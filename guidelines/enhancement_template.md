@@ -2,28 +2,22 @@
 title: neat-enhancement-idea
 authors:
   - TBD
-reviewers: # Include a comment about what domain expertise a reviewer is expected to bring and what area of the enhancement you expect them to focus on. For example: - "@networkguru, for networking aspects, please look at IP bootstrapping aspect"
-  - TBD
-approvers: # A single approver is preferred, the role of the approver is to raise important questions, help ensure the enhancement receives reviews from all applicable areas/SMEs, and determine when consensus is achieved such that the EP can move forward to implementation.  Having multiple approvers makes it difficult to determine who is responsible for the actual approval.
-  - TBD
-api-approvers: # In case of new or modified APIs or API extensions (CRDs, aggregated apiservers, webhooks, finalizers). If there is no API change, use "None"
-  - TBD
 creation-date: yyyy-mm-dd
 last-updated: yyyy-mm-dd
-tracking-link: # link to the tracking ticket (for example: Jira Feature or Epic ticket) that corresponds to this enhancement
+tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
   - TBD
 see-also:
-  - "/enhancements/this-other-neat-thing.md"
+  - "/enhancements/this-other-neat-thing"
 replaces:
-  - "/enhancements/that-less-than-great-idea.md"
+  - "/enhancements/that-less-than-great-idea"
 superseded-by:
-  - "/enhancements/our-past-effort.md"
+  - "/enhancements/our-past-effort"
 ---
 
 To get started with this template:
-1. **Pick a domain.** Find the appropriate domain to discuss your enhancement.
+1. **Create a directory.** Create the directory for your enhancement proposal.
 1. **Make a copy of this template.** Copy this template into the directory for
-   the domain.
+   the proposal as `README.md`.
 1. **Fill out the metadata at the top.** The embedded YAML document is
    checked by the linter.
 1. **Fill out the "overview" sections.** This includes the Summary and
@@ -205,33 +199,6 @@ and finalizers, i.e. those mechanisms that change the OCP API surface and behavi
 Fill in the operational impact of these API Extensions in the "Operational Aspects
 of API Extensions" section.
 
-### Topology Considerations
-
-#### Hypershift / Hosted Control Planes
-
-Are there any unique considerations for making this change work with
-Hypershift?
-
-See https://github.com/openshift/enhancements/blob/e044f84e9b2bafa600e6c24e35d226463c2308a5/enhancements/multi-arch/heterogeneous-architecture-clusters.md?plain=1#L282
-
-How does it affect any of the components running in the
-management cluster? How does it affect any components running split
-between the management cluster and guest cluster?
-
-#### Standalone Clusters
-
-Is the change relevant for standalone clusters?
-
-#### Single-node Deployments or MicroShift
-
-How does this proposal affect the resource consumption of a
-single-node OpenShift deployment (SNO), CPU and memory?
-
-How does this proposal affect MicroShift? For example, if the proposal
-adds configuration options through API resources, should any of those
-behaviors also be exposed to MicroShift admins through the
-configuration file for MicroShift?
-
 ### Implementation Details/Notes/Constraints
 
 What are some important details that didn't come across above in the
@@ -327,28 +294,6 @@ please be sure to include in the graduation criteria.**
 **Examples**: These are generalized examples to consider, in addition
 to the aforementioned [maturity levels][maturity-levels].
 
-### Dev Preview -> Tech Preview
-
-- Ability to utilize the enhancement end to end
-- End user documentation, relative API stability
-- Sufficient test coverage
-- Gather feedback from users rather than just developers
-- Enumerate service level indicators (SLIs), expose SLIs as metrics
-- Write symptoms-based alerts for the component(s)
-
-### Tech Preview -> GA
-
-- More testing (upgrade, downgrade, scale)
-- Sufficient time for feedback
-- Available by default
-- Backhaul SLI telemetry
-- Document SLOs for the component
-- Conduct load testing
-- User facing documentation created in [openshift-docs](https://github.com/openshift/openshift-docs/)
-
-**For non-optional features moving to GA, the graduation criteria must include
-end to end tests.**
-
 ### Removing a deprecated feature
 
 - Announce deprecation and support policy of the existing feature
@@ -408,42 +353,6 @@ enhancement:
   when this feature is used?
 - Will any other components on the node change? For example, changes to CSI, CRI
   or CNI may require updating that component before the kubelet.
-
-## Operational Aspects of API Extensions
-
-Describe the impact of API extensions (mentioned in the proposal section, i.e. CRDs,
-admission and conversion webhooks, aggregated API servers, finalizers) here in detail,
-especially how they impact the OCP system architecture and operational aspects.
-
-- For conversion/admission webhooks and aggregated apiservers: what are the SLIs (Service Level
-  Indicators) an administrator or support can use to determine the health of the API extensions
-
-  Examples (metrics, alerts, operator conditions)
-  - authentication-operator condition `APIServerDegraded=False`
-  - authentication-operator condition `APIServerAvailable=True`
-  - openshift-authentication/oauth-apiserver deployment and pods health
-
-- What impact do these API extensions have on existing SLIs (e.g. scalability, API throughput,
-  API availability)
-
-  Examples:
-  - Adds 1s to every pod update in the system, slowing down pod scheduling by 5s on average.
-  - Fails creation of ConfigMap in the system when the webhook is not available.
-  - Adds a dependency on the SDN service network for all resources, risking API availability in case
-    of SDN issues.
-  - Expected use-cases require less than 1000 instances of the CRD, not impacting
-    general API throughput.
-
-- How is the impact on existing SLIs to be measured and when (e.g. every release by QE, or
-  automatically in CI) and by whom (e.g. perf team; name the responsible person and let them review
-  this enhancement)
-
-- Describe the possible failure modes of the API extensions.
-- Describe how a failure or behaviour of the extension will impact the overall cluster health
-  (e.g. which kube-controller-manager functionality will stop working), especially regarding
-  stability, availability, performance and security.
-- Describe which OCP teams are likely to be called upon in case of escalation with one of the failure modes
-  and add them as reviewers to this enhancement.
 
 ## Support Procedures
 
