@@ -3,7 +3,7 @@ title: Pluggable Inventory Sources
 authors:
   - Juan Hernández
 creation-date: 2025-12-10
-last-updated: 2025-12-10
+last-updated: 2026-01-12
 tracking-link:
   - TBD
 replaces:
@@ -32,6 +32,26 @@ infrastructure is typically managed by specialized datacenter management systems
 Base Command Manager (BCM), OpenStack Ironic, or custom inventory databases. Each of these systems
 has its own API, data model, and capabilities.
 
+### Why Store Inventory Data?
+
+Storing inventory information in the fulfillment service database serves two important purposes:
+
+**Decoupling components from inventory sources**: When inventory data is available through the
+fulfillment service API, other components (such as provisioning systems) can work independently of
+the specific inventory source being used. For example, when integrating with NVIDIA BCM, it became
+clear that using OpenStack for provisioning would be impractical due to its complexity. Using
+Metal3 instead required only a simple controller that reads host information from the fulfillment
+service API. This flexibility is only possible when the inventory data is accessible through a
+single, consistent interface.
+
+**Reducing integration complexity**: When there are `n` inventory sources and `m` provisioning
+systems, direct integration would require `n × m` connectors—each inventory source would need to
+know how to communicate with each provisioning system. By centralizing inventory data in the
+fulfillment service, only `n + m` integrations are needed: each inventory source synchronizes with
+the fulfillment service, and each provisioning component reads from it.
+
+### Why a Pluggable Architecture?
+
 Rather than embedding support for each inventory source directly into the fulfillment service, a
 pluggable architecture allows:
 
@@ -59,7 +79,6 @@ pluggable architecture allows:
 - Establish a synchronization pattern for inventory source adapters.
 - Support hub configuration for HyperShift-based cluster provisioning.
 - Enable host assignment tracking for clusters.
-- Identify DNS provisioning as a required capability for cluster creation.
 
 ### Non-Goals
 
@@ -69,13 +88,17 @@ The following are explicitly out of scope for this proposal:
 - Automatic hardware discovery without an inventory source.
 - Network topology management (addressed by VDCaaS proposal).
 - Storage management and provisioning.
-- Detailed DNS provisioning implementation (mentioned as a requirement but implementation details
-  are out of scope).
+- DNS provisioning implementation. While DNS records are necessary for cluster access, the design
+  and implementation of DNS provisioning is a separate concern. This proposal mentions DNS only as
+  an example of a capability that provisioning systems may require.
 - Mandating a specific host provisioning mechanism. While this document uses `BareMetalHost`
   resources (from the Metal3 project) as an example for provisioning bare-metal hosts, the
   pluggable inventory source architecture does not require this specific technology. Other
   provisioning mechanisms (e.g., Ironic directly, vendor-specific tools) can be used depending
   on the deployment environment.
+- Defining a generic extension mechanism for custom object properties. While such a mechanism (a
+  `properties` field in object metadata) would be useful for storing deployment-specific data, it
+  is a general API enhancement that will be implemented independently of this proposal.
 
 ## Proposal
 
@@ -108,6 +131,7 @@ The `BMC` message contains:
 | `user` | `string` | Username for BMC authentication |
 | `password` | `string` | Password for BMC authentication |
 | `insecure` | `bool` | Whether to skip TLS certificate verification |
+| `trusted_cas` | `string` | PEM-encoded CA certificates to trust when verifying the BMC's TLS certificate |
 
 **Status fields:**
 
@@ -255,11 +279,39 @@ For each host in the inventory source, the synchronizer:
 3. Updates the host spec with BMC details, boot MAC/IP, rack location, and host class reference.
 4. Updates links back to the inventory source for operator reference.
 
+### Example: Minimal Synchronization (Ironic with Ansible)
+
+The simplest deployment scenario illustrates that synchronizers and detailed inventory data are
+optional. Consider a deployment where:
+
+- **Inventory source**: OpenStack Ironic manages the physical hosts.
+- **Provisioning**: Ansible playbooks interact directly with Ironic to provision hosts.
+
+In this architecture, the Ansible playbooks already know how to communicate with Ironic; they
+only need to know whicy types of hosts to provision for a given cluster. The fulfillment service provides
+this information through the `class` field on hosts field on cluster node sets.
+
+The only inventory data required in the fulfillment service is:
+
+- **Host classes**: Categories of hosts (e.g., "compute-large", "gpu-node") for allocation
+  purposes.
+
+No BMC credentials, boot MAC addresses, or other hardware details need to be synchronized because
+Ironic already has this information and the playbooks know how to use it.
+
+This minimal approach requires no synchronizer deployment at all; hosts and host classes can be
+created using the API as needed. This proposal's API extensions are additive: fields like
+`bmc`, `boot_mac`, and `boot_ip` remain empty and unused.
+
+This example demonstrates that the proposal does not impose additional complexity on deployments
+that don't need detailed inventory data in the fulfillment service.
+
 ### Example: BCM Synchronizer
 
-An example implementation for NVIDIA Base Command Manager (BCM) demonstrates the synchronization
-pattern. The initial implementation uses periodic synchronization; future iterations should
-leverage BCM's event capabilities if available to enable real-time updates.
+An example implementation for NVIDIA Base Command Manager (BCM) demonstrates a full synchronization
+scenario where detailed hardware information is needed. The initial implementation uses periodic
+synchronization; future iterations should leverage BCM's event capabilities if available to enable
+real-time updates.
 
 It is deployed as a separate Helm chart (`bcm-sync`) with the following configuration:
 
@@ -320,10 +372,14 @@ becomes:
 Other provisioning mechanisms would implement steps 4-5 differently while maintaining the same
 overall inventory synchronization and host selection patterns.
 
-### DNS Provisioning Requirements
+### Example: DNS Provisioning as a Related Concern
 
-Bare-metal cluster provisioning requires dynamic DNS record management. When a cluster is created,
-the fulfillment service must provision DNS records for:
+This section illustrates how the inventory synchronization pattern can inform the design of other
+provisioning-related integrations. DNS provisioning is presented as an example; its detailed
+design and implementation are out of scope for this proposal.
+
+Bare-metal cluster provisioning typically requires dynamic DNS record management. When a cluster
+is created, DNS records may need to be provisioned for:
 
 - **API endpoint**: `api.<cluster-alias>.<base-domain>` pointing to the hub cluster IP where the
   hosted control plane runs.
@@ -331,17 +387,15 @@ the fulfillment service must provision DNS records for:
   communication.
 - **Ingress wildcard**: `*.apps.<cluster-alias>.<base-domain>` for application routes.
 
-The DNS provisioning mechanism must support:
+Following the pluggable pattern established for inventory sources, DNS provisioning could be
+implemented as a separate component that:
 
-- Dynamic record creation when clusters are provisioned.
-- Record cleanup when clusters are deleted.
-- Authentication with the DNS server (e.g., TSIG keys for BIND).
-- Both A records and wildcard records.
+- Receives cluster lifecycle events from the fulfillment service.
+- Creates, updates, or deletes DNS records accordingly.
+- Supports different DNS backends (BIND, Route53, etc.) through adapter implementations.
 
-The specific implementation of DNS provisioning (which DNS server to use, authentication
-mechanism, etc.) is deployment-specific and may vary between environments. The fulfillment
-service should provide a pluggable or configurable mechanism for DNS updates, similar to the
-inventory source pattern.
+This example demonstrates how the architectural principles in this proposal—separation of concerns,
+pluggable adapters, and event-driven updates—can be applied to other infrastructure integrations.
 
 ### Risks and Mitigations
 
@@ -358,24 +412,27 @@ should monitor synchronization health.
 **Risk**: Security of BMC credentials in transit and at rest.
 
 **Mitigation**: BMC passwords are stored in the fulfillment service database. The gRPC connection
-between synchronizer and service should use TLS. Future work may introduce secret references
-instead of inline passwords.
+between synchronizer and service should use TLS. A separate enhancement proposal
+([PR #16](https://github.com/innabox/enhancement-proposals/pull/16)) addresses secrets management,
+introducing mechanisms for secure storage and reference-based secret handling.
 
-**Risk**: DNS provisioning failures leave clusters unreachable.
+**Risk**: External provisioning dependencies (DNS, DHCP, etc.) can fail independently.
 
-**Mitigation**: DNS record creation should be idempotent and retried on failure. The cluster
-reconciler should verify DNS records are resolvable before marking the cluster as ready. Cleanup
-of DNS records during cluster deletion should be best-effort to avoid blocking deletion.
+**Mitigation**: Related provisioning mechanisms (discussed as examples in this proposal) should
+implement idempotent operations with retry logic. The cluster reconciler should verify that
+prerequisites are in place before marking clusters as ready.
 
 ### Drawbacks
 
-- Additional deployment complexity with separate synchronizer components.
+- Additional deployment complexity with separate synchronizer components, though the minimal
+  synchronization example shows this is optional for simpler architectures.
 - When event-based synchronization is not available, falling back to periodic synchronization
   introduces latency for inventory changes.
 - Not all inventory sources support event notifications, limiting real-time synchronization
   capabilities in some environments.
 - BMC credentials are stored in the fulfillment service database, requiring appropriate security
-  measures.
+  measures. The secrets management enhancement
+  ([PR #16](https://github.com/innabox/enhancement-proposals/pull/16)) will address this concern.
 
 ## Alternatives
 
@@ -388,14 +445,34 @@ rejected because:
 - It would increase the core service's complexity and dependency footprint.
 - It would make testing harder without access to all supported inventory systems.
 
-### Direct API Integration
+### Inventory Source API Abstraction
 
-Having the fulfillment service query inventory sources on-demand was considered but rejected
-because:
+An alternative approach is to define a standard API that all inventory sources must implement. The
+fulfillment service would query this API on-demand rather than storing inventory data locally.
+For example, when a provisioning component needs host information, it would call this abstraction
+layer, which would delegate to the appropriate inventory source.
 
-- It would create tight coupling between the service and inventory source availability.
-- It would add latency to operations that need inventory data.
-- It would complicate error handling when inventory sources are unavailable.
+**Advantages**:
+
+- No data duplication between the inventory source and the fulfillment service.
+- Always returns up-to-date information without synchronization delays.
+- Simpler architecture with fewer moving parts (no synchronizers needed).
+
+**Disadvantages**:
+
+- **Query performance**: Some inventory sources (such as BCM) lack query capabilities. Translating
+  fulfillment service queries into inventory source API calls would require fetching entire
+  collections and filtering in memory, which becomes expensive for large inventories.
+- **Availability coupling**: The fulfillment service's ability to serve inventory data depends on
+  the availability of the underlying inventory source. If BCM is down, hosts cannot be listed. With
+  local storage, the fulfillment service remains operational even when the inventory source is
+  temporarily unreachable.
+- **Complexity in the abstraction layer**: Each inventory source has a different data model and
+  capabilities. Building a sufficiently flexible abstraction that works well with all sources while
+  maintaining good performance is challenging.
+
+This proposal chooses local storage with synchronization primarily for query flexibility and
+availability guarantees, accepting the tradeoff of eventual consistency.
 
 ## Test Plan
 
@@ -446,9 +523,6 @@ require synchronizer updates.
 
 ## Infrastructure Needed
 
-- Access to inventory source for synchronizer deployment.
+- Access to inventory source for synchronizer deployment (if using a synchronizer).
 - TLS certificates for secure communication between synchronizer and fulfillment service.
 - Network connectivity between synchronizer, inventory source, and fulfillment service.
-- DNS server with dynamic update support (e.g., BIND with TSIG authentication) for cluster
-  endpoint records.
-- DNS zone delegated to the fulfillment service for cluster domains.
