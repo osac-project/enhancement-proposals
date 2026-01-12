@@ -172,6 +172,36 @@ The controller will create the following resources in the tenant namespace:
 
 All created resources will have OwnerReferences pointing to the ComputeInstance CR for automatic cleanup.
 
+#### Operational Aspects of API Extensions
+
+**Behavior Modification:**
+- Modifies reconciliation behavior of existing `cloudkit.openshift.io/v1alpha1/ComputeInstance` CR
+- Adds new annotation `cloudkit.openshift.io/managed-by` to control provisioning path
+- No changes to CR schema (spec/status fields)
+- Backward compatible: ComputeInstances without annotation continue using AAP (existing behavior)
+
+**Operational Impact:**
+
+*During migration (dual-mode operation):*
+- **Impact on cluster:** None - both AAP and controller paths create identical Kubernetes resources
+- **Impact on existing workloads:** Existing ComputeInstances continue provisioning via AAP unchanged
+- **Impact on new workloads:** New ComputeInstances can choose provisioning path via annotation
+- **Rollback capability:** Change annotation value or redeploy previous controller version
+
+*After full migration (AAP removed):*
+- **Impact on cluster:** AAP infrastructure no longer required for Kubernetes resource provisioning (still needed for provider-specific infrastructure integration if applicable)
+- **Impact on existing workloads:** Continue running normally (no reconciliation triggered for running VMs)
+- **Impact on new workloads:** All new ComputeInstances provisioned via controller
+
+**Failure modes:**
+- If controller crashes during provisioning: Reconciliation resumes on restart (idempotent operations, partial resources safe via OwnerReferences)
+- If AAP unavailable: ComputeInstances with `managed-by: aap` will fail to provision until AAP restored
+- If annotation invalid/missing: Defaults to AAP (backward compatible)
+
+**Resource cleanup:**
+- Deletion of ComputeInstance CR triggers deletion of all child resources via OwnerReferences
+- No manual cleanup required
+
 ### Implementation Details/Notes/Constraints
 
 #### Resource Flow Diagram
@@ -595,7 +625,7 @@ Instead of removing AAP, optimize the webhook → EDA → AAP pipeline to reduce
 - Latency improvements limited (still external job queue)
 - Doesn't address core architectural complexity
 
-**Decision:** Not chosen because it doesn't address the root cause of complexity
+This approach doesn't address the root cause of complexity - the fundamental issue is using an external job queue for simple Kubernetes resource creation, not the performance of that queue.
 
 ### Alternative 2: New Dedicated OSAC Controller
 Create a separate osac-controller repository instead of extending cloudkit-operator.
@@ -609,7 +639,7 @@ Create a separate osac-controller repository instead of extending cloudkit-opera
 - Duplicates reconciliation logic already in cloudkit-operator
 - More complex dependency management
 
-**Decision:** Not chosen because extending cloudkit-operator reuses existing ComputeInstance reconciliation infrastructure
+Extending cloudkit-operator is simpler because it reuses the existing ComputeInstance reconciliation infrastructure and avoids creating another deployment to manage.
 
 ### Alternative 3: Hybrid Approach (AAP for Complex Resources)
 Keep simple resources in controller, delegate complex resources (DataVolumes, floating IPs) to AAP.
@@ -623,7 +653,7 @@ Keep simple resources in controller, delegate complex resources (DataVolumes, fl
 - Still requires AAP infrastructure
 - Debugging still spans multiple systems
 
-**Decision:** Not chosen because it doesn't achieve the goal of eliminating AAP dependency
+This approach doesn't achieve the primary goal of eliminating AAP dependency for Kubernetes resource provisioning and would maintain the split provisioning model that causes debugging complexity.
 
 ## Open Questions
 
@@ -670,7 +700,7 @@ func getStorageClass(ctx context.Context, client client.Client) (string, error) 
 }
 ```
 
-**Decision:** Approved - Matches Ansible logic
+This matches the current Ansible logic and provides both explicit configuration (via env var) and automatic detection (via default storage class).
 
 ### 3. Error Handling Strategy
 **Question:** How should we handle transient errors (API server unavailable, etc.)?
@@ -681,8 +711,6 @@ func getStorageClass(ctx context.Context, client client.Client) (string, error) 
 - Backoff: 5ms → 10ms → 20ms → ... → 1000ms (capped)
 - After max retries, update ComputeInstance status with error condition
 - Manual intervention required (or webhook fallback to AAP)
-
-**Decision:** Approved
 
 ## Test Plan
 
