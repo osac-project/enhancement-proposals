@@ -20,7 +20,7 @@ superseded-by:
 
 This proposal outlines the migration of compute instance provisioning logic from Ansible Automation Platform (AAP) to a native Kubernetes controller within cloudkit-operator. Currently, when a user orders a compute instance, the fulfillment-service creates a ComputeInstance CR, which triggers cloudkit-operator to call AAP via webhook. AAP then creates the underlying KubeVirt VirtualMachine CR and associated resources. This migration will move the KubeVirt VirtualMachine CR creation logic directly into the controller, eliminating external orchestration dependencies and simplifying the provisioning architecture.
 
-The scope of this migration is limited to moving KubeVirt resource creation from Ansible to the controller. The ComputeInstance CR creation (handled by fulfillment-service) remains unchanged.
+**Scope:** This migration moves **Kubernetes-native resource creation** (KubeVirt VirtualMachines, DataVolumes, Secrets, Services) from Ansible to the controller. **Provider-specific infrastructure integration** (networking, load balancers, floating IPs, DNS, TLS) remains in Ansible/AAP as the customization layer where providers integrate with their environment-specific infrastructure. The ComputeInstance CR creation (handled by fulfillment-service) remains unchanged.
 
 ## Motivation
 
@@ -68,11 +68,35 @@ User → fulfillment-api → fulfillment-service → ComputeInstance CR
 ### Non-Goals
 
 - Changes to ComputeInstance CR creation (already handled by fulfillment-service)
-- Complete AAP infrastructure removal in initial phase (will be done after migration is complete)
-- Floating IP management (massopencloud.esi integration remains in Ansible initially)
-- Changes to the fulfillment-service API
+- Provider-specific infrastructure integration (networking, storage, DNS, TLS) - these remain in Ansible/AAP as the customization layer where providers integrate with their environment-specific infrastructure (network fabric, load balancers, floating IPs, VPN, DNS records, TLS certificates, etc.)
+- Complete AAP infrastructure removal - providers with custom infrastructure integrations will continue to use Ansible hooks
+- Changes to the fulfillment-service API or database schema
 
 ## Proposal
+
+### Architectural Boundary: Controller vs Ansible
+
+This enhancement migrates **Kubernetes-native resource orchestration** from Ansible to the controller, while preserving **provider infrastructure integration** in Ansible.
+
+**cloudkit-controller responsibility:**
+- Kubernetes-native resource creation and lifecycle management
+- Creating KubeVirt VirtualMachines, DataVolumes, Secrets, Services
+- Reconciliation loops, status updates, owner references
+- Standard Kubernetes patterns and APIs
+
+**Ansible/AAP responsibility (provider integration layer):**
+- Environment-specific infrastructure integration that varies by provider:
+  - **Networking**: Network fabric integration (UDN/CUDN provisioning), VPN setup, private network plumbing
+  - **Load balancing**: MetalLB provisioning, hardware load balancers, floating IP assignment
+  - **DNS**: DNS record creation and management
+  - **TLS**: Certificate provisioning from provider's certificate authority
+  - **Storage**: Integration with provider-specific storage systems
+- Enables each provider to customize CloudKit to their infrastructure (network gear, topology, access requirements, etc.)
+- Uses Ansible's broad vendor support for network equipment configuration
+
+**Design rationale:** Ansible is the de facto standard for infrastructure automation and covers every major vendor of network gear. This architectural separation allows CloudKit to provide an end-to-end working reference implementation while enabling providers to integrate with their unique infrastructure through well-defined hooks.
+
+**Example:** The `massopencloud.esi` collection demonstrates provider-specific integration - MOC uses OpenStack ESI for floating IPs and port forwarding. Other providers may use different approaches (MetalLB, hardware load balancers, direct network fabric integration, etc.).
 
 ### Workflow Description
 
@@ -550,24 +574,12 @@ metadata:
 - Graceful error handling with clear error messages
 - Test in multiple cluster environments (dev, staging, prod)
 
-#### Risk 5: Floating IP Logic Not Ported
-**Description:** Initial implementation skips floating IP assignment (massopencloud.esi), breaking networking for some environments
-
-**Impact:** Medium - Compute instances not accessible from external network
-**Probability:** Low - Only affects environments using ESI floating IPs
-
-**Mitigation:**
-- Clearly document that floating IP assignment remains in Ansible Phase 1
-- Keep AAP running for environments requiring floating IPs
-- Plan Phase 2 to port floating IP logic to controller
-- Or: Create separate FloatingIP controller
-
 ### Drawbacks
 
 - Introduces code complexity in cloudkit-operator (more Go code to maintain vs. Ansible playbooks)
 - Requires careful migration strategy to avoid service disruption
 - Team needs to maintain two code paths (controller and AAP) during migration period
-- Floating IP logic remains in Ansible initially, partial migration
+- Providers with custom infrastructure integrations will continue to depend on Ansible/AAP (this is by design, but increases operational complexity for those providers)
 
 ## Alternatives (Not Implemented)
 
@@ -615,15 +627,21 @@ Keep simple resources in controller, delegate complex resources (DataVolumes, fl
 
 ## Open Questions
 
-### 1. Floating IP Assignment
-**Question:** Should we port massopencloud.esi floating IP logic to controller in Phase 1?
+### 1. Provider Integration Routing Logic
+**Question:** How does the system determine which ComputeInstances need provider-specific infrastructure integrations (and thus should use Ansible/AAP) vs which can be handled entirely by the controller?
+
+**Context:**
+- Some providers require custom networking (floating IPs, VPN, network fabric integration)
+- The `ocp_virt_vm` template currently always invokes provider integration hooks (e.g., massopencloud.esi)
+- No parameter in `templateParameters` currently indicates whether provider integration is needed
 
 **Options:**
-- A) Keep in Ansible initially (simplify Phase 1 scope)
-- B) Port to controller immediately (full feature parity)
-- C) Create separate FloatingIP controller (better separation of concerns)
+- A) Template-based: Create separate templates (`ocp_virt_vm_basic` for controller, `ocp_virt_vm_full` for AAP with provider hooks)
+- B) Parameter-based: Add `requires_provider_integration: bool` to template parameters
+- C) Provider/environment-based: Configuration in fulfillment-service indicating which providers always need AAP
+- D) Metadata-based: Add capabilities/requirements metadata to template definitions
 
-**Recommendation:** Option A - Keep in Ansible for Phase 1. The `massopencloud.esi` role is complex and environment-specific. Allows us to ship controller faster and migrate floating IP logic in Phase 2.
+**Action Required:** Discuss with team and determine approach before implementation.
 
 ### 2. Storage Class Selection
 **Question:** How should we handle storage class auto-detection?
