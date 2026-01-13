@@ -32,7 +32,7 @@ The current architecture spans multiple systems to provision a single compute in
 
 ```
 User → fulfillment-api → fulfillment-service → ComputeInstance CR
-     → Webhook → AAP EDA → Rulebook Match → Job Template
+     → cloudkit-operator → Webhook → AAP EDA → Rulebook Match → Job Template
      → Ansible Playbook → KubeVirt VirtualMachine CR
      → cloudkit-operator watches → Status updates
 ```
@@ -117,7 +117,7 @@ This enhancement migrates **Kubernetes-native resource orchestration** from Ansi
 #### Proposed Workflow
 
 1. User submits compute instance order via fulfillment-api (UNCHANGED)
-2. fulfillment-service creates cloudkit.openshift.io/v1alpha1/ComputeInstance CR (UNCHANGED)
+2. fulfillment-service creates cloudkit.openshift.io/v1alpha1/ComputeInstance CR with annotation "cloudkit.openshift.io/managed-by" set to "controller" or "aap" (value determined by fulfillment-service configuration)
 3. cloudkit-operator detects ComputeInstance CR where spec.desiredConfigVersion ≠ status.reconciledConfigVersion
 4. cloudkit-operator checks annotation "cloudkit.openshift.io/managed-by"
 5. **IF managed-by = "controller" (NEW PATH):**
