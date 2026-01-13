@@ -666,11 +666,26 @@ This approach doesn't achieve the primary goal of eliminating AAP dependency for
 - No parameter in `templateParameters` currently indicates whether provider integration is needed
 
 **Options:**
-- A) **Template-based:** Cloud Service Provider (CSP) decides what templates to offer; each template declares its integrations. Controller-only templates vs AAP-integrated templates.
-- B) **Parameter-based:** Add `requires_provider_integration: bool` to template parameters
-- C) **Provider/environment-based:** Configuration in fulfillment-service indicating which Cloud Service Providers always need AAP
-- D) **Metadata-based:** Template definitions include capabilities/requirements metadata
-- E) **Always invoke Ansible:** All templates go through Ansible; some Ansible plumbing expected for any Cloud Service Provider
+
+**A) Template-based:** Cloud Service Provider (CSP) decides what templates to offer; each template declares its integrations.
+- **Pros:** Clear separation, templates explicitly declare dependencies, CSP has full control
+- **Cons:** Requires creating multiple template variants (e.g., `ocp_virt_vm_basic`, `ocp_virt_vm_full`)
+
+**B) Parameter-based:** Add `requires_provider_integration: bool` to template parameters
+- **Pros:** Single template, runtime decision based on user input
+- **Cons:** Adds complexity to template parameters, user must understand infrastructure needs
+
+**C) Provider/environment-based:** Configuration in fulfillment-service per Cloud Service Provider (CSP)
+- **Pros:** No template changes needed, centralized configuration
+- **Cons:** Hardcoded CSP assumptions, doesn't support mixed deployments within same CSP
+
+**D) Metadata-based:** Template definitions include capabilities/requirements metadata
+- **Pros:** Declarative, allows dynamic discovery of template requirements
+- **Cons:** Requires new metadata schema, additional complexity in fulfillment-service
+
+**E) Always invoke Ansible:** All templates go through Ansible
+- **Pros:** Consistent flow, no routing logic needed, some Ansible customization expected anyway
+- **Cons:** Doesn't achieve latency reduction goal for controller-only deployments, maintains AAP dependency
 
 **Team Feedback:**
 - **Alona Kaplan:** Prefers Option E (always invoke Ansible) - expects some Ansible plumbing for any Cloud Service Provider
@@ -727,8 +742,14 @@ This matches the current Ansible logic and provides both explicit configuration 
 - Current template allows compound operation (Create VM + Allocate floating IP + Attach floating IP)
 
 **Options:**
-- A) Keep compound operation in template (current behavior)
-- B) Separate APIs: VM creation is controller-only, floating IP is separate Ansible-invoked API
+
+**A) Keep compound operation in template (current behavior)**
+- **Pros:** Simpler for users (single operation), existing behavior preserved, no migration needed for current templates
+- **Cons:** VM created with public IP by default (security concern), harder to manage IPs independently as day-2 operations, doesn't follow AWS/industry best practice model
+
+**B) Separate APIs: VM creation is controller-only, floating IP is separate Ansible-invoked API**
+- **Pros:** Better security (VMs private by default), follows AWS model and industry best practices, enables day-2 IP management and lifecycle, clearer separation of concerns between VM and networking
+- **Cons:** More complex user workflow (requires two operations), requires API changes and new endpoints, migration effort needed for existing templates
 
 **Team Feedback:**
 - **Avishay:** Prefers Option B (separate APIs) - matches AWS model, enables day-2 IP management
@@ -746,9 +767,18 @@ This matches the current Ansible logic and provides both explicit configuration 
 - Exposing ports seems like it should be part of Networking API (security group, LoadBalancer)
 
 **Options:**
-- A) Controller creates Service (current proposal)
-- B) Service creation moves to Ansible provider integration layer
-- C) Separate Networking/LoadBalancer API handles Service creation
+
+**A) Controller creates Service (current proposal)**
+- **Pros:** Simple implementation, works for common case (MetalLB), keeps all Kubernetes-native resources in controller, faster initial delivery
+- **Cons:** Assumes all providers use Kubernetes Services for networking, not flexible for different networking approaches (BGP, RouterAdvertisement, hardware load balancers), violates architectural boundary (networking is provider-specific)
+
+**B) Service creation moves to Ansible provider integration layer**
+- **Pros:** Flexible for provider-specific networking implementations, consistent with architectural boundary (networking in Ansible), supports non-Service networking approaches
+- **Cons:** Splits Kubernetes resource creation between controller and Ansible (breaks consistency), requires Ansible even for simple Kubernetes-only deployments
+
+**C) Separate Networking/LoadBalancer API handles Service creation**
+- **Pros:** Clean separation of concerns, most flexible architecture, allows day-2 networking changes independent of VM lifecycle, matches conceptual model (networking separate from compute)
+- **Cons:** Most complex to implement, requires new API development and additional components, delays feature availability, more moving parts to maintain
 
 **Team Feedback:**
 - **Adrien Gentil:** Suggests Service creation might belong in Networking API rather than VM provisioning
