@@ -666,12 +666,18 @@ This approach doesn't achieve the primary goal of eliminating AAP dependency for
 - No parameter in `templateParameters` currently indicates whether provider integration is needed
 
 **Options:**
-- A) Template-based: Create separate templates (`ocp_virt_vm_basic` for controller, `ocp_virt_vm_full` for AAP with provider hooks)
-- B) Parameter-based: Add `requires_provider_integration: bool` to template parameters
-- C) Provider/environment-based: Configuration in fulfillment-service indicating which providers always need AAP
-- D) Metadata-based: Add capabilities/requirements metadata to template definitions
+- A) **Template-based:** Cloud Service Provider (CSP) decides what templates to offer; each template declares its integrations. Controller-only templates vs AAP-integrated templates.
+- B) **Parameter-based:** Add `requires_provider_integration: bool` to template parameters
+- C) **Provider/environment-based:** Configuration in fulfillment-service indicating which Cloud Service Providers always need AAP
+- D) **Metadata-based:** Template definitions include capabilities/requirements metadata
+- E) **Always invoke Ansible:** All templates go through Ansible; some Ansible plumbing expected for any Cloud Service Provider
 
-**Action Required:** Discuss with team and determine approach before implementation.
+**Team Feedback:**
+- **Alona Kaplan:** Prefers Option E (always invoke Ansible) - expects some Ansible plumbing for any Cloud Service Provider
+- **Michael Hrivnak:** Supports Option A (template-based) - CSP decides templates and their integrations
+- **Consensus:** Floating IP logic stays in Ansible; only KubeVirt VM CR creation moves to controller
+
+**Action Required:** Finalize routing approach before implementation.
 
 ### 2. Storage Class Selection
 **Question:** How should we handle storage class auto-detection?
@@ -711,6 +717,43 @@ This matches the current Ansible logic and provides both explicit configuration 
 - Backoff: 5ms → 10ms → 20ms → ... → 1000ms (capped)
 - After max retries, update ComputeInstance status with error condition
 - Manual intervention required (or webhook fallback to AAP)
+
+### 4. Floating IP as Separate API
+**Question:** Should floating IP allocation/association be a separate API operation (day-2) rather than compound with VM creation?
+
+**Context:**
+- **Avishay & Eran:** Suggest following AWS model - separate APIs for "Allocate floating IP" and "Attach floating IP"
+- VMs should never be created with public IPs by default; IPs managed as day-2 operations via APIs calling Ansible hooks
+- Current template allows compound operation (Create VM + Allocate floating IP + Attach floating IP)
+
+**Options:**
+- A) Keep compound operation in template (current behavior)
+- B) Separate APIs: VM creation is controller-only, floating IP is separate Ansible-invoked API
+
+**Team Feedback:**
+- **Avishay:** Prefers Option B (separate APIs) - matches AWS model, enables day-2 IP management
+- **Eran:** Agrees separate APIs needed; supports keeping compound operation as option if desired
+
+**Action Required:** Determine if this change is in scope for this enhancement or separate future work.
+
+### 5. Service Creation Scope
+**Question:** Should LoadBalancer Service creation be part of controller-created resources, or is it provider-specific networking?
+
+**Context:**
+- Current proposal includes Service creation in controller
+- **Adrien Gentil:** Questions if Service belongs in controller - it's provider-specific networking (MetalLB vs RouterAdvertisement/BGP)
+- Different setups may not need Service objects at all
+- Exposing ports seems like it should be part of Networking API (security group, LoadBalancer)
+
+**Options:**
+- A) Controller creates Service (current proposal)
+- B) Service creation moves to Ansible provider integration layer
+- C) Separate Networking/LoadBalancer API handles Service creation
+
+**Team Feedback:**
+- **Adrien Gentil:** Suggests Service creation might belong in Networking API rather than VM provisioning
+
+**Action Required:** Determine if Service creation stays in controller or moves to provider integration layer.
 
 ## Test Plan
 
