@@ -3,7 +3,7 @@ title: Pluggable Inventory Sources
 authors:
   - Juan Hernández
 creation-date: 2025-12-10
-last-updated: 2026-01-12
+last-updated: 2026-01-14
 tracking-link:
   - TBD
 replaces:
@@ -38,11 +38,11 @@ Storing inventory information in the fulfillment service database serves two imp
 
 **Decoupling components from inventory sources**: When inventory data is available through the
 fulfillment service API, other components (such as provisioning systems) can work independently of
-the specific inventory source being used. For example, when integrating with NVIDIA BCM, it became
-clear that using OpenStack for provisioning would be impractical due to its complexity. Using
-Metal3 instead required only a simple controller that reads host information from the fulfillment
-service API. This flexibility is only possible when the inventory data is accessible through a
-single, consistent interface.
+the specific inventory source being used. For example, during a proof of concept integrating with
+NVIDIA BCM, it became clear that using OpenStack for provisioning would be impractical due to its
+complexity. Exploring alternatives like Metal3 was straightforward because it only required a
+simple controller that reads host information from the fulfillment service API. This flexibility
+is only possible when the inventory data is accessible through a single, consistent interface.
 
 **Reducing integration complexity**: When there are `n` inventory sources and `m` provisioning
 systems, direct integration would require `n × m` connectors—each inventory source would need to
@@ -68,8 +68,8 @@ pluggable architecture allows:
   request specific types of resources.
 - As a provider, I want the fulfillment service to automatically discover hosts from my inventory
   system and keep the data synchronized.
-- As a provider, I want to configure BMC (Baseboard Management Controller) credentials so the
-  service can power on/off hosts during provisioning.
+- As a provider, I want to use provisioning systems (such as Metal3 or Ironic) that can manage
+  host power and boot operations during cluster provisioning.
 - As a tenant, I want to see which hosts are assigned to my clusters so I can understand my
   resource allocation.
 
@@ -99,6 +99,9 @@ The following are explicitly out of scope for this proposal:
 - Defining a generic extension mechanism for custom object properties. While such a mechanism (a
   `properties` field in object metadata) would be useful for storing deployment-specific data, it
   is a general API enhancement that will be implemented independently of this proposal.
+- Reverse synchronization from the fulfillment service back to inventory sources. This proposal
+  only addresses reading inventory data; writing changes back to the source system is a separate
+  concern.
 
 ## Proposal
 
@@ -116,12 +119,19 @@ The host type requires additional fields to store hardware and provisioning deta
 | Field | Type | Description |
 |-------|------|-------------|
 | `bmc` | `BMC` | BMC (Baseboard Management Controller) connection details |
-| `rack` | `string` | Physical rack location |
+| `topology` | `map<string, string>` | Physical location attributes (e.g., region, zone, rack, slot) |
 | `class` | `string` | Reference to the host class identifier |
 | `boot_mac` | `string` | MAC address of the network interface used for PXE boot |
 | `boot_ip` | `string` | IP address assigned for network boot |
+| `available` | `bool` | Whether the host is available for allocation (excludes degraded, maintenance, or decommissioned hosts) |
 | `title` | `string` | Human-readable title |
 | `description` | `string` | Detailed description |
+
+The `topology` field provides flexible physical location information. The keys are
+deployment-specific (e.g., "region", "zone", "cabinet", "pod", "row", "slot", "u") and the values
+are the corresponding location identifiers. Provisioning components can translate these into
+appropriate constructs—for example, a Metal3-based provisioner could convert topology entries
+into Kubernetes labels on `BareMetalHost` resources.
 
 The `BMC` message contains:
 
@@ -137,8 +147,10 @@ The `BMC` message contains:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `cluster` | `string` | Identifier of the cluster this host is assigned to |
 | `hub` | `string` | Identifier of the hub managing this host |
+
+Note: Host-to-cluster assignment will be tracked through a `HostPool` resource rather than a
+field on the host itself, allowing for more flexible pool-based allocation.
 
 #### Cluster Type Extensions
 
@@ -163,7 +175,7 @@ The hub type requires additional configuration for HyperShift-based provisioning
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `pull_secret` | `string` | Docker configuration JSON for pulling container images |
+| `pull_secret` | `string` | Container registry credentials for pulling images |
 | `ssh_public_key` | `string` | SSH public key to install on provisioned hosts |
 | `ip` | `string` | IP address of the hub cluster (used for DNS configuration) |
 
@@ -175,8 +187,8 @@ resources exist in the hub cluster:
 
 1. **Namespace**: A dedicated namespace for the fulfillment service resources.
 
-2. **Pull Secret**: A Kubernetes secret containing Docker registry credentials for pulling
-   container images during cluster installation.
+2. **Pull Secret**: A Kubernetes secret containing container registry credentials for pulling
+   images during cluster installation.
 
 3. **InfraEnv**: An Agent-based installer `InfraEnv` resource that configures the discovery ISO
    parameters, including SSH authorized keys and network configuration.
@@ -188,9 +200,9 @@ The hub reconciler also starts a Kubernetes resource watcher for each hub. This 
 changes to relevant Kubernetes resources, signaling the appropriate fulfillment service entities
 when changes occur. This enables reactive reconciliation instead of polling.
 
-For example, in a HyperShift-based deployment using Metal3 for bare-metal provisioning, the
-watcher would monitor `HostedCluster`, `NodePool`, `BareMetalHost`, and `Agent` resources.
-Different provisioning mechanisms may require watching different resource types.
+For example, in a hypothetical HyperShift-based deployment using Metal3 for bare-metal
+provisioning, the watcher would monitor `HostedCluster`, `NodePool`, `BareMetalHost`, and `Agent`
+resources. Different provisioning mechanisms would require watching different resource types.
 
 ### Inventory Synchronization Architecture
 
@@ -276,8 +288,19 @@ For each host in the inventory source, the synchronizer:
 
 1. Searches for an existing host by identifier or name.
 2. Creates a new host if not found, using the inventory source identifier.
-3. Updates the host spec with BMC details, boot MAC/IP, rack location, and host class reference.
+3. Updates the host spec with BMC details, boot MAC/IP, topology, and host class reference.
 4. Updates links back to the inventory source for operator reference.
+
+#### Host Selection
+
+The decision of which hosts to assign to a cluster (or host pool) is made by the provisioning
+component, not the inventory source. Some inventory systems, like NVIDIA BCM, do not have host
+selection capabilities. By storing topology and class information in the fulfillment service,
+provisioning components can implement their own selection logic.
+
+If an inventory system does provide selection capabilities, a provisioning component can be built
+to delegate that decision. In such cases, the detailed topology information may not need to be
+copied to the fulfillment service.
 
 ### Example: Minimal Synchronization (Ironic with Ansible)
 
@@ -288,8 +311,8 @@ optional. Consider a deployment where:
 - **Provisioning**: Ansible playbooks interact directly with Ironic to provision hosts.
 
 In this architecture, the Ansible playbooks already know how to communicate with Ironic; they
-only need to know whicy types of hosts to provision for a given cluster. The fulfillment service provides
-this information through the `class` field on hosts field on cluster node sets.
+only need to know which types of hosts to provision for a given cluster. The fulfillment service
+provides this information through the `class` field on hosts and cluster node sets.
 
 The only inventory data required in the fulfillment service is:
 
@@ -297,11 +320,17 @@ The only inventory data required in the fulfillment service is:
   purposes.
 
 No BMC credentials, boot MAC addresses, or other hardware details need to be synchronized because
-Ironic already has this information and the playbooks know how to use it.
+Ironic already has this information and the playbooks know how to use it. In fact, some inventory
+systems like Ironic may not expose BMC passwords through their APIs at all. In such environments,
+administrators must choose a provisioning component that works directly with the inventory system
+rather than expecting BMC information in the fulfillment service.
+
+This pattern—where a single external system handles both inventory and provisioning—is common.
+The disadvantage is that inventory fields like `bmc`, `boot_mac`, and `boot_ip` remain empty in
+the fulfillment service, but this is acceptable when the provisioning component doesn't need them.
 
 This minimal approach requires no synchronizer deployment at all; hosts and host classes can be
-created using the API as needed. This proposal's API extensions are additive: fields like
-`bmc`, `boot_mac`, and `boot_ip` remain empty and unused.
+created using the API as needed. The proposal's API extensions are additive and optional.
 
 This example demonstrates that the proposal does not impose additional complexity on deployments
 that don't need detailed inventory data in the fulfillment service.
@@ -326,9 +355,14 @@ The BCM synchronizer maps:
 
 - BCM device categories → Host classes
 - BCM devices (LiteNode type) → Hosts
-- BCM rack positions → Host rack field
+- BCM physical location → Host topology map entries
 - BCM BMC settings → Host BMC configuration
 - BCM network interfaces → Boot MAC and IP addresses
+
+Note that we only synchronize the subset of inventory data required for provisioning components
+to function. BCM stores extensive information about hardware, physical location, installed
+packages, and more. Copying all of this would be impractical and unnecessary. The fields defined
+in this proposal are sufficient for the provisioning use cases we support.
 
 ### Workflow Integration
 
@@ -352,24 +386,30 @@ Host assignment for clusters follows this general flow:
 
 #### Example: HyperShift with Metal3
 
-As a concrete example, when using HyperShift with Metal3 for bare-metal provisioning, the workflow
-becomes:
+As a concrete example of how a provisioning component might work, consider a hypothetical
+deployment using HyperShift with Metal3 for bare-metal provisioning. Note that Metal3 is not
+currently part of our bare-metal deployment; this is presented as an illustration of how the
+pluggable architecture could support different provisioning mechanisms.
 
-1. **Host Discovery**: Same as above.
+In this scenario, the workflow becomes:
 
-2. **Cluster Creation**: Same as above.
+1. **Host Discovery**: The synchronizer creates or updates hosts in the fulfillment service.
 
-3. **Host Selection**: Same as above.
+2. **BareMetalHost Creation**: Immediately after host discovery, the reconciler creates
+   `BareMetalHost` resources in the hub cluster using BMC credentials from the host spec. This
+   happens before any cluster is created, making hosts available in the Metal3 inventory.
 
-4. **BareMetalHost Creation**: Reconciler creates `BareMetalHost` resources in the hub cluster
-   with BMC credentials from the host spec. Metal3 manages the hardware lifecycle.
+3. **Cluster Creation**: Tenant requests a cluster with node sets specifying host class and count.
+
+4. **Host Selection**: Cluster reconciler selects unassigned hosts matching the requested host
+   class.
 
 5. **Agent Binding**: When hosts boot and register as Agents, they are bound to the appropriate
    `HostedCluster`.
 
-6. **Status Update**: Same as above.
+6. **Status Update**: Host status is updated with the assigned hub identifier.
 
-Other provisioning mechanisms would implement steps 4-5 differently while maintaining the same
+Other provisioning mechanisms would implement steps 2 and 5 differently while maintaining the same
 overall inventory synchronization and host selection patterns.
 
 ### Example: DNS Provisioning as a Related Concern
