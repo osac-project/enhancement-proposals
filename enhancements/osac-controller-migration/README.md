@@ -1,9 +1,9 @@
 ---
 title: osac-controller-migration
 authors:
-  - CloudKit Team
+  - tzvatot
 creation-date: 2026-01-11
-last-updated: 2026-01-12
+last-updated: 2026-01-13
 tracking-link:
   - None
 see-also:
@@ -40,30 +40,32 @@ User → fulfillment-api → fulfillment-service → ComputeInstance CR
 **Key Issues:**
 1. **Multiple failure points:** Webhook delivery, AAP job queue, Ansible execution, K8s API
 2. **Debugging complexity:** Logs distributed across fulfillment, AAP, EDA, and controller
-3. **Latency overhead:** ~30 seconds from order to compute instance provisioning start
+3. **Latency overhead:** Additional latency from webhook delivery, EDA processing, and AAP job scheduling before Kubernetes resource creation begins
 4. **Infrastructure overhead:** AAP Controller, EDA, Execution Environments requiring maintenance
 5. **Deployment complexity:** AAP configuration-as-code, collections, job templates
 
 ### User Stories
 
+* As a Cloud Provider Admin, I want to define new templates with the ability to customize what input each template requires, what infrastructure it provisions, and how it provisions that infrastructure.
+
 * As an end user, I want my compute instance to be provisioned within seconds of submitting my order, so that I can start using my resources immediately without long wait times.
 
-* As a developer, I want to use native Kubernetes controller patterns (reconciliation loops, status conditions, owner references), so that I can leverage well-established best practices and tooling when implementing compute instance features.
+* As a developer implementing compute instance features, I want Kubernetes resource creation to use native controller patterns (reconciliation loops, idempotent operations, automatic retries), so that I can benefit from well-established reliability patterns and reduce the need for custom orchestration logic.
 
-* As an SRE debugging failed compute instance orders, I want to trace the entire provisioning flow in a single controller codebase, so that I can quickly identify root causes without navigating through AAP jobs, EDA rulebooks, and Ansible playbook logs across multiple systems.
+* As an SRE debugging failed compute instance orders, I want Kubernetes resource creation to be traceable in the controller codebase, so that I can quickly identify issues with VirtualMachine, DataVolume, and Secret creation without navigating through AAP jobs and EDA rulebooks.
 
-* As an SRE, I want to reduce operational overhead by eliminating AAP infrastructure dependencies, so that I have fewer systems to deploy, maintain, and troubleshoot.
+* As an SRE, I want to reduce the scope of AAP/EDA usage to only provider-specific infrastructure integration, so that I have fewer AAP jobs to monitor for basic compute instance provisioning.
 
-* As an SRE, I want to reduce the number of failure points in the provisioning pipeline, so that I have fewer components to monitor and fewer potential causes of outages.
+* As an SRE, I want to reduce the number of failure points in the Kubernetes resource creation phase, so that I have fewer components to troubleshoot when VirtualMachines fail to be created.
 
 ### Goals
 
-- Move KubeVirt VirtualMachine CR creation from Ansible playbooks to cloudkit-controller
-- Create associated resources (DataVolumes, Secrets, Services) directly in the controller
-- Maintain backwards compatibility during migration using dual-mode operation
-- Reduce provisioning latency from ~30s to <5s
-- Simplify the architecture by eliminating AAP dependency
+- Move Kubernetes-native resource creation (KubeVirt VirtualMachines, DataVolumes, Secrets, Services) from Ansible playbooks to cloudkit-controller
+- Reduce architectural complexity by removing the webhook → EDA → AAP job queue for Kubernetes resource creation
+- Reduce provisioning latency for the Kubernetes resource creation phase (webhook and AAP job scheduling overhead)
+- Simplify debugging by consolidating Kubernetes resource creation logic in the controller codebase
 - Enable future application of this pattern to Cluster resource provisioning
+- Maintain zero-downtime migration path using dual-mode operation
 
 ### Non-Goals
 
@@ -628,18 +630,20 @@ Instead of removing AAP, optimize the webhook → EDA → AAP pipeline to reduce
 This approach doesn't address the root cause of complexity - the fundamental issue is using an external job queue for simple Kubernetes resource creation, not the performance of that queue.
 
 ### Alternative 2: New Dedicated OSAC Controller
-Create a separate osac-controller repository instead of extending cloudkit-operator.
+Create a separate osac-controller repository instead of extending cloudkit-operator. This alternative achieves the same controller-based approach but differs in where the code lives.
 
 **Pros:**
-- Clean separation, independent versioning
-- Can optimize for specific compute instance provisioning use case
+- Clean separation of concerns (different controller per resource type)
+- Independent versioning and release cycles
+- Can optimize specifically for ComputeInstance provisioning
 
 **Cons:**
-- Another deployment to manage
-- Duplicates reconciliation logic already in cloudkit-operator
-- More complex dependency management
+- Another deployment to manage (additional operational overhead)
+- Duplicates ComputeInstance reconciliation logic already in cloudkit-operator
+- More complex dependency management between controllers
+- Doesn't reduce complexity, just moves it to a different codebase
 
-Extending cloudkit-operator is simpler because it reuses the existing ComputeInstance reconciliation infrastructure and avoids creating another deployment to manage.
+This alternative achieves the core goals but adds deployment complexity. Extending cloudkit-operator is simpler because it reuses the existing ComputeInstance reconciliation infrastructure and avoids creating another deployment to manage.
 
 ### Alternative 3: Hybrid Approach (AAP for Complex Resources)
 Keep simple resources in controller, delegate complex resources (DataVolumes, floating IPs) to AAP.
@@ -654,6 +658,23 @@ Keep simple resources in controller, delegate complex resources (DataVolumes, fl
 - Debugging still spans multiple systems
 
 This approach doesn't achieve the primary goal of eliminating AAP dependency for Kubernetes resource provisioning and would maintain the split provisioning model that causes debugging complexity.
+
+### Alternative 4: Replace AAP/EDA with Tekton Pipelines
+Replace AAP Controller and EDA with Tekton Pipelines to run Ansible playbooks, while keeping Ansible for both Kubernetes resource creation and provider infrastructure integration.
+
+**Pros:**
+- Kubernetes-native workflow orchestration (no separate AAP infrastructure)
+- Reduces operational overhead compared to AAP/EDA
+- Still leverages Ansible for both Kubernetes and provider-specific resources
+- Addresses infrastructure sprawl concerns
+
+**Cons:**
+- Still uses external orchestration for simple Kubernetes resource creation
+- Doesn't leverage native controller patterns for Kubernetes resources
+- Learning curve for Tekton (new technology for team)
+- Debugging still spans controller and Tekton pipeline logs
+
+This approach addresses the AAP infrastructure complexity but doesn't leverage Kubernetes controller patterns for Kubernetes-native resource creation. It could be combined with this proposal (Tekton for provider integration, controller for Kubernetes resources).
 
 ## Open Questions
 
@@ -733,23 +754,27 @@ This matches the current Ansible logic and provides both explicit configuration 
 - After max retries, update ComputeInstance status with error condition
 - Manual intervention required (or webhook fallback to AAP)
 
-### 4. Floating IP as Separate API
-**Question:** Should floating IP allocation/association be a separate API operation (day-2) rather than compound with VM creation?
+### 4. Floating IP and Networking Configuration Scope
+**Question:** Should floating IP allocation/association be a separate API operation (day-2) rather than compound with VM creation? More broadly, which networking decisions should be made at VM creation time vs as separate operations?
 
 **Context:**
 - **Avishay & Eran:** Suggest following AWS model - separate APIs for "Allocate floating IP" and "Attach floating IP"
 - VMs should never be created with public IPs by default; IPs managed as day-2 operations via APIs calling Ansible hooks
 - Current template allows compound operation (Create VM + Allocate floating IP + Attach floating IP)
+- **Michael Hrivnak:** Points out that many networking decisions happen during deployment:
+  - Which private network to put the VM on
+  - Whether there should be a load-balancer with an internal IP that's ready for a public IP
+  - Which ports on the VM should be accessible
 
 **Options:**
 
 **A) Keep compound operation in template (current behavior)**
-- **Pros:** Simpler for users (single operation), existing behavior preserved, no migration needed for current templates
-- **Cons:** VM created with public IP by default (security concern), harder to manage IPs independently as day-2 operations, doesn't follow AWS/industry best practice model
+- **Pros:** Simpler for users (single operation), existing behavior preserved, no migration needed for current templates, allows networking decisions at creation time
+- **Cons:** VM created with public IP by default (security concern), harder to manage IPs independently as day-2 operations, doesn't follow AWS/industry best practice model, couples VM lifecycle with networking lifecycle
 
-**B) Separate APIs: VM creation is controller-only, floating IP is separate Ansible-invoked API**
-- **Pros:** Better security (VMs private by default), follows AWS model and industry best practices, enables day-2 IP management and lifecycle, clearer separation of concerns between VM and networking
-- **Cons:** More complex user workflow (requires two operations), requires API changes and new endpoints, migration effort needed for existing templates
+**B) Separate APIs: VM creation separate from networking configuration**
+- **Pros:** Better security (VMs private by default), follows AWS model and industry best practices, enables day-2 networking management and lifecycle, clearer separation of concerns between compute and networking
+- **Cons:** More complex user workflow (requires multiple operations), requires API changes and new endpoints, migration effort needed for existing templates, need to decide which networking decisions happen at creation (private network, ports) vs day-2 (floating IPs)
 
 **Team Feedback:**
 - **Avishay:** Prefers Option B (separate APIs) - matches AWS model, enables day-2 IP management
