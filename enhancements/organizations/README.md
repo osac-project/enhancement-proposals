@@ -97,23 +97,23 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
 
 1. User initiates login
    1. The User calls the OSAC login endpoint, specifying the target Organization:
-      - `POST /api/fulfillment/v1/auth/login` with `organization_id` in the request body, OR
-      - Organization ID can be inferred from custom domain routing (if the organization has configured a custom domain), OR
+      - `POST /api/fulfillment/v1/auth/login` with `organization_name` in the request body, OR
+      - Organization name can be inferred from custom domain routing (if the organization has configured a custom domain), OR
       - For break-glass users (Cloud Provider Admin, Tenant Admin), the organization is determined from their account (Cloud Provider Admins belong to the `System` Organization, Tenant Admins belong to their assigned Organization)
    2. The API Endpoint forwards the request to the Auth Gateway.
    3. The Auth Gateway determines the target Organization using one of the methods above.
-   4. The Auth Gateway delegates authentication to Dex, providing the Organization context.
+   4. The Auth Gateway maps the Organization name to a Dex connector ID (the organization name is used directly as the connector ID, since it is URL-safe and unique).
 
 2. Dex performs authentication via the Organization's IdP
-   1. Dex receives the Organization context from the Auth Gateway and looks up the IdP configuration for that Organization.
-   2. If the Organization has a configured IdP, Dex starts an authentication flow and redirects the User to that Identity Provider (IdP).
-   3. If the Organization does not have a configured IdP, Dex authenticates against local OSAC users (break-glass accounts stored in Dex configuration).
-   4. The User authenticates at the IdP (or with local credentials).
-   5. The IdP returns an authentication result to Dex.
-   6. Dex maps IdP attributes to OSAC identity claims (username, group identifiers, etc.) and passes them along with the Organization context to the OSAC Identity Service.
+   1. The Auth Gateway proxies the token request to Dex's token endpoint (`/dex/token`), including the connector ID corresponding to the Organization.
+   2. Dex looks up the connector configuration for that Organization (dynamically loaded from the database).
+   3. If the Organization has a configured IdP, Dex authenticates against that upstream Identity Provider (IdP) using the connector configuration.
+   4. If the Organization does not have a configured IdP, Dex authenticates against local OSAC users (break-glass accounts stored in Dex Postgres storage).
+   5. The User authenticates at the IdP (or with local credentials).
+   6. Dex returns tokens to the Auth Gateway, including identity claims (username, group identifiers, etc.).
 
 3. OSAC Identity Service resolves user identity and roles
-   1. Dex passes the federated identity to the OSAC Identity Service, including the user's group memberships (group identifiers such as names or paths) from the IdP and the Organization context.
+   1. The Auth Gateway extracts identity claims (including group identifiers) from Dex tokens and calls the OSAC Identity Service with the user's group memberships and Organization context.
    2. The Identity Service looks up group-to-role mappings in the database (scoped to the user's Organization) based on the group identifiers from Dex.
    3. The Identity Service determines the user's effective OSAC roles by aggregating roles from all groups the user belongs to.
    4. The Identity Service returns normalized OSAC identity + roles + Organization context to the Auth Gateway.
@@ -149,24 +149,24 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
    - Organization is ready to contain Projects (which will map to OpenShift Projects)
 
 4. Cloud Provider Admin can then:
-   - Create additional Tenant Admins via `POST /api/fulfillment/v1/organizations/{id}/tenant_admins` (stored in Dex configuration)
-   - Configure IdP for the `System` Organization via `POST /api/fulfillment/v1/organizations/{id}/identity_provider` (as Tenant Admin for `System` org)
-   - View organization status and usage via `GET /api/fulfillment/v1/organizations/{id}`
+   - Create additional Tenant Admins via `POST /api/fulfillment/v1/organizations/{name}/tenant_admins` (stored in Dex configuration)
+   - Configure IdP for the `System` Organization via `POST /api/fulfillment/v1/organizations/{name}/identity_provider` (as Tenant Admin for `System` org)
+   - View organization status and usage via `GET /api/fulfillment/v1/organizations/{name}`
 
 #### Tenant Admin Workflow: Configuring IdP and Role Mappings
 
 1. Tenant Admin authenticates using OSAC credentials (built-in break-glass account stored in Dex configuration).
 
-2. Tenant Admin configures IdP via `POST /api/fulfillment/v1/organizations/{id}/identity_provider` with IdP configuration (type: LDAP/AD/OIDC/SAML, URLs, attribute mappings).
+2. Tenant Admin configures IdP via `POST /api/fulfillment/v1/organizations/{name}/identity_provider` with IdP configuration (type: LDAP/AD/OIDC/SAML, URLs, attribute mappings).
 
-3. Tenant Admin sets IdP credentials via `POST /api/fulfillment/v1/organizations/{id}/identity_provider/credentials` (client secrets, bind passwords stored in OpenShift Secrets).
+3. Tenant Admin sets IdP credentials via `POST /api/fulfillment/v1/organizations/{name}/identity_provider/credentials` (client secrets, bind passwords stored in OpenShift Secrets).
 
-4. Tenant Admin tests IdP connectivity via `POST /api/fulfillment/v1/organizations/{id}/identity_provider:test`.
+4. Tenant Admin tests IdP connectivity via `POST /api/fulfillment/v1/organizations/{name}/identity_provider:test`.
 
 5. Once IdP is configured and tested, Tenant Admin can create group-to-role mappings:
-   - `POST /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}/roles` to assign OSAC roles to a group (using group identifier from IdP; group identifiers must be URL-escaped in the path)
-   - `GET /api/fulfillment/v1/organizations/{id}/groups` to list groups and their role mappings (group information comes from IdP via Dex)
-   - `GET /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}` to view details of a specific group and its role mappings (group identifier must be URL-escaped)
+   - `POST /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` to assign OSAC roles to a group (using group identifier from IdP; group identifiers must be URL-escaped in the path)
+   - `GET /api/fulfillment/v1/organizations/{name}/groups` to list groups and their role mappings (group information comes from IdP via Dex)
+   - `GET /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}` to view details of a specific group and its role mappings (group identifier must be URL-escaped)
 
 6. Users can now authenticate through the IdP, and their group memberships (group identifiers such as names or paths) from the IdP will be used to resolve their OSAC roles via the stored mappings.
 
@@ -174,18 +174,18 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
 
 1. Tenant Admin authenticates using OSAC credentials (built-in break-glass account stored in Dex configuration or via IdP).
 
-2. Tenant Admin calls `POST /api/fulfillment/v1/organizations/{id}/projects` with project details (name, description, metadata).
+2. Tenant Admin calls `POST /api/fulfillment/v1/organizations/{name}/projects` with project details (name, description, metadata).
 
 3. OSAC creates the Project within the Organization, which triggers:
-   - Creation of an OpenShift Project (e.g., `osac-org-<org-id>-project-<project-id>`)
+   - Creation of an OpenShift Project (e.g., `osac-org-<org-name>-project-<project-name>`)
    - Bootstrap RBAC for the project scoped to the organization
    - Project is ready to contain resources (VMs, Networks, Volumes, etc.)
 
 4. Tenant Admin can then:
-   - List projects via `GET /api/fulfillment/v1/organizations/{id}/projects`
-   - View project details via `GET /api/fulfillment/v1/organizations/{id}/projects/{id}`
-   - Update project metadata via `PATCH /api/fulfillment/v1/organizations/{id}/projects/{id}`
-   - Delete project via `DELETE /api/fulfillment/v1/organizations/{id}/projects/{id}` (with proper teardown)
+   - List projects via `GET /api/fulfillment/v1/organizations/{name}/projects`
+   - View project details via `GET /api/fulfillment/v1/organizations/{name}/projects/{name}`
+   - Update project metadata via `PATCH /api/fulfillment/v1/organizations/{name}/projects/{name}`
+   - Delete project via `DELETE /api/fulfillment/v1/organizations/{name}/projects/{name}` (with proper teardown)
 
 5. Tenant Users can now provision resources within the Project using Tenant APIs.
 
@@ -194,50 +194,68 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
 This enhancement introduces new API endpoints following the fulfillment API pattern (`/api/fulfillment/v1/{resource}`). The APIs will be defined using Protocol Buffers in the fulfillment-api repository, following the same patterns as existing fulfillment services.
 
 **Authentication APIs** (`/api/fulfillment/v1`):
-- `POST /api/fulfillment/v1/auth/login` - Initiate login flow
-  - Request body includes `organization_id` to specify target Organization
+- `POST /api/fulfillment/v1/auth/login` - Initiate login flow (OAuth2 Resource Owner Password Credentials grant)
+  - Content-Type: `application/x-www-form-urlencoded`
+  - Request body parameters:
+    - `grant_type`: `password` (for username/password authentication)
+    - `organization_name`: Organization name (from metadata.name, required, unless inferred from custom domain or user account)
+    - `username`: User's username
+    - `password`: User's password
+    - `scope`: Optional OAuth2 scopes (e.g., `openid profile`)
   - Organization can also be determined from custom domain routing (if configured)
   - For break-glass users (Cloud Provider Admin, Tenant Admin), organization is determined from their account
-  - Returns OSAC token upon successful authentication
+  - Response: OSAC access token (JWT) containing user identity, Organization context, and OSAC roles
+    - `access_token`: OSAC JWT token
+    - `token_type`: `Bearer`
+    - `expires_in`: Token expiration time in seconds
+- `GET /api/fulfillment/v1/auth/validate` - Validate an authentication token
+  - Authorization header: `Bearer <token>`
+  - Returns validation status (200 if valid, 401 if invalid)
+- `GET /api/fulfillment/v1/auth/userinfo` - Get user information (OIDC UserInfo endpoint)
+  - Authorization header: `Bearer <token>`
+  - Returns user identity, Organization context, and OSAC roles
+- `GET /api/fulfillment/v1/auth/permissions` - Get available permissions/roles for the authenticated user
+  - Authorization header: `Bearer <token>`
+  - Returns list of OSAC roles and permissions for the user
 
 **Cloud Provider Admin APIs** (`/api/fulfillment/v1`):
 - Organization CRUD operations:
   - `POST /api/fulfillment/v1/organizations` - Create Organization
   - `GET /api/fulfillment/v1/organizations` - List Organizations
-  - `GET /api/fulfillment/v1/organizations/{id}` - Get Organization
-  - `PATCH /api/fulfillment/v1/organizations/{id}` - Update Organization
-  - `DELETE /api/fulfillment/v1/organizations/{id}` - Delete Organization
+  - `GET /api/fulfillment/v1/organizations/{name}` - Get Organization
+  - `PATCH /api/fulfillment/v1/organizations/{name}` - Update Organization
+  - `DELETE /api/fulfillment/v1/organizations/{name}` - Delete Organization
 - Tenant Admin management (creates accounts in Dex configuration):
-  - `POST /api/fulfillment/v1/organizations/{id}/tenant_admins` - Create Tenant Admin account (stored in Dex config)
-  - `GET /api/fulfillment/v1/organizations/{id}/tenant_admins` - List Tenant Admins
-  - `POST /api/fulfillment/v1/organizations/{id}/tenant_admins/{admin_id}:reset-credentials` - Reset credentials
-  - `DELETE /api/fulfillment/v1/organizations/{id}/tenant_admins/{admin_id}` - Disable/remove Tenant Admin
+  - `POST /api/fulfillment/v1/organizations/{name}/tenant_admins` - Create Tenant Admin account (stored in Dex config)
+  - `GET /api/fulfillment/v1/organizations/{name}/tenant_admins` - List Tenant Admins
+  - `POST /api/fulfillment/v1/organizations/{name}/tenant_admins/{admin_name}:reset-credentials` - Reset credentials
+  - `DELETE /api/fulfillment/v1/organizations/{name}/tenant_admins/{admin_name}` - Disable/remove Tenant Admin
 - Group-to-role mapping management for `System` Organization (same APIs as Tenant Admin, but scoped to `System` org)
 
 **Tenant Admin APIs** (`/api/fulfillment/v1`):
 - Identity Provider CRUD operations (nested under organization, since each organization has at most one IdP):
-  - `GET /api/fulfillment/v1/organizations/{id}/identity_provider` - Get IdP for an organization
-  - `POST /api/fulfillment/v1/organizations/{id}/identity_provider` - Create/configure IdP
-  - `PATCH /api/fulfillment/v1/organizations/{id}/identity_provider` - Update IdP configuration
-  - `DELETE /api/fulfillment/v1/organizations/{id}/identity_provider` - Delete/disable IdP
+  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider` - Get IdP for an organization
+  - `POST /api/fulfillment/v1/organizations/{name}/identity_provider` - Create/configure IdP
+  - `PATCH /api/fulfillment/v1/organizations/{name}/identity_provider` - Update IdP configuration
+  - `DELETE /api/fulfillment/v1/organizations/{name}/identity_provider` - Delete/disable IdP
 - IdP credentials management:
-  - `POST /api/fulfillment/v1/organizations/{id}/identity_provider/credentials` - Create/rotate credentials
-  - `GET /api/fulfillment/v1/organizations/{id}/identity_provider/credentials/status` - Get credential status
+  - `POST /api/fulfillment/v1/organizations/{name}/identity_provider/credentials` - Create/rotate credentials
+  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/credentials/status` - Get credential status
 - IdP health and events:
-  - `POST /api/fulfillment/v1/organizations/{id}/identity_provider:test` - Test IdP connectivity
-  - `GET /api/fulfillment/v1/organizations/{id}/identity_provider/health` - Get IdP health status
-  - `GET /api/fulfillment/v1/organizations/{id}/identity_provider/events` - Get IdP events
+  - `POST /api/fulfillment/v1/organizations/{name}/identity_provider:test` - Test IdP connectivity
+  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/health` - Get IdP health status
+  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/events` - Get IdP events
 - Project CRUD operations:
-  - `POST /api/fulfillment/v1/organizations/{id}/projects` - Create a Project within the Organization
-  - `GET /api/fulfillment/v1/organizations/{id}/projects` - List Projects in the Organization
-  - `GET /api/fulfillment/v1/organizations/{id}/projects/{id}` - Get Project details
-  - `PATCH /api/fulfillment/v1/organizations/{id}/projects/{id}` - Update Project metadata
-  - `DELETE /api/fulfillment/v1/organizations/{id}/projects/{id}` - Delete Project (with teardown)
+  - `POST /api/fulfillment/v1/organizations/{name}/projects` - Create a Project within the Organization
+  - `GET /api/fulfillment/v1/organizations/{name}/projects` - List Projects in the Organization
+  - `GET /api/fulfillment/v1/organizations/{name}/projects/{name}` - Get Project details
+  - `PATCH /api/fulfillment/v1/organizations/{name}/projects/{name}` - Update Project metadata
+  - `DELETE /api/fulfillment/v1/organizations/{name}/projects/{name}` - Delete Project (with teardown)
 - Group-to-role mapping management:
-  - `POST /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}/roles` - Assign OSAC roles to a group (using group identifier from IdP; must be URL-escaped)
-  - `GET /api/fulfillment/v1/organizations/{id}/groups` - List groups and their role mappings (group information retrieved from IdP via Dex)
-  - `GET /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}` - Get details of a specific group and its role mappings (group identifier must be URL-escaped)
-  - `DELETE /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}/roles` - Remove role assignments from a group (group identifier must be URL-escaped)
+  - `POST /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` - Assign OSAC roles to a group (using group identifier from IdP; must be URL-escaped)
+  - `GET /api/fulfillment/v1/organizations/{name}/groups` - List groups and their role mappings (group information retrieved from IdP via Dex)
+  - `GET /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}` - Get details of a specific group and its role mappings (group identifier must be URL-escaped)
+  - `DELETE /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` - Remove role assignments from a group (group identifier must be URL-escaped)
 
 ### Implementation Details/Notes/Constraints
 
@@ -246,9 +264,11 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 **Dex - Identity Broker**
 - Open-source identity broker that connects applications to external identity providers
 - Handles authentication flows, not RBAC
-- Receives Organization context from the Auth Gateway and looks up the corresponding IdP configuration
-- Redirects users to the Organization's IdP for SSO (or authenticates against local users if no IdP is configured)
-- Normalizes identity claims (username, group identifiers, etc.) and passes federated identity along with Organization context to OSAC Identity Service
+- Each Organization maps to a Dex connector with a unique connector ID (the organization name from metadata.name is used directly as the connector ID, since it is URL-safe and unique)
+- Connectors are dynamically registered/updated as Organizations are created or their IdP configurations change
+- Receives token requests from Auth Gateway via `/dex/token` endpoint with connector ID parameter
+- Authenticates against the Organization's configured IdP (LDAP/AD/OIDC/SAML) or local break-glass accounts
+- Returns OIDC tokens containing identity claims (username, group identifiers, etc.)
 - Authenticates break-glass users (Tenant Admins, Cloud Provider Admins) stored in Dex's Postgres storage backend
 - Uses Postgres as storage backend for break-glass accounts (persistent across pod restarts)
 - Provides gRPC API (port 5557) for dynamic account management without pod restarts
@@ -264,11 +284,14 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 
 **OSAC API (API Endpoint + Auth Gateway + Authorino)**
 - Auth Gateway handles login flows:
-  - Determines target Organization from login request (organization_id parameter, custom domain routing, or user account for break-glass users)
-  - Delegates authentication to Dex with Organization context
-  - Accepts federated identity from Dex (including Organization context)
-  - Consults Identity Service for role resolution
-  - Issues OSAC tokens containing user identity, Organization context, and OSAC roles
+  - Acts as a proxy/wrapper around Dex, providing a unified OSAC authentication API
+  - Determines target Organization from login request (organization_name parameter, custom domain routing, or user account for break-glass users)
+  - Maps Organization name to Dex connector ID (organization name is used directly as the connector ID)
+  - Proxies token requests to Dex's token endpoint (`/dex/token`) with the appropriate connector ID
+  - Receives tokens from Dex containing identity claims (username, group identifiers, etc.)
+  - Extracts identity claims from Dex tokens and consults Identity Service for role resolution
+  - Issues OSAC tokens (JWT) containing user identity, Organization context, and OSAC roles
+  - Provides additional endpoints: `/auth/validate`, `/auth/userinfo`, `/auth/permissions`
 - Authorino validates OSAC tokens and enforces fine-grained access policies based on OSAC roles and Organization context
 - Combined unit serves as unified API front end
 
@@ -278,7 +301,7 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 - Invoke Fulfillment/Infrastructure layer to realize changes
 
 **OpenShift Integration**
-- Each Project within an Organization maps to an OpenShift Project (e.g., `osac-org-<org-id>-project-<project-id>`)
+- Each Project within an Organization maps to an OpenShift Project (e.g., `osac-org-<org-name>-project-<project-name>`)
 - Per-Project non-secret configuration associated with the OpenShift Project
 - Organizations do not directly map to OpenShift Projects; they are logical containers for Projects
 - All secret material stored in OpenShift Secrets (IdP bind passwords, OIDC/SAML client secrets, certificates, private keys)
