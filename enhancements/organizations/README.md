@@ -17,7 +17,7 @@ This enhancement describes the organization model, authentication flows, and adm
 
 ## Summary
 
-This enhancement introduces a comprehensive multi-tenant organization model for OSAC that enables Cloud Provider Admins to create and manage Organizations, each with their own identity providers. Organizations can contain multiple Projects, providing additional isolation and resource organization within an organization. The system provides built-in OSAC authentication for Cloud Provider Admins and Tenant Admins, while allowing Organizations to optionally integrate with external identity providers (LDAP/AD/OIDC/SAML) for their users. The architecture leverages Dex as an identity broker, an OSAC Identity Service for group-to-role mapping resolution, and Authorino for API-level authorization. Each Project maps to an OpenShift Project, and all secret material is stored in OpenShift Secrets, relying on platform-level encryption at rest. Group-to-role mappings are stored in the database (scoped per organization, using group IDs), allowing role assignment through the OSAC API without importing users or groups into a local database.
+This enhancement introduces a comprehensive multi-tenant organization model for OSAC that enables Cloud Provider Admins to create and manage Organizations, each with their own identity providers. Organizations can contain multiple Projects, providing additional isolation and resource organization within an organization. The system provides built-in OSAC authentication for Cloud Provider Admins and Tenant Admins, while allowing Organizations to optionally integrate with external identity providers (LDAP/AD/OIDC/SAML) for their users. The architecture leverages Dex as an identity broker, an OSAC Identity Service for group-to-role mapping resolution, and Authorino for API-level authorization. Each Project maps to an OpenShift Project, and all secret material is stored in OpenShift Secrets, relying on platform-level encryption at rest. Group-to-role mappings are stored in the database (scoped per organization, using group identifiers such as names or paths from the IdP), allowing role assignment through the OSAC API without importing users or groups into a local database.
 
 ## Motivation
 
@@ -110,11 +110,11 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
    3. If the Organization does not have a configured IdP, Dex authenticates against local OSAC users (break-glass accounts stored in Dex configuration).
    4. The User authenticates at the IdP (or with local credentials).
    5. The IdP returns an authentication result to Dex.
-   6. Dex maps IdP attributes to OSAC identity claims (username, group IDs, etc.) and passes them along with the Organization context to the OSAC Identity Service.
+   6. Dex maps IdP attributes to OSAC identity claims (username, group identifiers, etc.) and passes them along with the Organization context to the OSAC Identity Service.
 
 3. OSAC Identity Service resolves user identity and roles
-   1. Dex passes the federated identity to the OSAC Identity Service, including the user's group memberships (group IDs) from the IdP and the Organization context.
-   2. The Identity Service looks up group-to-role mappings in the database (scoped to the user's Organization) based on the group IDs from Dex.
+   1. Dex passes the federated identity to the OSAC Identity Service, including the user's group memberships (group identifiers such as names or paths) from the IdP and the Organization context.
+   2. The Identity Service looks up group-to-role mappings in the database (scoped to the user's Organization) based on the group identifiers from Dex.
    3. The Identity Service determines the user's effective OSAC roles by aggregating roles from all groups the user belongs to.
    4. The Identity Service returns normalized OSAC identity + roles + Organization context to the Auth Gateway.
 
@@ -164,11 +164,11 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
 4. Tenant Admin tests IdP connectivity via `POST /api/fulfillment/v1/organizations/{id}/identity_provider:test`.
 
 5. Once IdP is configured and tested, Tenant Admin can create group-to-role mappings:
-   - `POST /api/fulfillment/v1/organizations/{id}/groups/{group_id}/roles` to assign OSAC roles to a group (using group ID from IdP)
+   - `POST /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}/roles` to assign OSAC roles to a group (using group identifier from IdP; group identifiers must be URL-escaped in the path)
    - `GET /api/fulfillment/v1/organizations/{id}/groups` to list groups and their role mappings (group information comes from IdP via Dex)
-   - `GET /api/fulfillment/v1/organizations/{id}/groups/{group_id}` to view details of a specific group and its role mappings
+   - `GET /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}` to view details of a specific group and its role mappings (group identifier must be URL-escaped)
 
-6. Users can now authenticate through the IdP, and their group memberships (group IDs) from the IdP will be used to resolve their OSAC roles via the stored mappings.
+6. Users can now authenticate through the IdP, and their group memberships (group identifiers such as names or paths) from the IdP will be used to resolve their OSAC roles via the stored mappings.
 
 #### Tenant Admin Workflow: Creating a Project
 
@@ -234,10 +234,10 @@ This enhancement introduces new API endpoints following the fulfillment API patt
   - `PATCH /api/fulfillment/v1/organizations/{id}/projects/{id}` - Update Project metadata
   - `DELETE /api/fulfillment/v1/organizations/{id}/projects/{id}` - Delete Project (with teardown)
 - Group-to-role mapping management:
-  - `POST /api/fulfillment/v1/organizations/{id}/groups/{group_id}/roles` - Assign OSAC roles to a group (using group ID from IdP)
+  - `POST /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}/roles` - Assign OSAC roles to a group (using group identifier from IdP; must be URL-escaped)
   - `GET /api/fulfillment/v1/organizations/{id}/groups` - List groups and their role mappings (group information retrieved from IdP via Dex)
-  - `GET /api/fulfillment/v1/organizations/{id}/groups/{group_id}` - Get details of a specific group and its role mappings
-  - `DELETE /api/fulfillment/v1/organizations/{id}/groups/{group_id}/roles` - Remove role assignments from a group
+  - `GET /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}` - Get details of a specific group and its role mappings (group identifier must be URL-escaped)
+  - `DELETE /api/fulfillment/v1/organizations/{id}/groups/{group_identifier}/roles` - Remove role assignments from a group (group identifier must be URL-escaped)
 
 ### Implementation Details/Notes/Constraints
 
@@ -248,15 +248,16 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 - Handles authentication flows, not RBAC
 - Receives Organization context from the Auth Gateway and looks up the corresponding IdP configuration
 - Redirects users to the Organization's IdP for SSO (or authenticates against local users if no IdP is configured)
-- Normalizes identity claims (username, group IDs, etc.) and passes federated identity along with Organization context to OSAC Identity Service
+- Normalizes identity claims (username, group identifiers, etc.) and passes federated identity along with Organization context to OSAC Identity Service
 - Authenticates break-glass users (Tenant Admins, Cloud Provider Admins) stored in Dex's Postgres storage backend
 - Uses Postgres as storage backend for break-glass accounts (persistent across pod restarts)
 - Provides gRPC API (port 5557) for dynamic account management without pod restarts
 - IdP configurations are dynamically loaded from the database (stored per Organization) rather than being statically configured in Dex
 
 **OSAC Identity Service**
-- Stores group-to-role mappings in the database (scoped per Organization, using group IDs from IdP)
-- Resolves OSAC roles by looking up group IDs from Dex identity claims against stored mappings
+- Stores group-to-role mappings in the database (scoped per Organization, using group identifiers such as names or paths from IdP)
+- Resolves OSAC roles by looking up group identifiers from Dex identity claims against stored mappings
+- Group identifiers are strings (group names or paths) returned by the IdP, which may contain slashes (e.g., "/TENANT-nairr-GET"). These are distinct from internal IdP UUIDs and are used as the key for role mappings.
 - Aggregates roles from all groups a user belongs to to determine effective OSAC roles
 - Does not store users or groups - users and groups remain in their IdP, only mappings are stored
 - Produces the "OSAC identity" (user identity + effective roles) used in all authorization decisions
@@ -390,7 +391,7 @@ The proposed approach maintains clear separation of concerns and allows OSAC to 
 
 3. Token refresh and rotation policies need to be defined. How long should tokens be valid? What is the refresh mechanism?
 
-4. Role model details need to be defined. What are the specific OSAC roles? How are group IDs formatted/identified across different IdP types to ensure uniqueness?
+4. Role model details need to be defined. What are the specific OSAC roles? How are group identifiers (names or paths) formatted/identified across different IdP types to ensure uniqueness? How should group identifiers containing slashes be handled in API paths?
 
 ## Test Plan
 
