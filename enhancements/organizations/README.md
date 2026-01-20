@@ -45,7 +45,7 @@ This enhancement is critical for enabling OSAC to provide a true multi-tenant ex
 
 * As a Cloud Infrastructure Admin, I want OSAC to use OpenShift Secrets for storing sensitive credentials, so that I can leverage platform-level encryption and existing secret management practices.
 
-* As a system operator, I want OSAC to provide built-in break-glass Cloud Provider Admin and Tenant Admin accounts that always remain available, so that I can recover from IdP failures or misconfigurations and configure IdPs for organizations.
+* As a system operator, I want OSAC to provide one break-glass account per organization (including System organization) with limited privileges to manage IdP configuration, so that I can recover from IdP failures or misconfigurations and restore normal authentication.
 
 ### Goals
 
@@ -57,7 +57,7 @@ This enhancement is critical for enabling OSAC to provide a true multi-tenant ex
 
 * Support flexible identity provider integration, allowing each Organization to use LDAP, Active Directory, OIDC, or SAML.
 
-* Maintain built-in break-glass authentication for Cloud Provider Admins and Tenant Admins that remains available regardless of IdP configuration.
+* Maintain one break-glass account per organization with limited IdP management privileges that remains available regardless of IdP configuration.
 
 * Provide clear role separation: Cloud Infrastructure Admins manage the cluster, Cloud Provider Admins manage organizations, Tenant Admins manage their organization, and Tenant Users consume services.
 
@@ -79,7 +79,7 @@ This enhancement introduces a comprehensive organization and authentication syst
 
 ### Dex
 
-Dex is an open-source identity broker (Apache 2.0 license) that connects applications to external identity providers. It supports multiple IdP types including LDAP, Active Directory, OIDC, and SAML. Dex can be configured to support local/break-glass users through its static password connector, which allows storing user credentials directly in Dex's configuration. This enables Cloud Provider Admins and Tenant Admins to authenticate even when their organization's IdP is unavailable or misconfigured, providing critical break-glass access capabilities.
+Dex is an open-source identity broker (Apache 2.0 license) that connects applications to external identity providers. It supports multiple IdP types including LDAP, Active Directory, OIDC, and SAML. Dex can be configured to support local/break-glass users through its static password connector, which allows storing user credentials directly in Dex's configuration. This enables break-glass accounts to authenticate even when their organization's IdP is unavailable or misconfigured, providing critical access to restore IdP functionality.
 
 ### Authorino
 
@@ -89,17 +89,17 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
 
 #### Authentication and Authorization Flow
 
-**Cloud Provider Admin** is a user in the `System` Organization with full control over all Organizations in OSAC.
+**Cloud Provider Admin** is a user in the `System` Organization with the `cloud-provider-admin` role, providing full control over all Organizations in OSAC.
 
-**Tenant Admin** is a user scoped to exactly one Organization, responsible for managing that organization's IdP, users, groups, roles, and Projects.
+**Tenant Admin** is a user scoped to exactly one Organization with the `tenant-admin` role, responsible for managing that organization's IdP, users, groups, roles, and Projects.
 
-**Tenant User** is a regular user within an Organization who authenticates through the organization's IdP and uses Tenant APIs within Projects.
+**Tenant User** is a regular user within an Organization who authenticates through the organization's IdP and uses Tenant APIs within Projects. Tenant Users have organization-scoped roles assigned via group-to-role mappings.
 
 1. User initiates login
    1. The User calls the OSAC login endpoint, specifying the target Organization:
       - `POST /api/fulfillment/v1/auth/login` with `organization_name` in the request body, OR
       - Organization name can be inferred from custom domain routing (if the organization has configured a custom domain), OR
-      - For break-glass users (Cloud Provider Admin, Tenant Admin), the organization is determined from their account (Cloud Provider Admins belong to the `System` Organization, Tenant Admins belong to their assigned Organization)
+      - For break-glass users, the organization is determined from their account (each break-glass account is scoped to exactly one organization)
    2. The API Endpoint forwards the request to the Auth Gateway.
    3. The Auth Gateway determines the target Organization using one of the methods above.
    4. The Auth Gateway maps the Organization name to a Dex connector ID (the organization name is used directly as the connector ID, since it is URL-safe and unique).
@@ -108,7 +108,7 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
    1. The Auth Gateway proxies the token request to Dex's token endpoint (`/dex/token`), including the connector ID corresponding to the Organization.
    2. Dex looks up the connector configuration for that Organization (dynamically loaded from the database).
    3. If the Organization has a configured IdP, Dex authenticates against that upstream Identity Provider (IdP) using the connector configuration.
-   4. If the Organization does not have a configured IdP, Dex authenticates against local OSAC users (break-glass accounts stored in Dex Postgres storage).
+   4. If the Organization does not have a configured IdP, Dex authenticates against the organization's break-glass account (stored in Dex Postgres storage).
    5. The User authenticates at the IdP (or with local credentials).
    6. Dex returns tokens to the Auth Gateway, including identity claims (username, group identifiers, etc.).
 
@@ -139,23 +139,23 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
 
 #### Cloud Provider Admin Workflow: Creating an Organization
 
-1. Cloud Provider Admin authenticates using OSAC credentials (built-in break-glass account stored in Dex configuration, or `System` Organization IdP if configured).
+1. Cloud Provider Admin authenticates using the `System` Organization IdP (or break-glass account if IdP is not configured).
 
 2. Cloud Provider Admin calls `POST /api/fulfillment/v1/organizations` with organization details (name, description, metadata).
 
 3. OSAC creates the Organization, which triggers:
    - Bootstrap RBAC for the organization
-   - Optionally creates a default Tenant Admin account (stored in Dex configuration)
+   - Creates one break-glass account for the organization (stored in Dex Postgres storage) with limited IdP management privileges
    - Organization is ready to contain Projects (which will map to OpenShift Projects)
 
 4. Cloud Provider Admin can then:
-   - Create additional Tenant Admins via `POST /api/fulfillment/v1/organizations/{name}/tenant_admins` (stored in Dex configuration)
-   - Configure IdP for the `System` Organization via `POST /api/fulfillment/v1/organizations/{name}/identity_provider` (as Tenant Admin for `System` org)
+   - Create Tenant Admins via `POST /api/fulfillment/v1/organizations/{name}/tenant_admins` (these are regular admin accounts, not break-glass)
+   - Configure IdP for the `System` Organization via `POST /api/fulfillment/v1/organizations/{name}/identity_provider` (as Cloud Provider Admin for `System` org)
    - View organization status and usage via `GET /api/fulfillment/v1/organizations/{name}`
 
 #### Tenant Admin Workflow: Configuring IdP and Role Mappings
 
-1. Tenant Admin authenticates using OSAC credentials (built-in break-glass account stored in Dex configuration).
+1. Tenant Admin authenticates using the organization's IdP (or break-glass account if IdP is not configured).
 
 2. Tenant Admin configures IdP via `POST /api/fulfillment/v1/organizations/{name}/identity_provider` with IdP configuration (type: LDAP/AD/OIDC/SAML, URLs, attribute mappings).
 
@@ -172,7 +172,7 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
 
 #### Tenant Admin Workflow: Creating a Project
 
-1. Tenant Admin authenticates using OSAC credentials (built-in break-glass account stored in Dex configuration or via IdP).
+1. Tenant Admin authenticates using the organization's IdP (or break-glass account if IdP is not configured).
 
 2. Tenant Admin calls `POST /api/fulfillment/v1/organizations/{name}/projects` with project details (name, description, metadata).
 
@@ -203,7 +203,7 @@ This enhancement introduces new API endpoints following the fulfillment API patt
     - `password`: User's password
     - `scope`: Optional OAuth2 scopes (e.g., `openid profile`)
   - Organization can also be determined from custom domain routing (if configured)
-  - For break-glass users (Cloud Provider Admin, Tenant Admin), organization is determined from their account
+  - For break-glass users, organization is determined from their account (each break-glass account is scoped to exactly one organization)
   - Response: OSAC access token (JWT) containing user identity, Organization context, and OSAC roles
     - `access_token`: OSAC JWT token
     - `token_type`: `Bearer`
@@ -230,7 +230,11 @@ This enhancement introduces new API endpoints following the fulfillment API patt
   - `GET /api/fulfillment/v1/organizations/{name}/tenant_admins` - List Tenant Admins
   - `POST /api/fulfillment/v1/organizations/{name}/tenant_admins/{admin_name}:reset-credentials` - Reset credentials
   - `DELETE /api/fulfillment/v1/organizations/{name}/tenant_admins/{admin_name}` - Disable/remove Tenant Admin
-- Group-to-role mapping management for `System` Organization (same APIs as Tenant Admin, but scoped to `System` org)
+- Group-to-role mapping management for `System` Organization:
+  - Only Cloud Provider Admins (authenticated via IdP) can manage System Organization group-to-role mappings
+  - System Organization supports system-level roles: `cloud-provider-admin`, `cloud-provider-reader`, `catalog-curator`, and other system-scoped roles
+  - Break-glass accounts cannot modify group-to-role mappings (prevents privilege escalation)
+  - Same API endpoints as Tenant Admin, but with restricted access: `POST /api/fulfillment/v1/organizations/System/groups/{group_identifier}/roles`, etc.
 
 **Tenant Admin APIs** (`/api/fulfillment/v1`):
 - Identity Provider CRUD operations (nested under organization, since each organization has at most one IdP):
@@ -257,6 +261,31 @@ This enhancement introduces new API endpoints following the fulfillment API patt
   - `GET /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}` - Get details of a specific group and its role mappings (group identifier must be URL-escaped)
   - `DELETE /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` - Remove role assignments from a group (group identifier must be URL-escaped)
 
+### Role Model and Scoping
+
+**System-Level Roles** (assigned only in `System` Organization):
+- `cloud-provider-admin`: Full control over all Organizations in OSAC
+- `cloud-provider-reader`: Read-only access to all Organizations
+- `catalog-curator`: Manages catalog/template resources across organizations
+- Additional system-level roles may be defined as needed
+
+**Organization-Level Roles** (assigned in tenant Organizations):
+- `tenant-admin`: Full control within a single Organization
+- `tenant-reader`: Read-only access within a single Organization
+- `tenant-user`: Standard user access within a single Organization
+- Additional organization-specific roles may be defined per organization
+
+**Break-Glass Role** (assigned to break-glass accounts):
+- `idp-manager`: Limited role that can only manage IdP configuration (view, update, test, view health) for the organization. Cannot create/delete organizations, manage users, assign roles, create projects, or perform any other administrative actions.
+
+**Role Assignment Constraints**:
+- System-level roles can only be assigned in the `System` Organization
+- Organization-level roles can only be assigned in tenant Organizations
+- Break-glass accounts have the `idp-manager` role and cannot be assigned other roles
+- Only Cloud Provider Admins (authenticated via IdP) can manage System Organization group-to-role mappings
+- Tenant Admins can only assign organization-level roles within their Organization
+- Authorization policies enforce these constraints to prevent privilege escalation
+
 ### Implementation Details/Notes/Constraints
 
 #### Components
@@ -269,7 +298,7 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 - Receives token requests from Auth Gateway via `/dex/token` endpoint with connector ID parameter
 - Authenticates against the Organization's configured IdP (LDAP/AD/OIDC/SAML) or local break-glass accounts
 - Returns OIDC tokens containing identity claims (username, group identifiers, etc.)
-- Authenticates break-glass users (Tenant Admins, Cloud Provider Admins) stored in Dex's Postgres storage backend
+- Authenticates break-glass accounts (one per organization) stored in Dex's Postgres storage backend
 - Uses Postgres as storage backend for break-glass accounts (persistent across pod restarts)
 - Provides gRPC API (port 5557) for dynamic account management without pod restarts
 - IdP configurations are dynamically loaded from the database (stored per Organization) rather than being statically configured in Dex
@@ -317,12 +346,13 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 
 #### Built-in Break-Glass Accounts
 
-- System ships with default Cloud Provider Admin user in `System` Organization, stored in Dex Postgres storage
-- Each Organization created with "first user" stored in Dex Postgres storage (Tenant Admin)
+- One break-glass account per organization (including `System` Organization)
+- Break-glass accounts have the `idp-manager` role with limited privileges: can only manage IdP configuration (view, update, test, view health) for their organization
+- Break-glass accounts cannot: create/delete organizations, manage users, assign roles, create projects, or perform any other administrative actions
 - Break-glass accounts are stored in OSAC Postgres tables (source of truth) and synchronized to Dex Postgres storage via gRPC API
 - Accounts always remain available for break-glass access, regardless of IdP configuration
-- Cloud Provider Admin configures IdP for the `System` Organization
-- Tenant Admins configure IdP for their own Organizations
+- Purpose: Recover from IdP failures or misconfigurations to restore normal authentication
+- Regular admin accounts (Cloud Provider Admin, Tenant Admin) are separate and authenticate through IdP (or break-glass if IdP is down, but with their normal roles)
 
 #### Dex Configuration Management
 
@@ -413,8 +443,6 @@ The proposed approach maintains clear separation of concerns and allows OSAC to 
 2. Organization and Project lifecycle semantics (especially deletion) need further definition. What happens to resources when an organization or project is deleted? What is the teardown process? Should project deletion be blocked if it contains resources?
 
 3. Token refresh and rotation policies need to be defined. How long should tokens be valid? What is the refresh mechanism?
-
-4. Role model details need to be defined. What are the specific OSAC roles? How are group identifiers (names or paths) formatted/identified across different IdP types to ensure uniqueness? How should group identifiers containing slashes be handled in API paths?
 
 ## Test Plan
 
