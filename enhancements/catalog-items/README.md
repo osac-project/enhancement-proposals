@@ -55,8 +55,9 @@ don't have the ability to add or modify ansible roles.
 
 ## Proposal
 
-ComputeInstanceTemplate and ClusterTemplate stay the same. They contiue to be
-auto-populated by the system based on discovered ansible roles.
+ComputeInstanceTemplate and ClusterTemplate continue to be auto-populated by the
+system based on discovered ansible roles. But they will no longer be directly
+usable by tenant users.
 
 New APIs called ClusterCatalogItem and ComputeInstanceCatalogItem will be
 created. Both will have similar properties, so we'll use Cluster as an example:
