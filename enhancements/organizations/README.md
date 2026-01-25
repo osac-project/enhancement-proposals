@@ -13,11 +13,11 @@ superseded-by:
 
 # OSAC Organizations & Authentication
 
-This enhancement describes the organization model, authentication flows, and admin APIs for OSAC. It provides a multi-tenant experience on top of ACM/OpenShift, supporting managed organizations with clear lifecycle operations. Organizations can contain multiple Projects for additional resource organization and isolation. Each Organization can bring its own IdP (LDAP/AD/OIDC/SAML).
+This enhancement describes the organization model, authentication flows, and admin APIs for OSAC. It provides a multi-tenant experience on top of ACM/OpenShift, supporting managed organizations with clear lifecycle operations. Organizations can contain multiple Projects for additional resource organization and isolation. Each Organization must configure an external identity provider (LDAP/AD/OIDC/SAML) for user authentication, with built-in break-glass accounts available for emergency access.
 
 ## Summary
 
-This enhancement introduces a comprehensive multi-tenant organization model for OSAC that enables Cloud Provider Admins to create and manage Organizations, each with their own identity providers. Organizations can contain multiple Projects, providing additional isolation and resource organization within an organization. The system provides built-in OSAC authentication for Cloud Provider Admins and Tenant Admins, while allowing Organizations to optionally integrate with external identity providers (LDAP/AD/OIDC/SAML) for their users. The architecture leverages Dex as an identity broker, an OSAC Identity Service for group-to-role mapping resolution, and Authorino for API-level authorization. Each Project maps to an OpenShift Project, and all secret material is stored in OpenShift Secrets, relying on platform-level encryption at rest. Group-to-role mappings are stored in the database (scoped per organization, using group identifiers such as names or paths from the IdP), allowing role assignment through the OSAC API without importing users or groups into a local database.
+This enhancement introduces a comprehensive multi-tenant organization model for OSAC that enables Cloud Provider Admins to create and manage Organizations, each with their own identity providers. Organizations can contain multiple Projects (with support for nested Projects) for additional resource organization and isolation. Each Organization must configure an external identity provider (LDAP/AD/OIDC/SAML) for user authentication. The system provides built-in OSAC break-glass accounts with limited privileges (IdP and role management only) for emergency access when the IdP is unavailable. Full admin roles (Cloud Provider Admin, Tenant Admin) are defined in the IdP. The architecture integrates with Keycloak (managed by the user) for identity management and native role assignment, Kuadrant (which includes Authorino for authorization and Limitador for rate limiting) for API-level authorization and rate limiting, and integration with OpenShift for resource isolation. Roles are managed natively in Keycloak and included in tokens, eliminating the need for separate role mapping storage. Authorino provides extensible authorization policies supporting RBAC (initially), with the ability to extend to OPA for advanced policies, SpiceDB for ReBAC, and integration with external systems (e.g., cost-management/billing) for future policy decisions.
 
 ## Motivation
 
@@ -27,29 +27,29 @@ This enhancement is critical for enabling OSAC to provide a true multi-tenant ex
 
 * As a Cloud Provider Admin, I want to create and manage Organizations through OSAC APIs, so that I can provide isolated multi-tenant services to different customers or business units.
 
-* As a Cloud Provider Admin, I want to manage Tenant Admin accounts (create, reset, disable), so that I can maintain control over organization access while delegating day-to-day management to Tenant Admins.
-
 * As a Cloud Provider Admin, I want to configure an IdP (LDAP/AD/OIDC/SAML) for the *`System`* Organization, so that Cloud Provider Admin users can authenticate using their existing corporate credentials.
+
+
+* As a Cloud Provider Admin, I want OSAC to provide one break-glass account per organization (including `System` organization) with limited privileges to manage IdP configuration and assign roles, so that I can recover from IdP failures or misconfigurations and restore normal authentication, including setting up role mappings for other users.
 
 * As a Tenant Admin, I want to configure an IdP (LDAP/AD/OIDC/SAML) for my Organization, so that my users can authenticate using their existing corporate credentials.
 
 * As a Cloud Provider Admin or Tenant Admin, I want to test IdP connectivity and view IdP health status, so that I can ensure reliable authentication for my organization's users.
 
-* As a Cloud Provider Admin or Tenant Admin, I want to maintain mappings of IdP groups to OSAC roles through the OSAC API, so that I can manage access control within my organization by assigning roles to groups rather than individual users.
+* As a Cloud Provider Admin or Tenant Admin, I want to manage roles and assign them to groups or users, so that I can control access to resources within my organization.
 
 * As a Tenant User, I want to authenticate through my organization's IdP so that I can access OSAC services without managing separate credentials.
 
 * As a Tenant Admin, I want to create and manage Projects within my Organization, so that I can organize resources and provide additional isolation for different teams or workloads.
 
+* As a Tenant Admin, I want to create nested Projects within my Organization, so that I can organize resources hierarchically (e.g., department/project, team/subproject) for better resource organization and isolation.
+
 * As a Tenant User, I want to use Tenant APIs (VMs, Networks, Volumes) within the scope of a Project in my Organization, so that I can provision and manage infrastructure resources in an organized manner.
 
-* As a Cloud Infrastructure Admin, I want OSAC to use OpenShift Secrets for storing sensitive credentials, so that I can leverage platform-level encryption and existing secret management practices.
-
-* As a system operator, I want OSAC to provide one break-glass account per organization (including System organization) with limited privileges to manage IdP configuration, so that I can recover from IdP failures or misconfigurations and restore normal authentication.
 
 ### Goals
 
-* Provide a multi-tenant organization model where each Organization operates independently with its own identity provider and group-to-role mappings. Organizations can contain multiple Projects for additional resource organization and isolation.
+* Provide a multi-tenant organization model where each Organization operates independently with its own identity provider and role configuration. Organizations can contain multiple Projects (with support for nested Projects) for additional resource organization and isolation.
 
 * Enable Cloud Provider Admins to manage the full lifecycle of Organizations (create, list, update, delete) through well-defined APIs.
 
@@ -57,11 +57,11 @@ This enhancement is critical for enabling OSAC to provide a true multi-tenant ex
 
 * Support flexible identity provider integration, allowing each Organization to use LDAP, Active Directory, OIDC, or SAML.
 
-* Maintain one break-glass account per organization with limited IdP management privileges that remains available regardless of IdP configuration.
+* Maintain one break-glass account per organization with limited privileges (IdP management and role assignment) that remains available regardless of IdP configuration.
 
 * Provide clear role separation: Cloud Infrastructure Admins manage the cluster, Cloud Provider Admins manage organizations, Tenant Admins manage their organization, and Tenant Users consume services.
 
-* Integrate seamlessly with OpenShift, using Projects for isolation and Secrets for credential storage.
+* Integrate seamlessly with OpenShift, using Projects for isolation.
 
 ### Non-Goals
 
@@ -75,15 +75,25 @@ This enhancement is critical for enabling OSAC to provide a true multi-tenant ex
 
 ## Proposal
 
-This enhancement introduces a comprehensive organization and authentication system for OSAC built on several key components: Dex as an identity broker, an OSAC Identity Service for identity resolution, an Auth Gateway for token issuance, Authorino for API authorization, and integration with OpenShift for resource isolation and secret storage.
+This enhancement introduces a comprehensive organization and authentication system for OSAC built on several key components: Keycloak (managed by the user) for identity management and native role assignment, Kuadrant for API-level authorization and rate limiting, and integration with OpenShift for resource isolation.
 
-### Dex
+### Keycloak
 
-Dex is an open-source identity broker (Apache 2.0 license) that connects applications to external identity providers. It supports multiple IdP types including LDAP, Active Directory, OIDC, and SAML. Dex can be configured to support local/break-glass users through its static password connector, which allows storing user credentials directly in Dex's configuration. This enables break-glass accounts to authenticate even when their organization's IdP is unavailable or misconfigured, providing critical access to restore IdP functionality.
+Keycloak is an open-source identity and access management platform that connects applications to external identity providers. It supports multiple IdP types including LDAP, Active Directory, OIDC, and SAML. The Keycloak instance itself is managed by the user (installation, upgrade, backup, etc.). OSAC integrates with the user's Keycloak instance by creating and managing realms via Keycloak Admin API, authenticating users, and reading roles from Keycloak tokens. OSAC creates a Keycloak realm for each Organization. Each Organization must configure an external IdP for user authentication within their Keycloak realm. Keycloak's built-in user storage will be used for break-glass accounts, which allows defining break-glass account credentials directly in Keycloak's database. This enables break-glass accounts to authenticate even when their organization's IdP is unavailable or misconfigured, providing critical access to restore IdP functionality. Each OSAC Organization maps to a Keycloak realm, providing complete isolation and independent IdP configuration per organization.
 
-### Authorino
+### Kuadrant
 
-Authorino is already used in the OSAC system to validate tokens and enforce fine-grained access policies. Previously, Authorino validated external tokens from identity providers. With this enhancement, Authorino will validate internal OSAC tokens issued by the Auth Gateway. These OSAC tokens contain the user's identity, Organization context, and OSAC roles that have already been resolved by the Identity Service from group-to-role mappings. This enhancement extends the existing Authorino workflow by connecting the new authentication flow (Dex → Identity Service → Auth Gateway) to Authorino's token validation and policy evaluation, ensuring consistent authorization behavior across all OSAC APIs while leveraging existing infrastructure.
+Kuadrant is an open source API security platform that provides comprehensive API protection including authentication, authorization, and rate limiting. Kuadrant integrates Authorino for fine-grained authorization policies and Limitador for rate limiting. This enhancement uses Kuadrant to protect OSAC APIs with:
+
+- **Authorino**: Validates OSAC tokens issued by the OSAC API and enforces authorization policies. Initially, Authorino will use RBAC policies based on OSAC roles from Keycloak tokens. Authorino's extensible architecture supports:
+  - OPA (Open Policy Agent) for advanced policy evaluation and complex authorization logic
+  - SpiceDB for Relationship-Based Access Control (ReBAC) when hierarchical permissions are needed
+  - External authorization services for integration with cost-management/billing systems to deny access based on quota or billing status
+  - Custom policy extensions as requirements evolve
+
+- **Limitador**: Provides rate limiting capabilities to protect OSAC APIs from abuse and ensure fair resource usage across organizations and projects.
+
+Kuadrant validates internal OSAC tokens issued by the OSAC API. These OSAC tokens contain the user's identity, Organization context, and OSAC roles that are included directly from Keycloak tokens. This enhancement extends the existing authorization workflow by connecting the new authentication flow (Keycloak → OSAC API) to Kuadrant's token validation and policy evaluation, ensuring consistent authorization behavior across all OSAC APIs while providing extensibility for future policy requirements.
 
 ### Workflow Description
 
@@ -93,101 +103,116 @@ Authorino is already used in the OSAC system to validate tokens and enforce fine
 
 **Tenant Admin** is a user scoped to exactly one Organization with the `tenant-admin` role, responsible for managing that organization's IdP, users, groups, roles, and Projects.
 
-**Tenant User** is a regular user within an Organization who authenticates through the organization's IdP and uses Tenant APIs within Projects. Tenant Users have organization-scoped roles assigned via group-to-role mappings.
+**Break-Glass Account** is a built-in OSAC user with limited privileges (`idp-manager` role) that can manage IdP configuration and roles. These accounts are stored in Keycloak and are used for initial IdP configuration during organization bootstrap, as well as for emergency access when the IdP is unavailable. Full admin roles (Cloud Provider Admin, Tenant Admin) are defined in the IdP and have a superset of capabilities beyond the break-glass accounts.
+
+**Tenant User** is a regular user within an Organization who authenticates through the organization's IdP and uses Tenant APIs within Projects. Tenant Users have organization-scoped roles assigned via Keycloak's native role management.
 
 1. User initiates login
    1. The User calls the OSAC login endpoint, specifying the target Organization:
       - `POST /api/fulfillment/v1/auth/login` with `organization_name` in the request body, OR
       - Organization name can be inferred from custom domain routing (if the organization has configured a custom domain), OR
       - For break-glass users, the organization is determined from their account (each break-glass account is scoped to exactly one organization)
-   2. The API Endpoint forwards the request to the Auth Gateway.
-   3. The Auth Gateway determines the target Organization using one of the methods above.
-   4. The Auth Gateway maps the Organization name to a Dex connector ID (the organization name is used directly as the connector ID, since it is URL-safe and unique).
+   2. The OSAC API determines the target Organization using one of the methods above.
+   3. The OSAC API maps the Organization name to a Keycloak realm name (the organization name is used directly as the realm name, since it is URL-safe and unique).
 
-2. Dex performs authentication via the Organization's IdP
-   1. The Auth Gateway proxies the token request to Dex's token endpoint (`/dex/token`), including the connector ID corresponding to the Organization.
-   2. Dex looks up the connector configuration for that Organization (dynamically loaded from the database).
-   3. If the Organization has a configured IdP, Dex authenticates against that upstream Identity Provider (IdP) using the connector configuration.
-   4. If the Organization does not have a configured IdP, Dex authenticates against the organization's break-glass account (stored in Dex Postgres storage).
-   5. The User authenticates at the IdP (or with local credentials).
-   6. Dex returns tokens to the Auth Gateway, including identity claims (username, group identifiers, etc.).
+2. Keycloak performs authentication via the Organization's IdP
+   1. The OSAC API proxies the token request to Keycloak's token endpoint for the organization's realm.
+   2. Keycloak looks up the realm configuration for that Organization.
+   3. Keycloak authenticates against the Organization's configured external Identity Provider (IdP) using the identity provider configuration in the realm.
+   4. For break-glass access (when IdP is unavailable), Keycloak can authenticate against the organization's break-glass account (stored in Keycloak's built-in user storage).
+   5. The User authenticates at the IdP (or with break-glass credentials for emergency access).
+   6. Keycloak returns tokens to the OSAC API, including identity claims (username, group identifiers, roles, etc.).
 
-3. OSAC Identity Service resolves user identity and roles
-   1. The Auth Gateway extracts identity claims (including group identifiers) from Dex tokens and calls the OSAC Identity Service with the user's group memberships and Organization context.
-   2. The Identity Service looks up group-to-role mappings in the database (scoped to the user's Organization) based on the group identifiers from Dex.
-   3. The Identity Service determines the user's effective OSAC roles by aggregating roles from all groups the user belongs to.
-   4. The Identity Service returns normalized OSAC identity + roles + Organization context to the Auth Gateway.
-
-4. Auth Gateway issues an OSAC token
-   1. The Auth Gateway constructs and returns an OSAC token to the User. It contains Organization context, includes user identity, contains OSAC roles, and is signed by OSAC. The token may also include Project context if the user is accessing resources within a specific Project.
+3. OSAC API extracts roles from Keycloak token and issues OSAC tokens
+   1. The OSAC API extracts identity claims (including roles) directly from Keycloak tokens. Keycloak includes roles in tokens based on its native role mappings (roles assigned to groups or users in Keycloak).
+   2. The OSAC API constructs an OSAC access token (short-lived, 15 minutes to 1 hour) and a refresh token (longer-lived, days/weeks) containing user identity, Organization context, and OSAC roles from the Keycloak token.
+   3. The OSAC API returns both tokens to the User. The access token may also include Project context if the user is accessing resources within a specific Project.
 
 #### Request Flow (Using the OSAC Token)
 
-1. User calls OSAC APIs with their OSAC token
-   1. The User makes an API call to `/api/...` with the OSAC token.
+1. User calls OSAC APIs with their OSAC access token
+   1. The User makes an API call to `/api/...` with the OSAC access token.
    2. The request reaches the API Endpoint, which extracts the token.
 
-2. Authorization via Authorino
-   1. The API Endpoint sends the token to Authorino for validation and policy checks.
-   2. Authorino validates the token signature and expiry, extracts OSAC identity + roles, and evaluates policies for the target API/action.
+2. Authorization via Kuadrant
+   1. The API Endpoint sends the token to Kuadrant (Authorino) for validation and policy checks.
+   2. Authorino validates the token signature and expiry, extracts OSAC identity + roles, and evaluates policies for the target API/action. Initially, policies use RBAC based on roles, but can be extended to use OPA, SpiceDB, or external authorization services.
+   3. If the access token has expired, the request is rejected with a 401 Unauthorized response.
+   4. Limitador enforces rate limiting based on organization, project, and user context.
+   5. If permitted and within rate limits, Kuadrant allows the request to proceed to the appropriate Tenant API.
 
-3. If permitted, Authorino allows the request to proceed to the appropriate Tenant API.
+#### Token Refresh Flow
 
-4. The API call reaches the relevant Tenant API (VMs, Networks, Volumes, etc.), which is scoped to a Project within the Organization.
+When an access token expires, users can obtain a new access token using their refresh token:
 
-5. Tenant API performs the actual operation (create/update/delete resources) within the specified Project.
+1. User calls `POST /api/fulfillment/v1/auth/refresh` with their refresh token
+2. OSAC API validates the refresh token
+3. OSAC API issues a new access token (short-lived, 15 minutes to 1 hour)
+4. The refresh token is reused until it is about to expire or rotated for security reasons (refresh token rotation is configurable per organization)
+5. If the refresh token is rotated, a new refresh token is returned; otherwise, the same refresh token is returned
+6. User uses the new access token for subsequent API calls
+
+3. The API call reaches the relevant Tenant API (VMs, Networks, Volumes, etc.), which is scoped to a Project within the Organization.
+
+4. Tenant API performs the actual operation (create/update/delete resources) within the specified Project.
 
 #### Cloud Provider Admin Workflow: Creating an Organization
 
-1. Cloud Provider Admin authenticates using the `System` Organization IdP (or break-glass account if IdP is not configured).
+1. Cloud Provider Admin authenticates using the `System` Organization IdP.
 
 2. Cloud Provider Admin calls `POST /api/fulfillment/v1/organizations` with organization details (name, description, metadata).
 
 3. OSAC creates the Organization, which triggers:
-   - Bootstrap RBAC for the organization
-   - Creates one break-glass account for the organization (stored in Dex Postgres storage) with limited IdP management privileges
-   - Organization is ready to contain Projects (which will map to OpenShift Projects)
+   - Creation of a Keycloak realm for the organization (via Keycloak Admin API)
+   - Creation of standard OSAC roles in the Keycloak realm (tenant-admin, tenant-reader, tenant-user, idp-manager)
+   - Creation of a break-glass account for the organization (stored in OSAC Postgres and synchronized to Keycloak)
+   - Creation of a "default" Project in the Organization
 
-4. Cloud Provider Admin can then:
-   - Create Tenant Admins via `POST /api/fulfillment/v1/organizations/{name}/tenant_admins` (these are regular admin accounts, not break-glass)
-   - Configure IdP for the `System` Organization via `POST /api/fulfillment/v1/organizations/{name}/identity_provider` (as Cloud Provider Admin for `System` org)
-   - View organization status and usage via `GET /api/fulfillment/v1/organizations/{name}`
+4. The organization creation response includes the break-glass account credentials (username and initial password).
 
-#### Tenant Admin Workflow: Configuring IdP and Role Mappings
+5. Cloud Provider Admin securely sends the break-glass account credentials to the organization's idp-manager persona.
 
-1. Tenant Admin authenticates using the organization's IdP (or break-glass account if IdP is not configured).
+6. The idp-manager persona uses the break-glass account to configure the IdP for the organization via `POST /api/fulfillment/v1/organizations/{name}/identity_provider`.
 
-2. Tenant Admin configures IdP via `POST /api/fulfillment/v1/organizations/{name}/identity_provider` with IdP configuration (type: LDAP/AD/OIDC/SAML, URLs, attribute mappings).
+7. The idp-manager persona (or Tenant Admin) can query IdP status via OSAC API:
+   - `GET /api/fulfillment/v1/organizations/{name}/identity_provider` to get IdP configuration (read from Keycloak)
+   - `POST /api/fulfillment/v1/organizations/{name}/identity_provider:test` to test IdP connectivity
+   - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/health` to get IdP health status
 
-3. Tenant Admin sets IdP credentials via `POST /api/fulfillment/v1/organizations/{name}/identity_provider/credentials` (client secrets, bind passwords stored in OpenShift Secrets).
+8. The idp-manager persona can then assign roles (including the `tenant-admin` role) to users in the IdP via Keycloak role management APIs.
 
-4. Tenant Admin tests IdP connectivity via `POST /api/fulfillment/v1/organizations/{name}/identity_provider:test`.
+#### Tenant Admin Workflow: Configuring IdP and Roles
 
-5. Once IdP is configured and tested, Tenant Admin can create group-to-role mappings:
-   - `POST /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` to assign OSAC roles to a group (using group identifier from IdP; group identifiers must be URL-escaped in the path)
-   - `GET /api/fulfillment/v1/organizations/{name}/groups` to list groups and their role mappings (group information comes from IdP via Dex)
-   - `GET /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}` to view details of a specific group and its role mappings (group identifier must be URL-escaped)
+1. Tenant Admin authenticates using the organization's IdP.
 
-6. Users can now authenticate through the IdP, and their group memberships (group identifiers such as names or paths) from the IdP will be used to resolve their OSAC roles via the stored mappings.
+2. Tenant Admin manages role assignments via OSAC APIs. OSAC validates that the user is authorized to make role changes, then makes the changes in Keycloak using Keycloak Admin API:
+   - `POST /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` to assign roles to a group
+   - `GET /api/fulfillment/v1/organizations/{name}/groups` to list groups and their assigned roles
+   - `GET /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}` to view details of a specific group and its assigned roles
+   - `DELETE /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles/{role_name}` to remove role assignments from a group
+   - `GET /api/fulfillment/v1/organizations/{name}/roles` to list available roles in the realm
+
+3. Users authenticate through the IdP, and their group memberships from the IdP are synced to Keycloak groups. Roles assigned to those groups in Keycloak are automatically included in tokens.
 
 #### Tenant Admin Workflow: Creating a Project
 
-1. Tenant Admin authenticates using the organization's IdP (or break-glass account if IdP is not configured).
+1. Tenant Admin authenticates using the organization's IdP (or break-glass account for emergency access if IdP is temporarily unavailable).
 
-2. Tenant Admin calls `POST /api/fulfillment/v1/organizations/{name}/projects` with project details (name, description, metadata).
+2. Tenant Admin calls `POST /api/fulfillment/v1/organizations/{name}/projects` with project details (name, description, metadata, optional parent_project for nested projects).
 
 3. OSAC creates the Project within the Organization, which triggers:
    - Creation of an OpenShift Project (e.g., `osac-org-<org-name>-project-<project-name>`)
-   - Bootstrap RBAC for the project scoped to the organization
-   - Project is ready to contain resources (VMs, Networks, Volumes, etc.)
+   - If a parent project is specified, the project is created as a nested project with appropriate hierarchical permissions
+   - Project is ready to contain resources (VMs, Networks, Volumes, etc.) or child projects
 
 4. Tenant Admin can then:
-   - List projects via `GET /api/fulfillment/v1/organizations/{name}/projects`
-   - View project details via `GET /api/fulfillment/v1/organizations/{name}/projects/{name}`
+   - List projects via `GET /api/fulfillment/v1/organizations/{name}/projects` (with optional filter for parent project)
+   - View project details via `GET /api/fulfillment/v1/organizations/{name}/projects/{name}` (includes parent project information for nested projects)
    - Update project metadata via `PATCH /api/fulfillment/v1/organizations/{name}/projects/{name}`
-   - Delete project via `DELETE /api/fulfillment/v1/organizations/{name}/projects/{name}` (with proper teardown)
+   - Delete project via `DELETE /api/fulfillment/v1/organizations/{name}/projects/{name}` (with proper teardown, including nested projects if any)
+   - List nested projects via `GET /api/fulfillment/v1/organizations/{name}/projects/{parent_name}/projects`
 
-5. Tenant Users can now provision resources within the Project using Tenant APIs.
+5. Tenant Users can now provision resources within the Project (or nested Project) using Tenant APIs.
 
 ### API Extensions
 
@@ -205,9 +230,18 @@ This enhancement introduces new API endpoints following the fulfillment API patt
   - Organization can also be determined from custom domain routing (if configured)
   - For break-glass users, organization is determined from their account (each break-glass account is scoped to exactly one organization)
   - Response: OSAC access token (JWT) containing user identity, Organization context, and OSAC roles
-    - `access_token`: OSAC JWT token
+    - `access_token`: OSAC JWT token (short-lived, 15 minutes to 1 hour)
+    - `refresh_token`: Refresh token for obtaining new access tokens (longer-lived, days/weeks)
     - `token_type`: `Bearer`
-    - `expires_in`: Token expiration time in seconds
+    - `expires_in`: Access token expiration time in seconds
+- `POST /api/fulfillment/v1/auth/refresh` - Refresh access token using refresh token
+  - Request body:
+    - `refresh_token`: Refresh token obtained from login or previous refresh
+  - Response: New OSAC access token (refresh token is only included if rotated)
+    - `access_token`: New OSAC JWT token (short-lived, 15 minutes to 1 hour)
+    - `refresh_token`: New refresh token (only present if refresh token was rotated; longer-lived, days/weeks)
+    - `token_type`: `Bearer`
+    - `expires_in`: Access token expiration time in seconds
 - `GET /api/fulfillment/v1/auth/validate` - Validate an authentication token
   - Authorization header: `Bearer <token>`
   - Returns validation status (200 if valid, 401 if invalid)
@@ -225,117 +259,111 @@ This enhancement introduces new API endpoints following the fulfillment API patt
   - `GET /api/fulfillment/v1/organizations/{name}` - Get Organization
   - `PATCH /api/fulfillment/v1/organizations/{name}` - Update Organization
   - `DELETE /api/fulfillment/v1/organizations/{name}` - Delete Organization
-- Tenant Admin management (creates accounts in Dex configuration):
-  - `POST /api/fulfillment/v1/organizations/{name}/tenant_admins` - Create Tenant Admin account (stored in Dex config)
-  - `GET /api/fulfillment/v1/organizations/{name}/tenant_admins` - List Tenant Admins
-  - `POST /api/fulfillment/v1/organizations/{name}/tenant_admins/{admin_name}:reset-credentials` - Reset credentials
-  - `DELETE /api/fulfillment/v1/organizations/{name}/tenant_admins/{admin_name}` - Disable/remove Tenant Admin
-- Group-to-role mapping management for `System` Organization:
-  - Only Cloud Provider Admins (authenticated via IdP) can manage System Organization group-to-role mappings
-  - System Organization supports system-level roles: `cloud-provider-admin`, `cloud-provider-reader`, `catalog-curator`, and other system-scoped roles
-  - Break-glass accounts cannot modify group-to-role mappings (prevents privilege escalation)
-  - Same API endpoints as Tenant Admin, but with restricted access: `POST /api/fulfillment/v1/organizations/System/groups/{group_identifier}/roles`, etc.
+- Tenant Admin role assignment (assigns roles to users in the IdP):
+  - Tenant Admins are users defined in the IdP with the `tenant-admin` role assigned via Keycloak
+  - Role assignment is managed through Keycloak role management APIs (see Tenant Admin APIs section)
+  - No separate "Tenant Admin account" creation is needed - users from the IdP are assigned roles in Keycloak
+- Role management for `System` Organization:
+  - Only Cloud Provider Admins (authenticated via IdP) and break-glass accounts can manage System Organization roles in Keycloak
+  - System Organization supports system-level roles: `cloud-provider-admin`, `cloud-provider-reader`
+  - Same API endpoints as Tenant Admin, but with restricted access: `GET /api/fulfillment/v1/organizations/System/roles`, etc.
 
 **Tenant Admin APIs** (`/api/fulfillment/v1`):
-- Identity Provider CRUD operations (nested under organization, since each organization has at most one IdP):
-  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider` - Get IdP for an organization
-  - `POST /api/fulfillment/v1/organizations/{name}/identity_provider` - Create/configure IdP
-  - `PATCH /api/fulfillment/v1/organizations/{name}/identity_provider` - Update IdP configuration
-  - `DELETE /api/fulfillment/v1/organizations/{name}/identity_provider` - Delete/disable IdP
-- IdP credentials management:
-  - `POST /api/fulfillment/v1/organizations/{name}/identity_provider/credentials` - Create/rotate credentials
-  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/credentials/status` - Get credential status
-- IdP health and events:
-  - `POST /api/fulfillment/v1/organizations/{name}/identity_provider:test` - Test IdP connectivity
-  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/health` - Get IdP health status
-  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/events` - Get IdP events
+- Identity Provider query and testing (IdP is configured in Keycloak by the user, OSAC provides read-only access):
+  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider` - Get IdP configuration for an organization (reads from Keycloak)
+  - `POST /api/fulfillment/v1/organizations/{name}/identity_provider:test` - Test IdP connectivity (proxies to Keycloak)
+  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/health` - Get IdP health status (reads from Keycloak)
+  - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/events` - Get IdP events (reads from Keycloak)
 - Project CRUD operations:
-  - `POST /api/fulfillment/v1/organizations/{name}/projects` - Create a Project within the Organization
-  - `GET /api/fulfillment/v1/organizations/{name}/projects` - List Projects in the Organization
-  - `GET /api/fulfillment/v1/organizations/{name}/projects/{name}` - Get Project details
+  - `POST /api/fulfillment/v1/organizations/{name}/projects` - Create a Project within the Organization (supports nested projects via `parent_project` field)
+  - `GET /api/fulfillment/v1/organizations/{name}/projects` - List Projects in the Organization (supports filtering by parent project)
+  - `GET /api/fulfillment/v1/organizations/{name}/projects/{name}` - Get Project details (includes parent project information for nested projects)
   - `PATCH /api/fulfillment/v1/organizations/{name}/projects/{name}` - Update Project metadata
-  - `DELETE /api/fulfillment/v1/organizations/{name}/projects/{name}` - Delete Project (with teardown)
-- Group-to-role mapping management:
-  - `POST /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` - Assign OSAC roles to a group (using group identifier from IdP; must be URL-escaped)
-  - `GET /api/fulfillment/v1/organizations/{name}/groups` - List groups and their role mappings (group information retrieved from IdP via Dex)
-  - `GET /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}` - Get details of a specific group and its role mappings (group identifier must be URL-escaped)
-  - `DELETE /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` - Remove role assignments from a group (group identifier must be URL-escaped)
+  - `DELETE /api/fulfillment/v1/organizations/{name}/projects/{name}` - Delete Project (with proper teardown, including nested projects)
+  - `GET /api/fulfillment/v1/organizations/{name}/projects/{parent_name}/projects` - List nested Projects under a parent Project
+- Role assignment management (roles are pre-created in Keycloak realms):
+  - `GET /api/fulfillment/v1/organizations/{name}/roles` - List available roles in Keycloak realm
+  - `GET /api/fulfillment/v1/organizations/{name}/roles/{name}` - Get role details
+  - `POST /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` - Assign roles to a group (group identifier from IdP; must be URL-escaped)
+  - `GET /api/fulfillment/v1/organizations/{name}/groups` - List groups and their assigned roles (group information retrieved from IdP via Keycloak)
+  - `GET /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}` - Get details of a specific group and its assigned roles (group identifier must be URL-escaped)
+  - `DELETE /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles/{role_name}` - Remove role assignment from a group (group identifier must be URL-escaped)
 
 ### Role Model and Scoping
 
 **System-Level Roles** (assigned only in `System` Organization):
 - `cloud-provider-admin`: Full control over all Organizations in OSAC
 - `cloud-provider-reader`: Read-only access to all Organizations
-- `catalog-curator`: Manages catalog/template resources across organizations
-- Additional system-level roles may be defined as needed
 
 **Organization-Level Roles** (assigned in tenant Organizations):
 - `tenant-admin`: Full control within a single Organization
 - `tenant-reader`: Read-only access within a single Organization
 - `tenant-user`: Standard user access within a single Organization
-- Additional organization-specific roles may be defined per organization
 
 **Break-Glass Role** (assigned to break-glass accounts):
-- `idp-manager`: Limited role that can only manage IdP configuration (view, update, test, view health) for the organization. Cannot create/delete organizations, manage users, assign roles, create projects, or perform any other administrative actions.
+- `idp-manager`: Limited role that can manage IdP configuration (view, update, test, view health) and assign roles to groups/users in Keycloak for the organization. Cannot create/delete organizations, manage users (except for role assignment), create projects, or perform any other administrative actions.
 
 **Role Assignment Constraints**:
 - System-level roles can only be assigned in the `System` Organization
 - Organization-level roles can only be assigned in tenant Organizations
 - Break-glass accounts have the `idp-manager` role and cannot be assigned other roles
-- Only Cloud Provider Admins (authenticated via IdP) can manage System Organization group-to-role mappings
-- Tenant Admins can only assign organization-level roles within their Organization
+- Cloud Provider Admins (authenticated via IdP) and break-glass accounts can manage System Organization roles in Keycloak
+- Tenant Admins and break-glass accounts can manage organization-level roles in Keycloak within their Organization
 - Authorization policies enforce these constraints to prevent privilege escalation
 
 ### Implementation Details/Notes/Constraints
 
 #### Components
 
-**Dex - Identity Broker**
-- Open-source identity broker that connects applications to external identity providers
+**Keycloak - Identity Broker**
+- Open-source identity and access management platform that connects applications to external identity providers
 - Handles authentication flows, not RBAC
-- Each Organization maps to a Dex connector with a unique connector ID (the organization name from metadata.name is used directly as the connector ID, since it is URL-safe and unique)
-- Connectors are dynamically registered/updated as Organizations are created or their IdP configurations change
-- Receives token requests from Auth Gateway via `/dex/token` endpoint with connector ID parameter
-- Authenticates against the Organization's configured IdP (LDAP/AD/OIDC/SAML) or local break-glass accounts
-- Returns OIDC tokens containing identity claims (username, group identifiers, etc.)
-- Authenticates break-glass accounts (one per organization) stored in Dex's Postgres storage backend
-- Uses Postgres as storage backend for break-glass accounts (persistent across pod restarts)
-- Provides gRPC API (port 5557) for dynamic account management without pod restarts
-- IdP configurations are dynamically loaded from the database (stored per Organization) rather than being statically configured in Dex
+- Keycloak instance is managed by the user (installation, upgrade, backup, etc.) - users deploy and operate their own Keycloak instance
+- OSAC integrates with Keycloak by creating and managing realms via Keycloak Admin API, authenticating users, and reading roles from Keycloak tokens
+- OSAC creates a Keycloak realm for each Organization (the organization name from metadata.name is used as the realm name, since it is URL-safe and unique)
+- Users configure IdP settings in Keycloak realms (OSAC can also configure IdPs via Keycloak Admin API)
+- OSAC API sends token requests to Keycloak's `/realms/{realm_name}/protocol/openid-connect/token` endpoint
+- Keycloak authenticates against the Organization's configured external IdP (LDAP/AD/OIDC/SAML) - IdP is required for each organization
+- Returns OIDC tokens containing identity claims (username, group identifiers, roles, etc.)
+- Break-glass accounts (one per organization) can be stored in Keycloak's built-in user storage for emergency access when IdP is unavailable
+- Users manage Keycloak's storage backend (typically Postgres) - OSAC does not manage Keycloak infrastructure
+- Keycloak provides Admin REST API for managing users, roles, and IdP configurations
+- Users configure IdP settings in Keycloak directly - OSAC reads configuration via Keycloak Admin API or from tokens
 
-**OSAC Identity Service**
-- Stores group-to-role mappings in the database (scoped per Organization, using group identifiers such as names or paths from IdP)
-- Resolves OSAC roles by looking up group identifiers from Dex identity claims against stored mappings
-- Group identifiers are strings (group names or paths) returned by the IdP, which may contain slashes (e.g., "/TENANT-nairr-GET"). These are distinct from internal IdP UUIDs and are used as the key for role mappings.
-- Aggregates roles from all groups a user belongs to to determine effective OSAC roles
-- Does not store users or groups - users and groups remain in their IdP, only mappings are stored
-- Produces the "OSAC identity" (user identity + effective roles) used in all authorization decisions
+**Keycloak Role Management**
+- Standard OSAC roles are pre-created in Keycloak realms when organizations are created
+- IdP groups are synced to Keycloak groups (via LDAP/AD group mappers or OIDC group claims)
+- Roles are assigned to Keycloak groups (or directly to users) using Keycloak's Admin REST API
+- Keycloak automatically includes roles in tokens based on group memberships and role assignments
+- Roles appear in token claims: `realm_access.roles` for realm roles, or `resource_access.{client}.roles` for client roles
+- No separate role mapping storage is needed - Keycloak is the source of truth for roles
 
-**OSAC API (API Endpoint + Auth Gateway + Authorino)**
-- Auth Gateway handles login flows:
-  - Acts as a proxy/wrapper around Dex, providing a unified OSAC authentication API
+**OSAC API**
+- Handles login flows and token issuance:
+  - Acts as a proxy/wrapper around Keycloak, providing a unified OSAC authentication API
   - Determines target Organization from login request (organization_name parameter, custom domain routing, or user account for break-glass users)
-  - Maps Organization name to Dex connector ID (organization name is used directly as the connector ID)
-  - Proxies token requests to Dex's token endpoint (`/dex/token`) with the appropriate connector ID
-  - Receives tokens from Dex containing identity claims (username, group identifiers, etc.)
-  - Extracts identity claims from Dex tokens and consults Identity Service for role resolution
-  - Issues OSAC tokens (JWT) containing user identity, Organization context, and OSAC roles
-  - Provides additional endpoints: `/auth/validate`, `/auth/userinfo`, `/auth/permissions`
-- Authorino validates OSAC tokens and enforces fine-grained access policies based on OSAC roles and Organization context
-- Combined unit serves as unified API front end
+  - Maps Organization name to Keycloak realm name (organization name is used directly as the realm name)
+  - Proxies token requests to Keycloak's token endpoint (`/realms/{realm_name}/protocol/openid-connect/token`) for the appropriate realm
+  - Receives tokens from Keycloak containing identity claims (username, roles, etc.)
+  - Extracts roles directly from Keycloak tokens (no separate Identity Service needed)
+  - Issues OSAC access tokens (JWT, short-lived: 15 minutes to 1 hour) and refresh tokens (longer-lived: days/weeks) containing user identity, Organization context, and OSAC roles from Keycloak
+  - Provides additional endpoints: `/auth/refresh`, `/auth/validate`, `/auth/userinfo`, `/auth/permissions`
+- Integrates with Kuadrant for authorization and rate limiting:
+- Kuadrant (Authorino + Limitador) validates OSAC tokens and enforces authorization policies and rate limits:
+  - Authorino validates token signature and expiry, extracts OSAC identity + roles, and evaluates policies
+  - Initially uses RBAC policies based on roles, with extensibility for OPA, SpiceDB, and external authorization services
+  - Limitador enforces rate limiting based on organization, project, and user context
+  - Combined unit serves as unified API protection layer
 
 **OSAC Tenant APIs**
 - Implement user-visible resource operations
-- Receive requests only after Authorino authorization
+- Receive requests only after Kuadrant authorization
 - Invoke Fulfillment/Infrastructure layer to realize changes
 
 **OpenShift Integration**
 - Each Project within an Organization maps to an OpenShift Project (e.g., `osac-org-<org-name>-project-<project-name>`)
-- Per-Project non-secret configuration associated with the OpenShift Project
+- Project names are unique within an Organization, so the OpenShift Project name format is sufficient for all projects (including nested projects)
 - Organizations do not directly map to OpenShift Projects; they are logical containers for Projects
-- All secret material stored in OpenShift Secrets (IdP bind passwords, OIDC/SAML client secrets, certificates, private keys)
-- OSAC relies on OpenShift platform-level encryption at rest
-- Non-secret IdP configuration (issuer URLs, attribute mappings, discovery endpoints) and group-to-role mappings reside in Postgres
 
 #### Authentication Boundaries
 
@@ -347,34 +375,69 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 #### Built-in Break-Glass Accounts
 
 - One break-glass account per organization (including `System` Organization)
-- Break-glass accounts have the `idp-manager` role with limited privileges: can only manage IdP configuration (view, update, test, view health) for their organization
-- Break-glass accounts cannot: create/delete organizations, manage users, assign roles, create projects, or perform any other administrative actions
-- Break-glass accounts are stored in OSAC Postgres tables (source of truth) and synchronized to Dex Postgres storage via gRPC API
+- Break-glass accounts are the only built-in OSAC users - they have the `idp-manager` role with limited privileges: can manage IdP configuration (view, update, test, view health) and assign roles to groups/users in Keycloak for their organization
+- Break-glass accounts cannot: create/delete organizations, manage users (except for role assignment), create projects, or perform any other administrative actions
+- Break-glass accounts are stored in OSAC Postgres tables (source of truth) and synchronized to Keycloak's user storage via Keycloak Admin REST API
 - Accounts always remain available for break-glass access, regardless of IdP configuration
-- Purpose: Recover from IdP failures or misconfigurations to restore normal authentication
-- Regular admin accounts (Cloud Provider Admin, Tenant Admin) are separate and authenticate through IdP (or break-glass if IdP is down, but with their normal roles)
+- Purpose: Initial IdP configuration during organization bootstrap, and recovery from IdP failures or misconfigurations to restore normal authentication, including the ability to configure IdP and set up role mappings for other users
+- Full admin roles (Cloud Provider Admin, Tenant Admin) are defined in the IdP and have a superset of capabilities beyond break-glass accounts. These users authenticate through the IdP and receive their admin roles from Keycloak based on IdP group memberships or direct role assignments.
 
-#### Dex Configuration Management
+#### Keycloak Configuration Management
 
-Break-glass account management uses Dex's Postgres storage backend with OSAC Postgres as the source of truth.
+Break-glass account management uses Keycloak's user storage with OSAC Postgres as the source of truth.
 
 **Storage Architecture:**
 - OSAC Postgres tables store break-glass account metadata and bcrypt-hashed passwords (source of truth, backed up)
-- Dex uses Postgres as its storage backend (persistent across pod restarts)
-- Accounts synchronized from OSAC to Dex via gRPC API
+- Keycloak uses its storage backend (managed by the user, typically Postgres) for break-glass accounts and realm configuration only
+- Regular user accounts are stored in the external IdP, not in Keycloak
+- Break-glass accounts synchronized from OSAC to Keycloak via Keycloak Admin REST API
+
+**Break-Glass Account Creation:**
+- When an Organization is created, OSAC automatically creates a break-glass account:
+  1. OSAC generates a random password for the break-glass account
+  2. OSAC stores the account metadata and bcrypt-hashed password in Postgres (source of truth)
+  3. OSAC creates the user in Keycloak via Admin REST API (`POST /admin/realms/{realm}/users`) with the generated password
+  4. OSAC assigns the `idp-manager` role to the account in Keycloak
+  5. The initial password is returned in the organization creation response to the Cloud Provider Admin (since the password is hashed in storage, it cannot be retrieved later). The Cloud Provider Admin is responsible for securely communicating it to the appropriate personnel.
+  6. The break-glass account is immediately available for authentication
 
 **Update Flow:**
 - When accounts are created/updated/deleted via OSAC API:
   1. OSAC updates its Postgres tables (source of truth)
-  2. OSAC service calls Dex gRPC API (`CreatePassword`, `UpdatePassword`, `DeletePassword`)
+  2. OSAC service calls Keycloak Admin REST API to create/update/delete users in the organization's realm
   3. Changes immediately available for authentication
 
 **Reconciliation:**
-- Periodic reconciliation (every 5 minutes) keeps OSAC and Dex storage in sync:
-  - Queries OSAC Postgres and Dex `ListPasswords` gRPC method
-  - Uses `CreatePassword` for new accounts, `VerifyPassword`+`UpdatePassword` for password changes, `DeletePassword` for removed accounts
+- Periodic reconciliation keeps OSAC and Keycloak storage in sync:
+  - Queries OSAC Postgres and Keycloak Admin REST API (`GET /admin/realms/{realm}/users`)
+  - Uses `POST /admin/realms/{realm}/users` for new accounts, `PUT /admin/realms/{realm}/users/{id}` for updates, `DELETE /admin/realms/{realm}/users/{id}` for removed accounts
 - Startup reconciliation ensures consistency when services start
-- On restore, OSAC database is restored and reconciliation rebuilds Dex storage from source of truth
+- On restore, OSAC database is restored and reconciliation rebuilds Keycloak user storage from source of truth
+
+**Realm and IdP Management:**
+- Realms are created and managed by OSAC via Keycloak Admin REST API (one realm per Organization)
+- Identity providers can be configured by users in Keycloak, or by OSAC via Keycloak Admin API
+- OSAC reads IdP configuration from Keycloak via Admin REST API or from token claims
+- The Keycloak instance itself (installation, upgrade, backup, etc.) is managed by the user
+
+#### Authorization Policy Extensibility
+
+Kuadrant's Authorino component provides extensible authorization capabilities to support evolving policy requirements:
+
+**Initial Implementation (RBAC):**
+- Authorization policies use role-based access control (RBAC) based on OSAC roles from Keycloak tokens
+- Policies evaluate user roles, organization context, and project context to permit or deny API requests
+
+**Future Extensibility:**
+- **OPA Integration**: Authorino can integrate with Open Policy Agent (OPA) for advanced policy evaluation, complex authorization logic, and policy-as-code workflows
+- **SpiceDB Integration**: Authorino can integrate with SpiceDB for Relationship-Based Access Control (ReBAC), enabling hierarchical permissions and relationship-based authorization decisions
+- **External Authorization Services**: Authorino supports external authorization services, enabling integration with:
+  - Cost-management/billing systems to deny access based on quota exhaustion or billing status
+  - Compliance systems for policy-based access control
+  - Custom authorization logic as requirements evolve
+- **Rate Limiting**: Limitador provides rate limiting capabilities that can be configured per organization, project, user, or API endpoint
+
+This extensibility ensures OSAC can adapt to future authorization requirements without requiring architectural changes.
 
 ### Risks and Mitigations
 
@@ -384,11 +447,11 @@ Break-glass account management uses Dex's Postgres storage backend with OSAC Pos
 - IdP misconfiguration could expose sensitive data or allow unauthorized access
   - Mitigation: Provide IdP testing endpoints, validate configurations, implement health checks
 - Secret storage compromise could expose IdP credentials
-  - Mitigation: Leverage OpenShift Secrets with platform-level encryption, implement secret rotation capabilities
+  - Mitigation: Implement secure secret storage in the database, implement secret rotation capabilities
 
 **Operational Risks:**
-- Dex or Identity Service failure could prevent all authentication
-  - Mitigation: Built-in break-glass accounts remain available, implement high availability for critical components
+- Keycloak failure could prevent all authentication
+  - Mitigation: Built-in break-glass accounts remain available, users should implement high availability for their Keycloak instance
 - IdP connectivity issues could prevent user authentication
   - Mitigation: Implement IdP health monitoring, provide fallback mechanisms, alert on failures
 - Organization deletion could result in data loss
@@ -397,14 +460,12 @@ Break-glass account management uses Dex's Postgres storage backend with OSAC Pos
 **Integration Risks:**
 - Version skew between OSAC components and OpenShift could cause issues
   - Mitigation: Define version compatibility matrix, test upgrade scenarios, implement graceful degradation
-- Changes to OpenShift Secrets API could break OSAC
-  - Mitigation: Monitor OpenShift API changes, implement abstraction layer, test compatibility
 
 ### Drawbacks
 
 **Operational Complexity:**
-- Introducing Dex, Identity Service, and Authorino adds operational complexity compared to using a single integrated solution like Keycloak
-  - Mitigation: Dex is lightweight and stateless, reducing operational burden compared to Keycloak
+- Introducing Keycloak, Kuadrant (Authorino + Limitador), and OpenShift integration adds operational complexity
+  - Mitigation: Users manage their own Keycloak instance, providing flexibility in deployment and operations. Kuadrant provides unified API protection with extensible authorization policies. Users are responsible for Keycloak high availability.
 
 **IdP Dependency:**
 - Organizations become dependent on their IdP availability for user authentication
@@ -415,16 +476,25 @@ Break-glass account management uses Dex's Postgres storage backend with OSAC Pos
   - Mitigation: Tokens can be stored securely, and SSO flows reduce the need for frequent re-authentication
 
 **OpenShift Coupling:**
-- Tight coupling with OpenShift Projects and Secrets means changes to OpenShift could require OSAC updates
+- Tight coupling with OpenShift Projects means changes to OpenShift could require OSAC updates
   - Mitigation: Use stable OpenShift APIs, implement abstraction layers where possible
 
 ## Alternatives (Not Implemented)
 
-### Why Not Keycloak?
+### Dex in place of Keycloak
 
-Keycloak is a powerful enterprise IAM platform, but it is operationally heavy for OSAC's requirements. It requires a stateful, highly available deployment with a backing database, regular schema migrations, careful clustering, and complex backups. Its multi-tenant model (realms or many external IdPs in a single realm) becomes difficult to manage and scale when each OSAC Organization brings its own IdP. The operational burden would fall directly on the cluster operator and does not align with OSAC's goal of providing a lightweight, easy-to-operate control plane.
+Dex is an open-source identity broker (Apache 2.0 license) that connects applications to external identity providers. While Dex is lightweight and supports multiple IdP types (LDAP, Active Directory, OIDC, SAML), it lacks the mature API and auditing capabilities that Keycloak provides.
 
-OSAC only needs two capabilities: (1) a local identity store for Cloud Provider Admins and Tenant Admins (stored in Dex configuration), and (2) federation to each Organization's IdP. Dex provides exactly these two functions with a small footprint, no database, and simple configuration, while allowing OSAC to fully control role mappings and authorization internally. By storing only group-to-role mappings in the database (not importing users and groups), OSAC avoids reimplementing Keycloak's user management while maintaining full control over role assignment through the OSAC API. This makes Dex a far better fit for OSAC's architecture and operational model than Keycloak.
+Dex requires manual configuration management and does not have a Kubernetes operator for declarative management. Each Organization would map to a Dex connector, but connector configurations must be managed programmatically via Dex's gRPC API or configuration files, requiring custom reconciliation logic. Dex's multi-tenant model using connectors is less mature than Keycloak's realm-based isolation.
+
+Keycloak was chosen over Dex because:
+- Realm-based multi-tenancy provides better isolation and management for each OSAC Organization
+- Mature Admin REST API for integration and dynamic account/IdP management
+- Built-in secure auditing capabilities including event logging, admin event tracking, and security event recording, which Dex lacks
+- Users can manage Keycloak according to their own operational requirements and preferences
+- OSAC integrates with Keycloak as a consumer, avoiding the need to manage identity infrastructure
+
+While Dex could provide the same core functionality (local identity store and IdP federation), Keycloak's mature API, realm-based isolation, and auditing capabilities make it a better fit for OSAC's integration requirements. By having users manage Keycloak themselves, OSAC avoids operational complexity while still benefiting from Keycloak's features.
 
 ### Alternative: Direct OpenShift User Integration
 
@@ -442,7 +512,6 @@ The proposed approach maintains clear separation of concerns and allows OSAC to 
 
 2. Organization and Project lifecycle semantics (especially deletion) need further definition. What happens to resources when an organization or project is deleted? What is the teardown process? Should project deletion be blocked if it contains resources?
 
-3. Token refresh and rotation policies need to be defined. How long should tokens be valid? What is the refresh mechanism?
 
 ## Test Plan
 
