@@ -163,7 +163,7 @@ The deployment will use an independent Ansible collection for slinky-on-openshif
 
 #### Submitting and Managing Slurm Jobs
 
-1. The tenant accesses the cluster using provided credentials (SSH to login node or kubectl access).
+1. The tenant accesses the Slurm cluster via SSH to a login pod. The login pod exposes an SSH server and provides access to Slurm CLI commands authenticated via JWT tokens managed by the Slinky operator. 
 
 2. The tenant submits a Slurm job using standard commands:
    ```bash
@@ -278,6 +278,15 @@ The osac-templates repository will be extended with:
 * **Resource Isolation**: Kubernetes resource limits and requests configured for Slurm components
 * **GPU Access**: Integration with OpenShift's GPU operator for GPU-enabled Slurm partitions
 * **Mixed Workloads**: Slurm nodes can potentially run both Slurm jobs and native Kubernetes workloads with appropriate resource allocation
+
+#### Deployment Status Reporting
+
+* **MVP Approach**:
+  - Ansible playbooks wait for Slurm components to reach ready state before completing
+  - Monitor SlurmCluster custom resource status conditions for deployment progress
+  - Verify Slurm controller and database pods are running and passing health checks
+  - Report success/failure status back to fulfillment service with configurable timeout
+* **Post-MVP**: Real-time status updates via Kubernetes events and metrics-based validation
 
 #### Monitoring and Observability [optional]
 
