@@ -54,10 +54,15 @@ This enhancement aims to **bridge Slurm and OpenShift**, allowing existing Slurm
 ### Goals
 
 * Integrate Slurm workload manager into OpenShift clusters using the Slinky operator
-* Modify existing osac-templates Ansible playbooks to automate Slurm deployment during cluster provisioning
+* Enable automated provisioning of OpenShift clusters with Slurm pre-configured and ready for HPC workloads
 * Enable tenants to submit and manage Slurm jobs on OpenShift clusters
 * Support standard Slurm commands and workflows for backward compatibility with existing HPC applications
-* Leverage OpenShift's resource management and isolation features for Slurm compute nodes
+* Leverage OpenShift's container orchestration for enhanced Slurm capabilities:
+  - **Resource Isolation**: CPU/memory/GPU limits, namespace quotas, and QoS classes
+  - **Network Security**: NetworkPolicies for tenant isolation and compliance (HIPAA, NIST 800-171)
+  - **Hardware Management**: NVIDIA GPU Operator for automatic GPU discovery and allocation
+  - **High Availability**: Pod failover, anti-affinity spreading across failure domains
+  - **Monitoring**: Prometheus metrics and audit logging for compliance and troubleshooting
 * Provide configuration options for Slurm parameters during cluster deployment
 * Enable monitoring and observability of Slurm workloads through OpenShift tools [optional]
 
@@ -69,6 +74,7 @@ This enhancement aims to **bridge Slurm and OpenShift**, allowing existing Slurm
 * Providing a GUI interface for Slurm job submission (command-line interface will be primary)
 * Implementing custom Slurm accounting or billing systems (organizations can integrate their own)
 * Supporting multi-cluster Slurm federations across multiple OpenShift clusters in the initial phase
+* Dynamic autoscaling of compute nodes via KEDA or similar metrics-based scaling (static node pools in MVP)
 
 ## Proposal
 
@@ -78,12 +84,12 @@ The implementation of Slurm on OpenShift leverages the Slinky operator, which pr
 * **Slurm Components**: Traditional Slurm components (slurmctld, slurmd, slurmdbd) running as containerized workloads on OpenShift
 * **Integration Points**: Connections between Slurm and OpenShift for resource discovery, job scheduling, and monitoring
 
-The deployment process will extend the existing O-SAC cluster fulfillment workflow:
+The deployment will use an independent Ansible collection for slinky-on-openshift:
 
-* **osac-templates Enhancement**: Ansible playbooks will be modified to include Slinky operator deployment and Slurm cluster configuration
-* **Fulfillment Service**: Extended to support Slurm-specific configuration parameters during cluster creation
-* **O-SAC Operator**: Enhanced to manage the lifecycle of OpenShift clusters with integrated Slurm capabilities
-* **O-SAC AAP**: Ansible automation to deploy and configure the Slinky operator and Slurm components
+* **Ansible Collection**: Standalone collection providing roles and playbooks for Slinky operator deployment and Slurm cluster configuration
+* **Fulfillment Integration**: Collection can be invoked from O-SAC fulfillment workflows to provision Slurm-enabled clusters
+* **Cluster Configuration**: Collection handles Slinky operator deployment, Slurm custom resource creation, and initial configuration
+* **Reusability**: Collection can be used independently of O-SAC for other OpenShift environments
 
 ### Architecture Overview
 
@@ -210,7 +216,9 @@ The deployment process will extend the existing O-SAC cluster fulfillment workfl
 
 #### Slinky Operator Integration
 
-The implementation will leverage the Slinky operator from the redhat-hpc/slinky-on-openshift repository. Key integration points:
+The implementation will leverage the upstream Slinky operator from the SlinkyProject community (https://github.com/SlinkyProject/slurm-operator). Using the upstream operator ensures vendor neutrality, broader community support, and compatibility across different OpenShift distributions. The operator will be deployed via Operator Lifecycle Manager (OLM) for standardized installation and lifecycle management.
+
+Key integration points:
 
 * **Operator Deployment**: The Slinky operator will be deployed to a dedicated namespace (e.g., `slurm-system`) during cluster provisioning
 * **Custom Resource Management**: The operator manages Slurm lifecycle through Kubernetes custom resources
@@ -241,12 +249,28 @@ The osac-templates repository will be extended with:
 * **External Access**: Optional NodePort or LoadBalancer for external job submission
 * **Munge Authentication**: Shared secrets distributed via Kubernetes Secrets
 
+#### Authentication and Authorization
+
+* **MVP Approach**:
+  - **Munge**: Inter-component authentication for Slurm services
+  - **Local User Management**: Users created in Slurm pods with synchronized UID/GID mappings
+  - **Static User Database**: Pre-configured user accounts deployed via ConfigMaps
+* **Post-MVP**: LDAP/AD integration with SSSD for centralized identity management and existing filesystem compatibility
+
 #### Storage Requirements
 
 * **Slurm Configuration**: ConfigMaps for slurm.conf, slurmdbd.conf, and related files
 * **Accounting Database**: PersistentVolume for MySQL/MariaDB data
 * **Job State Information**: PersistentVolume for Slurm controller state files
-* **User Home Directories**: Optional shared filesystem (NFS, CephFS) for job data
+
+##### MVP Approach for Shared Storage
+
+* **NFS CSI Driver**: For shared home directories and job data across compute nodes
+* **PersistentVolumeClaims**: User-specific storage with ReadWriteMany (RWX) access mode
+* **Mount Paths**:
+  - `/home/<username>`: User home directories
+  - `/scratch`: Shared scratch space for job I/O
+* **Post-MVP**: CephFS and Lustre integration for HPC workloads requiring parallel filesystems
 
 #### Resource Management
 
@@ -264,7 +288,6 @@ The osac-templates repository will be extended with:
 
 ## Open Questions [optional]
 
-* How will we handle shared filesystems for user home directories and job data across Slurm compute nodes?
 * Should Slurm nodes be dedicated or can they share resources with other OpenShift workloads?
 
 ## Test Plan
