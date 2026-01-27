@@ -18,7 +18,7 @@ superseded-by:
 
 ## Summary
 
-This enhancement proposes integrating Slurm workload manager with OpenShift clusters on Mass Open Cloud (MOC) using the Slinky operator. Slurm (Simple Linux Utility for Resource Management) is a widely-used open-source workload manager designed for Linux clusters of all sizes, commonly used in high-performance computing (HPC) environments. By deploying Slurm on OpenShift through the Slinky operator, tenants will be able to run traditional HPC workloads alongside cloud-native applications, leveraging OpenShift's container orchestration capabilities while maintaining familiar Slurm-based job scheduling and resource management.
+This enhancement proposes integrating Slurm workload manager with OpenShift clusters designed for broader Open Sovereign AI Cloud (OSAC) adoption using the Slinky operator. Slurm (Simple Linux Utility for Resource Management) is a widely-used open-source workload manager designed for Linux clusters of all sizes, commonly used in high-performance computing (HPC) environments. By deploying Slurm on OpenShift through the Slinky operator, tenants will be able to run traditional HPC workloads alongside cloud-native applications, leveraging OpenShift's container orchestration capabilities while maintaining familiar Slurm-based job scheduling and resource management.
 
 The implementation will modify existing Ansible templates from the osac-templates repository to automate the deployment of complete OpenShift clusters with Slurm pre-configured and integrated via the Slinky operator, providing a seamless HPC-as-a-Service experience.
 
