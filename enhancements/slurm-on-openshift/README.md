@@ -319,7 +319,7 @@ The osac-templates repository will be extended with:
 
 To disable Slurm on a cluster:
 1. Drain all running jobs: `scancel -u <all_users>`
-2. Scale down Slurm components: `kubectl scale deployment slurmctld --replicas=0`
+2. Scale down Slurm components: `kubectl scale <resource-type> <resource-name> --replicas=0`
 3. Delete SlurmCluster CR: `kubectl delete slurmcluster <name>`
 4. Uninstall Slinky operator if no longer needed
 
