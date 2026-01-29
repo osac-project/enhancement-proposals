@@ -82,23 +82,12 @@ This section defines the key networking terms used throughout this enhancement:
 
 ## Motivation
 
-OSAC needs a unified networking layer that provides tenants with the ability to
-define and manage their network topology. By introducing networking as a
-standalone API with first-class resources, we align with how major cloud
-providers (AWS, Azure, GCP) approach networking.
-
-This familiar model allows users to:
-
-1.  Define their network topology before provisioning workloads
-2.  Reference pre-existing networks when provisioning resources
-3.  Manage security policies centrally through SecurityGroups that can be
-    applied across multiple resources
-4.  Create isolated network segments for different workloads or environments
-
-The Networking API is designed with extensibility and reuse as core principles.
-It provides a consistent networking experience that can be leveraged by any OSAC
-service requiring network connectivity, starting with Compute Instance and
-extending to Cluster-as-a-Service and BareMetal-as-a-Service
+OSAC needs a unified networking layer aligned with major cloud providers (AWS,
+Azure, GCP). A standalone API with first-class resources lets tenants define
+topology before workloads, reference existing networks, manage SecurityGroups
+centrally, and create isolated segments. The API is designed for extensibility
+and reuse across OSAC services (Compute Instance first, then Cluster and
+BareMetal).
 
 ### User Stories
 
@@ -127,17 +116,13 @@ extending to Cluster-as-a-Service and BareMetal-as-a-Service
 
 ### Goals
 
-- Introduce a Networking API as a foundational OSAC service with VirtualNetwork,
-  Subnet, SecurityGroup, PublicIPPool, PublicIP, PublicIPAttachment, and NAT
-  Gateway as first-class resources
-- Design the API to be generic and reusable across all OSAC services (Compute
-  Instance, Cluster-as-a-Service, BareMetal-as-a-Service)
-- Implement a pluggable architecture (NetworkClass) that allows providers to
-  offer different networking implementations
-- Deliver initial integration with Compute Instance service as the first
-  consumer of the Networking API
-- Provide a first NetworkClass implementation (`tenant-isolated`) based on
-  OpenShift User Defined Networks (UDN)
+- Introduce the Networking API as a foundational OSAC service with the resources
+  defined in [Terminology](#terminology) as first-class API objects
+- Keep the API generic and reusable across OSAC services (Compute Instance,
+  Cluster, BareMetal)
+- Support pluggable implementations via NetworkClass and deliver initial
+  integration with Compute Instance (first: `tenant-isolated` based on OpenShift
+  UDN) as the first consumer
 
 ### Non-Goals
 
@@ -207,47 +192,9 @@ Future enhancements may introduce additional NetworkClasses (e.g.,
 VirtualNetworks, external connectivity, and tighter integration with physical
 network infrastructure.
 
-The Networking API introduces a cloud-like abstraction layer built on
-OpenShift's User Defined Networking (UDN). This design provides tenants with
-familiar networking primitives while allowing providers to maintain control over
-network configurations through NetworkClasses.
-
-The proposal relies on the following core concepts:
-
-- **NetworkClass**: A provider-defined resource that specifies how Virtual
-  Networks are implemented. Different NetworkClasses enable different networking
-  capabilities (e.g., single-subnet isolated networks vs. multi-subnet
-  fabric-integrated networks). Tenants select a NetworkClass when creating a
-  Virtual Network.
-- **VirtualNetwork**: A tenant's isolated virtual network environment, scoped to
-  a Region. The implementation behavior depends on the selected NetworkClass.
-  For the `tenant-isolated` class, VirtualNetwork is a logical grouping; the
-  actual namespace and UDN are created per Subnet.
-- **Subnet**: An IP address range within a VirtualNetwork, scoped to a single
-  Availability Zone within the VirtualNetwork's Region. For the
-  `tenant-isolated` NetworkClass, each Subnet maps to a dedicated namespace
-  containing an OpenShift UserDefinedNetwork resource. Each VirtualNetwork
-  contains exactly one Subnet due to UDN isolation constraints; that Subnet is
-  tied to one Availability Zone. Multi-AZ within one VirtualNetwork may be a
-  future extension.
-- **SecurityGroup**: A set of inbound and outbound traffic rules applied to
-  resources within a VirtualNetwork. SecurityGroups are implemented using
-  OVN-Kubernetes
-  [NetworkPolicies](https://ovn-kubernetes.io/features/network-security-controls/network-policy/).
-- **PublicIPPool**: A provider-defined pool of public IPv4 addresses, scoped to
-  a region. Defines one or more address ranges (CIDRs) from which PublicIPs can
-  be allocated. Tenants do not create pools; they allocate PublicIPs from
-  existing pools.
-- **PublicIP**: A floating public IP address allocated from a PublicIPPool.
-  PublicIPs are tenant-wide and scoped to a region. The IP persists until
-  explicitly released.
-- **PublicIPAttachment**: Binds a PublicIP to a target resource (e.g.,
-  ComputeInstance). Only one attachment per PublicIP is allowed at a time.
-- **NATGateway**: A tenant resource scoped to a VirtualNetwork that provides
-  outbound NAT using a PublicIP. Resources in the VirtualNetwork (e.g., in its
-  Subnets) have their egress traffic appear to originate from the gateway's
-  public IP, giving a single egress identity for the network without assigning a
-  public IP to each resource.
+The Networking API is built on OpenShift's User Defined Networking (UDN).
+Resource definitions are in [Terminology](#terminology); implementation notes
+for the `tenant-isolated` NetworkClass are in the subsections above.
 
 The Networking API will be implemented through updates to the following O-SAC
 components:
@@ -264,26 +211,16 @@ components:
 
 ### Integration with OSAC Services
 
-The Networking API is designed to be consumed by multiple OSAC services. This
-enhancement delivers the first integration:
-
-**Initial Integration (this enhancement):** - **ComputeInstance**: Extended with
-a `network_attachments` field that references Subnets and SecurityGroups within
-the tenant's VirtualNetwork
-
-**Planned Future Integrations:** - **HostPool**: Will leverage the
-`networkAttachments` pattern, referencing Subnets and SecurityGroups for
-bare-metal networking - **Cluster**: Will support cluster-level network
-configuration for OpenShift cluster networking
+- **This enhancement:** ComputeInstance is extended with `network_attachments`
+  (Subnets and SecurityGroups within the tenant's VirtualNetwork).
+- **Planned:** HostPool will use the same pattern for bare-metal; Cluster will
+  support cluster-level network configuration.
 
 ### Workflow Description
 
-**Provider** is a cloud administrator responsible for managing the overall
-network infrastructure and defining what networking capabilities are available
-to tenants.
-
-**Tenant** is an organization or user that consumes networking services to
-connect their resources (VMs, bare metal hosts, clusters).
+**Provider**: Cloud administrator managing network infrastructure and
+NetworkClasses. **Tenant**: Organization or user consuming networking for
+resources (VMs, bare metal, clusters).
 
 #### VirtualNetwork Creation
 
@@ -370,9 +307,6 @@ connect their resources (VMs, bare metal hosts, clusters).
     Subnets/resources as defined by the API.
 
 ### API Extensions
-
-The following sections describe the API resources introduced by this
-enhancement.
 
 #### VirtualNetwork
 
@@ -703,23 +637,15 @@ apply SecurityGroups for traffic control.
 
 ### Implementation Details/Notes/Constraints
 
-**NetworkClass Controller**: The NetworkClass resource is cluster-scoped and
-managed by the provider. The O-SAC Operator watches NetworkClass resources to
-determine which provisioner to use when reconciling VirtualNetworks.
-
-**Namespace per Subnet**: For the `tenant-isolated` NetworkClass, each Subnet
-gets its own namespace. Since UDNs are namespace-scoped in OpenShift, this
-mapping ensures proper isolation. The VirtualNetwork itself is a logical
-grouping that doesn't require a dedicated namespace.
-
-**Subnet and Availability Zone**: Subnet creation requires an Availability Zone
-in the same Region as the parent VirtualNetwork. The operator and scheduler use
-the Subnet's AZ for workload placement (e.g., nodes with the matching topology
-label).
-
-**UDN Lifecycle**: A namespace and UserDefinedNetwork are created when a Subnet
-is provisioned. Both are deleted when the Subnet is removed. The VirtualNetwork
-can only be deleted after all its child Subnets have been removed.
+- **NetworkClass**: Cluster-scoped, provider-managed; the O-SAC Operator uses it
+  to select the provisioner when reconciling VirtualNetworks.
+- **Namespace per Subnet** (`tenant-isolated`): Each Subnet has its own
+  namespace and UserDefinedNetwork; VirtualNetwork is a logical grouping. UDN
+  and namespace are created with the Subnet and removed with it; VirtualNetwork
+  can be deleted only after all Subnets are removed.
+- **Subnet and AZ**: Subnet must specify an Availability Zone in the
+  VirtualNetwork's Region; operator and scheduler use it for placement (e.g.,
+  node topology labels).
 
 ### Risks and Mitigations
 
@@ -747,15 +673,10 @@ can only be deleted after all its child Subnets have been removed.
 
 ### Drawbacks
 
-**Single Subnet per Virtual Network**: OpenShift's User Defined Networks (UDN)
-are isolated from each other at the OVN level. This architectural constraint
-means that each Virtual Network can only contain a single subnet. That Subnet is
-scoped to one Availability Zone; multi-AZ within one VirtualNetwork may be a
-future extension. Unlike traditional cloud providers where a Virtual Network can
-host multiple subnets, our implementation maps one Subnet to one UDN, which
-inherently supports only one subnet. Users requiring multiple isolated network
-segments must create multiple Virtual Networks rather than multiple Subnets
-within a single Virtual Network.
+**Single Subnet per Virtual Network**: As described in NetworkClass
+`tenant-isolated`, UDN constraints limit each VirtualNetwork to one Subnet (one
+AZ). Users needing multiple segments must create multiple VirtualNetworks;
+multi-AZ per VirtualNetwork may be a future extension.
 
 ## Alternatives (Not Implemented)
 
@@ -802,49 +723,43 @@ better isolation control.
 
 *Section to be completed when targeted at a release.*
 
-Testing strategy will include: - Unit tests for API validation and controller
-logic - Integration tests for VirtualNetwork, Subnet, SecurityGroup,
-PublicIPPool, PublicIP, PublicIPAttachment, and NAT Gateway lifecycle - E2E
-tests for resource network attachment workflows - Multi-tenant isolation tests
-to verify network separation
+- Unit: API validation and controller logic
+- Integration: lifecycle of all networking resources (VirtualNetwork through NAT
+  Gateway)
+- E2E: network attachment workflows
+- Multi-tenant: isolation and network separation
 
 ## Graduation Criteria
 
 *Section to be completed when targeted at a release.*
 
-Graduation from Dev Preview to Tech Preview: - Core API resources
-(VirtualNetwork, Subnet, SecurityGroup, PublicIPPool, PublicIP,
-PublicIPAttachment, NAT Gateway) are functional - `tenant-isolated` NetworkClass
-is implemented and tested - Documentation for tenant and provider workflows
-
-Graduation from Tech Preview to GA: - API stability (no breaking changes) -
-Performance and scalability validated - Support procedures documented
+- **Dev Preview → Tech Preview:** All core networking resources and
+  `tenant-isolated` NetworkClass functional and tested; tenant and provider
+  documentation complete.
+- **Tech Preview → GA:** API stable (no breaking changes); performance and
+  scalability validated; support procedures documented.
 
 ## Upgrade / Downgrade Strategy
 
 *Section to be completed when targeted at a release.*
 
-Key considerations: - Existing Compute Instances created before this enhancement
-must continue to work - New networking resources should be opt-in initially -
-Downgrade should preserve existing network configurations
+- Existing Compute Instances must continue to work; new networking resources are
+  opt-in initially; downgrade preserves existing network configuration.
 
 ## Version Skew Strategy
 
 *Section to be completed when targeted at a release.*
 
-The Networking API is managed by the Fulfillment Service and O-SAC Operator.
-Version skew considerations: - Fulfillment Service API changes must be backward
-compatible - O-SAC Operator must handle CRs from both old and new API versions
-during upgrades
+Fulfillment Service API changes must remain backward compatible; O-SAC Operator
+must handle CRs from both old and new API versions during upgrades.
 
 ## Support Procedures
 
 *Section to be completed when targeted at a release.*
 
-Failure detection: - VirtualNetwork stuck in "Pending" state indicates UDN
-creation failure - SecurityGroup rules not applied indicates NetworkPolicy
-reconciliation issues - Compute Instance unable to attach to network indicates
-NAD or UDN misconfiguration
+- VirtualNetwork stuck in "Pending" → UDN creation failure
+- SecurityGroup rules not applied → NetworkPolicy reconciliation issues
+- Compute Instance unable to attach → NAD or UDN misconfiguration
 
 ## Infrastructure Needed
 
