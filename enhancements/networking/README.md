@@ -20,10 +20,12 @@ superseded-by:
 
 This enhancement introduces a Networking API for OSAC fulfillment services. The
 API provides familiar cloud networking primitives (VirtualNetwork, Subnet,
-SecurityGroup, PublicIP) as first-class resources that tenants can define and
-manage independently. The implementation leverages OpenShift User Defined
-Networks (UDN) through a pluggable NetworkClass architecture, enabling providers
-to offer different networking capabilities based on their infrastructure.
+SecurityGroup, PublicIPPool, PublicIP) as first-class resources. PublicIPPools
+are defined by the service provider; tenants manage VirtualNetworks, Subnets,
+SecurityGroups, and PublicIPs (allocated from a pool). The implementation
+leverages OpenShift User Defined Networks (UDN) through a pluggable NetworkClass
+architecture, enabling providers to offer different networking capabilities
+based on their infrastructure.
 
 The Networking API is designed as a foundational service for OSAC, intended to
 be consumed by multiple services. **Compute Instance (VMaaS) will be the first
@@ -36,8 +38,8 @@ This section defines the key networking terms used throughout this enhancement:
 
 - **Region**: A user-facing abstraction representing a geographic or logical
   grouping of infrastructure. In OSAC, a Region maps to an internal "Hub" (a
-  managed OpenShift cluster). VirtualNetworks and PublicIPs are scoped to a
-  specific Region.
+  managed OpenShift cluster). VirtualNetworks, PublicIPPools, and PublicIPs are
+  scoped to a specific Region.
 
 - **VirtualNetwork**: A tenant's isolated virtual network environment, similar
   to an AWS VPC or Azure VNet. Provides logical isolation and defines the
@@ -51,10 +53,14 @@ This section defines the key networking terms used throughout this enhancement:
   destination addresses. SecurityGroups are applied to resources within a
   VirtualNetwork.
 
+- **PublicIPPool**: A provider-defined pool of public IPv4 addresses. Pools are
+  scoped to a region and define one or more address ranges (CIDRs) from which
+  PublicIPs can be allocated. Tenants allocate PublicIPs from a PublicIPPool.
+
 - **PublicIP** (also known as **Floating IP**): A public IPv4 address allocated
-  from provider-managed pools that can be dynamically attached to and detached
-  from resources. PublicIPs persist independently of the resources they're
-  attached to, allowing tenants to reassign them as needed.
+  from a PublicIPPool. PublicIPs can be dynamically attached to and detached
+  from resources. They persist independently of the resources they're attached
+  to, allowing tenants to reassign them as needed.
 
 - **PublicIPAttachment**: The binding between a PublicIP and a target resource.
   Creating an attachment routes traffic to the resource; deleting it removes the
@@ -95,7 +101,7 @@ extending to Cluster-as-a-Service and BareMetal-as-a-Service
   to resources in my VirtualNetwork
 - As an end-user, I want to be able to attach resources to a Subnet in one of my
   VirtualNetworks
-- As an end-user, I want to allocate a Public IP in a region
+- As an end-user, I want to allocate a Public IP from a PublicIPPool in a region
 - As an end-user, I want to attach and detach a Public IP to a resource
 
 #### Provider Stories
@@ -104,12 +110,14 @@ extending to Cluster-as-a-Service and BareMetal-as-a-Service
   the Networking API through NetworkClasses
 - As a service provider, I want to control which networking capabilities are
   available to tenants
+- As a service provider, I want to define PublicIPPools per region so tenants
+  can allocate PublicIPs from those pools
 
 ### Goals
 
 - Introduce a Networking API as a foundational OSAC service with VirtualNetwork,
-  Subnet, SecurityGroup, PublicIP, and PublicIPAttachment as first-class
-  resources
+  Subnet, SecurityGroup, PublicIPPool, PublicIP, and PublicIPAttachment as
+  first-class resources
 - Design the API to be generic and reusable across all OSAC services (Compute
   Instance, Cluster-as-a-Service, BareMetal-as-a-Service)
 - Implement a pluggable architecture (NetworkClass) that allows providers to
@@ -125,7 +133,7 @@ extending to Cluster-as-a-Service and BareMetal-as-a-Service
 - Integration with Cluster-as-a-Service and BareMetal-as-a-Service (planned for
   future enhancements)
 - APIs for NAT Gateways, Internet Gateways, and Load Balancers
-- Provider-side IP pool management (defining CIDR ranges, quotas, BYOIP)
+- Tenant-definable PublicIPPools or BYOIP (pools are provider-defined only)
 
 ## Proposal
 
@@ -210,8 +218,12 @@ The proposal relies on the following core concepts:
   resources within a VirtualNetwork. SecurityGroups are implemented using
   OVN-Kubernetes
   [NetworkPolicies](https://ovn-kubernetes.io/features/network-security-controls/network-policy/).
-- **PublicIP**: A floating public IP address allocated from provider-managed
-  pools. PublicIPs are tenant-wide and scoped to a region. The IP persists until
+- **PublicIPPool**: A provider-defined pool of public IPv4 addresses, scoped to a
+  region. Defines one or more address ranges (CIDRs) from which PublicIPs can be
+  allocated. Tenants do not create pools; they allocate PublicIPs from existing
+  pools.
+- **PublicIP**: A floating public IP address allocated from a PublicIPPool.
+  PublicIPs are tenant-wide and scoped to a region. The IP persists until
   explicitly released.
 - **PublicIPAttachment**: Binds a PublicIP to a target resource (e.g.,
   ComputeInstance). Only one attachment per PublicIP is allowed at a time.
@@ -220,14 +232,14 @@ The Networking API will be implemented through updates to the following O-SAC
 components:
 
 - **Fulfillment Service**: Expose the Networking API endpoints for
-  VirtualNetwork, Subnet, SecurityGroup, PublicIP, and PublicIPAttachment
-  resources
+  VirtualNetwork, Subnet, SecurityGroup, PublicIPPool, PublicIP, and
+  PublicIPAttachment resources
 - **Fulfillment CLI**: Provide tenant access to Networking API operations
 - **O-SAC Operator**: Manage and reconcile networking Custom Resources,
   translating them to OpenShift primitives (UDN, NetworkPolicies, ...)
 - **O-SAC Ansible**: Execute provider's Ansible playbooks to perform custom
-  operations to the networking infrastructure (e.g.: allocating and assigning a
-  Public IP)
+  operations to the networking infrastructure (e.g., allocating a Public IP
+  from a pool and assigning it to a resource)
 
 ### Integration with OSAC Services
 
@@ -301,6 +313,22 @@ connect their resources (VMs, bare metal hosts, clusters).
     applied (e.g., hardware firewall rules, fabric-level ACLs).
 5.  Traffic to/from resources associated with the SecurityGroup is filtered
     according to the rules.
+
+#### PublicIPPool and PublicIP Allocation
+
+1.  The **provider** defines one or more PublicIPPools per region (e.g., via
+    admin API or cluster-scoped CR), specifying the region and one or more
+    CIDR ranges for each pool.
+2.  The Fulfillment Service (or O-SAC Operator) creates PublicIPPool resources
+    and tracks capacity (total, allocated, available).
+3.  A **tenant** requests a PublicIP by specifying a pool name (e.g.,
+    `--pool public-us-east-1`). The pool determines the region and address
+    ranges from which an IP can be allocated.
+4.  The Fulfillment Service validates that the pool exists and has available
+    capacity, then creates a PublicIP CR and allocates an address from that
+    pool.
+5.  The tenant can attach the PublicIP to a resource via PublicIPAttachment;
+    releasing the PublicIP returns the address to the pool.
 
 ### API Extensions
 
@@ -483,15 +511,45 @@ spec:
         cidr: 0.0.0.0/0
 ```
 
+#### PublicIPPool
+
+PublicIPPools are provider-defined pools of public IPv4 addresses, scoped to a
+region. A pool can contain multiple CIDR ranges; addresses are allocated from
+any of those ranges. Tenants allocate PublicIPs from a pool; they cannot
+create or delete pools.
+
+Example provider workflow (e.g., via Fulfillment Service admin API or
+cluster-scoped CR):
+
+A provider defines a PublicIPPool:
+
+``` yaml
+apiVersion: o-sac.openshift.io/v1alpha1
+kind: PublicIPPool
+metadata:
+  name: public-us-east-1
+spec:
+  region: us-east-1
+  cidrs:
+  - 203.0.113.0/24
+  - 198.51.100.0/24
+status:
+  state: Ready
+  capacity:
+    total: 508      # sum of usable addresses across all CIDRs
+    allocated: 12
+    available: 496
+```
+
 #### PublicIP
 
-PublicIPs are floating public IP addresses allocated from provider-managed
-pools. They are tenant-wide and scoped to a region, allowing them to be attached
-to any resource in that region.
+PublicIPs are floating public IP addresses allocated from a PublicIPPool. They
+are tenant-wide and scoped to a region, allowing them to be attached to any
+resource in that region. A PublicIP must be allocated from a PublicIPPool.
 
 Example CLI commands:
 
-    $ ./fulfillment-cli create publicip --region us-east-1 --name my-public-ip
+    $ ./fulfillment-cli create publicip --pool public-us-east-1 --name my-public-ip
     $ ./fulfillment-cli delete publicip my-public-ip
 
 The Fulfillment Service creates the following PublicIP CR:
@@ -504,7 +562,8 @@ metadata:
   labels:
     tenantUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
 spec:
-  region: us-east-1
+  pool: public-us-east-1
+  # region is implied by the pool
 status:
   state: Allocated  # Allocated | Attached | Releasing
   address: 203.0.113.45
@@ -650,25 +709,28 @@ better isolation control.
     Current proposal scopes them to VirtualNetwork (similar to AWS), but
     tenant-wide SecurityGroups could simplify reuse.
 
-2.  Should PublicIP be part of a NetworkClass?
+2.  Should PublicIPPool or PublicIP be part of a NetworkClass? Today PublicIPPool
+    is a standalone provider resource; future NetworkClasses might define how
+    public IPs are implemented (e.g., NAT vs. direct allocation).
 
 ## Test Plan
 
 *Section to be completed when targeted at a release.*
 
 Testing strategy will include: - Unit tests for API validation and controller
-logic - Integration tests for VirtualNetwork, Subnet, SecurityGroup, PublicIP,
-and PublicIPAttachment lifecycle - E2E tests for resource network attachment
-workflows - Multi-tenant isolation tests to verify network separation
+logic - Integration tests for VirtualNetwork, Subnet, SecurityGroup,
+PublicIPPool, PublicIP, and PublicIPAttachment lifecycle - E2E tests for
+resource network attachment workflows - Multi-tenant isolation tests to verify
+network separation
 
 ## Graduation Criteria
 
 *Section to be completed when targeted at a release.*
 
 Graduation from Dev Preview to Tech Preview: - Core API resources
-(VirtualNetwork, Subnet, SecurityGroup, PublicIP, PublicIPAttachment) are
-functional - `tenant-isolated` NetworkClass is implemented and tested -
-Documentation for tenant and provider workflows
+(VirtualNetwork, Subnet, SecurityGroup, PublicIPPool, PublicIP,
+PublicIPAttachment) are functional - `tenant-isolated` NetworkClass is
+implemented and tested - Documentation for tenant and provider workflows
 
 Graduation from Tech Preview to GA: - API stability (no breaking changes) -
 Performance and scalability validated - Support procedures documented
