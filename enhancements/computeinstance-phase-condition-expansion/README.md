@@ -62,78 +62,42 @@ This change enables users to understand VM power state (running, stopped, paused
 
 ## Motivation
 
-This section is for explicitly listing the motivation, goals and non-goals of
-this proposal. Describe why the change is important and the benefits to users.
+As VMaaS matures to support full VM lifecycle operations, users need clear visibility into VM power state and operational status. The current phase model does not distinguish between a running VM and a stopped VM, and conditions overlap with phases rather than providing independent health information. This enhancement addresses these gaps to provide the operational visibility expected from a modern cloud platform.
 
 ### User Stories
 
-Detail the things that people will be able to do if this is implemented and
-what goal that allows them to achieve. In each story, explain who the actor
-is based on their role, explain what they want to do with the system,
-and explain the underlying goal they have, what it is they are going to
-achieve with this new feature.
+**For Tenants:**
 
-Use the standard three part formula:
+* As a tenant, I want to see if my VM is running, stopped, or paused, so that I understand its current power state
+* As a tenant, I want to see when my VM is starting or stopping, so that I know an operation is in progress
+* As a tenant, I want to see clear health indicators for my VM, so that I can identify issues without interpreting phase values
+* As a tenant, I want to see when my VM is being deleted, so that I can track the deletion progress
 
-> "As a _role_, I want to _take some action_ so that I can _accomplish a
-goal_."
+**For Cloud Providers:**
 
-Make the change feel real for users, without getting bogged down in
-implementation details.
+* As a cloud provider, I want to see clear VM power states for tenant VMs, so that I can provide effective support and troubleshooting
+* As a cloud provider, I want VM phases that align with industry standards, so that I can build monitoring dashboards with familiar terminology
 
-Here are some example user stories to show what they might look like:
+**For Developers:**
 
-* As an OpenShift engineer, I want to write an enhancement, so that I
-  can get feedback on my design and build consensus about the approach
-  to take before starting the implementation.
-* As an OpenShift engineer, I want to understand the rationale behind
-  a particular feature's design and alternatives considered, so I can
-  work on a new enhancement in that problem space knowing the history
-  of the current design better.
-* As a product manager, I want to review this enhancement proposal, so
-  that I can make sure the customer requirements are met by the
-  design.
-* As an administrator, I want a one-click OpenShift installer, so that
-  I can easily set up a new cluster without having to follow a long
-  set of operations.
-
-In each example, the persona's goal is clear, and the goal is clearly provided
-by the capability being described.
-The engineer wants feedback on their enhancement from their peers, and writing
-an enhancement allows for that feedback.
-The product manager wants to make sure that their customer requirements are fulfilled,
-reviewing the enhancement allows them to check that.
-The administrator wants to set up his OpenShift cluster as easily as possible, and
-reducing the install to a single click simplifies that process.
-
-Here are some real examples from previous enhancements:
-* [As a member of OpenShift concerned with the release process (TRT, dev, staff engineer, maybe even PM),
-I want to opt in to pre-release features so that I can run periodic testing in CI and obtain a signal of
-feature quality.](https://github.com/openshift/enhancements/blob/master/enhancements/installer/feature-sets.md#user-stories)
-* [As a cloud-provider affiliated engineer / platform integrator / RH partner
-I want to have a mechanism to signal OpenShift's built-in operators about additional
-cloud-provider specific components so that I can inject my own platform-specific controllers into OpenShift
-to improve the integration between OpenShift and my cloud provider.](https://github.com/openshift/enhancements/blob/master/enhancements/cloud-integration/infrastructure-external-platform-type.md#user-stories)
-* [As an OpenShift cluster administrator, I want to add worker nodes to my
-existing single control-plane node cluster, so that it'll be able to meet
-growing computation demands.](https://github.com/openshift/enhancements/blob/master/enhancements/single-node/single-node-openshift-with-workers.md#user-stories)
-
-Include a story on how this proposal will be operationalized:
-life-cycled, monitored and remediated at scale.
+* As a developer integrating with the OSAC API, I want consistent terminology (RESTART vs REBOOT), so that I don't have to handle inconsistencies between public and private APIs
+* As a developer, I want a phase/condition model where conditions are orthogonal to phases, so that new conditions can be added in future releases without breaking my existing integrations
+* As a developer, I want a well-defined phase model that can accommodate future VM operations (e.g., live migration), so that the API can evolve to support new capabilities
 
 ### Goals
 
-Summarize the specific goals of the proposal. How will we know that
-this has succeeded?  A good goal describes something a user wants from
-their perspective, and does not include the implementation details
-from the proposal.
+* Represent VM power state clearly - Users can see if a VM is Running, Stopped, or Paused
+* Expose transitional states - Users can see when operations are in progress (Starting, Stopping, Pausing, Deleting)
+* Align with industry standards - Phase values match what users expect from AWS, GCE, and KubeVirt
+* Make conditions orthogonal to phases - Conditions represent health/status attributes, not lifecycle state
+* Fix API inconsistencies - Unify RESTART/REBOOT terminology between public and private APIs
+* Expose DELETING in API - The K8s operator's Deleting phase should be visible in the public API
 
 ### Non-Goals
 
-What is out of scope for this proposal? Listing non-goals helps to
-focus discussion and make progress. Highlight anything that is being
-deferred to a later phase of implementation that may call for its own
-enhancement.
+* Additional conditions - Conditions such as NetworkReady and RestartRequired will be addressed in future enhancements as their dependencies (networking design, configuration change detection) are not yet finalized
+* New VM operations - This enhancement is about status representation, not adding pause/resume/stop operations themselves
+* Hibernate (suspend to disk) - Only in-memory pause is supported by KubeVirt; hibernate is out of scope
 
 ## Proposal
 
