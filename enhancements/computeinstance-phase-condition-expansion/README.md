@@ -52,14 +52,13 @@ around the enhancement process.
 
 ## Summary
 
-The `Summary` section is important for producing high quality
-user-focused documentation such as release notes or a development roadmap. It
-should be possible to collect this information before implementation begins in
-order to avoid requiring implementors to split their attention between writing
-release notes and implementing the feature itself.
+This enhancement proposes a cleanup and expansion of the `ComputeInstancePhaseType` and `ComputeInstanceConditionType` values for the OSAC VMaaS offering.
 
-Your summary should be one paragraph long. More detail
-should go into the following sections.
+The current 4-phase model (`Progressing`, `Ready`, `Failed`, `Deleting`) was designed for initial provisioning workflows. As VMaaS matures to support full lifecycle operations (stop, start, pause, resume), the phase model needs to expand to represent these power states. Additionally, the current conditions overlap with phases rather than providing orthogonal health information, and there are inconsistencies between the public and private APIs that need to be addressed.
+
+The redesign expands from 4 phases to 9 phases to properly represent the full VM lifecycle, aligning with industry standards from AWS, GCE, and KubeVirt. Conditions are redesigned to be orthogonal health indicators that complement, rather than duplicate, the lifecycle phase.
+
+This change enables users to understand VM power state (running, stopped, paused), see transitional progress (starting, stopping), and receive clear health signals through conditions - providing the operational visibility expected from a modern cloud platform.
 
 ## Motivation
 
