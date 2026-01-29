@@ -4,8 +4,8 @@ authors:
   - agentil@redhat.com
 creation-date: 2025-11-29
 last-updated: 2026-01-29
-tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
-  - TBD
+tracking-link:
+  - https://issues.redhat.com/browse/MGMT-22637
 see-also:
   - Region and Availability Zone API: https://github.com/osac-project/enhancement-proposals/pull/20
 replaces:
@@ -20,12 +20,12 @@ superseded-by:
 
 This enhancement introduces a Networking API for OSAC fulfillment services. The
 API provides familiar cloud networking primitives (VirtualNetwork, Subnet,
-SecurityGroup, PublicIPPool, PublicIP) as first-class resources. PublicIPPools
-are defined by the service provider; tenants manage VirtualNetworks, Subnets,
-SecurityGroups, and PublicIPs (allocated from a pool). The implementation
-leverages OpenShift User Defined Networks (UDN) through a pluggable NetworkClass
-architecture, enabling providers to offer different networking capabilities
-based on their infrastructure.
+SecurityGroup, PublicIPPool, PublicIP, NAT Gateway) as first-class resources.
+PublicIPPools are defined by the service provider; tenants manage
+VirtualNetworks, Subnets, SecurityGroups, and PublicIPs (allocated from a pool).
+
+The Networking API is pluggable through a NetworkClass architecture, and an
+implementation designed for VMaaS is being proposed.
 
 The Networking API is designed as a foundational service for OSAC, intended to
 be consumed by multiple services. **Compute Instance (VMaaS) will be the first
@@ -69,6 +69,13 @@ This section defines the key networking terms used throughout this enhancement:
   Creating an attachment routes traffic to the resource; deleting it removes the
   association without releasing the IP.
 
+- **NAT Gateway**: A gateway that provides outbound NAT for resources in a
+  VirtualNetwork. It is scoped to a VirtualNetwork and uses a PublicIP. Traffic
+  from resources in that VirtualNetwork (or in Subnets that use the gateway)
+  appears to originate from the gateway's public IP, giving tenants a single
+  egress identity for outbound access (e.g., to the internet) without assigning
+  a public IP to each resource.
+
 - **NetworkClass**: A provider-defined resource that specifies how
   VirtualNetworks are implemented. Enables pluggable networking backends (e.g.,
   `tenant-isolated` for basic UDN, `fabric-integrated` for advanced topologies).
@@ -106,6 +113,8 @@ extending to Cluster-as-a-Service and BareMetal-as-a-Service
   VirtualNetworks
 - As an end-user, I want to allocate a Public IP from a PublicIPPool in a region
 - As an end-user, I want to attach and detach a Public IP to a resource
+- As an end-user, I want to create a NAT Gateway in my VirtualNetwork so that
+  outbound traffic from my resources uses a dedicated public IP
 
 #### Provider Stories
 
@@ -119,8 +128,8 @@ extending to Cluster-as-a-Service and BareMetal-as-a-Service
 ### Goals
 
 - Introduce a Networking API as a foundational OSAC service with VirtualNetwork,
-  Subnet, SecurityGroup, PublicIPPool, PublicIP, and PublicIPAttachment as
-  first-class resources
+  Subnet, SecurityGroup, PublicIPPool, PublicIP, PublicIPAttachment, and NAT
+  Gateway as first-class resources
 - Design the API to be generic and reusable across all OSAC services (Compute
   Instance, Cluster-as-a-Service, BareMetal-as-a-Service)
 - Implement a pluggable architecture (NetworkClass) that allows providers to
@@ -135,7 +144,7 @@ extending to Cluster-as-a-Service and BareMetal-as-a-Service
 - Storage Networking
 - Integration with Cluster-as-a-Service and BareMetal-as-a-Service (planned for
   future enhancements)
-- APIs for NAT Gateways, Internet Gateways, and Load Balancers
+- APIs for Internet Gateways and Load Balancers
 - Tenant-definable PublicIPPools or BYOIP (pools are provider-defined only)
 
 ## Proposal
@@ -180,6 +189,12 @@ class provides:
   each Virtual Network contains exactly one subnet
 - **Layer 2 connectivity**: VMs within the same Virtual Network can communicate
   at Layer 2
+- **NAT Gateway**: A NAT Gateway is implemented via OVN's **EgressIP** resource.
+  The O-SAC Operator creates and reconciles an EgressIP (`k8s.ovn.org/v1`): the
+  NAT Gateway's PublicIP is set as `egressIPs`, and the EgressIP's
+  `namespaceSelector` targets the namespace(s) of the VirtualNetwork's
+  Subnet(s). Egress traffic from those namespaces then appears to originate from
+  the gateway's public IP.
 
 The `tenant-isolated` class is suitable for deployments where:
 
@@ -228,13 +243,18 @@ The proposal relies on the following core concepts:
   explicitly released.
 - **PublicIPAttachment**: Binds a PublicIP to a target resource (e.g.,
   ComputeInstance). Only one attachment per PublicIP is allowed at a time.
+- **NATGateway**: A tenant resource scoped to a VirtualNetwork that provides
+  outbound NAT using a PublicIP. Resources in the VirtualNetwork (e.g., in its
+  Subnets) have their egress traffic appear to originate from the gateway's
+  public IP, giving a single egress identity for the network without assigning a
+  public IP to each resource.
 
 The Networking API will be implemented through updates to the following O-SAC
 components:
 
 - **Fulfillment Service**: Expose the Networking API endpoints for
-  VirtualNetwork, Subnet, SecurityGroup, PublicIPPool, PublicIP, and
-  PublicIPAttachment resources
+  VirtualNetwork, Subnet, SecurityGroup, PublicIPPool, PublicIP,
+  PublicIPAttachment, and NAT Gateway resources
 - **Fulfillment CLI**: Provide tenant access to Networking API operations
 - **O-SAC Operator**: Manage and reconcile networking Custom Resources,
   translating them to OpenShift primitives (UDN, NetworkPolicies, ...)
@@ -333,6 +353,21 @@ connect their resources (VMs, bare metal hosts, clusters).
     pool.
 5.  The tenant can attach the PublicIP to a resource via PublicIPAttachment;
     releasing the PublicIP returns the address to the pool.
+
+#### NAT Gateway
+
+1.  The tenant creates a NAT Gateway within a VirtualNetwork, specifying a
+    PublicIP (allocated from a PublicIPPool) to use for outbound NAT.
+2.  The Fulfillment Service validates that the PublicIP exists and is not
+    attached to another resource (or is reserved for NAT), and creates a NAT
+    Gateway CR owned by the VirtualNetwork.
+3.  The O-SAC Operator reconciles the NAT Gateway so that egress traffic from
+    the VirtualNetwork's Subnets uses the gateway's public IP (for the
+    `tenant-isolated` NetworkClass, see that class for implementation details).
+4.  Resources (e.g., ComputeInstances) in Subnets of that VirtualNetwork
+    automatically have their egress traffic source-NAT'd to the NAT Gateway's
+    public IP, or the tenant explicitly associates the NAT Gateway with specific
+    Subnets/resources as defined by the API.
 
 ### API Extensions
 
@@ -615,6 +650,40 @@ status:
   state: Active
 ```
 
+#### NAT Gateway
+
+A NAT Gateway provides outbound NAT for resources in a VirtualNetwork. It is
+scoped to a VirtualNetwork and uses a PublicIP; traffic from resources in that
+VirtualNetwork (or in selected Subnets) appears to originate from the gateway's
+public IP.
+
+Example CLI command:
+
+    $ ./fulfillment-cli create natgateway \
+           --virtual-network my-network \
+           --publicip my-public-ip \
+           --name my-nat-gateway
+
+The Fulfillment Service creates the following NAT Gateway CR:
+
+``` yaml
+apiVersion: o-sac.openshift.io/v1alpha1
+kind: NATGateway
+metadata:
+  name: my-nat-gateway
+  ownerReferences:
+  - apiVersion: o-sac.openshift.io/v1alpha1
+    kind: VirtualNetwork
+    name: my-network
+    uid: 77c9fe7g-2bg3-5903-bd23-58ce58ebde51
+spec:
+  virtualNetwork: my-network
+  publicIP: my-public-ip
+status:
+  state: Ready
+  address: 203.0.113.45   # from the referenced PublicIP
+```
+
 #### Integration: ComputeInstance
 
 As the first consumer of the Networking API, ComputeInstance is extended with a
@@ -735,9 +804,9 @@ better isolation control.
 
 Testing strategy will include: - Unit tests for API validation and controller
 logic - Integration tests for VirtualNetwork, Subnet, SecurityGroup,
-PublicIPPool, PublicIP, and PublicIPAttachment lifecycle - E2E tests for
-resource network attachment workflows - Multi-tenant isolation tests to verify
-network separation
+PublicIPPool, PublicIP, PublicIPAttachment, and NAT Gateway lifecycle - E2E
+tests for resource network attachment workflows - Multi-tenant isolation tests
+to verify network separation
 
 ## Graduation Criteria
 
@@ -745,8 +814,8 @@ network separation
 
 Graduation from Dev Preview to Tech Preview: - Core API resources
 (VirtualNetwork, Subnet, SecurityGroup, PublicIPPool, PublicIP,
-PublicIPAttachment) are functional - `tenant-isolated` NetworkClass is
-implemented and tested - Documentation for tenant and provider workflows
+PublicIPAttachment, NAT Gateway) are functional - `tenant-isolated` NetworkClass
+is implemented and tested - Documentation for tenant and provider workflows
 
 Graduation from Tech Preview to GA: - API stability (no breaking changes) -
 Performance and scalability validated - Support procedures documented
