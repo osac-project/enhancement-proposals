@@ -18,9 +18,11 @@ superseded-by:
 
 This enhancement proposes a cleanup and expansion of the `ComputeInstancePhaseType` and `ComputeInstanceConditionType` values for the OSAC VMaaS offering.
 
-The current 4-phase model (`Progressing`, `Ready`, `Failed`, `Deleting`) was designed for initial provisioning workflows. As VMaaS matures to support full lifecycle operations (stop, start, pause, resume), the phase model needs to expand to represent these power states. Additionally, the current conditions overlap with phases rather than providing orthogonal health information, and there are inconsistencies between the public and private APIs that need to be addressed.
+The current 4-phase model (`Progressing`, `Ready`, `Failed`, `Deleting`) was designed for initial provisioning workflows. As VMaaS matures to support full lifecycle operations (start, stop, pause, resume), the phase model needs to expand to represent these power states. Additionally, the current conditions overlap with phases rather than providing orthogonal health information.
 
-The redesign expands from 4 phases to 9 phases to properly represent the full VM lifecycle, aligning with industry standards from AWS, GCE, and KubeVirt. Conditions are redesigned to be orthogonal health indicators that complement, rather than duplicate, the lifecycle phase.
+The redesign expands from 4 phases to 8 phases to properly represent the full VM lifecycle, aligning with industry standards from AWS, GCE, and KubeVirt. Conditions are redesigned to be orthogonal health indicators that complement, rather than duplicate, the lifecycle phase.
+
+> **Note:** You can find more details on industry standards [here](https://docs.google.com/document/d/1wgqAblnT7OHlT5bvaI4bi842kyeR3u4VfC_TAJXbGcI/edit?tab=t.oocbc3frwt7c). 
 
 This change enables users to understand VM power state (running, stopped, paused), see transitional progress (starting, stopping), and receive clear health signals through conditions - providing the operational visibility expected from a modern cloud platform.
 
@@ -44,17 +46,15 @@ As VMaaS matures to support full VM lifecycle operations, users need clear visib
 
 **For Developers:**
 
-* As a developer integrating with the OSAC API, I want consistent terminology (RESTART vs REBOOT), so that I don't have to handle inconsistencies between public and private APIs
 * As a developer, I want a phase/condition model where conditions are orthogonal to phases, so that new conditions can be added in future releases without breaking my existing integrations
 * As a developer, I want a well-defined phase model that can accommodate future VM operations (e.g., live migration), so that the API can evolve to support new capabilities
 
 ### Goals
 
 * Represent VM power state clearly - Users can see if a VM is Running, Stopped, or Paused
-* Expose transitional states - Users can see when operations are in progress (Starting, Stopping, Pausing, Deleting)
+* Expose transitional states - Users can see when operations are in progress (Starting, Stopping, Deleting)
 * Align with industry standards - Phase values match what users expect from AWS, GCE, and KubeVirt
 * Make conditions orthogonal to phases - Conditions represent health/status attributes, not lifecycle state
-* Fix API inconsistencies - Unify RESTART/REBOOT terminology between public and private APIs
 * Expose DELETING in API - The K8s operator's Deleting phase should be visible in the public API
 
 ### Non-Goals
@@ -78,7 +78,6 @@ This enhancement modifies the `ComputeInstance` status model across three layers
 
 **3. Fulfillment Service (Private protobuf)**
 - Mirror public API changes
-- Fix RESTART/REBOOT terminology inconsistency
 
 **Proposed Phases (8):**
 
@@ -95,14 +94,16 @@ This enhancement modifies the `ComputeInstance` status model across three layers
 
 **Proposed Conditions (orthogonal to phases):**
 
-| Condition | Description |
-|-----------|-------------|
-| `Provisioned` | Infrastructure resources (compute, storage) are allocated |
-| `Available` | VM is ready for user workloads |
-| `Degraded` | VM is running but with reduced capability |
-| `ConfigurationApplied` | Desired configuration matches actual |
-| `RestartInProgress` | Restart operation is in progress |
-| `RestartFailed` | Restart operation failed |
+| Condition (CRD) | Condition (Protobuf) | Layer | Description |
+|-----------------|---------------------|-------|-------------|
+| `Provisioned` | `PROVISIONED` | CRD + API | Infrastructure resources (compute, storage) are allocated |
+| `Available` | `AVAILABLE` | CRD + API | VM is ready for user workloads |
+| `Degraded` | `DEGRADED` | CRD + API | VM is running but with reduced capability |
+| `ConfigurationApplied` | `CONFIGURATION_APPLIED` | CRD + API | Desired configuration matches actual |
+| — | `RESTART_IN_PROGRESS` | API only | Restart operation is in progress |
+| — | `RESTART_FAILED` | API only | Restart operation failed |
+
+> **Note:** CRD conditions use PascalCase (Kubernetes convention). Protobuf conditions use UPPER_SNAKE_CASE with prefix (e.g., `COMPUTE_INSTANCE_CONDITION_TYPE_AVAILABLE`). Restart conditions exist only in the protobuf API because restart functionality is implemented at the fulfillment service layer.
 
 The phase values are derived from the underlying KubeVirt `VirtualMachine.Status.PrintableStatus`, ensuring accurate representation of VM power state.
 
@@ -125,9 +126,9 @@ A tenant creates a ComputeInstance and observes its lifecycle through phases:
 
 Restart is not a separate phase. When a tenant restarts a VM:
 - Phase transitions: `Running` → `Stopping` → `Stopped` → `Starting` → `Running`
-- Condition `RestartInProgress` is set to `True` throughout the operation
-- On completion, `RestartInProgress` is set to `False`
-- On failure, phase becomes `Failed` and condition `RestartFailed` is set to `True`
+- Condition `RESTART_IN_PROGRESS` is set to `True` throughout the operation (API only)
+- On completion, `RESTART_IN_PROGRESS` is set to `False`
+- On failure, phase becomes `Failed` and condition `RESTART_FAILED` is set to `True`
 
 **State Transition Diagram**
 
@@ -161,25 +162,39 @@ This enhancement modifies existing API types rather than adding new CRDs or webh
 | Fulfillment API | `ComputeInstanceState` enum | Replace 4 values with 8 new phase values |
 | Fulfillment API | `ComputeInstanceConditionType` enum | Keep 3 conditions, remove 3, add 3 new |
 | Fulfillment Service | `ComputeInstanceState` enum | Mirror public API changes |
-| Fulfillment Service | `ComputeInstanceConditionType` enum | Mirror public API, rename REBOOT_* to RESTART_* |
+| Fulfillment Service | `ComputeInstanceConditionType` enum | Mirror public API changes |
 
-**Condition Changes:**
+**Phase Mapping (Current → Proposed):**
 
-| Condition | Action | Notes |
-|-----------|--------|-------|
-| `DEGRADED` | Keep | No changes |
-| `RESTART_IN_PROGRESS` | Keep | Private API: rename from REBOOT_IN_PROGRESS |
-| `RESTART_FAILED` | Keep | Private API: rename from REBOOT_FAILED |
-| `PROGRESSING` | Remove | Phase now represents this |
-| `READY` | Remove | Replaced by `Available` |
-| `FAILED` | Remove | Phase now represents this |
-| `Provisioned` | New | Infrastructure resources are allocated |
-| `Available` | New | VM is ready for user workloads |
-| `ConfigurationApplied` | New | Desired configuration matches actual |
+| Current (CRD) | Current (Protobuf) | Proposed (CRD) | Proposed (Protobuf) |
+|---------------|-------------------|----------------|---------------------|
+| `Progressing` | `PROGRESSING` | `Pending` | `PENDING` |
+| — | — | `Starting` | `STARTING` |
+| `Ready` | `READY` | `Running` | `RUNNING` |
+| — | — | `Stopping` | `STOPPING` |
+| — | — | `Stopped` | `STOPPED` |
+| — | — | `Paused` | `PAUSED` |
+| `Deleting` | — | `Deleting` | `DELETING` |
+| `Failed` | `FAILED` | `Failed` | `FAILED` |
+
+**Condition Mapping (Current → Proposed):**
+
+| Current (CRD) | Current (Protobuf) | Proposed (CRD) | Proposed (Protobuf) | Action |
+|---------------|-------------------|----------------|---------------------|--------|
+| `Accepted` | — | — | — | Remove (no longer needed) |
+| `Progressing` | `PROGRESSING` | — | — | Remove (phase represents this) |
+| `Available` | `READY` | `Available` | `AVAILABLE` | Rename in protobuf |
+| `Deleting` | — | — | — | Remove (phase represents this) |
+| — | `FAILED` | — | — | Remove (phase represents this) |
+| — | `DEGRADED` | `Degraded` | `DEGRADED` | Keep, add to CRD |
+| — | `RESTART_IN_PROGRESS` | — | `RESTART_IN_PROGRESS` | Keep (API only) |
+| — | `RESTART_FAILED` | — | `RESTART_FAILED` | Keep (API only) |
+| — | — | `Provisioned` | `PROVISIONED` | New |
+| — | — | `ConfigurationApplied` | `CONFIGURATION_APPLIED` | New |
 
 **Behavioral Changes:**
 
-- `ComputeInstance.status.phase` will reflect VM power state (Running, Stopped, Paused) rather than reconciliation status
+- `ComputeInstance.status.phase` will reflect VM power state (`Running`, `Stopped`, `Paused`) rather than reconciliation status
 - Conditions are orthogonal to phases - a condition like `Available` can be True or False independent of the phase
 
 ### Implementation Details/Notes/Constraints
@@ -232,7 +247,7 @@ The following table shows the expected values of `Available` and `Degraded` cond
 | osac-operator | `internal/controller/computeinstance_controller.go` | Update phase determination logic |
 | osac-operator | `internal/controller/computeinstance_feedback_controller.go` | Update phase-to-state mapping |
 | fulfillment-api | `proto/fulfillment/v1/compute_instance_type.proto` | Replace enum values |
-| fulfillment-service | `proto/private/v1/compute_instance_type.proto` | Replace enum values, rename REBOOT to RESTART |
+| fulfillment-service | `proto/private/v1/compute_instance_type.proto` | Replace enum values |
 
 **Migration Approach**
 
