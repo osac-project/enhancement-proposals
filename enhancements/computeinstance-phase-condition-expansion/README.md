@@ -276,28 +276,27 @@ Since the product is in development with no external clients, old enum values (`
 
 ### Risks and Mitigations
 
-What are the risks of this proposal and how do we mitigate. Think broadly. For
-example, consider both security and how this will impact the larger OKD
-ecosystem.
-
-How will security be reviewed and by whom?
-
-How will UX be reviewed and by whom?
-
-Consider including folks that also work outside your immediate sub-project.
+| Risk | Mitigation |
+|------|------------|
+| **Breaking changes for internal consumers** - UI components, scripts, or any code tied to current phase/condition values will break when values change | Coordinate with internal teams before rollout; update all consumers in the same release |
+| **Developer scripts tied to old values** - Developers may have local scripts or automation that check for `Progressing`, `Ready`, or `Failed` conditions | Communicate changes clearly in release notes; provide migration guidance |
+| **Incorrect phase mapping from KubeVirt** - Controller could incorrectly map KubeVirt states, showing wrong phase values | Comprehensive unit tests for phase determination logic; manual testing with real VMs in dev environment |
+| **Edge cases in KubeVirt state transitions** - KubeVirt may have transitional states or error conditions not fully mapped | Review KubeVirt documentation; manual testing with various VM scenarios (create, stop, start, pause, resume, delete, error conditions) |
+| **Condition logic complexity** - Determining when `Available` and `Degraded` should be True/False adds controller complexity | Document condition semantics clearly; use table-driven logic in controller for maintainability |
 
 ### Drawbacks
 
-The idea is to find the best form of an argument why this enhancement should
-_not_ be implemented.
+**Migration effort for internal consumers**
 
-What trade-offs (technical/efficiency cost, user experience, flexibility,
-supportability, etc) must be made in order to implement this? What are the reasons
-we might not want to undertake this proposal, and how do we overcome them?
+Any UI components, scripts, or automation that reference current phase/condition values will need to be updated. Since the product is in development with no external clients, this is a one-time internal effort.
 
-Does this proposal implement a behavior that's new/unique/novel? Is it poorly
-aligned with existing user expectations?  Will it be a significant maintenance
-burden?  Is it likely to be superceded by something else in the near future?
+**Increased state complexity**
+
+Expanding from 4 phases to 8 phases means more states to reason about in controllers, tests, and documentation. However, the additional granularity aligns with industry standards and provides the operational visibility users expect.
+
+**No transitional Pausing phase**
+
+Unlike Stopping, we cannot show a "Pausing" transitional phase because KubeVirt does not expose this state - pause is instantaneous. GCE is the only major cloud provider that exposes a `SUSPENDING` transitional state; AWS and KubeVirt transition directly to the paused/stopped state. This minor inconsistency reflects the underlying platform behavior accurately.
 
 ## Alternatives (Not Implemented)
 
