@@ -655,12 +655,12 @@ apply SecurityGroups for traffic control.
   UDN feature        UDN requires            Document minimum OpenShift version
   availability       OVN-Kubernetes and may  requirements; provide clear error
                      not be available in all messages if UDN is unavailable
-                     OpenShift versions      
+                     OpenShift versions
 
   Namespace          Many Subnets could lead Implement namespace quotas per
   proliferation      to namespace management tenant; consider namespace pooling
                      overhead (one namespace in future enhancements
-                     per Subnet)             
+                     per Subnet)
 
   Network isolation  Misconfigured           Default-deny network policies;
   bypass             SecurityGroups could    validate SecurityGroup rules
