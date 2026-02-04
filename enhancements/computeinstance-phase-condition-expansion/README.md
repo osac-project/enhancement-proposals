@@ -38,6 +38,7 @@ As VMaaS matures to support full VM lifecycle operations, users need clear visib
 * As a tenant, I want to see when my VM is starting or stopping, so that I know an operation is in progress
 * As a tenant, I want to see clear health indicators for my VM, so that I can identify issues without interpreting phase values
 * As a tenant, I want to see when my VM is being deleted, so that I can track deletion progress and identify if resource removal fails
+* As a tenant, I want to know when my VM requires a restart for configuration changes to take effect, so that I can initiate a reboot when convenient
 
 **For Cloud Providers:**
 
@@ -60,7 +61,7 @@ As VMaaS matures to support full VM lifecycle operations, users need clear visib
 
 ### 2.3 Non-Goals
 
-* Additional conditions - Conditions such as Degraded and RestartRequired are deferred pending further discussion (see Open Questions)
+* Additional conditions - The Degraded condition is deferred pending further discussion (see Open Questions)
 * New VM operations - This enhancement is about status representation, not adding pause/resume/stop operations themselves
 * Hibernate (suspend to disk) - Only in-memory pause is supported by KubeVirt; hibernate is out of scope
 
@@ -99,10 +100,11 @@ This enhancement modifies the `ComputeInstance` status model across three layers
 | `Provisioned` | `PROVISIONED` | CRD + API | Infrastructure resources (compute, storage) are allocated |
 | `Available` | `AVAILABLE` | CRD + API | VM is ready for user workloads |
 | `ConfigurationApplied` | `CONFIGURATION_APPLIED` | CRD + API | Desired configuration matches actual |
+| `RestartRequired` | `RESTART_REQUIRED` | CRD + API | VM needs a restart for configuration changes to take effect |
 | — | `RESTART_IN_PROGRESS` | API only | Restart operation is in progress |
 | — | `RESTART_FAILED` | API only | Restart operation failed |
 
-> **Note:** CRD conditions use PascalCase (Kubernetes convention). Protobuf conditions use UPPER_SNAKE_CASE with prefix (e.g., `COMPUTE_INSTANCE_CONDITION_TYPE_AVAILABLE`). Restart conditions exist only in the protobuf API because restart functionality is implemented at the fulfillment service layer.
+> **Note:** CRD conditions use PascalCase (Kubernetes convention). Protobuf conditions use UPPER_SNAKE_CASE with prefix (e.g., `COMPUTE_INSTANCE_CONDITION_TYPE_AVAILABLE`). `RESTART_IN_PROGRESS` and `RESTART_FAILED` exist only in the protobuf API because restart operation tracking is implemented at the fulfillment service layer.
 
 The phase values are derived from the underlying KubeVirt `VirtualMachine.Status.PrintableStatus`, ensuring accurate representation of VM power state.
 
@@ -158,7 +160,7 @@ This enhancement modifies existing API types rather than adding new CRDs or webh
 |-------|----------|--------|
 | OSAC Operator | `ComputeInstance` CRD | Expand `status.phase` values, refactor `status.conditions` |
 | Fulfillment API | `ComputeInstanceState` enum | Replace 4 values with 7 new phase values |
-| Fulfillment API | `ComputeInstanceConditionType` enum | Keep 3 conditions, remove 4, add 2 new |
+| Fulfillment API | `ComputeInstanceConditionType` enum | Keep 3 conditions, remove 4, add 3 new |
 | Fulfillment Service | `ComputeInstanceState` enum | Mirror public API changes |
 | Fulfillment Service | `ComputeInstanceConditionType` enum | Mirror public API changes |
 
@@ -188,6 +190,7 @@ This enhancement modifies existing API types rather than adding new CRDs or webh
 | — | `RESTART_FAILED` | — | `RESTART_FAILED` | Keep (API only) |
 | — | — | `Provisioned` | `PROVISIONED` | New |
 | — | — | `ConfigurationApplied` | `CONFIGURATION_APPLIED` | New |
+| — | — | `RestartRequired` | `RESTART_REQUIRED` | New |
 
 **Behavioral Changes:**
 
@@ -223,6 +226,17 @@ The `Available` condition has a simple rule: it is `True` only when the VM is in
 | All other phases | False |
 
 This straightforward logic reflects that a VM is only "available for use" when it is actively running.
+
+**RestartRequired Condition Logic**
+
+The `RestartRequired` condition is derived from KubeVirt's `VirtualMachine.Status.Conditions` where `type = RestartRequired`. This condition is set by KubeVirt when configuration changes (such as adding or removing resources like CPUs, memory, or devices) have been applied to the VM spec but require a restart to take effect since they can't be live-propagated to the VMI. 
+
+| KubeVirt VM Condition | RestartRequired |
+|-----------------------|-----------------|
+| `RestartRequired` = True | True |
+| `RestartRequired` = False or absent | False |
+
+This enables tenants to see when their VM needs a restart and decide when to initiate the reboot based on their workload needs.
 
 **Files to Modify**
 
@@ -280,15 +294,14 @@ We could add a `Pausing` phase to mirror the `Stopping` transitional phase.
 
 - **Should we add a Degraded condition?** The existing `DEGRADED` enum value in the API is never set. What signals from KubeVirt would indicate a VM is "degraded" (running but with issues) vs "failed" (not running)? The KubeVirt signals considered (CrashLoopBackOff, ErrorUnschedulable, etc.) mostly indicate failure rather than degradation.
 
-- **Should we expose a RestartRequired condition?** KubeVirt has a `RestartRequired` condition that indicates the VM needs a restart for configuration changes to take effect. Should we expose this in the OSAC API, and if so, what configuration change detection logic is needed?
-
 ## 6. Test Plan
 
 - **Unit tests**: Phase determination logic in `computeinstance_controller.go` - test each KubeVirt `PrintableStatus` → ComputeInstance phase mapping
-- **Unit tests**: Condition setting logic - test `Available` condition for each phase
+- **Unit tests**: Condition setting logic - test `Available` and `RestartRequired` conditions
 - **Unit tests**: Feedback controller phase-to-state mapping
 - **Manual testing**: Create VMs in dev environment and verify phase transitions through lifecycle operations (create, stop, start, pause, resume, delete)
 - **Manual testing**: Verify error scenarios produce `Failed` phase
+- **Manual testing**: Modify VM configuration (e.g., CPU/memory) and verify `RestartRequired` condition is surfaced; reboot VM and verify condition clears
 
 ## 7. Graduation Criteria
 
