@@ -3,7 +3,7 @@ title: vm-api-fields
 authors:
   - mhrivnak
 creation-date: 2026-01-27
-last-updated: 2026-01-27
+last-updated: 2026-02-03
 tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
   - TBD
 see-also:
@@ -66,16 +66,43 @@ CompueInstance in the Fulfillment API will add these fields to its spec:
 | Image.SourceRef | String | Image reference in the context of the SourceType. For type "registry", this should be a standard OCI image reference. |
 | Cores | Int32 | Number of CPU Cores |
 | MemoryGiB | Int32 | Memory in GiB |
-| SSHKey | String | SSH Key that should have access to the VM |
+| SSHKey | String | SSH Key that should have access to the VM. Ignored if userDataSecretRef is provided. |
 | BootDisk| Disk | Details for the boot disk |
 | AdditionalDisks | repeated Disk | Array of details for additional disks |
 | RunStrategy | String | "Always" or "Halted". This is a subset of kubevirt's [runStrategy](https://kubevirt.io/user-guide/compute/run_strategies/) values. |
+| UserDataSecretRef | LocalObjectReference | A reference to a Secret in the same namespace that contains user-data. |
 
 The Disk struct will include:
 
 | Name | Type | Description |
 | --- | --- | --- |
 | SizeGiB | Int32 | Size in GiB |
+
+The CRD will look like this:
+
+```
+apiVersion: cloudkit.openshift.io/v1alpha1
+kind: ComputeInstance
+metadata:
+  name: vm-example
+  namespace: tenant1
+  labels:
+    osac.openshift.io/tenant-id: tenant1
+spec:
+  templateID: "rhel10-desktop"
+  image:
+    sourceType: registry
+    sourceRef: mylocalregistry.mydomain.io/redhat/rhel10-desktop:latest
+  cores: 8
+  memoryGiB: 32
+  bootDisk:
+    sizeGiB: 50
+  additionalDisks:
+    - sizeGiB: 250
+  runStrategy: Always
+  userDataSecretRef:
+    name: vm-example-user-data
+```
 
 ### Implementation Details/Notes/Constraints
 
