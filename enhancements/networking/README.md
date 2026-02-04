@@ -675,8 +675,9 @@ apply SecurityGroups for traffic control.
 
 **Single Subnet per Virtual Network**: As described in NetworkClass
 `tenant-isolated`, UDN constraints limit each VirtualNetwork to one Subnet (one
-AZ). Users needing multiple segments must create multiple VirtualNetworks;
-multi-AZ per VirtualNetwork may be a future extension.
+AZ). Users needing multiple segments must create multiple VirtualNetworks. This
+limitation will be lifted in OpenShift 4.22, and the Cluster Network Connect
+feature that will allow the interconnection of multiple UDNs.
 
 ## Alternatives (Not Implemented)
 
