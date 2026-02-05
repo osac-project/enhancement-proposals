@@ -3,7 +3,7 @@ title: vm-api-fields
 authors:
   - mhrivnak
 creation-date: 2026-01-27
-last-updated: 2026-02-03
+last-updated: 2026-02-05
 tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
   - TBD
 see-also:
@@ -60,23 +60,23 @@ Template authors will be able to start using these fields in their templates.
 
 CompueInstance in the Fulfillment API will add these fields to its spec:
 
-| Name | Type | Description |
-| --- | --- | --- |
-| Image.SourceType | String | One of the source types from the kubevirt [DataVolumeSource](https://kubevirt.io/api-reference/main/definitions.html#_v1beta1_datavolumesource) API. "registry" will be the only supported value for now. |
-| Image.SourceRef | String | Image reference in the context of the SourceType. For type "registry", this should be a standard OCI image reference. |
-| Cores | Int32 | Number of CPU Cores |
-| MemoryGiB | Int32 | Memory in GiB |
-| SSHKey | String | SSH Key that should have access to the VM. Ignored if userDataSecretRef is provided. |
-| BootDisk| Disk | Details for the boot disk |
-| AdditionalDisks | repeated Disk | Array of details for additional disks |
-| RunStrategy | String | "Always" or "Halted". This is a subset of kubevirt's [runStrategy](https://kubevirt.io/user-guide/compute/run_strategies/) values. |
-| UserDataSecretRef | LocalObjectReference | A reference to a Secret in the same namespace that contains user-data. |
+| Name | Type | Mutable | Description |
+| --- | --- | --- | --- |
+| Image.SourceType | String | no | One of the source types from the kubevirt [DataVolumeSource](https://kubevirt.io/api-reference/main/definitions.html#_v1beta1_datavolumesource) API. "registry" will be the only supported value for now. |
+| Image.SourceRef | String | no | Image reference in the context of the SourceType. For type "registry", this should be a standard OCI image reference. |
+| Cores | Int32 | no | Number of CPU Cores |
+| MemoryGiB | Int32 | no | Memory in GiB |
+| SSHKey | String | no | SSH Key that should have access to the VM |
+| BootDisk | Disk | no | Details for the boot disk |
+| AdditionalDisks | repeated Disk | no | Array of details for additional disks that should be created and attached |
+| RunStrategy | String | yes | "Always" or "Halted". This is a subset of kubevirt's [runStrategy](https://kubevirt.io/user-guide/compute/run_strategies/) values. |
+| UserDataSecretRef | String or LocalObjectReference | no | In fulfillment-API, a string. In CRD, a reference to a Secret in the same namespace that contains user-data. |
 
 The Disk struct will include:
 
-| Name | Type | Description |
-| --- | --- | --- |
-| SizeGiB | Int32 | Size in GiB |
+| Name | Type | Mutable | Description |
+| --- | --- | --- | --- |
+| SizeGiB | Int32 | no | Size in GiB |
 
 The CRD will look like this:
 
@@ -134,8 +134,23 @@ a limited set of tenant-facing choices that are focused on the use case and
 prevent the tenant from overstepping their boundaries in terms of resource
 utilization or isolation.
 
-## Open Questions [optional]
+## Open Questions
 
+### How to attach pre-existing volumes?
+
+There may be a use case for attaching one or more pre-existing volumes. That
+would require a system to exist that enables tenants to have volumes independely
+of VMs or clusters. Such system has not yet been designed.
+
+A likely solution would be to add a new field where pre-existing volumes can be
+listed. Something like:
+
+```
+existingVolumes:
+  - type: nfs
+  - ref: ...
+  - accessMode: RO
+```
 
 ## Test Plan
 
