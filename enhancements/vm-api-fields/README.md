@@ -152,6 +152,23 @@ existingVolumes:
   - accessMode: RO
 ```
 
+### How to specify guest OS type
+
+kubevirt lets you apply a VirtualMachinePreference (or the cluster-scoped
+VirtualMachineClusterPreference) to a VM at creation time. A
+VirtualMachinePreference resource corresponds to an OS type, like `rhel.9`. The
+resource defines optimizations and settings that work best with the given type
+of OS.
+
+There does not appear to be a list of included VMPs in openshift virt. It might
+be a "list them and pick the one you want" situation. That's not great for
+exposing the concept through the fulfillment API.
+
+Maybe this is what's included: https://github.com/kubevirt/common-instancetypes/tree/main/preferences
+
+We need to figure out how to correlate the OS a user is trying to run with the
+best available VMP.
+
 ## Test Plan
 
 **Note:** *Section not required until targeted at a release.*
