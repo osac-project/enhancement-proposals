@@ -101,10 +101,10 @@ This enhancement modifies the `ComputeInstance` status model across three layers
 | `Available` | `AVAILABLE` | CRD + API | VM infrastructure is running and ready (does not indicate guest OS readiness) |
 | `ConfigurationApplied` | `CONFIGURATION_APPLIED` | CRD + API | Desired configuration matches actual |
 | `RestartRequired` | `RESTART_REQUIRED` | CRD + API | VM needs a restart for configuration changes to take effect |
-| — | `RESTART_IN_PROGRESS` | API only | Restart operation is in progress |
-| — | `RESTART_FAILED` | API only | Restart operation failed |
+| `RestartInProgress` | `RESTART_IN_PROGRESS` | CRD + API | Restart operation is in progress |
+| `RestartFailed` | `RESTART_FAILED` | CRD + API | Restart operation failed |
 
-> **Note:** CRD conditions use PascalCase (Kubernetes convention). Protobuf conditions use UPPER_SNAKE_CASE with prefix (e.g., `COMPUTE_INSTANCE_CONDITION_TYPE_AVAILABLE`). `RESTART_IN_PROGRESS` and `RESTART_FAILED` exist only in the protobuf API because restart operation tracking is implemented at the fulfillment service layer.
+> **Note:** CRD conditions use PascalCase (Kubernetes convention). Protobuf conditions use UPPER_SNAKE_CASE with prefix (e.g., `COMPUTE_INSTANCE_CONDITION_TYPE_AVAILABLE`).
 
 The phase values are derived from the underlying KubeVirt `VirtualMachine.Status.PrintableStatus`, ensuring accurate representation of VM power state.
 
@@ -126,9 +126,9 @@ A tenant creates a ComputeInstance and observes its lifecycle through phases:
 
 Restart is not a separate phase. When a tenant restarts a VM:
 - Phase transitions: `Running` → `Stopping` → `Stopped` → `Starting` → `Running`
-- Condition `RESTART_IN_PROGRESS` is set to `True` throughout the operation (API only)
-- On completion, `RESTART_IN_PROGRESS` is set to `False`
-- On failure, phase becomes `Failed` and condition `RESTART_FAILED` is set to `True`
+- Condition `RestartInProgress` is set to `True` throughout the operation
+- On completion, `RestartInProgress` is set to `False`
+- On failure, phase becomes `Failed` and condition `RestartFailed` is set to `True`
 
 **State Transition Diagram**
 
@@ -186,8 +186,8 @@ This enhancement modifies existing API types rather than adding new CRDs or webh
 | `Deleting` | — | — | — | Remove (phase represents this) |
 | — | `FAILED` | — | — | Remove (phase represents this) |
 | — | `DEGRADED` | — | — | Remove (see Open Questions) |
-| — | `RESTART_IN_PROGRESS` | — | `RESTART_IN_PROGRESS` | Keep (API only) |
-| — | `RESTART_FAILED` | — | `RESTART_FAILED` | Keep (API only) |
+| `RestartInProgress` | `RESTART_IN_PROGRESS` | `RestartInProgress` | `RESTART_IN_PROGRESS` | Keep |
+| `RestartFailed` | `RESTART_FAILED` | `RestartFailed` | `RESTART_FAILED` | Keep |
 | — | — | `Provisioned` | `PROVISIONED` | New |
 | — | — | `ConfigurationApplied` | `CONFIGURATION_APPLIED` | New |
 | — | — | `RestartRequired` | `RESTART_REQUIRED` | New |
