@@ -3,7 +3,7 @@ title: serial-console-access
 authors:
   - Austin Jamias
 creation-date: 2026-01-29
-last-updated: 2026-01-29
+last-updated: 2026-02-09
 tracking-link:
   - "innabox/issues#282"
 see-also:
@@ -58,7 +58,7 @@ At a high level, tenants will be able to manage and connect to the serial
 console of their resources by editing its CR and using socat to connect.
 
 The following components would need to be updated to accomplish the goals:
-* Serial Console Service: A new service that handles authentication,
+* Serial Console Proxy: A new proxy that handles authentication,
   authorization, and proxy connections to actual BMC consoles
 * Cloudkit AAP: Updates to the roles responsible for Hosts and ComputeInstances
   for enabling/disabling serial console access.
@@ -66,8 +66,6 @@ The following components would need to be updated to accomplish the goals:
   consoleURL fields.
 * Envoy Configuration: Route configuration to forward console connections to
   the new serial console service.
-* Authorino Configuration: New authorization configuration to allow specific
-  accounts to access the serial console on their resources.
 
 ### Workflow Description
 
@@ -152,15 +150,13 @@ the connection can be upgraded to a raw TCP connection for serial data.
 **Accessing the Console**
 * Assume using `socat`
 * Initial connection needs to be HTTP**S**
-* Example connection command: `echo -ne "GET /console/${RESOURCE_ID} HTTP/1.1\r\nHost: ${HOST}\r\nAuthorization: Bearer $TOKEN\r\nConnection: Upgrade\r\nUpgrade: console\r\n\r\n" | socat - openssl:${HOST}`
+* Example connection command: `{ printf "POST /console/$RESOURCE/$RESOURCE_ID HTTP/1.1\r\nHost: $HOST\r\nAuthorization: Bearer $TOKEN\r\n\r\n"; cat; } | socat - OPENSSL:$HOST:$PORT,verify=0`
 
 **Serial Console Service**
-The serial-console service would have to do the following:
+The serial-console proxy would have to do the following:
 * Receive HTTP request with token and protocol upgrade request
-* Extract token to authenticate and authorize access to the resource
-* Check if JWT has access to the Host/ComputeInstance via SubjectAccessReview
+* Extract token to access the resource via gRPC to the fulfillment-api
 * Translate resource id to BMC console endpoint
-* Send HTTP 101 Switching Protocols response
 * Establish bidirectional proxy between client and actual console endpoint
 
 ### Risks and Mitigations
