@@ -3,7 +3,7 @@ title: OSAC Networking API
 authors:
   - agentil@redhat.com
 creation-date: 2025-11-29
-last-updated: 2026-01-29
+last-updated: 2026-02-11
 tracking-link:
   - https://issues.redhat.com/browse/MGMT-22637
 see-also:
@@ -37,9 +37,7 @@ BareMetal-as-a-Service planned for future integration.
 This section defines the key networking terms used throughout this enhancement:
 
 - **Region**: Region is the management boundary; networking resources such as
-  VirtualNetworks, PublicIPPools, and PublicIPs are scoped to a Region.
-
-- **Availability Zone (AZ)**: Subnets are scoped to a single Availability Zone.
+  VirtualNetworks, Subnets, PublicIPPools, and PublicIPs are scoped to a Region.
 
 - **VirtualNetwork**: A tenant's isolated virtual network environment, similar
   to an AWS VPC or Azure VNet. VirtualNetwork is scoped to a Region. It provides
@@ -47,9 +45,8 @@ This section defines the key networking terms used throughout this enhancement:
   network resources within that Region.
 
 - **Subnet**: A subdivision of a VirtualNetwork's IP address space, scoped to a
-  single Availability Zone. Resources are attached to Subnets to receive IP
-  addresses and network connectivity; placing a resource in a Subnet implies
-  placement in that Subnet's Availability Zone.
+  Region (the same Region as the VirtualNetwork). Resources are attached to
+  Subnets to receive IP addresses and network connectivity.
 
 - **SecurityGroup**: A stateful firewall that controls inbound and outbound
   traffic for resources. Rules specify allowed protocols, ports, and source/
@@ -138,8 +135,7 @@ This proposal relies on User Defined Networks (UDN), a networking feature
 provided by OpenShift that enables the creation of isolated networks within an
 OpenShift cluster. UDN leverages OVN-Kubernetes to provide network isolation.
 
-VirtualNetworks are scoped to a Region. Subnets are scoped to an Availability
-Zone within that Region.
+VirtualNetworks and Subnets are scoped to a Region.
 
 ### NetworkClass
 
@@ -237,10 +233,10 @@ resources (VMs, bare metal, clusters).
 #### Subnet Management
 
 1.  The tenant uses the Fulfillment CLI to create a new Subnet within their
-    VirtualNetwork, specifying the VirtualNetwork, CIDR, and Availability Zone.
+    VirtualNetwork, specifying the VirtualNetwork and CIDR.
 2.  The Fulfillment Service validates that the CIDR is within the
-    VirtualNetwork's CIDR range, that the Availability Zone is in the same
-    Region as the VirtualNetwork, and creates a Subnet CR.
+    VirtualNetwork's CIDR range and creates a Subnet CR scoped to the
+    VirtualNetwork's Region.
 3.  The O-SAC Operator detects the new Subnet CR and begins reconciliation:
     - Creates a dedicated namespace for the Subnet
     - Provisions the corresponding UserDefinedNetwork within that namespace
@@ -257,9 +253,7 @@ resources (VMs, bare metal, clusters).
 2.  The Fulfillment Service validates that the Subnet and SecurityGroups belong
     to the tenant's VirtualNetwork.
 3.  The O-SAC Operator configures the resource's network interfaces to attach to
-    the specified UserDefinedNetworks. Attaching to a Subnet implies placing the
-    resource in that Subnet's Availability Zone; the scheduler uses the AZ for
-    placement (e.g., nodes with the matching topology label).
+    the specified UserDefinedNetworks.
 4.  Depending on the NetworkClass, additional network configurations may be
     applied (e.g., DHCP reservations, external routing setup).
 5.  The resource receives an IP address from the Subnet's CIDR range (the
@@ -360,14 +354,13 @@ status:
 #### Subnet
 
 Subnets define IP address ranges within a VirtualNetwork and are scoped to a
-single Availability Zone. Each Subnet maps to a dedicated namespace containing
-an OpenShift UserDefinedNetwork.
+Region (the same Region as the VirtualNetwork). Each Subnet maps to a dedicated
+namespace containing an OpenShift UserDefinedNetwork.
 
 Example CLI command:
 
     $ ./fulfillment-cli create subnet \
            --virtual-network my-network \
-           --availability-zone us-east-1a \
            --cidr 10.0.1.0/24 \
            --name frontend-subnet
 
@@ -385,7 +378,6 @@ metadata:
     uid: 77c9fe7g-2bg3-5903-bd23-58ce58ebde51
 spec:
   virtualNetwork: my-network
-  availabilityZone: us-east-1a
   cidr: 10.0.1.0/24
 status:
   state: Ready
@@ -643,9 +635,8 @@ apply SecurityGroups for traffic control.
   UserDefinedNetwork; VirtualNetwork is a logical grouping. UDN and namespace
   are created with the Subnet and removed with it; VirtualNetwork can be deleted
   only after all Subnets are removed.
-- **Subnet and AZ**: Subnet must specify an Availability Zone in the
-  VirtualNetwork's Region; operator and scheduler use it for placement (e.g.,
-  node topology labels).
+- **Subnet and Region**: Subnets are scoped to the same Region as their
+  VirtualNetwork.
 
 ### Risks and Mitigations
 
@@ -674,10 +665,10 @@ apply SecurityGroups for traffic control.
 ### Drawbacks
 
 **Single Subnet per Virtual Network**: As described in NetworkClass `udn-net`,
-UDN constraints limit each VirtualNetwork to one Subnet (one AZ). Users needing
-multiple segments must create multiple VirtualNetworks. This limitation will be
-lifted in OpenShift 4.22, and the Cluster Network Connect feature that will
-allow the interconnection of multiple UDNs.
+UDN constraints limit each VirtualNetwork to one Subnet. Users needing multiple
+segments must create multiple VirtualNetworks. This limitation will be lifted in
+OpenShift 4.22, and the Cluster Network Connect feature that will allow the
+interconnection of multiple UDNs.
 
 ## Alternatives (Not Implemented)
 
