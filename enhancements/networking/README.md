@@ -20,8 +20,10 @@ superseded-by:
 
 This enhancement introduces a Networking API for OSAC fulfillment services. The
 API provides familiar cloud networking primitives (VirtualNetwork, Subnet,
-SecurityGroup, PublicIPPool, PublicIP, NAT Gateway) as first-class resources.
-PublicIPPools are defined by the service provider; tenants manage
+SecurityGroup, PublicIPPool, PublicIP, NAT Gateway) as first-class resources. It
+supports IPv4 and IPv6: VirtualNetworks and Subnets may use IPv4, IPv6, or
+dual-stack CIDRs; PublicIPPools are either IPv4 or IPv6 (one address family per
+pool). PublicIPPools are defined by the service provider; tenants manage
 VirtualNetworks, Subnets, SecurityGroups, and PublicIPs (allocated from a pool).
 
 The Networking API is pluggable through a NetworkClass architecture, and an
@@ -42,25 +44,28 @@ This section defines the key networking terms used throughout this enhancement:
 - **VirtualNetwork**: A tenant's isolated virtual network environment, similar
   to an AWS VPC or Azure VNet. VirtualNetwork is scoped to a Region. It provides
   logical isolation and defines the overall address space (CIDR) for a tenant's
-  network resources within that Region.
+  network resources within that Region. Address space may be IPv4, IPv6, or
+  dual-stack (separate CIDRs per family).
 
 - **Subnet**: A subdivision of a VirtualNetwork's IP address space, scoped to a
-  Region (the same Region as the VirtualNetwork). Resources are attached to
-  Subnets to receive IP addresses and network connectivity.
+  Region (the same Region as the VirtualNetwork). Subnets use IPv4 and/or IPv6
+  CIDRs consistent with the VirtualNetwork. Resources are attached to Subnets to
+  receive IP addresses and network connectivity.
 
 - **SecurityGroup**: A stateful firewall that controls inbound and outbound
   traffic for resources. Rules specify allowed protocols, ports, and source/
-  destination addresses. SecurityGroups are applied to resources within a
-  VirtualNetwork.
+  destination addresses (IPv4 or IPv6 CIDRs). SecurityGroups are applied to
+  resources within a VirtualNetwork.
 
-- **PublicIPPool**: A provider-defined pool of public IPv4 addresses. Pools are
-  scoped to a region and define one or more address ranges (CIDRs) from which
-  PublicIPs can be allocated. Tenants allocate PublicIPs from a PublicIPPool.
+- **PublicIPPool**: A provider-defined pool of public IP addresses. Each pool is
+  either IPv4 or IPv6 (not both). Pools are scoped to a region and define one or
+  more address ranges (CIDRs) of that family from which PublicIPs can be
+  allocated. Tenants allocate PublicIPs from a PublicIPPool.
 
-- **PublicIP** (also known as **Floating IP**): A public IPv4 address allocated
-  from a PublicIPPool. PublicIPs can be dynamically attached to and detached
-  from resources. They persist independently of the resources they're attached
-  to, allowing tenants to reassign them as needed.
+- **PublicIP** (also known as **Floating IP**): A public IP address (IPv4 or
+  IPv6) allocated from a PublicIPPool. PublicIPs can be dynamically attached to
+  and detached from resources. They persist independently of the resources
+  they're attached to, allowing tenants to reassign them as needed.
 
 - **PublicIPAttachment**: The binding between a PublicIP and a target resource.
   Creating an attachment routes traffic to the resource; deleting it removes the
@@ -97,7 +102,8 @@ BareMetal).
   to resources in my VirtualNetwork
 - As an end-user, I want to be able to attach resources to a Subnet in one of my
   VirtualNetworks
-- As an end-user, I want to allocate a Public IP from a PublicIPPool in a region
+- As an end-user, I want to allocate a Public IP (IPv4 or IPv6) from a
+  PublicIPPool in a region
 - As an end-user, I want to attach and detach a Public IP to a resource
 - As an end-user, I want to create a NAT Gateway in my VirtualNetwork so that
   outbound traffic from my resources uses a dedicated public IP
@@ -115,6 +121,8 @@ BareMetal).
 
 - Introduce the Networking API as a foundational OSAC service with the resources
   defined in [Terminology](#terminology) as first-class API objects
+- Support IPv4 and IPv6 (dual-stack where applicable) for VirtualNetworks,
+  Subnets, PublicIPPools, PublicIPs, and SecurityGroup rules
 - Keep the API generic and reusable across OSAC services (Compute Instance,
   Cluster, BareMetal)
 - Support pluggable implementations via NetworkClass and deliver initial
@@ -221,7 +229,8 @@ resources (VMs, bare metal, clusters).
 #### VirtualNetwork Creation
 
 1.  The tenant uses the Fulfillment CLI to create a VirtualNetwork by specifying
-    a name, region, NetworkClass, and CIDR range.
+    a name, region, NetworkClass, and CIDR list (one for single-stack, two for
+    dual-stack).
 2.  The Fulfillment Service validates the request and creates a VirtualNetwork
     custom resource (CR) scoped to that Region.
 3.  The O-SAC Operator detects the new VirtualNetwork CR and marks it as ready.
@@ -233,10 +242,11 @@ resources (VMs, bare metal, clusters).
 #### Subnet Management
 
 1.  The tenant uses the Fulfillment CLI to create a new Subnet within their
-    VirtualNetwork, specifying the VirtualNetwork and CIDR.
-2.  The Fulfillment Service validates that the CIDR is within the
-    VirtualNetwork's CIDR range and creates a Subnet CR scoped to the
-    VirtualNetwork's Region.
+    VirtualNetwork, specifying the VirtualNetwork and CIDR list (one for
+    single-stack, two for dual-stack).
+2.  The Fulfillment Service validates that each Subnet CIDR is within the
+    VirtualNetwork's CIDR of the same address family and creates a Subnet CR
+    scoped to the VirtualNetwork's Region.
 3.  The O-SAC Operator detects the new Subnet CR and begins reconciliation:
     - Creates a dedicated namespace for the Subnet
     - Provisions the corresponding UserDefinedNetwork within that namespace
@@ -305,9 +315,13 @@ resources (VMs, bare metal, clusters).
 #### VirtualNetwork
 
 A tenant requests a VirtualNetwork to create an isolated network environment
-with its own address space.
+with its own address space. The `cidr` field is a list: **single-stack** = one
+item (one IPv4 or one IPv6 CIDR), **dual-stack** = two items (one CIDR per
+family).
 
-Example CLI command:
+Example CLI commands:
+
+Single-stack (IPv4):
 
     $ ./fulfillment-cli create virtualnetwork \
            --region us-east-1 \
@@ -315,7 +329,16 @@ Example CLI command:
            --network-class udn-net \
            --name my-network
 
-The Fulfillment CLI sends this JSON request to the Fulfillment Service:
+Dual-stack:
+
+    $ ./fulfillment-cli create virtualnetwork \
+           --region us-east-1 \
+           --cidr 10.0.0.0/16 --cidr 2001:dead:beef::/48 \
+           --network-class udn-net \
+           --name my-network
+
+The Fulfillment CLI sends this JSON request to the Fulfillment Service
+(dual-stack example):
 
 ``` json
 {
@@ -323,14 +346,15 @@ The Fulfillment CLI sends this JSON request to the Fulfillment Service:
     "id": "my-network",
     "spec": {
       "region": "us-east-1",
-      "cidr": "10.0.0.0/16",
+      "cidr": ["10.0.0.0/16", "2001:dead:beef::/48"],
       "networkClass": "udn-net"
     }
   }
 }
 ```
 
-The Fulfillment Service creates the following VirtualNetwork CR:
+The Fulfillment Service creates the following VirtualNetwork CR (dual-stack
+example):
 
 ``` yaml
 apiVersion: o-sac.openshift.io/v1alpha1
@@ -341,7 +365,9 @@ metadata:
     tenantUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
 spec:
   region: us-east-1
-  cidr: 10.0.0.0/16
+  cidrs:
+  - 10.0.0.0/16
+  - 2001:dead:beef::/48
   networkClass: udn-net
 status:
   state: Ready
@@ -354,17 +380,28 @@ status:
 #### Subnet
 
 Subnets define IP address ranges within a VirtualNetwork and are scoped to a
-Region (the same Region as the VirtualNetwork). Each Subnet maps to a dedicated
-namespace containing an OpenShift UserDefinedNetwork.
+Region (the same Region as the VirtualNetwork). The `cidr` field is a list:
+**single-stack** = one item (one IPv4 or one IPv6 CIDR), **dual-stack** = two
+items (one CIDR per family). Each Subnet maps to a dedicated namespace
+containing an OpenShift UserDefinedNetwork.
 
-Example CLI command:
+Example CLI commands:
+
+Single-stack (IPv4):
 
     $ ./fulfillment-cli create subnet \
            --virtual-network my-network \
            --cidr 10.0.1.0/24 \
            --name frontend-subnet
 
-The Fulfillment Service creates the following Subnet CR:
+Dual-stack:
+
+    $ ./fulfillment-cli create subnet \
+           --virtual-network my-network \
+           --cidr 10.0.1.0/24 --cidr 2001:dead:beef::/48 \
+           --name frontend-subnet
+
+The Fulfillment Service creates the following Subnet CR (dual-stack example):
 
 ``` yaml
 apiVersion: o-sac.openshift.io/v1alpha1
@@ -378,7 +415,9 @@ metadata:
     uid: 77c9fe7g-2bg3-5903-bd23-58ce58ebde51
 spec:
   virtualNetwork: my-network
-  cidr: 10.0.1.0/24
+  cidrs:
+  - 10.0.1.0/24
+  - 2001:dead:beef::/48
 status:
   state: Ready
   namespace: tenant-66b8ed6f-subnet-frontend-subnet
@@ -386,7 +425,7 @@ status:
 ```
 
 The O-SAC Operator creates a namespace for the Subnet and the corresponding
-UserDefinedNetwork:
+UserDefinedNetwork (dual-stack: one subnet entry per CIDR):
 
 ``` yaml
 apiVersion: k8s.ovn.org/v1
@@ -401,6 +440,8 @@ spec:
     subnets:
     - cidr: 10.0.1.0/24
       hostSubnet: 24
+    - cidr: 2001:dead:beef::/48
+      hostSubnet: 48
 ```
 
 #### SecurityGroup
@@ -484,10 +525,10 @@ spec:
 
 #### PublicIPPool
 
-PublicIPPools are provider-defined pools of public IPv4 addresses, scoped to a
-region. A pool can contain multiple CIDR ranges; addresses are allocated from
-any of those ranges. Tenants allocate PublicIPs from a pool; they cannot create
-or delete pools.
+PublicIPPools are provider-defined pools of public IP addresses, scoped to a
+region. Each pool is either IPv4 or IPv6 (not both) and contains one or more
+CIDR ranges of that family; addresses are allocated from those ranges. Tenants
+allocate PublicIPs from a pool; they cannot create or delete pools.
 
 Example provider workflow (e.g., via Fulfillment Service admin API or
 cluster-scoped CR):
@@ -504,6 +545,7 @@ spec:
   cidrs:
   - 203.0.113.0/24
   - 198.51.100.0/24
+  # All CIDRs in a pool are the same family (IPv4 or IPv6)
 status:
   state: Ready
   capacity:
@@ -631,6 +673,13 @@ apply SecurityGroups for traffic control.
 
 - **NetworkClass**: Cluster-scoped, provider-managed; the O-SAC Operator uses it
   to select the provisioner when reconciling VirtualNetworks.
+- **IPv4 and IPv6**: VirtualNetworks and Subnets use a `cidr` list: single-stack
+  = one item (one IPv4 or one IPv6 CIDR), dual-stack = two items (one CIDR per
+  family). PublicIPPools are either IPv4 or IPv6 (one family per pool); each
+  pool's `cidrs` are all of that family. Allocation returns an address from the
+  pool's family. SecurityGroup rules use CIDR notation (e.g. `0.0.0.0/0`,
+  `::/0`). Implementation support for IPv6 depends on the NetworkClass and
+  underlying platform (e.g. OVN-Kubernetes / UDN).
 - **Namespace per Subnet** (`udn-net`): Each Subnet has its own namespace and
   UserDefinedNetwork; VirtualNetwork is a logical grouping. UDN and namespace
   are created with the Subnet and removed with it; VirtualNetwork can be deleted
@@ -710,6 +759,10 @@ better isolation control.
 2.  Should PublicIPPool or PublicIP be part of a NetworkClass? Today
     PublicIPPool is a standalone provider resource; future NetworkClasses might
     define how public IPs are implemented (e.g., NAT vs. direct allocation).
+
+3.  IPv6: Should the API require dual-stack by default (when the provider
+    supports it), or should IPv6 be opt-in per VirtualNetwork/Subnet/Pool? How
+    should NAT Gateway behave for IPv6 (e.g. NAT66 vs. prefix delegation)?
 
 ## Test Plan
 
