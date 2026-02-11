@@ -91,7 +91,7 @@ BareMetal).
 
 ### User Stories
 
-#### End User Stories
+#### Tenant Admin Stories
 
 - As an end-user, I want to be able to create one or several VirtualNetworks
   that are isolated from each other
