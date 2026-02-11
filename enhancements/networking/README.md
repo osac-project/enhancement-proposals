@@ -78,7 +78,7 @@ This section defines the key networking terms used throughout this enhancement:
 
 - **NetworkClass**: A provider-defined resource that specifies how
   VirtualNetworks are implemented. Enables pluggable networking backends (e.g.,
-  `tenant-isolated` for basic UDN, `fabric-integrated` for advanced topologies).
+  `udn-net` for basic UDN, `phys-net` for advanced topologies).
 
 ## Motivation
 
@@ -121,8 +121,8 @@ BareMetal).
 - Keep the API generic and reusable across OSAC services (Compute Instance,
   Cluster, BareMetal)
 - Support pluggable implementations via NetworkClass and deliver initial
-  integration with Compute Instance (first: `tenant-isolated` based on OpenShift
-  UDN) as the first consumer
+  integration with Compute Instance (first: `udn-net` based on OpenShift UDN) as
+  the first consumer
 
 ### Non-Goals
 
@@ -163,10 +163,10 @@ Networks are implemented. This follows the same pattern as Kubernetes
 This design ensures the networking API remains stable and user-friendly while
 allowing providers to plug in different implementations as needed.
 
-#### NetworkClass: `tenant-isolated`
+#### NetworkClass: `udn-net`
 
-This enhancement defines a single NetworkClass called `tenant-isolated`. This
-class provides:
+This enhancement defines a single NetworkClass called `udn-net`. This class
+provides:
 
 - **Isolated tenant networking**: Each Virtual Network is fully isolated from
   other tenants using OVN-Kubernetes
@@ -181,20 +181,20 @@ class provides:
   Subnet(s). Egress traffic from those namespaces then appears to originate from
   the gateway's public IP.
 
-The `tenant-isolated` class is suitable for deployments where:
+The `udn-net` class is suitable for deployments where:
 
 - Tenants need simple, isolated networks for their workloads
 - No integration with external network infrastructure is required
 - Each logical network segment can be represented as a separate Virtual Network
 
-Future enhancements may introduce additional NetworkClasses (e.g.,
-`fabric-integrated`) that leverage UDN Localnet mode to provide multi-subnet
-VirtualNetworks, external connectivity, and tighter integration with physical
-network infrastructure.
+Future enhancements may introduce additional NetworkClasses (e.g., `phys-net`)
+that leverage UDN Localnet mode to provide multi-subnet VirtualNetworks,
+external connectivity, and tighter integration with physical network
+infrastructure.
 
 The Networking API is built on OpenShift's User Defined Networking (UDN).
 Resource definitions are in [Terminology](#terminology); implementation notes
-for the `tenant-isolated` NetworkClass are in the subsections above.
+for the `udn-net` NetworkClass are in the subsections above.
 
 The Networking API will be implemented through updates to the following O-SAC
 components:
@@ -299,8 +299,8 @@ resources (VMs, bare metal, clusters).
     attached to another resource (or is reserved for NAT), and creates a NAT
     Gateway CR owned by the VirtualNetwork.
 3.  The O-SAC Operator reconciles the NAT Gateway so that egress traffic from
-    the VirtualNetwork's Subnets uses the gateway's public IP (for the
-    `tenant-isolated` NetworkClass, see that class for implementation details).
+    the VirtualNetwork's Subnets uses the gateway's public IP (for the `udn-net`
+    NetworkClass, see that class for implementation details).
 4.  Resources (e.g., ComputeInstances) in Subnets of that VirtualNetwork
     automatically have their egress traffic source-NAT'd to the NAT Gateway's
     public IP, or the tenant explicitly associates the NAT Gateway with specific
@@ -318,7 +318,7 @@ Example CLI command:
     $ ./fulfillment-cli create virtualnetwork \
            --region us-east-1 \
            --cidr 10.0.0.0/16 \
-           --network-class tenant-isolated \
+           --network-class udn-net \
            --name my-network
 
 The Fulfillment CLI sends this JSON request to the Fulfillment Service:
@@ -330,7 +330,7 @@ The Fulfillment CLI sends this JSON request to the Fulfillment Service:
     "spec": {
       "region": "us-east-1",
       "cidr": "10.0.0.0/16",
-      "networkClass": "tenant-isolated"
+      "networkClass": "udn-net"
     }
   }
 }
@@ -348,7 +348,7 @@ metadata:
 spec:
   region: us-east-1
   cidr: 10.0.0.0/16
-  networkClass: tenant-isolated
+  networkClass: udn-net
 status:
   state: Ready
   conditions:
@@ -639,10 +639,10 @@ apply SecurityGroups for traffic control.
 
 - **NetworkClass**: Cluster-scoped, provider-managed; the O-SAC Operator uses it
   to select the provisioner when reconciling VirtualNetworks.
-- **Namespace per Subnet** (`tenant-isolated`): Each Subnet has its own
-  namespace and UserDefinedNetwork; VirtualNetwork is a logical grouping. UDN
-  and namespace are created with the Subnet and removed with it; VirtualNetwork
-  can be deleted only after all Subnets are removed.
+- **Namespace per Subnet** (`udn-net`): Each Subnet has its own namespace and
+  UserDefinedNetwork; VirtualNetwork is a logical grouping. UDN and namespace
+  are created with the Subnet and removed with it; VirtualNetwork can be deleted
+  only after all Subnets are removed.
 - **Subnet and AZ**: Subnet must specify an Availability Zone in the
   VirtualNetwork's Region; operator and scheduler use it for placement (e.g.,
   node topology labels).
@@ -673,11 +673,11 @@ apply SecurityGroups for traffic control.
 
 ### Drawbacks
 
-**Single Subnet per Virtual Network**: As described in NetworkClass
-`tenant-isolated`, UDN constraints limit each VirtualNetwork to one Subnet (one
-AZ). Users needing multiple segments must create multiple VirtualNetworks. This
-limitation will be lifted in OpenShift 4.22, and the Cluster Network Connect
-feature that will allow the interconnection of multiple UDNs.
+**Single Subnet per Virtual Network**: As described in NetworkClass `udn-net`,
+UDN constraints limit each VirtualNetwork to one Subnet (one AZ). Users needing
+multiple segments must create multiple VirtualNetworks. This limitation will be
+lifted in OpenShift 4.22, and the Cluster Network Connect feature that will
+allow the interconnection of multiple UDNs.
 
 ## Alternatives (Not Implemented)
 
@@ -734,9 +734,9 @@ better isolation control.
 
 *Section to be completed when targeted at a release.*
 
-- **Dev Preview → Tech Preview:** All core networking resources and
-  `tenant-isolated` NetworkClass functional and tested; tenant and provider
-  documentation complete.
+- **Dev Preview → Tech Preview:** All core networking resources and `udn-net`
+  NetworkClass functional and tested; tenant and provider documentation
+  complete.
 - **Tech Preview → GA:** API stable (no breaking changes); performance and
   scalability validated; support procedures documented.
 
