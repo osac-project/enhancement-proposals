@@ -43,14 +43,15 @@ This section defines the key networking terms used throughout this enhancement:
 
 - **VirtualNetwork**: A tenant's isolated virtual network environment, similar
   to an AWS VPC or Azure VNet. VirtualNetwork is scoped to a Region. It provides
-  logical isolation and defines the overall address space (CIDR) for a tenant's
-  network resources within that Region. Address space may be IPv4, IPv6, or
-  dual-stack (separate CIDRs per family).
+  logical isolation and defines the overall address space via optional `ipv4`
+  and `ipv6` sections (each with a `cidr`). Single-stack = one section;
+  dual-stack = both.
 
 - **Subnet**: A subdivision of a VirtualNetwork's IP address space, scoped to a
-  Region (the same Region as the VirtualNetwork). Subnets use IPv4 and/or IPv6
-  CIDRs consistent with the VirtualNetwork. Resources are attached to Subnets to
-  receive IP addresses and network connectivity.
+  Region (the same Region as the VirtualNetwork). Subnets use optional `ipv4`
+  and `ipv6` sections (each with a `cidr`), consistent with the VirtualNetwork.
+  Resources are attached to Subnets to receive IP addresses and network
+  connectivity.
 
 - **SecurityGroup**: A stateful firewall that controls inbound and outbound
   traffic for resources. Rules specify allowed protocols, ports, and source/
@@ -58,9 +59,8 @@ This section defines the key networking terms used throughout this enhancement:
   resources within a VirtualNetwork.
 
 - **PublicIPPool**: A provider-defined pool of public IP addresses. Each pool is
-  either IPv4 or IPv6 (not both). Pools are scoped to a region and define one or
-  more address ranges (CIDRs) of that family from which PublicIPs can be
-  allocated. Tenants allocate PublicIPs from a PublicIPPool.
+  either IPv4 or IPv6 (not both), defined via `ipv4.cidrs` or `ipv6.cidrs`.
+  Pools are scoped to a region. Tenants allocate PublicIPs from a PublicIPPool.
 
 - **PublicIP** (also known as **Floating IP**): A public IP address (IPv4 or
   IPv6) allocated from a PublicIPPool. PublicIPs can be dynamically attached to
@@ -229,8 +229,8 @@ resources (VMs, bare metal, clusters).
 #### VirtualNetwork Creation
 
 1.  The tenant uses the Fulfillment CLI to create a VirtualNetwork by specifying
-    a name, region, NetworkClass, and CIDR list (one for single-stack, two for
-    dual-stack).
+    a name, region, NetworkClass, and address space (ipv4.cidr and/or
+    ipv6.cidr).
 2.  The Fulfillment Service validates the request and creates a VirtualNetwork
     custom resource (CR) scoped to that Region.
 3.  The O-SAC Operator detects the new VirtualNetwork CR and marks it as ready.
@@ -242,8 +242,8 @@ resources (VMs, bare metal, clusters).
 #### Subnet Management
 
 1.  The tenant uses the Fulfillment CLI to create a new Subnet within their
-    VirtualNetwork, specifying the VirtualNetwork and CIDR list (one for
-    single-stack, two for dual-stack).
+    VirtualNetwork, specifying the VirtualNetwork and address space (ipv4.cidr
+    and/or ipv6.cidr).
 2.  The Fulfillment Service validates that each Subnet CIDR is within the
     VirtualNetwork's CIDR of the same address family and creates a Subnet CR
     scoped to the VirtualNetwork's Region.
@@ -315,9 +315,9 @@ resources (VMs, bare metal, clusters).
 #### VirtualNetwork
 
 A tenant requests a VirtualNetwork to create an isolated network environment
-with its own address space. The `cidr` field is a list: **single-stack** = one
-item (one IPv4 or one IPv6 CIDR), **dual-stack** = two items (one CIDR per
-family).
+with its own address space. Address space is specified via optional `ipv4` and
+`ipv6` sections, each with a `cidr` field. **Single-stack** = one section (ipv4
+or ipv6). **Dual-stack** = both sections.
 
 Example CLI commands:
 
@@ -325,7 +325,7 @@ Single-stack (IPv4):
 
     $ ./fulfillment-cli create virtualnetwork \
            --region us-east-1 \
-           --cidr 10.0.0.0/16 \
+           --ipv4-cidr 10.0.0.0/16 \
            --network-class udn-net \
            --name my-network
 
@@ -333,7 +333,7 @@ Dual-stack:
 
     $ ./fulfillment-cli create virtualnetwork \
            --region us-east-1 \
-           --cidr 10.0.0.0/16 --cidr 2001:dead:beef::/48 \
+           --ipv4-cidr 10.0.0.0/16 --ipv6-cidr 2001:dead:beef::/48 \
            --network-class udn-net \
            --name my-network
 
@@ -346,7 +346,8 @@ The Fulfillment CLI sends this JSON request to the Fulfillment Service
     "id": "my-network",
     "spec": {
       "region": "us-east-1",
-      "cidr": ["10.0.0.0/16", "2001:dead:beef::/48"],
+      "ipv4": { "cidr": "10.0.0.0/16" },
+      "ipv6": { "cidr": "2001:dead:beef::/48" },
       "networkClass": "udn-net"
     }
   }
@@ -365,9 +366,10 @@ metadata:
     tenantUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
 spec:
   region: us-east-1
-  cidrs:
-  - 10.0.0.0/16
-  - 2001:dead:beef::/48
+  ipv4:
+    cidr: 10.0.0.0/16
+  ipv6:
+    cidr: 2001:dead:beef::/48
   networkClass: udn-net
 status:
   state: Ready
@@ -380,10 +382,10 @@ status:
 #### Subnet
 
 Subnets define IP address ranges within a VirtualNetwork and are scoped to a
-Region (the same Region as the VirtualNetwork). The `cidr` field is a list:
-**single-stack** = one item (one IPv4 or one IPv6 CIDR), **dual-stack** = two
-items (one CIDR per family). Each Subnet maps to a dedicated namespace
-containing an OpenShift UserDefinedNetwork.
+Region (the same Region as the VirtualNetwork). Address space is specified via
+optional `ipv4` and `ipv6` sections, each with a `cidr` field. **Single-stack**
+= one section. **Dual-stack** = both sections. Each Subnet maps to a dedicated
+namespace containing an OpenShift UserDefinedNetwork.
 
 Example CLI commands:
 
@@ -391,14 +393,14 @@ Single-stack (IPv4):
 
     $ ./fulfillment-cli create subnet \
            --virtual-network my-network \
-           --cidr 10.0.1.0/24 \
+           --ipv4-cidr 10.0.1.0/24 \
            --name frontend-subnet
 
 Dual-stack:
 
     $ ./fulfillment-cli create subnet \
            --virtual-network my-network \
-           --cidr 10.0.1.0/24 --cidr 2001:dead:beef::/48 \
+           --ipv4-cidr 10.0.1.0/24 --ipv6-cidr 2001:dead:beef::/48 \
            --name frontend-subnet
 
 The Fulfillment Service creates the following Subnet CR (dual-stack example):
@@ -415,9 +417,10 @@ metadata:
     uid: 77c9fe7g-2bg3-5903-bd23-58ce58ebde51
 spec:
   virtualNetwork: my-network
-  cidrs:
-  - 10.0.1.0/24
-  - 2001:dead:beef::/48
+  ipv4:
+    cidr: 10.0.1.0/24
+  ipv6:
+    cidr: 2001:dead:beef::/48
 status:
   state: Ready
   namespace: tenant-66b8ed6f-subnet-frontend-subnet
@@ -526,14 +529,14 @@ spec:
 #### PublicIPPool
 
 PublicIPPools are provider-defined pools of public IP addresses, scoped to a
-region. Each pool is either IPv4 or IPv6 (not both) and contains one or more
-CIDR ranges of that family; addresses are allocated from those ranges. Tenants
-allocate PublicIPs from a pool; they cannot create or delete pools.
+region. Each pool is either IPv4 or IPv6 (not both), specified via `ipv4.cidrs`
+or `ipv6.cidrs` (one or the other). Addresses are allocated from those ranges.
+Tenants allocate PublicIPs from a pool; they cannot create or delete pools.
 
 Example provider workflow (e.g., via Fulfillment Service admin API or
 cluster-scoped CR):
 
-A provider defines a PublicIPPool:
+A provider defines a PublicIPPool (either IPv4 or IPv6; one family per pool):
 
 ``` yaml
 apiVersion: o-sac.openshift.io/v1alpha1
@@ -542,10 +545,14 @@ metadata:
   name: public-us-east-1
 spec:
   region: us-east-1
-  cidrs:
-  - 203.0.113.0/24
-  - 198.51.100.0/24
-  # All CIDRs in a pool are the same family (IPv4 or IPv6)
+  ipv4:
+    cidrs:
+    - 203.0.113.0/24
+    - 198.51.100.0/24
+  # Or ipv6.cidrs for an IPv6-only pool, e.g.:
+  # ipv6:
+  #   cidrs:
+  #   - 2001:db8::/32
 status:
   state: Ready
   capacity:
@@ -673,10 +680,10 @@ apply SecurityGroups for traffic control.
 
 - **NetworkClass**: Cluster-scoped, provider-managed; the O-SAC Operator uses it
   to select the provisioner when reconciling VirtualNetworks.
-- **IPv4 and IPv6**: VirtualNetworks and Subnets use a `cidr` list: single-stack
-  = one item (one IPv4 or one IPv6 CIDR), dual-stack = two items (one CIDR per
-  family). PublicIPPools are either IPv4 or IPv6 (one family per pool); each
-  pool's `cidrs` are all of that family. Allocation returns an address from the
+- **IPv4 and IPv6**: VirtualNetworks and Subnets use optional `ipv4` and `ipv6`
+  sections, each with a `cidr` field; single-stack = one section, dual-stack =
+  both. PublicIPPools are either IPv4 or IPv6 (one family per pool), with
+  `ipv4.cidrs` or `ipv6.cidrs` (list). Allocation returns an address from the
   pool's family. SecurityGroup rules use CIDR notation (e.g. `0.0.0.0/0`,
   `::/0`). Implementation support for IPv6 depends on the NetworkClass and
   underlying platform (e.g. OVN-Kubernetes / UDN).
