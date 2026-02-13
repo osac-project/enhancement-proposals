@@ -174,8 +174,11 @@ provides:
 
 - **Isolated tenant networking**: Each Virtual Network is fully isolated from
   other tenants using OVN-Kubernetes
-- **Single subnet per Virtual Network**: Due to UDN architecture constraints,
-  each Virtual Network contains exactly one subnet
+- **Subnets per Virtual Network**: With the UDN architecture, a Virtual Network
+  has one primary subnet by default. Multiple subnets are possible when pods are
+  attached directly to them via secondary networks and Multus. Routed subnets
+  will be supported from OpenShift 4.22 with the Cluster Network Connect
+  feature.
 - **Layer 2 connectivity**: VMs within the same Virtual Network can communicate
   at Layer 2
 - **NAT Gateway**: A NAT Gateway is implemented via OVN's **EgressIP** resource.
@@ -194,11 +197,8 @@ The `udn-net` class is suitable for deployments where:
 Future enhancements may introduce additional NetworkClasses (e.g., `phys-net`)
 that leverage UDN Localnet mode to provide multi-subnet VirtualNetworks,
 external connectivity, and tighter integration with physical network
-infrastructure.
-
-The Networking API is built on OpenShift's User Defined Networking (UDN).
-Resource definitions are in [Terminology](#terminology); implementation notes
-for the `udn-net` NetworkClass are in the subsections above.
+infrastructure. The Networking API is built on OpenShift's User Defined
+Networking (UDN). Resource definitions are in [Terminology](#terminology).
 
 The Networking API will be implemented through updates to the following O-SAC
 components:
@@ -720,11 +720,11 @@ apply SecurityGroups for traffic control.
 
 ### Drawbacks
 
-**Single Subnet per Virtual Network**: As described in NetworkClass `udn-net`,
-UDN constraints limit each VirtualNetwork to one Subnet. Users needing multiple
-segments must create multiple VirtualNetworks. This limitation will be lifted in
-OpenShift 4.22, and the Cluster Network Connect feature that will allow the
-interconnection of multiple UDNs.
+**Subnets per Virtual Network**: With `udn-net` (see [NetworkClass:
+`udn-net`](#networkclass-udn-net)), a drawback is that new subnets created after
+a VM exists are not accessible to that VM until the VirtualMachine is
+re-created. This limitation will be removed with the Cluster Network Connect
+feature from OpenShift 4.22.
 
 ## Alternatives (Not Implemented)
 
@@ -752,10 +752,9 @@ Automatically create one VirtualNetwork per tenant, eliminating the need for
 explicit VirtualNetwork management.
 
 **Why not selected**: This limits flexibility for tenants who need multiple
-isolated network segments. It also restricts providers from offering
-NetworkClasses that support multiple subnets within a VirtualNetwork. The
-explicit VirtualNetwork creation aligns with cloud provider models and provides
-better isolation control.
+isolated network segments and restricts providers from offering NetworkClasses
+with multiple or routed subnets. Explicit VirtualNetwork creation aligns with
+cloud provider models and provides better isolation control.
 
 ## Open Questions
 
