@@ -135,73 +135,210 @@ We acknowledge that the long-term architectural goal is to map `1 AZ = 1 Distinc
 2.  Tenant specifies `Availability Zone: zone-a`.
 3.  The scheduler matches the request to nodes labeled `zone=zone-a` (Rack A).
 
-API Extensions
-Done! I’ve integrated the **API Extensions** section into your proposal. It formalizes the shift from the "Implicit" model to the "Explicit" management model required for your Phase 1 GoRI delivery.
+## API Extensions
 
----
+To support the Phase 1 Converged Topology, we introduce two primary Administrative APIs using gRPC/Protocol Buffers. These allow the Fulfillment Service to bridge the logical cloud request to the physical OpenShift cluster and its internal rack structure.
 
-### ### API Extensions
+### API Protocol
 
-To support the Phase 1 Converged Topology, we introduce two primary Administrative APIs. These allow the Fulfillment Service to bridge the logical cloud request to the physical OpenShift cluster and its internal rack structure.
+All APIs are exposed via **gRPC** with Protocol Buffer definitions. This ensures:
+* **Type Safety:** Strongly-typed schemas prevent runtime errors.
+* **Performance:** Binary serialization reduces payload size and parsing overhead.
+* **Streaming Support:** Future-ready for real-time cluster health monitoring.
 
-#### 1. Region Registration (Management Cluster Binding)
+### API Scopes
 
-This API registers a physical OpenShift cluster as a logical OSAC Region. It establishes the `api_url` where the cloudkit-operator resides.
+The Region and Availability Zone APIs are split into two distinct scopes:
 
-**POST** `/api/infrastructure/v1/regions`
+#### Private API (Admin-Only)
+Administrative fields that expose the physical infrastructure mapping. These are **only accessible** to Cloud Administrators and internal services:
+* `hub_id` - Reference to the hub (management cluster) this region uses
+* `topology_profile` - Implementation strategy (converged vs federated)
+* `failure_domain.id` - Physical rack identifier
+* `failure_domain.node_selector` - Kubernetes node selector for scheduling
 
-```json
-{
-  "id": "us-east-1",
-  "metadata": {
-    "name": "US East (Appalachia)",
-    "labels": {
-      "topology-profile": "converged-v1"
-    }
-  },
-  "spec": {
-    "management_cluster": {
-      "api_url": "https://api.cluster-01.provider.com:6443",
-      "auth_secret_ref": "cluster-01-kubeconfig",
-      "version": "4.20"
-    },
-    "description": "Converged Regional boundary mapping 1:1 to Cluster-01."
-  }
+#### Public API (User-Facing)
+Logical cloud constructs exposed to end-users for workload placement:
+* `region_id` - Logical region identifier (e.g., `us-east-1`)
+* `region.name` - Human-readable region name
+* `region.description` - Region description
+* `availability_zone_id` - Logical AZ identifier (e.g., `us-east-1a`)
+* `availability_zone.name` - Human-readable AZ name
+
+End-users interact **only** with the public API fields. They never see hub references or physical rack details.
+
+### 1. Region Registration (Hub Binding)
+
+This private API registers a logical OSAC Region and binds it to a hub (management cluster). The hub contains the kubeconfig and connection details for the cluster where the cloudkit-operator resides.
+
+**gRPC Method:** `private.v1.RegionService/CreateRegion`
+
+```protobuf
+message CreateRegionRequest {
+  Region region = 1;
 }
 
+message Region {
+  // Unique identifier - automatically generated
+  string id = 1;
+
+  private.v1.Metadata metadata = 2;
+
+  RegionSpec spec = 3;
+}
+
+message RegionSpec {
+  // Public API Fields
+  string name = 1;                  // e.g., "US East (Appalachia)"
+  string description = 2;
+
+  // Private API Fields (Admin-Only)
+  string hub_id = 3;                // Reference to the hub managing this region
+  TopologyProfile topology_profile = 4;
+}
+
+enum TopologyProfile {
+  TOPOLOGY_PROFILE_UNSPECIFIED = 0;
+  TOPOLOGY_PROFILE_CONVERGED_V1 = 1;    // Region = Single Cluster
+  TOPOLOGY_PROFILE_FEDERATED_V2 = 2;    // Region = Collection of Clusters
+}
 ```
 
-#### 2. Availability Zone Definition (Rack Mapping)
-
-This API maps the physical racks within the registered Region to logical AZs. In Phase 1, these AZs inherit the `api_url` of their parent Region.
-
-**POST** `/api/infrastructure/v1/availability_zones`
-
-```json
+**Example Request:**
+```protobuf
 {
-  "id": "us-east-1a",
-  "metadata": {
-    "name": "N. Virginia Zone A"
-  },
-  "spec": {
-    "region_id": "us-east-1",
-    "failure_domain": {
-      "type": "rack",
-      "id": "rack-01",
-      "node_selector": {
-        "topology.kubernetes.io/zone": "us-east-1a"
+  region: {
+    metadata: {
+      name: "us-east-1"
+      labels: {
+        "environment": "production"
+      }
+    }
+    spec: {
+      name: "US East (Appalachia)"
+      description: "Converged Regional boundary mapping 1:1 to Cluster-01."
+      hub_id: "hub-01"
+      topology_profile: TOPOLOGY_PROFILE_CONVERGED_V1
+    }
+  }
+}
+```
+
+### 2. Availability Zone Definition (Rack Mapping)
+
+This private API maps the physical racks within the registered Region to logical AZs. In Phase 1, these AZs use the hub referenced by their parent Region.
+
+**gRPC Method:** `private.v1.AvailabilityZoneService/CreateAvailabilityZone`
+
+```protobuf
+message CreateAvailabilityZoneRequest {
+  AvailabilityZone availability_zone = 1;
+}
+
+message AvailabilityZone {
+  // Unique identifier - automatically generated
+  string id = 1;
+
+  private.v1.Metadata metadata = 2;
+
+  AvailabilityZoneSpec spec = 3;
+}
+
+message AvailabilityZoneSpec {
+  // Public API Fields
+  string name = 1;                  // e.g., "N. Virginia Zone A"
+  string region_id = 2;             // Parent region reference
+
+  // Private API Fields (Admin-Only)
+  FailureDomain failure_domain = 3;
+}
+
+message FailureDomain {
+  FailureDomainType type = 1;
+  string id = 2;                    // Physical rack identifier
+  map<string, string> node_selector = 3;
+}
+
+enum FailureDomainType {
+  FAILURE_DOMAIN_TYPE_UNSPECIFIED = 0;
+  FAILURE_DOMAIN_TYPE_RACK = 1;
+  FAILURE_DOMAIN_TYPE_CLUSTER = 2;  // For Phase 2
+}
+```
+
+**Example Request:**
+```protobuf
+{
+  availability_zone: {
+    metadata: {
+      name: "us-east-1a"
+    }
+    spec: {
+      name: "N. Virginia Zone A"
+      region_id: "us-east-1"
+      failure_domain: {
+        type: FAILURE_DOMAIN_TYPE_RACK
+        id: "rack-01"
+        node_selector: {
+          "topology.kubernetes.io/zone": "us-east-1a"
+        }
       }
     }
   }
 }
-
 ```
 
-#### 3. Data Model Summary
+### 3. Hub Relationship
 
-* **Region:** Acts as the "Gateway" to a specific OpenShift Cluster's control plane.
-* **AZ:** Acts as a "Constraint" applied to MachineSets and workload scheduling within that cluster.
-* **Cluster API URL:** Stored at the Region level in Phase 1; move to the AZ level in Phase 2 to support multi-cluster regions.
+The **Hub** is the management cluster that hosts the control plane for fulfillment operations. Each region references exactly one hub.
+
+**Hub Definition (from existing API):**
+```protobuf
+message Hub {
+  string id = 1;
+  private.v1.Metadata metadata = 2;
+  bytes kubeconfig = 3;          // Contains address and credentials
+  string namespace = 4;          // Namespace for cluster orders
+}
+```
+
+**Key Points:**
+* **Hub = Management Cluster:** The hub contains the kubeconfig with the API endpoint and credentials for the OpenShift cluster.
+* **Region → Hub Reference:** Each region points to a hub via `region.spec.hub_id`.
+* **Current Design:** 1:1 relationship - one region points to one hub.
+
+**API Visibility:**
+* The `hub_id` field is part of the **private API** (admin-only).
+* End-users never see hub references. They only interact with `region_id` and `availability_zone_id`.
+* The fulfillment service uses the hub's kubeconfig to connect to the cluster and create cluster orders in the specified namespace.
+
+**Example:**
+```
+Hub: hub-01
+  ├── kubeconfig: (contains api.cluster-01.provider.com:6443)
+  ├── namespace: "osac-orders"
+  └── Region: us-east-1
+        ├── AZ: us-east-1a (Rack-01)
+        └── AZ: us-east-1b (Rack-02)
+
+Hub: hub-02
+  ├── kubeconfig: (contains api.cluster-02.provider.com:6443)
+  ├── namespace: "osac-orders"
+  └── Region: us-west-1
+        ├── AZ: us-west-1a (Rack-03)
+        └── AZ: us-west-1b (Rack-04)
+```
+
+**Future Evolution:**
+* In Phase 2, when regions may span multiple clusters, a region might reference multiple hubs.
+* The API contract for regions and AZs remains stable - only the internal implementation changes.
+
+### 4. Data Model Summary
+
+* **Hub:** The management cluster that hosts the fulfillment control plane. Contains kubeconfig and connection details.
+* **Region:** A logical IaaS boundary that references a hub. Acts as the user-facing "Gateway" to cloud resources.
+* **AZ:** A logical failure domain within a region, mapped to physical racks via node selectors.
+* **Topology Profile:** Explicitly defined in `region.spec.topology_profile` to indicate converged (single-cluster) vs federated (multi-cluster) implementation.
 
 ### Implementation Details/Notes/Constraints
 
