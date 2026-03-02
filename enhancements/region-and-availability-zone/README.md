@@ -43,7 +43,6 @@ To avoid this overhead, we are selecting the **Single-Cluster Topology** for Pha
 * **As a Cloud Administrator**, I want to onboard a new OpenShift Cluster and register it as a distinct **Region** (e.g., `us-east-1`), so that tenants can begin provisioning resources within that boundary.
 * **As a Cloud Administrator**, I want to map physical racks to logical **Availability Zones** by applying standard node labels (`topology.kubernetes.io/zone=us-east-1a`), so that the scheduler is aware of the physical failure domains.
 * **As a Cloud Administrator**, I want to configure **MachineSets** that strictly target specific racks (AZs), so that when the cluster autoscales or remediates nodes, it respects the physical isolation guarantees.
-* **As a Cloud Administrator**, I want to define **Zone-Specific Storage Classes**, so that I can ensure high-performance storage workloads are pinned to the same rack as their compute resources to minimize latency.
 
 
 ### Goals and Non-Goals
