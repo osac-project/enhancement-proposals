@@ -49,7 +49,7 @@ to the tenant for whom I am provisioning.
 ### Non-Goals
 
 * Create new management capabilities for storage.
-* Establish a process for differentiating multiple classes of storage (speed, redudnancy, etc.) for individual tenants.
+* Establish a process for differentiating multiple classes of storage (speed, redundancy, etc.) for individual tenants.
 
 ## Proposal
 
@@ -97,7 +97,7 @@ parameters:
 
 Ansible roles that implement templates will need the ability to determine which
 StorageClass to use. Either they can perform a normal query from ansible, or
-the controller could do that up-front and inject the chosed StorageClass as
+the controller could do that up-front and inject the chosen StorageClass as
 context.
 
 ### Risks and Mitigations
