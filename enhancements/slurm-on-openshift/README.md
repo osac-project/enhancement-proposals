@@ -3,7 +3,7 @@ title: slurm-on-openshift
 authors:
   - Swati Kale, Ecosystem Engineering
 creation-date: 2025-12-16
-last-updated: 2025-12-16
+last-updated: 2026-03-17
 tracking-link:
   - TBD
 see-also:
@@ -42,12 +42,30 @@ This enhancement aims to **bridge Slurm and OpenShift**, allowing existing Slurm
 
 ### User Stories
 
-* As a provider, I want to deploy OpenShift clusters with Slurm pre-configured using the Slinky operator, so that I can offer HPC-as-a-Service to my tenants.
-* As a provider, I want to customize Slurm configurations during cluster deployment, so that I can tailor the HPC environment to specific use cases.
-* As a tenant, I want to submit traditional Slurm batch jobs to an OpenShift cluster, so that I can run my existing HPC workflows without modification.
-* As a tenant, I want to use familiar Slurm commands (sbatch, squeue, scancel, etc.) to manage my compute jobs on OpenShift.
-* As a tenant, I want Slurm to integrate with OpenShift's resource management, so that I can take advantage of container-based isolation and orchestration.
-* As a tenant, I want to access specialized hardware resources (GPUs, high-memory nodes) through Slurm scheduling on OpenShift.
+**Personas:**
+- **Provider**: Cloud infrastructure operator who manages O-SAC platform
+- **Cluster Administrator**: Organization or team that requests/manages a Slurm cluster
+- **Job Submitter**: Individual researcher or developer who submits and runs Slurm jobs
+
+#### Cluster Provisioning Stories
+
+**Provider-Provisioned Model:**
+* As a provider, I want to deploy OpenShift clusters with Slurm pre-configured using the Slinky operator, so that I can offer HPC-as-a-Service to my tenant organizations.
+* As a provider, I want to customize Slurm configurations during cluster deployment, so that I can tailor the HPC environment to specific organizational needs.
+
+**Self-Service Model:**
+* As a cluster administrator, I want to request and provision my own Slurm-enabled OpenShift cluster through the Fulfillment Service, so that my organization has dedicated HPC resources.
+* As a cluster administrator, I want to customize Slurm partition configurations (CPU, GPU, memory) during cluster request, so that I can match my team's workload requirements.
+
+#### Job Submission and Management Stories
+
+* As a job submitter, I want to submit traditional Slurm batch jobs to an OpenShift cluster, so that I can run my existing HPC workflows without modification.
+* As a job submitter, I want to use familiar Slurm commands (sbatch, squeue, scancel, etc.) to manage my compute jobs on OpenShift.
+* As a job submitter, I want Slurm to leverage OpenShift's AI/HPC infrastructure capabilities, so that I can benefit from automated resource management, security compliance, and high availability.
+* As a job submitter, I want to access specialized hardware resources (GPUs, high-memory nodes) through Slurm scheduling on OpenShift.
+
+#### Cluster Operations Stories
+
 * As a cluster administrator, I want to monitor Slurm job metrics and cluster utilization through OpenShift's observability stack. [optional]
 * As a cluster administrator, I want to manage Slurm configurations declaratively using Kubernetes custom resources. [optional]
 
@@ -57,9 +75,9 @@ This enhancement aims to **bridge Slurm and OpenShift**, allowing existing Slurm
 * Enable automated provisioning of OpenShift clusters with Slurm pre-configured and ready for HPC workloads
 * Enable tenants to submit and manage Slurm jobs on OpenShift clusters
 * Support standard Slurm commands and workflows for backward compatibility with existing HPC applications
-* Leverage OpenShift's container orchestration for enhanced Slurm capabilities:
+* Leverage OpenShift's AI/HPC infrastructure capabilities for enhanced Slurm deployments:
   - **Resource Isolation**: CPU/memory/GPU limits, namespace quotas, and QoS classes
-  - **Network Security**: NetworkPolicies for tenant isolation and compliance (HIPAA, NIST 800-171)
+  - **Network Security**: NetworkPolicies for security controls and compliance (HIPAA, NIST 800-171)
   - **Hardware Management**: NVIDIA GPU Operator for automatic GPU discovery and allocation
   - **High Availability**: Pod failover, anti-affinity spreading across failure domains
   - **Monitoring**: Prometheus metrics and audit logging for compliance and troubleshooting
@@ -158,12 +176,21 @@ The deployment will use an independent Ansible collection for slinky-on-openshif
 
 6. The O-SAC Operator monitors the deployment status and updates the cluster CR to reflect Slurm readiness.
 
-7. The tenant receives cluster access credentials and can submit Slurm jobs using standard commands.
+7. The tenant receives cluster access information via the Fulfillment CLI/API, including:
+   - **Login Endpoint**: FQDN and SSH port for the login pod (e.g., `slurm-login.cluster-name.example.com:22`)
+   - **Slurm Controller Endpoint**: Internal service endpoint for slurmctld (e.g., `slurm-controller.slurm-system.svc.cluster.local:6817`)
+   - **SSH Credentials**: SSH public key to add to authorized_keys, or generated SSH keypair for login pod access
+   - **Kubeconfig**: Credentials for kubectl access to the OpenShift cluster (for administrators)
+   - **User Accounts**: List of pre-configured Slurm user accounts 
 
 
 #### Submitting and Managing Slurm Jobs
 
-1. The tenant accesses the Slurm cluster via SSH to a login pod. The login pod exposes an SSH server and provides access to Slurm CLI commands authenticated via JWT tokens managed by the Slinky operator. 
+1. The tenant connects to the Slurm cluster using the SSH endpoint and credentials provided during cluster provisioning:
+   ```bash
+   ssh -i ~/.ssh/slurm-key user@slurm-login.my-hpc-cluster.apps.example.com
+   ```
+   The login pod provides access to Slurm CLI commands and communicates with the Slurm controller for job management. 
 
 2. The tenant submits a Slurm job using standard commands:
    ```bash
@@ -200,17 +227,7 @@ The deployment will use an independent Ansible collection for slinky-on-openshif
 
 #### Cluster Deletion
 
-1. The tenant requests deletion of the Slurm-enabled OpenShift cluster through the Fulfillment Service.
-
-2. The O-SAC Operator detects the cluster deletion request.
-
-3. The Operator initiates cleanup:
-   - Drains and terminates running Slurm jobs (with configurable grace periods)
-   - Deletes Slurm custom resources managed by the Slinky operator
-   - Removes the Slinky operator deployment
-   - Proceeds with standard OpenShift cluster deletion workflow
-
-4. All associated resources (persistent volumes, network configurations, compute nodes) are released.
+When a Slurm-enabled OpenShift cluster is deleted, the standard O-SAC cluster deletion workflow applies. The Slinky operator and Slurm custom resources are removed as part of the cluster cleanup process, with no special Slurm-specific handling required.
 
 ### Implementation Details/Notes/Constraints
 
@@ -242,17 +259,21 @@ The osac-templates repository will be extended with:
   - Parameterized Slurm configurations for flexible deployment
   - Partition definitions based on node types and resources
 
+  **Proposed API Design:**
+  1. Input API - How tenants request Slurm clusters (e.g., via Fulfillment CLI parameters, CR spec fields)
+  2. Configuration Parameters - List of configurable Slurm settings (partition names, node counts, resource limits, etc.)
+  3. Output API - What information is returned (cluster endpoints, access credentials, partition details)
+
 #### Networking Considerations
 
 * **Slurm Controller Access**: Exposed via Kubernetes Service (ClusterIP or LoadBalancer)
 * **Compute Node Communication**: Leverages Kubernetes pod networking
 * **External Access**: Optional NodePort or LoadBalancer for external job submission
-* **Munge Authentication**: Shared secrets distributed via Kubernetes Secrets
 
 #### Authentication and Authorization
 
 * **MVP Approach**:
-  - **Munge**: Inter-component authentication for Slurm services
+  - **Inter-component auth**: Slurm native auth via slurm.key secret (deployed and configured by the operator for controller and NodeSets)
   - **Local User Management**: Users created in Slurm pods with synchronized UID/GID mappings
   - **Static User Database**: Pre-configured user accounts deployed via ConfigMaps
 * **Post-MVP**: LDAP/AD integration with SSSD for centralized identity management and existing filesystem compatibility
@@ -277,7 +298,6 @@ The osac-templates repository will be extended with:
 * **Node Selection**: Slurm compute nodes run on designated OpenShift nodes via nodeSelectors or taints/tolerations
 * **Resource Isolation**: Kubernetes resource limits and requests configured for Slurm components
 * **GPU Access**: Integration with OpenShift's GPU operator for GPU-enabled Slurm partitions
-* **Mixed Workloads**: Slurm nodes can potentially run both Slurm jobs and native Kubernetes workloads with appropriate resource allocation
 
 #### Deployment Status Reporting
 
@@ -285,7 +305,8 @@ The osac-templates repository will be extended with:
   - Ansible playbooks wait for Slurm components to reach ready state before completing
   - Monitor SlurmCluster custom resource status conditions for deployment progress
   - Verify Slurm controller and database pods are running and passing health checks
-  - Report success/failure status back to fulfillment service with configurable timeout
+  - Report success/failure status back to fulfillment service based on observed resource conditions
+  - Allow administrative intervention for troubleshooting deployment issues
 * **Post-MVP**: Real-time status updates via Kubernetes events and metrics-based validation
 
 #### Monitoring and Observability [optional]
@@ -294,10 +315,6 @@ The osac-templates repository will be extended with:
 * **Log Aggregation**: Slurm logs forwarded to OpenShift's logging stack (e.g., EFK/ELK)
 * **Alerts**: Prometheus alerts for Slurm controller failures, database issues, node failures
 * **Dashboards**: Grafana dashboards for Slurm job statistics and resource utilization
-
-## Open Questions [optional]
-
-* Should Slurm nodes be dedicated or can they share resources with other OpenShift workloads?
 
 ## Test Plan
 
