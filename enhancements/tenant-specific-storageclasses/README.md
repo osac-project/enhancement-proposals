@@ -74,7 +74,7 @@ StorageClass to use by searching for the label with the tenant's identifier.
 
 ### API Extensions
 
-A label with key `osac.openshift.com/tenant-id` will be used to designate the
+A label with key `osac.openshift.io/tenant` will be used to designate the
 tenant to whom a StorageClass belongs.
 
 ```
@@ -83,7 +83,7 @@ kind: StorageClass
 metadata:
   name: netapp-tenant123
   labels:
-    osac.openshift.com/tenant-id: tenant123
+    osac.openshift.io/tenant: tenant123
 provisioner: csi.trident.netapp.io
 reclaimPolicy: Delete
 allowVolumeExpansion: true
@@ -99,6 +99,23 @@ Ansible roles that implement templates will need the ability to determine which
 StorageClass to use. Either they can perform a normal query from ansible, or
 the controller could do that up-front and inject the chosen StorageClass as
 context.
+
+#### Default StorageClass
+
+OSAC still needs to support the option for using a default storage class when
+one has not been configured for a particular tenant. That may occur in a use
+case where there are no tenant-specific storage classes at all, or where only
+some tenants have their own storage class.
+
+But the default storage class for tenant VMs may not necessarily be the
+cluster's default. Thus OSAC will enable the CSP to designate a storage class
+as the default one to use for OSAC specifically, by adding the label
+`osac.openshift.io/tenant: Default`. That label is safe from collisions with
+tenant identifiers because a tenant ID cannot have any capital letters.
+
+At the time of selecting a storage class to use, if OSAC fails to find a
+tenant-specific storage class, and it fails to find an explicitly-labeled
+default storage class, it will return an error.
 
 ### Risks and Mitigations
 
