@@ -20,7 +20,7 @@ to use storage that has been configured for that tenant. Many storage solutions
 have the ability to dedicate a portion of storage for a specific tenant, which
 can enable quota enforcement, QoS, and encryption. This proposal uses labels on
 StorageClasses to identify which StorageClasses in a cluster correspond to a
-particular tenant. 
+particular tenant.
 
 ## Motivation
 
