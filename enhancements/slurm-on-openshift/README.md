@@ -3,7 +3,7 @@ title: slurm-on-openshift
 authors:
   - Swati Kale, Ecosystem Engineering
 creation-date: 2025-12-16
-last-updated: 2026-03-17
+last-updated: 2026-03-18
 tracking-link:
   - TBD
 see-also:
@@ -233,7 +233,7 @@ When a Slurm-enabled OpenShift cluster is deleted, the standard O-SAC cluster de
 
 #### Slinky Operator Integration
 
-The implementation will leverage the upstream Slinky operator from the SlinkyProject community (https://github.com/SlinkyProject/slurm-operator). Using the upstream operator ensures vendor neutrality, broader community support, and compatibility across different OpenShift distributions. The operator will be deployed via Operator Lifecycle Manager (OLM) for standardized installation and lifecycle management.
+The implementation will leverage the upstream Slinky operator from the SlinkyProject community (https://github.com/SlinkyProject/slurm-operator). The operator will be deployed via Operator Lifecycle Manager (OLM) for standardized installation and lifecycle management.
 
 Key integration points:
 
