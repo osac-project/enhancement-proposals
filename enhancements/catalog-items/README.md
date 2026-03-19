@@ -3,320 +3,386 @@ title: catalog-items
 authors:
   - mhrivnak
 creation-date: 2026-01-12
-last-updated: 2026-01-17
+last-updated: 2026-03-19
 tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
 see-also:
 replaces:
 superseded-by:
 ---
 
-# Published Templates
+# Template Inheritance
 
 ## Summary
 
-Today there is a 1:1 mapping between templates and ansible roles. This document
-proposes an API that enables a single ansible role to be used as the basis for
-multiple catalog items that are published for users. That enables a CSP to
-define a small number of ansible roles based on their infrastructure and use
-case needs, but expose many variations of curated catalog items to users.
+Today there is a 1:1 mapping between templates and Ansible roles. This document
+proposes extending the existing `ClusterTemplate` and
+`ComputeInstanceTemplate` types with an inheritance mechanism that enables
+admins and tenants to derive new templates from existing ones. A derived
+template can override default values and _seal_ parameters so that users cannot
+change them. This removes the need for a new Ansible role every time a
+variation of an existing template is needed, and it allows tenant admins to
+curate their own catalog of templates without any Ansible work at all.
 
 ## Motivation
 
 Today if the Cloud Provider Admin or Tenant Admin wants to make a new template
 appear that is even just a small variation of an existing template, the only
-option is to create a new ansible role. That's a lot of overhead to just create
+option is to create a new Ansible role. That's a lot of overhead to just create
 a variation of a template.
 
 For example, if an admin wants to have a RHEL 10 VM in sizes small, medium, and
-large, they would probably create a base ansible role that can deploy RHEL 10,
+large, they would probably create a base Ansible role that can deploy RHEL 10,
 and then three small stub roles that just pass pre-determined size parameters
 into the primary role.
 
 Meanwhile the Tenant Admin is not able to create templates at all, because they
-don't have the ability to add or modify ansible roles.
+don't have the ability to add or modify Ansible roles.
 
 ### User Stories
 
-* As a Cloud Provider Admin, I want to publish multiple templates that are similar to each other.
-* As a Cloud Provider Admin, I want to publish multiple templates without having to create a new ansible role.
-* As a Cloud Provider Admin, I want to offer templates to my users that pre-define the values for certain fields.
-* As a Cloud Provider Admin, I want to offer templates to my users that prevent them from setting certain fields.
-
-* As a Tenant Admin, I want to offer templates to my users that pre-define the values for certain fields.
-* As a Tenant Admin, I want to offer templates to my users that prevent them from setting certain fields.
+* As a Cloud Provider Admin, I want to publish multiple templates that are
+  similar to each other.
+* As a Cloud Provider Admin, I want to publish multiple templates without
+  having to create a new Ansible role for each one.
+* As a Cloud Provider Admin, I want to offer templates to my users that
+  pre-define the values for certain fields.
+* As a Cloud Provider Admin, I want to offer templates to my users that prevent
+  them from changing certain fields.
+* As a Tenant Admin, I want to create new templates that are derived from
+  existing ones, customizing default values and restricting parameters, without
+  needing access to Ansible roles.
+* As a Tenant Admin, I want to offer templates to my users that pre-define the
+  values for certain fields.
+* As a Tenant Admin, I want to offer templates to my users that prevent them
+  from changing certain fields.
 
 ### Goals
 
-* Enable provider and tenant admins to make templates available for use without requiring new ansible roles.
+* Enable provider and tenant admins to make templates available for use without
+  requiring new Ansible roles.
+* Reuse the existing `ClusterTemplate` and `ComputeInstanceTemplate` types
+  rather than introducing new API types.
 
 ### Non-Goals
 
-* Enable the use of templates that don't use ansible at all.
+* Enable the use of templates that don't use Ansible at all.
 
 ## Proposal
 
-ComputeInstanceTemplate and ClusterTemplate continue to be auto-populated by the
-system based on discovered ansible roles. But they will no longer be directly
-usable by tenant users.
+This proposal extends the existing `ClusterTemplate` and
+`ComputeInstanceTemplate` types with template inheritance. Both template types
+will be extended in the same way, so the description below uses
+`ClusterTemplate` as the running example, but the same applies to
+`ComputeInstanceTemplate`.
 
-New APIs called ClusterCatalogItem and ComputeInstanceCatalogItem will be
-created. Both will have similar properties, so we'll use Cluster as an example:
+The key ideas are:
 
-ClusterCatalogItem
-* references an existing ClusterTemplate by ID
-* includes the same fields as the ClusterTemplate API, giving the admin an opportunity to pre-define values.
-* includes an exclusive list of fields that the user can specify.
-* includes a new selector field `published` that takes values TRUE and FALSE
-* includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
+1. **Template inheritance via a `parent` field.** A new `parent` field is added
+   to `ClusterTemplate`. When set, the template inherits all parameter
+   definitions from the referenced parent. This forms a tree of templates where
+   the root template is one that has no parent and is typically backed by an
+   Ansible role.
 
-The exclusive list of fields that the user can specify will use dot-notation
-if necessary to reference nested fields.
+2. **Sealed parameters.** A child template can override the `default` value of
+   a parameter inherited from its parent and mark it as `sealed`. A sealed
+   parameter's value is fixed and cannot be changed by users when creating a
+   cluster. The child template only needs to specify the fields it overrides
+   (`default`, `sealed`); the `type`, `title`, and `description` are
+   automatically inherited from the parent.
 
-Cluster and ComputeInstance resources will replace the TemplateID field with a
-reference to the CatalogItem. Both will have validations on create that ensure
-the user did not provide any fields that are not in the CatalogItem's list of
-allowed fields.
+3. **Ansible role resolution.** Currently, the Ansible role name is derived
+   directly from the template name. With inheritance, the Ansible role name is
+   taken from the root of the inheritance tree. For example, if
+   `ocp_17_small_with_gpu` inherits from `ocp_17_small`, then clusters created
+   with either template will use the `ocp_17_small` Ansible role. In addition,
+   an `ansible_role` field (or alternatively an `osac/ansible_role` annotation)
+   can be used to override this default resolution when needed.
 
-The fulfillment-cli will need to be updated to use the new CatalogItem API.
+4. **Effective view.** An `effective` query parameter is added to the list and
+   get template endpoints. When set to `true`, the response contains the
+   _flattened_ representation of the template with all inherited parameter
+   definitions merged in. When `false` (the default), only the raw fields of
+   the template itself are returned.
+
+5. **Tenant template creation.** To allow tenants to create their own derived
+   templates, the Authorino authorization configuration is updated to permit
+   the operation. The existing visibility mechanism already ensures that
+   tenants only see the templates assigned to them.
 
 ### Workflow Description
 
-Tenant Users will provision by:
-#. View the list of available CatalogItems that correspond to a type of CNA (Cloud Native Asset), such as ClusterCatalogItems, and pick the one they want.
-#. Create an instance of the corresponding type of CNA, such as Cluster, referencing the CatalogItem and including required fields as input.
+**Tenant Users** will provision clusters or compute instances by:
 
-Cloud Provider Admins will publish templates to a global catalog by:
-#. curate a small collection of ansible roles that provision CNAs, including creation of all corresponding k8s resources and management of the provider's relevant infrastructure.
-#. create *CatalogItems to present templates to users, specifying which fields are pre-set vs available for the user to provide.
+1. List the available templates (optionally with `effective=true` to see the
+   full parameter definitions) and pick one.
+2. Create a cluster (or compute instance) referencing the chosen template and
+   providing values for the non-sealed parameters.
 
-Tenant Admins will publish templates to their organization by:
-#. review the collection of templates that provision CNAs.
-#. create *CatalogItems to present templates to users, specifying which fields are pre-set vs available for the user to provide.
+**Cloud Provider Admins** will publish templates by:
 
-For example, a CSP Admin could make available a ComputeInstanceTemplate that
-creates a VM and takes all standard fields as input, including image reference,
-memory, and vCPU. A Tenant Admin could then create three
-ComputeInstanceCatalogItems that all specify a RHEL 10 image, and each has
-different values for memory and vCPU. The catalog item would enable users to
-provide certain other fields, but would prevent them from overriding the image,
-memory and vCPU values.
+1. Curate a collection of Ansible roles that provision cloud-native assets,
+   resulting in root templates.
+2. Optionally create child templates that inherit from a root template, setting
+   defaults and sealing parameters as needed.
+3. Assign templates to tenants using the existing visibility mechanism.
+
+**Tenant Admins** will publish templates to their organization by:
+
+1. Review the templates available to them.
+2. Create new child templates that inherit from an available template, setting
+   defaults and sealing parameters to present a curated selection to their
+   users.
+
+For example, a CSP Admin could provide a `ComputeInstanceTemplate` called
+`fedora_vm` that creates a Fedora virtual machine. It has parameters
+`version` and `selinux`. A Tenant Admin could then create a child template
+`fedora_43_vm` that inherits from `fedora_vm`, sets the `version` parameter
+default to `43`, and seals it. Users creating a compute instance with the
+`fedora_43_vm` template can still set `selinux` but cannot change the
+Fedora version.
 
 ### API Extensions
 
-Add:
-* ClusterCatalogItem
-* ComputeInstanceCatalogItem
+**Changes to `ClusterTemplate` and `ComputeInstanceTemplate`:**
 
-Change:
-* Cluster references a ClusterCatalogItem instead of a ClusterTemplate
-* ComputeInstance references a ComputeInstanceCatalogItem instead of a ComputeInstanceTemplate
+Add a `parent` field containing the identifier of the parent template. When
+this is empty the template is a root template.
 
+Add a `sealed` boolean field to `ClusterTemplateParameterDefinition` (and the
+equivalent `ComputeInstanceTemplateParameterDefinition`). When `true`, the
+parameter value is locked to its `default` and cannot be overridden by users
+when creating a resource.
+
+Add an `ansible_role` field to `ClusterTemplate` (and
+`ComputeInstanceTemplate`). This is optional; when set it explicitly specifies
+the Ansible role to use for provisioning, overriding the default resolution
+based on the root template name.
+
+**Changes to list/get template endpoints:**
+
+Add an `effective` query parameter. When `true`, the returned templates
+include all parameters inherited from parent templates, with overrides applied.
+
+**Changes to `Cluster` and `ComputeInstance` creation:**
+
+When a cluster or compute instance is created, the server validates that
+sealed parameters are not provided by the user (or, if provided, match the
+sealed default). The server resolves the full chain of inherited parameter
+definitions before passing the information to the operator.
+
+**Changes to the operator:**
+
+The operator currently receives only the `Cluster` (or `ComputeInstance`)
+object. It will now also need to receive information about the template
+hierarchy, at a minimum the resolved Ansible role name and the effective
+parameter definitions.
 
 ### Implementation Details/Notes/Constraints
 
-TO DO from here down
+**Parameter inheritance rules:**
 
-What are some important details that didn't come across above in the
-**Proposal**? Go in to as much detail as necessary here. This might be
-a good place to talk about core concepts and how they relate. While it is useful
-to go into the details of the code changes required, it is not necessary to show
-how the code will be rewritten in the enhancement.
+A child template's `parameters` list contains only the parameters it wants to
+override. Each entry must reference by `name` a parameter that exists in the
+parent. The child can set `sealed` to `true` and provide a new `default`
+value. Fields like `type`, `title`, and `description` are inherited from the
+parent and should not be repeated in the child (the server will ignore them
+if provided).
+
+**Validation on template creation:**
+
+When a new template is created the server verifies:
+
+* If `parent` is set, the referenced template must exist and be visible to the
+  creator.
+* Each parameter in the child must reference a parameter that exists in the
+  parent.
+* A child cannot un-seal a parameter that was sealed in the parent.
+* The `default` value of an overridden parameter must match the parameter's
+  `type` as declared in the parent.
+
+**Ansible role resolution algorithm:**
+
+1. If the template has an explicit `ansible_role` field (or `osac/ansible_role`
+   annotation), use that value.
+2. Otherwise, walk up the inheritance chain to the root template and use the
+   root template's name as the Ansible role.
+
+**Effective view computation:**
+
+When `effective=true` is requested, the server walks the inheritance chain
+from root to leaf, merging parameter definitions at each level. Parameters in
+child templates override fields of the same-named parameter from the parent.
+The result is a flat list of all parameters with their effective `title`,
+`description`, `type`, `default`, `sealed`, and `required` values.
+
+For example, given a root template `fedora_vm` with parameters:
+
+```json
+[
+  {
+    "name": "version",
+    "title": "Fedora version",
+    "description": "Fedora major version, for example 43.",
+    "type": "type.googleapis.com/google.protobuf.Int32Value",
+    "required": false,
+    "default": 42
+  },
+  {
+    "name": "selinux",
+    "title": "SELinux mode",
+    "description": "SELinux mode: 'enabled', 'disabled' or 'permissive'.",
+    "type": "type.googleapis.com/google.protobuf.StringValue",
+    "required": false,
+    "default": "enabled"
+  }
+]
+```
+
+And a child template `fedora_43_vm` with `parent` set to `fedora_vm` and
+parameters:
+
+```json
+[
+  {
+    "name": "version",
+    "sealed": true,
+    "default": 43
+  }
+]
+```
+
+The effective view of `fedora_43_vm` would be:
+
+```json
+[
+  {
+    "name": "version",
+    "title": "Fedora version",
+    "description": "Fedora major version, for example 43.",
+    "type": "type.googleapis.com/google.protobuf.Int32Value",
+    "required": false,
+    "sealed": true,
+    "default": 43
+  },
+  {
+    "name": "selinux",
+    "title": "SELinux mode",
+    "description": "SELinux mode: 'enabled', 'disabled' or 'permissive'.",
+    "type": "type.googleapis.com/google.protobuf.StringValue",
+    "required": false,
+    "sealed": false,
+    "default": "enabled"
+  }
+]
+```
 
 ### Risks and Mitigations
 
-What are the risks of this proposal and how do we mitigate. Think broadly. For
-example, consider both security and how this will impact the larger OKD
-ecosystem.
+**Deep inheritance chains.** Deeply nested template hierarchies could become
+hard to understand and debug. This can be mitigated by documenting best
+practices (e.g. keeping hierarchies shallow) and potentially enforcing a
+maximum depth.
 
-How will security be reviewed and by whom?
+**Circular references.** The server must validate that the `parent` chain does
+not contain cycles. This is a straightforward check at template creation time.
 
-How will UX be reviewed and by whom?
+**Sealed parameter enforcement.** The server must consistently enforce sealed
+parameters during cluster and compute instance creation. This is a validation
+step in the existing creation flow.
 
-Consider including folks that also work outside your immediate sub-project.
+**Operator changes.** The operator needs to receive template information in
+addition to the cluster or compute instance object. The scope of this change
+needs to be carefully defined to keep the interface clean.
 
 ### Drawbacks
 
-The idea is to find the best form of an argument why this enhancement should
-_not_ be implemented.
-
-What trade-offs (technical/efficiency cost, user experience, flexibility,
-supportability, etc) must be made in order to implement this? What are the reasons
-we might not want to undertake this proposal, and how do we overcome them?
-
-Does this proposal implement a behavior that's new/unique/novel? Is it poorly
-aligned with existing user expectations?  Will it be a significant maintenance
-burden?  Is it likely to be superceded by something else in the near future?
+The inheritance model adds complexity to the template system. Users and admins
+need to understand the parent-child relationship and how parameter overrides
+and sealing work. However, this complexity is justified by the flexibility it
+provides and is preferable to introducing entirely new API types.
 
 ## Alternatives (Not Implemented)
 
-Similar to the `Drawbacks` section the `Alternatives` section is used
-to highlight and record other possible approaches to delivering the
-value proposed by an enhancement, including especially information
-about why the alternative was not selected.
+**New `ClusterCatalogItem` and `ComputeInstanceCatalogItem` types.** An
+earlier version of this proposal suggested introducing dedicated catalog item
+types that would reference existing templates, pre-define parameter values,
+and include an exclusive list of fields the user can set. Clusters and compute
+instances would reference catalog items instead of templates. This approach
+was rejected because it would leave the existing template types without a
+clear purpose and add unnecessary API surface. The inheritance-based approach
+achieves the same goals by extending the existing types.
+
+**Annotations instead of a dedicated `ansible_role` field.** Using an
+`osac/ansible_role` annotation instead of a first-class field would reduce
+coupling between the API server and Ansible. This is a viable alternative
+that may be reconsidered during implementation. Both mechanisms are described
+in this proposal.
 
 ## Open Questions [optional]
 
-This is where to call out areas of the design that require closure before deciding
-to implement the design.  For instance,
- > 1. This requires exposing previously private resources which contain sensitive
-  information.  Can we do this?
+1. Should there be a maximum depth for template inheritance chains?
+2. Should the `ansible_role` override be a first-class field or an annotation?
+   Using an annotation (`osac/ansible_role`) reduces coupling between the API
+   server and Ansible, but a field is more discoverable.
+3. What is the minimal set of template information that needs to be passed to
+   the operator? Passing the full effective template representation is the most
+   flexible option, but passing just the resolved Ansible role and effective
+   parameters may suffice.
 
 ## Test Plan
 
 **Note:** *Section not required until targeted at a release.*
 
-Consider the following in developing a test plan for this enhancement:
-- Will there be e2e and integration tests, in addition to unit tests?
-- How will it be tested in isolation vs with other components?
-- What additional testing is necessary to support managed OpenShift service-based offerings?
+The test strategy should cover:
 
-No need to outline all of the test cases, just the general strategy. Anything
-that would count as tricky in the implementation and anything particularly
-challenging to test should be called out.
-
-All code is expected to have adequate tests (eventually with coverage
-expectations).
+* Unit tests for the inheritance resolution logic (parameter merging, sealed
+  enforcement, cycle detection).
+* Unit tests for the effective view computation.
+* Integration tests for template CRUD operations with parent references.
+* Integration tests for cluster and compute instance creation with inherited
+  templates, verifying sealed parameter enforcement.
+* End-to-end tests validating the full workflow from template creation through
+  resource provisioning.
 
 ## Graduation Criteria
 
 **Note:** *Section not required until targeted at a release.*
 
-Define graduation milestones.
-
-These may be defined in terms of API maturity, or as something else. Initial proposal
-should keep this high-level with a focus on what signals will be looked at to
-determine graduation.
-
-Consider the following in developing the graduation criteria for this
-enhancement:
-
-- Maturity levels
-  - [`alpha`, `beta`, `stable` in upstream Kubernetes][maturity-levels]
-  - `Dev Preview`, `Tech Preview`, `GA` in OpenShift
-- [Deprecation policy][deprecation-policy]
-
-Clearly define what graduation means by either linking to the [API doc definition](https://kubernetes.io/docs/concepts/overview/kubernetes-api/#api-versioning),
-or by redefining what graduation means.
-
-In general, we try to use the same stages (alpha, beta, GA), regardless how the functionality is accessed.
-
-[maturity-levels]: https://git.k8s.io/community/contributors/devel/sig-architecture/api_changes.md#alpha-beta-and-stable-versions
-[deprecation-policy]: https://kubernetes.io/docs/reference/using-api/deprecation-policy/
-
-**If this is a user facing change requiring new or updated documentation in [openshift-docs](https://github.com/openshift/openshift-docs/),
-please be sure to include in the graduation criteria.**
-
-**Examples**: These are generalized examples to consider, in addition
-to the aforementioned [maturity levels][maturity-levels].
-
-### Removing a deprecated feature
-
-- Announce deprecation and support policy of the existing feature
-- Deprecate the feature
+To be defined during implementation planning.
 
 ## Upgrade / Downgrade Strategy
 
-If applicable, how will the component be upgraded and downgraded? Make sure this
-is in the test plan.
+The `parent`, `sealed`, and `ansible_role` fields are additive. Existing
+templates without a parent continue to work as root templates. No migration is
+needed for existing clusters or compute instances.
 
-Consider the following in developing an upgrade/downgrade strategy for this
-enhancement:
-- What changes (in invocations, configurations, API use, etc.) is an existing
-  cluster required to make on upgrade in order to keep previous behavior?
-- What changes (in invocations, configurations, API use, etc.) is an existing
-  cluster required to make on upgrade in order to make use of the enhancement?
-
-Upgrade expectations:
-- Each component should remain available for user requests and
-  workloads during upgrades. Ensure the components leverage best practices in handling [voluntary
-  disruption](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/). Any exception to
-  this should be identified and discussed here.
-- Micro version upgrades - users should be able to skip forward versions within a
-  minor release stream without being required to pass through intermediate
-  versions - i.e. `x.y.N->x.y.N+2` should work without requiring `x.y.N->x.y.N+1`
-  as an intermediate step.
-- Minor version upgrades - you only need to support `x.N->x.N+1` upgrade
-  steps. So, for example, it is acceptable to require a user running 4.3 to
-  upgrade to 4.5 with a `4.3->4.4` step followed by a `4.4->4.5` step.
-- While an upgrade is in progress, new component versions should
-  continue to operate correctly in concert with older component
-  versions (aka "version skew"). For example, if a node is down, and
-  an operator is rolling out a daemonset, the old and new daemonset
-  pods must continue to work correctly even while the cluster remains
-  in this partially upgraded state for some time.
-
-Downgrade expectations:
-- If an `N->N+1` upgrade fails mid-way through, or if the `N+1` cluster is
-  misbehaving, it should be possible for the user to rollback to `N`. It is
-  acceptable to require some documented manual steps in order to fully restore
-  the downgraded cluster to its previous state. Examples of acceptable steps
-  include:
-  - Deleting any CVO-managed resources added by the new version. The
-    CVO does not currently delete resources that no longer exist in
-    the target version.
+On downgrade, templates with inheritance would lose their parent relationship,
+but since the fields are simply ignored by older versions, no data is lost.
+Clusters already created from child templates continue to function because the
+provisioning information was resolved at creation time.
 
 ## Version Skew Strategy
 
-How will the component handle version skew with other components?
-What are the guarantees? Make sure this is in the test plan.
+During an upgrade, older components that are unaware of template inheritance
+will treat all templates as root templates. This is safe because:
 
-Consider the following in developing a version skew strategy for this
-enhancement:
-- During an upgrade, we will always have skew among components, how will this impact your work?
-- Does this enhancement involve coordinating behavior in the control plane and
-  in the kubelet? How does an n-2 kubelet without this feature available behave
-  when this feature is used?
-- Will any other components on the node change? For example, changes to CSI, CRI
-  or CNI may require updating that component before the kubelet.
+* The API server resolves the effective template at cluster/compute instance
+  creation time. Older operators receiving resolved parameters will work
+  correctly.
+* The new `parent`, `sealed`, and `ansible_role` fields are ignored by
+  components that do not understand them.
 
 ## Support Procedures
 
-Describe how to
-- detect the failure modes in a support situation, describe possible symptoms (events, metrics,
-  alerts, which log output in which component)
-
-  Examples:
-  - If the webhook is not running, kube-apiserver logs will show errors like "failed to call admission webhook xyz".
-  - Operator X will degrade with message "Failed to launch webhook server" and reason "WehhookServerFailed".
-  - The metric `webhook_admission_duration_seconds("openpolicyagent-admission", "mutating", "put", "false")`
-    will show >1s latency and alert `WebhookAdmissionLatencyHigh` will fire.
-
-- disable the API extension (e.g. remove MutatingWebhookConfiguration `xyz`, remove APIService `foo`)
-
-  - What consequences does it have on the cluster health?
-
-    Examples:
-    - Garbage collection in kube-controller-manager will stop working.
-    - Quota will be wrongly computed.
-    - Disabling/removing the CRD is not possible without removing the CR instances. Customer will lose data.
-      Disabling the conversion webhook will break garbage collection.
-
-  - What consequences does it have on existing, running workloads?
-
-    Examples:
-    - New namespaces won't get the finalizer "xyz" and hence might leak resource X
-      when deleted.
-    - SDN pod-to-pod routing will stop updating, potentially breaking pod-to-pod
-      communication after some minutes.
-
-  - What consequences does it have for newly created workloads?
-
-    Examples:
-    - New pods in namespace with Istio support will not get sidecars injected, breaking
-      their networking.
-
-- Does functionality fail gracefully and will work resume when re-enabled without risking
-  consistency?
-
-  Examples:
-  - The mutating admission webhook "xyz" has FailPolicy=Ignore and hence
-    will not block the creation or updates on objects when it fails. When the
-    webhook comes back online, there is a controller reconciling all objects, applying
-    labels that were not applied during admission webhook downtime.
-  - Namespaces deletion will not delete all objects in etcd, leading to zombie
-    objects when another namespace with the same name is created.
+* If template inheritance resolution fails, the API server will return an
+  error on the template get/list endpoint (with `effective=true`) or during
+  cluster/compute instance creation. The error message will identify the
+  broken link in the inheritance chain.
+* Admins can inspect the raw template (without `effective=true`) to see the
+  direct parent reference and parameter overrides, making it straightforward
+  to diagnose misconfigured inheritance.
 
 ## Infrastructure Needed [optional]
 
-Use this section if you need things from the project. Examples include a new
-subproject, repos requested, github details, and/or testing infrastructure.
+No new infrastructure is needed. The changes are to the existing API server,
+operator, and authorization configuration.
