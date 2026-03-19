@@ -244,7 +244,7 @@ This single formula works uniformly for creation and scale operations without br
 
 Without these changes, the approval gate is unenforceable — a tenant could bypass quotas by writing `approval_state = "approved"` directly.
 
-**Known gap — GPU tracking for VMs:** ComputeInstance currently has no structured field for GPU allocation. If a VM template provisions GPU passthrough, the GPU count is buried in `template_parameters` (unstructured JSON). For GPU quota enforcement on VMs, either a `gpus` field must be added to `ComputeInstanceSpec`, or GPU information must be extractable from the template metadata during resolution. This does not affect cluster GPU quotas, which are tracked by node resource class (e.g., `nodes.h100`).
+**Prerequisite — structured GPU field for VMs:** ComputeInstance currently has no structured field for GPU allocation. GPU count is buried in `template_parameters` (unstructured JSON), which cannot be reliably queried or aggregated for quota enforcement. A structured `gpus` field must be added to `ComputeInstanceSpec` before GPU quota enforcement can be implemented. This is consistent with how other VM resource dimensions are handled — `cores`, `memory_gib`, and `boot_disk` are already structured API fields. GPU is central to OSAC's AI workload value proposition and must not be deferred. This does not affect cluster GPU quotas, which are tracked by node resource class (e.g., `nodes.h100`).
 
 **Configuration:**
 
@@ -254,9 +254,17 @@ Without these changes, the approval gate is unenforceable — a tenant could byp
 
 #### Template Metadata Enrichment
 
-The Fulfillment Service resolves resource footprints from template metadata when populating `desired_spec`. In most cases, this works with the existing `default_node_request` format — the Fulfillment Service reads `resourceClass` and `numberOfNodes` directly. However, when **template parameters override node counts** (e.g., a `worker_count` parameter that changes the number of workers), the Fulfillment Service cannot resolve the correct footprint because it doesn't know which parameter maps to which node set.
+**Important caveat:** Template metadata enrichment is only needed for **clusters**. VMs and host pools have their quotable dimensions as explicit API fields (`spec.cores`, `spec.memory_gib` for VMs; `spec.host_sets` for host pools) — the Fulfillment Service sees exact values in the request. No template resolution needed.
 
-To address this, two **optional fields** are added to the existing `default_node_request` entries in `meta/osac.yaml`:
+For clusters, the resource footprint comes from `default_node_request` in `meta/osac.yaml`. However, **`default_node_request` is a redundant declaration** — the actual node count defaults also exist independently in the Ansible role's code (e.g., `{{ worker_count | default(2) }}` in `install.yaml` and/or `defaults/main.yaml`). These two sources are maintained separately with no enforcement that they agree. If `default_node_request` says 2 nodes but the Ansible role defaults to 3, quotas would be computed against the wrong value. This fragility predates the quota proposal but becomes a correctness concern once quotas rely on this metadata.
+
+**Recommended long-term fix:** Either make `meta/osac.yaml` the single source of truth that Ansible roles also read from, or extract the actual defaults from the Ansible role during the AAP discovery job rather than maintaining a separate declaration. Both options are beyond the scope of this proposal but should be tracked as a follow-up to ensure quota accuracy.
+
+For v1, the Fulfillment Service uses `default_node_request` as the best available source, with the understanding that template authors must keep it consistent with the Ansible defaults. CI validation should be added to catch mismatches.
+
+**Design principle — structured fields for all quotable dimensions:** VMs already have structured API fields for all quotable dimensions (`cores`, `memory_gib`, `boot_disk`, and `gpus` as a prerequisite). Clusters also have a structured field — `nodeRequests` / `node_sets` — but it's optional. When tenants omit it and rely on template defaults or parameter overrides, the Fulfillment Service must resolve the structured values from unstructured template parameters. The `countParameter` enrichment below is a **pragmatic v1 mechanism** for this resolution. The long-term fix is making `osac.yaml` the single source of truth so that resolution is reliable by design.
+
+When **template parameters override node counts** (e.g., a `worker_count` parameter that changes the number of workers), the Fulfillment Service cannot resolve the correct footprint because it doesn't know which parameter maps to which node set. To address this, two **optional fields** are added to the existing `default_node_request` entries in `meta/osac.yaml`:
 
 ```yaml
 # Existing format (unchanged, still works):
@@ -570,11 +578,11 @@ The following capabilities are enabled by this proposal's architecture but are e
 
 ## Open Questions
 
-1. **VM quota granularity:** What quota keys should be used for VMs? Options include `compute_instances` (count), `vcpus`, `memory_gib`, `gpus`. The Fulfillment Service already stores `spec.cores` and `spec.memory_gib` as structured fields, so any combination is feasible.
+1. **Template metadata reliability for clusters:** The `default_node_request` metadata in `meta/osac.yaml` is a redundant declaration — the actual node count defaults also exist independently in the Ansible role's code. These are maintained separately with no enforcement that they agree. For v1, quota accuracy depends on template authors keeping them consistent. A longer-term solution (making `osac.yaml` the single source of truth, or extracting defaults from the Ansible role during discovery) should be discussed with the template maintainers.
 
-2. **Late-binding resource classes:** Current templates specify resource classes explicitly (e.g., `resourceClass: fc430`). If future templates support generic resource requests (e.g., "5 GPU nodes" without specifying h100 vs a100), resolve-at-creation may not have enough information. This is not a problem today but should be monitored.
+2. **Abstraction layers above raw quotas:** MOC/NERC uses "units of computing" (ColdFront's allocation multiplier) and "Service Units" (billing currency tracking resource × time). Neither is the Quota Service's concern — it operates on raw resource counts. ColdFront's plugin translates its internal abstractions into raw OSAC quota limits before calling the Quota Service API. SU-based billing would be a separate system. Confirm with MOC stakeholders that this separation of concerns is correct.
 
-3. **Abstraction layers above raw quotas:** MOC/NERC uses two abstraction layers above raw resource counts: "units of computing" (ColdFront's allocation multiplier that generates per-resource-type quotas) and "Service Units" (a billing currency that tracks resource × time usage). Neither of these is the Quota Service's concern — the Quota Service operates on raw resource counts (`nodes.h100: 20`) and doesn't need to understand multipliers, exchange rates, or time-based billing. ColdFront's plugin translates its internal abstractions into raw OSAC quota limits before calling the Quota Service API. SU-based billing would be a separate system that reads resource usage data, not a Quota Service feature. Confirm with MOC stakeholders (@hpdempsey) that this separation of concerns is correct and no quota-level SU support is needed.
+3. **Declarative API model:** Should the Fulfillment Service API follow strict Kubernetes declarative conventions (admissibility model in status block, as proposed by Avishay) or remain a service API with K8s-like conventions? This is a broader API philosophy question that affects the quota field design but extends beyond quota scope. See the PR discussion for details.
 
 
 ## Test Plan
