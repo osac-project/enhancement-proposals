@@ -4,7 +4,7 @@ authors:
   - Lars Kellogg-Stedman <lars@redhat.com>
   - Zoltan Szabo <zszabo@redhat.com>
 creation-date: 2025-09-11
-last-updated: 2026-03-12
+last-updated: 2026-03-20
 tracking-link:
   - https://issues.redhat.com/browse/MGMT-23368
 see-also:
@@ -18,7 +18,7 @@ superseded-by:
 
 ## Summary
 
-This proposal introduces a quota management system for the Open Sovereign AI Cloud (OSAC) that enforces resource limits on tenant provisioning requests. The system adds a generic approval workflow to the Fulfillment Service and introduces the OSAC Quota Service as a loosely coupled component. The design avoids maintaining a separate usage ledger by querying the Fulfillment Service as the single source of truth for resource consumption, and leverages resolve-at-creation to store resource footprints directly on resource records in the Fulfillment Service database.
+This proposal introduces a quota management system for the Open Sovereign AI Cloud (OSAC) that enforces resource limits on tenant provisioning requests. The system adds a generic, extensible approval workflow to the Fulfillment Service and introduces the OSAC Quota Service as a loosely coupled component. The design follows Kubernetes-like declarative conventions: `spec` represents the user's intent, and `status.approval` tracks the system's admission state including an `approved_spec` that records what has been approved. The Quota Service computes tenant resource usage on demand from Fulfillment Service data.
 
 ## Motivation
 
@@ -40,7 +40,7 @@ Service providers need to enforce upper limits on the resources tenants can cons
 
 ### Goals
 
-- Implement a generic approval workflow in the Fulfillment API that enables quota enforcement in v1 and is extensible to other approval patterns in the future
+- Implement a generic approval workflow in the Fulfillment API that enables quota enforcement in v1 and is extensible to other approval patterns (billing, policy, manual admin) in the future
 - Introduce the OSAC Quota Service as a separate, pluggable component that makes approval decisions based on configurable quota limits
 - Support create, scale-out/up, scale-in/down, and delete operations in the quota workflow
 - Enable integration with external quota sources (e.g., ColdFront) via the Quota Service API
@@ -49,23 +49,23 @@ Service providers need to enforce upper limits on the resources tenants can cons
 ### Non-Goals
 
 - User interface components for quota management (will be addressed in a separate proposal)
-- Billing or cost accounting integration (the architecture supports it but it is out of scope)
+- Billing or cost accounting integration (the architecture supports it via extensible gates but billing logic is out of scope)
 - Capacity planning or predictive quota management
 - Per-hub or per-region quota limits (v1 enforces quotas globally per organization across all hubs; sub-dividing quotas by hub, region, or availability zone is deferred)
 - **High availability and backup:** The Quota Service is deployed as a single replica with no automated backup, consistent with all other OSAC components (Fulfillment Service, OSAC Operator, Keycloak, etc.) which also run at `replicas: 1` with no backup strategy. The current OSAC platform does not address HA or backup for any component. The Quota Service's PostgreSQL database stores only quota limits (not resource data), so loss is recoverable by re-entering limits from ColdFront or admin records. When a platform-wide HA and backup initiative is undertaken, the Quota Service should be included.
-- **Manual admin approval workflows:** The generic `approval_state` field is designed to be extensible to non-quota approval patterns (e.g., an admin manually reviewing and approving large requests). However, v1 only implements automated quota-based approval. Manual approval and multi-party approval (where both a quota check AND an admin must approve) would require extending the single `approval_state` field into a multi-step approval model (e.g., an `approved_by` list). This is deferred to a future proposal.
+- **Multi-gate coordination semantics:** v1 implements only the quota gate. The extensible gate structure is in place for future gates (billing, policy, manual admin), but the coordination semantics for multiple concurrent gates (reservation, rollback, ordering) are deliberately deferred until a concrete second gate is needed. See Future Work for details.
 
 ## Proposal
 
 We propose four changes:
 
-1. **Generic approval workflow in the Fulfillment Service:** All resources gain an `approval_state` field (pending/approved/rejected), a `decision_reason` field, and a `desired_spec` field for pending changes. The Fulfillment Service only creates or updates CRs on the hub for approved resources.
+1. **Generic approval workflow in the Fulfillment Service:** The Fulfillment Service API follows Kubernetes-like declarative conventions. `spec` represents the user's intent (always the latest desired state). A new `status.approval` block tracks the system's admission state, including an `approved_spec` (what has been approved and is on the hub) and an extensible `gates` structure for independent approval services. The Fulfillment Service only creates or updates CRs on the hub when `status.approval.state` is `"approved"`.
 
-2. **`desired_spec` for pending changes:** Both new resource creation and scale operations store the requested state in `desired_spec`, while `spec` retains the current approved state (empty for new resources, current footprint for scale). On approval, `desired_spec` is moved to `spec`. The Quota Service computes usage directly from `spec` and `desired_spec` fields — no additional resource tracking fields are needed.
+2. **Gating semaphore for sequential evaluation:** To prevent cross-gate race conditions, only one resource per tenant can be in `"gating"` state at a time. The Fulfillment Service promotes the oldest pending resource to `"gating"`, gate services evaluate it, and on completion the next pending resource is promoted. This ensures that each gate's admission decision is based on accurate, up-to-date resource consumption.
 
-3. **`OSAC_APPROVAL_REQUIRED` configuration flag:** A boolean flag on the Fulfillment Service (default `false`) that controls whether the approval workflow is active. When `false`, the Fulfillment Service moves `desired_spec` to `spec` immediately and sets `approval_state = "approved"` — no approval service is consulted and existing behavior is preserved. When `true`, new resources and scale operations start with `approval_state = "pending"` and wait for an approval service to approve or reject them. This ensures backwards compatibility for deployments that don't use quotas, and allows gradual adoption.
+3. **`OSAC_APPROVAL_REQUIRED` configuration flag:** A boolean flag on the Fulfillment Service (default `false`) that controls whether the approval workflow is active. When `false`, resources are immediately approved (`status.approval.approved_spec` is set to match `spec`). When `true`, new resources and scale operations start with `status.approval.state = "pending"` and wait for gate services to evaluate. This ensures backwards compatibility for deployments that don't use quotas, and allows gradual adoption. When this flag changes from `true` to `false` at runtime, the Fulfillment Service auto-approves all currently pending and gating resources to drain the backlog.
 
-4. **OSAC Quota Service:** A standalone service that stores quota limits per tenant, periodically polls for pending resources via the Fulfillment Service API, computes current tenant usage from spec data, and approves or rejects resources based on quota limits.
+4. **OSAC Quota Service:** A standalone service that stores quota limits per tenant. It watches for resources in `"gating"` state, computes projected usage by querying the Fulfillment Service for the tenant's current resource consumption, and writes its decision to the `quota` gate entry. When a tenant's footprint changes (resource deleted, scale-in, quota limit increased), the Quota Service sets all rejected resources for that tenant back to `"pending"` for automatic re-evaluation through the normal gating flow.
 
 ### Workflow Description
 
@@ -83,51 +83,22 @@ sequenceDiagram
     participant Hub as Hub Cluster
 
     T->>FS: Create resource (template + params)
-    FS->>DB: Store record (spec={}, desired_spec={nodes:2}, approval_state=pending)
+    FS->>DB: Store record (spec={nodes:2}, approval.state=pending)
     FS-->>T: Created (pending approval)
 
-    loop Poll (configurable interval)
-        QS->>FS: List pending resources (all types)
-    end
-    QS->>FS: List all resources for tenant
-    FS-->>QS: All resources with specs
-    QS->>QS: Compute: sum(specs) + delta(desired-spec) ≤ limits?
-    QS->>FS: Update(approval_state=approved)
-    FS->>DB: Store approval_state=approved
+    FS->>DB: Promote to gating (oldest pending for tenant)
 
-    R->>DB: Detect approval_state=approved + desired_spec set
-    R->>DB: Move desired_spec → spec, clear desired_spec
-    R->>Hub: Create CR (ClusterOrder/ComputeInstance/HostPool)
+    QS->>FS: Detect gating resource
+    QS->>FS: Query all approved resources for tenant
+    QS->>QS: sum(approved_specs) + spec = projected, check limits
+    QS->>FS: Write gates.quota = admitted (via Update API)
+
+    FS->>DB: Detect all gates admitted → state=approved, approved_spec=spec
+
+    R->>DB: Detect approved, approved_spec set
+    R->>Hub: Create CR using approved_spec
     Hub-->>R: CR created
     Note over Hub: Operator reconciles → AAP provisions
-```
-
-**Scale-out rejection:**
-
-```mermaid
-sequenceDiagram
-    participant T as Tenant (CLI/UI)
-    participant FS as Fulfillment Service
-    participant DB as PostgreSQL
-    participant QS as Quota Service
-    participant R as Reconciler
-
-    Note over DB: Existing resource: spec={nodes:2}, approval_state=approved
-    T->>FS: Scale request (2→5 nodes)
-    FS->>DB: Set desired_spec={nodes:5}, approval_state=pending
-    FS-->>T: Scale pending approval
-
-    QS->>FS: List pending resources (all types)
-    QS->>FS: List all resource types for tenant
-    QS->>QS: sum(specs) + delta(5-2=3) > limits
-    QS->>FS: Update(approval_state=rejected, decision_reason="...")
-    FS->>DB: Store rejection
-
-    R->>DB: Detect approval_state=rejected + spec non-empty (scale rejection)
-    R->>DB: Clear desired_spec, revert approval_state=approved
-    Note over R: No hub CR change — cluster stays at 2 nodes
-    T->>FS: Get resource
-    FS-->>T: approval_state=approved, decision_reason="Scale rejected: ..."
 ```
 
 #### Resource Creation
@@ -136,125 +107,147 @@ The following workflow applies to all resource types: clusters, compute instance
 
 1. A **tenant** creates a new resource using the Fulfillment API (CLI or UI), specifying a template and parameters.
 
-2. The **Fulfillment Service** creates a resource record in its database. The template-resolved resource details are stored in `desired_spec` (e.g., `desired_spec.node_sets` for clusters, `desired_spec.cores`/`desired_spec.memory_gib` for VMs), while `spec` remains empty (nothing is provisioned yet). If `OSAC_APPROVAL_REQUIRED` is `true`, `approval_state` is set to `"pending"`. If `false`, `desired_spec` is immediately moved to `spec`, `approval_state` is set to `"approved"`, and processing proceeds (existing behavior). No CR is created on the hub until `approval_state = "approved"`.
+2. The **Fulfillment Service** creates a resource record in its database with the template-resolved details in `spec` (the user's intent). `status.approval.approved_spec` is empty (nothing approved yet). If `OSAC_APPROVAL_REQUIRED` is `true`, `status.approval.state` is set to `"pending"`. If `false`, `approved_spec` is immediately set to match `spec`, `state` is set to `"approved"`, and processing proceeds (existing behavior). No CR is created on the hub until `state = "approved"`.
 
-3. The **Quota Service** detects the new pending resource during its next polling cycle.
+3. The **Fulfillment Service** promotes the oldest pending resource for this tenant to `"gating"` state. Only one resource per tenant can be in `"gating"` at a time (semaphore).
 
-4. The **Quota Service** computes the projected total for the tenant:
-   - Queries all non-deleted resources for the tenant (regardless of `approval_state`)
-   - Sums the resource footprint from each resource's `spec` (for new pending resources, `spec` is empty so they contribute zero)
-   - Adds the delta of the resource being evaluated: `desired_spec - spec` (for new resources `spec` is empty, so the delta equals the full `desired_spec` footprint; for scale-out, the delta is the additional consumption)
-   - Compares the projected total against the tenant's quota limits
+4. The **Quota Service** detects the gating resource and evaluates it:
+   - Queries the Fulfillment Service for all approved, non-deleted resources for this tenant (across all resource types)
+   - Sums the `approved_spec` footprints to get current tenant usage
+   - Computes the delta: `spec - approved_spec` of the gating resource (for new resources, `approved_spec` is empty, so delta = full `spec` footprint)
+   - Compares `current_usage + delta` against the tenant's quota limits
+   - Writes its decision to `status.approval.gates.quota` via the Fulfillment Service Update API: `admitted` or `rejected` with reason
 
-5. The **Quota Service** makes a decision:
-   - **If within limits:** Sets `approval_state = "approved"`. The Fulfillment Service detects the approval, moves `desired_spec → spec`, clears `desired_spec`, and creates the corresponding CR (ClusterOrder, ComputeInstance, or HostPool) on the hub cluster. The Operator sees the new CR and begins provisioning.
-   - **If exceeds limits:** Sets `approval_state = "rejected"` and `decision_reason` to a human-readable explanation (e.g., "Would exceed your quota for nodes.fc430 by 2 nodes. Current usage: 8/10"). The resource record remains in the database — no CR is created. The tenant can delete the rejected resource and create a new one with a smaller footprint. Automatic retry or in-place modification of rejected resources is not supported in v1.
+5. The **Fulfillment Service** checks the gate results:
+   - **All gates admitted:** Sets `status.approval.state = "approved"` and `status.approval.approved_spec = spec`. The reconciler creates the corresponding CR on the hub cluster. Promotes the next pending resource to gating.
+   - **Any gate rejected:** Sets `status.approval.state = "rejected"`. The resource's `spec` (user intent) is preserved. No CR is created. Promotes the next pending resource to gating.
 
-6. The **tenant** can check the status via the CLI (e.g., `fulfillment-cli get clusters`, `fulfillment-cli get computeinstances`) which shows `approval_state` for each resource.
+6. The **tenant** can check the status via the CLI (e.g., `fulfillment-cli get clusters`) which shows the approval state for each resource.
+
+#### Re-evaluation of Rejected Resources
+
+When the Quota Service detects a change in a tenant's resource footprint (resource deleted, scale-in completed, quota limit increased), it sets all rejected (non-expired, non-deleted) resources for that tenant back to `"pending"` state. This re-enters them into the normal gating flow:
+
+- The Fulfillment Service promotes the oldest pending resource to `"gating"` (normal semaphore behavior)
+- The Quota Service evaluates it using the standard formula
+- If it now fits within quota, the Quota Service admits it — the FS transitions to `"approved"`
+- If it still doesn't fit, the Quota Service rejects it again
+- The next pending resource is then promoted to gating, and so on
+
+This provides declarative retry behavior: the user's intent (in `spec`) is preserved, and the system reconciles toward it when conditions allow. No special re-evaluation logic is needed — the existing gating flow handles everything.
+
+Resources that have been rejected for longer than a configurable TTL (e.g., 24 hours) are transitioned to a terminal `"expired"` state to prevent stale auto-provisioning. Expired resources are not re-evaluated.
 
 #### Scale Operations
 
 Scale operations apply to **clusters** (adding/removing worker nodes) and **host pools** (adding/removing hosts). Compute instances (VMs) have immutable resource specs (`cores`, `memoryGiB`, `bootDisk`) — they cannot be resized after creation. To change a VM's resources, the tenant must delete it and create a new one, which goes through the standard approval workflow.
 
-- **Scale-out** (adding nodes to a cluster or hosts to a host pool): The tenant requests a scale change via the Fulfillment API (e.g., `node_sets.fc430.size` from 2 to 5). The Fulfillment Service stores the desired change in `desired_spec` but **does NOT update `spec` or push the change to the hub CR**. The resource's `spec` retains the current state (2 nodes), keeping its current consumption visible in quota calculations. `approval_state` is set to `"pending"`.
+- **Scale-out** (adding nodes to a cluster or hosts to a host pool): The tenant edits the resource via the Fulfillment API (e.g., changes `spec.node_sets.fc430.size` from 2 to 5). The Fulfillment Service updates `spec` to reflect the user's new intent. `status.approval.approved_spec` retains the current approved state (2 nodes), keeping actual consumption visible. `status.approval.state` is set to `"pending"`, then promoted to `"gating"` when it's the tenant's turn.
 
-  - **On approval:** The Quota Service sets `approval_state = "approved"`. The Fulfillment Service moves `desired_spec → spec` and the reconciler pushes the updated spec to the hub CR. The Operator sees the CR change and scales the cluster.
-  - **On denial:** The Quota Service sets `approval_state = "rejected"` and `decision_reason` with the denial explanation. The Fulfillment Service detects the rejection, and because `spec` is non-empty (indicating this is a scale operation on an existing resource, not a new resource creation), it clears `desired_spec` and reverts `approval_state` to `"approved"`. The spec is unchanged, the hub CR is unchanged, the cluster stays at its current size. This is distinct from a new resource rejection (where `spec` is empty and `approval_state` stays `"rejected"`). Note: after revert, the resource shows `approval_state = "approved"` with a `decision_reason` explaining the scale rejection. This is a known v1 trade-off — clients must check `decision_reason` to detect a recent scale denial on an otherwise approved resource. The future `decision_history[]` evolution (see Future Work) will provide a cleaner model for this.
+  - **On approval:** All gates admit. `approved_spec` is set to match `spec`. The reconciler pushes the updated spec to the hub CR. The Operator scales the cluster.
+  - **On rejection:** The user's `spec` (5 nodes) is preserved as their intent. `approved_spec` stays at 2. The cluster keeps running at 2 nodes. If quota later frees up, the re-evaluation trigger automatically retries.
 
-  This follows the same gating principle as resource creation: the hub CR change is the provisioning trigger, so the Fulfillment Service must hold it until approval.
+- **Scale-in** (removing nodes or hosts): When the new `spec` is less than or equal to `approved_spec`, no approval is needed — freeing resources is always allowed. The Fulfillment Service updates both `spec` and `approved_spec`, sets `state = "approved"`, pushes the change to the hub CR immediately, and the Operator scales down. The Quota Service detects the footprint change and may trigger re-evaluation of rejected resources for this tenant.
 
-- **Scale-in** (removing nodes or hosts): No approval needed — freeing resources is always allowed. The Fulfillment Service updates `spec` directly, pushes the change to the hub CR immediately, and the Operator scales down.
+  General rule for spec changes: if `new_spec > approved_spec` → pending (needs gating); if `new_spec ≤ approved_spec` → approved immediately.
 
 #### Resource Deletion
 
-When a resource is deleted, it is soft-deleted in the Fulfillment Service (via `deletion_timestamp`). The Quota Service does not need to track deletions — it must filter its queries to exclude soft-deleted resources, ensuring they do not count against quota.
+When a resource is deleted, it is soft-deleted in the Fulfillment Service (via `deletion_timestamp`). The Quota Service detects the footprint change and triggers re-evaluation of rejected resources for that tenant (sets them back to `"pending"`). Deleted resources are excluded from all quota computations.
 
 #### Provisioning Failure
 
-If provisioning fails after approval, the resource remains in the Fulfillment Service database with `status.state = FAILED` and `approval_state = "approved"`. It continues to count against quota because:
+If provisioning fails after approval, the resource remains in the Fulfillment Service database with `status.state = FAILED` and `status.approval.state = "approved"`. It continues to count against quota because:
 - Failures can be partial (e.g., 3 of 5 nodes allocated before failure)
 - Automatically freeing quota on failure could cause over-commitment
 - The tenant must explicitly delete the failed resource to free quota (standard cloud platform behavior)
 
 ### API Extensions
 
-All resources that can be requested via the Fulfillment API gain the following metadata fields:
+All resources gain a new `status.approval` block in the Fulfillment Service API. Following Kubernetes-like conventions, `spec` represents the user's intent and `status` contains system-managed state:
 
-- **`approval_state`** (string): The approval state of the resource. Values:
-  - `"approved"` — Resource has been approved for provisioning (default when `OSAC_APPROVAL_REQUIRED=false`)
-  - `"pending"` — Resource is awaiting approval (default when `OSAC_APPROVAL_REQUIRED=true`)
-  - `"rejected"` — Resource has been rejected; will not be provisioned
-- **`decision_reason`** (string, optional): Human-readable explanation of the latest approval decision. Set when a resource is rejected (e.g., "Would exceed your quota for nodes.fc430 by 2 nodes") or when a scale operation is denied (e.g., "Scale from 2 to 5 nodes denied: would exceed quota"). Cleared on successful approval. In a future version, this may evolve into a `decision_history[]` array providing a full audit trail of all approval decisions.
-- **`desired_spec`** (same proto type as `spec`, optional): The full desired resource spec awaiting approval. Uses the same protobuf message type as `spec` for each resource (e.g., `ClusterSpec`, `ComputeInstanceSpec`, `HostPoolSpec`) and is always fully populated. For new resources, contains the complete template-resolved spec (template, parameters, node_sets, etc.). For scale-out, contains a copy of the current spec with the modified fields updated (e.g., `node_sets` changed, all other fields — including immutable fields like `template` — copied from current spec). In both cases, `spec` retains the current approved state (empty for new resources, current footprint for scale). On approval, `desired_spec` replaces `spec` entirely and is cleared. On rejection, `desired_spec` is cleared with no other changes.
+```yaml
+Cluster:
+  spec:                              # User's intent (always the latest desired state)
+    template: "ocp_4_17_small"
+    node_sets: {fc430: {size: 5}}    # What the user wants
+  status:
+    state: READY                     # Hub-reported state (Operator writes)
+    conditions: [...]                # Hub-reported conditions
+    api_url: "https://..."
+    approval:                        # Approval block (Fulfillment Service manages)
+      state: "gating"               # pending | gating | approved | rejected
+      approved_spec:                # What's been approved and is on the hub
+        template: "ocp_4_17_small"
+        node_sets: {fc430: {size: 2}}
+      gates:                        # Extensible gate structure
+        quota:
+          state: "admitted"
+          reason: "Within quota limits"
+          timestamp: "2026-03-20T..."
+```
 
-**No additional resource tracking fields are needed.** The Quota Service computes resource footprints directly from existing spec fields (`spec.node_sets` for clusters, `spec.cores`/`spec.memory_gib` for VMs, `spec.host_sets` for host pools). This avoids introducing quota-specific fields into the shared data model, keeping the Fulfillment Service schema generic and enabling simple pluggability of different approval services.
+**Approval states:**
+- `"pending"` — Resource is waiting to be promoted to gating
+- `"gating"` — Resource is being evaluated by gate services (only one per tenant at a time)
+- `"approved"` — All gates admitted; resource is provisioned or being provisioned
+- `"rejected"` — At least one gate rejected; user's `spec` is preserved as intent; may be re-evaluated when conditions change
+- `"expired"` — Resource was rejected and has exceeded the configurable TTL; terminal state, will not be re-evaluated
+
+**Key fields:** `status.approval.state` is managed by the Fulfillment Service (gate services do NOT write it directly). `status.approval.approved_spec` is the spec approved and on the hub (same proto type as `spec`; reconciler uses this for hub CR operations, never `spec` directly). `status.approval.gates` is a map where each gate service writes only its own entry (v1: `quota` only). `decision_reason` is a top-level convenience field summarizing the latest decision.
+
+**Pending change detection:** `spec != approved_spec` → pending change; `spec == approved_spec` → fully reconciled. No separate intent field needed.
 
 **Field write permissions:**
 
-| Field | Tenant (public API) | Fulfillment Service | Quota Service (`approval-writer` role) |
-|-------|--------------------|--------------------|---------------------------------------|
-| `approval_state` | Read only | Writes `"pending"` on create/scale | Writes `"approved"` or `"rejected"` |
-| `decision_reason` | Read only | Clears `desired_spec` and reverts `approval_state` on scale rejection | Writes reason on rejection, clears on approval |
-| `desired_spec` | Read only | Computes from tenant's create/scale request. Moves to `spec` on approval. Clears on rejection. | — |
-| `spec` | Read only | Receives `desired_spec` on approval | — |
-| Create/scale requests | Submits via API (template + parameters, or edit commands) | Validates and routes to `desired_spec` | — |
+| Field | Tenant (public API) | Fulfillment Service | Gate Services (e.g., Quota Service) |
+|-------|--------------------|--------------------|-------------------------------------|
+| `spec` | Writable (via create/scale requests) | Resolves templates, validates | — |
+| `status.approval.state` | Read only | Manages transitions (pending→gating→approved/rejected) | — |
+| `status.approval.approved_spec` | Read only | Sets to `spec` on approval | — |
+| `status.approval.gates.<name>` | Read only | — | Each gate writes its own entry only |
+| `decision_reason` | Read only | Sets from rejecting gate's reason | — |
 
-Tenants do not write `spec` or `desired_spec` directly. They submit create requests (template + parameters) or scale requests (edit commands) through the Fulfillment API. The Fulfillment Service validates the request, resolves template metadata, computes the resulting spec, and stores it in `desired_spec`. This ensures all changes go through validation and the approval workflow.
+**Pending resource modification rules:** The Fulfillment Service rejects modification requests (scale, parameter changes) for resources with `status.approval.state` in `"pending"` or `"gating"`. This prevents spec changes while gates are evaluating. However, **deletion of pending/gating resources is allowed**. Gate services must check that a resource has not been deleted before writing their decision.
 
-`desired_spec` is readable by tenants so they can see what they requested while waiting for approval (e.g., `fulfillment-cli get cluster <id>` shows both current `spec` and pending `desired_spec`).
+**Fulfillment Service reconciler logic:**
 
-**Pending resource modification rules:** The Fulfillment Service rejects modification requests (scale, parameter changes) for resources with `approval_state = "pending"`. This prevents competing `desired_spec` values and ensures the Quota Service always evaluates a stable request. However, **deletion of pending resources is allowed** — if a tenant creates a resource they no longer want while it's awaiting approval, they can delete it immediately. The Quota Service must check that a pending resource has not been deleted before processing it. Deleted pending resources are soft-deleted as usual and will not appear in subsequent queries.
+1. If `approved_spec` is empty → skip entirely (no CR exists on the hub, nothing to sync)
+2. If `status.approval.state = "approved"` and `spec != approved_spec` → set `approved_spec = spec`, create/update CR on hub using `approved_spec`, sync status from hub
+3. If `approved_spec` is non-empty → sync status from hub (regardless of approval state)
 
-**Fulfillment Service reconciler logic:** The existing per-resource reconcilers (cluster, compute instance, host pool) are modified to check `approval_state` as the universal gate before any hub operation. The reconciler logic for each resource type adds these checks at the beginning of its reconciliation pass:
+Step 3 covers approved resources (normal operation), rejected scale-outs (cluster keeps running at `approved_spec`), and expired resources with existing CRs. The reconciler reads hub-reported status (state, conditions, api_url) so tenants always see accurate status even for resources with rejected pending changes. No spec changes are pushed to the hub unless step 2 applies.
 
-1. If `approval_state = "pending"` → skip this resource entirely (no CR creation, no spec updates)
-2. If `approval_state = "rejected"` and `spec` is empty → skip (rejected new resource, nothing to do)
-3. If `approval_state = "rejected"` and `spec` is non-empty → clear `desired_spec`, revert `approval_state` to `"approved"` (scale rejection cleanup). The `decision_reason` is preserved so the tenant can see why the scale was rejected. Continue normal reconciliation with the unchanged spec.
-4. If `approval_state = "approved"` and `desired_spec` is set → move `desired_spec` to `spec`, clear `desired_spec`, then continue to create/update the CR on the hub with the new spec
-5. If `approval_state = "approved"` and `desired_spec` is not set → normal reconciliation (existing behavior)
+The reconciler always uses `approved_spec` for hub CR operations, never `spec` directly. Hub selection happens during step 2 (after approval), matching current behavior.
 
-The `desired_spec → spec` move (PostgreSQL write) and CR creation/update (Kubernetes API write on the hub) happen in the same reconciliation pass. These are not transactionally atomic — if the reconciler crashes between the DB write and the CR creation, the next reconciliation pass will detect that `spec` is set but no CR exists, and retry the CR creation. The design relies on idempotent reconciliation, not transactional atomicity. Hub selection also happens during this pass (after approval), matching the current behavior — no change to hub selection logic is needed. This works consistently regardless of whether a Quota Service is deployed: with `OSAC_APPROVAL_REQUIRED=false`, the Fulfillment Service sets `approval_state = "approved"` and moves `desired_spec → spec` at creation time, so the reconciler sees step 5 and proceeds immediately.
-
-**Quota computation formula:**
-
-```
-projected_total = sum(spec footprint of ALL non-deleted resources for the tenant)
-                + delta(desired_spec - spec) of the resource being evaluated
-
-For new resources: spec is empty (contributes 0 to the sum), delta = desired_spec - {} = full footprint
-For scale-out:     spec has current footprint (counted in sum), delta = desired_spec - spec = additional nodes
-```
-
-`desired_spec` is used consistently for both new resources and scale operations. `spec` always represents what has been approved and is on the hub (empty for new, current for scale).
-
-This single formula works uniformly for creation and scale operations without branching logic.
+The `approved_spec` write (PostgreSQL) and CR creation/update (Kubernetes API on hub) happen in the same reconciliation pass. These are not transactionally atomic — if the reconciler crashes between them, the next pass retries (idempotent reconciliation). This works consistently regardless of whether a Quota Service is deployed: with `OSAC_APPROVAL_REQUIRED=false`, the Fulfillment Service sets `approved_spec = spec` and `state = "approved"` at creation time, so the reconciler sees step 4 and proceeds immediately.
 
 **Required proto/schema changes by resource type:**
 
 | Resource Type | New Fields | Quota Footprint Source |
 |--------------|-----------|----------------------|
-| **Clusters** | `approval_state`, `decision_reason`, `desired_spec` | `spec.node_sets` (already exists). Example footprint: `{clusters: 1, nodes.fc430: 2}` |
-| **ComputeInstances** | `approval_state`, `decision_reason`, `desired_spec` | `spec.cores`, `spec.memory_gib`, `spec.boot_disk.size_gib` (already exist). Illustrative example: `{compute_instances: 1, vcpus: 8, memory_gib: 32}` — exact VM quota keys are an open question (see Open Questions). VMs use the same `desired_spec` → `spec` flow as other resources for creation. Scale operations are not applicable (VM specs are immutable after creation). |
-| **HostPools** | `approval_state`, `decision_reason`, `desired_spec` | `spec.host_sets` (already exists). Example: `{nodes.h100: 3}` |
+| **Clusters** | `status.approval` block | `spec.node_sets` / `approved_spec.node_sets` (already exists). Example footprint: `{clusters: 1, nodes.fc430: 2}` |
+| **ComputeInstances** | `status.approval` block | `spec.cores`, `spec.memory_gib`, `spec.gpus` (already exist except `gpus`). Example: `{compute_instances: 1, vcpus: 8, memory_gib: 32}`. VMs use the same approval flow for creation. Scale operations are not applicable (VM specs are immutable after creation). |
+| **HostPools** | `status.approval` block | `spec.host_sets` (already exists). Example: `{nodes.h100: 3}` |
 
-**Prerequisite — Fulfillment Service field-level write protection:** The current Fulfillment Service public API does not enforce field-level write restrictions uniformly. The ComputeInstances public server lacks `AddIgnoredFields` for status fields (unlike Clusters and HostPools), meaning a tenant could potentially update `approval_state` directly via the public Update API. Before implementing the approval workflow, the following must be addressed:
+**Prerequisite — Fulfillment Service field-level write protection:** The current Fulfillment Service public API does not enforce field-level write restrictions uniformly. The ComputeInstances public server lacks `AddIgnoredFields` for status fields (unlike Clusters and HostPools), meaning a tenant could potentially update `status.approval` directly via the public Update API. Before implementing the approval workflow, the following must be addressed:
 1. Add `AddIgnoredFields(statusField)` to the ComputeInstances public server `inMapper` (parity fix)
-2. Add `approval_state`, `decision_reason`, and `desired_spec` to ignored fields on all public `inMapper` configurations
+2. Add `status.approval` block to ignored fields on all public `inMapper` configurations
 3. Enforce immutability of `spec.template` and `spec.template_parameters` on Update in private servers
 
-Without these changes, the approval gate is unenforceable — a tenant could bypass quotas by writing `approval_state = "approved"` directly.
+Without these changes, the approval gate is unenforceable — a tenant could bypass quotas by writing `status.approval.state = "approved"` directly.
 
 **Prerequisite — structured GPU field for VMs:** ComputeInstance currently has no structured field for GPU allocation. GPU count is buried in `template_parameters` (unstructured JSON), which cannot be reliably queried or aggregated for quota enforcement. A structured `gpus` field must be added to `ComputeInstanceSpec` before GPU quota enforcement can be implemented. This is consistent with how other VM resource dimensions are handled — `cores`, `memory_gib`, and `boot_disk` are already structured API fields. GPU is central to OSAC's AI workload value proposition and must not be deferred. This does not affect cluster GPU quotas, which are tracked by node resource class (e.g., `nodes.h100`).
 
 **Configuration:**
 
-- **`OSAC_APPROVAL_REQUIRED`** (boolean, default `false`): When `false`, new requests default to `approval_state = "approved"` and skip the approval workflow entirely. This preserves backwards compatibility for deployments without a Quota Service. When `true`, new requests default to `"pending"`. **Runtime behavior on config change:** When this flag changes from `true` to `false`, the Fulfillment Service auto-approves all currently pending resources (moves `desired_spec → spec`, sets `approval_state = "approved"`). This drains the pending backlog, ensuring no resources are stuck in an unrecoverable pending state. Note that this intentionally bypasses quota review for queued resources — some may represent stale requests the tenant no longer wants. This trade-off is acceptable as an emergency operational escape hatch; tenants can delete unwanted resources after they are provisioned.
+- **`OSAC_APPROVAL_REQUIRED`** (boolean, default `false`): When `false`, new requests are immediately approved (`approved_spec = spec`, `state = "approved"`) and skip the approval workflow entirely. When `true`, new requests start with `state = "pending"`. **Runtime behavior on config change:** When this flag changes from `true` to `false`, the Fulfillment Service auto-approves all pending and gating resources (sets `approved_spec = spec`, `state = "approved"`). This drains the backlog, ensuring no resources are stuck. This intentionally bypasses gate review — tenants can delete unwanted resources after provisioning.
 
 ### Implementation Details/Notes/Constraints
 
 #### Template Metadata Enrichment
 
-**Important caveat:** Template metadata enrichment is only needed for **clusters**. VMs and host pools have their quotable dimensions as explicit API fields (`spec.cores`, `spec.memory_gib` for VMs; `spec.host_sets` for host pools) — the Fulfillment Service sees exact values in the request. No template resolution needed.
+**Important caveat:** Template metadata enrichment is only needed for **clusters**. VMs and host pools have their quotable dimensions as explicit API fields (`spec.cores`, `spec.memory_gib`, `spec.gpus` for VMs; `spec.host_sets` for host pools) — the Fulfillment Service sees exact values in the request. No template resolution needed.
 
 For clusters, the resource footprint comes from `default_node_request` in `meta/osac.yaml`. However, **`default_node_request` is a redundant declaration** — the actual node count defaults also exist independently in the Ansible role's code (e.g., `{{ worker_count | default(2) }}` in `install.yaml` and/or `defaults/main.yaml`). These two sources are maintained separately with no enforcement that they agree. If `default_node_request` says 2 nodes but the Ansible role defaults to 3, quotas would be computed against the wrong value. This fragility predates the quota proposal but becomes a correctness concern once quotas rely on this metadata.
 
@@ -283,24 +276,7 @@ default_node_request:
     quotable: false                 # control plane runs as pods on hub, not counted against quota
 ```
 
-**When enrichment is needed:**
-
-| Scenario | Enrichment needed? | Why |
-|----------|-------------------|-----|
-| Template has fixed node count, no parameter overrides | No | `numberOfNodes` is already explicit in `default_node_request` |
-| Tenant specifies `nodeRequests` explicitly in their request | No | Fulfillment Service uses the explicit values |
-| Template parameter overrides node count (e.g., `worker_count=5`) | **Yes** | `countParameter` tells the Fulfillment Service which parameter maps to which node set |
-| VM templates (`spec.cores`, `spec.memory_gib`) | No | Resource specs are always explicit, not derived from templates |
-
-**Impact on existing components:**
-
-| Component | Change required |
-|-----------|----------------|
-| Template `meta/osac.yaml` files | Add optional `countParameter` and `quotable` fields where applicable |
-| AAP template discovery job | Read two additional optional fields during discovery |
-| Fulfillment Service template proto | Add two optional fields to the existing node request message |
-| Ansible playbooks (`install.yaml`, `delete.yaml`) | **No change** — playbooks don't read `osac.yaml` at runtime |
-| Existing templates without enrichment | **No change** — continue to work; node counts resolved from `numberOfNodes` defaults |
+Enrichment is only needed when template parameters override node counts. For fixed node counts, explicit `nodeRequests`, and VMs (where `spec.cores`/`spec.memory_gib` are explicit API fields), no enrichment is required. The enrichment is backwards compatible — existing templates and Ansible playbooks require no changes.
 
 #### Multi-Layer Template Considerations
 
@@ -323,10 +299,11 @@ To maintain the "metadata as authoritative contract" principle, any override tha
 The Quota Service is a standalone Go service with the following responsibilities. Filter expressions below are illustrative pseudo-code — exact syntax will follow the Fulfillment Service's CEL-based filter language.
 
 **Core:**
-- **Poll for pending resources:** Periodically query each resource type's List API on the Fulfillment Service — `Clusters.List`, `ComputeInstances.List`, and `HostPools.List` — filtering for pending approval state (configurable interval, default 5s). The Quota Service must fan out across all three resource types and merge the results client-side. This catches both new resource creation and scale-out operations, since both set `approval_state` to `"pending"`. Note: the Fulfillment Service has a streaming Events API (`Events.Watch()`) used by internal reconcilers, but it currently only supports Cluster and ClusterTemplate event payloads. Once the Events API is extended to support ComputeInstance and HostPool events, the Quota Service should migrate to event-driven detection with polling as fallback, reducing approval latency from seconds to milliseconds.
-- **Compute projected usage:** For each pending resource, query all non-deleted resources for the tenant across all resource types (`Clusters.List`, `ComputeInstances.List`, `HostPools.List`, filtering by tenant and excluding soft-deleted resources) and apply the quota computation formula (see API Extensions section). The Quota Service aggregates footprints from all three resource types client-side. This single formula works uniformly for both creation and scale-out.
-- **Make approval decisions:** Compare the projected total against quota limits. Set `approval_state` to `"approved"` or `"rejected"` via the Fulfillment Service Update API. The Quota Service always writes `"rejected"` for denials — both for new resources and scale operations. The Fulfillment Service handles the lifecycle distinction: for rejected new resources (`spec` empty), the rejection is final; for rejected scale operations (`spec` non-empty), the Fulfillment Service clears `desired_spec` and reverts `approval_state` to `"approved"`. The Quota Service must parse each resource type's spec to extract the footprint (e.g., `spec.node_sets` for clusters, `spec.cores` for VMs).
-- **Concurrency control:** Process pending resources serially per tenant with a row lock. This prevents two concurrent requests from both passing the quota check. Processing order among multiple pending resources from the same tenant is not guaranteed — it depends on polling order. At OSAC's current scale, concurrent pending resources from the same tenant are rare (polling interval is seconds, approval is milliseconds).
+- **Watch for gating resources:** Periodically query each resource type's List API on the Fulfillment Service — `Clusters.List`, `ComputeInstances.List`, and `HostPools.List` — filtering for `"gating"` approval state (configurable interval, default 5s). The Quota Service must fan out across all three resource types and merge the results client-side. Note: the Fulfillment Service has a streaming Events API (`Events.Watch()`) used by internal reconcilers, but it currently only supports Cluster and ClusterTemplate event payloads. Once the Events API is extended to support ComputeInstance and HostPool events, the Quota Service should migrate to event-driven detection with polling as fallback.
+- **Compute projected usage:** For each gating resource, query the Fulfillment Service for all approved, non-deleted resources for the tenant across all resource types. Sum their `approved_spec` footprints to get current usage. Apply the quota computation formula: `current_usage + delta(spec - approved_spec)`.
+- **Trigger re-evaluation:** When the Quota Service detects a change in a tenant's footprint (resource deleted, scale-in completed, quota limit increased), it sets all rejected (non-expired, non-deleted) resources for that tenant back to `"pending"` via the Fulfillment Service Update API. The normal gating flow then re-evaluates them.
+- **Make gate decisions:** Write to `status.approval.gates.quota` on the Fulfillment Service via the Update API. The Quota Service only writes to its own gate entry — it never writes `status.approval.state` or `approved_spec`.
+- **Concurrency control:** Process gating resources serially per tenant with a row lock. Since only one resource per tenant is in `"gating"` state at a time (enforced by the Fulfillment Service semaphore), this primarily prevents duplicate processing.
 
 **Quota Management API:**
 - `POST /quotas` — Create quota for a tenant (admin only)
@@ -335,7 +312,7 @@ The Quota Service is a standalone Go service with the following responsibilities
 - `PUT /quotas/{id}` — Update quota (admin only)
 - `DELETE /quotas/{id}` — Remove quota (admin only)
 
-Quota limits are stored as sets of arbitrary key/value pairs to support new resource types without code changes. The following is an illustrative example — exact VM quota keys are an open question (see Open Questions):
+Quota limits are stored as sets of arbitrary key/value pairs to support new resource types without code changes:
 
 ```json
 {
@@ -352,96 +329,39 @@ Quota limits are stored as sets of arbitrary key/value pairs to support new reso
 ```
 
 **What the Quota Service does NOT do:**
-- It does NOT maintain a usage ledger or resource tracking fields. Resource consumption is computed on demand from spec data already in the Fulfillment Service.
-- It does NOT need reconciliation. Every approval decision is computed from the current state of resources.
-- It does NOT modify resource specs. It only writes `approval_state` and `decision_reason`.
+- It does NOT write `status.approval.state` or `approved_spec`. The Fulfillment Service manages approval state transitions. Gate services only write to their own gate entries.
+- It does NOT modify resource specs. It only writes to `status.approval.gates.quota`.
+- It does NOT maintain a usage ledger or footprint cache. Usage is computed on demand from Fulfillment Service data. A future `/v1/usage` aggregate endpoint on the Fulfillment Service could optimize this.
 
 ### Data Access Pattern
 
-The Quota Service accesses all data through the **Fulfillment Service gRPC API**. It never accesses the database directly or the Kubernetes API directly. The following diagram uses pseudo-code for filter expressions — exact filter syntax will follow the Fulfillment Service's CEL-based filter language:
-
-```
-Quota Service                             Fulfillment Service (gRPC)
-─────────────                             ────────────────────────────
-
-Poll (per resource type):
-  Clusters.List(filter=                ──▶ Returns pending clusters
-    "approval_state = 'pending'")
-  ComputeInstances.List(filter=        ──▶ Returns pending VMs
-    "approval_state = 'pending'")
-  HostPools.List(filter=               ──▶ Returns pending host pools
-    "approval_state = 'pending'")
-
-Usage query (per resource type, filtered by tenant, excluding deleted):
-  Clusters.List(...)                   ──▶ Returns all tenant clusters
-  ComputeInstances.List(...)           ──▶ Returns all tenant VMs
-  HostPools.List(...)                  ──▶ Returns all tenant host pools
-
-  → Quota Service aggregates footprints client-side
-
-Clusters.Update / ComputeInstances.Update / HostPools.Update
-  (approval_state="approved"           ──▶ Stores in PostgreSQL
-   or "rejected")
-```
-
-The new fields (`approval_state`, `decision_reason`, `desired_spec`) are added to the **public** Fulfillment API proto definitions (in `fulfillment-api/` repo), since tenants need to read them. The Quota Service uses the public API for both reads and writes — the `approval-writer` role provides the necessary write permissions. Hub-internal fields (like `status.hub`) remain in the private API only.
-
-Rationale for API-only access:
-- **Direct DB access** would bypass authentication, tenancy isolation, and couple the Quota Service to the database schema
-- **Direct K8s API access** would miss tenancy data, approval_state, and template parameters that only exist in PostgreSQL
-- **gRPC API** provides proper auth, tenancy filtering, a stable contract, and combines data from both stores (PostgreSQL + Kubernetes CRs)
-
-**Per-tenant aggregation:** The Fulfillment Service database stores individual resource records, not per-tenant usage summaries. In v1, the Quota Service performs aggregation client-side: it calls the List API with a tenant filter, receives all resource records, and computes resource footprints from each resource's spec fields locally. At OSAC's current scale (tenants with 5-20 resources), this is efficient — the gRPC response is small and the computation is trivial.
-
-For deployments with larger tenant resource counts, a future server-side aggregation endpoint should be added to the Fulfillment Service (illustrative — exact VM quota keys are an open question):
-
-```
-GET /v1/usage?tenant=org-A
-→ {clusters: 3, nodes.h100: 12, nodes.fc430: 6, compute_instances: 4, vcpus: 32}
-```
-
-This would compute the aggregation in a single SQL query, returning only the summary instead of individual records.
+The Quota Service accesses all data through the **Fulfillment Service public gRPC API**. It never accesses the database directly or the Kubernetes API directly — this ensures proper auth, tenancy filtering, and a stable API contract. The `status.approval` block is part of the public API since tenants need to read their approval state. Hub-internal fields (like `status.hub`) remain in the private API only.
 
 ### Security Model
 
-The Quota Service is a privileged component with write access to `approval_state` on all resources. The security model uses defense in depth:
+The Quota Service is a privileged component with write access to gate entries on all resources. The security model uses defense in depth:
 
 | Layer | Control |
 |-------|---------|
 | **Authentication** | Dedicated Keycloak service account for the Quota Service |
-| **Authorization** | Narrow `approval-writer` role — can only modify `approval_state` and `decision_reason` fields. Cannot create, delete, or modify resources. Note: the current Fulfillment Service lacks field-level authorization on the Update API — implementing this role requires adding field-level write restrictions to the generic server infrastructure (see prerequisite above). |
+| **Authorization** | Narrow `approval-writer` role — can only modify `status.approval.gates` entries. Cannot create, delete, or modify resources or `approved_spec`. Note: the current Fulfillment Service lacks field-level authorization on the Update API — implementing this role requires adding field-level write restrictions to the generic server infrastructure (see prerequisite above). |
 | **Quota API auth** | Separate `quota-admin` Keycloak role for ColdFront or admin users who manage quota limits. Tenants have read-only access to their own quotas. |
 | **Audit logging** | All approval decisions and quota changes logged with actor, timestamp, and decision rationale |
-| **Network policy** | Quota Service network access restricted to the Fulfillment Service API and Keycloak. In the current architecture, this is direct pod-to-pod communication. When the Organizations/Gateway architecture is implemented, the Quota Service will route through the Gateway instead (see Integration with Organizations section). The network policy should be designed to support both models — initially allowing direct access, with a migration path to Gateway-only access. |
+| **Network policy** | Quota Service network access restricted to the Fulfillment Service API and Keycloak. In the current architecture, this is direct pod-to-pod communication. When the Organizations/Gateway architecture is implemented, the Quota Service will route through the Gateway instead (see Integration with Organizations section). The network policy should be designed to support both models. |
 | **Input validation** | Reject impossibly large quota values; alert on changes beyond configurable thresholds |
-| **Hub CR protection** | Tenants do not have direct access to the hub cluster — they interact via the Fulfillment API only. RBAC on the hub restricts CR modifications to the Fulfillment Service's service account. This prevents tenants from bypassing quota enforcement by editing CRs directly with `oc` or `kubectl`. Platform admins with hub access can intentionally bypass quotas — this is expected and acceptable. A Kubernetes validating admission webhook could be added in the future to enforce that only the Fulfillment Service's service account can modify quota-relevant CRs. |
+| **Hub CR protection** | Tenants do not have direct access to the hub cluster — they interact via the Fulfillment API only. RBAC on the hub restricts CR modifications to the Fulfillment Service's service account. |
 
 ### Pluggability and Approval Service Independence
 
-A key design requirement is that the Quota Service is **optional and replaceable**. The approval workflow in the Fulfillment Service is generic — it does not assume any specific approval logic. This is achieved through minimal coupling:
+A key design requirement is that the Quota Service is **optional and replaceable**. The approval workflow in the Fulfillment Service is generic — it does not assume any specific gate logic. This is achieved through minimal coupling:
 
 **What the Fulfillment Service knows about approval:**
-- Resources have an `approval_state` field (pending/approved/rejected)
-- Resources may have a `desired_spec` field (pending scale change)
-- The reconciler only acts on `approval_state = "approved"` resources
+- Resources have a `status.approval` block with `state`, `approved_spec`, and `gates`
+- The Fulfillment Service manages state transitions (pending → gating → approved/rejected) and the gating semaphore
+- The reconciler only uses `approved_spec` for hub CR operations
 - The Fulfillment Service does NOT know about quotas, limits, or resource accounting
 
-**What an approval service must do (minimum contract):**
-- Read resources with `approval_state = "pending"` from the Fulfillment Service API
-- Set `approval_state` to `"approved"` or `"rejected"` (with `decision_reason`)
-- That's it — no resource tracking fields to manage, no merge logic, no state to maintain
-
-This makes alternative approval services trivially simple to implement:
-
-| Approval Service | Implementation |
-|-----------------|----------------|
-| **No approval** | Set `OSAC_APPROVAL_REQUIRED=false`. No service needed. |
-| **Quota Service** (this proposal) | Compute usage from specs, compare against limits, approve/reject. |
-| **Manual admin approval** (future) | Admin reviews pending resources via CLI/UI, sets `approval_state`. One API call per decision. |
-| **Policy-based approval** (future) | Evaluate pending resources against organizational policies (e.g., "no GPU clusters without manager approval"). |
-| **Billing-based approval** (future) | Check tenant's payment status before approving resource creation. |
-
-Because the Quota Service computes resource footprints from existing spec fields rather than maintaining its own tracking fields on the resource, replacing or removing the Quota Service leaves the Fulfillment Service schema unchanged.
+**What a gate service must do (minimum contract):** Watch for resources in `"gating"` state and write to its own gate entry (`admitted` or `rejected` with reason). No state management, no coordination with other gates. This makes alternative gate services (manual admin approval, billing, policy engines) trivially simple to implement — or set `OSAC_APPROVAL_REQUIRED=false` for no approval at all.
 
 ### Integration with Organizations and Gateway Architecture
 
@@ -451,13 +371,13 @@ The [Organizations & Authentication proposal](../organizations/README.md) (merge
 - The Fulfillment Service receives verified identity via HTTP headers (`X-Remote-User`, `X-Organization`, `X-Roles`), not by parsing tokens directly
 - **Network policies** enforce that the Fulfillment Service is only reachable through the Gateway
 
-**Quota v1 is independently shippable** before the Organizations proposal is implemented. Quotas do not depend on the Organization entity — they use the existing tenancy model (`tenants[]` array on resource records, populated from Keycloak groups). When Organizations is implemented, the tenant scope naturally maps to Organization without requiring quota code changes. In the current architecture (pre-Organizations), the Quota Service communicates directly with the Fulfillment Service using a Keycloak service account. When the Organizations/Gateway architecture is implemented, the Quota Service will migrate to route through the Gateway, with its service account in the **System Keycloak realm** and an AuthPolicy configured to allow the `approval-writer` role. The Quota Service's API contract (read pending resources, write approval decisions) is the same in both models — only the network path and auth mechanism change.
+**Quota v1 is independently shippable** before the Organizations proposal is implemented. Quotas do not depend on the Organization entity — they use the existing tenancy model (`tenants[]` array on resource records, populated from Keycloak groups). When Organizations is implemented, the tenant scope naturally maps to Organization without requiring quota code changes. In the current architecture (pre-Organizations), the Quota Service communicates directly with the Fulfillment Service using a Keycloak service account. When the Organizations/Gateway architecture is implemented, the Quota Service will migrate to route through the Gateway, with its service account in the **System Keycloak realm** and an AuthPolicy configured to allow the `approval-writer` role.
 
-**Field-level authorization:** Authorino provides endpoint-level RBAC, but the quota feature requires finer-grained control (only `approval-writer` can modify `approval_state`). This must be enforced in the Fulfillment Service itself, using the `X-Roles` header injected by Authorino to check permissions on field-level writes.
+**Field-level authorization:** Authorino provides endpoint-level RBAC, but the quota feature requires finer-grained control (only `approval-writer` can modify gate entries). This must be enforced in the Fulfillment Service itself, using the `X-Roles` header injected by Authorino to check permissions on field-level writes.
 
-**Cross-tenant read access:** The Quota Service must list pending resources across all tenants and compute per-tenant usage. The current Fulfillment Service tenancy logic scopes service accounts to their own tenant's resources. The `approval-writer` role (or the System realm identity) must be granted cross-tenant read access in the Fulfillment Service — this is an auth infrastructure change that should be noted as a prerequisite alongside the field-level write protection.
+**Cross-tenant read access:** The Quota Service must list resources across all tenants to detect gating resources and compute per-tenant usage. The `approval-writer` role (or the System realm identity) must be granted cross-tenant read access in the Fulfillment Service.
 
-**Quota scope:** The Organizations proposal introduces a two-level hierarchy: Organizations contain Projects. In this proposal, "tenant" maps to **Organization**. Quotas are enforced globally per organization across all hubs — the Quota Service sums resource consumption from the central Fulfillment Service database regardless of which hub resources are deployed on. Per-Project quotas and per-hub quota sub-divisions are potential future extensions — the quota limits data model (arbitrary key/value pairs) supports adding project or hub dimensions without architectural changes.
+**Quota scope:** The Organizations proposal introduces a two-level hierarchy: Organizations contain Projects. In this proposal, "tenant" maps to **Organization**. Quotas are enforced globally per organization across all hubs. Per-Project quotas and per-hub quota sub-divisions are potential future extensions.
 
 ### Quota Data Sources
 
@@ -474,7 +394,7 @@ At the Mass Open Cloud, [ColdFront](https://coldfront.readthedocs.io/en/stable/)
 
 1. Administrators create/manage resource allocations in ColdFront
 2. The ColdFront OSAC plugin calls the Quota Service API to set quota limits
-3. The Quota Service stores limits and uses them for approval decisions
+3. The Quota Service stores limits and uses them for gate decisions
 
 ColdFront already has plugins for [OpenShift](https://github.com/nerc-project/coldfront-plugin-cloud) (creates ResourceQuota objects) and OpenStack (calls quota API). The OSAC plugin follows the same pattern. ColdFront authenticates to the Quota Service using a Keycloak service account with the `quota-admin` role.
 
@@ -483,7 +403,8 @@ ColdFront already has plugins for [OpenShift](https://github.com/nerc-project/co
 When an administrator reduces a tenant's quota below their current usage:
 
 - **Existing resources are NOT affected.** Running clusters and VMs continue to operate normally.
-- **New requests are denied** until the tenant's usage drops below the new limit (through voluntary deletion or scale-down).
+- **New requests are rejected** until the tenant's usage drops below the new limit (through voluntary deletion or scale-down).
+- The quota limit change triggers re-evaluation of rejected resources — but since usage is now even further above the new limit, they remain rejected.
 - The principle: **resource changes drive quota accounting, not the other way around.** Quotas are a gate for new consumption, not a tool for reclaiming existing resources.
 
 ### Observability
@@ -492,89 +413,59 @@ The Quota Service should expose the following Prometheus metrics:
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `quota_approval_decisions_total` | Counter | `result` (approved/rejected), `resource_type`, `tenant` | Total approval decisions made |
-| `quota_pending_resources` | Gauge | `tenant`, `resource_type` | Number of resources currently awaiting approval |
+| `quota_gate_decisions_total` | Counter | `result` (admitted/rejected), `resource_type`, `tenant` | Total gate decisions made |
+| `quota_pending_resources` | Gauge | `tenant`, `resource_type` | Number of resources in pending or gating state |
 | `quota_utilization_ratio` | Gauge | `tenant`, `resource_type` | Current usage / limit ratio (0.0-1.0+) |
-| `quota_decision_duration_seconds` | Histogram | `result` | Time to evaluate and write an approval decision |
+| `quota_decision_duration_seconds` | Histogram | `result` | Time to evaluate and write a gate decision |
+| `quota_reevaluation_triggers_total` | Counter | `tenant` | Number of re-evaluation triggers (footprint changes) |
 
 Key alerts:
 
 | Alert | Condition | Severity |
 |-------|-----------|----------|
-| `QuotaServicePendingBacklog` | Pending resources not processed for >5 minutes | Warning |
+| `QuotaServiceGatingBacklog` | Resources in gating state not processed for >5 minutes | Warning |
 | `QuotaServiceDown` | Quota Service pod not ready | Critical |
 | `QuotaTenantNearLimit` | `quota_utilization_ratio` > 0.9 for any resource type | Info |
 
-All approval decisions should be logged with: tenant ID, resource ID, resource type, decision (approved/rejected), reason, current usage, quota limit, and timestamp.
+All gate decisions should be logged with: tenant ID, resource ID, resource type, decision (admitted/rejected), reason, current usage, quota limit, and timestamp.
 
 ### Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| **Race conditions** | Two concurrent requests from the same tenant could both pass the quota check before either is recorded | Per-tenant row-level locking in the Quota Service database serializes approval decisions for each tenant under the single-replica deployment model. This ensures only one pending resource per tenant is evaluated at a time, preventing concurrent approvals from exceeding quota. Note: this is serialized processing, not transactional atomicity across the Fulfillment Service reads and writes. If HA with multiple replicas is added in the future, the strategy must evolve to leader election or distributed locking. |
-| **Quota Service unavailability** | All requests blocked in "pending" state | Single replica with standard Kubernetes pod restart (consistent with all other OSAC components). Pending resources are safe — no over-commitment during downtime. Health monitoring and alerts ensure quick detection. If prolonged outage, admin can temporarily set `OSAC_APPROVAL_REQUIRED=false`. HA (leader election with multiple replicas) can be added in the future if needed, but is not justified at current scale. |
-| **Quota Service compromise** | Attacker could approve/deny any request | Narrow `approval-writer` Keycloak role, network policies, audit logging. The Quota Service cannot create or delete resources — it can only change approval status. |
-| **Fulfillment Service dependency** | Every approval decision requires the Fulfillment Service to be available | Acceptable because the Quota Service already depends on it for reading pending requests and writing approval status. If the Fulfillment Service is down, no new requests are arriving anyway. |
-| **Partial provisioning failure** | Resources may be partially allocated when provisioning fails | Failed resources count against quota until explicitly deleted. This is correct behavior and standard across cloud platforms. |
+| **Race conditions** | Two concurrent requests from the same tenant could both pass the quota check | The gating semaphore ensures only one resource per tenant is evaluated at a time. Per-tenant row locking in the Quota Service provides additional protection within the single-replica deployment. |
+| **Polling overhead** | Quota Service queries all approved resources per tenant on each evaluation | At OSAC's current scale (5-20 resources per tenant), this is trivial (~5ms). A future `/v1/usage` aggregate endpoint on the Fulfillment Service could optimize this. |
+| **Quota Service unavailability** | All requests blocked in "pending" state | Single replica with standard Kubernetes pod restart (consistent with all OSAC components). Admin can set `OSAC_APPROVAL_REQUIRED=false` to unblock. |
+| **Quota Service compromise** | Attacker could admit any request | Narrow `approval-writer` role limited to gate entries only. Cannot write `approved_spec` or `state`. |
+| **Fulfillment Service dependency** | Gate decisions require the Fulfillment Service | Acceptable — if the Fulfillment Service is down, no new requests are arriving anyway. |
+| **Partial provisioning failure** | Resources may be partially allocated when provisioning fails | Failed resources count against quota until explicitly deleted. Standard cloud platform behavior. |
+| **Gating timeout** | A slow or crashed gate service blocks the tenant's gating queue | Configurable timeout on gating state — if a resource has been gating for too long, the Fulfillment Service can revert it to pending or reject it. |
 
 ### Drawbacks
 
-- **Added latency:** Every provisioning request now waits for the Quota Service to make a decision (up to the polling interval, default 5s). Acceptable given that provisioning takes minutes. Migrating to the Events API in the future would reduce this to near-instant.
-- **New component to operate:** The Quota Service is a new Go service with its own database (for quota limits) that must be deployed, monitored, and maintained. However, it is simpler than the original proposal's design because it does not maintain a usage ledger.
-- **Fulfillment Service coupling:** The no-ledger design makes the Quota Service fully dependent on the Fulfillment Service for usage data. This is acceptable at current scale but may need revisiting if the Fulfillment Service becomes a bottleneck.
+- **Added latency:** Every provisioning request waits for the gating cycle (polling interval + gate evaluation). At default settings, this adds up to 5-10 seconds. Acceptable given that provisioning takes minutes. Events API migration would reduce this.
+- **New component to operate:** The Quota Service is a new Go service with its own database that must be deployed, monitored, and maintained.
+- **Sequential gating:** The per-tenant semaphore means concurrent requests from the same tenant are processed sequentially. At OSAC's current scale (few requests per tenant per day), this is not a concern.
+- **Five approval states:** The state machine (pending/gating/approved/rejected/expired) is more complex than a simple approved/rejected model, but each state serves a distinct purpose and the transitions are well-defined.
 
 ## Alternatives (Not Implemented)
 
-### Alternative 1: Quota Enforcement at the Gateway (Authorino)
-
-We considered enforcing quotas at the API Gateway layer (Authorino/Kuadrant), returning a 4XX error immediately when a request would exceed quota. This was rejected because:
-- Authorino sees HTTP requests (method, path, token) but not the resolved resource footprint. Computing "will this request exceed quota?" requires template resolution, parameter processing, and querying current tenant usage — business logic that doesn't belong in a policy engine.
-- Quota decisions require dynamic computation (sum specs across multiple resource types, compare against limits), which is beyond Authorino's declarative policy model.
-- The async approval model (pending → approved/rejected) provides a richer UX: requests are recorded for audit, tenants can view rejected requests with reasons, and the same mechanism supports non-quota approval patterns (manual review, billing gates, policy checks).
-- The same reasoning applies to billing enforcement ("no more credits") — these require business context that the Gateway layer doesn't have.
-
-Authorino's role is endpoint-level RBAC and token validation. Quota enforcement is business logic that belongs in a dedicated service.
-
-### Alternative 2: Built-in Quota Support in the Fulfillment Service (no separate service)
-
-We considered implementing quota enforcement directly in the Fulfillment Service. This was rejected because:
-- It would bind the Fulfillment Service to specific quota management requirements
-- Different deployments need different quota logic and integration with different external systems
-- The generic approval workflow pattern has value beyond quotas (see Future Work)
-
-### Alternative 3: Separate Usage Ledger (Original Proposal)
-
-The original proposal maintained a persistent usage ledger in the Quota Service, recording every approval and watching for deletions. This was rejected because:
-- The ledger is a cache of data already in the Fulfillment Service database
-- Caches introduce drift, missed-event bugs, and require reconciliation
-- At OSAC's current scale, on-demand queries are trivially fast
-- Eliminating the ledger removes an entire class of consistency problems
-
-### Alternative 4: Resource Tracking Fields on Resource Records
-
-We considered adding `approved_resources` and `pending_resources` fields to each resource record, where the Quota Service would track approved footprints and pending deltas explicitly. This was rejected because:
-- These fields are primarily used by the Quota Service, making the Fulfillment Service schema dependent on quota-specific concerns
-- Any alternative approval service (e.g., manual admin approval) would need to implement the same merge/clear logic for these fields, reducing pluggability
-- The same information can be computed from existing spec data (`spec.node_sets`, `spec.cores`, etc.) without additional fields
-- The `desired_spec` approach achieves the same gating effect with fewer fields and less coupling
-
-### Alternative 5: Independent Resolution Service
-
-We considered extracting template resolution into a standalone service usable by Quota Service, billing, and UI. This was deferred because:
-- Spec-based computation in the Quota Service is simpler and sufficient for v1
-- A Resolution API endpoint can be added to the Fulfillment Service later for billing/UI preview without rearchitecting
-- The template metadata is already stored in the Fulfillment Service database
+- **Gateway-level quota enforcement (Authorino):** Rejected — quota decisions require template resolution and cross-resource usage aggregation, which is business logic beyond Authorino's policy model.
+- **Separate usage ledger (original proposal, PR #8):** Rejected — the ledger duplicates data already in the Fulfillment Service database, introducing drift, missed-event bugs, and reconciliation complexity. On-demand computation is simpler and always accurate.
 
 ## Future Work
 
 The following capabilities are enabled by this proposal's architecture but are explicitly out of scope for v1:
 
-- **Manual admin approval:** An admin reviews pending requests and manually approves or denies them via the CLI or UI. The `approval_state` field supports this today for single-approver scenarios. For workflows requiring both automated quota approval AND manual admin approval, the approval model would need to evolve from a single `approval_state` field to a multi-step approval pattern (e.g., an `approved_by` list tracking which approvers have signed off).
-- **Usage analytics and reporting:** The current design computes usage on demand from spec data. For historical usage data (trend analysis, capacity planning, billing), a persistent usage tracking component could be added alongside the Quota Service without changing the core approval workflow.
-- **Resolution API for billing and UI preview:** A `/v1/resolve` endpoint on the Fulfillment Service that returns the resource footprint for a template + parameters combination, allowing UIs to show "this request will consume X resources" before submission, and billing systems to price requests.
-- **UI for quota management:** Tenant-facing quota dashboard showing limits, current usage, and denial history. Admin-facing UI for setting and managing quotas across tenants.
-- **Scale-out rejection UX refinement:** v1 communicates scale denials via `decision_reason` on an otherwise approved resource. Future work could explore richer notification mechanisms (CLI blocking, events, or a dedicated denial state) to make scale rejections more visible to tenants.
-- **Decision history:** The `decision_reason` field currently holds only the latest decision. In a future version, this could evolve into a `decision_history[]` array where each entry records the action (create/scale), result (approved/rejected), reason, and timestamp. This would provide a full audit trail per resource — useful for debugging ("why was my scale denied 3 days ago?"), compliance reporting, and tenant self-service ("show me all denial events for my organization").
+- **Multi-gate coordination semantics:** When a second gate is added (e.g., billing), the system needs to define: whether each gate's admission counts as a resource reservation, how to handle rollback when a later gate rejects after an earlier gate admitted, and whether gates are ordered. The gating semaphore ensures only one resource is evaluated at a time, which simplifies this, but the reservation semantics need explicit design. See the discussion in PR #28 for analysis.
+- **Manual admin approval:** An admin reviews gating resources via CLI/UI and writes a gate entry. The gate structure supports this today — implementing it requires only a CLI command and a `manual-admin` gate key.
+- **Per-tenant usage aggregate endpoint:** A server-side `/v1/usage?tenant=X` endpoint on the Fulfillment Service that computes tenant resource consumption in a single SQL query, avoiding the need for the Quota Service to query all individual resources. Could be backed by a Fulfillment Service-internal footprint cache.
+- **Usage analytics and reporting:** For historical usage data (trends, capacity planning, billing), a separate analytics component could subscribe to approval events.
+- **Resolution API for billing and UI preview:** A `/v1/resolve` endpoint that returns the resource footprint for a template + parameters combination before submission.
+- **UI for quota management:** Tenant-facing quota dashboard showing limits, current usage, and rejection history.
+- **Scale-out rejection UX refinement:** v1 preserves the user's intent in `spec` while `approved_spec` tracks the running state. Future work could add notifications when a rejected resource is auto-retried and approved.
+- **Decision history:** The `decision_reason` field holds only the latest decision. A future `decision_history[]` array would provide a full audit trail per resource.
+- **Events API migration:** When the Fulfillment Service Events API is extended beyond Cluster/ClusterTemplate payloads, the Quota Service should migrate from polling to event-driven detection.
 
 ## Open Questions
 
@@ -582,46 +473,47 @@ The following capabilities are enabled by this proposal's architecture but are e
 
 2. **Abstraction layers above raw quotas:** MOC/NERC uses "units of computing" (ColdFront's allocation multiplier) and "Service Units" (billing currency tracking resource × time). Neither is the Quota Service's concern — it operates on raw resource counts. ColdFront's plugin translates its internal abstractions into raw OSAC quota limits before calling the Quota Service API. SU-based billing would be a separate system. Confirm with MOC stakeholders that this separation of concerns is correct.
 
-3. **Declarative API model:** Should the Fulfillment Service API follow strict Kubernetes declarative conventions (admissibility model in status block, as proposed by Avishay) or remain a service API with K8s-like conventions? This is a broader API philosophy question that affects the quota field design but extends beyond quota scope. See the PR discussion for details.
-
-
 ## Test Plan
 
 ### Unit Tests
-- Fulfillment Service: template resolution logic, spec computation, parameter override handling, `desired_spec` lifecycle
-- Quota Service: approval decision logic, concurrent request handling, quota limit evaluation
+- Fulfillment Service: template resolution logic, spec computation, parameter override handling, approval state transitions, gating semaphore logic
+- Quota Service: gate decision logic, re-evaluation trigger, quota limit evaluation
 
 ### Integration Tests (KIND cluster)
-- End-to-end approval workflow: create request → pending → Quota Service approves → provisioning starts
-- Denial workflow: create request → pending → Quota Service denies → tenant sees reason
-- Scale-out approval: scale cluster → pending → approved/rejected
-- `OSAC_APPROVAL_REQUIRED=false` mode: requests skip approval entirely
-- Concurrent request handling: two requests from same tenant, only one should be approved if quota is tight
-- Delete while pending: tenant deletes a pending resource, Quota Service skips it
-- Scale-in: no approval required, spec updated and CR pushed immediately
+- End-to-end approval workflow: create request → pending → gating → approved → provisioning starts
+- Rejection workflow: create request → pending → gating → rejected → user sees reason
+- Scale-out approval: scale cluster → pending → gating → approved → cluster scaled
+- Scale-out rejection: scale → rejected → user intent preserved → quota frees up → auto-retry → approved
+- `OSAC_APPROVAL_REQUIRED=false` mode: resources skip approval entirely
+- Gating semaphore: two pending resources for same tenant, only one gating at a time
+- Delete while pending/gating: tenant deletes a resource, gate service skips it
+- Scale-in: no approval required, spec and approved_spec updated, may trigger re-evaluation of rejected resources
 - Failed provisioning: resource with `status.state = FAILED` continues to count against quota until deleted
 - Quota reduction: admin reduces quota below current usage, existing resources unaffected, new requests rejected
-- Authorization bypass prevention: tenant attempt to write `approval_state` or `desired_spec` via public API is rejected
+- Re-evaluation trigger: delete a resource → rejected resources for same tenant set to pending → re-gated → approved if quota fits
+- TTL expiration: rejected resource exceeds TTL → transitions to expired → not re-evaluated
+- Authorization bypass prevention: tenant attempt to write `status.approval` via public API is rejected
 - Cross-tenant isolation: Quota Service identity can read across tenants, regular service accounts cannot
-- Config change drain: switching `OSAC_APPROVAL_REQUIRED` from true to false auto-approves all pending resources
-- (Post-Organizations) Gateway role enforcement: `X-Roles` header is correctly enforced for field-level write permissions in the Fulfillment Service
+- Config change drain: switching `OSAC_APPROVAL_REQUIRED` from true to false auto-approves all pending/gating resources
+- (Post-Organizations) Gateway role enforcement: `X-Roles` header correctly enforced
 
 ### E2E Tests (hypershift1)
 - Full provisioning with quota enforcement on real bare metal
 - ColdFront integration (when plugin is available)
-- Migration testing: upgrade existing deployment, verify existing resources get `approval_state = "approved"`
+- Migration testing: upgrade existing deployment, verify existing resources get `status.approval.state = "approved"`
 
 ## Graduation Criteria
 
 ### Dev Preview
 - Prerequisites met: field-level write protection on public API, cross-tenant read access for Quota Service identity, ComputeInstance inMapper parity fix
-- Approval workflow functional (pending/approved/rejected)
-- Quota Service makes correct approval decisions
+- Approval workflow functional (pending/gating/approved/rejected)
+- Quota Service makes correct gate decisions
 - CLI shows approval status and rejection reasons
 - `OSAC_APPROVAL_REQUIRED` flag works correctly
 
 ### Tech Preview
 - Scale operation approval support
+- Re-evaluation trigger for rejected resources
 - ColdFront OSAC plugin available
 - Migration tested on hypershift1 with existing tenants
 - Deployment and recovery procedures documented and tested
@@ -636,21 +528,21 @@ The following capabilities are enabled by this proposal's architecture but are e
 
 ### Upgrade (existing deployment without quotas)
 
-1. **Database migration:** Add `approval_state`, `decision_reason`, and `desired_spec` fields to all resource types. Set `approval_state = "approved"` for all existing resources (READY, PROGRESSING, and FAILED). `desired_spec` is left empty (no pending changes for existing resources). No changes needed to existing resource specs — the Quota Service reads existing spec fields for usage computation.
-2. **Fulfillment Service upgrade:** Deploy new version with `OSAC_APPROVAL_REQUIRED=false` (default). Existing behavior is preserved — all new requests are auto-approved.
+1. **Database migration:** Add `status.approval` block to all resource types. Set `status.approval.state = "approved"` and `status.approval.approved_spec = spec` for all existing resources (READY, PROGRESSING, and FAILED). No changes needed to existing `spec` fields.
+2. **Fulfillment Service upgrade:** Deploy new version with `OSAC_APPROVAL_REQUIRED=false` (default). Existing behavior is preserved — all new resources are immediately approved.
 3. **Deploy Quota Service:** Install and configure the Quota Service. Set initial quota limits.
-4. **Enable approval:** Set `OSAC_APPROVAL_REQUIRED=true`. New requests now go through the Quota Service.
+4. **Enable approval:** Set `OSAC_APPROVAL_REQUIRED=true`. New requests now go through the gating workflow.
 
 ### Downgrade
 
-1. Set `OSAC_APPROVAL_REQUIRED=false`. All new requests are auto-approved.
+1. Set `OSAC_APPROVAL_REQUIRED=false`. All new requests are immediately approved.
 2. The Quota Service can remain deployed but has no effect. Or it can be removed.
-3. `approval_state`, `decision_reason`, and `desired_spec` fields remain on resources but are ignored.
+3. `status.approval` block remains on resources but is ignored.
 
 ## Version Skew Strategy
 
 The Quota Service and Fulfillment Service communicate via gRPC API. Version skew is managed through API versioning:
-- The `approval_state` and `decision_reason` fields are additive — older clients that don't know about them will simply not see them. The `desired_spec` field is also additive and only present while a resource is pending approval (for both new resource creation and scale operations).
+- The `status.approval` block is additive — older clients that don't know about it will simply not see it.
 - The Quota Service depends on the Fulfillment Service API. If the Fulfillment Service is upgraded first, the Quota Service continues to work. If the Quota Service is upgraded first, it may try to use features not yet available — deployment ordering should be documented.
 
 ## CLI User Experience Examples
@@ -661,7 +553,7 @@ The Quota Service and Fulfillment Service communicate via gRPC API. Version skew
 $ fulfillment-cli get clusters
 ID                                    STATE        APPROVAL    REASON
 b211a004-ab87-436d-86c7-7519ce75c77b  READY        approved
-a409e02f-3564-4584-8dbd-f4b10a45e23c  -            pending
+a409e02f-3564-4584-8dbd-f4b10a45e23c  -            gating
 c7f3e891-2a4b-4c5d-9e6f-8a1b2c3d4e5f  -            rejected    Would exceed quota for nodes.fc430 by 2 (8/10)
 ```
 
@@ -671,16 +563,19 @@ c7f3e891-2a4b-4c5d-9e6f-8a1b2c3d4e5f  -            rejected    Would exceed quot
 $ fulfillment-cli get cluster b211a004 -o yaml
 spec:
   node_sets:
-    fc430: {host_class: fc430, size: 2}    # current (on hub)
-desired_spec:
-  node_sets:
-    fc430: {host_class: fc430, size: 5}    # awaiting approval
-approval_state: pending
+    fc430: {host_class: fc430, size: 5}    # user's intent
 status:
   state: READY
+  approval:
+    state: gating
+    approved_spec:
+      node_sets:
+        fc430: {host_class: fc430, size: 2}    # what's on the hub
+    gates:
+      quota: {state: pending}
 ```
 
-**Viewing quota limits and usage** (illustrative — exact VM quota keys are an open question):
+**Viewing quota limits and usage:**
 
 ```
 $ fulfillment-cli get quota
@@ -694,14 +589,15 @@ vcpus               24       64       38%
 
 ## Support Procedures
 
-- **Quota Service is down:** All requests remain in `"pending"` state. No provisioning occurs but existing resources are unaffected. To unblock: restart the Quota Service, or set `OSAC_APPROVAL_REQUIRED=false` temporarily. When the flag changes from `true` to `false`, the Fulfillment Service must auto-approve all currently pending resources (move `desired_spec → spec`, set `approval_state = "approved"`) to drain the pending backlog. This is a one-time operation triggered by the config change.
-- **Incorrect quota limits:** Admin can view and modify quotas via the Quota Service API. Changes take effect on the next approval decision.
-- **Tenant over quota:** Tenant sees denial reason in CLI output (`fulfillment-cli get clusters`). They must delete existing resources to free quota, or request a quota increase from their administrator.
-- **Debugging approval decisions:** Check Quota Service logs for approval/denial decisions with tenant ID, request ID, current usage, and quota limits.
+- **Quota Service is down:** All resources stay in `"pending"` state (no promotion to gating). Existing approved resources are unaffected. To unblock: restart the Quota Service, or set `OSAC_APPROVAL_REQUIRED=false` to drain the backlog.
+- **Quota computation seems wrong:** The Quota Service computes usage on demand from Fulfillment Service data. Verify by listing all approved resources for the tenant and summing their `approved_spec` footprints manually.
+- **Incorrect quota limits:** Admin can view and modify quotas via the Quota Service API. Changes take effect on the next gate evaluation and may trigger re-evaluation of rejected resources.
+- **Tenant over quota:** Tenant sees rejection reason in CLI output. They must delete existing resources to free quota, or request a quota increase from their administrator. Rejected resources are automatically retried when quota frees up.
+- **Debugging gate decisions:** Check Quota Service logs for gate decisions with tenant ID, resource ID, current usage, and quota limits.
 
 ## Infrastructure Needed
 
 - Container image build pipeline for the Quota Service
-- PostgreSQL database for Quota Service (quota limits storage only — small footprint)
+- PostgreSQL database for Quota Service (quota limits only — small footprint)
 - Keycloak configuration for `approval-writer` and `quota-admin` service accounts/roles
 - CI pipeline for quota-related integration tests
