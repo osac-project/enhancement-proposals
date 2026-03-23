@@ -309,12 +309,14 @@ The osac-templates repository will be extended with:
   - Allow administrative intervention for troubleshooting deployment issues
 * **Post-MVP**: Real-time status updates via Kubernetes events and metrics-based validation
 
-#### Monitoring and Observability [optional]
+#### OpenShift-Native Monitoring and Observability [optional]
 
-* **Metrics Collection**: Slurm metrics exported via Prometheus exporters
-* **Log Aggregation**: Slurm logs forwarded to OpenShift's logging stack (e.g., EFK/ELK)
+Standard Slurm monitoring and logging tools (sinfo, squeue, sacct, slurmctld logs, etc.) will be available for cluster administrators to monitor Slurm cluster health and troubleshoot issues. This section describes optional OpenShift-native integrations for unified observability:
+
+* **Metrics Collection**: Slurm metrics exported via Prometheus exporters for integration with OpenShift monitoring
+* **Log Aggregation**: Slurm logs forwarded to OpenShift's logging stack (e.g., EFK/ELK) for centralized log management
 * **Alerts**: Prometheus alerts for Slurm controller failures, database issues, node failures
-* **Dashboards**: Grafana dashboards for Slurm job statistics and resource utilization
+* **Dashboards**: Grafana dashboards for Slurm job statistics and resource utilization alongside other cluster metrics
 
 ## Test Plan
 
