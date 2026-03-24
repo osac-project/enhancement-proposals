@@ -65,7 +65,7 @@ We propose four changes:
 
 3. **`OSAC_APPROVAL_REQUIRED` configuration flag:** A boolean flag on the Fulfillment Service (default `false`) that controls whether the approval workflow is active. When `false`, resources are immediately approved (`status.approval.approved_spec` is set to match `spec`). When `true`, new resources and scale operations start with `status.approval.state = "pending"` and wait for gate services to evaluate. This ensures backwards compatibility for deployments that don't use quotas, and allows gradual adoption. When this flag changes from `true` to `false` at runtime, the Fulfillment Service auto-approves all currently pending and gating resources to drain the backlog.
 
-4. **OSAC Quota Service:** A standalone service that stores quota limits per tenant. It watches for resources in `"gating"` state, computes projected usage by querying the Fulfillment Service for the tenant's current resource consumption, and writes its decision to the `quota` gate entry. When a tenant's footprint changes (resource deleted, scale-in, quota limit increased), the Quota Service sets all rejected resources for that tenant back to `"pending"` for automatic re-evaluation through the normal gating flow.
+4. **OSAC Quota Service:** A standalone service that stores quota limits per tenant. It watches for resources in `"gating"` state, computes projected usage by querying the Fulfillment Service for the tenant's current resource consumption, and writes its decision to the `quota` gate entry. When a quota limit increases, the Quota Service triggers re-evaluation of rejected resources by setting them back to `"pending"`. The Fulfillment Service handles re-evaluation triggers for deletions and scale-ins.
 
 ### Workflow Description
 
@@ -126,7 +126,7 @@ The following workflow applies to all resource types: clusters, compute instance
 
 #### Re-evaluation of Rejected Resources
 
-When the Quota Service detects a change in a tenant's resource footprint (resource deleted, scale-in completed, quota limit increased), it sets all rejected (non-expired, non-deleted) resources for that tenant back to `"pending"` state. This re-enters them into the normal gating flow:
+When a tenant's resource footprint changes (resource deleted, scale-in completed, quota limit increased), rejected non-deleted resources without the `AdmissibilityExpired` condition are set back to `"pending"` state. The Fulfillment Service handles this for deletions and scale-ins; the Quota Service handles this for quota limit increases (via the FS Update API). This re-enters them into the normal gating flow:
 
 - The Fulfillment Service promotes the oldest pending resource to `"gating"` (normal semaphore behavior)
 - The Quota Service evaluates it using the standard formula
@@ -136,7 +136,7 @@ When the Quota Service detects a change in a tenant's resource footprint (resour
 
 This provides declarative retry behavior: the user's intent (in `spec`) is preserved, and the system reconciles toward it when conditions allow. No special re-evaluation logic is needed — the existing gating flow handles everything.
 
-Resources that have been rejected for longer than a configurable TTL (e.g., 24 hours) are transitioned to a terminal `"expired"` state to prevent stale auto-provisioning. Expired resources are not re-evaluated.
+To prevent stale auto-provisioning, the Fulfillment Service sets an `AdmissibilityExpired` condition (standard K8s condition pattern) on resources that have been in `"rejected"` state beyond a configurable TTL (e.g., 24 hours, CSP-configurable). Resources with this condition are skipped during re-evaluation. The tenant can retry by "poking" the resource (e.g., a minor edit or dedicated retry command), which clears the condition and sets the resource back to `"pending"`.
 
 #### Scale Operations
 
@@ -191,8 +191,7 @@ Cluster:
 - `"pending"` — Resource is waiting to be promoted to gating
 - `"gating"` — Resource is being evaluated by gate services (only one per tenant at a time)
 - `"approved"` — All gates admitted; resource is provisioned or being provisioned
-- `"rejected"` — At least one gate rejected; user's `spec` is preserved as intent; may be re-evaluated when conditions change
-- `"expired"` — Resource was rejected and has exceeded the configurable TTL; terminal state, will not be re-evaluated
+- `"rejected"` — At least one gate rejected; user's `spec` is preserved as intent; may be re-evaluated when conditions change. If rejected beyond the configurable TTL, an `AdmissibilityExpired` condition is set (K8s condition pattern) — the resource is skipped during re-evaluation until the tenant retries
 
 **Key fields:** `status.approval.state` is managed by the Fulfillment Service (gate services do NOT write it directly). `status.approval.approved_spec` is the spec approved and on the hub (same proto type as `spec`; reconciler uses this for hub CR operations, never `spec` directly). `status.approval.gates` is a map where each gate service writes only its own entry (v1: `quota` only). `decision_reason` is a top-level convenience field summarizing the latest decision.
 
@@ -216,7 +215,7 @@ Cluster:
 2. If `status.approval.state = "approved"` and `spec != approved_spec` → set `approved_spec = spec`, create/update CR on hub using `approved_spec`, sync status from hub
 3. If `approved_spec` is non-empty → sync status from hub (regardless of approval state)
 
-Step 3 covers approved resources (normal operation), rejected scale-outs (cluster keeps running at `approved_spec`), and expired resources with existing CRs. The reconciler reads hub-reported status (state, conditions, api_url) so tenants always see accurate status even for resources with rejected pending changes. No spec changes are pushed to the hub unless step 2 applies.
+Step 3 covers approved resources (normal operation) and rejected scale-outs (cluster keeps running at `approved_spec`). The reconciler reads hub-reported status (state, conditions, api_url) so tenants always see accurate status even for resources with rejected pending changes. No spec changes are pushed to the hub unless step 2 applies.
 
 The reconciler always uses `approved_spec` for hub CR operations, never `spec` directly. Hub selection happens during step 2 (after approval), matching current behavior.
 
@@ -245,54 +244,37 @@ Without these changes, the approval gate is unenforceable — a tenant could byp
 
 ### Implementation Details/Notes/Constraints
 
-#### Template Metadata Enrichment
+#### Resource Footprint Resolution
 
-**Important caveat:** Template metadata enrichment is only needed for **clusters**. VMs and host pools have their quotable dimensions as explicit API fields (`spec.cores`, `spec.memory_gib`, `spec.gpus` for VMs; `spec.host_sets` for host pools) — the Fulfillment Service sees exact values in the request. No template resolution needed.
+**Design principle — structured fields for all quotable dimensions:** The Quota Service reads footprints from structured spec fields. For VMs and host pools, quotable dimensions are already explicit API fields (`spec.cores`, `spec.memory_gib`, `spec.gpus` for VMs; `spec.host_sets` for host pools). No template resolution needed.
 
-For clusters, the resource footprint comes from `default_node_request` in `meta/osac.yaml`. However, **`default_node_request` is a redundant declaration** — the actual node count defaults also exist independently in the Ansible role's code (e.g., `{{ worker_count | default(2) }}` in `install.yaml` and/or `defaults/main.yaml`). These two sources are maintained separately with no enforcement that they agree. If `default_node_request` says 2 nodes but the Ansible role defaults to 3, quotas would be computed against the wrong value. This fragility predates the quota proposal but becomes a correctness concern once quotas rely on this metadata.
+For **clusters**, `spec.node_sets` is populated by the Fulfillment Service at creation time from the template's `default_node_request`. The FS resolves template defaults and tenant-provided node set sizes into structured `spec.node_sets` before persisting (see `private_clusters_server.go`, lines 621-636). The Quota Service reads `spec.node_sets` directly — same pattern as VMs and host pools.
 
-**Recommended long-term fix:** Either make `meta/osac.yaml` the single source of truth that Ansible roles also read from, or extract the actual defaults from the Ansible role during the AAP discovery job rather than maintaining a separate declaration. Both options are beyond the scope of this proposal but should be tracked as a follow-up to ensure quota accuracy.
+**Known gap — template parameter overrides:** If a tenant uses template parameters (e.g., `worker_count=5`) to override node count instead of explicit node sets, the FS currently stores the template default in `spec.node_sets` (not the parameter-overridden value). Ansible processes the parameter at provisioning time and creates a different number of nodes than what `spec.node_sets` says. This creates a mismatch between what quota counts and what actually gets provisioned.
 
-For v1, the Fulfillment Service uses `default_node_request` as the best available source, with the understanding that template authors must keep it consistent with the Ansible defaults. CI validation should be added to catch mismatches.
+**Recommended fix:** `spec.node_sets` should be the single source of truth for node counts. Ansible roles should read node counts from the ClusterOrder CR's `nodeRequests` (which is derived from `spec.node_sets`), not from template parameters. Template parameters like `worker_count` that duplicate `spec.node_sets` functionality should be retired. If a tenant-facing knob for node count is needed, the FS should translate it into `spec.node_sets` at creation time. This is a template architecture concern to be addressed together with the template maintainers — not a quota implementation detail.
 
-**Design principle — structured fields for all quotable dimensions:** VMs already have structured API fields for all quotable dimensions (`cores`, `memory_gib`, `boot_disk`, and `gpus` as a prerequisite). Clusters also have a structured field — `nodeRequests` / `node_sets` — but it's optional. When tenants omit it and rely on template defaults or parameter overrides, the Fulfillment Service must resolve the structured values from unstructured template parameters. The `countParameter` enrichment below is a **pragmatic v1 mechanism** for this resolution. The long-term fix is making `osac.yaml` the single source of truth so that resolution is reliable by design.
+#### Template Architecture Considerations
 
-When **template parameters override node counts** (e.g., a `worker_count` parameter that changes the number of workers), the Fulfillment Service cannot resolve the correct footprint because it doesn't know which parameter maps to which node set. To address this, two **optional fields** are added to the existing `default_node_request` entries in `meta/osac.yaml`:
+OSAC templates (`osac.templates` collection) and workflows (`osac.workflows` collection) now live together in the `osac-aap` repository. The `osac.workflows` collection provides reusable workflow playbooks with override support — CSPs import vendor workflows and customize specific steps via override variables, without duplicating code.
 
-```yaml
-# Existing format (unchanged, still works):
-default_node_request:
-  - resourceClass: fc430
-    numberOfNodes: 2
+CSP-specific overrides (e.g., `osac.massopencloud` for MOC) can declare different `default_node_request` entries than the base templates. The AAP template discovery job must publish the **correct `default_node_request` for each fully-qualified template ID**.
 
-# With optional enrichment (backwards compatible):
-default_node_request:
-  - resourceClass: fc430
-    numberOfNodes: 2
-    countParameter: worker_count    # NEW, optional: which template parameter overrides numberOfNodes
-    quotable: true                  # NEW, optional: counted against quota (defaults to true)
-  - resourceClass: large
-    numberOfNodes: 3
-    quotable: false                 # control plane runs as pods on hub, not counted against quota
-```
+**Override risk for quotas:** A workflow override could add resources (e.g., a monitoring node) without updating `default_node_request` in the template's `meta/osac.yaml`, causing the Quota Service to approve based on an understated footprint. Any override that changes the resource footprint must be accompanied by an updated `default_node_request`. CI validation should enforce consistency.
 
-Enrichment is only needed when template parameters override node counts. For fixed node counts, explicit `nodeRequests`, and VMs (where `spec.cores`/`spec.memory_gib` are explicit API fields), no enrichment is required. The enrichment is backwards compatible — existing templates and Ansible playbooks require no changes.
+#### Implementation Open Questions
 
-#### Multi-Layer Template Considerations
+The following design questions are deferred to the implementation phase. They affect the queuing and scheduling behavior but not the core architectural model (approval states, gates, quota formula):
 
-OSAC templates use a three-layer system:
+- **Queue discipline (FIFO vs best-effort):** Should pending resources be processed strictly in creation order (FIFO), or should smaller requests be allowed to skip blocked larger ones (backfilling)?
+- **Head-of-line blocking:** If the first resource in the queue is a 32-node cluster that doesn't fit, should it block a 1-node cluster that would fit? Backfilling increases utilization but risks starvation for large requests.
+- **Re-evaluation efficiency:** Setting all rejected resources back to pending on every footprint change may cause unnecessary write amplification at larger scale. A smarter approach (check if they'd fit before re-queuing) can be implemented as an optimization.
 
-1. **Base templates** (`osac.templates` collection) — infrastructure-agnostic defaults
-2. **CSP-specific overrides** (`osac.massopencloud` collection at MOC) — can add nodes, change resource classes, or modify resource requirements
-3. **Execution engine** (`osac-aap`) — runs playbooks that consume templates
-
-Each layer can have a role with the **same name** (e.g., `ocp_4_17_small` exists in both `osac.templates` and `osac.massopencloud`). The CSP version may declare different `default_node_request` entries than the base. The AAP template discovery job must publish the **correct `default_node_request` for each fully-qualified template ID**. When the Fulfillment Service resolves a template, it must use the metadata matching the qualified ID (e.g., `osac.massopencloud.ocp_4_17_small` may require 3 nodes while `osac.templates.ocp_4_17_small` requires 2).
-
-#### Compatibility with the Override Points Revamp (MGMT-23142)
-
-A planned template architecture change (MGMT-23142) replaces template forking with an override points model, where CSPs import vendor playbooks and override specific steps via variables. This introduces a risk: **an override could add resources (e.g., a monitoring node) without updating `default_node_request` in the template's `meta/osac.yaml`**, causing the Quota Service to approve based on an understated footprint.
-
-To maintain the "metadata as authoritative contract" principle, any override that changes the resource footprint must be accompanied by an updated `default_node_request` in the overriding template's `meta/osac.yaml`. CI validation should enforce that the node counts and resource classes declared in `default_node_request` match what the playbook actually provisions. The override points design should account for this constraint.
+The [Kueue project](https://kueue.sigs.k8s.io/) (Kubernetes-native job queuing with quota management) provides proven patterns that should inform the implementation design:
+- **BestEffortFIFO** (Kueue's default) is recommended over StrictFIFO — older workloads that don't fit do not block newer ones that would fit, avoiding head-of-line blocking while maintaining fairness
+- Kueue's **AdmissionCheck** pattern (external controllers gate admission via independent checks, workload admitted only when all checks pass) validates our extensible gates model
+- Kueue's distinction between **Retry** (temporary, try again) and **Rejected** (terminal) aligns with our re-evaluation model (rejected → re-evaluated on footprint change) and AdmissibilityExpired condition (terminal)
+- Kueue features not applicable to v1 but potentially relevant for future work: **preemption** (evicting lower-priority workloads), **cohort-based borrowing** (cross-tenant quota sharing), and **flavor fungibility** (trying alternative resource types)
 
 ### OSAC Quota Service
 
@@ -301,7 +283,7 @@ The Quota Service is a standalone Go service with the following responsibilities
 **Core:**
 - **Watch for gating resources:** Periodically query each resource type's List API on the Fulfillment Service — `Clusters.List`, `ComputeInstances.List`, and `HostPools.List` — filtering for `"gating"` approval state (configurable interval, default 5s). The Quota Service must fan out across all three resource types and merge the results client-side. Note: the Fulfillment Service has a streaming Events API (`Events.Watch()`) used by internal reconcilers, but it currently only supports Cluster and ClusterTemplate event payloads. Once the Events API is extended to support ComputeInstance and HostPool events, the Quota Service should migrate to event-driven detection with polling as fallback.
 - **Compute projected usage:** For each gating resource, query the Fulfillment Service for all approved, non-deleted resources for the tenant across all resource types. Sum their `approved_spec` footprints to get current usage. Apply the quota computation formula: `current_usage + delta(spec - approved_spec)`.
-- **Trigger re-evaluation:** When the Quota Service detects a change in a tenant's footprint (resource deleted, scale-in completed, quota limit increased), it sets all rejected (non-expired, non-deleted) resources for that tenant back to `"pending"` via the Fulfillment Service Update API. The normal gating flow then re-evaluates them.
+- **Trigger re-evaluation:** When the Quota Service detects a quota limit increase, it sets rejected non-deleted resources (without `AdmissibilityExpired` condition) for that tenant back to `"pending"` via the Fulfillment Service Update API. The Fulfillment Service handles the same for deletions and scale-ins. The normal gating flow then re-evaluates them.
 - **Make gate decisions:** Write to `status.approval.gates.quota` on the Fulfillment Service via the Update API. The Quota Service only writes to its own gate entry — it never writes `status.approval.state` or `approved_spec`.
 - **Concurrency control:** Process gating resources serially per tenant with a row lock. Since only one resource per tenant is in `"gating"` state at a time (enforced by the Fulfillment Service semaphore), this primarily prevents duplicate processing.
 
@@ -446,7 +428,7 @@ All gate decisions should be logged with: tenant ID, resource ID, resource type,
 - **Added latency:** Every provisioning request waits for the gating cycle (polling interval + gate evaluation). At default settings, this adds up to 5-10 seconds. Acceptable given that provisioning takes minutes. Events API migration would reduce this.
 - **New component to operate:** The Quota Service is a new Go service with its own database that must be deployed, monitored, and maintained.
 - **Sequential gating:** The per-tenant semaphore means concurrent requests from the same tenant are processed sequentially. At OSAC's current scale (few requests per tenant per day), this is not a concern.
-- **Five approval states:** The state machine (pending/gating/approved/rejected/expired) is more complex than a simple approved/rejected model, but each state serves a distinct purpose and the transitions are well-defined.
+- **Four approval states:** The state machine (pending/gating/approved/rejected) is more complex than a simple approved/rejected model, but each state serves a distinct purpose. Rejection TTL is handled via a K8s condition (`AdmissibilityExpired`) rather than a separate state.
 
 ## Alternatives (Not Implemented)
 
@@ -491,7 +473,7 @@ The following capabilities are enabled by this proposal's architecture but are e
 - Failed provisioning: resource with `status.state = FAILED` continues to count against quota until deleted
 - Quota reduction: admin reduces quota below current usage, existing resources unaffected, new requests rejected
 - Re-evaluation trigger: delete a resource → rejected resources for same tenant set to pending → re-gated → approved if quota fits
-- TTL expiration: rejected resource exceeds TTL → transitions to expired → not re-evaluated
+- TTL expiration: rejected resource exceeds TTL → `AdmissibilityExpired` condition set → skipped during re-evaluation → tenant pokes to retry
 - Authorization bypass prevention: tenant attempt to write `status.approval` via public API is rejected
 - Cross-tenant isolation: Quota Service identity can read across tenants, regular service accounts cannot
 - Config change drain: switching `OSAC_APPROVAL_REQUIRED` from true to false auto-approves all pending/gating resources
