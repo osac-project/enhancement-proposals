@@ -3,7 +3,7 @@ title: bare-metal-fulfillment
 authors:
   - Tzu-Mainn Chen
 creation-date: 2025-09-08
-last-updated: 2025-09-15
+last-updated: 2026-03-18
 tracking-link:
   - None
 see-also:
@@ -18,480 +18,327 @@ superseded-by:
 
 ## Summary
 
-Bare metal fulfillment refers to the process through which a tenant acquires bare metal hosts and configures their networking.
-Afterwards, the tenant will be able to perform selected operations on the host: inventory information, power control, and
-serial console access. Any further operations - for example, image-based provisioning - are outside the scope of the O-SAC
-solution and must be integrated by the cloud provider.
-
-We believe this feature set is generic enough to support a wide range of initial bare metal cluster use cases, including:
-
-* support for an environment where developers have the flexibility to install their own operating systems and software
-* support for alternative clusters such as SLURM
-* support for bare metal configuration during O-SAC cluster fulfillment
-
-In this context, a “tenant” is an organization that can perform selected actions on the requested bare metal resources in
-order to achieve these use cases; at the MOC, a tenant would be led by a ColdFront PI or manager.
+Bare metal fulfillment refers to the process through which bare metal hosts are acquired and configured. Requests for bare
+metal fulfillment could be triggered by an O-SAC tenant, or by a provider workflow, or by other O-SAC fulfillment processes
+(such as cluster fulfillment).
 
 ## Motivation
 
-Bare metal fulfillment is a fundamental requirement for O-SAC, identified as an explicit need for the MOC. It will also serve
-as a component for other fulfillment workflows, such as VDC and OpenShift cluster fulfillment.
+O-SAC requires the manipulation of bare metal, whether for cluster fulfillment or agent provisioning or to satisfy tenant
+requests. Bare metal fulfillment provides a unified API for this manipulation while also giving us a single point
+of integration with backend bare metal inventory and management systems.
 
 ### User Stories
 
-* As a provider, I want to define the available bare metal resource classes.
-* As a provider, I want to mark hosts as available for bare metal fulfillment.
-* As a tenant, I want to see available bare metal resource classes.
-* As a tenant, I want to select hosts for a bare metal cluster by resource class and other possible filters (such as rack location).
-* As a tenant, I want to increase or decrease the number of hosts for an existing bare metal cluster.
-* As a tenant, I want to view inventory details for my hosts.
-* As a tenant, I want to connect to the serial console of my hosts.
-* As a tenant, I want to perform basic power control (power on/power off/reset) of my hosts.
-* As a tenant, I want to specify network attachments for a host when I first acquire it.
-* As a tenant, I want to modify the network attachments of a host that I have already acquired.
-* As a tenant, I want to manage connectivity at the interface level in order to support hardware that may have both regular and high performance interfaces (for example, some hosts may have high-bandwidth connectivity for GPU workloads, and it may be necessary to attach specific networks to these interfaces).
+* As an O-SAC developer, I want a bare metal fulfillment architecture that allows support for multiple bare metal backends
+* As an O-SAC developer, I want to utilize bare metal fulfillment in workflows such as cluster fulfillment
+* As a provider, I want to specify bare metal workflows for both internal and tenant use
+* As a provider, I want to track bare metal usage for reporting and billing purposes
+* As a provider, I want to utilize bare metal fulfillment in workflows such as agent provisioning
+* As a tenant, I want to utilize bare metal fulfillment to acquire and configure hardware
 
 ### Goals
 
-We will implement bare metal fulfillment in the O-SAC solution, covering the user stories described above. This implementation will
-be first deployed and tested in the MOC; as a result, the implementation will rely upon ESI for bare metal management (although
-it will be designed to allow easy replacement of the bare metal management layer). While not addressed in this proposal, a long term goal
-of bare metal fulfillment is to have it be used as the basis of bare metal configuration during cluster fulfillment.
+We will implement a bare metal fulfillment architecture that has the following features:
+
+* Enables support for multiple bare metal backends
+* Allows providers to specify bare metal workflows that automate bare metal configuration (such as image provisioning)
+* Usable by tenants, providers, and within other O-SAC fulfillment workflows (such as cluster fulfillment)
+* Tracks host assignment for reporting and billing purposes
 
 ### Non-Goals
 
-We will not look into alternatives for ESI; that work will be covered through a future enhancement.
-
-We will not substantially modify the existing cluster fulfillment workflow at this time.
+* This proposal does not implement bare metal networking; instead, it assumes the existence of an O-SAC Networking API that can be utilized when configuring networking for bare metal hosts.
+* This proposal does not implement serial console access to bare metal hosts.
+* This proposal does not accommodate a single O-SAC environment with multiple bare metal inventories (although the architecture is designed to support this feature in the future).
 
 ## Proposal
 
-The implementation of bare metal fulfillment relies on three concepts:
+We propose creating the following CRDs:
 
-* HostPool: A collection of requested bare metal machines (potentially from multiple resource classes), along with their desired network configuration.
-* Host: An ephemeral resource created when bare metal resources are acquired from the underlying bare metal management layer. They represent the assignment of a bare metal resource to a HostPool, and provide an endpoint for host-specific operations.
-* HostClass: Defines a set of bare metal properties, such as memory, CPU, and network interfaces. Each Host has a single HostClass attribute. HostClasses are defined by the provider.
+* **Bare Metal Pool:** A bare metal pool represents a collection of bare metal hosts which share a common desired configuration. It specifies two items:
+  * **Host Sets:** A collection of desired hosts
+  * **Profile:** A configuration that specifies how the bare metal pool should behave. It specifies additional restrictions when selecting hosts, the template that should be applied to the bare metal pool, and the template that should be applied to each host.
+  * **Bare Metal Pool Template:** An Ansible role that details setup and teardown steps for a bare metal pool as a whole. Can be written so
 
-At a high level, tenants will request a HostPool by specifying:
+* **Host Lease:** Represents a lease on a host; an ephemeral resource that can be used to manipulate the host after acquisition, and which can be safely deleted when the host is released.
+  * **Host Class:** Specifies how a host can be managed (OpenStack, Carbide, etc). Each Host is associated with one Host Class.
+  * **Host Type:** Describes the type of hardware represented by this host. Analogous to "instance type" in AWS or "resource class" in Ironic. E.g. `fc430`, `h100`
+  * **Host Template:** An Ansible role that details setup and teardown steps for an individual host. These steps will typically modify a HostLease's `spec` to manage provisioning, power state, and/or network attachment.
 
-* the number and HostClass of hosts, as well as any desired filters (for example: "hosts on rack X" or "not host with name Y")
-* the network configuration to be applied to those hosts (note that this configuration applies to each individual host in the HostPool)
+These CRDs will be managed by the following operators:
 
-The O-SAC solution will find available hosts matching the request from the system's inventory, which is managed separately by the cloud provider. O-SAC
-will then assign them to the tenant, creating matching Host resources for each host. The tenant can then perform available operations upon the Host.
+* **Bare Metal Pool Operator:**
 
-We expect bare metal fulfillment to follow the same workflow used for cluster fulfillment; as such, we expect to update the
-following existing O-SAC components:
+  * Creates/deletes Host Lease CRs corresponding to the hosts desired for the bare metal pool
+  * Executes setup/teardown templates applicable to the entire bare metal pool (and not to individual hosts)
 
-* Fulfillment Service: Define the API for HostPools, Hosts, and HostClasses
-* Fulfillment CLI: Give the tenant access to the API
-* O-SAC Operator: Manage and reconcile the Custom Resources for HostPools and Hosts
-* O-SAC AAP: Use Ansible playbooks to perform the requested reconciliation operations of HostPools and Hosts by calling Bare Metal Management APIs.
-* Bare Metal Management: Manage the hardware; we will use ESI for now
-
-Much of the development work can simply follow the established patterns set by the cluster fulfillment workflow. However, the
-following topics merit further discussion in the "Implementation Details/Notes/Constraints" below:
-
-* ESI playbooks
-* Serial console support
+* **Host Inventory Operator:** Reconciles Host Leases with no Host Class assigned. Queries the backend inventory, assigns a host, and populates the Host Lease CR with information about that host (including the Host Class).
+* **Host Management Operator (Host Class-specific):** Reconciles Host Leases corresponding to the operator's Host Class; a new Host Management Operator will be created for each bare metal management backend. Allows bare metal management operations to be performed upon the host associated with the Host Lease (power management, provisioning, etc).
 
 ### Workflow Description
 
-#### Host Pool Creation
+```mermaid
+flowchart TD
+    U1([Tenant]) --> A1
+    A1[Fulfillment Service] -->B{Bare Metal Pool CR}
+    A2[OSAC Cluster Operator] -->B
+    B <--> C[Bare Metal Pool Operator]
+    C --> D{Host CR}
+    D <--> E[Host Inventory Operator]
+    D <--> F[Host Management Operator]
+```
 
-1. The tenant uses the Fulfillment CLI to request a HostPool by specifying the desired number of hosts and resource classes, as well as the desired network configuration.
-2. The Fulfillment Service receives the request and creates a new HostPool custom resource (CR) in the appropriate Hub.
-3. The O-SAC Operator begins the reconciliation process for the new HostPool CR, finding the requested hosts and creating matching Host CRs, and performing the requested network configuration.
-4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the HostPool CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of their requested HostPool.
+Bare metal fulfillment begins with the creation of a Bare Metal Pool CR. This creation might be triggered by a tenant (through the fulfillment service), a provider (through their own workflow), or another O-SAC fulfillment workflow (such as cluster fulfillment).
 
-#### Host Pool Network Update
+#### Bare Metal Pool Creation
 
-1. The tenant uses the Fulfillment CLI to update the network configuration of a HostPool.
-2. The Fulfillment Service receives the request and updates the existing HostPool CR in the appropriate Hub.
-3. The O-SAC Operator begins the reconciliation process for the HostPool CR, noting the discrepency between the current network configuration and the desired networking confiuration, and updating the network configuration of the hosts.
-4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the HostPool CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of the HostPool.
+1. The Bare Metal Pool CR is created, specifying the desired Host Set and Profile
+2. The Bare Metal Pool Operator:
+  * Iterates through `spec.hostSets` and creates a Host Lease CR for each requested host
+    * Uses the following values when creating the Host Lease CRs
+      * Adds the host set’s host type to the Host Lease CRs `spec.selector` dictionary
+      * Adds the values in the profile’s `matchLabels` attribute to the Host Lease CRs `spec.selector` dictionary
+      * Sets `spec.template`
+        * The template ID is taken from the profile’s `hostTemplate` value
+        * The template input is taken from `spec.profile.input`
+    * Executes the provisioning step of the template specified by the profile’s `bareMetalPoolTemplate`
+3. The Host Inventory Operator:
+  * Reconciles individual Host Lease CRs
+    * Queries configured Bare Metal Inventory for a host that matches the Host Lease CR’s `spec.selector` dictionary and assigns it to the Bare Metal Pool
+    * Updates the Host Lease CR with information returned from the above query, as well as the `hostClass` and `networkClass` specified by the operator’s inventory configuration
+4. The Host Management Operator:
+  * Executes the provisioning step of the template specified by the Host Lease CR’s `spec.template`
 
-#### Host Pool Expansion
+#### Bare Metal Pool Scale Up
 
-1. The tenant uses the Fulfillment CLI to increase the number of requested hosts specified in a HostPool, updating any desired filters.
-2. The Fulfillment Service receives the request and updates the existing HostPool CR in the appropriate Hub.
-3. The O-SAC Operator begins the reconciliation process for the HostPool CR, noting the discrepency between the current host count and the desired host count, and adding the requested hosts.
-4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the HostPool CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of the HostPool.
+1. The Bare Metal Pool CR is modified to add an additional host in the specified Host Set
+2. The Bare Metal Pool Operator:
+  * Counts the pool’s existing Host Lease CRs against requested hosts, and creates Host Lease CRs as required
+    * Uses the following values when creating the Host Lease CRs
+      * Adds the host set’s host type to the Host Lease CRs `spec.selector` dictionary
+      * Adds the values in the profile’s `matchLabels` attribute to the Host Lease CRs `spec.selector` dictionary
+      * Sets `spec.template`
+        * The template ID is taken from the profile’s `hostTemplate` value
+        * The template input is taken from `spec.profile.input`
+    * Executes the provisioning step of the template specified by the profile’s `bareMetalPoolTemplate`
+3. The Host Inventory Operator:
+  * Reconciles the new Host Lease CRs
+    * Queries configured Bare Metal Inventory for a host that matches the Host Lease CR’s `spec.selector` dictionary and assigns it to the Bare Metal Pool
+    * Updates the Host Lease CR with information returned from the above query, as well as the `hostClass` and `networkClass` specified by the operator’s inventory configuration
+4. The Host Management Operator:
+  * Executes the provisioning step of the template specified by the Host Lease CR’s `spec.template`
 
-#### Host Pool Reduction
+#### Bare Metal Pool Scale Down
 
-1. The tenant uses the Fulfillment CLI to decrease the number of requested hosts specified in a HostPool; they also optionally mark specific hosts for removal (this is detailed further below).
-2. The Fulfillment Service receives the request and updates the existing HostPool CR in the appropriate Hub.
-3. The O-SAC Operator begins the reconciliation process for the HostPool CR, noting the discrepency between the current host count and the desired host count, and removing the requested hosts.
-4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the HostPool CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of the HostPool.
+1. The Bare Metal Pool CR is modified to remove a host in the specified Host Set
+2. The Bare Metal Pool Operator:
+  * Counts pool’s Host Lease CRs against requested hosts, and identifies Host Lease CRs to be removed
+    * The operator may prioritize Host Lease CRs with a “to-be-removed” annotation
+  * Deletes selected Host Lease CRs
+3. Host Management Operator
+  * Executes the deprovisioning step of the template specified by the Host Lease CR’s `spec.template`
+  * Unsets the Host Lease CR’s `hostClass`
+4. Host Inventory Operator
+  * Updates the bare metal inventory to unassign the bare metal pool from the host
+  * Allows Host Lease CR to be deleted
 
-#### Host Operations
+#### Bare Metal Pool Deletion
 
-1. The tenant uses the Fulfillment CLI to view their Hosts.
-2. The tenant uses the Fulfillment CLI to perform available operations upon the desired Host. Initially, these actions will be limited to power control; additional actions (such as console enablement) may be added later.
-3. The Fulfillment Service receives the request and updates the existing Host CR in the appropriate Hub.
-3. The O-SAC Operator begins the reconciliation process for the Host CR, noting any discrepency between the current state and the desired state, and calling the bare metal service to perform any needed host operations.
-4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the Host CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of the Host.
-
-#### Host Pool Deletion
-
-1. The tenant uses the Fulfillment CLI to delete a HostPool.
-2. The Fulfillment Service receives the request and deletes the existing HostPool CR in the appropriate Hub.
-3. The deletion of the HostPool CR triggers cascading deletes of associated Hosts.
-4. The O-SAC Operator detects these deletions and calls the bare metal service to clean these hosts.
+1. The Bare Metal Pool CR is deleted
+2. The Bare Metal Pool Operator:
+  * Deletes the pool’s Host Lease CRs
+  * Executes the deprovisioning step of the template specified by the profile’s `bareMetalPoolTemplate`
+  * Allows Bare Metal Pool CR to be deleted after the above operations are complete
+3. The Host Management Operator:
+  * Executes the deprovisioning step of the template specified by the Host Lease CR’s `spec.template`
+  * Unsets the Host Lease CR’s `hostClass`
+4. The Host Inventory Operator:
+  * Updates the bare metal inventory to unassign the bare metal pool from the host
+  * Allows Host Lease CR to be deleted
 
 ### API Extensions
 
-#### HostPools
+#### Bare Metal Pool
 
-A tenant requests bare metal resources by creating a HostPool with a desired specification. Once created, O-SAC
-will repeatedly attempt to fulfill the request until the state of the HostPool matches its specification. Tenants
-can update a HostPool specification, and the same reconciliation process will perform the needed operations to change
-the state of the HostPool.
+The Bare Metal Pool CR acts as the entrypoint into bare metal fulfillment. For example:
 
-In the following example, the tenant uses the Fulfillment CLI to request a HostPool with two fc430 hosts and one h100.
-Each host will have `network1` attached as a native VLAN on one physical interface; and a trunk port with `network2` as a native
-VLAN and `network3` as a tagged VLAN on a second physical interface. It is assumed that the tenant will have knowledge of their
-available networks from a separate O-SAC network service (whose implementation is outside the scope of this proposal).
+``` yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: BareMetalPool
+metadata:
+  name: bm-pool-12345
+  namespace: osac-namespace
+spec:
+  hostSets:
+    - hostType: fc430
+      replicas: 2
+    - hostType: h100
+      replicas: 1
+  profile:
+    name: imageProvisioning
+    templateParameters: some-json-string
+```
 
-    $ ./fulfillment-cli create hostpool \
-           --host-set workers=host_class:fc430,size:2 \
-           --host-set gpus=host_class:h100,size:1 \
-           --network-attachments primary:network1 \
-           --network-attachments primary:network2,vlans:network3
+The profile allows for the automated configuration of a Bare Metal Pool. For example, an `imageProvisioning` profile might look like the following:
 
-The Fulfillment CLI sends this JSON request to the Fulfillment Service:
+``` yaml
+imageProvisioning:
+  matchLabels:
+    managedBy: None
+    provisionState: available
+  expectedParameters: [“imageURL”]
+  bareMetalPoolTemplate: osac.templates.bm_private_network_create
+  hostTemplate: osac.templates.bm_host_image_provision
+```
 
-    {
-      "object": {
-        "spec": {
-          "host_sets": {
-            "workers": {
-              "resource_class": "fc430",
-              "replicas": 2
-            },
-            "gpus": {
-              "resource_class": "h100",
-              "replicas": 1
-            }
-          },
-          "network_attachments": [
-            {
-              "primary": "network1"
-            },
-            {
-              "primary": "network2",
-              "vlans": ["network3"]
-            },
-          ]
-        }
-      }
-    }
+* `matchLabels`: additional constraints to be used when selecting hosts for the Bare Metal Pool
+* `bareMetalPoolTemplate`: similar to an OSAC cluster template; specifies an Ansible role with setup and tear down actions to be applied for the bare metal pool as a whole
+* `hostTemplate`: similar to an OSAC cluster template; specifies an Ansible role with setup and tear down actions to be applied for an individual host
+* `expectedParameter`: parameters expected by the above templates
 
-The Fulfillment Service creates the following HostPool CR:
+Profiles are specified by the provider in a configuration file that can be read by the Bare Metal Pool Operator.
 
-    apiVersion: o-sac.openshift.io/v1alpha1
-    kind: HostPool
-    metadata:
-      name: examplehostpool
-    spec:
-      hostSets:
-        workers:
-          resourceClass: fc430
-          replicas: 2
-        gpus
-          resourceClass: h100
-          replicas: 1
-      selector:
-        matchLabels:
-          hostPoolUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
+#### Host Lease
 
-      # The networkAttachments section controls how networks are connected to
-      # physical interfaces.
-      networkAttachments:
-      # This configuration will match any available interface.
-      - primary: network1
-      - primary: network2
-        vlans:
-        - network3
+Host Lease CRs are created by the Bare Metal Pool Operator when it reconciles a Bare Metal Pool CR:
 
-Note that the selector values are supplied by the Fulfillment Service; these values are used to label the
-created Hosts without any input needed from the tenant.
+``` yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: HostLease
+metadata:
+  name: host-54321
+  namespace: osac-namespace
+  ownerReferences:
+  - apiVersion: osac.openshift.io/v1alpha1
+    kind: BareMetalPool
+    name: bm-pool-12345
+    namespace: osac-namespace
+spec:
+  selector:
+    hostSelector:
+      hostType: fc430
+      managedBy: None
+      provisionState: available
+  templateID: osac.templates.bm_host-image-provision
+  templateParameters: some-json-string
+```
 
-If the tenant wishes to specify host properties, they can filter hosts by specifying hostSelectors that use standard
-Kubernetes `matchLabel` and `matchExpression` syntax; for example, this HostPool CR requires that the fc430 hosts be
-located on rack R2, but not in cabinet C2:
+When a Host Lease CR is created, it is not associated with a host from the backend inventory. That
+association only occurs after the Host Inventory Operator reconciles the Host Lease CR:
 
-    apiVersion: o-sac.openshift.io/v1alpha1
-    kind: HostPool
-    metadata:
-      name: examplehostpool
-    spec:
-      hostSets:
-        workers:
-          resourceClass: fc430
-          replicas: 2
-          hostSelectors:
-            matchLabels:
-              row: R2
-            matchExpressions:
-            - op: NotIn
-              key: cabinet
-              values: ["C2"]
-        gpus:
-          resourceClass: h100
-          replicas: 1
-      selector:
-        matchLabels:
-          hostPoolUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
+``` yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: HostLease
+metadata:
+  name: host-54321
+  namespace: osac-namespace
+  ownerReferences:
+  - apiVersion: osac.openshift.io/v1alpha1
+    kind: BareMetalPool
+    name: bm-pool-12345
+    namespace: osac-namespace
+spec:
+  selector:
+    hostType: fc430
+    managedBy: None
+    provisionState: available
+  templateID: osac.templates.bm_host-image-provision
+  templateParameters: some-json-string
+  externalID: host-id
+  externalName: host-name
+  hostClass: openstack
+  networkClass: openstack
+status:
+  poweredOn: false
+  networkInterfaces:
+  - macAddress: aa:bb:cc:dd:ee:f1
+  - macAddress: aa:bb:cc:dd:ee:f2
+  provisioning:
+    state: available
+```
 
-      # The networkAttachments section controls how networks are connected to
-      # physical interfaces.
-      networkAttachments:
-      # This configuration will match any available interface.
-      - primary: network1
-      - primary: network2
-        vlans:
-        - network3
+That assignment also sets the Host Lease CR's `hostClass` and `networkClass`. Once the `hostClass` is set,
+the Host Lease CR can be reconciled by the Host Management Operator specific to that host class, allowing management
+operations against the leased host - provisioning, power control, and network attachment:
 
-Note that initially, information regarding valid key/value pairs will have to be provided out-of-band by the
-cloud provider. A later enhancement may allow O-SAC to provide this information through an API.
+``` yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: HostLease
+metadata:
+  name: host-54321
+  namespace: osac-namespace
+  ownerReferences:
+  - apiVersion: osac.openshift.io/v1alpha1
+    kind: BareMetalPool
+    name: bm-pool-12345
+    namespace: osac-namespace
+spec:
+  selector:
+    hostType: fc430
+    managedBy: None
+    provisionState: available
+  templateID: osac.templates.bm_host-image-provision
+  templateParameters: some-json-string
+  externalID: host-id
+  externalName: host-name
+  hostClass: openstack
+  networkClass: openstack
+  poweredOn: true
+  networkInterfaces:
+  - macAddress: aa:bb:cc:dd:ee:f1
+    network: private-vlan-network
+  provisioning:
+    url: http://iso.url
+    state: active
+status:
+  poweredOn: false
+  networkInterfaces:
+  - macAddress: aa:bb:cc:dd:ee:f1
+  - macAddress: aa:bb:cc:dd:ee:f2
+  provisioning:
+    state: available
+```
 
-If the tenant wishes to remove a host from their HostPool, then they will update their HostPool specification to reduce
-the number of Hosts of a resource class, resulting in the following CR. The reconciliation process will remove an arbitrary
-Host of that resource class from the HostPool:
+The Host Management Operator will use APIs specific to its `hostClass` for provisioning and power operations. Note that a provisioning operation may require the backend bare metal management system to control the power state as well; as a result the operator may need to suspend power reconciliation during provisioning.
 
-    apiVersion: o-sac.openshift.io/v1alpha1
-    kind: HostPool
-    metadata:
-      name: examplehostpool
-    spec:
-      hostSets:
-        workers:
-          resourceClass: fc430
-          replicas: 1
-        gpus:
-          resourceClass: h100
-          replicas: 1
-      selector:
-        matchLabels:
-          hostPoolUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
-
-      # The networkAttachments section controls how networks are connected to
-      # physical interfaces.
-      networkAttachments:
-      # This configuration will match any available interface.
-      - primary: network1
-      - primary: network2
-        vlans:
-        - network3
-
-If the tenant wishes to remove a specific host from their HostPool, then they will first mark a Host for removal
-using an O-SAC API that annotates the Host with a marker for deletion before reducing the number of Hosts within a HostPool.
-The reconciliation process will favor removing Hosts with that annotation.
-
-If a tenant wishes to remove a specific host and prevent it from ever being re-added to the HostPool, they can add
-a host selector that excludes a particular host by name. Note that this also allows for a tenant to replace a host by keeping the
-number of hosts constant while also excluding the unwanted host.
-
-    apiVersion: o-sac.openshift.io/v1alpha1
-    kind: HostPool
-    metadata:
-      name: examplehostpool
-    spec:
-      hostSets:
-        workers:
-          resourceClass: fc430
-          replicas: 1
-          hostSelectors:
-            matchExpressions:
-            - op: NotIn
-              key: hostName
-              values: ["examplehost"]
-        gpus:
-          resourceClass: h100
-          replicas: 1
-      selector:
-        matchLabels:
-          hostPoolUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
-
-      # The networkAttachments section controls how networks are connected to
-      # physical interfaces.
-      networkAttachments:
-      # This configuration will match any available interface.
-      - primary: network1
-      - primary: network2
-        vlans:
-        - network3
-
-Tenants can also attach networks to interfaces matching a specific property. In this example,
-each fc430 will be configured with `network1` attached to any available physical interface,
-while `storage-network` will only be attached to an interface with the `25gb` property.
-
-    apiVersion: o-sac.openshift.io/v1alpha1
-    kind: HostPool
-    metadata:
-      name: example
-    spec:
-      hostSets:
-        workers:
-          resourceClass: fc430
-          replicas: 2
-        gpus:
-          resourceClass: h100
-          replicas: 1
-      selector:
-        matchLabels:
-          hostPoolUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
-
-      # The networkAttachments section controls how networks are connected to
-      # physical interfaces.
-      networkAttachments:
-      # This configuration will match any available interface.
-      - primary: network1
-      # This configuration will only match interfaces with the `25gb` property
-      - matches:
-            property: 25gb
-        primary: storage-network
-
-#### Hosts
-
-Tenants do not create Hosts directly; instead, they are created as part of the HostPool fulfillment workflow, resulting in a Host CR.
-For example:
-
-    apiVersion: cloudkit.openshift.io/v1alpha1
-    kind: Host
-    metadata:
-      name: examplehost
-      ownerReferences:
-      - apiVersion: o-sac.openshift.io/v1alpha1
-        blockOwnerDeletion: true
-        controller: true
-        kind: HostPool
-        name: examplehostpool
-        uid: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
-      labels:
-        hostPoolUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
-    spec:
-      powerState: PowerOff
-      serialConsole: Enabled
-    status:
-      powerState: PowerOff
-      serialConsole: Enabled
-      name: examplehost
-      properties:
-        cpus: 512
-        memory_mb: 1572864
-        accelerators:
-        - "NVIDIA Corporation GH100"
-
-The listed properties will depend upon the attributes returned by the underlying bare metal management service.
-
-Note that each Host has an ownerReferences entry to the parent HostPool; this will enable both cascading resource deletion, while
-also preventing the parent HostPool from being deleted until its child Hosts are deleted.
-
-Once created, tenants can use the Fulfillment CLI to perform various operations against the host:
-
-* Power control
-* Serial console access
-* Inventory information
-
-A Hosts API will support these operations. For example, the tenant can edit the Host spec to change the power state, resulting
-in the following Host CR:
-
-    apiVersion: cloudkit.openshift.io/v1alpha1
-    kind: Host
-    metadata:
-      name: examplehost
-      ownerReferences:
-      - apiVersion: o-sac.openshift.io/v1alpha1
-        blockOwnerDeletion: true
-        controller: true
-        kind: HostPool
-        name: examplehostpool
-        uid: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
-      labels:
-        hostPoolUID: 66b8ed6f-1af2-4892-ac12-47bd47dacd40
-    spec:
-      powerState: PowerOn
-      serialConsole: Enabled
-    status:
-      powerState: PowerOff
-      serialConsole: Enabled
-      name: examplehost
-      properties:
-        cpus: 512
-        memory_mb: 1572864
-        accelerators:
-        - "NVIDIA Corporation GH100"
-
-The O-SAC Operator will detect the difference in powerState between the spec and the status, and call the bare metal service
-to power the host on before updating the Host's status to PowerOn.
+The operator will rely upon the OSAC Networking API to perform network attachment operations.
 
 ### Implementation Details/Notes/Constraints
 
-#### ESI Playbooks
+Bare metal fulfillment is designed to support varying bare metal inventory and management backends. These
+backends may often be one and the same - OpenStack Ironic, Carbide - but they may also be different - Netbox
+for inventory, and OpenShift BareMetalHosts for management.
 
-The ESI API supports all of the needed bare metal functionality (the cluster fulfillment workflow already relies upon ESI
-playbooks for bare metal network configuration) . However, it is important to recognize that O-SAC will not use the ESI concept
-of tenancy; from an ESI perspective, hosts will always remain leased to the O-SAC project. As a result, we will need to introduce
-a new method of keeping track of O-SAC tenancy.
+We integrate with these backends in different ways. The Host Inventory Operator will accommodate multiple
+bare metal inventory backends; this integration is coded directly in the operator. On the other hand, the
+Host Management Operator will be specific to a particular host class; thus, there will be separate
+Host Management Operators for Ironic, Carbide, etc.
 
-One solution would be to rely upon Ironic’s extra field, which allows an ESI project to set arbitrary key/value pairs upon a
-specified host. Doing so would not be difficult; it simply creates additional considerations when implementing playbooks related
-to host assignment and unassignment.
-
-#### Serial Console Support
-
-We would like to implement a solution for serial console access that can be utilized by both the bare metal service and the virtual machine service.
-We will propose a design for that solution in a future enhancement proposal.
-
-#### Task Groupings
-
-We can perform this implementation in smaller steps:
-
-* HostPool and Host
-  * Tenants can create/update/delete HostPools
-  * No network attachments
-  * Hosts are created when a HostPool is fulfilled
-  * Tenants can view their Hosts
-  * Tenants have power control on their Hosts
-* Implement HostPool hostSelectors
-  * filter by name (to support removal of specific hosts from a HostPool)
-  * filter by rack
-  * affinity/anti-affinity
-* Network Attachments
-  * Tenants can specify network attachments when creating/updating HostPools
-  * Requires network service
-* Serial Console
-  * Tenants can enable/disable serial console on a Host
+We assume that the external inventory should always contain an accurate representation of the current state
+of any bare metal host. As a result, we do not have an intermediate host representation within OSAC, as that
+merely adds an additional sync requirement.
 
 ### Risks and Mitigations
 
-How do we prevent a tenant from performing unauthorized bare metal operations? The first layer of protection
-is the fact that the tenant never has direct access to the underlying bare metal management service; they
-only have access to the fulfillment service and the limited operations provided by the fulfillment API.
-Naturally, that API will need strong multi-tenancy support in order to prevent a tenant from accessing
-resources allocated to a different tenant; that feature is being implemented outside of this proposal.
+We need to integrate with a variety of bare metal backends. If our design does not allow us to do so
+easily, then we may find ourselves in a position where we need to restructure and recode a significant
+chunk of our architecture. In order to mitigate this risk, we will clearly identify the process for integrating
+with a backend; and we will isolate the integration points to both minimize the needed integration work, and
+to reduce the impact of portions of this architecture need to be reworked.
 
 ### Drawbacks
 
-??
+TBD
 
 ## Alternatives (Not Implemented)
 
-* One alternative would be to focus on an ESI replacement before developing the bare metal fulfillment functionality. However, we anticipate that the MOC will continue to use ESI for now; for that reason, it makes sense to perform this implementation with ESI in mind, and simply make it easy to replace ESI if/when needed. Note that it is also possible that we will continue to use ESI if the issues pushing us towards a replacement are resolved.
-* We could limit a HostPool to hosts from a single resource class; a tenant in need of hosts from multiple resource classes would simply create multiple HostPools. However allowing multiple resource classes in HostPool does provide additional conveniences. For example, cluster fulfillment allows for OpenShift clusters with mixed resource classes; if we move that workflow towards using HostPools for bare metal configuration, then associating that cluster with a single HostPool allows for far easier bare metal tracking and management.
+One question that has been raised is whether it's possible to standardize on a single bare metal management
+backend, with OpenShift BareMetalHosts identified as an ideal backend. However, BareMetalHosts do not currently
+meet all of the MOC's requirements (such as networking or integration with an external inventory).
 
-## Open Questions [optional]
-
-* Can we manage network attachment by MAC address?
-* Do we allow a network to be attached multiple times to a host (on different interfaces)?
+If/when BareMetalHosts become suitable for our needs, we can simply slot them in as a Host Management Operator;
+the rest of our architecture remains the same.
 
 ## Test Plan
 
