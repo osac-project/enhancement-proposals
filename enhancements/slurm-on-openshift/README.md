@@ -3,7 +3,7 @@ title: slurm-on-openshift
 authors:
   - Swati Kale, Ecosystem Engineering
 creation-date: 2025-12-16
-last-updated: 2026-03-18
+last-updated: 2026-03-27
 tracking-link:
   - TBD
 see-also:
@@ -259,10 +259,98 @@ The osac-templates repository will be extended with:
   - Parameterized Slurm configurations for flexible deployment
   - Partition definitions based on node types and resources
 
-  **Proposed API Design:**
-  1. Input API - How tenants request Slurm clusters (e.g., via Fulfillment CLI parameters, CR spec fields)
-  2. Configuration Parameters - List of configurable Slurm settings (partition names, node counts, resource limits, etc.)
-  3. Output API - What information is returned (cluster endpoints, access credentials, partition details)
+#### Proposed API design 
+
+The following enumerates **field names and types** for review. This is a **proposed contract** for what Fulfillment (or equivalent automation) should collect and return; it is **not** a shipped HTTP/OpenAPI implementation in this enhancement. Shapes are aligned with the **Slinky** Kubernetes API (`apiVersion: slinky.slurm.net/v1beta1`, kinds **`Controller`** and **`NodeSet`**) as used in a Slurm-on-OpenShift proof of concept. Ansible variables, Fulfillment request bodies, or parent cluster CR `status` subresources can **project** these same fields. Upstream docs and playbooks that refer to “Slurm cluster” resources should map to these kinds.
+
+#### Input — configuration collected at provision time
+
+**Placement and naming**
+
+| Field | Type | Slinky mapping |
+| --- | --- | --- |
+| `slurm_namespace` | `string` | Namespace for `Controller` / `NodeSet` (e.g. `slurm`) |
+| `controller_name` | `string` | `Controller` `metadata.name` |
+| `nodeset_name` | `string` | `NodeSet` `metadata.name` (repeat pattern if multiple NodeSets) |
+
+**Auth — secret references (values are not embedded in CRs)**
+
+| Field | Type | Slinky mapping |
+| --- | --- | --- |
+| `jwt_secret_ref.name` | `string` | `spec.jwtHs256KeyRef.name` |
+| `jwt_secret_ref.key` | `string` | `spec.jwtHs256KeyRef.key` |
+| `slurm_key_secret_ref.name` | `string` | `spec.slurmKeyRef.name` |
+| `slurm_key_secret_ref.key` | `string` | `spec.slurmKeyRef.key` |
+
+**`Controller` spec**
+
+| Field | Type | Slinky mapping |
+| --- | --- | --- |
+| `slurmctld.image` | `string` | `spec.slurmctld.image` |
+| `slurmctld.resources.requests.cpu` | `string` | Kubernetes quantity |
+| `slurmctld.resources.requests.memory` | `string` | Kubernetes quantity |
+| `slurmctld.resources.limits.cpu` | `string` | Kubernetes quantity |
+| `slurmctld.resources.limits.memory` | `string` | Kubernetes quantity |
+| `persistence.enabled` | `boolean` | `spec.persistence.enabled` |
+| `persistence.storage` | `string` | e.g. `spec.persistence.resources.requests.storage` |
+| `persistence.access_modes` | `array[string]` | e.g. `ReadWriteOnce` |
+| `slurm_extra_conf` | `string` | `spec.extraConf` (Slurm.conf lines, including `PartitionName=...`) |
+
+**`NodeSet` spec**
+
+| Field | Type | Slinky mapping |
+| --- | --- | --- |
+| `controller_ref.name` | `string` | `spec.controllerRef.name` |
+| `controller_ref.namespace` | `string` | `spec.controllerRef.namespace` |
+| `compute_replicas` | `integer` | `spec.replicas` |
+| `partition.enabled` | `boolean` | `spec.partition.enabled` |
+| `slurmd.image` | `string` | `spec.slurmd.image` |
+| `slurmd.resources.requests` / `limits` | `object` | Same structure as controller resources |
+| `node_selector` | `map[string]string` | `spec.template.spec.nodeSelector` |
+| `tolerations` | `array[object]` | `spec.template.spec.tolerations` (optional) |
+| `affinity` | `object` | `spec.template.spec.affinity` (optional) |
+
+**Helm values path (optional)**
+
+If provisioning uses the Slinky Helm chart instead of raw CRs, the same logical fields appear under chart values (for example `controller.*`, `compute.replicas`, `slurm.partitions[]` with `name`, `default`, `maxTime`, `nodes`, and `network.serviceType`). Automation should either generate CRs from those values or treat the chart as the single source of truth.
+
+#### Output — information returned to the tenant after successful provisioning
+
+Prefer **references** for secrets; avoid returning raw key material in API responses unless policy explicitly requires it.
+
+**Connection and inventory (non-sensitive)**
+
+| Field | Type | How populated (conceptual) |
+| --- | --- | --- |
+| `slurm_namespace` | `string` | From request / applied manifest |
+| `controller_cr_name` | `string` | `Controller` name |
+| `nodeset_names` | `array[string]` | All `NodeSet`s for the controller |
+| `slurmctld_service_hostname` | `string` | Kubernetes Service DNS name for slurmctld (from cluster API after reconcile) |
+| `slurmctld_port` | `integer` | Typically `6817` |
+| `openshift_api_url` | `string` | Standard cluster handoff (cluster admins) |
+| `console_url` | `string` | Optional OpenShift console URL |
+| `effective_partitions` | `array[object]` | Post-ready: e.g. `{ name, default, max_time, nodes_expr }` from `sinfo` or generated `slurm.conf` |
+
+**Credentials (by reference or platform pattern)**
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `credential_refs` | `array[object]` | e.g. `{ secret_name, namespace, purpose: "jwt" \| "slurm_key" }` |
+| `kubeconfig_delivery` | `string` | Enum or platform convention: e.g. `standard_cluster_handoff`, `vault`, `one_time_download` |
+
+**Optional — external login / SSH (when a login pod and Route exist)**
+
+| Field | Type |
+| --- | --- |
+| `login_ssh_host` | `string` |
+| `login_ssh_port` | `integer` |
+| `ssh_key_ref` or `ssh_public_key` | `string` (reference or material per security review) |
+
+A minimal POC often uses **`kubectl` / `oc` and `oc exec` into the controller pod** instead of an SSH login service; the output contract should still expose **service hostname**, **port**, and **namespace** so clients and automation can connect without ad hoc discovery.
+
+##### Delivery mechanism
+
+The concrete channel (Fulfillment API JSON body, artifacts from AAP, or `status.slurm` on a parent cluster CR) is **implementation-specific** and should be chosen in the fulfillment and operator design pass. The tables above define **what** to surface; **where** it lives can follow existing O-SAC patterns for cluster credentials and endpoints.
 
 #### Networking Considerations
 
