@@ -407,7 +407,7 @@ A new optional label is added alongside the existing tenant label:
 | Label key | Required | Values | Default if absent |
 |---|---|---|---|
 | `osac.openshift.io/tenant` | Yes | `<tenantName>` or `Default` | N/A (required) |
-| `osac.openshift.io/storage-tier` | No | Any lowercase alphanumeric string (e.g., `fast`, `standard`, `archival`, `nvme`) | `Default` |
+| `osac.openshift.io/storage-tier` | No | Lowercase Kubernetes label value (e.g., `fast`, `standard`, `archival`, `nvme-1`) | `Default` |
 
 Both label axes use the same sentinel convention: real values are lowercase,
 and the sentinel/fallback value is `Default` (capitalized). This is consistent
@@ -469,9 +469,9 @@ parameters:
 
 #### Tenant CRD status changes
 
-The singular `status.storageClass` field (string) is replaced by a
-`status.storageClasses` list that captures all resolved StorageClass mappings
-for the tenant:
+The singular `status.storageClass` field (string) is retained for backward
+compatibility, and a new `status.storageClasses` list captures all resolved
+StorageClass mappings for the tenant:
 
 ```yaml
 status:
@@ -519,7 +519,8 @@ resolves with tier `Default` (either explicitly labeled or with no tier label),
 tier-aware to continue working without changes.
 
 If no `Default` tier resolves for a tenant (neither a tenant-specific SC
-without a tier label, nor a shared Default SC without a tier label),
+with `storage-tier: Default` or without a tier label, nor a shared Default SC
+with `storage-tier: Default` or without a tier label),
 `status.storageClass` will be empty, even if other tiers (`fast`, `standard`)
 resolved successfully. Consumers that are not tier-aware would fail in this
 case, which is the correct signal: the CSP must configure a `Default` tier
