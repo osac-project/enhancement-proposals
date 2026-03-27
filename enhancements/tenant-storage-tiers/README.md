@@ -760,15 +760,8 @@ instead of a list of structs. This was considered but rejected because:
 
 ## Graduation Criteria
 
-**Note:** *Section not required until targeted at a release.*
-
-This enhancement would follow the same maturity progression as the broader OSAC
-project. Initial implementation targets Dev Preview with the expectation that
-the label vocabulary and API fields will stabilize through operational
-experience before GA.
-
-[maturity-levels]: https://git.k8s.io/community/contributors/devel/sig-architecture/api_changes.md#alpha-beta-and-stable-versions
-[deprecation-policy]: https://kubernetes.io/docs/reference/using-api/deprecation-policy/
+N/A. OSAC is in active development and has not been released to customers.
+Initial implementation targets Dev Preview.
 
 ## Upgrade / Downgrade Strategy
 
