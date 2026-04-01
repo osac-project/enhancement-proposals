@@ -18,7 +18,7 @@ superseded-by: []
 
 ## Summary
 
-This proposal introduces a quota management system for the Open Sovereign AI Cloud (OSAC) that enforces resource limits on tenant provisioning requests. The system consists of three layers: a **metering layer** (a `/v1/usage` endpoint on the Fulfillment Service that reports per-tenant resource consumption), an **approval workflow** (a generic, extensible gating mechanism in the Fulfillment Service), and an **OSAC Quota Service** (a pluggable component that consumes metering data and makes quota-based gate decisions). The design follows Kubernetes-like declarative conventions: `spec` represents the user's intent, and `status.approval` reports the system's observations about gate decisions. Quota-internal state (`approved_spec`) is kept in the Fulfillment Service database, not exposed in the API.
+This proposal introduces a quota management system for the Open Sovereign AI Cloud (OSAC) that enforces resource limits on tenant provisioning requests. The system adds a generic, extensible **approval workflow** to the Fulfillment Service and introduces the **OSAC Quota Service** as a pluggable component. The Quota Service reads current tenant resource consumption via a `/v1/usage` query endpoint on the Fulfillment Service and compares it against configurable limits. The design follows Kubernetes-like declarative conventions: `spec` represents the user's intent, and `status.approval` reports the system's observations about gate decisions. Quota-internal state (`approved_spec`) is kept in the Fulfillment Service database, not exposed in the API. A comprehensive metering system (time-based consumption tracking for billing) is being designed separately and is not a dependency for quota enforcement.
 
 ## Motivation
 
@@ -28,7 +28,7 @@ Service providers need to enforce upper limits on the resources tenants can cons
 - Service providers cannot plan capacity or allocate resources fairly across organizations
 - There is no mechanism for integration with external resource allocation systems (e.g., ColdFront at MOC)
 
-Note: visibility into per-tenant resource utilization is a **metering** concern, addressed in this proposal by the `/v1/usage` endpoint. Metering is a prerequisite for quotas but also a standalone capability useful for billing, dashboards, and capacity planning.
+Note: comprehensive metering (time-based consumption tracking for billing, analytics, and dashboards) is being designed as a separate proposal. This quota proposal includes a simple `/v1/usage` query endpoint for point-in-time resource consumption — sufficient for quota enforcement and basic CLI visibility, but not a substitute for full metering. When the metering system is available, the Quota Service can be adapted to consume metering data instead.
 
 ### User Stories
 
@@ -41,9 +41,9 @@ Note: visibility into per-tenant resource utilization is a **metering** concern,
 
 ### Goals
 
-- Provide a metering capability (`/v1/usage` endpoint) that reports per-tenant resource consumption, usable by quotas, billing, dashboards, and capacity planning
+- Provide a `/v1/usage` query endpoint on the Fulfillment Service that reports point-in-time per-tenant resource consumption for quota enforcement and basic CLI visibility. Designed to be replaceable by a comprehensive metering system in the future.
 - Implement a generic approval workflow in the Fulfillment API that enables quota enforcement in v1 and is extensible to other approval patterns (billing, policy, manual admin) in the future
-- Introduce the OSAC Quota Service as a separate, pluggable component that consumes metering data and makes quota-based gate decisions
+- Introduce the OSAC Quota Service as a separate, pluggable component that reads current usage and makes quota-based gate decisions
 - Support create, scale-out/up, scale-in/down, and delete operations in the quota workflow
 - Enable integration with external quota sources (e.g., ColdFront) via the Quota Service API
 - Ensure backwards compatibility — quotas are fully opt-in via the `OSAC_APPROVAL_REQUIRED` flag (default: disabled), allowing deployments to run without a Quota Service and adopt quota enforcement gradually
@@ -51,7 +51,7 @@ Note: visibility into per-tenant resource utilization is a **metering** concern,
 ### Non-Goals
 
 - User interface components for quota management (will be addressed in a separate proposal)
-- Billing or cost accounting integration (the architecture supports it via extensible gates and the metering endpoint, but billing logic is out of scope)
+- Billing or cost accounting integration (the architecture supports extensible gates, but billing logic and time-based metering are out of scope — see separate metering proposal)
 - Capacity planning or predictive quota management
 - Per-hub or per-region quota limits (v1 enforces quotas globally per organization across all hubs; sub-dividing quotas by hub, region, or availability zone is deferred)
 - **High availability and backup:** The Quota Service is deployed as a single replica with no automated backup, consistent with all other OSAC components (Fulfillment Service, OSAC Operator, Keycloak, etc.) which also run at `replicas: 1` with no backup strategy. The current OSAC platform does not address HA or backup for any component. The Quota Service's PostgreSQL database stores only quota limits (not resource data), so loss is recoverable by re-entering limits from ColdFront or admin records. When a platform-wide HA and backup initiative is undertaken, the Quota Service should be included.
@@ -59,17 +59,15 @@ Note: visibility into per-tenant resource utilization is a **metering** concern,
 
 ## Proposal
 
-We propose five changes:
+We propose four changes:
 
-1. **Metering endpoint on the Fulfillment Service:** A `/v1/usage` endpoint that computes and returns per-tenant resource consumption by aggregating `approved_spec` footprints from the Fulfillment Service database. This is a standalone metering capability, not quota-specific — it serves quotas, CLI, UI, billing, and capacity planning.
+1. **Generic approval workflow in the Fulfillment Service:** The Fulfillment Service API follows Kubernetes-like declarative conventions. `spec` represents the user's intent (always the latest desired state). A new `status.approval` block reports the system's observations about gate decisions, including `state` (pending/gating/approved/rejected) and an extensible `gates` map. The Fulfillment Service maintains `approved_spec` internally in its database (not exposed in the API) to track what has been approved and pushed to the hub. A `/v1/usage` query endpoint provides point-in-time per-tenant resource consumption for quota enforcement. A per-tenant **gating semaphore** ensures only one resource is evaluated at a time, preventing cross-gate race conditions. The Fulfillment Service only creates or updates CRs on the hub when `status.approval.state` is `"approved"`.
 
-2. **Generic approval workflow in the Fulfillment Service:** The Fulfillment Service API follows Kubernetes-like declarative conventions. `spec` represents the user's intent (always the latest desired state). A new `status.approval` block reports the system's observations about gate decisions, including `state` (pending/gating/approved/rejected) and an extensible `gates` map. The Fulfillment Service maintains `approved_spec` internally in its database (not exposed in the API) to track what has been approved and pushed to the hub. The Fulfillment Service only creates or updates CRs on the hub when `status.approval.state` is `"approved"`.
+2. **`OSAC_APPROVAL_REQUIRED` configuration flag:** A boolean flag on the Fulfillment Service (default `false`) that controls whether the approval workflow is active. When `false`, resources are immediately approved. When `true`, new resources and scale operations start with `status.approval.state = "pending"` and wait for gate services to evaluate. When this flag changes from `true` to `false` at runtime, the Fulfillment Service auto-approves all currently pending and gating resources to drain the backlog.
 
-3. **Gating semaphore for sequential evaluation:** To prevent cross-gate race conditions, only one resource per tenant can be in `"gating"` state at a time. The Fulfillment Service promotes the oldest pending resource to `"gating"`, gate services evaluate it, and on completion the next pending resource is promoted.
+3. **OSAC Quota Service:** A standalone service that stores quota limits per tenant. It watches for resources in `"gating"` state, reads the tenant's current consumption from the `/v1/usage` endpoint, and writes its gate decision. When a quota limit increases, the Quota Service triggers re-evaluation of rejected resources. The Fulfillment Service handles re-evaluation triggers for deletions and scale-ins.
 
-4. **`OSAC_APPROVAL_REQUIRED` configuration flag:** A boolean flag on the Fulfillment Service (default `false`) that controls whether the approval workflow is active. When `false`, resources are immediately approved. When `true`, new resources and scale operations start with `status.approval.state = "pending"` and wait for gate services to evaluate. When this flag changes from `true` to `false` at runtime, the Fulfillment Service auto-approves all currently pending and gating resources to drain the backlog.
-
-5. **OSAC Quota Service:** A standalone service that stores quota limits per tenant. It watches for resources in `"gating"` state, reads the tenant's current consumption from the `/v1/usage` metering endpoint, and writes its gate decision. When a quota limit increases, the Quota Service triggers re-evaluation of rejected resources. The Fulfillment Service handles re-evaluation triggers for deletions and scale-ins.
+4. **Usage query endpoint (`/v1/usage`):** A read-only endpoint on the Fulfillment Service that returns point-in-time per-tenant resource consumption by aggregating `approved_spec` footprints from the database. This serves quota enforcement and basic CLI visibility (`fulfillment-cli get quota`). The endpoint is designed to be replaceable — when a comprehensive metering system is available, the Quota Service can be adapted to consume metering data instead. See the "Usage Query Endpoint" section for details.
 
 ### Workflow Description
 
@@ -165,9 +163,9 @@ If provisioning fails after approval, the resource remains in the Fulfillment Se
 - Automatically freeing quota on failure could cause over-commitment
 - The tenant must explicitly delete the failed resource to free quota (standard cloud platform behavior)
 
-### Metering: `/v1/usage` Endpoint
+### Usage Query Endpoint: `/v1/usage`
 
-The Fulfillment Service provides a metering endpoint that computes per-tenant resource consumption. This is a **standalone capability**, not quota-specific — it serves any consumer that needs to know what a tenant is using.
+The Fulfillment Service provides a usage query endpoint that computes point-in-time per-tenant resource consumption. This serves quota enforcement and basic tenant visibility (e.g., `fulfillment-cli get quota`). When a comprehensive metering system is available (see separate metering proposal), the Quota Service can be adapted to consume metering data instead — the `/v1/usage` endpoint would then either delegate to the metering system or be deprecated.
 
 **Endpoint:** `GET /v1/usage?tenant=<tenant-id>[&exclude=<resource-id>]`
 
@@ -195,7 +193,8 @@ The Fulfillment Service provides a metering endpoint that computes per-tenant re
 - **Quota Service** — reads tenant usage for gate decisions
 - **CLI** (`fulfillment-cli get quota`) — shows tenants their limits and current usage
 - **UI** — tenant dashboard for quota visibility
-- **Future: billing, capacity planning, analytics**
+
+Note: billing, capacity planning, and analytics will be served by the comprehensive metering system (separate proposal). This endpoint may be superseded or used as a delegate by that system.
 
 **Authorization:** Tenants can only query their own tenant's usage. Only privileged service accounts (Quota Service, admins) can query arbitrary tenants. The `exclude` parameter must reference a resource belonging to the queried tenant.
 
@@ -274,7 +273,7 @@ The reconciler always uses `approved_spec` for hub CR operations, never `spec` d
 
 #### Resource Footprint Resolution
 
-**Design principle — structured fields for all quotable dimensions:** The metering endpoint reads footprints from structured spec fields. For VMs and host pools, quotable dimensions are already explicit API fields (`spec.cores`, `spec.memory_gib`, `spec.gpus` for VMs; `spec.host_sets` for host pools). No template resolution needed.
+**Design principle — structured fields for all quotable dimensions:** The `/v1/usage` endpoint reads footprints from structured spec fields. For VMs and host pools, quotable dimensions are already explicit API fields (`spec.cores`, `spec.memory_gib`, `spec.gpus` for VMs; `spec.host_sets` for host pools). No template resolution needed.
 
 For **clusters**, `spec.node_sets` is populated by the Fulfillment Service at creation time from the template's `default_node_request`. The FS resolves template defaults and tenant-provided node set sizes into structured `spec.node_sets` before persisting.
 
@@ -292,7 +291,7 @@ CSP-specific overrides (e.g., `osac.massopencloud` for MOC) can declare differen
 
 #### Implementation Open Questions
 
-The following design questions are deferred to the implementation phase. They affect the queuing and scheduling behavior but not the core architectural model (approval states, gates, metering):
+The following design questions are deferred to the implementation phase. They affect the queuing and scheduling behavior but not the core architectural model (approval states, gates, usage computation):
 
 - **Queue discipline (FIFO vs best-effort):** Should pending resources be processed strictly in creation order (FIFO), or should smaller requests be allowed to skip blocked larger ones (backfilling)?
 - **Head-of-line blocking:** If the first resource in the queue is a 32-node cluster that doesn't fit, should it block a 1-node cluster that would fit? Backfilling increases utilization but risks starvation for large requests.
@@ -309,7 +308,7 @@ The Quota Service is a standalone Go service with the following responsibilities
 
 **Core:**
 - **Watch for gating resources:** Periodically query each resource type's List API on the Fulfillment Service, filtering for `"gating"` approval state (configurable interval, default 5s). Note: once the Fulfillment Service Events API is extended to support all resource types, the Quota Service should migrate to event-driven detection with polling as fallback.
-- **Compute projected usage:** For each gating resource, read the tenant's current consumption from the `/v1/usage` metering endpoint (excluding the gated resource). Add the gated resource's `spec` footprint. Compare against quota limits.
+- **Compute projected usage:** For each gating resource, read the tenant's current consumption from the `/v1/usage` endpoint (excluding the gated resource). Add the gated resource's `spec` footprint. Compare against quota limits.
 - **Trigger re-evaluation:** When the Quota Service detects a quota limit increase, it sets rejected non-deleted resources (without `AdmissibilityExpired` condition) for that tenant back to `"pending"` via the Fulfillment Service Update API.
 - **Make gate decisions:** Write to `status.approval.gates.quota` on the Fulfillment Service via the Update API. The Quota Service only writes to its own gate entry.
 - **Concurrency control:** Process gating resources serially per tenant with a row lock. Since only one resource per tenant is in `"gating"` state at a time (enforced by the Fulfillment Service semaphore), this primarily prevents duplicate processing.
@@ -340,7 +339,7 @@ Quota limits are stored as sets of arbitrary key/value pairs to support new reso
 **What the Quota Service does NOT do:**
 - It does NOT write `status.approval.state` or `approved_spec`. The Fulfillment Service manages these.
 - It does NOT modify resource specs. It only writes to `status.approval.gates.quota`.
-- It does NOT compute usage itself. It reads the `/v1/usage` metering endpoint.
+- It does NOT compute usage itself. It reads the `/v1/usage` endpoint. When a comprehensive metering system is available, the Quota Service can be adapted to consume metering data instead.
 
 ### Security Model
 
@@ -424,13 +423,13 @@ When an administrator reduces a tenant's quota below their current usage:
 ## Alternatives (Not Implemented)
 
 - **Gateway-level quota enforcement (Authorino):** Rejected — quota decisions require cross-resource usage aggregation, which is business logic beyond Authorino's policy model.
-- **Separate usage ledger (original proposal, PR #8):** Rejected — the ledger duplicates data already in the Fulfillment Service database. The `/v1/usage` metering endpoint provides the same data without drift.
+- **Separate usage ledger (original proposal, PR #8):** Rejected — the ledger duplicates data already in the Fulfillment Service database. The `/v1/usage` endpoint provides point-in-time consumption data without drift.
 
 ## Future Work
 
+- **Metering system integration:** A comprehensive metering system (time-based consumption tracking for billing, analytics, dashboards) is being designed separately. When available, the Quota Service can be adapted to consume metering data instead of the `/v1/usage` query endpoint, and the endpoint itself may delegate to or be superseded by the metering system.
 - **Multi-gate coordination semantics:** Reservation/rollback across multiple gates.
 - **Manual admin approval:** A gate entry written by an admin via CLI/UI.
-- **Usage analytics:** Historical usage data for trends, capacity planning, billing.
 - **Resolution API:** `/v1/resolve` endpoint for template footprint preview before submission.
 - **UI for quota management:** Tenant dashboard for limits, usage, rejection history.
 - **Decision history:** `decision_history[]` array for full audit trail per resource.
