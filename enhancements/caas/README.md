@@ -325,8 +325,9 @@ The cluster can be in one of the following states:
 
 - **Progressing** (`CLUSTER_STATE_PROGRESSING`): The cluster is being created
   or updated.
-- **Ready** (`CLUSTER_STATE_READY`): The cluster is fully operational and
-  accessible via the API URL and console URL.
+- **Ready** (`CLUSTER_STATE_READY`): The cluster control plane is operational
+  and accessible via the API URL and console URL. Check the DEGRADED condition
+  to determine if all requested nodes are available.
 - **Failed** (`CLUSTER_STATE_FAILED`): The cluster creation or update has
   failed.
 
@@ -337,8 +338,10 @@ The conditions provide additional detail:
 - **Ready** (`CLUSTER_CONDITION_TYPE_READY`): The cluster is ready to use.
 - **Failed** (`CLUSTER_CONDITION_TYPE_FAILED`): The cluster is unusable.
 - **Degraded** (`CLUSTER_CONDITION_TYPE_DEGRADED`): The cluster is operational
-  but not at full capacity (e.g., the system cannot allocate all requested
-  nodes).
+  but not at full capacity (e.g., some requested worker nodes could not be
+  allocated). A cluster can be in READY state with DEGRADED condition TRUE if
+  the control plane is functional but the worker node count is below the
+  requested size.
 
 Tenants can retrieve cluster credentials using the Fulfillment CLI or API:
 
