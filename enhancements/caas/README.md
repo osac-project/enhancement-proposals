@@ -186,18 +186,21 @@ executed:
 3. Upon successful validation, the Fulfillment Service deletes the ClusterOrder
    custom resource (CR) from the appropriate namespace.
 
-4. The O-SAC Operator detects the deletion of the ClusterOrder CR and begins
-   the cleanup process.
+4. The O-SAC Operator detects the deletion via Kubernetes finalizers: a
+   `deletionTimestamp` is set on the ClusterOrder CR, and the Operator begins
+   the cleanup process while the finalizer prevents garbage collection.
 
 5. The Operator, using AAP, automates the following steps:
     - Deletes the HyperShift HostedCluster resource
-    - Releases all allocated bare-metal hosts back to the pool
+    - Deletes the associated HostPool, releasing all allocated bare-metal
+      hosts back to the provider's inventory
     - Performs any additional cleanup operations required by the selected
       cluster template
 
-6. The Operator updates the status of the deletion operation and ensures all
-   resources are properly cleaned up. If the deletion fails, the cluster
-   remains in a Deleting state to prevent orphaned infrastructure.
+6. Once cleanup completes successfully, the Operator removes the finalizer,
+   allowing Kubernetes to garbage-collect the CR. If the deletion fails, the
+   cluster remains in a Deleting state with the finalizer intact to prevent
+   orphaned infrastructure.
 
 7. The tenant can confirm the deletion and cleanup via the Fulfillment CLI or
    API.
@@ -330,6 +333,8 @@ The cluster can be in one of the following states:
   to determine if all requested nodes are available.
 - **Failed** (`CLUSTER_STATE_FAILED`): The cluster creation or update has
   failed.
+- **Deleting** (`CLUSTER_STATE_DELETING`): The cluster is being deleted.
+  Resources are being cleaned up (HostedCluster, HostPool, bare-metal hosts).
 
 The conditions provide additional detail:
 
@@ -383,6 +388,12 @@ Fulfillment Service. The following is the API format used for this publication:
 }
 ```
 
+The template's `node_sets` define the **default** node set configuration. Each
+node set specifies the default `host_class` and initial `size`. Tenants can
+override the `size` (and optionally add new node sets) when creating a cluster
+by including `node_sets` in the cluster creation request. If the tenant does not
+specify `node_sets`, the template defaults are used.
+
 ### Implementation Details/Notes/Constraints
 
 This proposal is built upon HyperShift, which provides hosted control planes
@@ -405,6 +416,14 @@ The key architectural decisions are:
 - **Credential access**: Tenants access their clusters through the API URL
   (OpenShift API server) and console URL (OpenShift web console). The Fulfillment
   Service provides endpoints for retrieving the kubeconfig and admin password.
+- **Networking**: Cluster networking integrates with HostPool network
+  attachments. When a HostPool is created for a cluster, the bare-metal hosts
+  are configured with the network attachments specified in the HostPool's
+  network configuration. This includes connectivity for the cluster's control
+  plane to worker node communication, as well as any tenant-facing network
+  access. See the [Bare Metal Fulfillment](/enhancements/bare-metal-fulfillment)
+  and [Networking](/enhancements/networking) proposals for details on network
+  attachment configuration.
 
 ### Risks and Mitigations
 
