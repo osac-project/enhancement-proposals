@@ -227,7 +227,6 @@ using a template with two node sets:
 ```json
 {
   "object": {
-    "id": "mycluster",
     "spec": {
       "template": "hosted_cluster",
       "template_parameters": {
