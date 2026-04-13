@@ -223,37 +223,41 @@ current catalog of available cluster templates.
 
 #### Cluster
 
-A tenant requests an OpenShift cluster by requesting a Cluster to the
-Fulfillment Service. Here is an example of a request that creates a cluster
-using a template with two node sets:
+Tenants do not create Cluster resources directly. Instead, they create a
+cluster order via the Fulfillment CLI, which triggers the system to create and
+manage the underlying Cluster resource. The Clusters API (`POST /api/fulfillment/v1/clusters`)
+is a server-internal operation not exposed to tenants.
+
+The following example shows a Cluster resource as it appears in the system after
+creation, with two node sets:
 
 ```json
+POST /api/fulfillment/v1/clusters (server-internal)
+
 {
-  "object": {
-    "spec": {
-      "template": "hosted_cluster",
-      "template_parameters": {
-        "cluster_version": {
-          "value": "4.16"
-        }
+  "spec": {
+    "template": "hosted_cluster",
+    "template_parameters": {
+      "cluster_version": {
+        "value": "4.16"
+      }
+    },
+    "node_sets": {
+      "compute": {
+        "host_class": "acme_1tb",
+        "size": 3
       },
-      "node_sets": {
-        "compute": {
-          "host_class": "acme_1tb",
-          "size": 3
-        },
-        "gpu": {
-          "host_class": "acme_1tb_h100",
-          "size": 2
-        }
+      "gpu": {
+        "host_class": "acme_1tb_h100",
+        "size": 2
       }
     }
   }
 }
 ```
 
-After creating a cluster, tenants can check its current status and details as
-follows:
+Tenants can check the cluster's status via the Fulfillment CLI or the
+`GET /api/fulfillment/v1/clusters/{id}` endpoint:
 
 ```json
 {
