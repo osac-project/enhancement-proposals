@@ -3,7 +3,7 @@ title: cluster-as-a-service
 authors:
   - Elad Tabak
 creation-date: 2026-03-31
-last-updated: 2026-03-31
+last-updated: 2026-04-13
 tracking-link:
   - https://redhat.atlassian.net/browse/MGMT-23417
 see-also:
@@ -18,21 +18,23 @@ superseded-by:
 
 ## Summary
 
-This document proposes a service enabling tenants to provision, manage, and
-operate OpenShift clusters within a self-service environment. The service
-provides APIs for creating clusters from pre-defined templates, scaling node
-sets, accessing cluster credentials, and managing the full cluster lifecycle.
-Clusters are provisioned as HyperShift HostedClusters on bare-metal hosts
-managed through HostPools.
+This document defines the tenant-facing API contract for the Cluster-as-a-Service
+capability. It specifies the Cluster and ClusterTemplate resources, their
+endpoints, request/response formats, status semantics, and lifecycle workflows
+(create, scale nodes, delete). Clusters are provisioned as HyperShift
+HostedClusters on bare-metal hosts managed through HostPools, following the
+existing O-SAC fulfillment workflow.
 
 
 ## Motivation
 
-Cluster-as-a-Service (CaaS) addresses the need for on-demand OpenShift
-clusters within a multi-tenant environment. By providing a self-service API
-backed by pre-defined templates, tenants can create and manage clusters without
-requiring deep infrastructure knowledge. This addresses a need identified in the
-scope of O-SAC, and will benefit the MOC.
+The Cluster-as-a-Service (CaaS) capability already exists in O-SAC, enabling
+on-demand OpenShift clusters within a multi-tenant environment. However, the
+tenant-facing API has not been formally defined. This proposal specifies the
+explicit API contract — the Cluster and ClusterTemplate resources, their
+endpoints, lifecycle workflows, and status semantics — so that tenants can
+create and manage clusters through a well-defined, self-service interface
+without requiring deep infrastructure knowledge.
 
 ### User Stories
 
