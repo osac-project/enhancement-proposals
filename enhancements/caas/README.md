@@ -93,18 +93,24 @@ The following are explicitly out of scope for this proposal:
 
 ## Proposal
 
-The CaaS API is based on two primary resources:
+The CaaS capability already exists with two primary resources — **Cluster**
+and **ClusterTemplate** — along with working lifecycle workflows (create,
+scale, delete). This proposal changes how cluster configuration flows through
+the system.
 
-* **Cluster**: Represents a provisioned OpenShift cluster that a tenant can
-  create and manage. Tenants can only see the clusters they created.
-* **ClusterTemplate**: Defined by the provider, this is a pre-configured
-  blueprint for clusters. Each template is identified by a unique template ID
-  and includes initial node set definitions. Templates are available to all
-  tenants to use; they cannot edit them.
+### Current state
 
-Currently, cluster configuration is passed via the generic
-`template_parameters` field, and some values are hardcoded in the Ansible
-roles:
+Today, cluster configuration reaches the provisioning layer through two
+mechanisms:
+
+1. **`template_parameters`**: An opaque `map<string, Any>` on `ClusterSpec`.
+   Tenants pass `pull_secret` and `ssh_public_key` here, but the field names
+   and types are not visible in the proto definition.
+
+2. **Hardcoded values in Ansible roles**: `release_image` is set in each
+   template's `defaults/main.yaml`. `cluster_network_cidr` and
+   `service_network_cidr` are hardcoded in the `hosted_cluster` service role.
+   Tenants cannot override these.
 
 ```json
 {
@@ -116,11 +122,15 @@ roles:
     }
   }
 }
-// release_image is hardcoded in template defaults
-// cluster_network_cidr (10.132.0.0/14) and service_network_cidr (172.31.0.0/16) are hardcoded in the hosted_cluster role
+// release_image hardcoded in template defaults/main.yaml
+// cluster_network_cidr (10.132.0.0/14) hardcoded in hosted_cluster role
+// service_network_cidr (172.31.0.0/16) hardcoded in hosted_cluster role
 ```
 
-This proposal changes the API to use explicit typed fields in `ClusterSpec`:
+### Proposed change
+
+Add five explicit fields to `ClusterSpec`. All are optional with sensible
+defaults, so existing behavior is preserved:
 
 ```json
 {
@@ -135,142 +145,53 @@ This proposal changes the API to use explicit typed fields in `ClusterSpec`:
 }
 ```
 
-To request a new Cluster, tenants provide:
+The changes span multiple components:
 
-* The ID of the desired ClusterTemplate
-* Cluster configuration via explicit fields (`pull_secret`, `ssh_public_key`)
-* Optionally, custom node requests specifying host classes and node counts
-  (defaults are provided by the template)
+* **Fulfillment Service (proto)**: Add the five fields to `ClusterSpec` in
+  both public and private proto definitions.
+* **Fulfillment Service (server)**: Validate new fields and pass them through
+  to the ClusterOrder CR.
+* **Fulfillment CLI**: Add dedicated flags (`--pull-secret`,
+  `--ssh-public-key`, `--release-image`, `--cluster-network-cidr`,
+  `--service-network-cidr`) to the `create cluster` command.
+* **Fulfillment Service (controller)**: Map new proto fields to ClusterOrder
+  CR spec fields.
+* **O-SAC Operator**: Read new fields from ClusterOrder CR and pass them to
+  AAP.
+* **O-SAC AAP**: Update `hosted_cluster` role to use new CR fields instead
+  of hardcoded values and `templateParameters`.
 
-The cluster fulfillment process aligns with the existing O-SAC fulfillment
-workflows. To support this, the following O-SAC components will be enhanced or
-updated:
+### Workflow changes
 
-* **Fulfillment Service**: Defines and exposes the APIs for managing Cluster
-  and ClusterTemplate resources.
-* **Fulfillment CLI**: Provides tenants with command-line access to the
-  Fulfillment Service APIs.
-* **O-SAC Operator**: Monitors and reconciles ClusterOrder custom resources
-  within the system.
-* **O-SAC AAP (Ansible Automation Platform)**: Executes automation tasks (via
-  Ansible playbooks) to reconcile ClusterOrder resources, including
-  interactions with HyperShift for cluster lifecycle management and ESI for
-  bare-metal host allocation.
+The cluster creation, scaling, and deletion workflows remain unchanged. The
+only difference is in step 1 of cluster creation:
 
-### Workflow Description
+**Before:** The tenant passes credentials via
+`--template-parameter pull_secret=...` and cannot control OCP version or
+networking CIDRs.
 
-#### Cluster creation
+**After:** The tenant uses explicit flags:
 
-1. The tenant initiates the creation of a new Cluster using the Fulfillment
-   CLI. The tenant must provide:
-    - The ID of the desired ClusterTemplate
-    - Cluster configuration via explicit fields (e.g., `--pull-secret`,
-      `--ssh-public-key`)
-    - Optionally, custom node requests specifying the host class and number of
-      nodes for each node set
+```
+fulfillment-cli create cluster \
+  --template hosted_cluster \
+  --pull-secret <pull-secret> \
+  --ssh-public-key "ssh-ed25519 ..." \
+  --release-image "quay.io/.../ocp-release:4.17.0-multi" \
+  --cluster-network-cidr "10.132.0.0/14" \
+  --service-network-cidr "172.31.0.0/16"
+```
 
-2. The Fulfillment Service receives this request and performs validation to
-   ensure:
-    - The specified template exists and is available
-    - Required cluster configuration fields are provided and valid
-    - The requested host classes exist
+All flags are optional. If omitted, the system uses provider defaults (for
+credentials) or template/role defaults (for release image and CIDRs).
 
-3. Upon successful validation, the Fulfillment Service creates a new
-   ClusterOrder custom resource (CR) in the appropriate Hub and namespace.
+#### Unchanged workflows
 
-4. The O-SAC Operator detects the new ClusterOrder CR and begins the
-   reconciliation process.
-
-5. The Operator, using Ansible Automation Platform (AAP), automates the
-   following steps:
-    - Creates a HostPool to allocate the required bare-metal hosts (see
-      [Bare Metal Fulfillment](/enhancements/bare-metal-fulfillment) for details)
-    - Creates a HyperShift HostedCluster with the allocated hosts as worker
-      nodes
-    - Configures the cluster according to the template parameters
-    - Performs any additional operations required by the selected template
-
-6. The Operator continuously monitors the cluster's status and updates the
-   ClusterOrder CR status to reflect the current state, including `api_url`
-   and `console_url` when the cluster is ready.
-
-7. The tenant can check the cluster's status at any time using the Fulfillment
-   CLI or API, and can access the cluster via the provided API URL and console
-   URL.
-
-#### Node scaling
-
-When a tenant requests a change to the node set sizes, the following workflow
-is executed:
-
-1. The tenant updates the node set sizes for an existing cluster using the
-   Fulfillment CLI or API.
-
-2. The Fulfillment Service validates the update:
-    - The host class for existing node sets cannot be changed
-    - New node sets can be added
-    - At least one node set must remain
-
-3. The Fulfillment Service updates the ClusterOrder CR with the new node
-   requests.
-
-4. The Operator detects the configuration change and triggers a
-   re-provisioning cycle via AAP.
-
-5. AAP adjusts the HostPool allocation and HyperShift NodePool sizes to match
-   the requested node counts.
-
-6. The cluster status is updated to reflect the new node allocation once
-   complete.
-
-#### Cluster deletion
-
-When a tenant requests the deletion of a Cluster, the following workflow is
-executed:
-
-1. The tenant initiates the deletion of a Cluster using the Fulfillment CLI or
-   API by specifying its identifier.
-
-2. The Fulfillment Service receives the deletion request and performs
-   validation to ensure:
-    - The specified Cluster resource exists
-    - The tenant has permission to delete the resource
-
-3. Upon successful validation, the Fulfillment Service deletes the ClusterOrder
-   custom resource (CR) from the appropriate namespace.
-
-4. The O-SAC Operator detects the deletion via Kubernetes finalizers: a
-   `deletionTimestamp` is set on the ClusterOrder CR, and the Operator begins
-   the cleanup process while the finalizer prevents garbage collection.
-
-5. The Operator, using AAP, automates the following steps:
-    - Deletes the HyperShift HostedCluster resource
-    - Deletes the associated HostPool, releasing all allocated bare-metal
-      hosts back to the provider's inventory
-    - Performs any additional cleanup operations required by the selected
-      cluster template
-
-6. Once cleanup completes successfully, the Operator removes the finalizer,
-   allowing Kubernetes to garbage-collect the CR. If the deletion fails, the
-   cluster retains its `deletion_timestamp` and finalizer intact to prevent
-   orphaned infrastructure.
-
-7. The tenant can confirm the deletion and cleanup via the Fulfillment CLI or
-   API.
-
-This workflow ensures that all resources associated with the Cluster are
-properly deprovisioned and that no orphaned resources remain.
-
-#### Cluster template management
-
-Cluster templates are centrally managed by the provider using a GitOps
-approach. All templates are stored in a version-controlled repository, which
-acts as the single source of truth. At regular intervals, an automated job in
-Ansible Automation Platform (AAP) synchronizes the latest templates from this
-repository to the Fulfillment Service. As a result, any changes to the
-templates are automatically and consistently reflected in the Fulfillment
-Service. This process ensures that tenants always have access to the most
-current catalog of available cluster templates.
+Node scaling, cluster deletion, and cluster template management workflows are
+not affected by this proposal. They continue to work as currently implemented.
+The only change is that the new explicit fields flow through the same pipeline
+as the existing `template_parameters` — from `ClusterSpec` to ClusterOrder CR
+to the Ansible provisioning roles.
 
 ### API Extensions
 
