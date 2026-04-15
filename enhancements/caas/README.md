@@ -81,13 +81,14 @@ currently hidden in templates or hardcoded.
 
 The following are explicitly out of scope for this proposal:
 
-- Implementing multi-region cluster placement
-- Implementing cluster auto-scaling based on workload demand
-- Cluster version upgrades (will be addressed in a separate proposal)
-- Advanced networking features such as VPNs, peering, or custom network
-  topologies
-- Storage provisioning beyond the default StorageClass
-- Cluster add-ons management (monitoring, logging, etc.)
+- Promoting template-specific parameters (e.g., GitHub OAuth settings) to
+  `ClusterSpec` — these remain in `template_parameters`
+- Exposing provider-managed settings (base domain, availability policies,
+  platform type) as tenant-configurable fields
+- Changing the cluster creation workflow or operator reconciliation logic —
+  this proposal only changes how configuration is passed through the API
+- Removing the `template_parameters` field — it is retained for backward
+  compatibility and template-specific extensions
 
 
 ## Proposal
