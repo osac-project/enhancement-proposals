@@ -3,7 +3,7 @@ title: cluster-as-a-service
 authors:
   - Elad Tabak
 creation-date: 2026-03-31
-last-updated: 2026-04-13
+last-updated: 2026-04-15
 tracking-link:
   - https://redhat.atlassian.net/browse/MGMT-23417
 see-also:
@@ -201,7 +201,7 @@ executed:
 
 6. Once cleanup completes successfully, the Operator removes the finalizer,
    allowing Kubernetes to garbage-collect the CR. If the deletion fails, the
-   cluster remains in a Deleting state with the finalizer intact to prevent
+   cluster retains its `deletion_timestamp` and finalizer intact to prevent
    orphaned infrastructure.
 
 7. The tenant can confirm the deletion and cleanup via the Fulfillment CLI or
@@ -339,8 +339,10 @@ The cluster can be in one of the following states:
   to determine if all requested nodes are available.
 - **Failed** (`CLUSTER_STATE_FAILED`): The cluster creation or update has
   failed.
-- **Deleting** (`CLUSTER_STATE_DELETING`): The cluster is being deleted.
-  Resources are being cleaned up (HostedCluster, HostPool, bare-metal hosts).
+Deletion is indicated by the presence of a `deletion_timestamp` in the cluster
+metadata rather than a separate state. While the cluster is being deleted,
+resources are cleaned up (HostedCluster, HostPool, bare-metal hosts) and the
+finalizer prevents garbage collection until cleanup completes.
 
 The conditions provide additional detail:
 
