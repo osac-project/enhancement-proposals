@@ -193,148 +193,9 @@ The only change is that the new explicit fields flow through the same pipeline
 as the existing `template_parameters` — from `ClusterSpec` to ClusterOrder CR
 to the Ansible provisioning roles.
 
-### API Extensions
+### API Changes
 
-#### Cluster
-
-Tenants do not create Cluster resources directly. Instead, they create a
-cluster order via the Fulfillment CLI, which triggers the system to create and
-manage the underlying Cluster resource. The Clusters API (`POST /api/fulfillment/v1/clusters`)
-is a server-internal operation not exposed to tenants.
-
-The following example shows a Cluster resource as it appears in the system after
-creation, with two node sets:
-
-```json
-POST /api/fulfillment/v1/clusters (server-internal)
-
-{
-  "spec": {
-    "template": "hosted_cluster",
-    "pull_secret": "<pull-secret-contents>",
-    "ssh_public_key": "ssh-ed25519 AAAA...",
-    "release_image": "quay.io/openshift-release-dev/ocp-release:4.17.0-multi",
-    "cluster_network_cidr": "10.132.0.0/14",
-    "service_network_cidr": "172.31.0.0/16",
-    "node_sets": {
-      "compute": {
-        "host_class": "acme_1tb",
-        "size": 3
-      },
-      "gpu": {
-        "host_class": "acme_1tb_h100",
-        "size": 2
-      }
-    }
-  }
-}
-```
-
-Tenants can check the cluster's status via the Fulfillment CLI or the
-`GET /api/fulfillment/v1/clusters/{id}` endpoint:
-
-```json
-{
-  "@type": "type.googleapis.com/fulfillment.v1.Cluster",
-  "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "metadata": {
-    "creation_timestamp": "2026-03-31T10:00:00.000000Z",
-    "creators": [
-      "tenant-user"
-    ]
-  },
-  "spec": {
-    "template": "hosted_cluster",
-    "pull_secret": "<pull-secret-contents>",
-    "ssh_public_key": "ssh-ed25519 AAAA...",
-    "release_image": "quay.io/openshift-release-dev/ocp-release:4.17.0-multi",
-    "cluster_network_cidr": "10.132.0.0/14",
-    "service_network_cidr": "172.31.0.0/16",
-    "node_sets": {
-      "compute": {
-        "host_class": "acme_1tb",
-        "size": 3
-      },
-      "gpu": {
-        "host_class": "acme_1tb_h100",
-        "size": 2
-      }
-    }
-  },
-  "status": {
-    "state": "CLUSTER_STATE_READY",
-    "api_url": "https://api.mycluster.example.com:6443",
-    "console_url": "https://console.mycluster.example.com",
-    "conditions": [
-      {
-        "type": "CLUSTER_CONDITION_TYPE_READY",
-        "status": "CONDITION_STATUS_TRUE",
-        "last_transition_time": "2026-03-31T10:30:00.000000Z",
-        "message": "The cluster is ready to use"
-      },
-      {
-        "type": "CLUSTER_CONDITION_TYPE_PROGRESSING",
-        "status": "CONDITION_STATUS_FALSE",
-        "last_transition_time": "2026-03-31T10:30:00.000000Z"
-      },
-      {
-        "type": "CLUSTER_CONDITION_TYPE_FAILED",
-        "status": "CONDITION_STATUS_FALSE",
-        "last_transition_time": "2026-03-31T10:00:00.000000Z"
-      },
-      {
-        "type": "CLUSTER_CONDITION_TYPE_DEGRADED",
-        "status": "CONDITION_STATUS_FALSE",
-        "last_transition_time": "2026-03-31T10:00:00.000000Z"
-      }
-    ],
-    "node_sets": {
-      "compute": {
-        "host_class": "acme_1tb",
-        "size": 3
-      },
-      "gpu": {
-        "host_class": "acme_1tb_h100",
-        "size": 2
-      }
-    }
-  }
-}
-```
-
-The cluster can be in one of the following states:
-
-- **Progressing** (`CLUSTER_STATE_PROGRESSING`): The cluster is being created
-  or updated.
-- **Ready** (`CLUSTER_STATE_READY`): The cluster control plane is operational
-  and accessible via the API URL and console URL. Check the DEGRADED condition
-  to determine if all requested nodes are available.
-- **Failed** (`CLUSTER_STATE_FAILED`): The cluster creation or update has
-  failed.
-Deletion is indicated by the presence of a `deletion_timestamp` in the cluster
-metadata rather than a separate state. While the cluster is being deleted,
-resources are cleaned up (HostedCluster, HostPool, bare-metal hosts) and the
-finalizer prevents garbage collection until cleanup completes.
-
-The conditions provide additional detail:
-
-- **Progressing** (`CLUSTER_CONDITION_TYPE_PROGRESSING`): The cluster is not
-  yet fully ready.
-- **Ready** (`CLUSTER_CONDITION_TYPE_READY`): The cluster is ready to use.
-- **Failed** (`CLUSTER_CONDITION_TYPE_FAILED`): The cluster is unusable.
-- **Degraded** (`CLUSTER_CONDITION_TYPE_DEGRADED`): The cluster is operational
-  but not at full capacity (e.g., some requested worker nodes could not be
-  allocated). A cluster can be in READY state with DEGRADED condition TRUE if
-  the control plane is functional but the worker node count is below the
-  requested size.
-
-Tenants can retrieve cluster credentials using the Fulfillment CLI or API:
-
-- **GetKubeconfig**: Returns the admin kubeconfig for the cluster, allowing
-  direct access via `oc`, `kubectl`, or other Kubernetes-compatible tools.
-- **GetPassword**: Returns the admin password for the cluster console.
-
-#### ClusterSpec changes
+#### ClusterSpec — new fields
 
 The following fields are promoted from `template_parameters` or hardcoded
 values to explicit `ClusterSpec` fields. This gives tenants direct control over
@@ -356,92 +217,43 @@ Existing fields that remain unchanged:
 | `template_parameters` | map | No | Generic parameters (retained for backward compatibility) |
 | `node_sets` | map | No | Desired node sets (defaults from template if not specified) |
 
-#### ClusterTemplate
+#### ClusterTemplate — no changes
 
-Cluster templates are implemented as Ansible roles, following the same pattern
-as [VMaaS templates](/enhancements/vmaas). Each role defines the cluster
-configuration, including default node sets.
-
-A periodic job will publish the Ansible roles as cluster templates to the
-Fulfillment Service. The following is the API format used for this publication:
-
-```json
-{
-  "object": {
-    "id": "hosted_cluster",
-    "title": "Hosted OpenShift Cluster",
-    "description": "Provisions a HyperShift HostedCluster on bare-metal hosts.",
-    "node_sets": {
-      "compute": {
-        "host_class": "acme_1tb",
-        "size": 3
-      }
-    }
-  }
-}
-```
-
-The template's `node_sets` define the **default** node set configuration. Each
-node set specifies the default `host_class` and initial `size`. Tenants can
-override the `size` (and optionally add new node sets) when creating a cluster
-by including `node_sets` in the cluster creation request. If the tenant does not
-specify `node_sets`, the template defaults are used.
+ClusterTemplate is not modified by this proposal. Templates continue to define
+default node sets and are published from Ansible roles via the existing periodic
+job.
 
 ### Implementation Details/Notes/Constraints
 
-This proposal is built upon HyperShift, which provides hosted control planes
-for multi-tenant OpenShift cluster provisioning. By using HyperShift, each
-tenant's cluster gets its own dedicated control plane hosted on the hub cluster,
-while worker nodes run on bare-metal hosts allocated via HostPools.
+The new `ClusterSpec` fields must flow through the full stack:
 
-The key architectural decisions are:
+1. **Proto → Server**: New fields added to `ClusterSpec` proto. Server
+   validates values (e.g., CIDR format) and applies defaults when not provided.
+2. **Server → Controller**: Controller maps new proto fields to the
+   ClusterOrder CR spec. The CR schema needs new fields to carry them.
+3. **Controller → Operator → AAP**: Operator reads new CR fields and passes
+   them to the AAP provisioning job. The `hosted_cluster` Ansible role is
+   updated to use these values instead of hardcoded defaults.
 
-- **Hosted control planes**: Each cluster's control plane runs as pods on the
-  hub cluster, providing strong isolation between tenants without requiring
-  dedicated control plane hardware.
-- **Bare-metal worker nodes**: Worker nodes are provisioned on dedicated
-  bare-metal hosts via the HostPool mechanism described in the
-  [Bare Metal Fulfillment](/enhancements/bare-metal-fulfillment) proposal.
-  This provides tenants with full hardware access for their workloads.
-- **Node sets**: Clusters support multiple node sets, each with a different
-  host class. This allows tenants to mix hardware types (e.g., GPU and
-  non-GPU nodes) within a single cluster.
-- **Credential access**: Tenants access their clusters through the API URL
-  (OpenShift API server) and console URL (OpenShift web console). The Fulfillment
-  Service provides endpoints for retrieving the kubeconfig and admin password.
-- **Networking**: Cluster networking integrates with HostPool network
-  attachments. When a HostPool is created for a cluster, the bare-metal hosts
-  are configured with the network attachments specified in the HostPool's
-  network configuration. This includes connectivity for the cluster's control
-  plane to worker node communication, as well as any tenant-facing network
-  access. See the [Bare Metal Fulfillment](/enhancements/bare-metal-fulfillment)
-  and [Networking](/enhancements/networking) proposals for details on network
-  attachment configuration.
+CIDRs use plain string notation in CIDR format (e.g., `10.132.0.0/14`),
+consistent with the existing `VirtualNetwork` and `Subnet` proto conventions
+and Kubernetes API conventions.
 
 ### Risks and Mitigations
 
-TBD
+- **Invalid CIDR values**: Tenants may provide overlapping or malformed CIDRs.
+  Mitigated by server-side CIDR validation, consistent with VirtualNetwork
+  and Subnet validation.
+- **Backward compatibility**: Existing clusters use `template_parameters`.
+  Mitigated by retaining `template_parameters` — the new fields take
+  precedence when set, but the old path continues to work.
 
 ### Drawbacks
 
-#### Cluster creation time
-
-Cluster creation is inherently slower than VM creation due to multi-node
-bare-metal provisioning and HyperShift control plane setup. Tenants should
-expect creation times on the order of minutes rather than seconds.
-
-#### Bare metal availability
-
-Clusters cannot be created without available hosts matching the requested host
-classes. If the system cannot allocate the required number of nodes, the cluster
-will be marked as degraded, and the details will be reported in the `DEGRADED`
-condition.
-
-#### Node set constraints
-
-Node scaling is limited to changing the node count within existing host classes
-or adding new node sets. The host class of an existing node set cannot be
-changed after creation. At least one node set must remain at all times.
+- Adding explicit fields to the proto increases the API surface. Each new
+  field requires changes across multiple repos (proto, server, CLI, CR,
+  operator, AAP). However, this is the same trade-off already accepted for
+  VMaaS and the benefit of discoverability and type safety outweighs it.
 
 
 ## Alternatives (Not Implemented)
