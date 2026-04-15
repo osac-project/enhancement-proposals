@@ -18,23 +18,37 @@ superseded-by:
 
 ## Summary
 
-This document defines the tenant-facing API contract for the Cluster-as-a-Service
-capability. It specifies the Cluster and ClusterTemplate resources, their
-endpoints, request/response formats, status semantics, and lifecycle workflows
-(create, scale nodes, delete). Clusters are provisioned as HyperShift
-HostedClusters on bare-metal hosts managed through HostPools, following the
-existing O-SAC fulfillment workflow.
+This proposal promotes cluster configuration parameters from generic
+`template_parameters` (opaque `map<string, Any>`) to explicit typed fields in
+the `ClusterSpec` protobuf message, following the same approach already taken
+for VMaaS (where `vm_cpu_cores`, `vm_memory`, etc. were promoted to explicit
+`ComputeInstanceSpec` fields like `cores`, `memory_gib`, `boot_disk`).
+
+Currently, CaaS still uses the original `template_parameters` pattern, where
+parameters like `pull_secret` and `ssh_public_key` are passed as untyped
+template parameters. This proposal moves them to first-class proto fields,
+providing type safety, discoverability, and proto-level validation.
+
+This document also formally defines the tenant-facing API contract for the
+Cluster-as-a-Service capability, including lifecycle workflows (create, scale
+nodes, delete) and status semantics.
 
 
 ## Motivation
 
-The Cluster-as-a-Service (CaaS) capability already exists in O-SAC, enabling
-on-demand OpenShift clusters within a multi-tenant environment. However, the
-tenant-facing API has not been formally defined. This proposal specifies the
-explicit API contract — the Cluster and ClusterTemplate resources, their
-endpoints, lifecycle workflows, and status semantics — so that tenants can
-create and manage clusters through a well-defined, self-service interface
-without requiring deep infrastructure knowledge.
+The VMaaS API has already been updated to use explicit `ComputeInstanceSpec`
+fields instead of generic `template_parameters`. The CaaS API should follow
+the same pattern for consistency. Cluster configuration parameters (pull secret,
+SSH key) are:
+
+- Common across all cluster templates, not template-specific
+- Sensitive credentials that benefit from explicit field semantics
+- Discoverable from the proto definition without inspecting template metadata
+
+By promoting these to explicit `ClusterSpec` fields, the API becomes
+self-documenting and the CLI can offer dedicated flags (e.g., `--pull-secret`,
+`--ssh-public-key`) instead of the generic `--template-parameter name=value`
+syntax.
 
 ### User Stories
 
@@ -75,20 +89,52 @@ The following are explicitly out of scope for this proposal:
 
 ## Proposal
 
-The process of fulfilling cluster requests is based on two primary APIs:
+The CaaS API is based on two primary resources:
 
 * **Cluster**: Represents a provisioned OpenShift cluster that a tenant can
   create and manage. Tenants can only see the clusters they created.
 * **ClusterTemplate**: Defined by the provider, this is a pre-configured
   blueprint for clusters. Each template is identified by a unique template ID
-  and includes a set of parameters (some required, some optional) that tenants
-  can specify when creating a cluster, as well as initial node set definitions.
-  Templates are available to all tenants to use; they cannot edit them.
+  and includes initial node set definitions. Templates are available to all
+  tenants to use; they cannot edit them.
 
-To request a new Cluster, tenants must provide:
+Currently, cluster configuration is passed via the generic
+`template_parameters` field, and some values are hardcoded in the Ansible
+roles:
+
+```json
+{
+  "spec": {
+    "template": "hosted_cluster",
+    "template_parameters": {
+      "pull_secret": { "@type": "...StringValue", "value": "..." },
+      "ssh_public_key": { "@type": "...StringValue", "value": "ssh-ed25519 ..." }
+    }
+  }
+}
+// release_image is hardcoded in template defaults
+// cluster_network_cidr (10.132.0.0/14) and service_network_cidr (172.31.0.0/16) are hardcoded in the hosted_cluster role
+```
+
+This proposal changes the API to use explicit typed fields in `ClusterSpec`:
+
+```json
+{
+  "spec": {
+    "template": "hosted_cluster",
+    "pull_secret": "...",
+    "ssh_public_key": "ssh-ed25519 ...",
+    "release_image": "quay.io/openshift-release-dev/ocp-release:4.17.0-multi",
+    "cluster_network_cidr": "10.132.0.0/14",
+    "service_network_cidr": "172.31.0.0/16"
+  }
+}
+```
+
+To request a new Cluster, tenants provide:
 
 * The ID of the desired ClusterTemplate
-* Cluster configuration fields such as `pull_secret` and `ssh_public_key`
+* Cluster configuration via explicit fields (`pull_secret`, `ssh_public_key`)
 * Optionally, custom node requests specifying host classes and node counts
   (defaults are provided by the template)
 
@@ -114,14 +160,15 @@ updated:
 1. The tenant initiates the creation of a new Cluster using the Fulfillment
    CLI. The tenant must provide:
     - The ID of the desired ClusterTemplate
-    - Cluster configuration such as `pull_secret` and `ssh_public_key`
+    - Cluster configuration via explicit fields (e.g., `--pull-secret`,
+      `--ssh-public-key`)
     - Optionally, custom node requests specifying the host class and number of
       nodes for each node set
 
 2. The Fulfillment Service receives this request and performs validation to
    ensure:
     - The specified template exists and is available
-    - Required cluster configuration fields are provided
+    - Required cluster configuration fields are provided and valid
     - The requested host classes exist
 
 3. Upon successful validation, the Fulfillment Service creates a new
@@ -241,6 +288,9 @@ POST /api/fulfillment/v1/clusters (server-internal)
     "template": "hosted_cluster",
     "pull_secret": "<pull-secret-contents>",
     "ssh_public_key": "ssh-ed25519 AAAA...",
+    "release_image": "quay.io/openshift-release-dev/ocp-release:4.17.0-multi",
+    "cluster_network_cidr": "10.132.0.0/14",
+    "service_network_cidr": "172.31.0.0/16",
     "node_sets": {
       "compute": {
         "host_class": "acme_1tb",
@@ -272,6 +322,9 @@ Tenants can check the cluster's status via the Fulfillment CLI or the
     "template": "hosted_cluster",
     "pull_secret": "<pull-secret-contents>",
     "ssh_public_key": "ssh-ed25519 AAAA...",
+    "release_image": "quay.io/openshift-release-dev/ocp-release:4.17.0-multi",
+    "cluster_network_cidr": "10.132.0.0/14",
+    "service_network_cidr": "172.31.0.0/16",
     "node_sets": {
       "compute": {
         "host_class": "acme_1tb",
@@ -356,18 +409,26 @@ Tenants can retrieve cluster credentials using the Fulfillment CLI or API:
   direct access via `oc`, `kubectl`, or other Kubernetes-compatible tools.
 - **GetPassword**: Returns the admin password for the cluster console.
 
-#### ClusterSpec fields
+#### ClusterSpec changes
 
-Cluster configuration parameters such as `pull_secret` and `ssh_public_key` are
-defined as explicit typed fields in the `ClusterSpec` protobuf message, rather
-than as generic key-value template parameters. This provides type safety,
-discoverability, and validation at the proto level.
+The following fields are promoted from `template_parameters` or hardcoded
+values to explicit `ClusterSpec` fields. This gives tenants direct control over
+cluster configuration without relying on template internals.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `pull_secret` | string | No | Provider default | Credentials for authenticating to image repositories. If not provided, defaults are used from the provider's configuration. |
+| `ssh_public_key` | string | No | Provider default | SSH public key installed into `authorized_keys` on cluster worker nodes. If not provided, defaults are used from the provider's configuration. |
+| `release_image` | string | No | Template default | OCP release image URL (e.g., `quay.io/openshift-release-dev/ocp-release:4.17.0-multi`). Controls the OpenShift version. If not provided, the template default is used. |
+| `cluster_network_cidr` | string | No | `10.132.0.0/14` | CIDR range for the cluster's pod network. Tenants may need to customize this to avoid conflicts with existing infrastructure. |
+| `service_network_cidr` | string | No | `172.31.0.0/16` | CIDR range for the cluster's service network. Tenants may need to customize this to avoid conflicts with existing infrastructure. |
+
+Existing fields that remain unchanged:
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `template` | string | Yes | Reference to the cluster template (immutable after creation) |
-| `pull_secret` | string | No | Credentials for authenticating to image repositories. If not provided, defaults are used from the provider's configuration. |
-| `ssh_public_key` | string | No | SSH public key installed into `authorized_keys` on cluster worker nodes. If not provided, defaults are used from the provider's configuration. |
+| `template_parameters` | map | No | Generic parameters (retained for backward compatibility) |
 | `node_sets` | map | No | Desired node sets (defaults from template if not specified) |
 
 #### ClusterTemplate
