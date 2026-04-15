@@ -57,27 +57,25 @@ currently hidden in templates or hardcoded.
 
 ### User Stories
 
-- As a provider, I want to define cluster templates that my tenants will be
-  able to use
-- As a tenant, I want to list pre-defined cluster templates with their
-  available parameters and host classes
-- As a tenant, I want to create an OpenShift cluster based on a pre-defined
-  template
-- As a tenant, I want to scale the number of nodes in my cluster by adjusting
-  node set sizes
-- As a tenant, I want to access my cluster via kubeconfig and web console
-- As a tenant, I want to retrieve the admin password for my cluster
-- As a tenant, I want to delete my cluster and have all associated resources
-  cleaned up
+- As a tenant, I want to specify my own pull secret when creating a cluster
+  so I can use my private image registries
+- As a tenant, I want to provide my SSH public key so I can access worker
+  nodes for debugging
+- As a tenant, I want to choose the OpenShift version for my cluster
+- As a tenant, I want to configure cluster and service network CIDRs to avoid
+  conflicts with my existing infrastructure
+- As a tenant, I want to discover available cluster configuration options from
+  the API without inspecting template internals
 
 ### Goals
 
-- Provide a self-service API for tenants to create, manage, and operate
-  OpenShift clusters with minimal operational overhead
-- Support a catalog of pre-defined cluster templates
-- Enable node scaling by allowing tenants to modify node set sizes
-- Provide credential access (kubeconfig, admin password, console URL)
-- Align with the existing O-SAC fulfillment workflow used by VMaaS
+- Define explicit `ClusterSpec` fields for all tenant-configurable cluster
+  parameters, replacing the opaque `template_parameters` mechanism
+- Allow tenants to control OCP version, credentials, and networking
+  configuration through the API and CLI
+- Provide sensible defaults so that all new fields are optional
+- Align with the approach already taken for VMaaS (`ComputeInstanceSpec`
+  explicit fields)
 
 ### Non-Goals
 
