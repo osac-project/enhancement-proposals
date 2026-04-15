@@ -88,7 +88,7 @@ The process of fulfilling cluster requests is based on two primary APIs:
 To request a new Cluster, tenants must provide:
 
 * The ID of the desired ClusterTemplate
-* Any required or optional parameters for that template
+* Cluster configuration fields such as `pull_secret` and `ssh_public_key`
 * Optionally, custom node requests specifying host classes and node counts
   (defaults are provided by the template)
 
@@ -114,14 +114,14 @@ updated:
 1. The tenant initiates the creation of a new Cluster using the Fulfillment
    CLI. The tenant must provide:
     - The ID of the desired ClusterTemplate
-    - All required and any optional parameters for the template
+    - Cluster configuration such as `pull_secret` and `ssh_public_key`
     - Optionally, custom node requests specifying the host class and number of
       nodes for each node set
 
 2. The Fulfillment Service receives this request and performs validation to
    ensure:
     - The specified template exists and is available
-    - All required parameters are provided and valid
+    - Required cluster configuration fields are provided
     - The requested host classes exist
 
 3. Upon successful validation, the Fulfillment Service creates a new
@@ -239,11 +239,8 @@ POST /api/fulfillment/v1/clusters (server-internal)
 {
   "spec": {
     "template": "hosted_cluster",
-    "template_parameters": {
-      "cluster_version": {
-        "value": "4.16"
-      }
-    },
+    "pull_secret": "<pull-secret-contents>",
+    "ssh_public_key": "ssh-ed25519 AAAA...",
     "node_sets": {
       "compute": {
         "host_class": "acme_1tb",
@@ -273,11 +270,8 @@ Tenants can check the cluster's status via the Fulfillment CLI or the
   },
   "spec": {
     "template": "hosted_cluster",
-    "template_parameters": {
-      "cluster_version": {
-        "value": "4.16"
-      }
-    },
+    "pull_secret": "<pull-secret-contents>",
+    "ssh_public_key": "ssh-ed25519 AAAA...",
     "node_sets": {
       "compute": {
         "host_class": "acme_1tb",
@@ -362,11 +356,25 @@ Tenants can retrieve cluster credentials using the Fulfillment CLI or API:
   direct access via `oc`, `kubectl`, or other Kubernetes-compatible tools.
 - **GetPassword**: Returns the admin password for the cluster console.
 
+#### ClusterSpec fields
+
+Cluster configuration parameters such as `pull_secret` and `ssh_public_key` are
+defined as explicit typed fields in the `ClusterSpec` protobuf message, rather
+than as generic key-value template parameters. This provides type safety,
+discoverability, and validation at the proto level.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `template` | string | Yes | Reference to the cluster template (immutable after creation) |
+| `pull_secret` | string | No | Credentials for authenticating to image repositories. If not provided, defaults are used from the provider's configuration. |
+| `ssh_public_key` | string | No | SSH public key installed into `authorized_keys` on cluster worker nodes. If not provided, defaults are used from the provider's configuration. |
+| `node_sets` | map | No | Desired node sets (defaults from template if not specified) |
+
 #### ClusterTemplate
 
 Cluster templates are implemented as Ansible roles, following the same pattern
 as [VMaaS templates](/enhancements/vmaas). Each role defines the cluster
-configuration, including default node sets and available parameters.
+configuration, including default node sets.
 
 A periodic job will publish the Ansible roles as cluster templates to the
 Fulfillment Service. The following is the API format used for this publication:
@@ -377,15 +385,6 @@ Fulfillment Service. The following is the API format used for this publication:
     "id": "hosted_cluster",
     "title": "Hosted OpenShift Cluster",
     "description": "Provisions a HyperShift HostedCluster on bare-metal hosts.",
-    "parameters": [
-      {
-        "name": "cluster_version",
-        "title": "OpenShift Version",
-        "description": "The version of OpenShift to install",
-        "required": true,
-        "type": "type.googleapis.com/google.protobuf.StringValue"
-      }
-    ],
     "node_sets": {
       "compute": {
         "host_class": "acme_1tb",
