@@ -18,16 +18,16 @@ superseded-by:
 
 ## Summary
 
-This proposal promotes cluster configuration parameters from generic
-`template_parameters` (opaque `map<string, Any>`) to explicit typed fields in
-the `ClusterSpec` protobuf message, following the same approach already taken
-for VMaaS (where `vm_cpu_cores`, `vm_memory`, etc. were promoted to explicit
-`ComputeInstanceSpec` fields like `cores`, `memory_gib`, `boot_disk`).
+This proposal moves cluster configuration out of Ansible templates and into
+the tenant-facing API. Today, key cluster parameters are either buried in the
+opaque `template_parameters` map (`pull_secret`, `ssh_public_key`) or hardcoded
+in Ansible roles (`release_image`, networking CIDRs). Tenants cannot discover
+or control these without knowledge of the underlying templates.
 
-Currently, CaaS still uses the original `template_parameters` pattern, where
-parameters like `pull_secret` and `ssh_public_key` are passed as untyped
-template parameters. This proposal moves them to first-class proto fields,
-providing type safety, discoverability, and proto-level validation.
+This proposal defines explicit typed fields in the `ClusterSpec` protobuf
+message for all tenant-configurable cluster parameters, following the same
+approach already taken for VMaaS (where `vm_cpu_cores`, `vm_memory`, etc. were
+promoted from `template_parameters` to explicit `ComputeInstanceSpec` fields).
 
 This document also formally defines the tenant-facing API contract for the
 Cluster-as-a-Service capability, including lifecycle workflows (create, scale
@@ -36,19 +36,24 @@ nodes, delete) and status semantics.
 
 ## Motivation
 
-The VMaaS API has already been updated to use explicit `ComputeInstanceSpec`
-fields instead of generic `template_parameters`. The CaaS API should follow
-the same pattern for consistency. Cluster configuration parameters (pull secret,
-SSH key) are:
+Currently, creating a cluster requires passing configuration through two
+different mechanisms that are not visible in the API:
 
-- Common across all cluster templates, not template-specific
-- Sensitive credentials that benefit from explicit field semantics
-- Discoverable from the proto definition without inspecting template metadata
+1. **`template_parameters`**: An opaque `map<string, Any>` where `pull_secret`
+   and `ssh_public_key` are passed as untyped values. Tenants must know the
+   parameter names and types by inspecting the template definition.
+2. **Hardcoded values in Ansible roles**: `release_image` (OCP version),
+   `cluster_network_cidr`, and `service_network_cidr` are baked into the
+   playbooks. Tenants have no way to customize these at all.
 
-By promoting these to explicit `ClusterSpec` fields, the API becomes
-self-documenting and the CLI can offer dedicated flags (e.g., `--pull-secret`,
-`--ssh-public-key`) instead of the generic `--template-parameter name=value`
-syntax.
+The VMaaS API has already been updated to move parameters from
+`template_parameters` to explicit `ComputeInstanceSpec` fields (`cores`,
+`memory_gib`, `boot_disk`, etc.). The CaaS API should follow the same pattern.
+
+By defining explicit `ClusterSpec` fields, the API becomes self-documenting,
+the CLI can offer dedicated flags (e.g., `--pull-secret`, `--release-image`,
+`--cluster-network-cidr`), and tenants gain control over configuration that is
+currently hidden in templates or hardcoded.
 
 ### User Stories
 
