@@ -141,7 +141,7 @@ private):
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `pull_secret` | string | No | Provider default | Credentials for authenticating to image repositories |
+| `pull_secret` | string | No | Provider default | Credentials for authenticating to image repositories. Write-only: redacted in GET responses |
 | `ssh_public_key` | string | No | Provider default | SSH public key installed on cluster worker nodes |
 | `release_image` | string | No | Template default | OCP release image URL. Controls the OpenShift version |
 | `cluster_network_cidr` | string | No | `10.132.0.0/14` | CIDR for the cluster's pod network |
@@ -155,7 +155,9 @@ existing `VirtualNetwork` and `Subnet` proto conventions.
 The new fields must flow through the full stack:
 
 1. **Proto → Server**: New fields added to `ClusterSpec` proto. Server
-   validates values (e.g., CIDR format) and applies defaults.
+   validates values (e.g., CIDR format) and applies defaults. Templates can
+   override the system defaults for any field (e.g., a template can set a
+   specific `release_image`).
 2. **Server → Controller**: Controller maps new proto fields to ClusterOrder
    CR spec. The CR schema needs corresponding new fields.
 3. **Controller → Operator → AAP**: Operator reads new CR fields and passes
