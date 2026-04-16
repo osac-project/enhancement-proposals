@@ -3,7 +3,7 @@ title: cluster-as-a-service
 authors:
   - Elad Tabak
 creation-date: 2026-03-31
-last-updated: 2026-04-15
+last-updated: 2026-04-16
 tracking-link:
   - https://redhat.atlassian.net/browse/MGMT-23417
 see-also:
@@ -33,8 +33,8 @@ discover or control these without knowledge of the underlying templates:
    untyped `Any` values. Tenants must know the parameter names and types by
    inspecting template definitions.
 2. **Hardcoded in Ansible roles**: `release_image` (OCP version),
-   `cluster_network_cidr`, and `service_network_cidr` are baked into the
-   playbooks. Tenants cannot customize these at all.
+   pod network CIDR, and service network CIDR are baked into the playbooks.
+   Tenants cannot customize these at all.
 
 The VMaaS API has already moved parameters from `template_parameters` to
 explicit `ComputeInstanceSpec` fields (`cores`, `memory_gib`, `boot_disk`,
@@ -92,8 +92,8 @@ defaults, so existing behavior is preserved.
   }
 }
 // release_image hardcoded in template defaults/main.yaml
-// cluster_network_cidr (10.132.0.0/14) hardcoded in hosted_cluster role
-// service_network_cidr (172.31.0.0/16) hardcoded in hosted_cluster role
+// pod CIDR (10.128.0.0/14) hardcoded in hosted_cluster role
+// service CIDR (172.30.0.0/16) hardcoded in hosted_cluster role
 ```
 
 **After** (proposed):
@@ -105,8 +105,10 @@ defaults, so existing behavior is preserved.
     "pull_secret": "...",
     "ssh_public_key": "ssh-ed25519 ...",
     "release_image": "quay.io/openshift-release-dev/ocp-release:4.17.0-multi",
-    "cluster_network_cidr": "10.132.0.0/14",
-    "service_network_cidr": "172.31.0.0/16"
+    "network": {
+      "pod_cidr": "10.128.0.0/14",
+      "service_cidr": "172.30.0.0/16"
+    }
   }
 }
 ```
@@ -127,8 +129,8 @@ fulfillment-cli create cluster \
   --pull-secret <pull-secret> \
   --ssh-public-key "ssh-ed25519 ..." \
   --release-image "quay.io/.../ocp-release:4.17.0-multi" \
-  --cluster-network-cidr "10.132.0.0/14" \
-  --service-network-cidr "172.31.0.0/16"
+  --pod-cidr "10.128.0.0/14" \
+  --service-cidr "172.30.0.0/16"
 ```
 
 All flags are optional. If omitted, the system uses provider defaults (for
@@ -136,18 +138,24 @@ credentials) or template/role defaults (for release image and CIDRs).
 
 ### API Extensions
 
-Five new fields added to the `ClusterSpec` protobuf message (public and
-private):
+New fields added to the `ClusterSpec` protobuf message (public and private):
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `pull_secret` | string | No | Provider default | Credentials for authenticating to image repositories. Write-only: redacted in GET responses |
 | `ssh_public_key` | string | No | Provider default | SSH public key installed on cluster worker nodes |
 | `release_image` | string | No | Template default | OCP release image URL. Controls the OpenShift version |
-| `cluster_network_cidr` | string | No | `10.132.0.0/14` | CIDR for the cluster's pod network |
-| `service_network_cidr` | string | No | `172.31.0.0/16` | CIDR for the cluster's service network |
+| `network` | `ClusterNetwork` | No | See below | Cluster networking configuration |
 
-CIDRs use plain string notation (e.g., `10.132.0.0/14`), consistent with the
+The `ClusterNetwork` message groups networking fields together for cleaner
+organization as the API grows:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `pod_cidr` | string | No | `10.128.0.0/14` | CIDR for the cluster's pod network |
+| `service_cidr` | string | No | `172.30.0.0/16` | CIDR for the cluster's service network |
+
+CIDRs use plain string notation (e.g., `10.128.0.0/14`), consistent with the
 existing `VirtualNetwork` and `Subnet` proto conventions.
 
 ### Implementation Details/Notes/Constraints
