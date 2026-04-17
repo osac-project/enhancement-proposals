@@ -206,7 +206,7 @@ components:
 - **Fulfillment Service**: Expose the Networking API endpoints for
   VirtualNetwork, Subnet, SecurityGroup, PublicIPPool, PublicIP,
   PublicIPAttachment, and NAT Gateway resources
-- **Fulfillment CLI**: Provide tenant access to Networking API operations
+- **OSAC CLI**: Provide tenant access to Networking API operations
 - **O-SAC Operator**: Manage and reconcile networking Custom Resources,
   translating them to OpenShift primitives (UDN, NetworkPolicies, ...)
 - **O-SAC Ansible**: Execute provider's Ansible playbooks to perform custom
@@ -228,7 +228,7 @@ resources (VMs, bare metal, clusters).
 
 #### VirtualNetwork Creation
 
-1.  The tenant uses the Fulfillment CLI to create a VirtualNetwork by specifying
+1.  The tenant uses the OSAC CLI to create a VirtualNetwork by specifying
     a name, region, NetworkClass, and address space (ipv4.cidr and/or
     ipv6.cidr).
 2.  The Fulfillment Service validates the request and creates a VirtualNetwork
@@ -237,11 +237,11 @@ resources (VMs, bare metal, clusters).
 4.  Depending on the NetworkClass, additional provisioning operations may be
     performed (e.g., configuring external fabric integration, allocating network
     resources from infrastructure providers).
-5.  The tenant uses the Fulfillment CLI to check the VirtualNetwork status.
+5.  The tenant uses the OSAC CLI to check the VirtualNetwork status.
 
 #### Subnet Management
 
-1.  The tenant uses the Fulfillment CLI to create a new Subnet within their
+1.  The tenant uses the OSAC CLI to create a new Subnet within their
     VirtualNetwork, specifying the VirtualNetwork and address space (ipv4.cidr
     and/or ipv6.cidr).
 2.  The Fulfillment Service validates that each Subnet CIDR is within the
@@ -323,7 +323,7 @@ Example CLI commands:
 
 Single-stack (IPv4):
 
-    $ ./fulfillment-cli create virtualnetwork \
+    $ ./osac create virtualnetwork \
            --region us-east-1 \
            --ipv4-cidr 10.0.0.0/16 \
            --network-class udn-net \
@@ -331,13 +331,13 @@ Single-stack (IPv4):
 
 Dual-stack:
 
-    $ ./fulfillment-cli create virtualnetwork \
+    $ ./osac create virtualnetwork \
            --region us-east-1 \
            --ipv4-cidr 10.0.0.0/16 --ipv6-cidr 2001:dead:beef::/48 \
            --network-class udn-net \
            --name my-network
 
-The Fulfillment CLI sends this JSON request to the Fulfillment Service
+The OSAC CLI sends this JSON request to the Fulfillment Service
 (dual-stack example):
 
 ``` json
@@ -391,14 +391,14 @@ Example CLI commands:
 
 Single-stack (IPv4):
 
-    $ ./fulfillment-cli create subnet \
+    $ ./osac create subnet \
            --virtual-network my-network \
            --ipv4-cidr 10.0.1.0/24 \
            --name frontend-subnet
 
 Dual-stack:
 
-    $ ./fulfillment-cli create subnet \
+    $ ./osac create subnet \
            --virtual-network my-network \
            --ipv4-cidr 10.0.1.0/24 --ipv6-cidr 2001:dead:beef::/48 \
            --name frontend-subnet
@@ -454,7 +454,7 @@ VirtualNetwork.
 
 Example CLI command:
 
-    $ ./fulfillment-cli create security-group \
+    $ ./osac create security-group \
            --virtual-network my-network \
            --name web-servers \
            --ingress "protocol:tcp,port:80,source:0.0.0.0/0" \
@@ -569,8 +569,8 @@ resource in that region. A PublicIP must be allocated from a PublicIPPool.
 
 Example CLI commands:
 
-    $ ./fulfillment-cli create publicip --pool public-us-east-1 --name my-public-ip
-    $ ./fulfillment-cli delete publicip my-public-ip
+    $ ./osac create publicip --pool public-us-east-1 --name my-public-ip
+    $ ./osac delete publicip my-public-ip
 
 The Fulfillment Service creates the following PublicIP CR:
 
@@ -597,13 +597,13 @@ does not release it.
 
 Example CLI commands:
 
-    $ ./fulfillment-cli create publicipattachment \
+    $ ./osac create publicipattachment \
            --publicip my-public-ip \
            --target-type ComputeInstance \
            --target-name my-vm \
            --name my-attachment
 
-    $ ./fulfillment-cli delete publicipattachment my-attachment
+    $ ./osac delete publicipattachment my-attachment
 
 The Fulfillment Service creates the following PublicIPAttachment CR:
 
@@ -634,7 +634,7 @@ public IP.
 
 Example CLI command:
 
-    $ ./fulfillment-cli create natgateway \
+    $ ./osac create natgateway \
            --virtual-network my-network \
            --publicip my-public-ip \
            --name my-nat-gateway

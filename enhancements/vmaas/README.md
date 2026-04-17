@@ -98,7 +98,7 @@ enhanced or updated:
 
 * **Fulfillment Service**: Defines and exposes the APIs for managing
   ComputeInstance and ComputeInstanceTemplate resources.
-* **Fulfillment CLI**: Provides tenants with command-line access to the
+* **OSAC CLI**: Provides tenants with command-line access to the
   Fulfillment Service APIs.
 * **O-SAC Operator**: Monitors and reconciles ComputeInstance custom resources
   within the system.
@@ -112,7 +112,7 @@ enhanced or updated:
 #### Virtual machine creation and update
 
 1. The tenant initiates the creation of a new ComputeInstance using the
-   Fulfillment CLI. The tenant must provide:
+   OSAC CLI. The tenant must provide:
     - The ID of the desired ComputeInstanceTemplate
     - All required and any optional parameters for the template (such as CPU,
       memory, disk size, network configuration)
@@ -144,7 +144,7 @@ enhanced or updated:
 6. The Operator continuously monitors the VM’s status and updates the
    ComputeInstance CR status to reflect the current state.
 
-7. The tenant can check the VM’s status at any time using the Fulfillment CLI or
+7. The tenant can check the VM’s status at any time using the OSAC CLI or
    API, and can access the VM via the assigned floating IP.
 
 The update process is the same as the creation workflow as it will be designed
@@ -184,7 +184,7 @@ is executed:
 6. The Operator updates the status of the deletion operation and ensures all
    resources are properly cleaned up.
 
-7. The tenant can confirm the deletion and cleanup via the Fulfillment CLI or
+7. The tenant can confirm the deletion and cleanup via the OSAC CLI or
    API.
 
 This workflow ensures that all resources associated with the ComputeInstance are

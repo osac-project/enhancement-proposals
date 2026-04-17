@@ -124,7 +124,7 @@ and cannot control OCP version or networking CIDRs.
 **After:** Tenant uses explicit CLI flags:
 
 ```
-fulfillment-cli create cluster \
+osac create cluster \
   --template hosted_cluster \
   --pull-secret <pull-secret> \
   --ssh-public-key "ssh-ed25519 ..." \
