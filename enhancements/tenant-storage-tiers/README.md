@@ -90,6 +90,31 @@ not need to think about storage infrastructure.
 * Backward compatibility with the singular `status.storageClass` field. OSAC is
   pre-release; see [Migration Path](#migration-path) for upgrade guidance.
 
+### Assumptions
+
+This proposal assumes the following:
+
+1. **An external system maintains the source of truth for valid storage tier
+   names.** The Tenant controller does not define, validate, or discover which
+   tiers are available in the underlying storage infrastructure. Some external
+   process (CSP onboarding tooling, storage vendor integration, or manual CSP
+   Admin action) is responsible for knowing what storage tiers the data center
+   can provide (e.g., which pools exist on the Ceph/NetApp/Pure Storage cluster)
+   and mapping those to tier names used in OSAC labels.
+
+2. **An external system is responsible for creating and maintaining Tenant
+   StorageClasses with the correct labels.** This proposal defines how the
+   Tenant controller *consumes* labeled StorageClasses, not how they are
+   *created*. Whether StorageClass creation is automated (e.g., as part of
+   tenant onboarding via the OSAC API) or manual (CSP Admin runs `oc apply`)
+   is outside the scope of this proposal. Automation for tier discovery and
+   StorageClass lifecycle management will be addressed in a subsequent proposal.
+
+3. **The set of available tiers is relatively static.** Tiers represent
+   categories of storage capability (e.g., fast, standard, archival), not
+   individual storage pools or volumes. Tier names are expected to change
+   infrequently, on the order of storage infrastructure changes.
+
 ## Proposal
 
 This proposal adds a second label axis to the StorageClass labeling convention.
@@ -534,15 +559,31 @@ default, user override) can be added as a separate enhancement. These
 strategies would require proto changes, fulfillment-service updates, and API
 versioning.
 
-#### StorageClassReady condition updates
+#### StorageClassReady condition and Tenant readiness
+
+A Tenant cannot reach `Ready` phase without at least one StorageClass that
+carries **both** required labels (`osac.openshift.io/tenant` and
+`osac.openshift.io/storage-tier`). If a CSP creates a StorageClass for a
+tenant but omits the `storage-tier` label (or the `tenant` label), the
+controller ignores it entirely. The Tenant remains in `Progressing` phase and
+the `StorageClassReady` condition is `False`, signaling that storage is not
+configured correctly.
+
+This approach uses **status reflection** rather than admission webhooks. The
+controller does not actively prevent the creation of incorrectly labeled
+StorageClasses. Instead, the misconfiguration is surfaced through the Tenant
+CR's status, which operators and monitoring systems can observe. Admission
+webhooks were considered but rejected due to the operational complexity of
+managing webhooks for a resource type (StorageClass) that is not owned by OSAC.
 
 The existing `StorageClassReady` condition is extended:
 
 - `Ready` requires at least one tier to resolve successfully.
-- If **no tier resolves successfully** (all have duplicates,
-  MultipleDefaultsFound, or are not found), the Tenant `phase` is set to
-  `Progressing` and the `StorageClassReady` condition is `False` with a
-  message listing all tier resolution failures.
+- If **no tier resolves successfully** (all tiers have duplicates,
+  MultipleDefaultsFound, or no StorageClass with both required labels exists
+  for the tenant), the Tenant `phase` is set to `Progressing` and the
+  `StorageClassReady` condition is `False` with a message listing all tier
+  resolution failures.
 - Duplicate detection applies per tier. Two StorageClasses for `(tenantX,
   fast)` produces a `MultipleFound` condition, but does not affect
   `(tenantX, standard)`.
