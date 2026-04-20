@@ -397,11 +397,14 @@ The `osac.openshift.io/tenant` label retains the `Default` (capitalized)
 sentinel convention for shared StorageClasses. The `osac.openshift.io/tenant`
 axis is the only axis that uses a capitalized sentinel.
 
-Storage tier values are freeform. OSAC does not define a fixed vocabulary or
-treat any tier name as special. CSPs choose tier names that make sense for
-their storage offering. Recommended conventions include `fast`, `standard`,
-`archival`, and `default`, but these are documentation guidance, not enforced
-constraints. Tier values must be lowercase and conform to Kubernetes label
+Storage tier values are currently freeform. OSAC does not define a fixed
+vocabulary or treat any tier name as special. CSPs choose tier names that make
+sense for their storage offering. Recommended conventions include `fast`,
+`standard`, `archival`, and `default`, but these are documentation guidance,
+not enforced constraints. As noted in [Assumptions](#assumptions), an external
+system will own the source of truth for valid tier names. A future proposal
+addressing tier discovery and StorageClass lifecycle management may introduce
+validation of tier names against that registry. Tier values must be lowercase and conform to Kubernetes label
 value syntax:
 alphanumeric, dashes, dots, and underscores, up to 63 characters, beginning
 and ending with an alphanumeric character.
@@ -758,14 +761,17 @@ tier they need; there are no assumptions about which tiers exist.
 
 ### 2. Should tier names be validated against a predefined vocabulary?
 
-**Decision: No. Tier names are freeform.** Values must follow Kubernetes label
-syntax, but OSAC does not enforce a fixed list.
+**Decision: No, for now. Tier names are freeform.** Values must follow
+Kubernetes label value syntax, but OSAC does not enforce a fixed list in this
+proposal.
 
 **Rationale:** Different CSPs have different storage offerings. Hardcoding tier
 names in the controller is inflexible and would require controller updates as
 storage technology evolves (e.g., `nvme-gen5`, `persistent-memory`). Instead,
 the proposal documents recommended conventions (`fast`, `standard`, `archival`,
-`default`) without enforcing them.
+`default`) without enforcing them. Once the external system that owns the
+source of truth for valid tier names is built (see
+[Assumptions](#assumptions)), tier validation may be introduced at that layer.
 
 ### 3. Should tenant users be able to specify storage tiers?
 
