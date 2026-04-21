@@ -3,9 +3,9 @@ title: tenant-storage-tiers
 authors:
   - akshaynadkarni
 creation-date: 2026-03-26
-last-updated: 2026-03-31
+last-updated: 2026-04-20
 tracking-link:
-  - TBD
+  - https://redhat.atlassian.net/browse/MGMT-23669
 see-also:
   - "/enhancements/tenant-specific-storageclasses"
 replaces:
@@ -288,12 +288,12 @@ parameters:
 status:
   phase: Ready
   storageClasses:
-    - storageClassName: "ceph-shared-default"
-      storageTier: "default"
-    - storageClassName: "ceph-acme-fast"
-      storageTier: "fast"
-    - storageClassName: "ceph-acme-slow"
-      storageTier: "slow"
+    - name: "ceph-shared-default"
+      tier: "default"
+    - name: "ceph-acme-fast"
+      tier: "fast"
+    - name: "ceph-acme-slow"
+      tier: "slow"
 ```
 
 **Expected result:** `tenant-acme` has three resolved tiers. The `fast` and
@@ -452,14 +452,14 @@ status:
   phase: Ready
   namespace: "tenant-acme-ns"
   storageClasses:
-    - storageClassName: "ceph-acme-default"
-      storageTier: "default"
-    - storageClassName: "ceph-acme-fast"
-      storageTier: "fast"
-    - storageClassName: "ceph-acme-standard"
-      storageTier: "standard"
-    - storageClassName: "ceph-shared-archival"
-      storageTier: "archival"
+    - name: "ceph-acme-default"
+      tier: "default"
+    - name: "ceph-acme-fast"
+      tier: "fast"
+    - name: "ceph-acme-standard"
+      tier: "standard"
+    - name: "ceph-shared-archival"
+      tier: "archival"
 ```
 
 Each entry in `storageClasses` is either a tenant-specific StorageClass or a
@@ -471,18 +471,18 @@ Go type:
 
 ```go
 type ResolvedStorageClass struct {
-    // StorageClassName is the name of the resolved StorageClass.
+    // Name is the name of the resolved StorageClass.
     // +kubebuilder:validation:Required
     // +kubebuilder:validation:MinLength=1
-    StorageClassName string `json:"storageClassName"`
+    Name string `json:"name"`
 
-    // StorageTier is the storage tier this StorageClass provides,
+    // Tier is the storage tier this StorageClass provides,
     // taken from the osac.openshift.io/storage-tier label.
     // +kubebuilder:validation:Required
     // +kubebuilder:validation:MinLength=1
     // +kubebuilder:validation:MaxLength=63
     // +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`
-    StorageTier string `json:"storageTier"`
+    Tier string `json:"tier"`
 }
 ```
 
@@ -525,8 +525,7 @@ with `osac.openshift.io/tenant=<tenantName>` or
      the Tenant level; individual provisioning requests that ask for this
      tier will fail at the Ansible role level).
 
-The resolved list is stored in `tenant.status.storageClasses`. Downstream
-consumers never implement fallback logic; they look up the requested tier in
+The resolved list is stored in `tenant.status.storageClasses`. Consumers never implement fallback logic; they look up the requested tier in
 the pre-resolved list.
 
 #### Tier selection at provisioning time
@@ -602,8 +601,8 @@ The `tenant_storage_class` role currently reads `tenant.status.storageClass`
 2. **Require** the `tenant_storage_class_storage_tier` input parameter (no
    default value). Fail immediately if the parameter is not provided, with an
    error message listing available tiers.
-3. Find the entry in the list whose `storageTier` matches the request.
-4. Set `tenant_storage_class_name` to the matching `storageClassName`.
+3. Find the entry in the list whose `tier` matches the request.
+4. Set `tenant_storage_class_name` to the matching `name`.
 5. Fail with a descriptive error if the requested tier is not in the list,
    including the available tiers.
 
@@ -888,7 +887,7 @@ This was rejected because:
 - Upgrade to the new controller.
 - Verify:
   - `status.storageClasses` (list) is populated with one entry:
-    `{storageClassName: "...", storageTier: "default"}`.
+    `{name: "...", tier: "default"}`.
   - `status.storageClass` (singular) is no longer present.
   - Templates updated to pass `tenant_storage_class_storage_tier: "default"`
     continue to provision successfully.
