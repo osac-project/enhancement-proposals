@@ -526,14 +526,27 @@ with `osac.openshift.io/tenant=<tenantName>` or
      the Tenant level; individual provisioning requests that ask for this
      tier will fail at the Ansible role level).
 
-The resolved list is stored in `tenant.status.storageClasses`. Consumers never implement fallback logic; they look up the requested tier in
-the pre-resolved list.
+The resolved list is stored in `tenant.status.storageClasses`. Consumers never
+implement fallback logic; they look up the requested tier in the pre-resolved
+list.
+
+#### Data flow: operator to Ansible
+
+The resolved `storageClasses` list is passed to Ansible as part of the job
+context (extra_vars) when the CI controller triggers a provisioning job.
+The CI controller already fetches the Tenant CR to verify readiness before
+triggering; it reads `tenant.status.storageClasses` at that point and injects
+the list into the extra_vars alongside the ComputeInstance payload. This
+eliminates the need for Ansible to make a separate K8s API call to fetch the
+Tenant CR, since Ansible has no informer cache and every `k8s_info` call is a
+direct API server hit.
 
 #### Tier selection at provisioning time
 
 The `tenant_storage_class` Ansible role is the selection interface. It
 **requires** a `tenant_storage_class_storage_tier` input parameter (no default
-value) and resolves it against the tenant's `status.storageClasses` list.
+value) and resolves it against the `storageClasses` list injected via
+extra_vars.
 
 If the parameter is not provided, the role fails immediately with a descriptive
 error listing the available tiers for the tenant. This forces template authors
@@ -595,10 +608,13 @@ The existing `StorageClassReady` condition is extended:
 
 #### Ansible role changes
 
-The `tenant_storage_class` role currently reads `tenant.status.storageClass`
-(a single string) and sets `tenant_storage_class_name`. It will be updated to:
+The `tenant_storage_class` role currently queries the K8s API for the Tenant CR
+and reads `tenant.status.storageClass` (a single string). It will be updated
+to read the resolved `storageClasses` list from the injected extra_vars
+instead of querying the K8s API:
 
-1. Read `tenant.status.storageClasses` (the resolved list).
+1. Read the `storageClasses` list from extra_vars (injected by the CI
+   controller at job creation time).
 2. **Require** the `tenant_storage_class_storage_tier` input parameter (no
    default value). Fail immediately if the parameter is not provided, with an
    error message listing available tiers.
@@ -618,15 +634,19 @@ The `tenant_storage_class` role currently reads `tenant.status.storageClass`
 - Add `tenant.status.storageClasses` (list of `ResolvedStorageClass`).
 - Remove `status.storageClass` (singular) from the Tenant CRD API.
 - Update `StorageClassReady` condition with per-tier resolution detail.
+- Update the CI controller to read the resolved `storageClasses` list from
+  the Tenant status and inject it into the extra_vars when launching the
+  provisioning job.
 - Update unit tests for multi-tier scenarios (multiple tiers resolved,
   duplicate within one tier, missing tier, fallback to shared Default per
   tier, StorageClass without tier label is ignored).
 
 **osac-aap:**
 
-- Update `tenant_storage_class` role to read `tenant.status.storageClasses`
-  and **require** a `tenant_storage_class_storage_tier` input parameter (no
-  default).
+- Update `tenant_storage_class` role to read the `storageClasses` list from
+  extra_vars (injected by the CI controller) instead of querying the K8s API
+  for the Tenant CR. **Require** a `tenant_storage_class_storage_tier` input
+  parameter (no default).
 - Update all template roles to explicitly pass the appropriate tier to
   `tenant_storage_class` when invoking it.
 - Update tests for tier-aware lookup and for the missing-parameter failure
