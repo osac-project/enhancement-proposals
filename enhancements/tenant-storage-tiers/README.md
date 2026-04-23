@@ -58,10 +58,14 @@ As a **CSP Admin**, I want to provide shared Default StorageClasses at different
 tiers so that tenants without dedicated storage still have access to tiered
 storage options.
 
-As a **Tenant Admin**, I want to create VM templates that automatically select
-the right storage tier for their workload type (e.g., a database template uses
-fast storage, an archival template uses standard storage) so that my users do
-not need to think about storage infrastructure.
+As an **OSAC Contributor**, I want to ship VM templates that work out of the
+box on any OSAC deployment, so that CSPs can use them without needing to fork
+and customize each template for their storage tier names.
+
+As a **CSP Admin**, I want to customize or extend OSAC-shipped templates to
+use specialized storage tiers (e.g., `fast` for database templates) that match
+my infrastructure, so that my tenants get the right storage for each workload
+type.
 
 ### Goals
 
@@ -143,8 +147,8 @@ controller does not assign it any magic behavior.
 
 | Persona | Role | Relevant actions |
 |---|---|---|
-| **CSP Admin** | Cloud Provider Admin (infrastructure) | Creates StorageClasses with tenant and tier labels |
-| **Tenant Admin** | Tenant organization administrator | Creates and configures VM templates for their users |
+| **OSAC Contributor** | OSAC project developer | Creates and maintains OSAC-shipped VM templates |
+| **CSP Admin** | Cloud Provider Admin (infrastructure) | Creates StorageClasses with tenant and tier labels; customizes templates for specialized tiers |
 | **Tenant User** | End user within a tenant organization | Creates ComputeInstances using available templates |
 
 #### Workflow 1: CSP Admin configures tiered storage for a tenant
@@ -303,11 +307,11 @@ to the shared Default StorageClass.
 
 #### Workflow 4: Template-driven tier selection during provisioning
 
-**Actors:** Tenant Admin (creates the template), Tenant User (creates the CI)
+**Actors:** CSP Admin (customizes the template), Tenant User (creates the CI)
 
 **Starting state:** `tenant-acme` has `fast` and `default` tiers resolved.
-The Tenant Admin has created a `database_vm` template that is configured to
-use `fast` storage for boot disks.
+The CSP Admin has customized the `database_vm` template to use `fast` storage
+for boot disks.
 
 1. The Tenant User creates a ComputeInstance using the database template:
 
@@ -364,7 +368,7 @@ missing tier and listing the available alternatives.
 
 #### Workflow 6: Tier parameter not specified in template
 
-**Actors:** Tenant Admin (creates a template without specifying a tier)
+**Actors:** CSP Admin or OSAC Contributor (creates a template without specifying a tier)
 
 **Starting state:** `tenant-acme` has `fast` and `default` tiers resolved.
 
@@ -553,15 +557,40 @@ error listing the available tiers for the tenant. This forces template authors
 to be explicit about which storage tier their workload needs.
 
 **Who provides the `storage_tier` value** is a separate concern from how the
-role resolves it. The initial implementation uses **Strategy A:
-template-driven** selection. The VM template role (e.g.,
-`osac.templates.database_vm`) hardcodes which tier each disk needs. The
-template author chooses the tier based on the workload type. The tenant user
-selects a template when creating a ComputeInstance and does not need to know
-about storage tiers.
+role resolves it. The initial implementation uses **template-driven**
+selection. Each VM template hardcodes which tier its disks need. The tenant
+user selects a template when creating a ComputeInstance and does not need to
+know about storage tiers.
+
+#### OSAC-shipped templates and the `default` tier convention
+
+OSAC-shipped templates (written by OSAC contributors) must work out of the box
+on any OSAC deployment without requiring CSPs to fork or customize them for
+their specific tier names. To achieve this, OSAC-shipped templates use the
+conventional tier name `default`:
 
 ```yaml
-# Inside osac.templates.database_vm/tasks/create.yaml
+# Inside osac.templates.ocp_virt_vm/tasks/create.yaml (OSAC-shipped)
+- name: Resolve boot disk StorageClass
+  ansible.builtin.include_role:
+    name: osac.service.tenant_storage_class
+  vars:
+    tenant_storage_class_storage_tier: "default"
+```
+
+For this to work, every VMaaS cluster must have at least one shared
+StorageClass with `osac.openshift.io/tenant: Default` and
+`osac.openshift.io/storage-tier: default`. This is the baseline that ensures
+OSAC-shipped templates resolve a StorageClass for any tenant through the
+existing shared Default fallback. CSPs can override it per-tenant by creating
+a StorageClass with `tenant: <tenantName>, storage-tier: default`.
+
+CSPs that want specialized templates (e.g., a `database_vm` template that uses
+`fast` storage) customize or extend OSAC-shipped templates for their
+environment:
+
+```yaml
+# Inside a CSP-customized database_vm template
 - name: Resolve boot disk StorageClass
   ansible.builtin.include_role:
     name: osac.service.tenant_storage_class
@@ -569,11 +598,10 @@ about storage tiers.
     tenant_storage_class_storage_tier: "fast"
 ```
 
-If user-specified tiers are needed in the future, Strategy B (a `storageTier`
-field on the ComputeInstance `DiskSpec`) or Strategy C (hybrid: template
-default, user override) can be added as a separate enhancement. These
-strategies would require proto changes, fulfillment-service updates, and API
-versioning.
+If user-specified tiers are needed in the future, a `storageTier` field on the
+ComputeInstance `DiskSpec` or a hybrid approach (template default, user
+override) can be added as a separate enhancement. These strategies would
+require proto changes, fulfillment-service updates, and API versioning.
 
 #### StorageClassReady condition and Tenant readiness
 
@@ -654,9 +682,9 @@ instead of querying the K8s API:
 
 **fulfillment-service:**
 
-- No changes expected in the initial implementation (Strategy A). The
-  fulfillment-service remains a pass-through. If Strategy B is adopted later,
-  the `DiskSpec` proto message will need a `storage_tier` field.
+- No changes expected. The fulfillment-service remains a pass-through.
+  If user-specified tiers are added in the future (via a `storageTier` field
+  on `DiskSpec`), the proto message will need updating.
 
 **osac-installer:**
 
@@ -795,16 +823,19 @@ source of truth for valid tier names is built (see
 
 ### 3. Should tenant users be able to specify storage tiers?
 
-**Decision: Start with Strategy A (template-driven) only.** Templates encode
-the storage requirement. Users select templates based on workload type, not
-infrastructure details.
+**Decision: Template-driven only.** Templates encode the storage requirement.
+Users select templates based on workload type, not infrastructure details.
+OSAC-shipped templates use the conventional tier name `default`; CSPs customize
+templates for specialized tiers.
 
 **Rationale:** Templates are the right abstraction layer for storage decisions.
-A `database_vm` template knows it needs `fast` storage; a user does not need to
-think about it. Adding user-specified tiers (Strategy B/C) introduces
+OSAC contributors write base templates that work on any deployment by using the
+`default` tier. CSPs customize templates for specialized tiers (e.g.,
+`database_vm` uses `fast`). Users do not need to think about storage. Adding
+user-specified tiers (e.g., a `storageTier` field on `DiskSpec`) introduces
 complexity: proto changes, fulfillment-service updates, API versioning, and two
 paths to the same outcome. If tenant feedback shows a need for user-specified
-tiers, Strategy C (hybrid: template default, user override) can be added as a
+tiers, a hybrid approach (template default, user override) can be added as a
 future enhancement.
 
 ### 4. Should `status.storageClass` (singular) be deprecated or removed?
