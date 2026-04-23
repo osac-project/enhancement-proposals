@@ -3,7 +3,7 @@ title: tenant-storage-tiers
 authors:
   - akshaynadkarni
 creation-date: 2026-03-26
-last-updated: 2026-04-20
+last-updated: 2026-04-22
 tracking-link:
   - https://redhat.atlassian.net/browse/MGMT-23669
 see-also:
