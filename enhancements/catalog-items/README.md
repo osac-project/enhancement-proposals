@@ -3,7 +3,7 @@ title: catalog-items
 authors:
   - mhrivnak
 creation-date: 2026-01-12
-last-updated: 2026-01-17
+last-updated: 2026-04-25
 tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
 see-also:
 replaces:
@@ -14,11 +14,13 @@ superseded-by:
 
 ## Summary
 
-Today there is a 1:1 mapping between templates and ansible roles. This document
-proposes an API that enables a single ansible role to be used as the basis for
-multiple catalog items that are published for users. That enables a CSP to
-define a small number of ansible roles based on their infrastructure and use
-case needs, but expose many variations of curated catalog items to users.
+Today there is a 1:1 mapping between templates and ansible roles. A user sees a
+list of templates and selects one to provision. This document proposes a new
+"Catalog" concept that becomes the way to present templates to users. A new
+catalog API enables a single ansible role to be used as the basis for multiple
+catalog items that are presented to users. That enables a CSP to define a small
+number of ansible roles based on their infrastructure and use case needs, but
+expose many variations of curated catalog items to users.
 
 ## Motivation
 
@@ -37,13 +39,13 @@ don't have the ability to add or modify ansible roles.
 
 ### User Stories
 
-* As a Cloud Provider Admin, I want to publish multiple templates that are similar to each other.
-* As a Cloud Provider Admin, I want to publish multiple templates without having to create a new ansible role.
-* As a Cloud Provider Admin, I want to offer templates to my users that pre-define the values for certain fields.
-* As a Cloud Provider Admin, I want to offer templates to my users that prevent them from setting certain fields.
+* As a Cloud Provider Admin, I want to publish multiple catalog item that are similar to each other.
+* As a Cloud Provider Admin, I want to publish multiple catalog item without having to create a new ansible role.
+* As a Cloud Provider Admin, I want to offer catalog item to my users that pre-define the values for certain fields.
+* As a Cloud Provider Admin, I want to offer catalog item to my users that prevent them from setting certain fields.
 
-* As a Tenant Admin, I want to offer templates to my users that pre-define the values for certain fields.
-* As a Tenant Admin, I want to offer templates to my users that prevent them from setting certain fields.
+* As a Tenant Admin, I want to offer catalog item to my users that pre-define the values for certain fields.
+* As a Tenant Admin, I want to offer catalog item to my users that prevent them from setting certain fields.
 
 ### Goals
 
@@ -77,7 +79,7 @@ reference to the CatalogItem. Both will have validations on create that ensure
 the user did not provide any fields that are not in the CatalogItem's list of
 allowed fields.
 
-The fulfillment-cli will need to be updated to use the new CatalogItem API.
+The osac-cli will need to be updated to use the new CatalogItem API.
 
 ### Workflow Description
 
@@ -103,6 +105,9 @@ memory and vCPU values.
 
 ### API Extensions
 
+The catalog API exists only within the gRPC API service. It does not exist at
+the k8s layer as CRDs.
+
 Add:
 * ClusterCatalogItem
 * ComputeInstanceCatalogItem
@@ -111,212 +116,172 @@ Change:
 * Cluster references a ClusterCatalogItem instead of a ClusterTemplate
 * ComputeInstance references a ComputeInstanceCatalogItem instead of a ComputeInstanceTemplate
 
-
 ### Implementation Details/Notes/Constraints
 
-TO DO from here down
+#### Protobuf Message Types
 
-What are some important details that didn't come across above in the
-**Proposal**? Go in to as much detail as necessary here. This might be
-a good place to talk about core concepts and how they relate. While it is useful
-to go into the details of the code changes required, it is not necessary to show
-how the code will be rewritten in the enhancement.
+Two new message types will be added to the proto definitions in `fulfillment-service`, following the existing patterns for `ClusterTemplate` and `ComputeInstanceTemplate`.
+
+`ClusterCatalogItem`:
+- `id` (string) - unique identifier, assigned by the server
+- `metadata` - standard metadata (creation_timestamp, labels, annotations, etc.)
+- `title` (string) - human-friendly short name for display in UIs and CLIs
+- `description` (string) - markdown-formatted long description
+- `template` (string) - references a `ClusterTemplate` by ID
+- `template_parameters` (map<string, Any>) - pre-defined parameter values using the same type encoding as `ClusterSpec.template_parameters`
+- `node_sets` (map<string, ClusterCatalogItemNodeSet>) - pre-defined node set configuration; entries here override defaults from the template
+- `allowed_fields` (repeated string) - dot-notation list of fields the user is permitted to provide when creating a Cluster; fields not in this list will be rejected if provided by the user
+- `published` (bool) - when false (the default), the item is hidden from Tenant Users; Cloud Provider Admins and Tenant Admins can see unpublished items
+- `tenant` (string) - optional tenant ID that scopes visibility to a single tenant organization; when empty the item is visible to all tenants
+
+`ComputeInstanceCatalogItem`:
+- Same structure as `ClusterCatalogItem` but references a `ComputeInstanceTemplate` and carries fields from `ComputeInstanceSpec` (image, cores, memory_gib, boot_disk, run_strategy, etc.) as pre-definable values
+
+Both types will have corresponding `ClusterCatalogItemsService` and
+`ComputeInstanceCatalogItemsService` gRPC services with `List`, `Get`, `Create`,
+`Update`, and `Delete` RPCs.
+
+#### API Behavior
+
+The dot-notation for allowed fields may use a wildcard to include nested fields.
+
+Dot-notation does not differentiate between fields that are a singular value, a
+map, or a list.
+
+Map and List values are all-or-nothing. User-provided values will not be merged
+with those provided by the Catalog Item.
+
+#### Public vs. Private API Split
+
+Following the existing public/private server pattern:
+
+- **Private API** (`osac/private/v1`): full CRUD over catalog items with no filtering based on `published` or `tenant`. Used by Cloud Provider Admins and Tenant Admins, and by the server internally when validating a user's create request.
+- **Public API** (`osac/public/v1`): read-only for Tenant Users (`List` and `Get` only). The public server filters results to items where `published == true` and where `tenant` is empty or matches the caller's tenant. Cloud Provider Admins and Tenant Admins interact with catalog items through the private API.
+
+The public `List` endpoint must filter by `published = true` and the caller's
+tenant, so the public `CatalogItemsServer` will not simply delegate to the
+private server unchanged — it must inject a tenancy and publication filter
+before delegating.
+
+#### Changes to ClusterSpec and ComputeInstanceSpec
+
+The `template` field in `ClusterSpec` will be replaced with `catalog_item`, a
+string reference to a `ClusterCatalogItem` ID. The `template_parameters` field
+is retained because the CatalogItem's `allowed_fields` may permit the user to
+supply additional parameter values. The same change applies to
+`ComputeInstanceSpec`.
+
+#### Validation on Create
+
+When a Tenant User creates a Cluster or ComputeInstance, the
+`ClustersServer.Create` method (or its private equivalent) will perform these
+additional steps before writing the object:
+
+1. Fetch the referenced `CatalogItem` by ID. Return `NOT_FOUND` if it does not exist or is not visible to the caller's tenant.
+2. Verify `published == true`. Return `NOT_FOUND` if the item is not published.
+3. Enumerate every field set by the user in the request (using proto reflection, similar to how `GenericMapper` already walks fields). Return `INVALID_ARGUMENT` if any field is not present in `allowed_fields`.
+4. Merge the `CatalogItem`'s pre-defined field values into the request data, with user-provided values taking precedense.
+5. Store the merged object as the Cluster or ComputeInstance spec.
+
+#### Tenancy and Authorization
+
+The `tenant` field on `CatalogItem` is enforced at two layers:
+
+1. **Read**: The public `CatalogItems_List` and `CatalogItems_Get` operations filter by `tenant = "" OR tenant = <caller_tenant>` and `published = true`. This is implemented in the public server before delegating to the private server, using the same filter-injection mechanism the other public servers use for tenancy.
+2. **Write**: Only Cloud Provider Admins may create CatalogItems with `tenant = ""` (global items). Tenant Admins may only create CatalogItems with `tenant` set to their own tenant. This is enforced via policy rules consistent with the rest of the authorization model.
+
+A tenant with a CNA that was published from a Catalog Item that has since been
+unpublished should still be able to read that Catalog Item through a direct GET
+operation.
+
+#### Database Migrations
+
+Two new SQL migration files will be added under `internal/database/migrations/`:
+
+```sql
+-- cluster_catalog_items
+create table cluster_catalog_items (
+  id text not null primary key,
+  creation_timestamp timestamp with time zone not null default now(),
+  deletion_timestamp timestamp with time zone not null default 'epoch',
+  name text not null default '',
+  finalizers text[] not null default '{}',
+  creators text[] not null default '{}',
+  tenants text[] not null default '{}',
+  labels jsonb not null default '{}',
+  annotations jsonb not null default '{}',
+  version integer not null default 0,
+  data jsonb not null
+);
+
+-- compute_instance_catalog_items (identical structure)
+```
+
+#### CLI Changes
+
+The `osac` CLI's `create cluster` and `create computeinstance` commands will be updated:
+
+- The `--template` flag is replaced with `--catalog-item`.
+- A new `get cluster-catalog-items` and `get compute-instance-catalog-items` subcommand will be added to list available catalog items so users can discover what is available to them.
+- The `describe cluster` and `describe computeinstance` commands will show the referenced catalog item name/title instead of (or in addition to) the template.
+
+#### Updates to Catalog Items
+
+When a catalog item is changed or updated, those changes do not affect CNAs that
+were previously deployed using the same catalog item.
+
+#### Deletion
+
+Catalog items should not be deleted. They should be set to unpublished, but
+preserved so that existing CNAs deployed with that catalog item can maintain a
+reference to it.
 
 ### Risks and Mitigations
 
-What are the risks of this proposal and how do we mitigate. Think broadly. For
-example, consider both security and how this will impact the larger OKD
-ecosystem.
+**API change**: Replacing `ClusterSpec.template` with `ClusterSpec.catalog_item` changes the create path for Clusters and ComputeInstances. All first-party consumers (CLI, operator) must be updated in the same release.
 
-How will security be reviewed and by whom?
+**Validation complexity**: The `allowed_fields` allow-list introduces new validation logic that must work correctly with proto field names including nested paths using dot notation. Any mistake here could silently allow users to override pre-defined values. Mitigation: use proto reflection to enumerate fields set in a request, and write thorough unit tests covering edge cases (empty allow-list, nested fields, map fields).
 
-How will UX be reviewed and by whom?
-
-Consider including folks that also work outside your immediate sub-project.
+**Tenant filter injection**: The public catalog item server must inject tenant and publication filters before delegating to the private server. If this filtering is incomplete, a user could see or use catalog items intended for another tenant. Mitigation: reuse the existing tenancy filter injection patterns from other public servers; add integration tests that verify cross-tenant isolation.
 
 ### Drawbacks
 
-The idea is to find the best form of an argument why this enhancement should
-_not_ be implemented.
+Adding a catalog layer between users and templates increases conceptual complexity. Admins now manage two related resources (templates and catalog items) instead of one. The main argument against implementing this is that the same goal — presenting curated options to users — could be achieved more simply by adding a `published` flag and a pre-defined-parameters map directly to the existing template types. The counter-argument is that multiple catalog items per template are genuinely useful (e.g., S/M/L size variants from a single role), and that keeping templates as a backend concept cleanly separates infrastructure concerns (how provisioning works) from presentation concerns (what users see).
 
-What trade-offs (technical/efficiency cost, user experience, flexibility,
-supportability, etc) must be made in order to implement this? What are the reasons
-we might not want to undertake this proposal, and how do we overcome them?
-
-Does this proposal implement a behavior that's new/unique/novel? Is it poorly
-aligned with existing user expectations?  Will it be a significant maintenance
-burden?  Is it likely to be superceded by something else in the near future?
+The `allowed_fields` mechanism also adds ongoing maintenance: every new field added to `ClusterSpec` or `ComputeInstanceSpec` must be considered for inclusion as an allow-listable field, increasing the surface area of the API.
 
 ## Alternatives (Not Implemented)
 
-Similar to the `Drawbacks` section the `Alternatives` section is used
-to highlight and record other possible approaches to delivering the
-value proposed by an enhancement, including especially information
-about why the alternative was not selected.
+**Add `published` and parameter overrides directly to templates**: The simplest path would be to add `published`, `allowed_fields`, and `preset_parameters` fields directly to `ClusterTemplate` and `ComputeInstanceTemplate`. This avoids a new resource type and the 1:many template→catalog-item relationship. It was not selected because it does not allow a single template to be exposed in multiple curated configurations, and it conflates the infrastructure definition (ansible role and its parameters) with the presentation layer (what users see and can control).
+
+**Use Kubernetes CRDs for catalog items**: CRDs would make catalog items visible to Kubernetes-native tooling and consistent with the osac-operator's CRD-based resources. This was not selected because catalog items are a global presentation layer that is not specific to any management cluster. The CRDs are infrastructure concerns while catalog items are presentation/policy concerns managed by admins through the fulfillment-service API.
 
 ## Open Questions [optional]
 
-This is where to call out areas of the design that require closure before deciding
-to implement the design.  For instance,
- > 1. This requires exposing previously private resources which contain sensitive
-  information.  Can we do this?
-
 ## Test Plan
 
-**Note:** *Section not required until targeted at a release.*
-
-Consider the following in developing a test plan for this enhancement:
-- Will there be e2e and integration tests, in addition to unit tests?
-- How will it be tested in isolation vs with other components?
-- What additional testing is necessary to support managed OpenShift service-based offerings?
-
-No need to outline all of the test cases, just the general strategy. Anything
-that would count as tricky in the implementation and anything particularly
-challenging to test should be called out.
-
-All code is expected to have adequate tests (eventually with coverage
-expectations).
+Standard unit and integration tests.
 
 ## Graduation Criteria
 
-**Note:** *Section not required until targeted at a release.*
+The feature will be considered complete when:
 
-Define graduation milestones.
-
-These may be defined in terms of API maturity, or as something else. Initial proposal
-should keep this high-level with a focus on what signals will be looked at to
-determine graduation.
-
-Consider the following in developing the graduation criteria for this
-enhancement:
-
-- Maturity levels
-  - [`alpha`, `beta`, `stable` in upstream Kubernetes][maturity-levels]
-  - `Dev Preview`, `Tech Preview`, `GA` in OpenShift
-- [Deprecation policy][deprecation-policy]
-
-Clearly define what graduation means by either linking to the [API doc definition](https://kubernetes.io/docs/concepts/overview/kubernetes-api/#api-versioning),
-or by redefining what graduation means.
-
-In general, we try to use the same stages (alpha, beta, GA), regardless how the functionality is accessed.
-
-[maturity-levels]: https://git.k8s.io/community/contributors/devel/sig-architecture/api_changes.md#alpha-beta-and-stable-versions
-[deprecation-policy]: https://kubernetes.io/docs/reference/using-api/deprecation-policy/
-
-**If this is a user facing change requiring new or updated documentation in [openshift-docs](https://github.com/openshift/openshift-docs/),
-please be sure to include in the graduation criteria.**
-
-**Examples**: These are generalized examples to consider, in addition
-to the aforementioned [maturity levels][maturity-levels].
-
-### Removing a deprecated feature
-
-- Announce deprecation and support policy of the existing feature
-- Deprecate the feature
+- All new API endpoints (ClusterCatalogItems, ComputeInstanceCatalogItems) are implemented and tested.
+- The Cluster and ComputeInstance create path validates against the referenced catalog item.
+- The CLI is updated to use `--catalog-item` in place of `--template`.
+- Cloud Provider Admin and Tenant Admin workflows are documented.
+- The `template` field is removed from ClusterSpec/ComputeInstanceSpec and replaced with `catalog_item`.
 
 ## Upgrade / Downgrade Strategy
 
-If applicable, how will the component be upgraded and downgraded? Make sure this
-is in the test plan.
-
-Consider the following in developing an upgrade/downgrade strategy for this
-enhancement:
-- What changes (in invocations, configurations, API use, etc.) is an existing
-  cluster required to make on upgrade in order to keep previous behavior?
-- What changes (in invocations, configurations, API use, etc.) is an existing
-  cluster required to make on upgrade in order to make use of the enhancement?
-
-Upgrade expectations:
-- Each component should remain available for user requests and
-  workloads during upgrades. Ensure the components leverage best practices in handling [voluntary
-  disruption](https://kubernetes.io/docs/concepts/workloads/pods/disruptions/). Any exception to
-  this should be identified and discussed here.
-- Micro version upgrades - users should be able to skip forward versions within a
-  minor release stream without being required to pass through intermediate
-  versions - i.e. `x.y.N->x.y.N+2` should work without requiring `x.y.N->x.y.N+1`
-  as an intermediate step.
-- Minor version upgrades - you only need to support `x.N->x.N+1` upgrade
-  steps. So, for example, it is acceptable to require a user running 4.3 to
-  upgrade to 4.5 with a `4.3->4.4` step followed by a `4.4->4.5` step.
-- While an upgrade is in progress, new component versions should
-  continue to operate correctly in concert with older component
-  versions (aka "version skew"). For example, if a node is down, and
-  an operator is rolling out a daemonset, the old and new daemonset
-  pods must continue to work correctly even while the cluster remains
-  in this partially upgraded state for some time.
-
-Downgrade expectations:
-- If an `N->N+1` upgrade fails mid-way through, or if the `N+1` cluster is
-  misbehaving, it should be possible for the user to rollback to `N`. It is
-  acceptable to require some documented manual steps in order to fully restore
-  the downgraded cluster to its previous state. Examples of acceptable steps
-  include:
-  - Deleting any CVO-managed resources added by the new version. The
-    CVO does not currently delete resources that no longer exist in
-    the target version.
+Not applicable; there are no deployed instances or stored data to migrate.
 
 ## Version Skew Strategy
 
-How will the component handle version skew with other components?
-What are the guarantees? Make sure this is in the test plan.
-
-Consider the following in developing a version skew strategy for this
-enhancement:
-- During an upgrade, we will always have skew among components, how will this impact your work?
-- Does this enhancement involve coordinating behavior in the control plane and
-  in the kubelet? How does an n-2 kubelet without this feature available behave
-  when this feature is used?
-- Will any other components on the node change? For example, changes to CSI, CRI
-  or CNI may require updating that component before the kubelet.
+Not applicable at this stage.
 
 ## Support Procedures
 
-Describe how to
-- detect the failure modes in a support situation, describe possible symptoms (events, metrics,
-  alerts, which log output in which component)
-
-  Examples:
-  - If the webhook is not running, kube-apiserver logs will show errors like "failed to call admission webhook xyz".
-  - Operator X will degrade with message "Failed to launch webhook server" and reason "WehhookServerFailed".
-  - The metric `webhook_admission_duration_seconds("openpolicyagent-admission", "mutating", "put", "false")`
-    will show >1s latency and alert `WebhookAdmissionLatencyHigh` will fire.
-
-- disable the API extension (e.g. remove MutatingWebhookConfiguration `xyz`, remove APIService `foo`)
-
-  - What consequences does it have on the cluster health?
-
-    Examples:
-    - Garbage collection in kube-controller-manager will stop working.
-    - Quota will be wrongly computed.
-    - Disabling/removing the CRD is not possible without removing the CR instances. Customer will lose data.
-      Disabling the conversion webhook will break garbage collection.
-
-  - What consequences does it have on existing, running workloads?
-
-    Examples:
-    - New namespaces won't get the finalizer "xyz" and hence might leak resource X
-      when deleted.
-    - SDN pod-to-pod routing will stop updating, potentially breaking pod-to-pod
-      communication after some minutes.
-
-  - What consequences does it have for newly created workloads?
-
-    Examples:
-    - New pods in namespace with Istio support will not get sidecars injected, breaking
-      their networking.
-
-- Does functionality fail gracefully and will work resume when re-enabled without risking
-  consistency?
-
-  Examples:
-  - The mutating admission webhook "xyz" has FailPolicy=Ignore and hence
-    will not block the creation or updates on objects when it fails. When the
-    webhook comes back online, there is a controller reconciling all objects, applying
-    labels that were not applied during admission webhook downtime.
-  - Namespaces deletion will not delete all objects in etcd, leading to zombie
-    objects when another namespace with the same name is created.
-
 ## Infrastructure Needed [optional]
 
-Use this section if you need things from the project. Examples include a new
-subproject, repos requested, github details, and/or testing infrastructure.
+None.
