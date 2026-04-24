@@ -120,6 +120,14 @@ This proposal assumes the following:
    individual storage pools or volumes. Tier names are expected to change
    infrequently, on the order of storage infrastructure changes.
 
+4. **A shared StorageClass with tier `default` exists on every VMaaS
+   cluster.** OSAC-shipped templates use the conventional tier name `default`.
+   For these templates to work out of the box, a shared StorageClass with
+   `osac.openshift.io/tenant: Default` and
+   `osac.openshift.io/storage-tier: default` must exist. See
+   [OSAC-shipped templates and the `default` tier convention](#osac-shipped-templates-and-the-default-tier-convention)
+   for details.
+
 ## Proposal
 
 This proposal adds a second label axis to the StorageClass labeling convention.
@@ -139,7 +147,10 @@ Tier names are freeform: CSPs choose values that make sense for their storage
 offering (e.g., `fast`, `standard`, `archival`, `default`). OSAC does not
 define a fixed vocabulary or treat any tier name as special. A CSP that wants a
 general-purpose tier can label it `default` (lowercase, by convention), but the
-controller does not assign it any magic behavior.
+controller does not assign it any magic behavior. OSAC-shipped templates use
+the tier name `default` so they work on any deployment without customization.
+A shared StorageClass with `tenant: Default` and `storage-tier: default` is
+expected on every VMaaS cluster.
 
 ### Workflow Description
 
@@ -406,7 +417,10 @@ Storage tier values are currently freeform. OSAC does not define a fixed
 vocabulary or treat any tier name as special. CSPs choose tier names that make
 sense for their storage offering. Recommended conventions include `fast`,
 `standard`, `archival`, and `default`, but these are documentation guidance,
-not enforced constraints. As noted in [Assumptions](#assumptions), an external
+not enforced constraints. However, OSAC-shipped templates rely on the tier name
+`default`; a shared StorageClass with `tenant: Default, storage-tier: default`
+is expected on every VMaaS cluster for these templates to work out of the box.
+As noted in [Assumptions](#assumptions), an external
 system will own the source of truth for valid tier names. A future proposal
 addressing tier discovery and StorageClass lifecycle management may introduce
 validation of tier names against that registry. Tier values must be lowercase and conform to Kubernetes label
