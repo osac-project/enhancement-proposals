@@ -66,20 +66,20 @@ created. Both will have similar properties, so we'll use Cluster as an example:
 
 ClusterCatalogItem
 * references an existing ClusterTemplate by ID
-* includes the same fields as the ClusterTemplate API, giving the admin an opportunity to pre-define values.
-* includes an exclusive list of fields that the user can specify.
+* includes a list of field definitions, each of which specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
 
-The exclusive list of fields that the user can specify will use dot-notation
-if necessary to reference nested fields.
+The field definitions use dot-notation paths to reference fields in the
+underlying resource spec.
 
 Cluster and ComputeInstance resources will replace the TemplateID field with a
-reference to the CatalogItem. Both will have validations on create that ensure
-the user did not provide any fields that are not in the CatalogItem's list of
-allowed fields.
+reference to the CatalogItem. Both will have validations on create that apply
+the catalog item's field definitions: non-editable fields are set to their
+pre-defined values regardless of user input, and editable fields are validated
+against the field's validation schema.
 
-The osac-cli will need to be updated to use the new CatalogItem API.
+The osac CLI will need to be updated to use the new CatalogItem API.
 
 ### Workflow Description
 
@@ -120,7 +120,17 @@ Change:
 
 #### Protobuf Message Types
 
-Two new message types will be added to the proto definitions in `fulfillment-service`, following the existing patterns for `ClusterTemplate` and `ComputeInstanceTemplate`.
+This design is inspired by the [DCM project's catalog item schema](https://github.com/dcm-project/enhancements/blob/main/enhancements/catalog-item-schema/catalog-item-schema.md#catalog-item),
+which defines catalog items as a list of field definitions rather than a typed
+message that mirrors the underlying resource's fields. Each field definition
+specifies a dot-notation path, whether the field is user-editable, an optional
+default value, and an optional validation schema. This approach is
+service-type-agnostic and avoids having to mirror every resource field inside
+the catalog item message type.
+
+Two new message types will be added to the proto definitions in
+`fulfillment-service`, following the existing patterns for `ClusterTemplate` and
+`ComputeInstanceTemplate`.
 
 `ClusterCatalogItem`:
 - `id` (string) - unique identifier, assigned by the server
@@ -128,14 +138,32 @@ Two new message types will be added to the proto definitions in `fulfillment-ser
 - `title` (string) - human-friendly short name for display in UIs and CLIs
 - `description` (string) - markdown-formatted long description
 - `template` (string) - references a `ClusterTemplate` by ID
-- `template_parameters` (map<string, Any>) - pre-defined parameter values using the same type encoding as `ClusterSpec.template_parameters`
-- `node_sets` (map<string, ClusterCatalogItemNodeSet>) - pre-defined node set configuration; entries here override defaults from the template
-- `allowed_fields` (repeated string) - dot-notation list of fields the user is permitted to provide when creating a Cluster; fields not in this list will be rejected if provided by the user
-- `published` (bool) - when false (the default), the item is hidden from Tenant Users; Cloud Provider Admins and Tenant Admins can see unpublished items
-- `tenant` (string) - optional tenant ID that scopes visibility to a single tenant organization; when empty the item is visible to all tenants
+- `fields` (repeated FieldDefinition) - ordered list of field definitions that
+  specify which resource spec fields are pre-defined by the admin and which are
+  editable by the user
+- `published` (bool) - when false (the default), the item is hidden from Tenant
+  Users; Cloud Provider Admins and Tenant Admins can see unpublished items
+- `tenant` (string) - optional tenant ID that scopes visibility to a single
+  tenant organization; when empty the item is visible to all tenants
 
 `ComputeInstanceCatalogItem`:
-- Same structure as `ClusterCatalogItem` but references a `ComputeInstanceTemplate` and carries fields from `ComputeInstanceSpec` (image, cores, memory_gib, boot_disk, run_strategy, etc.) as pre-definable values
+- Same top-level structure as `ClusterCatalogItem` but references a
+  `ComputeInstanceTemplate`
+
+`FieldDefinition`:
+- `path` (string) - dot-notation path of the field within the resource spec
+  (e.g., `template_parameters.cpu_count`, `node_sets.workers.size`)
+- `display_name` (string) - optional human-readable label for UIs and CLIs;
+  derived from `path` if not set
+- `editable` (bool) - when true the user may provide a value for this field;
+  when false (the default) the field uses the `default` value and the user
+  cannot override it
+- `default` (google.protobuf.Value) - optional default value; applied as the
+  fixed value for non-editable fields, or as the fallback for editable fields
+  when the user does not supply a value
+- `validation_schema` (google.protobuf.Struct) - optional JSON Schema object
+  (draft 2020-12) constraining what values are valid for this field; only
+  meaningful when `editable` is true
 
 Both types will have corresponding `ClusterCatalogItemsService` and
 `ComputeInstanceCatalogItemsService` gRPC services with `List`, `Get`, `Create`,
@@ -143,13 +171,29 @@ Both types will have corresponding `ClusterCatalogItemsService` and
 
 #### API Behavior
 
-The dot-notation for allowed fields may use a wildcard to include nested fields.
+The `fields` list defines the complete contract between the admin and the user
+for a given catalog item. Fields not listed in `fields` are neither editable
+nor pre-defined; the admin is responsible for ensuring that every field required
+by the underlying template is covered by a field definition.
 
-Dot-notation does not differentiate between fields that are a singular value, a
-map, or a list.
+The dot-notation `path` references fields within the resource spec. Nested
+fields and map entries are supported. For example:
+- `template_parameters.cpu_count` - a specific template parameter
+- `node_sets.workers.size` - the size of a named node set
+- `image.name` - a sub-field of a complex field
 
-Map and List values are all-or-nothing. User-provided values will not be merged
-with those provided by the Catalog Item.
+Wildcards are not supported in paths; each field must be listed individually.
+
+Map and list values are all-or-nothing. User-provided values for editable map
+or list fields replace the entire field and are not merged with the catalog
+item's `default`.
+
+The `validation_schema` field follows
+[JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/json-schema-validation),
+supporting numeric constraints (`minimum`, `maximum`), string constraints
+(`pattern`, `minLength`, `maxLength`), enumerations (`enum`), and conditional
+logic (`if/then/else`). The server always validates; UIs may also use the schema
+for early feedback, since users can bypass the UI via the CLI or API directly.
 
 #### Public vs. Private API Split
 
@@ -167,9 +211,9 @@ before delegating.
 
 The `template` field in `ClusterSpec` will be replaced with `catalog_item`, a
 string reference to a `ClusterCatalogItem` ID. The `template_parameters` field
-is retained because the CatalogItem's `allowed_fields` may permit the user to
-supply additional parameter values. The same change applies to
-`ComputeInstanceSpec`.
+is retained because the catalog item's `fields` list may mark certain template
+parameters as editable, allowing the user to supply values for them. The same
+change applies to `ComputeInstanceSpec`.
 
 #### Validation on Create
 
@@ -177,11 +221,18 @@ When a Tenant User creates a Cluster or ComputeInstance, the
 `ClustersServer.Create` method (or its private equivalent) will perform these
 additional steps before writing the object:
 
-1. Fetch the referenced `CatalogItem` by ID. Return `NOT_FOUND` if it does not exist or is not visible to the caller's tenant.
+1. Fetch the referenced `CatalogItem` by ID. Return `NOT_FOUND` if it does not
+   exist or is not visible to the caller's tenant.
 2. Verify `published == true`. Return `NOT_FOUND` if the item is not published.
-3. Enumerate every field set by the user in the request (using proto reflection, similar to how `GenericMapper` already walks fields). Return `INVALID_ARGUMENT` if any field is not present in `allowed_fields`.
-4. Merge the `CatalogItem`'s pre-defined field values into the request data, with user-provided values taking precedense.
-5. Store the merged object as the Cluster or ComputeInstance spec.
+3. For each field definition in `fields`:
+   - If `editable` is false: ignore any user-provided value for the field and
+     apply the catalog item's `default`.
+   - If `editable` is true and the user provided a value: validate the value
+     against `validation_schema` if one is present. Return `INVALID_ARGUMENT`
+     with a descriptive message if validation fails.
+   - If `editable` is true and the user did not provide a value: apply the
+     `default` if one is present.
+4. Store the resulting object as the Cluster or ComputeInstance spec.
 
 #### Tenancy and Authorization
 
@@ -192,7 +243,7 @@ The `tenant` field on `CatalogItem` is enforced at two layers:
 
 A tenant with a CNA that was published from a Catalog Item that has since been
 unpublished should still be able to read that Catalog Item through a direct GET
-operation.
+request.
 
 #### Database Migrations
 
@@ -232,29 +283,155 @@ were previously deployed using the same catalog item.
 
 #### Deletion
 
-Catalog items should not be deleted. They should be set to unpublished, but
-preserved so that existing CNAs deployed with that catalog item can maintain a
-reference to it.
+Catalog items should not be deleted if there are existing CNAs created from it.
+Such catalog items should be set to unpublished, but preserved so that existing
+CNAs deployed with that catalog item can maintain a reference to it.
 
 ### Risks and Mitigations
 
 **API change**: Replacing `ClusterSpec.template` with `ClusterSpec.catalog_item` changes the create path for Clusters and ComputeInstances. All first-party consumers (CLI, operator) must be updated in the same release.
 
-**Validation complexity**: The `allowed_fields` allow-list introduces new validation logic that must work correctly with proto field names including nested paths using dot notation. Any mistake here could silently allow users to override pre-defined values. Mitigation: use proto reflection to enumerate fields set in a request, and write thorough unit tests covering edge cases (empty allow-list, nested fields, map fields).
+**Validation complexity**: The field-definition approach requires the server to
+resolve dot-notation paths against the resource spec at request time, validate
+values against JSON Schema, and apply defaults. Path resolution errors (e.g., a
+typo in `path`) are not caught at CatalogItem creation time and will only
+surface at request time. Mitigation: implement path resolution with clear error
+messages, and write thorough unit tests covering edge cases (nested fields, map
+fields, missing defaults). Require that path strings are validated against the
+resource spec schema when a CatalogItem is created.
 
 **Tenant filter injection**: The public catalog item server must inject tenant and publication filters before delegating to the private server. If this filtering is incomplete, a user could see or use catalog items intended for another tenant. Mitigation: reuse the existing tenancy filter injection patterns from other public servers; add integration tests that verify cross-tenant isolation.
 
 ### Drawbacks
 
-Adding a catalog layer between users and templates increases conceptual complexity. Admins now manage two related resources (templates and catalog items) instead of one. The main argument against implementing this is that the same goal — presenting curated options to users — could be achieved more simply by adding a `published` flag and a pre-defined-parameters map directly to the existing template types. The counter-argument is that multiple catalog items per template are genuinely useful (e.g., S/M/L size variants from a single role), and that keeping templates as a backend concept cleanly separates infrastructure concerns (how provisioning works) from presentation concerns (what users see).
+Adding a catalog layer between users and templates increases conceptual
+complexity. Admins now manage two related resources (templates and catalog
+items) instead of one. The main argument against implementing this is that the
+same goal — presenting curated options to users — could be achieved more simply
+by adding a `published` flag and a pre-defined-parameters map directly to the
+existing template types. The counter-argument is that multiple catalog items per
+template are genuinely useful (e.g., S/M/L size variants from a single role),
+and that keeping templates as a backend concept cleanly separates infrastructure
+concerns (how provisioning works) from presentation concerns (what users see).
 
-The `allowed_fields` mechanism also adds ongoing maintenance: every new field added to `ClusterSpec` or `ComputeInstanceSpec` must be considered for inclusion as an allow-listable field, increasing the surface area of the API.
+Using `google.protobuf.Value` for defaults and `google.protobuf.Struct` for
+validation schemas sacrifices compile-time type safety. A typo in a path string
+or a type mismatch in a default value is not caught when the CatalogItem is
+created. Server-side path validation at write time partially mitigates this, but
+the API does not provide the same guarantees as a fully typed proto message.
 
 ## Alternatives (Not Implemented)
 
-**Add `published` and parameter overrides directly to templates**: The simplest path would be to add `published`, `allowed_fields`, and `preset_parameters` fields directly to `ClusterTemplate` and `ComputeInstanceTemplate`. This avoids a new resource type and the 1:many template→catalog-item relationship. It was not selected because it does not allow a single template to be exposed in multiple curated configurations, and it conflates the infrastructure definition (ansible role and its parameters) with the presentation layer (what users see and can control).
+**Add `published` and parameter overrides directly to templates**: The simplest
+path would be to add `published` and `preset_parameters` fields directly to
+`ClusterTemplate` and `ComputeInstanceTemplate`. This avoids a new resource type
+and the 1:many template→catalog-item relationship. It was not selected because
+it does not allow a single template to be exposed in multiple curated
+configurations, and it conflates the infrastructure definition (ansible role and
+its parameters) with the presentation layer (what users see and can control).
 
-**Use Kubernetes CRDs for catalog items**: CRDs would make catalog items visible to Kubernetes-native tooling and consistent with the osac-operator's CRD-based resources. This was not selected because catalog items are a global presentation layer that is not specific to any management cluster. The CRDs are infrastructure concerns while catalog items are presentation/policy concerns managed by admins through the fulfillment-service API.
+**Use Kubernetes CRDs for catalog items**: CRDs would make catalog items visible
+to Kubernetes-native tooling and consistent with the osac-operator's CRD-based
+resources. This was not selected because catalog items are a global presentation
+layer that is not specific to any management cluster. The CRDs are
+infrastructure concerns while catalog items are presentation/policy concerns
+managed by admins through the fulfillment-service API.
+
+### Alternative field-definition representations
+
+The three alternatives below differ from the chosen approach only in how field
+definitions represent types, defaults, and validation constraints within the
+gRPC/protobuf layer. All three remain at the gRPC API layer and do not use CRDs.
+
+**Typed `oneof` per field kind**: Each `FieldDefinition` uses a `oneof` to
+select a type-specific sub-message carrying typed defaults and typed constraints:
+
+```proto
+message FieldDefinition {
+  string path         = 1;
+  string display_name = 2;
+  bool   editable     = 3;
+  oneof kind {
+    IntegerField integer      = 4;
+    StringField  string_value = 5;
+    BoolField    bool_value   = 6;
+  }
+}
+message IntegerField {
+  optional int32 default = 1;
+  optional int32 minimum = 2;
+  optional int32 maximum = 3;
+}
+message StringField {
+  optional string  default = 1;
+  repeated string  enum    = 2;
+  optional string  pattern = 3;
+}
+```
+
+This gives compile-time type safety: the proto compiler rejects a string where
+an int32 is expected. It was not selected because adding a new primitive type
+(float, duration, complex sub-message) requires a proto schema change and
+regeneration, the `oneof` is verbose for API consumers, and it cannot naturally
+represent complex object defaults such as a full image sub-message.
+
+**Extend OSAC's existing `Any`-based pattern**: OSAC already uses
+`google.protobuf.Any` with a type URL string in `ClusterTemplateParameterDefinition`.
+The same pattern could be applied to `FieldDefinition`, with a `type` string
+declaring the expected type and an `Any` carrying the default, plus a typed
+`FieldConstraints` message with named constraint fields:
+
+```proto
+message FieldDefinition {
+  string              path              = 1;
+  string              display_name      = 2;
+  bool                editable          = 3;
+  string              type              = 4; // e.g. "type.googleapis.com/google.protobuf.Int32Value"
+  google.protobuf.Any default           = 5;
+  FieldConstraints    constraints       = 6;
+}
+message FieldConstraints {
+  optional double               minimum = 1;
+  optional double               maximum = 2;
+  optional string               pattern = 3;
+  repeated google.protobuf.Any  enum    = 4;
+}
+```
+
+This is consistent with the existing OSAC convention and supports any proto-typed
+default including complex sub-messages. It was not selected because the `Any`
+type URL ceremony is unfamiliar to API consumers, the `type` and `constraints`
+fields can be set inconsistently (e.g., a `minimum` on a string field), and
+`enum` as `repeated Any` is still weakly typed at the proto level.
+
+**`google.protobuf.Value` for defaults with a typed constraint message**: This
+uses `google.protobuf.Value` (a JSON-compatible scalar or object, without the
+type URL of `Any`) for defaults, paired with a typed `FieldConstraints` proto
+message that covers common constraint kinds as named fields:
+
+```proto
+message FieldDefinition {
+  string                 path              = 1;
+  string                 display_name      = 2;
+  bool                   editable          = 3;
+  google.protobuf.Value  default           = 4;
+  FieldConstraints       constraints       = 5;
+}
+message FieldConstraints {
+  optional double                  minimum   = 1;
+  optional double                  maximum   = 2;
+  optional string                  pattern   = 3;
+  repeated google.protobuf.Value   enum      = 4;
+}
+```
+
+The constraint message is typed and self-documenting in the proto schema,
+avoiding the need for a JSON Schema library. It was not selected because adding
+a new constraint keyword (e.g., `minLength`, `if/then/else`) requires a proto
+schema change, and `enum` as `repeated Value` is still weakly typed. The chosen
+approach (Option 4) accepts a freeform `google.protobuf.Struct` for the
+validation schema, trading proto-level constraint typing for full JSON Schema
+expressiveness without requiring proto changes to support new constraint kinds.
 
 ## Open Questions [optional]
 
