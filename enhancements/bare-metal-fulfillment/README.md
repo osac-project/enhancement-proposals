@@ -84,7 +84,7 @@ We expect bare metal fulfillment to follow the same workflow used for cluster fu
 following existing O-SAC components:
 
 * Fulfillment Service: Define the API for HostPools, Hosts, and HostClasses
-* Fulfillment CLI: Give the tenant access to the API
+* OSAC CLI: Give the tenant access to the API
 * O-SAC Operator: Manage and reconcile the Custom Resources for HostPools and Hosts
 * O-SAC AAP: Use Ansible playbooks to perform the requested reconciliation operations of HostPools and Hosts by calling Bare Metal Management APIs.
 * Bare Metal Management: Manage the hardware; we will use ESI for now
@@ -99,48 +99,48 @@ following topics merit further discussion in the "Implementation Details/Notes/C
 
 #### Host Pool Creation
 
-1. The tenant uses the Fulfillment CLI to request a HostPool by specifying the desired number of hosts and resource classes, as well as the desired network configuration.
+1. The tenant uses the OSAC CLI to request a HostPool by specifying the desired number of hosts and resource classes, as well as the desired network configuration.
 2. The Fulfillment Service receives the request and creates a new HostPool custom resource (CR) in the appropriate Hub.
 3. The O-SAC Operator begins the reconciliation process for the new HostPool CR, finding the requested hosts and creating matching Host CRs, and performing the requested network configuration.
 4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the HostPool CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of their requested HostPool.
+5. The tenant uses the OSAC CLI to check the status of their requested HostPool.
 
 #### Host Pool Network Update
 
-1. The tenant uses the Fulfillment CLI to update the network configuration of a HostPool.
+1. The tenant uses the OSAC CLI to update the network configuration of a HostPool.
 2. The Fulfillment Service receives the request and updates the existing HostPool CR in the appropriate Hub.
 3. The O-SAC Operator begins the reconciliation process for the HostPool CR, noting the discrepency between the current network configuration and the desired networking confiuration, and updating the network configuration of the hosts.
 4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the HostPool CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of the HostPool.
+5. The tenant uses the OSAC CLI to check the status of the HostPool.
 
 #### Host Pool Expansion
 
-1. The tenant uses the Fulfillment CLI to increase the number of requested hosts specified in a HostPool, updating any desired filters.
+1. The tenant uses the OSAC CLI to increase the number of requested hosts specified in a HostPool, updating any desired filters.
 2. The Fulfillment Service receives the request and updates the existing HostPool CR in the appropriate Hub.
 3. The O-SAC Operator begins the reconciliation process for the HostPool CR, noting the discrepency between the current host count and the desired host count, and adding the requested hosts.
 4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the HostPool CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of the HostPool.
+5. The tenant uses the OSAC CLI to check the status of the HostPool.
 
 #### Host Pool Reduction
 
-1. The tenant uses the Fulfillment CLI to decrease the number of requested hosts specified in a HostPool; they also optionally mark specific hosts for removal (this is detailed further below).
+1. The tenant uses the OSAC CLI to decrease the number of requested hosts specified in a HostPool; they also optionally mark specific hosts for removal (this is detailed further below).
 2. The Fulfillment Service receives the request and updates the existing HostPool CR in the appropriate Hub.
 3. The O-SAC Operator begins the reconciliation process for the HostPool CR, noting the discrepency between the current host count and the desired host count, and removing the requested hosts.
 4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the HostPool CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of the HostPool.
+5. The tenant uses the OSAC CLI to check the status of the HostPool.
 
 #### Host Operations
 
-1. The tenant uses the Fulfillment CLI to view their Hosts.
-2. The tenant uses the Fulfillment CLI to perform available operations upon the desired Host. Initially, these actions will be limited to power control; additional actions (such as console enablement) may be added later.
+1. The tenant uses the OSAC CLI to view their Hosts.
+2. The tenant uses the OSAC CLI to perform available operations upon the desired Host. Initially, these actions will be limited to power control; additional actions (such as console enablement) may be added later.
 3. The Fulfillment Service receives the request and updates the existing Host CR in the appropriate Hub.
 3. The O-SAC Operator begins the reconciliation process for the Host CR, noting any discrepency between the current state and the desired state, and calling the bare metal service to perform any needed host operations.
 4. The O-SAC Operator monitors the status of the reconciliation process and updates the status of the Host CR to reflect the current state.
-5. The tenant uses the Fulfillment CLI to check the status of the Host.
+5. The tenant uses the OSAC CLI to check the status of the Host.
 
 #### Host Pool Deletion
 
-1. The tenant uses the Fulfillment CLI to delete a HostPool.
+1. The tenant uses the OSAC CLI to delete a HostPool.
 2. The Fulfillment Service receives the request and deletes the existing HostPool CR in the appropriate Hub.
 3. The deletion of the HostPool CR triggers cascading deletes of associated Hosts.
 4. The O-SAC Operator detects these deletions and calls the bare metal service to clean these hosts.
@@ -154,18 +154,18 @@ will repeatedly attempt to fulfill the request until the state of the HostPool m
 can update a HostPool specification, and the same reconciliation process will perform the needed operations to change
 the state of the HostPool.
 
-In the following example, the tenant uses the Fulfillment CLI to request a HostPool with two fc430 hosts and one h100.
+In the following example, the tenant uses the OSAC CLI to request a HostPool with two fc430 hosts and one h100.
 Each host will have `network1` attached as a native VLAN on one physical interface; and a trunk port with `network2` as a native
 VLAN and `network3` as a tagged VLAN on a second physical interface. It is assumed that the tenant will have knowledge of their
 available networks from a separate O-SAC network service (whose implementation is outside the scope of this proposal).
 
-    $ ./fulfillment-cli create hostpool \
+    $ ./osac create hostpool \
            --host-set workers=host_class:fc430,size:2 \
            --host-set gpus=host_class:h100,size:1 \
            --network-attachments primary:network1 \
            --network-attachments primary:network2,vlans:network3
 
-The Fulfillment CLI sends this JSON request to the Fulfillment Service:
+The OSAC CLI sends this JSON request to the Fulfillment Service:
 
     {
       "object": {
@@ -395,7 +395,7 @@ The listed properties will depend upon the attributes returned by the underlying
 Note that each Host has an ownerReferences entry to the parent HostPool; this will enable both cascading resource deletion, while
 also preventing the parent HostPool from being deleted until its child Hosts are deleted.
 
-Once created, tenants can use the Fulfillment CLI to perform various operations against the host:
+Once created, tenants can use the OSAC CLI to perform various operations against the host:
 
 * Power control
 * Serial console access
