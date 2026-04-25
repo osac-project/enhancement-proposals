@@ -84,16 +84,16 @@ The osac CLI will need to be updated to use the new CatalogItem API.
 ### Workflow Description
 
 Tenant Users will provision by:
-#. View the list of available CatalogItems that correspond to a type of CNA (Cloud Native Asset), such as ClusterCatalogItems, and pick the one they want.
-#. Create an instance of the corresponding type of CNA, such as Cluster, referencing the CatalogItem and including required fields as input.
+1. View the list of available CatalogItems that correspond to a type of CNA (Cloud Native Asset), such as ClusterCatalogItems, and pick the one they want.
+2. Create an instance of the corresponding type of CNA, such as Cluster, referencing the CatalogItem and including required fields as input.
 
 Cloud Provider Admins will publish templates to a global catalog by:
-#. curate a small collection of ansible roles that provision CNAs, including creation of all corresponding k8s resources and management of the provider's relevant infrastructure.
-#. create *CatalogItems to present templates to users, specifying which fields are pre-set vs available for the user to provide.
+1. curate a small collection of ansible roles that provision CNAs, including creation of all corresponding k8s resources and management of the provider's relevant infrastructure.
+2. create *CatalogItems to present templates to users, specifying which fields are pre-set vs available for the user to provide.
 
 Tenant Admins will publish templates to their organization by:
-#. review the collection of templates that provision CNAs.
-#. create *CatalogItems to present templates to users, specifying which fields are pre-set vs available for the user to provide.
+1. review the collection of templates that provision CNAs.
+2. create *CatalogItems to present templates to users, specifying which fields are pre-set vs available for the user to provide.
 
 For example, a CSP Admin could make available a ComputeInstanceTemplate that
 creates a VM and takes all standard fields as input, including image reference,
@@ -200,7 +200,7 @@ for early feedback, since users can bypass the UI via the CLI or API directly.
 Following the existing public/private server pattern:
 
 - **Private API** (`osac/private/v1`): full CRUD over catalog items with no filtering based on `published` or `tenant`. Used by Cloud Provider Admins and Tenant Admins, and by the server internally when validating a user's create request.
-- **Public API** (`osac/public/v1`): read-only for Tenant Users (`List` and `Get` only). The public server filters results to items where `published == true` and where `tenant` is empty or matches the caller's tenant. Cloud Provider Admins and Tenant Admins interact with catalog items through the private API.
+- **Public API** (`osac/public/v1`): read-only for Tenant Users (`List` and `Get` only). The public server filters results to items where `published == true` and where `tenant` is empty or matches the caller's tenant. Also tenants with an existing CNA should be able to `Get` the catalog item it references even if unpublished. Cloud Provider Admins and Tenant Admins interact with catalog items through the private API.
 
 The public `List` endpoint must filter by `published = true` and the caller's
 tenant, so the public `CatalogItemsServer` will not simply delegate to the
