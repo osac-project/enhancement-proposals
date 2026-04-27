@@ -16,23 +16,30 @@ superseded-by:
 
 ## Summary
 
-This proposal introduces a VM image management API that enables organization users to upload qcow2 virtual machine disk images without requiring direct registry access or OCI tooling knowledge. Uploaded images are stored as OCI artifacts in a CSP-owned registry (source of truth, shareable across clusters). When a VM references an image, a local PVC cache is created on-demand for that (image, storageClass) combination. Subsequent VMs clone from the cache using CSI copy-on-write snapshots, eliminating repeated registry pulls.
+This proposal introduces a VM image management API that enables organization users to upload qcow2 virtual machine disk images without requiring direct registry access or OCI tooling knowledge. Uploaded images are wrapped in ContainerDisk format (tar with `/disk/disk.img` structure) and stored as OCI container images in a CSP-owned registry (source of truth, shareable across clusters). When a VM references an image, a local PVC cache is created on-demand for that (image, storageClass) combination. Subsequent VMs clone from the cache using CSI copy-on-write snapshots, eliminating repeated registry pulls.
 
 Additionally, users can create images from running VMs, capturing the complete VM disk state. This enables backup workflows, golden image creation, and cross-cluster VM cloning by exporting the VM to the registry as a new image.
 
-**MVP Scope:** Upload qcow2 images via API, create images from running VMs, store as OCI artifacts in registry. On-demand PVC caching with garbage collection. Import from HTTP/S3 URLs and image cloning are deferred to future enhancements.
+**MVP Scope:** Upload qcow2 images via API, create images from running VMs, store as ContainerDisk-format OCI container images in registry. On-demand PVC caching with garbage collection. Import from HTTP/S3 URLs and image cloning are deferred to future enhancements.
 
 ## Motivation
 
-Currently, OSAC requires organization users to manually push VM images to an OCI registry using podman/skopeo, then reference them when creating VMs. Each VM creation pulls the image from the registry over the network. This approach has several limitations:
+Currently, OSAC VM provisioning works as follows:
+- **CSP uploads images**: Cloud Service Provider admins manually push VM images (RHEL, Windows, etc.) to the OCI registry using podman/skopeo
+- **Ansible role per image**: Each image has a corresponding Ansible role that knows how to provision VMs from that image
+- **Template per role**: ComputeInstance templates are created per Ansible role, exposing specific parameters (cores, memory, storage)
+- **Org users consume templates**: Organization users create VMs by selecting a template and providing parameters
 
-1. **Poor UX**: Requires understanding OCI tooling (podman, skopeo), managing registry credentials, and converting qcow2 to ContainerDisk format.
-2. **No API discoverability**: Users cannot list available images or query metadata (OS type, size) via the OSAC API.
-3. **Slow provisioning**: Each VM pulls a multi-gigabyte image from the registry over the network (2-5 minutes per VM).
-4. **Registry bottleneck**: Creating 100 VMs simultaneously means 100 concurrent registry pulls.
-5. **No multi-cluster optimization**: Each cluster re-pulls the same image from registry for every VM, even if the image was already pulled before.
+This approach has several limitations:
 
-This proposal introduces an upload API that hides registry complexity from users, stores images in the CSP-owned registry as the source of truth (enabling multi-cluster sharing and versioning), and creates local PVC caches on-demand when VMs reference images for fast VM cloning.
+1. **No custom images for org users**: Users cannot upload their own qcow2 images (e.g., custom golden images, pre-configured environments). They must request CSP to upload images and create corresponding Ansible roles/templates.
+2. **CSP bottleneck for new images**: Adding a new image requires CSP admin intervention (upload to registry, create Ansible role, create template). Cannot self-service.
+3. **No image cloning from running VMs**: Users cannot capture a configured VM as a reusable image for backup or cloning purposes.
+4. **Slow VM provisioning**: Each VM creation pulls the image from registry over the network (2-5 minutes per VM, no local caching).
+5. **Registry bottleneck at scale**: Creating 100 VMs simultaneously means 100 concurrent registry pulls, even for the same image.
+6. **No API discoverability**: Users cannot list available images or query metadata via the OSAC API, only templates.
+
+This proposal introduces an image management API that enables organization users to upload custom qcow2 images and create images from running VMs. Images are stored in the CSP-owned registry (source of truth) and imported to local PVC caches on-demand for fast VM provisioning via CSI copy-on-write clones.
 
 ### User Stories
 
@@ -50,7 +57,7 @@ This proposal introduces an upload API that hides registry complexity from users
 
 - Enable organization users to upload qcow2 disk images via HTTP API without OCI tooling or registry access.
 - Enable organization users to create images from running VMs (export VM disk state to registry).
-- Store uploaded images in CSP-owned registry as OCI artifacts (source of truth, cross-cluster sharing).
+- Store uploaded images in CSP-owned registry as OCI container images in ContainerDisk format (source of truth, cross-cluster sharing).
 - Import registry images once per cluster to local PVC caches.
 - Clone local PVC caches using CSI copy-on-write snapshots for fast VM provisioning.
 - Provide metadata API (name, description, OS type, registry reference) for image discovery.
@@ -73,7 +80,7 @@ This proposal introduces an upload API that hides registry complexity from users
 
 ## Proposal
 
-Introduce a `VirtualMachineImage` custom resource that represents a qcow2 VM disk image uploaded by an authorized user. Images are uploaded via HTTP API and stored as OCI artifacts in the CSP-owned registry. When a user creates a ComputeInstance referencing an image, the operator creates a local PVC cache on-demand (if it doesn't exist) by importing from the registry. Subsequent VMs clone from the cache using CSI copy-on-write snapshots, eliminating repeated registry pulls.
+Introduce a `ComputeImage` custom resource that represents a qcow2 VM disk image uploaded by an authorized user. Images are uploaded via HTTP API, wrapped in ContainerDisk format (tar with `/disk/disk.img` structure), and stored as OCI container images in the CSP-owned registry. When a user creates a ComputeInstance referencing an image, the operator creates a local PVC cache on-demand (if it doesn't exist) by importing from the registry. Subsequent VMs clone from the cache using CSI copy-on-write snapshots, eliminating repeated registry pulls.
 
 **Architecture:**
 - **Source of truth:** OCI registry (CSP-owned, shareable across clusters)
@@ -106,38 +113,46 @@ Introduce a `VirtualMachineImage` custom resource that represents a qcow2 VM dis
 1. User has a Windows Server 2022 qcow2 image (15 GB) on their laptop.
 2. User uploads via CLI:
    ```bash
-   fulfillment-cli image upload windows-server-2022.qcow2 \
+   osac image upload windows-server-2022.qcow2 \
      --name windows-2022 \
      --description "Windows Server 2022 Datacenter"
    ```
-3. CLI calls fulfillment-api `InitiateUpload` RPC, receives upload URL.
-4. CLI streams qcow2 file to fulfillment-service upload endpoint.
-5. Fulfillment-service:
-   - Streams uploaded qcow2 directly to CSP registry as OCI artifact (no temporary storage)
-   - Calculates SHA256 digest on-the-fly using io.TeeReader while streaming
+3. CLI calls fulfillment-api `InitiateUpload` RPC.
+4. Fulfillment-service creates Image record in database with `status.state = PENDING`, returns upload URL.
+5. CLI streams qcow2 file to fulfillment-service upload endpoint.
+6. Fulfillment-service:
+   - Wraps uploaded qcow2 in ContainerDisk format (tar with `/disk/disk.img`) on-the-fly
+   - Streams to CSP registry as OCI container image (no temporary storage)
+   - Calculates SHA256 digest during streaming using io.TeeReader
    - Pushes to registry using OCI distribution spec (e.g., `registry.csp.internal/vm-images/org-acme/windows-2022:v1`)
-   - Creates VirtualMachineImage CR with `spec.source` pointing to the registry URL
-6. VirtualMachineImage now exists in organization's namespace, ready to be referenced by VMs
-   - No cache PVC is created yet (on-demand import happens when first VM references the image)
-7. Organization user creates VM (first VM using this image on this cluster):
+   - Updates Image record: `status.state = AVAILABLE`, `status.size_bytes = <actual size>`
+7. Image now discoverable via `ListImages` API with state=AVAILABLE
+   - No ComputeImage CR created yet (lazy creation when first VM references the image)
+   - No cache PVC created yet (on-demand import when operator reconciles)
+8. Organization user creates VM (first VM using this image on this cluster):
    ```bash
-   fulfillment-cli create compute-instance \
+   osac create compute-instance \
      --name web-server \
      --image windows-2022 \
      --cores 4 \
      --memory 8 \
      --storage-class ceph-fast
    ```
-8. Operator checks for cache PVC `vm-image-cache-windows-2022-ceph-fast`:
-   - **Not found (first VM):** Create DataVolume importing from registry to cache PVC with storageClass `ceph-fast` (~1-2 minutes)
-   - **Found (subsequent VMs):** Clone from existing cache PVC (~5 seconds)
-9. Operator creates VM's root disk DataVolume:
+9. Operator reconciles ComputeInstance:
+   - Queries fulfillment-service for image metadata (registry URL, digest)
+   - Checks if ComputeImage CR exists for this image
+   - **Not found (first VM on this cluster):** Creates ComputeImage CR with `spec.source` pointing to registry URL
+   - Checks for cache PVC `vm-image-cache-windows-2022-ceph-fast`:
+     - **Not found (first VM with this storageClass):** Creates DataVolume importing from registry to cache PVC with `storageClass: ceph-fast` (~1-2 minutes)
+     - **Found (subsequent VMs):** Reuses existing cache PVC
+   - **Note:** Cache PVC uses the same storage class (`ceph-fast`) as the VM to enable CSI smart clones
+10. Operator creates VM's root disk DataVolume:
    - If cache just created: wait for it to be ready, then clone
    - If cache exists: clone immediately
-10. Operator creates VirtualMachine referencing the root disk DataVolume (same pattern as current OSAC).
-11. VM boots from cloned disk.
+11. Operator creates VirtualMachine referencing the root disk DataVolume (same pattern as current OSAC).
+12. VM boots from cloned disk.
 
-**Subsequent VMs:** Steps 8-11 but cache already exists → clone immediately (~5 seconds total).
+**Subsequent VMs:** Steps 9-12 but cache already exists → clone immediately (~5 seconds total).
 
 **Expected result:** User uploads qcow2 without registry knowledge. Image stored in registry (shareable across clusters). VMs provision in seconds via PVC clones from local cache.
 
@@ -150,31 +165,57 @@ Introduce a `VirtualMachineImage` custom resource that represents a qcow2 VM dis
 1. User has a running VM (`web-server`) that they've configured with applications and settings.
 2. User creates an image from the VM via CLI:
    ```bash
-   fulfillment-cli image create-from-vm web-server \
+   osac image create-from-vm web-server \
      --name web-server-golden \
      --description "Production web server configuration - April 2026"
    ```
 3. CLI calls fulfillment-api `CreateImageFromVM` RPC.
-4. Fulfillment-service initiates VM export workflow:
-   - Creates a temporary VirtualMachineExport CR (KubeVirt feature) for the running VM
-   - VirtualMachineExport exports VM disk to downloadable qcow2 format
-5. Fulfillment-service streams exported qcow2 to CSP registry:
-   - Downloads from VirtualMachineExport endpoint
-   - Streams to registry as OCI artifact (e.g., `registry.csp.internal/vm-images/org-acme/web-server-golden:v1`)
+4. Fulfillment-service:
+   - Creates Image record in database with `status.state = PENDING`
+   - Creates `ComputeImageExportJob` CR in the operator namespace:
+   ```yaml
+   apiVersion: osac.openshift.io/v1alpha1
+   kind: ComputeImageExportJob
+   metadata:
+     name: export-web-server-golden
+     namespace: org-acme
+   spec:
+     vmName: web-server
+     imageName: web-server-golden
+     description: "Production web server configuration - April 2026"
+     ttlSecondsAfterFinished: 86400  # 24 hours
+   ```
+5. Operator watches `ComputeImageExportJob` and reconciles:
+   - Creates `VirtualMachineExport` CR (KubeVirt resource) for the running VM
+   - Waits for VirtualMachineExport to be Ready (polls status)
+   - Downloads exported qcow2 from VirtualMachineExport endpoint
+   - Wraps qcow2 in ContainerDisk format (tar with `/disk/disk.img`) on-the-fly
+   - Streams to registry as OCI container image (e.g., `registry.csp.internal/vm-images/org-acme/web-server-golden:v1`)
    - Calculates SHA256 digest
-6. Fulfillment-service creates VirtualMachineImage CR with `spec.source` pointing to registry.
-7. Fulfillment-service cleans up VirtualMachineExport CR.
-8. VirtualMachineImage now exists with metadata indicating it was created from a VM.
-   - No cache PVC is created yet (on-demand import happens when first VM references the image)
-9. Organization user creates new VM from the image:
+   - Updates `ComputeImageExportJob.status`:
+     ```yaml
+     status:
+       phase: Complete
+       completionTime: "2026-04-26T12:00:00Z"
+       registryURL: "registry.csp.internal/vm-images/org-acme/web-server-golden:v1"
+       digest: "sha256:abc123..."
+       virtualMachineExportName: "export-web-server-abc123"
+     ```
+6. Fulfillment-service watches `ComputeImageExportJob` status (via Signal RPC or polling).
+7. When status.phase = Complete, fulfillment-service updates Image record: `status.state = AVAILABLE`, `status.size_bytes` from export, registry URL from status.
+8. Image now available via `ListImages` API with state=AVAILABLE and metadata indicating it was created from a VM.
+   - No ComputeImage CR created yet (lazy creation when first VM references the image)
+   - No cache PVC created yet (on-demand import when operator reconciles)
+9. After TTL expires (24 hours), operator garbage collects both `ComputeImageExportJob` and `VirtualMachineExport` CRs (via finalizer).
+10. Organization user creates new VM from the image:
    ```bash
-   fulfillment-cli create compute-instance \
+   osac create compute-instance \
      --name web-server-test \
      --image web-server-golden \
      --cores 4 \
      --memory 8
    ```
-10. Operator follows standard image workflow:
+11. Operator follows standard image workflow:
     - Creates cache PVC if needed (on-demand import from registry)
     - Clones cache to create VM root disk
     - VM boots with identical disk state as source VM
@@ -188,28 +229,122 @@ Introduce a `VirtualMachineImage` custom resource that represents a qcow2 VM dis
 
 ### API Extensions
 
-#### VirtualMachineImage CRD
+#### ComputeImage CRD
 
 New custom resource representing a VM disk image:
 
 ```yaml
 apiVersion: osac.openshift.io/v1alpha1
-kind: VirtualMachineImage
+kind: ComputeImage
 metadata:
   name: windows-2022
   namespace: org-acme
 spec:
-  # Display name for UI/CLI
-  displayName: "Windows Server 2022 Datacenter"
-
   # Human-readable description
   description: "Windows Server 2022 Datacenter with security hardening"
 
   # Source reference (MVP: OCI registry URL, future: S3, HTTP)
   source: "registry.csp.internal/vm-images/org-acme/windows-2022:v1"
+
+# Note: Human-friendly name is in metadata.name (Kubernetes standard), not spec
+
+status:
+  # Cache PVCs tracked by operator (one per storage class)
+  # Used for reconciliation, GC decisions, and avoiding PVC list operations
+  caches:
+    - storageClass: ceph-fast
+      pvcName: vm-image-cache-windows-2022-a1b2c3d4
+      phase: Ready                    # Pending, Importing, Ready, Failed
+      lastUsedTime: "2026-04-26T12:00:00Z"
+      sizeGiB: 15
+      message: ""                     # Error message if phase = Failed
+
+    - storageClass: ceph-slow
+      pvcName: vm-image-cache-windows-2022-e5f6g7h8
+      phase: Ready
+      lastUsedTime: "2026-04-25T10:00:00Z"
+      sizeGiB: 15
+      message: ""
+
+  # Overall conditions
+  conditions:
+    - type: Available
+      status: "True"
+      lastTransitionTime: "2026-04-26T11:00:00Z"
+      reason: RegistryImageReady
+      message: "Image available in registry"
 ```
 
-**Note:** VirtualMachineImage is purely metadata. Cache PVCs are created on-demand per cluster when VMs reference the image, managed automatically by the operator.
+**Note:** ComputeImage CR is created lazily by the operator when the first VM on that cluster references the image. Cache PVCs are created on-demand per (image, storageClass) combination. Image metadata lives in the fulfillment-service database; the CR is purely an operator reconciliation artifact for cache management.
+
+**Status usage (operator-internal):**
+- `status.caches`: Tracks cache PVC state per storage class for reconciliation (avoid listing all PVCs to find caches)
+- `lastUsedTime`: Updated when VMs reference the cache, used for TTL-based garbage collection
+- `phase`: Import progress (Pending → Importing → Ready or Failed)
+- End users don't see this status (they query fulfillment-service Image API, not CRDs)
+- Future enhancement: Expose cache metrics to CSPs via Prometheus or admin API for observability
+
+#### ComputeImageExportJob CRD
+
+New custom resource for exporting a running VM to an image:
+
+```yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: ComputeImageExportJob
+metadata:
+  name: export-web-server-golden
+  namespace: org-acme
+  finalizers:
+    - osac.openshift.io/cleanup-export  # Ensures VirtualMachineExport is cleaned up
+spec:
+  # Source VM to export
+  vmName: web-server
+
+  # Name for the resulting image
+  imageName: web-server-golden
+
+  # Human-readable description for the image
+  description: "Production web server configuration - April 2026"
+
+  # TTL for garbage collection (both this CR and VirtualMachineExport)
+  ttlSecondsAfterFinished: 86400  # 24 hours (default)
+
+status:
+  # Current phase of the export operation
+  # Valid values: Pending, Exporting, Uploading, Complete, Failed
+  phase: Complete
+
+  # Time when the export completed (success or failure)
+  completionTime: "2026-04-26T12:00:00Z"
+
+  # Registry URL where the image was uploaded
+  registryURL: "registry.csp.internal/vm-images/org-acme/web-server-golden:v1"
+
+  # SHA256 digest of the uploaded image
+  digest: "sha256:abc123..."
+
+  # Name of the VirtualMachineExport CR created for this export
+  virtualMachineExportName: "export-web-server-abc123"
+
+  # Error message if phase = Failed
+  error: ""
+
+  # Optional: export progress percentage (0-100)
+  exportProgress: 100
+```
+
+**Lifecycle:**
+1. Created by fulfillment-service when user calls `CreateImageFromVM` (also creates Image DB record with status=PENDING)
+2. Operator reconciles: creates VirtualMachineExport, exports VM disk, uploads to registry
+3. Status updated to Complete (or Failed) with registry URL
+4. Fulfillment-service watches status, updates Image DB record to status=AVAILABLE when Complete
+5. After TTL expires, operator garbage collects both ComputeImageExportJob and VirtualMachineExport (via finalizer)
+
+**Garbage collection:**
+- TTL starts from `status.completionTime` (when phase becomes Complete or Failed)
+- Finalizer ensures VirtualMachineExport is deleted when ComputeImageExportJob is deleted
+- Both CRs cleaned up atomically after TTL expires
+- Default TTL: 24 hours (configurable via spec.ttlSecondsAfterFinished)
 
 #### fulfillment-api: Images Service
 
@@ -223,16 +358,19 @@ service Images {
   // Get details of a specific image
   rpc GetImage(GetImageRequest) returns (Image);
 
-  // Initiate upload (returns upload token/URL; VirtualMachineImage created after upload completes)
+  // Initiate upload (creates Image DB record with status=PENDING, returns upload URL)
+  // Upload completion updates status to AVAILABLE; failure updates to FAILED
+  // Note: ComputeImage CR is created later by operator when first VM references the image (lazy creation)
   rpc InitiateUpload(InitiateUploadRequest) returns (UploadInfo);
 
-  // Create image from running VM (exports VM disk to registry as new image)
-  rpc CreateImageFromVM(CreateImageFromVMRequest) returns (Image);
+  // Create image from running VM (async operation: creates ComputeImageExportJob, returns immediately)
+  // Use GetImage to check when export completes and image becomes available
+  rpc CreateImageFromVM(CreateImageFromVMRequest) returns (CreateImageFromVMResponse);
 
-  // Update image metadata (display name, description)
+  // Update image metadata (name, description)
   rpc UpdateImage(UpdateImageRequest) returns (Image);
 
-  // Delete image (deletes VirtualMachineImage CR, registry artifact, and all cache PVCs)
+  // Delete image (deletes Image DB record, registry artifact, ComputeImage CR if it exists, and all cache PVCs)
   rpc DeleteImage(DeleteImageRequest) returns (google.protobuf.Empty);
 }
 
@@ -240,19 +378,83 @@ message Image {
   string id = 1;
   shared.v1.Metadata metadata = 2;
   ImageSpec spec = 3;
+  ImageStatus status = 4;
 }
 
 message ImageSpec {
-  string display_name = 1;
-  string description = 2;
-  string source = 3;  // Source reference (OCI registry URL, future: S3, HTTP)
+  string description = 1;
 }
+
+message ImageStatus {
+  // Current state of the image
+  ImageState state = 1;
+
+  // Size of the image in bytes (discovered during upload/export)
+  int64 size_bytes = 2;
+
+  // Human-readable status message
+  string message = 3;
+}
+
+enum ImageState {
+  IMAGE_STATE_UNSPECIFIED = 0;
+  IMAGE_STATE_PENDING = 1;      // Upload/export in progress
+  IMAGE_STATE_AVAILABLE = 2;    // Image ready to use
+  IMAGE_STATE_FAILED = 3;       // Upload/export failed
+}
+
+// Note: Image uses metadata.name for the human-friendly name (from shared.v1.Metadata).
+// No separate display_name field needed.
 
 message CreateImageFromVMRequest {
   string vm_id = 1;                    // ID of the running VM to export
-  string image_name = 2;               // Name for the new image
-  string display_name = 3;             // Display name for UI/CLI
-  string description = 4;              // Human-readable description
+  string image_name = 2;               // Name for the new image (becomes metadata.name)
+  string description = 3;              // Human-readable description
+}
+
+message CreateImageFromVMResponse {
+  string export_job_id = 1;            // ID of the ComputeImageExportJob CR (for status tracking)
+  string image_name = 2;               // Name of the image (will be available when export completes)
+  string status = 3;                   // Current status: "Pending", "Exporting", "Uploading", "Complete", "Failed"
+}
+
+message InitiateUploadRequest {
+  string image_name = 1;               // Name for the new image (becomes metadata.name)
+  string description = 2;              // Human-readable description
+  string organization_id = 3;          // Organization that owns the image
+}
+
+message UploadInfo {
+  string upload_url = 1;               // URL where client should upload the qcow2 file
+  string upload_token = 2;             // Token for authenticating the upload request
+  string image_id = 3;                 // ID of the created Image record (status=PENDING)
+}
+
+message ListImagesRequest {
+  string organization_id = 1;          // Filter images by organization
+  string filter = 2;                   // Optional CEL filter expression
+  int32 page_size = 3;                 // Maximum number of results per page
+  string page_token = 4;               // Token for pagination
+}
+
+message ListImagesResponse {
+  repeated Image images = 1;
+  string next_page_token = 2;          // Token for retrieving next page
+  int32 total_count = 3;               // Total number of images matching filter
+}
+
+message GetImageRequest {
+  string image_id = 1;                 // ID of the image to retrieve
+}
+
+message UpdateImageRequest {
+  string image_id = 1;                 // ID of the image to update
+  shared.v1.Metadata metadata = 2;     // Updated metadata (name, labels, annotations)
+  ImageSpec spec = 3;                  // Updated spec (description)
+}
+
+message DeleteImageRequest {
+  string image_id = 1;                 // ID of the image to delete
 }
 ```
 
@@ -265,7 +467,7 @@ message ComputeInstanceSpec {
   string template = 1;
   map<string, google.protobuf.Any> template_parameters = 2;
 
-  // Reference to VirtualMachineImage by name
+  // Reference to ComputeImage by name
   // If set, creates VM by cloning the image PVC cache
   string image_ref = 3;
 }
@@ -278,26 +480,89 @@ message ComputeInstanceSpec {
 Images are uploaded to fulfillment-service, stored in the CSP registry as OCI artifacts, then imported to local PVC caches on each cluster via CDI:
 
 **Upload and storage flow:**
-1. User calls `fulfillment-cli image upload windows-2022.qcow2 --name windows-2022 --description "Windows Server 2022"`
+1. User calls `osac image upload windows-2022.qcow2 --name windows-2022 --description "Windows Server 2022"`
 2. CLI calls `InitiateUpload` RPC on fulfillment-api
-3. Fulfillment-service returns upload URL (fulfillment-service HTTP endpoint)
-4. CLI streams qcow2 file to fulfillment-service upload endpoint
+3. Fulfillment-service creates Image record in database with `status.state = PENDING`, returns upload URL (fulfillment-service HTTP endpoint)
+4. CLI streams qcow2 file to fulfillment-service upload endpoint (includes Content-Length header for file size)
 5. Fulfillment-service:
-   - Streams uploaded qcow2 directly to CSP registry as OCI artifact (no temporary storage)
-   - Calculates SHA256 digest on-the-fly using io.TeeReader while streaming
+   - Wraps uploaded qcow2 in ContainerDisk format on-the-fly (tar archive with `/disk/disk.img` structure)
+   - Streams directly to CSP registry as OCI container image (no temporary storage)
+   - Calculates SHA256 digest during streaming using io.TeeReader
    - Pushes to registry using OCI distribution spec (e.g., `registry.csp.internal/vm-images/org-acme/windows-2022:v1`)
-   - Creates VirtualMachineImage CR with `spec.source`
-6. VirtualMachineImage now exists in organization's namespace, ready to be referenced by VMs
+   - Updates Image record in database: `status.state = AVAILABLE`, `status.size_bytes = <actual size>`
+6. Image now discoverable via `ListImages` API with state=AVAILABLE
+   - No ComputeImage CR created yet (operator creates it when first VM references the image)
 
-**Registry credentials:** Fulfillment-service uses CSP-configured registry credentials (stored in Kubernetes Secret) to push images. CDI uses the same credentials to pull from registry when creating cache PVCs.
+**Upload service scalability (future enhancement):**
+For MVP, image uploads go through fulfillment-service. The upload URL returned by `InitiateUpload` is opaque to clients, which allows future architecture changes without API impact:
+- **Current (MVP)**: fulfillment-service handles both API requests and uploads
+- **Future**: Dedicated image-upload-service that can scale independently
+  - `InitiateUpload` returns URL pointing to upload service: `https://image-upload.osac.svc/upload/<token>`
+  - Upload service handles high-bandwidth, long-running uploads
+  - Fulfillment-service stays responsive during upload bursts
+  - Upload service can have different resource limits and scaling policies
+
+This separation allows CSPs to scale upload capacity independently from API capacity without changing client code.
+
+**ContainerDisk format requirement:**
+CDI's `DataVolume.source.registry` expects images in ContainerDisk format, which packages the qcow2 disk in a tar archive with specific directory structure:
+- Directory: `/disk/` (mode 0755)
+- File: `/disk/disk.img` containing the qcow2 (mode 0644)
+- Packaged as OCI container image layer
+
+**Streaming ContainerDisk creation (no temp storage):**
+Fulfillment-service creates ContainerDisk format on-the-fly during upload:
+1. Client provides file size via HTTP `Content-Length` header
+2. Tar writer creates directory header for `/disk/` (~512 bytes)
+3. Tar writer creates file header for `/disk/disk.img` with size from Content-Length (~512 bytes)
+4. Stream qcow2 bytes directly into tar (no buffering)
+5. Tar writer adds footer padding
+6. Entire tar stream goes to OCI layer → registry push
+
+**Go implementation example:**
+```go
+tarWriter := tar.NewWriter(ociLayerWriter)
+tarWriter.WriteHeader(&tar.Header{Name: "/disk/", Typeflag: tar.TypeDir, Mode: 0755})
+tarWriter.WriteHeader(&tar.Header{Name: "/disk/disk.img", Size: contentLength, Mode: 0644})
+io.Copy(tarWriter, uploadStream) // Stream qcow2 directly, no temp storage
+tarWriter.Close()
+```
+
+**Overhead:** Tar adds ~10KB headers/padding on a 5GB image (0.0002% overhead, negligible).
+
+**Registry credentials and multi-tenancy:**
+The registry is CSP-owned infrastructure. Fulfillment-service and operators use CSP-configured registry credentials (stored in Kubernetes Secret) for all registry operations (push during upload, pull during cache creation). Tenants never access the registry directly - they only interact via OSAC API.
+
+**Why CSP credentials instead of per-tenant credentials:**
+- **Shared images break per-tenant credentials**: CSP-provided shared images (e.g., `registry.csp.internal/vm-images/public/rhel9:latest`) need to be accessible to all tenants. If tenant A has credentials scoped to `org-acme/*` namespace, the operator cannot pull from `public/*` when creating VMs. Solutions like granting all tenants read access to `public/*` add ACL management complexity without security benefit.
+- **Multi-tenancy enforced at API layer**: OSAC API/RBAC controls which tenants can upload images, list images, and create VMs. Registry namespaces (e.g., `org-acme/*`, `org-beta/*`) provide organization and naming structure, not the security boundary.
+- **Simpler credential management**: Single CSP credential pair (push/pull) vs N tenant credentials + complex ACL policies.
+- **Tenant isolation via API**: Fulfillment-service enforces tenant isolation - tenants can only list/use images in their organization namespace. This is enforced before any registry operation happens.
+
+**Registry namespace structure:**
+- Private images: `registry.csp.internal/vm-images/<org-name>/<image-name>:tag`
+- Shared images (future): `registry.csp.internal/vm-images/public/<image-name>:tag`
+
+CDI uses the same CSP credentials to pull from registry when creating cache PVCs.
 
 **Cache PVC creation (on-demand):**
 When a VM requests an image for the first time on a cluster with a specific storage class:
 1. Operator checks for cache PVC: `vm-image-cache-<image-name>-<storageclass-hash>`
-2. If not found, creates DataVolume importing from `VirtualMachineImage.spec.source` (registry URL)
-3. DataVolume PVC uses the storage class requested by the VM
+2. If not found, creates DataVolume importing from `ComputeImage.spec.source` (registry URL)
+3. **Cache PVC MUST use the same storage class as the VM** (required for CSI smart clones)
 4. Cache PVC persists after VM creation for reuse by subsequent VMs
-5. Multiple cache PVCs can exist for same image with different storage classes
+5. Multiple cache PVCs can exist for same image with different storage classes (one per storage class)
+
+**Why cache must match VM storage class:**
+CSI smart clones (copy-on-write snapshots) only work when source and destination PVCs are on the same storage backend. Cross-storage-class cloning results in full copies instead of deduplicated snapshots:
+- **Same storage class**: 10 GB cache + 10 VMs = 10 GB + deltas (CSI CoW snapshots)
+- **Different storage class**: 10 GB cache + 10 VMs = 110 GB total storage consumed (10 full copies, no deduplication)
+
+**User billing:**
+Users are billed only for their VM's boot disk (e.g., 10 GB on `ceph-fast`). The cache PVC is infrastructure overhead, not billed to users. Users choose storage class based on performance needs and the per-GB cost of that tier.
+
+**CSP infrastructure cost:**
+Cache storage cost is amortized across VMs. Example: 10 GB cache on `ceph-fast` shared by 10 VMs consumes 10 GB (cache) + deltas (only changed blocks). For read-heavy workloads, total storage ≈ 10 GB vs 100 GB without caching (10× reduction). For write-heavy workloads, total = 10 GB + sum of deltas across all VMs.
 
 **Cache PVC naming:**
 - Format: `vm-image-cache-<image-name>-<storageclass-hash>`
@@ -307,8 +572,112 @@ When a VM requests an image for the first time on a cluster with a specific stor
 **Cache PVC lifecycle:**
 - **Created:** On first VM creation for (image, storageClass) combination
 - **Reused:** By all subsequent VMs using same image and storage class
-- **Deleted:** When VirtualMachineImage is deleted (operator cleans up all associated caches)
+- **Deleted:** When ComputeImage is deleted (operator cleans up all associated caches)
 - **Garbage collected:** Cache PVCs not referenced by any VMs after 1 day (configurable TTL)
+
+#### VM Export Workflow
+
+Creating an image from a running VM uses an operator-driven workflow to keep heavy data operations out of the API server:
+
+**Export and upload flow:**
+1. User calls `osac image create-from-vm web-server --name web-server-golden`
+2. CLI calls `CreateImageFromVM` RPC on fulfillment-api
+3. Fulfillment-service:
+   - Creates Image DB record with `status.state = PENDING`
+   - Creates `ComputeImageExportJob` CR in the operator namespace
+4. CreateImageFromVM RPC returns immediately with export job ID (async operation)
+5. Operator watches `ComputeImageExportJob` CRs and reconciles:
+   - Creates `VirtualMachineExport` CR (KubeVirt resource) for the source VM
+   - Waits for VirtualMachineExport status to be Ready
+   - Downloads exported qcow2 from VirtualMachineExport HTTP endpoint
+   - Wraps qcow2 in ContainerDisk format (tar with `/disk/disk.img`) on-the-fly
+   - Streams to CSP registry as OCI container image
+   - Calculates SHA256 digest during upload
+   - Updates `ComputeImageExportJob.status` with registry URL, digest, size, and phase=Complete
+6. Fulfillment-service watches `ComputeImageExportJob` status (via polling or Signal RPC)
+7. When status.phase = Complete, fulfillment-service updates Image DB record: `status.state = AVAILABLE`, `status.size_bytes` from export
+8. Image now available via `ListImages` API with state=AVAILABLE
+9. After TTL expires (default 24h), operator garbage collects both `ComputeImageExportJob` and `VirtualMachineExport` CRs
+
+**Operator reconciliation logic:**
+```go
+func (r *ComputeImageExportJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+    // Fetch ComputeImageExportJob
+    job := &osacv1alpha1.ComputeImageExportJob{}
+    if err := r.Get(ctx, req.NamespacedName, job); err != nil {
+        return ctrl.Result{}, client.IgnoreNotFound(err)
+    }
+
+    // Handle deletion (finalizer cleanup)
+    if !job.DeletionTimestamp.IsZero() {
+        return r.handleDeletion(ctx, job)
+    }
+
+    // Garbage collection: delete if TTL expired
+    if job.Status.Phase == osacv1alpha1.ExportPhaseComplete || job.Status.Phase == osacv1alpha1.ExportPhaseFailed {
+        if job.Status.CompletionTime != nil && job.Spec.TTLSecondsAfterFinished != nil {
+            ttl := time.Duration(*job.Spec.TTLSecondsAfterFinished) * time.Second
+            if time.Since(job.Status.CompletionTime.Time) > ttl {
+                return ctrl.Result{}, r.Delete(ctx, job)
+            }
+            // Requeue when TTL expires
+            return ctrl.Result{RequeueAfter: ttl - time.Since(job.Status.CompletionTime.Time)}, nil
+        }
+    }
+
+    // Skip if already complete or failed
+    if job.Status.Phase == osacv1alpha1.ExportPhaseComplete || job.Status.Phase == osacv1alpha1.ExportPhaseFailed {
+        return ctrl.Result{}, nil
+    }
+
+    // Phase: Pending → Exporting
+    if job.Status.Phase == "" || job.Status.Phase == osacv1alpha1.ExportPhasePending {
+        return r.createVMExport(ctx, job)
+    }
+
+    // Phase: Exporting → Uploading
+    if job.Status.Phase == osacv1alpha1.ExportPhaseExporting {
+        return r.checkExportReady(ctx, job)
+    }
+
+    // Phase: Uploading → Complete
+    if job.Status.Phase == osacv1alpha1.ExportPhaseUploading {
+        return r.uploadToRegistry(ctx, job)
+    }
+
+    return ctrl.Result{}, nil
+}
+```
+
+**Finalizer cleanup:**
+When `ComputeImageExportJob` is deleted, the finalizer ensures `VirtualMachineExport` is also deleted:
+```go
+func (r *ComputeImageExportJobReconciler) handleDeletion(ctx context.Context, job *osacv1alpha1.ComputeImageExportJob) (ctrl.Result, error) {
+    if controllerutil.ContainsFinalizer(job, finalizerName) {
+        // Delete VirtualMachineExport if it exists
+        if job.Status.VirtualMachineExportName != "" {
+            vmExport := &kubevirtv1.VirtualMachineExport{}
+            vmExport.Name = job.Status.VirtualMachineExportName
+            vmExport.Namespace = job.Namespace
+            if err := r.Delete(ctx, vmExport); client.IgnoreNotFound(err) != nil {
+                return ctrl.Result{}, err
+            }
+        }
+
+        // Remove finalizer
+        controllerutil.RemoveFinalizer(job, finalizerName)
+        return ctrl.Result{}, r.Update(ctx, job)
+    }
+    return ctrl.Result{}, nil
+}
+```
+
+**Benefits of operator-driven export:**
+- ✅ Fulfillment-service stays stateless (no long-running uploads)
+- ✅ Operator owns cluster resources (VirtualMachineExport, snapshots)
+- ✅ Multi-cluster ready (each cluster's operator exports its VMs)
+- ✅ Scalable (operator can handle concurrent exports, fulfillment-service doesn't)
+- ✅ Follows existing OSAC pattern (like ComputeInstance provisioning)
 
 #### Volume Clone Optimization
 
@@ -354,7 +723,7 @@ spec:
 ```go
 // Operator logic for on-demand cache PVC creation
 func (r *ComputeInstanceReconciler) createBootDisk(ctx context.Context, ci *ComputeInstance) error {
-    image := &VirtualMachineImage{}
+    image := &ComputeImage{}
     if err := r.Get(ctx, types.NamespacedName{
         Name: ci.Spec.ImageRef,
         Namespace: ci.Namespace,
@@ -517,7 +886,7 @@ CSI copy-on-write clones share base image blocks:
 **Cache PVC lifecycle:**
 - **Creation:** On-demand when first VM needs (image, storageClass) combination
 - **Protection:** Cannot be deleted while VMs reference them (finalizer)
-- **Manual deletion:** When VirtualMachineImage is deleted, operator deletes all associated cache PVCs
+- **Manual deletion:** When ComputeImage is deleted, operator deletes all associated cache PVCs
 - **Garbage collection:** Operator periodically deletes cache PVCs not referenced by any VMs after TTL (default 1 day)
   - Configurable via operator environment variable: `VM_IMAGE_CACHE_TTL_DAYS=1`
   - Cache PVC tracks last-used timestamp via annotation
@@ -540,13 +909,13 @@ CSI copy-on-write clones share base image blocks:
 
 **Private images (default):**
 - Registry path scoped to organization (e.g., `registry.csp.internal/vm-images/org-acme/...`)
-- VirtualMachineImage CR created in organization's namespace
+- ComputeImage CR created lazily in organization's namespace when first VM references the image
 - PVC cache created in organization's namespace
 - Only visible to that organization via RBAC
 
 **Public/shared images (deferred to future enhancement):**
 - Registry path in shared namespace (e.g., `registry.csp.internal/vm-images/public/rhel9`)
-- VirtualMachineImage CR created in provider-managed namespace
+- ComputeImage CR created lazily in provider-managed namespace when first VM references the image
 - Each cluster imports to local PVC cache in public namespace
 - All organizations can list and clone via cross-namespace references
 - Cross-namespace PVC clone supported by CDI
@@ -618,7 +987,7 @@ Mitigation:
 **Implementation effort:**
 - New fulfillment-api service endpoints (InitiateUpload, List, Get, Update, Delete)
 - Upload handling and OCI push logic in fulfillment-service
-- Operator controller for VirtualMachineImage (watch CR, import from registry, manage PVC cache)
+- Operator controller for ComputeImage (watch CR, import from registry, manage PVC cache)
 - CLI commands (list, get, upload, delete)
 - Registry credential management and configuration
 
@@ -683,7 +1052,7 @@ None. MVP scope is limited to qcow2 upload only.
 ## Test Plan
 
 **Unit tests:**
-- VirtualMachineImage CRUD operations (create, list, get, delete)
+- ComputeImage CRUD operations (create, list, get, delete)
 - Registry push logic in fulfillment-service (OCI artifact creation, streaming upload)
 - Cache PVC naming and hash generation (deterministic, collision-free)
 - Cache PVC garbage collection logic (TTL-based cleanup)
@@ -694,7 +1063,7 @@ None. MVP scope is limited to qcow2 upload only.
 - First VM creation: cache PVC created on-demand from registry
 - Second VM creation: clone from existing cache PVC (fast path)
 - Multiple storage classes: separate cache PVCs for same image
-- VirtualMachineImage deletion: all cache PVCs cleaned up
+- ComputeImage deletion: all cache PVCs cleaned up
 - Cache garbage collection: unused caches deleted after TTL
 - Storage quota enforcement (both registry and PVC quotas)
 - Registry credential handling (pull secret configuration for cache imports)
@@ -726,7 +1095,7 @@ None. MVP scope is limited to qcow2 upload only.
 N/A. OSAC is in active development and has not been released to customers.
 
 **MVP implementation includes:**
-- VirtualMachineImage API with upload support
+- ComputeImage API with upload support
 - On-demand PVC caching with garbage collection
 - Integration with ComputeInstance via imageRef field
 - Basic test coverage
@@ -746,7 +1115,7 @@ N/A. OSAC is in active development and has not been released to customers.
 **Deployment:**
 
 1. CSP configures registry credentials and URL in OSAC configuration.
-2. Deploy new operator version with VirtualMachineImage controller.
+2. Deploy new operator version with ComputeImage controller.
 3. Deploy new fulfillment-service version with upload endpoint and OCI push logic.
 4. Deploy new fulfillment-api version with Images service.
 5. Organizations can now upload images via new API (stored in CSP registry, imported to PVC caches).
@@ -755,7 +1124,7 @@ N/A. OSAC is in active development and has not been released to customers.
 **Downgrade:**
 
 Not supported. If rollback is required:
-- Delete all VirtualMachineImage CRs
+- Delete all ComputeImage CRs
 - Delete all image PVC caches
 - Clean up registry namespace (manual or via registry GC)
 - Downgrade operator/service/API components
@@ -766,7 +1135,7 @@ Not supported. If rollback is required:
 - Safe to upgrade operators independently across clusters
 - Registry is source of truth: uploaded images automatically available to all clusters
 - Each cluster creates cache PVCs on-demand when VMs reference images
-- Unupgraded clusters without VirtualMachineImage controller cannot provision VMs using `imageRef`
+- Unupgraded clusters without ComputeImage controller cannot provision VMs using `imageRef`
 - Cache PVCs are per-cluster, not replicated (each cluster pulls from registry on first VM creation)
 
 **Component version requirements:**
@@ -810,23 +1179,23 @@ Resolution:
 
 Detection:
 - ComputeInstance stuck in `Provisioning` state
-- Operator logs: `VirtualMachineImage "myimage" not found`
+- Operator logs: `ComputeImage "myimage" not found`
 
 Diagnosis:
 ```bash
 # Check if image exists
-oc get virtualmachineimage myimage
+oc get computeimage myimage
 
 # Check if cache PVC exists (may be creating on-demand)
 oc get pvc -l osac.openshift.io/image=myimage,osac.openshift.io/cache=true
 ```
 
 Resolution:
-- If image doesn't exist: create it using `fulfillment-cli image upload`
+- If image doesn't exist: create it using `osac image upload`
 - If image exists but cache PVC is being created: wait for cache import to complete (~1-2 minutes on first VM)
 - Subsequent VMs will provision faster once cache exists
 
-**Symptom: Slow VM provisioning despite using VirtualMachineImage**
+**Symptom: Slow VM provisioning despite using ComputeImage**
 
 Detection:
 - VM creation takes > 2 minutes (expected: < 30 seconds)
@@ -853,7 +1222,7 @@ Resolution:
 **Symptom: Storage quota exceeded**
 
 Detection:
-- VirtualMachineImage creation fails
+- ComputeImage creation fails
 - Error message: `exceeded quota: requests.storage=100Gi`
 
 Diagnosis:
@@ -866,7 +1235,7 @@ oc get pvc -n <namespace> --no-headers | awk '{sum+=$4} END {print sum "Gi"}'
 ```
 
 Resolution:
-- Delete unused images: `fulfillment-cli image delete <name>`
+- Delete unused images: `osac image delete <name>`
 - Request quota increase from CSP admin
 - Use image cloning instead of re-uploading duplicates
 
