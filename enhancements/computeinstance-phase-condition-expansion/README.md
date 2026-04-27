@@ -98,7 +98,7 @@ This enhancement modifies the `ComputeInstance` status model across three layers
 | Condition (CRD) | Condition (Protobuf) | Layer | Description |
 |-----------------|---------------------|-------|-------------|
 | `Provisioned` | `PROVISIONED` | CRD + API | Infrastructure resources (compute, storage) are allocated |
-| `Ready` | `READY` | CRD + API | VM infrastructure is running and ready (mirrors KubeVirt VirtualMachine Ready condition) |
+| `Ready` | `READY` | CRD + API | Compute instance is running and ready (readiness check has passed) |
 | `ConfigurationApplied` | `CONFIGURATION_APPLIED` | CRD + API | Desired configuration matches actual |
 | `RestartRequired` | `RESTART_REQUIRED` | CRD + API | VM needs a restart for configuration changes to take effect |
 | `RestartInProgress` | `RESTART_IN_PROGRESS` | CRD + API | Restart operation is in progress |
@@ -243,9 +243,10 @@ The `Provisioned` condition indicates whether infrastructure resources (compute,
 
 | State | Status | Reason | Message |
 |-------|--------|--------|---------|
+| Initial (conditions just created) | `False` | `Initialized` | *(empty)* |
 | Tenant not ready | `False` | `TenantNotReady` | `Tenant '<name>' is not ready (phase: <phase>)` |
 | No KubeVirt VM yet | `False` | `WaitingForVM` | `VirtualMachine not yet created, waiting for provisioning` |
-| KubeVirt `PrintableStatus` = `Provisioning` | `False` | `ProvisioningStorage` | `Creating DataVolumes for boot disk (<size>GiB)` (with optional ` and <N> additional disk(s)`) |
+| KubeVirt `PrintableStatus` = `Provisioning` | `False` | `ProvisioningStorage` | `Creating DataVolumes for boot disk (<size>GiB)` (with optional `and <N> additional disk(s)`) |
 | Infrastructure ready | `True` | `InfrastructureReady` | `All infrastructure resources provisioned successfully` |
 
 This enables consumers to understand exactly where in the provisioning pipeline a ComputeInstance is, rather than only knowing that it is "not yet provisioned".
@@ -287,6 +288,10 @@ This enables tenants to see when their VM needs a restart and decide when to ini
 **Migration Approach**
 
 Since the product is in development with no external clients, old enum values (`PROGRESSING`, `READY`, `FAILED` for conditions) will be removed rather than deprecated. The controller will emit only the new phase and condition values.
+
+**Wire compatibility for the Available → Ready rename:** The protobuf enum value `COMPUTE_INSTANCE_CONDITION_TYPE_AVAILABLE` is renamed to `COMPUTE_INSTANCE_CONDITION_TYPE_READY` but retains the same numeric value (2). Since protobuf stores numeric values on the wire and in the fulfillment-service database (not string names), existing stored conditions will deserialize correctly without migration.
+
+**Stale `Available` condition on existing CRs:** After the controller is updated, it will no longer manage the old `Available` condition. Existing ComputeInstance CRs that were created before the rename may carry a stale `Available` condition in their `status.conditions` array. Since the product is in development with no production workloads, no automated cleanup is planned. The stale condition is harmless (the controller ignores it) and will be removed when the CR is deleted and recreated.
 
 ### 3.4 Risks and Mitigations
 
