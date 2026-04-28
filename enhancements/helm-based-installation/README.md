@@ -51,18 +51,22 @@ Helm provides:
 
 - **Separate OSAC installation from prerequisite deployment:** Helm chart installs OSAC components, with optional bundled PostgreSQL/Keycloak (non-HA) for simplified deployments, while prerequisite operators (AAP, cert-manager) must be installed separately
 - **Make installation available via OpenShift Software Catalog:** Provide form-based installation UI in the OpenShift console for ease of use
+- **Idempotent installation and upgrades:** Support `helm upgrade --install` and idempotent hooks (pre-install validation, db migration, AAP bootstrap) to enable safe re-runs on failure
+- **Support disconnected deployments:** Document mirroring of OCI charts and container images to internal registries for air-gapped environments
 - Provide Helm charts for all OSAC components (fulfillment-service, osac-operator, osac-aap)
 - Create an umbrella chart that composes component charts with proper dependency ordering
 - Support both development workflows (git submodules with `file://` chart references) and production workflows (OCI registry with versioned charts)
 - Handle database migrations during upgrades through Helm hooks
 - Validate prerequisites and configuration before installation
 - Separate CRD lifecycle from operator lifecycle
+- Provide upgrade status visibility for each OSAC component during installation and upgrades
 
 ### Non-Goals
 
 - Migrate existing Kustomize installations to Helm (clean install only, as OSAC is pre-GA)
 - Install prerequisite operators (AAP, cert-manager, etc.) - these remain out of scope
 - **Deploy AAP operator or instance** - AAP (operator and instance) is a prerequisite, managed separately from OSAC installation
+- **Deploy OpenShift management cluster** - Helm chart installs OSAC components on an existing OpenShift cluster. Cluster provisioning (via Enclave or other tools) is out of scope
 - **Provide HA PostgreSQL or Keycloak** - bundled PostgreSQL/Keycloak are single-replica (not HA):
   - Suitable for deployments where downtime risk is acceptable
   - For high-availability requirements, use external PostgreSQL/Keycloak instances
@@ -72,7 +76,7 @@ Helm provides:
 
 Introduce a Helm-based installation architecture with the following structure:
 
-```
+```text
 osac-installer/
   charts/
     osac/                          # Umbrella chart
@@ -443,6 +447,21 @@ helm install fulfillment oci://ghcr.io/osac-project/charts/service \
   --version 1.2.3
 ```
 
+**Disconnected/Air-gapped deployments:**
+For environments without internet access (e.g., Enclave):
+1. Mirror OCI charts to internal registry:
+   ```bash
+   helm pull oci://ghcr.io/osac-project/charts/osac --version 1.0.0
+   helm push osac-1.0.0.tgz oci://internal-registry.example.com/osac-charts
+   ```
+2. Mirror container images using documented image list (released as `images.txt` artifact or chart annotation)
+3. Install from internal registry:
+   ```bash
+   helm install osac oci://internal-registry.example.com/osac-charts/osac --version 1.0.0
+   ```
+
+Each release includes a complete image manifest (`images.txt`) listing all container images deployed by the chart, enabling pre-mirroring to disconnected environments.
+
 #### OpenShift Software Catalog Integration
 
 The umbrella chart will be available in the OpenShift Software Catalog for form-based installation via the console UI.
@@ -523,7 +542,8 @@ Test matrix:
 
 **Mitigation:**
 - Hook jobs have clear names and labels for debugging
-- Hooks use `hook-delete-policy: before-hook-creation` to preserve failed jobs
+- Hooks use `hook-delete-policy: before-hook-creation` to clean up previous hook resources before creating new ones (does not preserve failed jobs across retries)
+- For debugging failed hooks across retries, use unique hook names with `{{ .Release.Revision }}` to prevent deletion
 - Pre-install hooks validate prerequisites before any resources are created
 - Post-install hooks have retry logic (backoffLimit)
 
@@ -541,7 +561,7 @@ Test matrix:
 
 **Keep Kustomize Only:** Rejected because manual configuration, no lifecycle hooks, no parameter validation, non-standard for production.
 
-**Use operator-sdk bundle/OLM:** Rejected because OSAC is a multi-component platform (not a single operator), OLM not available on all Kubernetes distributions, doesn't fit umbrella architecture.
+**Use operator-sdk bundle/OLM:** Rejected as the primary installation method because OSAC is a multi-component platform (not a single operator), OLM not available on all Kubernetes distributions, doesn't fit umbrella architecture. However, a hybrid approach is possible: osac-operator could be packaged as an OLM bundle for platforms built around OLM (e.g., Enclave) while the Helm umbrella chart remains the primary installation method. This would enable native operator integration in OLM-centric platforms without replacing Helm as the main distribution mechanism.
 
 **Ansible-based installer:** Rejected because requires Ansible runtime on admin workstation, no native Kubernetes resource management, doesn't integrate with GitOps. Ansible remains for AAP-based resource provisioning, not platform installation.
 
