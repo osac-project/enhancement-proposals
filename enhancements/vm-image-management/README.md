@@ -16,9 +16,9 @@ superseded-by:
 
 ## Summary
 
-This proposal introduces a VM image management API that enables organization users to upload qcow2 virtual machine disk images without requiring direct registry access or OCI tooling knowledge. Uploaded images are stored as OCI artifacts in a CSP-owned registry (source of truth, shareable across clusters). When a VM references an image, a local PVC cache is created on-demand for that (image, storageClass) combination. Subsequent VMs clone from the cache using CSI copy-on-write snapshots, eliminating repeated registry pulls.
+This proposal introduces a VM image management API that enables organization users to upload qcow2 or VMDK virtual machine disk images without requiring direct registry access or OCI tooling knowledge. Uploaded images are stored as OCI artifacts in a CSP-owned registry (source of truth, shareable across clusters). When a VM references an image, a local PVC cache is created on-demand for that (image, storageClass) combination. Subsequent VMs clone from the cache using CSI copy-on-write snapshots, eliminating repeated registry pulls.
 
-**MVP Scope:** Upload qcow2 images via API, stored as OCI artifacts in registry. On-demand PVC caching with garbage collection. Import from HTTP/S3 URLs and image cloning are deferred to future enhancements.
+**MVP Scope:** Upload qcow2/VMDK images via API, stored as OCI artifacts in registry. On-demand PVC caching with garbage collection. Import from HTTP/S3 URLs, ISO installation workflows, and image cloning are deferred to future enhancements.
 
 ## Motivation
 
@@ -35,6 +35,7 @@ This proposal introduces an upload API that hides registry complexity from users
 ### User Stories
 
 - As an authorized user, I want to upload a Windows Server qcow2 image via the OSAC API so that I can create Windows VMs without learning OCI tooling or managing registry credentials.
+- As a VCD administrator migrating to OSAC, I want to upload my existing VMDK images so that I can reuse my golden images without format conversion.
 - As an authorized user, I want to upload a custom Linux qcow2 image so that I can deploy my pre-configured golden images.
 - As an organization user, I want to list uploaded images and their metadata via the API so that I can see what images are available.
 - As an organization user, I want VM provisioning to be fast (< 30 seconds) so that I can scale my workloads quickly.
@@ -43,7 +44,10 @@ This proposal introduces an upload API that hides registry complexity from users
 
 ### Goals
 
-- Enable organization users to upload qcow2 disk images via HTTP API without OCI tooling or registry access.
+- Enable organization users to upload qcow2 and VMDK disk images via HTTP API without OCI tooling or registry access.
+  - **qcow2:** Primary format for images created with QEMU/KVM tooling
+  - **VMDK:** Enables migration from VMware environments (e.g., VCD users transitioning to OSAC)
+  - Both formats are OS-agnostic (can contain Windows, Linux, or any guest OS)
 - Store uploaded images in CSP-owned registry as OCI artifacts (source of truth, cross-cluster sharing).
 - Import registry images once per cluster to local PVC caches.
 - Clone local PVC caches using CSI copy-on-write snapshots for fast VM provisioning.
@@ -57,7 +61,11 @@ This proposal introduces an upload API that hides registry complexity from users
 - Importing pre-existing images from external OCI registries (deferred to future enhancement).
 - Cloning existing images within OSAC (deferred to future enhancement).
 - Provider-managed shared image catalog (deferred to future enhancement).
-- Supporting raw, vmdk, or other formats (MVP is qcow2 only).
+- **ISO upload and interactive installation workflows** (deferred to future enhancement):
+  - ISO files are installation media, not bootable disk images
+  - Supporting ISOs would require interactive installation (VNC/console), post-install automation (sysprep, image capture), and image building workflows
+  - Users should create bootable qcow2/VMDK images from ISOs offline, then upload the resulting disk image
+- Supporting other formats beyond qcow2 and VMDK (e.g., raw, vdi, vhd) - can be added in future if needed.
 - Image versioning or tagging (MVP uses auto-generated tags in registry).
 - Image scanning or CVE detection (deferred to separate enhancement).
 - Managing the OCI registry itself (OSAC uses existing CSP-provided registry, doesn't deploy one).
@@ -66,17 +74,18 @@ This proposal introduces an upload API that hides registry complexity from users
 
 ## Proposal
 
-Introduce a `VirtualMachineImage` custom resource that represents a qcow2 VM disk image uploaded by an authorized user. Images are uploaded via HTTP API and stored as OCI artifacts in the CSP-owned registry. When a user creates a ComputeInstance referencing an image, the operator creates a local PVC cache on-demand (if it doesn't exist) by importing from the registry. Subsequent VMs clone from the cache using CSI copy-on-write snapshots, eliminating repeated registry pulls.
+Introduce a `VirtualMachineImage` custom resource that represents a qcow2 or VMDK VM disk image uploaded by an authorized user. Images are uploaded via HTTP API and stored as OCI artifacts in the CSP-owned registry. When a user creates a ComputeInstance referencing an image, the operator creates a local PVC cache on-demand (if it doesn't exist) by importing from the registry. Subsequent VMs clone from the cache using CSI copy-on-write snapshots, eliminating repeated registry pulls.
 
 **Architecture:**
 - **Source of truth:** OCI registry (CSP-owned, shareable across clusters)
+- **Supported formats:** qcow2 (QEMU/KVM) and VMDK (VMware) - both are OS-agnostic
 - **Per-cluster caching:** PVC caches created on-demand when VMs reference images
   - Cache key: (image, storageClass) - separate cache per storage class
   - First VM: imports from registry to cache (~1-2 minutes)
   - Subsequent VMs: clone from cache (~5 seconds)
 - **Garbage collection:** Unused cache PVCs deleted after TTL (default 1 day)
 
-**MVP focuses on upload API with on-demand caching.** Import from HTTP/S3, external registry import, and image cloning are deferred to future enhancements.
+**MVP focuses on upload API with on-demand caching.** Import from HTTP/S3, external registry import, ISO installation workflows, and image cloning are deferred to future enhancements.
 
 ### Workflow Description
 
@@ -222,15 +231,23 @@ Images are uploaded to fulfillment-service, stored in the CSP registry as OCI ar
 
 **Upload and storage flow:**
 1. User calls `fulfillment-cli image upload windows-2022.qcow2 --name windows-2022 --description "Windows Server 2022"`
+   - Supports both qcow2 and VMDK formats
+   - Format detected from file extension or Content-Type header
 2. CLI calls `InitiateUpload` RPC on fulfillment-api
 3. Fulfillment-service returns upload URL (fulfillment-service HTTP endpoint)
-4. CLI streams qcow2 file to fulfillment-service upload endpoint
+4. CLI streams disk image file to fulfillment-service upload endpoint
 5. Fulfillment-service:
-   - Streams uploaded qcow2 directly to CSP registry as OCI artifact (no temporary storage)
+   - Streams uploaded disk image (qcow2 or VMDK) directly to CSP registry as OCI artifact (no temporary storage)
    - Calculates SHA256 digest on-the-fly using io.TeeReader while streaming
    - Pushes to registry using OCI distribution spec (e.g., `registry.csp.internal/vm-images/org-acme/windows-2022:v1`)
    - Creates VirtualMachineImage CR with `spec.source`
 6. VirtualMachineImage now exists in organization's namespace, ready to be referenced by VMs
+
+**Format support:**
+- **qcow2:** Native QEMU/KVM format, most common for Linux-based clouds
+- **VMDK:** VMware format, enables migration from VCD and other VMware environments
+- Both formats are supported by CDI (Containerized Data Importer) for import to PVCs
+- CDI automatically detects format and handles conversion during import if needed
 
 **Registry credentials:** Fulfillment-service uses CSP-configured registry credentials (stored in Kubernetes Secret) to push images. CDI uses the same credentials to pull from registry when creating cache PVCs.
 
