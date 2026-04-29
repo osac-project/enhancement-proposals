@@ -3,7 +3,7 @@ title: computeinstance-phase-condition-expansion
 authors:
   - Akshay Nadkarni
 creation-date: 2026-01-29
-last-updated: 2026-02-05
+last-updated: 2026-04-29
 tracking-link:
   - TBD
 see-also:
@@ -98,13 +98,13 @@ This enhancement modifies the `ComputeInstance` status model across three layers
 | Condition (CRD) | Condition (Protobuf) | Layer | Description |
 |-----------------|---------------------|-------|-------------|
 | `Provisioned` | `PROVISIONED` | CRD + API | Infrastructure resources (compute, storage) are allocated |
-| `Available` | `AVAILABLE` | CRD + API | VM infrastructure is running and ready (does not indicate guest OS readiness) |
+| `Ready` | `READY` | CRD + API | Compute instance is running and ready (readiness check has passed) |
 | `ConfigurationApplied` | `CONFIGURATION_APPLIED` | CRD + API | Desired configuration matches actual |
 | `RestartRequired` | `RESTART_REQUIRED` | CRD + API | VM needs a restart for configuration changes to take effect |
 | `RestartInProgress` | `RESTART_IN_PROGRESS` | CRD + API | Restart operation is in progress |
 | `RestartFailed` | `RESTART_FAILED` | CRD + API | Restart operation failed |
 
-> **Note:** CRD conditions use PascalCase (Kubernetes convention). Protobuf conditions use UPPER_SNAKE_CASE with prefix (e.g., `COMPUTE_INSTANCE_CONDITION_TYPE_AVAILABLE`).
+> **Note:** CRD conditions use PascalCase (Kubernetes convention). Protobuf conditions use UPPER_SNAKE_CASE with prefix (e.g., `COMPUTE_INSTANCE_CONDITION_TYPE_READY`).
 
 The phase values are derived from the underlying KubeVirt `VirtualMachine.Status.PrintableStatus`, ensuring accurate representation of VM power state.
 
@@ -182,7 +182,7 @@ This enhancement modifies existing API types rather than adding new CRDs or webh
 |---------------|-------------------|----------------|---------------------|--------|
 | `Accepted` | — | — | — | Remove (no longer needed) |
 | `Progressing` | `PROGRESSING` | — | — | Remove (phase represents this) |
-| `Available` | `READY` | `Available` | `AVAILABLE` | Rename in protobuf |
+| `Available` | `AVAILABLE` | `Ready` | `READY` | Rename CRD + protobuf to align with KubeVirt (proto **symbol** `..._AVAILABLE` → `..._READY` at **same numeric value 2** — do not confuse with **phase** enum `READY` / `RUNNING` above) |
 | `Deleting` | — | — | — | Remove (phase represents this) |
 | — | `FAILED` | — | — | Remove (phase represents this) |
 | — | `DEGRADED` | — | — | Remove (see Open Questions) |
@@ -192,10 +192,12 @@ This enhancement modifies existing API types rather than adding new CRDs or webh
 | — | — | `ConfigurationApplied` | `CONFIGURATION_APPLIED` | New |
 | — | — | `RestartRequired` | `RESTART_REQUIRED` | New |
 
+> **Clarification:** The **phase** row `Ready` → `READY` (table above) is the lifecycle **phase** enum. The **condition** row `Available` → `AVAILABLE` is the fulfillment **condition-type** enum **name** before MGMT-23147; wire format is numeric (see §3.3 migration). After rename, that same value is emitted as `READY` in generated Go/protobuf **identifiers**, not a second distinct wire value.
+
 **Behavioral Changes:**
 
 - `ComputeInstance.status.phase` will reflect VM power state (`Running`, `Stopped`, `Paused`) rather than reconciliation status
-- Conditions are orthogonal to phases - a condition like `Available` can be True or False independent of the phase
+- Conditions are orthogonal to phases - a condition like `Ready` can be True or False independent of the phase
 
 ### 3.3 Implementation Details/Notes/Constraints
 
@@ -216,12 +218,12 @@ The controller determines the ComputeInstance phase based on the KubeVirt `Virtu
 
 > **Note:** KubeVirt does not have a transitional "Pausing" state. When a VM is paused, `PrintableStatus` remains "Running" but the VMI has a `Paused` condition set to `True`. The controller checks this condition to determine the `Paused` phase.
 
-**Available Condition Logic**
+**Ready Condition Logic**
 
-The `Available` condition is set to `True` when `VirtualMachine.Status.Ready = true`. The `VirtualMachine.Status.Ready` field ([VirtualMachineStatus Ready](https://github.com/kubevirt/api/blob/fe5ef708bb5c1ed6ef155c4ad9ec1e7cfcb99500/core/v1/types.go#L2074-L2075)) is derived from the `VirtualMachineInstance.Conditions[Ready]` condition ([VirtualMachineInstanceConditionType Ready](https://github.com/kubevirt/api/blob/fe5ef708bb5c1ed6ef155c4ad9ec1e7cfcb99500/core/v1/types.go#L698-L700)). KubeVirt's virt-controller syncs VMI conditions to the VM object ([see vm.go](https://github.com/kubevirt/kubevirt/pull/6575)), and the VMI Ready condition is synced from the virt-launcher pod's Ready condition.
+The `Ready` condition (renamed from `Available` to align with the KubeVirt `VirtualMachineReady` condition it mirrors) is set to `True` when `VirtualMachine.Status.Ready = true`. The `VirtualMachine.Status.Ready` field ([VirtualMachineStatus Ready](https://github.com/kubevirt/api/blob/fe5ef708bb5c1ed6ef155c4ad9ec1e7cfcb99500/core/v1/types.go#L2074-L2075)) is derived from the `VirtualMachineInstance.Conditions[Ready]` condition ([VirtualMachineInstanceConditionType Ready](https://github.com/kubevirt/api/blob/fe5ef708bb5c1ed6ef155c4ad9ec1e7cfcb99500/core/v1/types.go#L698-L700)). KubeVirt's virt-controller syncs VMI conditions to the VM object ([see vm.go](https://github.com/kubevirt/kubevirt/pull/6575)), and the VMI Ready condition is synced from the virt-launcher pod's Ready condition.
 
-| VirtualMachine.Status.Ready | Available |
-|----------------------------|-----------|
+| VirtualMachine.Status.Ready | Ready |
+|----------------------------|-------|
 | `true` | True |
 | `false` | False |
 
@@ -231,11 +233,37 @@ The `Available` condition is set to `True` when `VirtualMachine.Status.Ready = t
 2. **virt-launcher pod becomes ready** → Pod `Ready` condition = `True`
 3. **Pod Ready condition syncs to VMI** → `VirtualMachineInstance.Conditions[Ready]` = `True` ([VirtualMachineInstanceConditionType Ready](https://github.com/kubevirt/api/blob/fe5ef708bb5c1ed6ef155c4ad9ec1e7cfcb99500/core/v1/types.go#L698-L700)) - [synced by virt-handler](https://github.com/kubevirt/kubevirt/pull/1921)
 4. **VMI Ready condition syncs to VM** → `VirtualMachine.Status.Ready` = `true` ([VirtualMachineStatus Ready](https://github.com/kubevirt/api/blob/fe5ef708bb5c1ed6ef155c4ad9ec1e7cfcb99500/core/v1/types.go#L2074-L2075)) - [synced by virt-controller](https://github.com/kubevirt/kubevirt/pull/6575)
-5. **ComputeInstance controller observes VM Ready** → `ComputeInstance.Conditions[Available]` = `True`
+5. **ComputeInstance controller observes VM Ready** → `ComputeInstance.Conditions[Ready]` = `True`
 
-This means `Available = True` indicates that the VM infrastructure (virt-launcher pod ready, QEMU process running) is operational, but does not verify guest OS boot status.
+This means `Ready = True` indicates that the VM infrastructure (virt-launcher pod ready, QEMU process running) is operational, but does not verify guest OS boot status.
 
-> **Note:** `Available = True` indicates VM infrastructure readiness but does not guarantee that the guest OS has fully booted or that applications inside the VM are ready to serve traffic.
+> **Note:** `Ready = True` indicates VM infrastructure readiness but does not guarantee that the guest OS has fully booted or that applications inside the VM are ready to serve traffic.
+
+**Provisioned Condition Logic**
+
+The `Provisioned` condition indicates whether infrastructure resources (compute, storage) have been allocated for the ComputeInstance. Unlike a simple True/False toggle, the condition uses granular `Reason` and `Message` values to communicate provisioning progress:
+
+| State | Status | Reason | Message |
+|-------|--------|--------|---------|
+| Initial (conditions just created) | `False` | `Initialized` | *(empty)* |
+| Tenant not ready | `False` | `TenantNotReady` | `Tenant '<name>' is not ready (phase: <phase>)` |
+| No KubeVirt VM yet | `False` | `WaitingForVM` | `VirtualMachine not yet created, waiting for provisioning` |
+| KubeVirt `PrintableStatus` = `Provisioning` | `False` | `ProvisioningStorage` | `Creating DataVolumes for boot disk (<size>GiB)` (with optional `and <N> additional disk(s)`) |
+| Infrastructure ready | `True` | `InfrastructureReady` | `All infrastructure resources provisioned successfully` |
+
+This enables consumers to understand exactly where in the provisioning pipeline a ComputeInstance is, rather than only knowing that it is "not yet provisioned".
+
+**Kubernetes Events**
+
+The controller emits Kubernetes events (via `events.EventRecorder`) at key provisioning transitions. **Guards differ by condition:** for **`Provisioned`**, emit only when **`Reason`** changes (same pattern for `TenantNotReady`, `ProvisioningStorage`, `InfrastructureReady`). For the **`Ready`** condition, **`Reason`** is typically stable (`AsExpected`); emit the **`Ready`** Normal event on **transition of condition `Status` to `True`** once the VM is ready **and** an IP has been recorded — not on every reconcile — using prior **Status** (not Reason) in the guard. The `WaitingForVM` state is reflected only on the `Provisioned` condition (no Kubernetes event), so many reconciles do not spam the console while the VM is still absent.
+
+| Event Reason | Event Type | When |
+|-------------|-----------|------|
+| `TenantNotReady` | Normal | `Provisioned` **Reason** just transitioned to `TenantNotReady` (guarded); Normal avoids flooding Warnings while many CIs share one tenant |
+| `WaitingForVM` | *(none)* | Use `Provisioned` / `ReasonWaitingForVM` only — no event |
+| `ProvisioningStorage` | Normal | `Provisioned` **Reason** just transitioned to `ProvisioningStorage` (guarded) |
+| `InfrastructureReady` | Normal | `Provisioned` **Reason** just transitioned to `InfrastructureReady` (guarded) |
+| `Ready` | Normal | **`Ready`** condition **Status** just became **`True`** with IP assigned (guarded by prior **Status**, not `Reason`) |
 
 **RestartRequired Condition Logic**
 
@@ -252,15 +280,20 @@ This enables tenants to see when their VM needs a restart and decide when to ini
 
 | Repository | File | Changes |
 |------------|------|---------|
-| osac-operator | `api/v1alpha1/computeinstance_types.go` | Add new phase and condition constants |
-| osac-operator | `internal/controller/computeinstance_controller.go` | Update phase determination logic |
-| osac-operator | `internal/controller/computeinstance_feedback_controller.go` | Update phase-to-state mapping |
-| fulfillment-api | `proto/fulfillment/v1/compute_instance_type.proto` | Replace enum values |
-| fulfillment-service | `proto/private/v1/compute_instance_type.proto` | Replace enum values |
+| osac-operator | `api/v1alpha1/computeinstance_types.go` | Add new phase and condition constants; rename `Available` to `Ready` |
+| osac-operator | `api/v1alpha1/conditions.go` | Add `ConditionReady` and granular reason constants (`ReasonTenantNotReady`, `ReasonProvisioningStorage`, `ReasonWaitingForVM`, `ReasonInfrastructureReady`) |
+| osac-operator | `internal/controller/computeinstance_controller.go` | Update phase determination logic; add `EventRecorder` for Kubernetes events; enhance `Provisioned` condition with granular reasons and messages |
+| osac-operator | `internal/controller/computeinstance_feedback_controller.go` | Rename `syncAvailable` to `syncReady`; sync `Reason` field to fulfillment service |
+| fulfillment-service | `proto/public/osac/public/v1/compute_instance_type.proto` | Rename `AVAILABLE` to `READY`; document `Provisioned` reason values |
+| fulfillment-service | `proto/private/osac/private/v1/compute_instance_type.proto` | Rename `AVAILABLE` to `READY` |
 
 **Migration Approach**
 
 Since the product is in development with no external clients, old enum values (`PROGRESSING`, `READY`, `FAILED` for conditions) will be removed rather than deprecated. The controller will emit only the new phase and condition values.
+
+**Wire compatibility for the Available → Ready rename:** The protobuf enum value `COMPUTE_INSTANCE_CONDITION_TYPE_AVAILABLE` is renamed to `COMPUTE_INSTANCE_CONDITION_TYPE_READY` but retains the same numeric value (2). Since protobuf stores numeric values on the wire and in the fulfillment-service database (not string names), existing stored conditions will deserialize correctly without migration.
+
+**Stale `Available` condition on existing CRs:** After the controller is updated, it will no longer manage the old `Available` condition. Existing ComputeInstance CRs that were created before the rename may carry a stale `Available` condition in their `status.conditions` array. Since the product is in development with no production workloads, no automated cleanup is planned. The stale condition is harmless (the controller ignores it) and will be removed when the CR is deleted and recreated.
 
 ### 3.4 Risks and Mitigations
 
@@ -270,7 +303,7 @@ Since the product is in development with no external clients, old enum values (`
 | **Developer scripts tied to old values** - Developers may have local scripts or automation that check for `Progressing`, `Ready`, or `Failed` conditions | Communicate changes clearly in release notes; provide migration guidance |
 | **Incorrect phase mapping from KubeVirt** - Controller could incorrectly map KubeVirt states, showing wrong phase values | Comprehensive unit tests for phase determination logic; manual testing with real VMs in dev environment |
 | **Edge cases in KubeVirt state transitions** - KubeVirt may have transitional states or error conditions not fully mapped | Review KubeVirt documentation; manual testing with various VM scenarios (create, stop, start, pause, resume, delete, error conditions) |
-| **Condition logic complexity** - Determining when `Available` should be True/False adds controller complexity | Document condition semantics clearly; use table-driven logic in controller for maintainability |
+| **Condition logic complexity** - Determining when `Ready` should be True/False adds controller complexity | Document condition semantics clearly; use table-driven logic in controller for maintainability |
 
 ### 3.5 Drawbacks
 
@@ -304,18 +337,23 @@ We could add a `Pausing` phase to mirror the `Stopping` transitional phase.
 
 - **Should we add a Degraded condition?** The existing `DEGRADED` enum value in the API is never set. What signals from KubeVirt would indicate a VM is "degraded" (running but with issues) vs "failed" (not running)? The KubeVirt signals considered (CrashLoopBackOff, ErrorUnschedulable, etc.) mostly indicate failure rather than degradation.
 
-- **Should the Available condition capture whether the guest OS is ready and accessible (e.g., user can SSH into it)?** Currently, `Available = True` when `VirtualMachine.Status.Ready = true`, which indicates VM infrastructure (virt-launcher pod, QEMU process) is ready. This does not verify that the guest OS has booted or that SSH/applications are accessible. Should we redefine `Available` to represent guest-level readiness, or is infrastructure-level readiness the correct semantic?
+- **~~Should the Available condition capture whether the guest OS is ready and accessible (e.g., user can SSH into it)?~~** **Resolved:** The condition has been renamed from `Available` to `Ready` to directly mirror the KubeVirt `VirtualMachineReady` condition. `Ready = True` indicates VM infrastructure readiness (virt-launcher pod ready, QEMU process running) and does not verify guest OS boot status.
 
-- **If Available should capture guest OS readiness, which mechanism should we use?** KubeVirt supports readiness probes (TCP socket for SSH access, or guest agent ping for OS responsiveness) that can verify guest-level readiness. The choice impacts operational complexity (VM image requirements) and the accuracy of readiness detection.
+- **~~If Available should capture guest OS readiness, which mechanism should we use?~~** **Resolved:** Since `Ready` mirrors KubeVirt's infrastructure-level readiness, guest OS readiness is out of scope for this condition. KubeVirt readiness probes could be used in the future for a separate guest-level readiness signal if needed.
 
 ## 6. Test Plan
 
 - **Unit tests**: Phase determination logic in `computeinstance_controller.go` - test each KubeVirt `PrintableStatus` → ComputeInstance phase mapping
-- **Unit tests**: Condition setting logic - test `Available` and `RestartRequired` conditions
-- **Unit tests**: Feedback controller phase-to-state mapping
+- **Unit tests**: Condition setting logic - test `Ready`, `Provisioned` (with granular reasons: `TenantNotReady`, `WaitingForVM`, `ProvisioningStorage`, `InfrastructureReady`), and `RestartRequired` conditions
+- **Unit tests**: Verify `Provisioned` condition transitions correctly through reason values as provisioning progresses (TenantNotReady → WaitingForVM → ProvisioningStorage → InfrastructureReady)
+- **Unit tests**: Feedback controller phase-to-state mapping, including `Reason` field propagation
+- **Unit tests**: Verify Kubernetes events are only emitted on **Reason** change for `Provisioned`-related reasons, and on **`Ready` Status** transition for the Ready event — not on every reconcile cycle
+- **Unit tests (migration / MGMT-23147)**: CRD shows both stale **`Available`** and new **`Ready`** condition entries on upgraded objects — controller only **writes** `Ready`; assert reads/ignores legacy `Available` as documented in §3.3
+- **Unit tests (protobuf)**: Fulfillment / private API round-trip — stored numeric enum **2** deserializes as `COMPUTE_INSTANCE_CONDITION_TYPE_READY` after symbol rename (`AVAILABLE` → `READY` at same value)
 - **Manual testing**: Create VMs in dev environment and verify phase transitions through lifecycle operations (create, stop, start, pause, resume, delete)
 - **Manual testing**: Verify error scenarios produce `Failed` phase
 - **Manual testing**: Modify VM configuration (e.g., CPU/memory) and verify `RestartRequired` condition is surfaced; reboot VM and verify condition clears
+- **Manual testing**: Monitor Kubernetes events during provisioning and verify granular progress messages appear
 
 ## 7. Graduation Criteria
 
