@@ -3,7 +3,7 @@ title: computeinstance-phase-condition-expansion
 authors:
   - Akshay Nadkarni
 creation-date: 2026-01-29
-last-updated: 2026-04-19
+last-updated: 2026-04-28
 tracking-link:
   - TBD
 see-also:
@@ -253,12 +253,12 @@ This enables consumers to understand exactly where in the provisioning pipeline 
 
 **Kubernetes Events**
 
-The controller emits Kubernetes events (via `events.EventRecorder`) at key provisioning transitions. Events are only emitted when the condition reason actually changes, not on every reconcile cycle. This provides an audit trail of provisioning progress without flooding the event stream.
+The controller emits Kubernetes events (via `events.EventRecorder`) at key provisioning transitions. Events are only emitted when the condition reason actually changes, not on every reconcile cycle. This provides an audit trail of provisioning progress without flooding the event stream. The `WaitingForVM` state is reflected only on the `Provisioned` condition (no Kubernetes event), so many reconciles do not spam the console while the VM is still absent.
 
 | Event Reason | Event Type | When |
 |-------------|-----------|------|
-| `TenantNotReady` | Warning | Tenant is not in Ready phase |
-| `WaitingForVM` | Normal | KubeVirt VM does not yet exist |
+| `TenantNotReady` | Normal | Tenant is not in Ready phase (Normal avoids treating steady-state 'waiting on tenant' as a cluster-wide Warning when many instances share one tenant) |
+| `WaitingForVM` | *(none)* | Use `Provisioned` / `ReasonWaitingForVM` only — no event |
 | `ProvisioningStorage` | Normal | KubeVirt is creating DataVolumes |
 | `InfrastructureReady` | Normal | All infrastructure provisioned |
 | `Ready` | Normal | VM is ready (with IP address) |
