@@ -3,7 +3,7 @@ title: computeinstance-phase-condition-expansion
 authors:
   - Akshay Nadkarni
 creation-date: 2026-01-29
-last-updated: 2026-04-28
+last-updated: 2026-04-29
 tracking-link:
   - TBD
 see-also:
@@ -182,7 +182,7 @@ This enhancement modifies existing API types rather than adding new CRDs or webh
 |---------------|-------------------|----------------|---------------------|--------|
 | `Accepted` | — | — | — | Remove (no longer needed) |
 | `Progressing` | `PROGRESSING` | — | — | Remove (phase represents this) |
-| `Available` | `READY` | `Ready` | `READY` | Rename CRD + protobuf to align with KubeVirt |
+| `Available` | `AVAILABLE` | `Ready` | `READY` | Rename CRD + protobuf to align with KubeVirt (proto **symbol** `..._AVAILABLE` → `..._READY` at **same numeric value 2** — do not confuse with **phase** enum `READY` / `RUNNING` above) |
 | `Deleting` | — | — | — | Remove (phase represents this) |
 | — | `FAILED` | — | — | Remove (phase represents this) |
 | — | `DEGRADED` | — | — | Remove (see Open Questions) |
@@ -191,6 +191,8 @@ This enhancement modifies existing API types rather than adding new CRDs or webh
 | — | — | `Provisioned` | `PROVISIONED` | New |
 | — | — | `ConfigurationApplied` | `CONFIGURATION_APPLIED` | New |
 | — | — | `RestartRequired` | `RESTART_REQUIRED` | New |
+
+> **Clarification:** The **phase** row `Ready` → `READY` (table above) is the lifecycle **phase** enum. The **condition** row `Available` → `AVAILABLE` is the fulfillment **condition-type** enum **name** before MGMT-23147; wire format is numeric (see §3.3 migration). After rename, that same value is emitted as `READY` in generated Go/protobuf **identifiers**, not a second distinct wire value.
 
 **Behavioral Changes:**
 
@@ -253,15 +255,15 @@ This enables consumers to understand exactly where in the provisioning pipeline 
 
 **Kubernetes Events**
 
-The controller emits Kubernetes events (via `events.EventRecorder`) at key provisioning transitions. Events are only emitted when the condition reason actually changes, not on every reconcile cycle. This provides an audit trail of provisioning progress without flooding the event stream. The `WaitingForVM` state is reflected only on the `Provisioned` condition (no Kubernetes event), so many reconciles do not spam the console while the VM is still absent.
+The controller emits Kubernetes events (via `events.EventRecorder`) at key provisioning transitions. **Guards differ by condition:** for **`Provisioned`**, emit only when **`Reason`** changes (same pattern for `TenantNotReady`, `ProvisioningStorage`, `InfrastructureReady`). For the **`Ready`** condition, **`Reason`** is typically stable (`AsExpected`); emit the **`Ready`** Normal event on **transition of condition `Status` to `True`** once the VM is ready **and** an IP has been recorded — not on every reconcile — using prior **Status** (not Reason) in the guard. The `WaitingForVM` state is reflected only on the `Provisioned` condition (no Kubernetes event), so many reconciles do not spam the console while the VM is still absent.
 
 | Event Reason | Event Type | When |
 |-------------|-----------|------|
-| `TenantNotReady` | Normal | Tenant is not in Ready phase (Normal avoids treating steady-state 'waiting on tenant' as a cluster-wide Warning when many instances share one tenant) |
+| `TenantNotReady` | Normal | `Provisioned` **Reason** just transitioned to `TenantNotReady` (guarded); Normal avoids flooding Warnings while many CIs share one tenant |
 | `WaitingForVM` | *(none)* | Use `Provisioned` / `ReasonWaitingForVM` only — no event |
-| `ProvisioningStorage` | Normal | KubeVirt is creating DataVolumes |
-| `InfrastructureReady` | Normal | All infrastructure provisioned |
-| `Ready` | Normal | VM is ready (with IP address) |
+| `ProvisioningStorage` | Normal | `Provisioned` **Reason** just transitioned to `ProvisioningStorage` (guarded) |
+| `InfrastructureReady` | Normal | `Provisioned` **Reason** just transitioned to `InfrastructureReady` (guarded) |
+| `Ready` | Normal | **`Ready`** condition **Status** just became **`True`** with IP assigned (guarded by prior **Status**, not `Reason`) |
 
 **RestartRequired Condition Logic**
 
@@ -345,7 +347,9 @@ We could add a `Pausing` phase to mirror the `Stopping` transitional phase.
 - **Unit tests**: Condition setting logic - test `Ready`, `Provisioned` (with granular reasons: `TenantNotReady`, `WaitingForVM`, `ProvisioningStorage`, `InfrastructureReady`), and `RestartRequired` conditions
 - **Unit tests**: Verify `Provisioned` condition transitions correctly through reason values as provisioning progresses (TenantNotReady → WaitingForVM → ProvisioningStorage → InfrastructureReady)
 - **Unit tests**: Feedback controller phase-to-state mapping, including `Reason` field propagation
-- **Unit tests**: Verify Kubernetes events are only emitted on condition transitions, not on every reconcile cycle
+- **Unit tests**: Verify Kubernetes events are only emitted on **Reason** change for `Provisioned`-related reasons, and on **`Ready` Status** transition for the Ready event — not on every reconcile cycle
+- **Unit tests (migration / MGMT-23147)**: CRD shows both stale **`Available`** and new **`Ready`** condition entries on upgraded objects — controller only **writes** `Ready`; assert reads/ignores legacy `Available` as documented in §3.3
+- **Unit tests (protobuf)**: Fulfillment / private API round-trip — stored numeric enum **2** deserializes as `COMPUTE_INSTANCE_CONDITION_TYPE_READY` after symbol rename (`AVAILABLE` → `READY` at same value)
 - **Manual testing**: Create VMs in dev environment and verify phase transitions through lifecycle operations (create, stop, start, pause, resume, delete)
 - **Manual testing**: Verify error scenarios produce `Failed` phase
 - **Manual testing**: Modify VM configuration (e.g., CPU/memory) and verify `RestartRequired` condition is surfaced; reboot VM and verify condition clears
