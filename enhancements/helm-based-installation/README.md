@@ -100,7 +100,7 @@ Component repositories maintain their own charts:
 #### Initial Installation
 
 1. **CSP Administrator** ensures prerequisites are installed:
-   - AAP operator and instance (licensed and running)
+   - AAP operator and instance (subscribed and running)
    - cert-manager
    - StorageClass with ReadWriteMany (RWX) support (required for VM live migration - e.g., NFS, Ceph, enterprise SAN)
    - Optional: OpenShift Virtualization (for VM support)
@@ -179,10 +179,10 @@ Component repositories maintain their own charts:
    - Install CRDs (from operator-crds chart)
    - Install operators and services
    - Deploy PostgreSQL and Keycloak (if enabled) or validate external instances are reachable
-   - Deploy fulfillment-service
    - Deploy osac-operator
    - Deploy osac-aap
    - Post-install hook runs aap-bootstrap job to load OSAC automation into AAP
+   - Deploy fulfillment-service (user-facing API that orchestrates the above components)
    - Post-install hook runs smoke tests (if enabled via values.yaml)
 
 6. **CSP Administrator** verifies installation:
@@ -191,11 +191,11 @@ Component repositories maintain their own charts:
    kubectl get pods -n osac
    ```
 
-7. **CSP Administrator** registers management hub clusters (operational, not installation):
+7. **CSP Administrator** registers management hub clusters (operational, not installation, using the new `osac-admin` CLI proposed in this document):
    ```bash
    osac-admin create hub --id prod-hub-01 \
      --kubeconfig /path/to/hub.kubeconfig \
-     --namespace cloudkit-provisioning
+     --namespace osac-provisioning
    ```
 
 #### Upgrade Workflow
@@ -308,7 +308,6 @@ dependencies:
   - name: aap
     version: "1.0.0"
     repository: "oci://ghcr.io/osac-project/charts"
-    condition: aap.enabled
 ```
 
 For development with git submodules:
@@ -403,9 +402,11 @@ The automated setup script enables smoke tests by default. Manual production ins
 **Separate CRD chart** prevents accidental deletion and allows independent updates. CRDs include `"helm.sh/resource-policy": keep` annotation to prevent Helm from deleting them on chart uninstall, protecting user data (all VM/cluster CRs).
 
 Upgrade process:
-1. `operator-crds` chart updated with new fields
+1. `operator-crds` chart updated with new CRD fields
 2. `operator` chart updated to use new fields
-3. Helm dependency ordering ensures CRDs update before operator
+3. Helm's resource type sorting ensures CRDs are applied before operator Deployments
+
+**Note on CRD schema updates:** Helm does not modify existing CRDs during `helm upgrade` (it only adds new CRDs and warns about schema changes to existing ones). For CRD schema updates, use a pre-upgrade hook job that applies updated CRDs via `kubectl apply`, or manually apply CRD updates before running `helm upgrade`.
 
 #### CLI Restructuring
 
@@ -464,7 +465,7 @@ Each release includes a complete image manifest (`images.txt`) listing all conta
 
 #### OpenShift Software Catalog Integration
 
-The umbrella chart will be available in the OpenShift Software Catalog for form-based installation via the console UI.
+The umbrella chart could be published in software catalogs such as the OpenShift Software Catalog for form-based installation via the console UI.
 
 **Requirements:**
 - **values.schema.json** - JSON Schema defining configuration parameters (AAP URL, credentials, external hostname, enable/disable PostgreSQL/Keycloak)
@@ -561,7 +562,7 @@ Test matrix:
 
 **Keep Kustomize Only:** Rejected because manual configuration, no lifecycle hooks, no parameter validation, non-standard for production.
 
-**Use operator-sdk bundle/OLM:** Rejected as the primary installation method because OSAC is a multi-component platform (not a single operator), OLM not available on all Kubernetes distributions, doesn't fit umbrella architecture. However, a hybrid approach is possible: osac-operator could be packaged as an OLM bundle for platforms built around OLM (e.g., Enclave) while the Helm umbrella chart remains the primary installation method. This would enable native operator integration in OLM-centric platforms without replacing Helm as the main distribution mechanism.
+**Use operator-sdk bundle/OLM:** An operator could be created to install OSAC components (there is prior art for operators that install controllers). However, Helm was chosen as the installation method to save development time and complexity compared to building a meta-operator. The multi-component umbrella architecture is naturally expressed in Helm's dependency model.
 
 **Ansible-based installer:** Rejected because requires Ansible runtime on admin workstation, no native Kubernetes resource management, doesn't integrate with GitOps. Ansible remains for AAP-based resource provisioning, not platform installation.
 
