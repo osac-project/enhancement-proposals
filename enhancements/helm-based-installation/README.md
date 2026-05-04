@@ -110,15 +110,15 @@ Component repositories maintain their own charts:
 
 2. **CSP Administrator** creates required secrets:
    ```bash
-   # AAP credentials for fulfillment-service to call AAP
+   # AAP credentials (use --from-file to avoid exposing secrets in shell history)
    kubectl create secret generic aap-credentials \
-     --from-literal=url=https://aap.example.com \
-     --from-literal=token=<aap-api-token> \
+     --from-file=url=aap-url.txt \
+     --from-file=token=aap-token.txt \
      -n osac
 
    # PostgreSQL connection (if using external database - optional if using bundled)
    kubectl create secret generic postgres-credentials \
-     --from-literal=url=postgresql://user:pass@postgres.example.com:5432/osac \
+     --from-file=url=postgres-url.txt \
      -n osac
    ```
 
@@ -212,7 +212,7 @@ Component repositories maintain their own charts:
 
 3. **Helm** executes upgrade in this order:
    - Pre-upgrade hook runs database migration job (new `fulfillment-service migrate` command)
-   - Updates CRDs (if needed)
+   - Adds new CRDs (existing CRDs are not modified by Helm - see CRD Lifecycle Management section)
    - Rolling update of fulfillment-service deployment
    - Updates osac-operator
    - Updates osac-aap configuration
