@@ -219,8 +219,10 @@ This flow uses standard OIDC protocol endpoints; OSAC does not provide custom to
 1. Tenant User authenticates using the organization's IdP, receiving an OIDC token from Keycloak.
 
 2. Tenant User specifies the project context in API requests. The project is included in the request body or as a path parameter:
-   ```
+   ```http
    POST /api/fulfillment/v1/compute_instances
+   Content-Type: application/json
+
    {
      "organization": "acme",
      "project": "web-app",
@@ -386,7 +388,7 @@ OSAC uses a two-tier permission model: Organization-level roles (managed as Keyc
   - Additional scopes as needed for other OSAC resource types
 - The specific set of scopes will be defined during implementation
 - Authorino validates Keycloak Authorization at request time by decoding RPT tokens locally (recommended for performance) or via UMA endpoints: "Can user X perform action Y on resource Z?" See the [Keycloak Authorization Services Integration](#keycloak-authorization-services-integration) section for details on the local RPT validation approach.
-- Authorization policies can be defined in Keycloak to handle hierarchical permissions (e.g., parent project admins automatically get access to child projects)
+- Authorization policies can be defined in Keycloak to handle hierarchical permissions (see [Hierarchical Project Permissions](#hierarchical-project-permissions) for details on which permissions cascade from parent to child projects)
 - Project visibility is controlled through permissions - users only see Projects they have at least `VIEW_PROJECT` permission on
 - This enables true multi-project tenancy where different users have different access to different Projects within the same Organization
 - No separate authorization storage is needed - Keycloak Authorization Services is the source of truth for project permissions
@@ -503,7 +505,7 @@ Kuadrant's Authorino component provides multi-layered authorization capabilities
 - Each Project is modeled as a Keycloak Authorization Resource
 - Fine-grained scoped permissions control what operations users can perform on specific Projects
 - Authorino queries Keycloak Authorization Services at request time to evaluate permissions
-- Supports hierarchical permission policies (e.g., parent project admins can access child projects)
+- Supports hierarchical permission policies where MANAGE_PROJECT and VIEW_PROJECT permissions automatically cascade from parent to child projects (see [Hierarchical Project Permissions](#hierarchical-project-permissions))
 - Enables true multi-project tenancy with per-project access control
 
 **Future Extensibility:**
@@ -632,7 +634,7 @@ Parent project administrators automatically receive permissions on child project
 Authorino integrates with Keycloak Authorization Services using a hybrid approach that optimizes for performance:
 
 **Token Validation Approach:**
-- **RPT tokens**: Authorino validates Requesting Party Tokens (RPTs) locally by decoding the JWT and checking the `permissions` claim. No remote introspection call is needed - validation is fast and local.
+- **RPT tokens**: Authorino performs full JWT validation by verifying the JWS signature against Keycloak's JWKS endpoint, validating mandatory claims (iss, aud, exp, nbf), and performing time checks (exp > now and nbf ≤ now). After JWT validation succeeds, Authorino decodes the token locally and checks the `permissions` claim to evaluate authorization. No remote introspection call is needed - validation is fast and local.
 - **Standard Keycloak tokens**: When a user presents a regular Keycloak access token (not an RPT), Authorino negotiates a User-Managed Access (UMA) ticket with Keycloak and exchanges it for an RPT containing the user's permissions.
 
 **Performance and Caching Strategy:**
