@@ -143,8 +143,9 @@ Two new message types will be added to the proto definitions in
   editable by the user
 - `published` (bool) - when false (the default), the item is hidden from Tenant
   Users; Cloud Provider Admins and Tenant Admins can see unpublished items
-- `tenant` (string) - optional tenant ID that scopes visibility to a single
-  tenant organization; when empty the item is visible to all tenants
+- `tenant` (string) - internal field, not exposed through the public API. Scopes
+  visibility to a single tenant organization; when empty the item is visible to
+  all tenants. Set automatically by the server for Tenant Admin creates.
 
 `ComputeInstanceCatalogItem`:
 - Same top-level structure as `ClusterCatalogItem` but references a
@@ -199,13 +200,14 @@ for early feedback, since users can bypass the UI via the CLI or API directly.
 
 Following the existing public/private server pattern:
 
-- **Private API** (`osac/private/v1`): full CRUD over catalog items with no filtering based on `published` or `tenant`. Used by Cloud Provider Admins and Tenant Admins, and by the server internally when validating a user's create request.
-- **Public API** (`osac/public/v1`): read-only for Tenant Users (`List` and `Get` only). The public server filters results to items where `published == true` and where `tenant` is empty or matches the caller's tenant. Also tenants with an existing CNA should be able to `Get` the catalog item it references even if unpublished. Cloud Provider Admins and Tenant Admins interact with catalog items through the private API.
+- **Private API** (`osac/private/v1`): full CRUD over catalog items with no filtering based on `published` or `tenant`. Used by Cloud Provider Admins, and by the server internally when validating a user's create request.
+- **Public API** (`osac/public/v1`): used by Tenant Admins and Tenant Users. The `tenant` field is not exposed to either role — it is stripped from all responses and ignored on writes. Tenant Admins have full CRUD access and can see all catalog items scoped to their tenant (published or not); on create the server automatically sets `tenant` to the caller's tenant. Tenant Users have read-only access (`List` and `Get` only) and only see items where `published == true` and `tenant` is empty or matches the caller's tenant. Exception: a Tenant User can always `Get` a catalog item referenced by one of their existing CNAs, even if that item is unpublished.
 
-The public `List` endpoint must filter by `published = true` and the caller's
-tenant, so the public `CatalogItemsServer` will not simply delegate to the
-private server unchanged — it must inject a tenancy and publication filter
-before delegating.
+The public `List` endpoint always filters by the caller's tenant; for Tenant
+User callers it additionally filters by `published = true`. The public
+`CatalogItemsServer` therefore cannot simply delegate to the private server
+unchanged — it must inject filters based on the caller's role before
+delegating.
 
 #### Changes to ClusterSpec and ComputeInstanceSpec
 
@@ -238,8 +240,8 @@ additional steps before writing the object:
 
 The `tenant` field on `CatalogItem` is enforced at two layers:
 
-1. **Read**: The public `CatalogItems_List` and `CatalogItems_Get` operations filter by `tenant = "" OR tenant = <caller_tenant>` and `published = true`. This is implemented in the public server before delegating to the private server, using the same filter-injection mechanism the other public servers use for tenancy.
-2. **Write**: Only Cloud Provider Admins may create CatalogItems with `tenant = ""` (global items). Tenant Admins may only create CatalogItems with `tenant` set to their own tenant. This is enforced via policy rules consistent with the rest of the authorization model.
+1. **Read**: The public `CatalogItems_List` and `CatalogItems_Get` operations always filter by `tenant = "" OR tenant = <caller_tenant>`. When the caller is a Tenant User, the public server additionally injects `published = true`, with one exception: a Tenant User may `Get` a catalog item referenced by one of their existing CNAs even if that item is unpublished. Tenant Admins see all items in their tenant regardless of publication status. This is implemented in the public server before delegating to the private server, using the same filter-injection mechanism the other public servers use for tenancy.
+2. **Write**: Cloud Provider Admins set `tenant` explicitly; `tenant = ""` creates a global item. For Tenant Admins, the public server injects `tenant` from the caller's identity — the field is not accepted from the caller.
 
 A tenant with a CNA that was published from a Catalog Item that has since been
 unpublished should still be able to read that Catalog Item through a direct GET
@@ -300,7 +302,7 @@ messages, and write thorough unit tests covering edge cases (nested fields, map
 fields, missing defaults). Require that path strings are validated against the
 resource spec schema when a CatalogItem is created.
 
-**Tenant filter injection**: The public catalog item server must inject tenant and publication filters before delegating to the private server. If this filtering is incomplete, a user could see or use catalog items intended for another tenant. Mitigation: reuse the existing tenancy filter injection patterns from other public servers; add integration tests that verify cross-tenant isolation.
+**Tenant filter injection**: The public catalog item server must inject a tenant filter before delegating to the private server; for Tenant User callers, it must additionally inject a `published = true` filter. If this filtering is incomplete, a user could see or use catalog items intended for another tenant, or unpublished items they should not see. Mitigation: reuse the existing tenancy filter injection patterns from other public servers; add integration tests that verify cross-tenant isolation and that Tenant Users cannot see unpublished items.
 
 ### Drawbacks
 
@@ -437,7 +439,13 @@ expressiveness without requiring proto changes to support new constraint kinds.
 
 ## Test Plan
 
-Standard unit and integration tests.
+Standard unit and integration tests. Integration tests must cover:
+
+- Cross-tenant isolation: a Tenant User cannot see catalog items belonging to another tenant.
+- Publication filtering: a Tenant User cannot list or get unpublished items they do not already reference via a CNA.
+- CNA reference exception: a Tenant User can `Get` a catalog item referenced by one of their existing CNAs even after that item is unpublished, but cannot list or get unrelated unpublished items.
+- Tenant Admin visibility: a Tenant Admin can see all catalog items in their tenant regardless of publication status.
+- Tenant field injection: the `tenant` field is absent from public API responses and auto-set on Tenant Admin creates.
 
 ## Graduation Criteria
 
