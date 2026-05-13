@@ -241,7 +241,7 @@ additional steps before writing the object:
 The `tenant` field on `CatalogItem` is enforced at two layers:
 
 1. **Read**: The public `CatalogItems_List` and `CatalogItems_Get` operations always filter by `tenant = "" OR tenant = <caller_tenant>`. When the caller is a Tenant User, the public server additionally injects `published = true`, with one exception: a Tenant User may `Get` a catalog item referenced by one of their existing CNAs even if that item is unpublished. Tenant Admins see all items in their tenant regardless of publication status. This is implemented in the public server before delegating to the private server, using the same filter-injection mechanism the other public servers use for tenancy.
-2. **Write**: Cloud Provider Admins set `tenant` explicitly; `tenant = ""` creates a global item. For Tenant Admins, the public server injects `tenant` from the caller's identity — the field is not accepted from the caller.
+2. **Write**: Cloud Provider Admins set `tenant` explicitly; `tenant = ""` creates a global item. For Tenant Admins, the public server injects `tenant` from the caller's identity — the field is not accepted from the caller. Tenant Admins can only Update or Delete catalog items scoped to their own tenant (i.e., where `tenant` equals the caller's tenant); they cannot modify global items (`tenant = ""`) or items belonging to another tenant.
 
 A tenant with a CNA that was published from a Catalog Item that has since been
 unpublished should still be able to read that Catalog Item through a direct GET
@@ -446,6 +446,7 @@ Standard unit and integration tests. Integration tests must cover:
 - CNA reference exception: a Tenant User can `Get` a catalog item referenced by one of their existing CNAs even after that item is unpublished, but cannot list or get unrelated unpublished items.
 - Tenant Admin visibility: a Tenant Admin can see all catalog items in their tenant regardless of publication status.
 - Tenant field injection: the `tenant` field is absent from public API responses and auto-set on Tenant Admin creates.
+- Tenant Admin write isolation: a Tenant Admin cannot create, update, or delete catalog items scoped to another tenant.
 
 ## Graduation Criteria
 
