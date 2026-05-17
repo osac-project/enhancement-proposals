@@ -125,7 +125,7 @@ All instance types in Phase 1 are globally scoped:
 3. The instance type remains visible in ListInstanceTypes for Organization Users
 4. New VM creation requests succeed but return a warning: "Instance type 'standard-2-4' is deprecated and will become obsolete on 2026-12-31. Consider migrating to 'standard-2-8'."
 5. Existing VMs continue to run unchanged
-6. (Future) Scheduled job automatically transitions to OBSOLETE when the `obsolete` timestamp is reached
+6. **Note:** Phase 1 does not include automatic state transitions - Cloud Provider Admin must manually transition to OBSOLETE on or after the obsolete date
 
 **Obsoleting an Instance Type**
 
