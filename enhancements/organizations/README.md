@@ -3,7 +3,7 @@ title: osac-organizations-and-authentication
 authors:
   - Avishay Traeger
 creation-date: 2025-12-21
-last-updated: 2025-12-21
+last-updated: 2026-05-06
 tracking-link:
   - TBD
 see-also:
@@ -17,7 +17,15 @@ This enhancement describes the organization model, authentication flows, and adm
 
 ## Summary
 
-This enhancement introduces a comprehensive multi-tenant organization model for OSAC that enables Cloud Provider Admins to create and manage Organizations, each with their own identity providers. Organizations can contain multiple Projects (with support for nested Projects) for additional resource organization and isolation. Each Organization must configure an external identity provider (LDAP/AD/OIDC/SAML) for user authentication. The system provides built-in OSAC break-glass accounts with limited privileges (IdP and role management only) for emergency access when the IdP is unavailable. Full admin roles (Cloud Provider Admin, Tenant Admin) are defined in the IdP. The architecture follows the Sovereign Gateway Pattern, integrating with Keycloak (managed by the user) for identity management and native role assignment, Gateway API with Kuadrant (which includes Authorino for authorization and Limitador for rate limiting) for declarative, infrastructure-level API protection, and integration with OpenShift for resource isolation. The OSAC Console and CLI authenticate directly with Keycloak using standard OIDC Authorization Code flows. Keycloak Protocol Mappers normalize upstream IdP claims into the standard OSAC Token schema. Kuadrant operates at the Gateway layer via AuthPolicy resources, validating Keycloak-issued tokens and enforcing authorization policies before requests reach the Fulfillment Service. Roles are managed natively in Keycloak and included in tokens, eliminating the need for separate role mapping storage. Authorino provides extensible authorization policies supporting RBAC (initially), with the ability to extend to OPA for advanced policies, SpiceDB for ReBAC, and integration with external systems (e.g., cost-management/billing) for future policy decisions.
+This enhancement introduces a comprehensive multi-tenant organization model for OSAC that enables Cloud Provider Admins to create and manage Organizations, each with their own identity providers. Organizations can contain multiple Projects (with support for nested Projects) for additional resource organization and isolation.
+
+Each Organization must configure an external identity provider (LDAP/AD/OIDC/SAML) for user authentication. The system provides built-in OSAC break-glass accounts with limited privileges (IdP and role management only) for emergency access when the IdP is unavailable. Full admin roles (Cloud Provider Admin, Tenant Admin) are defined in the IdP. Keycloak (managed by the user) handles identity management and native role assignment.
+
+The authorization model uses a two-tier approach: Organization-level roles are managed as Keycloak roles, while Project-level permissions leverage Keycloak Authorization Services. Each Project is modeled as a Keycloak Authorization Resource with fine-grained scoped permissions (e.g., CREATE_COMPUTE_INSTANCE, VIEW_PROJECT, MANAGE_PROJECT), enabling true multi-project tenancy where different users have different access to different Projects within the same Organization. Keycloak Protocol Mappers normalize upstream IdP claims into the standard OSAC Token schema.
+
+The architecture follows the Sovereign Gateway Pattern, integrating Gateway API with Kuadrant (which includes Authorino for authorization and Limitador for rate limiting) for declarative, infrastructure-level API protection. Kuadrant operates at the Gateway layer via AuthPolicy resources, validating Keycloak-issued tokens (using local RPT validation for performance) and enforcing authorization policies (including project-level permissions via Keycloak Authorization Services) before requests reach the Fulfillment Service.
+
+A single OSAC instance with a single API entry point and Keycloak installation can manage multiple OpenShift infrastructure clusters, reconciling Project resources across all clusters. The OSAC Console and CLI authenticate directly with Keycloak using standard OIDC Authorization Code flows.
 
 ## Motivation
 
@@ -83,11 +91,13 @@ Keycloak is an open-source identity and access management platform that connects
 
 The OSAC Console and CLI authenticate directly with Keycloak using standard OIDC Authorization Code flows. Users are redirected to Keycloak, which handles the authentication flow with the organization's configured Identity Provider. Upstream Identity Provider claims (groups, roles) are mapped into the standard OSAC Token schema using Keycloak Protocol Mappers, ensuring the OSAC platform receives a normalized token without requiring code changes. Keycloak issues OIDC tokens directly to clients; OSAC does not wrap or proxy these tokens.
 
+**Keycloak Authorization Services** provide fine-grained, resource-level permissions for Projects. Each Project is modeled as a Keycloak Authorization Resource with a unique identifier. Keycloak Authorization supports scoped permissions (e.g., `CREATE_COMPUTE_INSTANCE`, `VIEW_PROJECT`, `MANAGE_PROJECT`) that control what operations users can perform on specific Projects. This enables true multi-project tenancy where different users can have different access levels to different Projects within the same Organization. Authorino queries Keycloak Authorization Services at request time to evaluate: "Can user X perform action Y on Project Z?" This authorization happens at the Gateway layer before requests reach the Fulfillment Service.
+
 ### Kuadrant
 
 Kuadrant is an open source API security platform that provides comprehensive API protection including authentication, authorization, and rate limiting. Kuadrant integrates Authorino for fine-grained authorization policies and Limitador for rate limiting. This enhancement uses Kuadrant to protect OSAC APIs at the infrastructure layer via Gateway API and AuthPolicy resources:
 
-- **Authorino**: Validates Keycloak-issued OIDC tokens and enforces authorization policies at the Gateway layer before requests reach the Fulfillment Service. Authorino validates token signatures using Keycloak's public keys (retrieved from Keycloak's JWKS endpoint), extracts identity claims and OSAC roles from tokens, and evaluates authorization policies. Initially, Authorino will use RBAC policies based on OSAC roles from Keycloak tokens. Authorino's extensible architecture supports:
+- **Authorino**: Validates Keycloak-issued OIDC tokens and enforces authorization policies at the Gateway layer before requests reach the Fulfillment Service. Authorino validates token signatures using Keycloak's public keys (retrieved from Keycloak's JWKS endpoint), extracts identity claims and OSAC roles from tokens, and evaluates authorization policies. For Organization-level access, Authorino uses RBAC policies based on OSAC roles from Keycloak tokens. For Project-level access, Authorino integrates with Keycloak Authorization Services to query resource permissions at request time, checking: "Can user X perform action Y on Project Z?" Authorino's extensible architecture also supports:
   - OPA (Open Policy Agent) for advanced policy evaluation and complex authorization logic
   - SpiceDB for Relationship-Based Access Control (ReBAC) when hierarchical permissions are needed
   - External authorization services for integration with cost-management/billing systems to deny access based on quota or billing status
@@ -95,7 +105,7 @@ Kuadrant is an open source API security platform that provides comprehensive API
 
 - **Limitador**: Provides rate limiting capabilities to protect OSAC APIs from abuse and ensure fair resource usage across organizations and projects.
 
-Kuadrant operates at the Gateway layer (Envoy Proxy) via AuthPolicy resources. When a request arrives at the OSAC Gateway, Kuadrant intercepts it before it reaches the Fulfillment Service. Authorino validates the Keycloak token signature and claims, then injects verified user context into HTTP headers (e.g., `X-Remote-User`, `X-Organization`, `X-Roles`) that the Fulfillment Service consumes. This declarative, infrastructure-level enforcement ensures consistent authorization behavior across all OSAC APIs while providing extensibility for future policy requirements.
+Kuadrant operates at the Gateway layer (Envoy Proxy) via AuthPolicy resources. When a request arrives at the OSAC Gateway, Kuadrant intercepts it before it reaches the Fulfillment Service. Authorino validates the Keycloak token signature and claims, queries Keycloak Authorization Services for project-level permissions (if the request targets a specific Project), then injects verified user context into HTTP headers (e.g., `X-Remote-User`, `X-Organization`, `X-Project`, `X-Roles`) that the Fulfillment Service consumes. This declarative, infrastructure-level enforcement ensures consistent authorization behavior across all OSAC APIs while providing extensibility for future policy requirements.
 
 ### Workflow Description
 
@@ -152,7 +162,7 @@ This flow uses standard OIDC protocol endpoints; OSAC does not provide custom to
    - Creation of a Keycloak realm for the organization (via Keycloak Admin API)
    - Creation of standard OSAC roles in the Keycloak realm (tenant-admin, tenant-reader, tenant-user, idp-manager)
    - Creation of a break-glass account for the organization directly in Keycloak (via Keycloak Admin API) - Keycloak is the single source of truth for break-glass accounts
-   - Creation of a "default" Project in the Organization
+   - Creation of a "default" Project in the Organization (users do NOT automatically have access to this project - permissions must be explicitly granted via Keycloak Authorization Services)
 
 4. The organization creation response includes the break-glass account credentials (username and initial password).
 
@@ -187,8 +197,11 @@ This flow uses standard OIDC protocol endpoints; OSAC does not provide custom to
 2. Tenant Admin calls `POST /api/fulfillment/v1/organizations/{name}/projects` with project details (name, description, metadata, optional parent_project for nested projects).
 
 3. OSAC creates the Project within the Organization, which triggers:
-   - Creation of an OpenShift Project (e.g., `osac-org-<org-name>-project-<project-name>`)
-   - If a parent project is specified, the project is created as a nested project with appropriate hierarchical permissions
+   - Creation of a Project record in the database with hierarchy information (parent-child relationships)
+   - Creation of a Keycloak Authorization Resource representing the Project (e.g., `PROJECT-acme-web-app`)
+   - **Implementation note**: To avoid N×M scalability issues with many projects and clusters, OpenShift Project creation can be deferred until resources are first deployed to a specific cluster (on-demand creation) rather than pre-creating in all managed clusters upfront
+   - OpenShift Projects include owner reference or annotations to represent the parent-child relationship for nested projects
+   - If new clusters are added later, reconciliation creates OpenShift Projects as needed when resources are deployed
    - Project is ready to contain resources (VMs, Networks, Volumes, etc.) or child projects
 
 4. Tenant Admin can then:
@@ -197,14 +210,63 @@ This flow uses standard OIDC protocol endpoints; OSAC does not provide custom to
    - Update project metadata via `PATCH /api/fulfillment/v1/organizations/{name}/projects/{name}`
    - Delete project via `DELETE /api/fulfillment/v1/organizations/{name}/projects/{name}` (with proper teardown, including nested projects if any)
    - List nested projects via `GET /api/fulfillment/v1/organizations/{name}/projects/{parent_name}/projects`
+   - Assign project permissions to users/groups via Keycloak Authorization Services
 
 5. Tenant Users can now provision resources within the Project (or nested Project) using Tenant APIs.
+
+#### Tenant User Workflow: Accessing Projects and Creating Resources
+
+1. Tenant User authenticates using the organization's IdP, receiving an OIDC token from Keycloak.
+
+2. Tenant User specifies the project context in API requests. The project is included in the request body or as a path parameter:
+   ```http
+   POST /api/fulfillment/v1/compute_instances
+   Content-Type: application/json
+
+   {
+     "organization": "acme",
+     "project": "web-app",
+     "name": "my-vm",
+     "image": "rhel-9",
+     ...
+   }
+   ```
+
+3. The request hits the OSAC Gateway (Envoy Proxy).
+
+4. Authorino (via Kuadrant) validates the request:
+   - Validates the OIDC token signature and claims
+   - Extracts organization and project from the request
+   - Queries Keycloak Authorization Services: "Does this user have `CREATE_COMPUTE_INSTANCE` permission on Project resource `PROJECT-acme-web-app`?"
+   - If yes, injects verified context into HTTP headers (`X-Remote-User`, `X-Organization`, `X-Project`, `X-Roles`, `X-Permissions`)
+   - If no, returns 403 Forbidden
+
+5. Fulfillment Service receives the request with verified context and creates the ComputeInstance in the appropriate OpenShift Project.
+
+**Project Visibility and Permissions:**
+- Users only see Projects they have permissions on when listing projects
+- Different users can have different permissions on different Projects within the same Organization
+- Project permissions are scoped (e.g., `VIEW_PROJECT`, `CREATE_COMPUTE_INSTANCE`, `MANAGE_PROJECT`)
+- **Hierarchical permissions**: Users with `MANAGE_PROJECT` or `VIEW_PROJECT` permission on a parent project automatically receive the same permission on all child projects. Resource-specific permissions (e.g., `CREATE_COMPUTE_INSTANCE`) do NOT cascade - these must be granted explicitly per project. See [Hierarchical Project Permissions](#hierarchical-project-permissions) for details.
+- Project hierarchy is stored in the database and enforced through Keycloak Authorization policies
 
 ### API Extensions
 
 This enhancement introduces new API endpoints following the fulfillment API pattern (`/api/fulfillment/v1/{resource}`). The APIs will be defined using Protocol Buffers in the fulfillment-api repository, following the same patterns as existing fulfillment services.
 
 **Authentication**: Authentication is handled natively by the OIDC Protocol and Keycloak's standard endpoints. The OSAC Console and CLI authenticate directly with Keycloak using standard OIDC Authorization Code flows. Users obtain tokens from Keycloak's standard endpoints (`/realms/{realm}/protocol/openid-connect/token`, `/realms/{realm}/protocol/openid-connect/userinfo`, `/realms/{realm}/protocol/openid-connect/certs`). OSAC does not provide custom authentication endpoints; all authentication flows use standard OIDC protocol endpoints provided by Keycloak.
+
+**Project Context**: For Tenant APIs that operate on resources within Projects (e.g., ComputeInstances, VirtualNetworks), the project context is specified in the request body. The `organization` and `project` fields identify which Project the resource belongs to. Authorino extracts these fields, queries Keycloak Authorization Services to verify the user has the required permission on that Project resource, and then injects the verified context into HTTP headers for the Fulfillment Service. Example:
+```json
+POST /api/fulfillment/v1/compute_instances
+{
+  "organization": "acme",
+  "project": "web-app",
+  "name": "my-vm",
+  "image": "rhel-9",
+  ...
+}
+```
 
 **Cloud Provider Admin APIs** (`/api/fulfillment/v1`):
 - Organization CRUD operations:
@@ -230,13 +292,17 @@ This enhancement introduces new API endpoints following the fulfillment API patt
   - `GET /api/fulfillment/v1/organizations/{name}/identity_provider/events` - Get IdP events (reads from Keycloak)
 - Project CRUD operations:
   - `POST /api/fulfillment/v1/organizations/{name}/projects` - Create a Project within the Organization (supports nested projects via `parent_project` field)
-  - `GET /api/fulfillment/v1/organizations/{name}/projects` - List Projects in the Organization (supports filtering by parent project)
+  - `GET /api/fulfillment/v1/organizations/{name}/projects` - List Projects in the Organization (supports filtering by parent project; returns only projects the user has VIEW_PROJECT permission on)
   - `GET /api/fulfillment/v1/organizations/{name}/projects/{name}` - Get Project details (includes parent project information for nested projects)
   - `PATCH /api/fulfillment/v1/organizations/{name}/projects/{name}` - Update Project metadata
   - `DELETE /api/fulfillment/v1/organizations/{name}/projects/{name}` - Delete Project (with proper teardown, including nested projects)
   - `GET /api/fulfillment/v1/organizations/{name}/projects/{parent_name}/projects` - List nested Projects under a parent Project
-- Role assignment management (roles are pre-created in Keycloak realms):
-  - `GET /api/fulfillment/v1/organizations/{name}/roles` - List available roles in Keycloak realm
+- Project permission management (permissions managed via Keycloak Authorization Services):
+  - `POST /api/fulfillment/v1/organizations/{name}/projects/{project_name}/permissions` - Grant permissions to users/groups on a Project
+  - `GET /api/fulfillment/v1/organizations/{name}/projects/{project_name}/permissions` - List permissions for a Project
+  - `DELETE /api/fulfillment/v1/organizations/{name}/projects/{project_name}/permissions/{permission_id}` - Revoke permissions
+- Role assignment management (organization-level roles are pre-created in Keycloak realms):
+  - `GET /api/fulfillment/v1/organizations/{name}/roles` - List available organization-level roles in Keycloak realm
   - `GET /api/fulfillment/v1/organizations/{name}/roles/{name}` - Get role details
   - `POST /api/fulfillment/v1/organizations/{name}/groups/{group_identifier}/roles` - Assign roles to a group (group identifier from IdP; must be URL-escaped)
   - `GET /api/fulfillment/v1/organizations/{name}/groups` - List groups and their assigned roles (group information retrieved from IdP via Keycloak)
@@ -245,24 +311,41 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 
 ### Role Model and Scoping
 
+OSAC uses a two-tier permission model: Organization-level roles (managed as Keycloak roles) and Project-level permissions (managed via Keycloak Authorization Services).
+
 **System-Level Roles** (assigned only in `System` Organization):
 - `cloud-provider-admin`: Full control over all Organizations in OSAC
 - `cloud-provider-reader`: Read-only access to all Organizations
 
 **Organization-Level Roles** (assigned in tenant Organizations):
-- `tenant-admin`: Full control within a single Organization
-- `tenant-reader`: Read-only access within a single Organization
-- `tenant-user`: Standard user access within a single Organization
+- `tenant-admin`: Full control within a single Organization (including all Projects)
+- `tenant-reader`: Read-only access within a single Organization (to all Projects the user has VIEW_PROJECT permission on)
+- `tenant-user`: Standard user access within a single Organization (to Projects the user has been granted access to)
 
 **Break-Glass Role** (assigned to break-glass accounts):
 - `idp-manager`: Limited role that can manage IdP configuration (view, update, test, view health) and assign roles to groups/users in Keycloak for the organization. Cannot create/delete organizations, manage users (except for role assignment), create projects, or perform any other administrative actions.
 
-**Role Assignment Constraints**:
+**Project-Level Permissions** (managed via Keycloak Authorization Services):
+- Project permissions provide fine-grained, resource-level access control for individual Projects
+- Each Project is a Keycloak Authorization Resource with scoped permissions
+- Example scopes include:
+  - `VIEW_PROJECT` - View project details and status
+  - `MANAGE_PROJECT` - Update project metadata, delete project, manage permissions
+  - `CREATE_COMPUTE_INSTANCE` - Create ComputeInstances in the project
+  - `DELETE_COMPUTE_INSTANCE` - Delete ComputeInstances in the project
+  - Additional scopes for other OSAC resource types (VirtualNetwork, Subnet, SecurityGroup, etc.)
+- **Note**: The specific set of scopes and their granularity (e.g., per-resource-type vs. generic CRUD scopes) will be defined during implementation based on OSAC's resource model and operational requirements. The examples above illustrate the concept.
+- Project permissions are assigned to users or groups independently of organization-level roles
+- Users with `tenant-admin` role automatically have all permissions on all Projects in their Organization
+- Users with `tenant-user` role have permissions only on Projects they've been explicitly granted access to
+
+**Role and Permission Assignment Constraints**:
 - System-level roles can only be assigned in the `System` Organization
 - Organization-level roles can only be assigned in tenant Organizations
+- Project-level permissions can only be assigned within the context of a specific Project
 - Break-glass accounts have the `idp-manager` role and cannot be assigned other roles
 - Cloud Provider Admins (authenticated via IdP) and break-glass accounts can manage System Organization roles in Keycloak
-- Tenant Admins and break-glass accounts can manage organization-level roles in Keycloak within their Organization
+- Tenant Admins and break-glass accounts can manage organization-level roles and project-level permissions in Keycloak within their Organization
 - Authorization policies enforce these constraints to prevent privilege escalation
 
 ### Implementation Details/Notes/Constraints
@@ -293,6 +376,38 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 - Roles appear in token claims: `realm_access.roles` for realm roles, or `resource_access.{client}.roles` for client roles
 - No separate role mapping storage is needed - Keycloak is the source of truth for roles
 
+**Keycloak Authorization Services for Project Permissions**
+- Keycloak Authorization Services (UMA - User-Managed Access) provide fine-grained, resource-level permissions for Projects
+- Each Project is modeled as a Keycloak Authorization Resource with a unique identifier (e.g., `PROJECT-acme-web-app`)
+- Projects have a foreign key relationship to their parent Organization in the OSAC database
+- Scoped permissions control what operations users can perform on specific Projects (examples):
+  - `VIEW_PROJECT` - List project details, view project status
+  - `MANAGE_PROJECT` - Update project metadata, delete project
+  - `CREATE_COMPUTE_INSTANCE` - Create ComputeInstances in the project
+  - `DELETE_COMPUTE_INSTANCE` - Delete ComputeInstances in the project
+  - Additional scopes as needed for other OSAC resource types
+- The specific set of scopes will be defined during implementation
+- Authorino validates Keycloak Authorization at request time by decoding RPT tokens locally (recommended for performance) or via UMA endpoints: "Can user X perform action Y on resource Z?" See the [Keycloak Authorization Services Integration](#keycloak-authorization-services-integration) section for details on the local RPT validation approach.
+- Authorization policies can be defined in Keycloak to handle hierarchical permissions (see [Hierarchical Project Permissions](#hierarchical-project-permissions) for details on which permissions cascade from parent to child projects)
+- Project visibility is controlled through permissions - users only see Projects they have at least `VIEW_PROJECT` permission on
+- This enables true multi-project tenancy where different users have different access to different Projects within the same Organization
+- No separate authorization storage is needed - Keycloak Authorization Services is the source of truth for project permissions
+
+**Project-Scoped Resource Access**
+- All resource operations (list, create, update, delete) are scoped to a specific Project context
+- Users specify the project in the API request (either in the request body or as a path/query parameter)
+- Authorino validates that the user has the required permission on the specified Project before allowing the request to proceed
+- The Fulfillment Service filters resources to only those within the specified Project
+- **Implementation note**: Database queries must use efficient indexing on `project_id` and `organization_id` columns to ensure good performance when filtering resources
+- This provides clear context and simplifies authorization - each request explicitly states which Project it operates on
+- The OSAC Console uses a project switcher (similar to OpenShift) where users select their current project context
+- The CLI requires explicit project specification via flags or configuration
+
+**Future Enhancement: Cross-Project Views**
+- Cross-project resource listing (e.g., "show all VMs across all my accessible projects") is deferred to a future enhancement
+- When implemented, this would require querying Keycloak Authorization Services to retrieve the list of Projects the user has access to, then aggregating resources across those Projects
+- Initial implementation focuses on single-project scoping for simplicity and clarity
+
 **OSAC Gateway (Envoy Proxy)**
 - Receives all incoming API requests at the infrastructure layer
 - Routes requests to appropriate Fulfillment Services based on Gateway API routing rules
@@ -321,9 +436,17 @@ This enhancement introduces new API endpoints following the fulfillment API patt
 - Invoke Fulfillment/Infrastructure layer to realize changes
 
 **OpenShift Integration**
-- Each Project within an Organization maps to an OpenShift Project (e.g., `osac-org-<org-name>-project-<project-name>`)
+- A single OSAC instance with a single API entry point and Keycloak installation can manage multiple OpenShift infrastructure clusters
+- **Important**: This enhancement covers OSAC's infrastructure clusters where OSAC creates Projects for resource isolation. User-facing Cluster-as-a-Service (CaaS) authentication and management is out of scope for this enhancement and will be addressed separately.
+- Each Project within an Organization maps to an OpenShift Project in every managed infrastructure cluster (e.g., `osac-org-<org-name>-project-<project-name>`)
 - Project names are unique within an Organization, so the OpenShift Project name format is sufficient for all projects (including nested projects)
+- Due to OpenShift's name length limits, the full project hierarchy is not encoded in the OpenShift Project name
+- Parent-child relationships are stored in the database and represented on OpenShift Projects via owner references or annotations
+- OpenShift Projects can be created on-demand when resources are first deployed to a cluster, avoiding N×M scaling issues with many projects and clusters
+- Alternatively, OpenShift Projects can be pre-created in all managed clusters at Project creation time for simpler implementation
+- If new clusters are added later, reconciliation creates OpenShift Projects as needed (either immediately or on-demand depending on implementation choice)
 - Organizations do not directly map to OpenShift Projects; they are logical containers for Projects
+- OSAC's authentication to infrastructure clusters, credential management (kubeconfig storage), and ensuring continued API access are implementation details deferred to infrastructure management design
 
 #### Authentication Boundaries
 
@@ -371,24 +494,32 @@ Break-glass account management uses Keycloak as the single source of truth.
 - OSAC reads IdP configuration from Keycloak via Admin REST API or from token claims
 - The Keycloak instance itself (installation, upgrade, backup, etc.) is managed by the user
 
-#### Authorization Policy Extensibility
+#### Authorization Policy Architecture
 
-Kuadrant's Authorino component provides extensible authorization capabilities to support evolving policy requirements:
+Kuadrant's Authorino component provides multi-layered authorization capabilities:
 
-**Initial Implementation (RBAC):**
-- Authorization policies use role-based access control (RBAC) based on OSAC roles from Keycloak tokens
-- Policies evaluate user roles, organization context, and project context to permit or deny API requests
+**Organization-Level Authorization (RBAC):**
+- Authorization policies use role-based access control (RBAC) based on OSAC organization-level roles from Keycloak tokens
+- Policies evaluate user roles and organization context to permit or deny API requests
+- Roles include `cloud-provider-admin`, `tenant-admin`, `tenant-reader`, `tenant-user`, `idp-manager`
+
+**Project-Level Authorization (Keycloak Authorization Services):**
+- Each Project is modeled as a Keycloak Authorization Resource
+- Fine-grained scoped permissions control what operations users can perform on specific Projects
+- Authorino queries Keycloak Authorization Services at request time to evaluate permissions
+- Supports hierarchical permission policies where MANAGE_PROJECT and VIEW_PROJECT permissions automatically cascade from parent to child projects (see [Hierarchical Project Permissions](#hierarchical-project-permissions))
+- Enables true multi-project tenancy with per-project access control
 
 **Future Extensibility:**
 - **OPA Integration**: Authorino can integrate with Open Policy Agent (OPA) for advanced policy evaluation, complex authorization logic, and policy-as-code workflows
-- **SpiceDB Integration**: Authorino can integrate with SpiceDB for Relationship-Based Access Control (ReBAC), enabling hierarchical permissions and relationship-based authorization decisions
+- **SpiceDB Integration**: Authorino can integrate with SpiceDB for Relationship-Based Access Control (ReBAC), enabling more complex relationship-based authorization decisions beyond Keycloak's capabilities
 - **External Authorization Services**: Authorino supports external authorization services, enabling integration with:
   - Cost-management/billing systems to deny access based on quota exhaustion or billing status
   - Compliance systems for policy-based access control
   - Custom authorization logic as requirements evolve
 - **Rate Limiting**: Limitador provides rate limiting capabilities that can be configured per organization, project, user, or API endpoint
 
-This extensibility ensures OSAC can adapt to future authorization requirements without requiring architectural changes.
+This architecture provides comprehensive authorization from day one while ensuring OSAC can adapt to future requirements without architectural changes.
 
 ### Risks and Mitigations
 
@@ -459,11 +590,74 @@ An alternative approach would be to create OpenShift Users for each OSAC user an
 
 The proposed approach maintains clear separation of concerns and allows OSAC to implement its own authorization model independent of OpenShift RBAC.
 
-## Open Questions
+## Deletion Lifecycle Semantics
 
-1. IdP health monitoring and alerting implementation details are deferred to a future improvement. Should this be a separate enhancement or part of a monitoring enhancement?
+**Project Deletion:**
+Following industry best practices from Kubernetes, OpenStack, and AWS, OSAC implements a safe deletion policy:
 
-2. Organization and Project lifecycle semantics (especially deletion) need further definition. What happens to resources when an organization or project is deleted? What is the teardown process? Should project deletion be blocked if it contains resources?
+1. **Default behavior: Block deletion if Project contains resources**
+   - DELETE request returns an error (e.g., 409 Conflict) with a list of resources that must be deleted first
+   - Prevents accidental data loss and orphaned resources
+   - User must explicitly delete all resources (ComputeInstances, VirtualNetworks, etc.) before deleting the Project
+
+2. **Optional cascade deletion with explicit confirmation**
+   - Add `cascade=true` query parameter to DELETE request
+   - Requires explicit user acknowledgment in API call or CLI flag
+   - OSAC deletes all resources within the Project in dependency order, then deletes the Project itself
+   - Returns a detailed list of deleted resources
+
+3. **Automatic cleanup of metadata**
+   - Keycloak Authorization Resources are automatically deleted when Project is deleted (these are just permission metadata, not infrastructure)
+   - OpenShift Projects are reconciled for deletion across all managed clusters
+   - Database records are cleaned up in a transaction
+
+4. **Nested project handling**
+   - Parent projects cannot be deleted if they contain child projects
+   - User must delete child projects first (or use cascade deletion)
+   - Cascade deletion on a parent project deletes all descendants in tree order
+
+**Organization Deletion:**
+Similar semantics apply to Organization deletion:
+1. Block deletion if Organization contains Projects (default)
+2. Optional cascade deletion with `cascade=true` deletes all Projects and their resources
+3. Automatic cleanup: Keycloak realm, break-glass accounts, and Authorization Resources
+
+## Hierarchical Project Permissions
+
+Parent project administrators automatically receive permissions on child projects via Keycloak Authorization policies. This matches typical organizational hierarchies and simplifies management:
+
+- Users with `MANAGE_PROJECT` permission on a parent project automatically have `MANAGE_PROJECT` on all child projects
+- Users with `VIEW_PROJECT` on a parent can view all child projects
+- Resource-specific permissions (e.g., `CREATE_COMPUTE_INSTANCE`) on parent projects do NOT automatically cascade to children - these must be granted explicitly per project
+- This policy is implemented via Keycloak Authorization policies and is consistent across all Organizations
+
+## Keycloak Authorization Services Integration
+
+Authorino integrates with Keycloak Authorization Services using a hybrid approach that optimizes for performance:
+
+**Token Validation Approach:**
+- **RPT tokens**: Authorino performs full JWT validation by verifying the JWS signature against Keycloak's JWKS endpoint, validating mandatory claims (iss, aud, exp, nbf), and performing time checks (exp > now and nbf ≤ now). After JWT validation succeeds, Authorino decodes the token locally and checks the `permissions` claim to evaluate authorization. No remote introspection call is needed - validation is fast and local.
+- **Standard Keycloak tokens**: When a user presents a regular Keycloak access token (not an RPT), Authorino negotiates a User-Managed Access (UMA) ticket with Keycloak and exchanges it for an RPT containing the user's permissions.
+
+**Performance and Caching Strategy:**
+- **Client-side caching**: Once Authorino obtains an RPT, it returns the RPT to the API consumer for use in subsequent requests. This skips new UMA ticket negotiations and enables fast local validation.
+- **RPT validity**: RPTs are short-lived tokens (typically 5-15 minutes, configurable in Keycloak). Clients should cache and reuse RPTs until expiration.
+- **Server-side caching**: Keycloak's internal caching (resource cache, policy cache) significantly impacts UMA ticket negotiation performance. Proper Keycloak cache configuration is critical for production deployments.
+- **Initial negotiation cost**: The first request using a standard token incurs UMA ticket negotiation latency (can be 100ms-2000ms depending on the number of resources and policies). Subsequent requests with the RPT are fast (local JWT validation).
+
+**API Calls to Keycloak:**
+1. Protection Resource API - lookup resource ID from request path
+2. Permission endpoint - negotiate UMA ticket for user's requested resource/scope
+3. Token endpoint - exchange UMA ticket for RPT containing permissions
+4. No token introspection calls needed - RPT validation is local
+
+**Recommendation**: Use local RPT validation (not token introspection) as documented in [Authorino's Keycloak Authorization Services guide](https://docs.kuadrant.io/1.2.x/authorino/docs/user-guides/keycloak-authorization-services/). Ensure Keycloak is properly configured with appropriate cache sizes and high availability for production workloads.
+
+## Future Enhancements
+
+1. **IdP health monitoring and alerting**: Implementation details for proactive IdP health monitoring, alerting, and failover mechanisms will be addressed in a future monitoring-focused enhancement.
+
+2. **Cross-project resource views**: The initial implementation requires users to specify a single Project context for all resource operations. Future enhancements may add cross-project listing capabilities (e.g., "show all VMs across all my accessible projects", `--all-projects` flag in CLI) for dashboard and monitoring use cases.
 
 
 ## Test Plan
