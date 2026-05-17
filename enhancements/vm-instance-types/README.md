@@ -86,7 +86,7 @@ All instance types in Phase 1 are globally scoped:
 **API behavior by state:**
 * ListInstanceTypes: Returns ACTIVE and DEPRECATED by default; supports filter parameter to include OBSOLETE (e.g., `filter: "state IN (ACTIVE, DEPRECATED, OBSOLETE)"`)
 * GetInstanceType: Returns any instance type regardless of state (for viewing details by name)
-* CreateComputeInstance: ACTIVE succeeds, DEPRECATED succeeds with warning, OBSOLETE is rejected with 409 Conflict
+* CreateComputeInstance: ACTIVE succeeds, DEPRECATED succeeds with warning in `CreateComputeInstanceResponse.warnings` field, OBSOLETE is rejected with 409 Conflict
 
 ### Naming and Uniqueness
 
@@ -199,8 +199,15 @@ All instance types in Phase 1 are globally scoped:
    - Instance type "standard-4-16" exists and state is ACTIVE or DEPRECATED
    - User has appropriate permissions
    - Resolves instance type to cores=4, memory_gib=16
-   - If state is DEPRECATED, includes warning in response
-3. The Fulfillment Service creates the ComputeInstance CR with expanded values:
+   - If state is DEPRECATED, includes warning in `CreateComputeInstanceResponse.warnings` field
+3. The API returns `CreateComputeInstanceResponse`:
+   ```json
+   {
+     "compute_instance": { /* ComputeInstance resource */ },
+     "warnings": []  // Empty for ACTIVE instance types; contains deprecation message for DEPRECATED types
+   }
+   ```
+4. The Fulfillment Service creates the ComputeInstance CR with expanded values:
    ```yaml
    apiVersion: osac.openshift.io/v1alpha1
    kind: ComputeInstance
@@ -218,8 +225,8 @@ All instance types in Phase 1 are globally scoped:
        source_type: "registry"
        source_ref: "quay.io/fedora/fedora:40"
    ```
-4. The osac-operator reconciles the ComputeInstance, reading cores and memory_gib from spec
-5. The VM is provisioned via KubeVirt with 4 cores and 16 GiB RAM
+5. The osac-operator reconciles the ComputeInstance, reading cores and memory_gib from spec
+6. The VM is provisioned via KubeVirt with 4 cores and 16 GiB RAM
 
 **Error Cases**
 
@@ -271,7 +278,7 @@ Note: The Kubernetes CR schema retains cores/memory_gib fields. The fulfillment-
 **Public API (Organization Users):**
 - CreateComputeInstance: Require instance_type field (string name), reject if missing
 - CreateComputeInstance: Validate instance_type name exists and state is ACTIVE or DEPRECATED
-- CreateComputeInstance: If state is DEPRECATED, return warning with replacement suggestion (if set)
+- CreateComputeInstance: If state is DEPRECATED, include warning in `CreateComputeInstanceResponse.warnings` field with replacement suggestion (if set) and obsolete timestamp (if set)
 - CreateComputeInstance: If state is OBSOLETE, reject with HTTP 409 Conflict ("instance type is obsolete")
 - CreateComputeInstance: If instance_type name not found, reject with HTTP 404 Not Found
 - CreateComputeInstance: Expand instance_type name to cores/memory_gib before creating CR
@@ -499,6 +506,12 @@ message ComputeInstanceSpec {
   optional string user_data = 11;
   optional string subnet = 12;
   repeated string security_groups = 13;
+}
+
+// CreateComputeInstanceResponse includes warnings for DEPRECATED instance types
+message CreateComputeInstanceResponse {
+  ComputeInstance compute_instance = 1;
+  repeated string warnings = 2;  // Warning messages (e.g., "Instance type 'standard-2-4' is deprecated and will become obsolete on 2026-12-31. Consider migrating to 'standard-2-8'.")
 }
 ```
 
