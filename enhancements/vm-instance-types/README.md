@@ -285,9 +285,12 @@ Note: The Kubernetes CR schema retains cores/memory_gib fields. The fulfillment-
 - CreateInstanceType: Default state to ACTIVE if not specified
 - UpdateInstanceType: Reject changes to name, cores, or memory_gib (immutable)
 - UpdateInstanceType: Allow changes to description, state, and deprecation fields
-- UpdateInstanceType: When transitioning to DEPRECATED, auto-populate deprecation.deprecated timestamp if not provided
-- UpdateInstanceType: When transitioning to OBSOLETE, auto-populate deprecation.obsolete timestamp if not provided
-- UpdateInstanceType: Validate deprecation.obsolete is in the future when transitioning to DEPRECATED
+- UpdateInstanceType: When transitioning to DEPRECATED, auto-populate deprecation.deprecated timestamp (set to current time) if not provided
+- UpdateInstanceType: When transitioning to OBSOLETE, auto-populate deprecation.obsolete timestamp (set to current time) if not provided
+- UpdateInstanceType: If deprecation.deprecated is provided explicitly, allow any timestamp (past or future) - represents when deprecation was/will be announced
+- UpdateInstanceType: If deprecation.obsolete is provided explicitly when transitioning to DEPRECATED, validate it is in the future (cannot set future DEPRECATED type to already-obsolete)
+- UpdateInstanceType: If deprecation.obsolete is provided explicitly when transitioning to OBSOLETE, allow any timestamp (past or future) - represents when it became/will become obsolete
+- UpdateInstanceType: API behavior is based on state field, not timestamps (future deprecation timestamps do not affect current behavior)
 - DeleteInstanceType: Reject if any ComputeInstances reference this instance type by name
 
 #### Deletion Protection
