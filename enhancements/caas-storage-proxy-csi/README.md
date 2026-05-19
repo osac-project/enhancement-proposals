@@ -86,7 +86,7 @@ If tenant clusters deploy vendor CSI drivers (e.g., VAST, Ceph) directly and com
 
 The proposed architecture establishes a three-tier control plane for CaaS storage:
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────┐
 │ Tenant Kubernetes Cluster (Hosted by OSAC)                 │
 │                                                             │
@@ -446,7 +446,7 @@ Despite these drawbacks, the centralized control plane architecture is the ONLY 
 **Description**: Deploy vendor CSI drivers (VAST, Ceph, NetApp) directly in tenant clusters. Tenant clusters communicate with storage backends over a dedicated storage network.
 
 **Architecture**:
-```
+```text
 Tenant Cluster
   └─ Vendor CSI Driver (VAST, Ceph)
        └─ Storage Backend (direct communication)
@@ -454,31 +454,22 @@ Tenant Cluster
 
 **Why Rejected**:
 
-1. **Violates Sovereignty Claims**: OSAC cannot claim strict governance over tenant data when tenants can provision volumes directly on shared storage infrastructure. The control plane is bypassed, invalidating sovereignty guarantees.
+This option violates all four core requirements from the Motivation section:
 
-2. **Fragmented Audit Trail**: Storage lifecycle events are logged only in vendor backend systems, not in OSAC's centralized audit log. Compliance audits require correlating logs across multiple storage arrays, breaking the single-source-of-truth requirement.
+1. **Evidence Locker Compliance Violation**: Tenant clusters are untrusted sources outside the high-trust boundary. The evidence locker cannot accept lifecycle events from tenant K8s audit logs or correlate backend storage logs with OSAC tenant mappings to produce cryptographically signed compliance attestations. Storage lifecycle events must be attested by the OSAC control plane.
 
-3. **Information Leakage and Operational Burden**:
-   - While storage backends can provide tenant-scoped credentials (separate management endpoints or API keys per organization), distributing these into tenant clusters leaks infrastructure details that OSAC otherwise abstracts (management IPs, backend hardware topology, storage vendor specifics beyond what the node plugin already reveals)
-   - This is analogous to leaking which physical host a VM runs on — information OSAC intentionally hides
-   - Credential rotation requires updating secrets in every tenant cluster instead of only in the management cluster, increasing operational complexity and surface area for misconfigurations
-   - Tenant cluster-admins gain visibility into backend infrastructure that undermines OSAC's abstraction layer
+2. **Fragmented Volume Inventory and Governance**: CaaS volumes would exist only as PVCs in tenant cluster etcd, invisible to OSAC's unified inventory. Cross-workload governance policies (snapshot schedules, size approvals, encryption requirements) cannot be applied uniformly. Quota enforcement becomes vendor-specific with inconsistent timing (VAST: provision-time hard limit, Ceph: runtime soft limit, Pure: configurable burst). Encryption key management for backends like NetApp ONTAP would require either direct KMIP access from tenant clusters (security risk) or per-cluster fragmented key storage (no central audit trail). Operational troubleshooting requires manual correlation across backend APIs and tenant clusters.
 
-4. **Vendor-Specific Quota Enforcement**: OSAC must rely on each storage backend's native quota implementation, which means:
-   - Different quota models per vendor (VAST quotas work differently than Ceph quotas)
-   - Different enforcement granularity (some backends support per-organization quotas, others only per-pool or per-project)
-   - No single enforcement point or uniform policy across all storage tiers
-   - OSAC cannot guarantee consistent quota behavior or reporting across different backends
-   - CSPs must configure quotas separately in each backend system, increasing operational complexity
-   - Quota violations may behave differently (some backends hard-fail, others soft-warn, others allow overruns)
+3. **Network Trust Boundary Violation**: Tenant cluster worker nodes (low-trust zone) would require network access to storage backend control APIs (high-trust zone), violating network segmentation principles for sovereign environments. The OSAC CSI proxy maintains separation: tenant clusters communicate only with OSAC control plane, management cluster accesses storage control network.
 
-5. **Operational Complexity**: Each storage vendor has different APIs, authentication models, and multi-tenancy patterns. OSAC must implement vendor-specific clients to query usage, bill organizations, and detect anomalies. This breaks the vendor-agnostic abstraction layer. Additionally, usage data must be polled from backends and will lag behind actual values, causing confusing UX where quota appears available in OSAC but requests are rejected by the backend.
+4. **Operational Complexity**: OSAC must implement vendor-specific integration code for each backend (VAST REST, Ceph CLI, NetApp ONTAP API, Pure REST - all different auth and data models) to query usage, enforce quotas, and detect anomalies. Usage data must be polled (expensive) or cached (stale), creating UX confusion where quota appears available in OSAC console but provision requests fail at the backend.
 
-6. **Volume Import Requirement**: To allow users to manage volumes via the OSAC API (resize, snapshot, backup, cross-cluster portability), OSAC must import volume metadata from storage backends. This creates a synchronization problem: volumes created directly via tenant CSI drivers must be discovered and imported, leading to eventual consistency issues and potential conflicts between backend state and OSAC's view.
+**Additional Drawbacks**:
 
-7. **Breaks API Gateway Boundary**: OSAC's architectural requirement is that all infrastructure mutations flow through the OSAC API for authorization and audit. Option B allows tenants to mutate shared infrastructure out-of-band, violating this guardrail.
+- **Volume Import Synchronization**: To support OSAC API management of volumes (resize, snapshot, cross-cluster portability), volumes created via tenant CSI drivers must be discovered and imported, leading to eventual consistency issues and potential conflicts between backend state and OSAC database.
+- **Breaks API Gateway Boundary**: OSAC's architectural requirement is that all infrastructure mutations flow through the OSAC API for authorization and audit. Option B allows tenants to mutate shared infrastructure out-of-band.
 
-**Conclusion**: Option B appears simpler initially (reuse vendor drivers as-is), but long-term complexity is higher: developing and testing per-backend plugins for quota queries, volume import/sync logic, and handling consistency between backend state and OSAC's database. Additionally, it is architecturally incompatible with OSAC's product requirements. The centralized control plane (Option A) is the only viable approach.
+**Conclusion**: Option B appears simpler initially (reuse vendor drivers as-is), but the long-term operational burden is higher: vendor-specific backend integrations, quota polling infrastructure, volume import/sync logic, and fragmented credential distribution. Additionally, it is fundamentally incompatible with OSAC's sovereign cloud compliance requirements. The centralized control plane (Option A) is the only viable approach.
 
 ## Infrastructure Needed
 
