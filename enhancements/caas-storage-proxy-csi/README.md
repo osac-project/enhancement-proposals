@@ -432,6 +432,27 @@ OSAC Volume API delegates to vendor CSI drivers running in the management cluste
 - Document minimum multi-tenancy requirements for supported storage backends
 - Audit storage backend configurations during CSP onboarding
 
+#### Risk: NFS Protocol Limitations in Multi-Tenant Environments
+
+**Description**: NFS-based storage presents unique security challenges in multi-tenant environments that the OSAC proxy architecture cannot fully mitigate. Unlike block protocols (iSCSI, RBD, FC) where control plane operations (create LUN, manage pools) use a separate vendor API and data plane operations use the storage protocol, NFS uses **a single protocol for both**: creating subdirectories, mounting, and file operations all use NFS. This means:
+
+- **No credential separation**: The same NFS credentials (Kerberos principal or AUTH_SYS IP allowlist) that allow mounting also allow creating/deleting directories on the export.
+- **Subdirectory isolation weakness**: Common NFS CSI drivers provision volumes as subdirectories under a shared parent export (e.g., `/exports/tenant-acme-corp/vol-123/`, `/exports/tenant-acme-corp/vol-456/`). A compromised node with mount access to the parent export can `ls` to enumerate all volumes and `rm -rf` to delete any subdirectory within that tenant's namespace.
+- **SELinux isolation broken**: Volumes provisioned as subdirectories of the same export must share an SELinux label (`seLinuxMount: false`), preventing per-volume isolation.
+- **Path traversal vulnerabilities**: CVE-2026-3864 demonstrated that insufficient validation of subdirectory paths in NFS CSI drivers can allow attackers to delete unintended directories.
+
+The OSAC proxy architecture provides unified inventory and audit logging for NFS volumes, but **does not solve the fundamental protocol-level isolation issues** because there is no separate control plane API to isolate.
+
+**Mitigation**:
+- **Prefer block protocols** (iSCSI, RBD, FC) for security-sensitive multi-tenant environments where volumes require strong isolation.
+- For NFS deployments:
+  - Use separate NFS exports per volume (not subdirectories) for stronger isolation, though this increases operational complexity.
+  - Rely on file-level permissions (UID/GID mapping) and export policies (IP allowlists) for isolation.
+  - Use NFSv4 with Kerberos (krb5p mode) for encryption and authentication instead of AUTH_SYS.
+  - Monitor and audit NFS access logs for anomalous activity (unexpected directory access, deletion attempts).
+  - Ensure NFS CSI driver is patched to v4.13.1+ to mitigate CVE-2026-3864.
+- **Document NFS limitations** in OSAC security guidance for CSPs and recommend block protocols as the primary storage option.
+
 ### Drawbacks
 
 **Increased Complexity**: OSAC must maintain a CSI driver and proxy layer, adding operational burden compared to letting tenant clusters use vendor CSI drivers directly.
