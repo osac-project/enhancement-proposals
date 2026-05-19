@@ -25,7 +25,7 @@ OSAC's product positioning requires demonstrable data sovereignty and centralize
 
 If tenant clusters deploy vendor CSI drivers (e.g., VAST, Ceph) directly and communicate with storage arrays over an out-of-band network for control plane operations (CreateVolume, DeleteVolume, ControllerPublishVolume), OSAC faces several showstopping issues:
 
-1. **Evidence Locker Compliance Violation**: OSAC's sovereign cloud architecture requires an evidence locker—a cryptographically signed, immutable audit repository proving compliance with data residency laws and operational boundaries. Storage backends can isolate tenants via dedicated pools (separate namespaces with QoS, quotas, redundancy controls), but the core question is: Does OSAC need control-plane visibility into what happens in those pools? For evidence locker compliance, the answer is yes:
+1. **Evidence Locker Compliance Violation**: OSAC's sovereign cloud architecture requires an evidence locker - a cryptographically signed, immutable audit repository proving compliance with data residency laws and operational boundaries. Storage backends can isolate tenants via dedicated pools (separate namespaces with QoS, quotas, redundancy controls), but OSAC needs control-plane visibility into what happens in those pools:
 
    - **Tenant clusters are untrusted**: A compromised cluster could suppress audit logs, forge timestamps, or modify webhook configurations. The evidence locker cannot accept events from sources outside the trust boundary.
    
@@ -37,13 +37,14 @@ If tenant clusters deploy vendor CSI drivers (e.g., VAST, Ceph) directly and com
 
 2. **Fragmented Volume Inventory and Governance**: Without OSAC control plane visibility, CaaS volumes exist only as Kubernetes PVCs in tenant cluster etcd, invisible to OSAC's unified resource inventory. This prevents:
 
-   - **Cross-workload governance**: Cannot apply policies like "snapshot all production volumes daily" uniformly across VMs, clusters, and bare-metal hosts.
+   - **Cross-workload governance**: Cannot apply policies like "snapshot all production volumes daily" or "require approval for allocating volumes larger than 1TB" uniformly across VMs, clusters, and bare-metal hosts.
    - **Unified inventory**: `osac volumes list --organization acme-corp` returns VMaaS and BMaaS volumes but omits CaaS PVCs.
-   - **Consistent quota enforcement**: Different backends enforce quotas differently (VAST: hard limit at provision, Ceph: soft limit with grace, Pure: configurable burst). OSAC cannot provide consistent API-level quota enforcement across storage tiers.
-   - **Account lifecycle control**: Suspending an organization requires revoking credentials in every tenant cluster instead of a single control-plane operation.
+   - **Consistent quota enforcement**: Different backends enforce quotas differently (VAST: hard limit at provision, Ceph: soft limit with grace, Pure: configurable burst). OSAC cannot provide consistent API-level quota enforcement across storage tiers. Quotas similar to AWS/GCP can easily be implemented generically in the OSAC control plane.
+   - **Account lifecycle control**: Suspending an organization requires revoking credentials for every tenant cluster instead of a single control-plane operation.
    - **Encryption key management**: Storage backends like NetApp ONTAP that support per-volume encryption with external KMIP servers (NetApp Volume Encryption with unique keys per volume) require OSAC to broker key requests from the central KMS (e.g., Vault). Without OSAC in the path, either volumes remain unencrypted (compliance violation), tenant clusters need direct KMIP access (security risk, credential distribution), or encryption keys are managed per-cluster (fragmented, no central audit trail of which volumes are encrypted with which keys).
-   
-   Operational scenarios become fragmented: troubleshooting "We're billed for 8TB but only see 6TB" requires querying vendor-specific backend APIs, manually mapping hardware volume IDs back to PVCs across isolated clusters, and reconstructing inventory by hand.
+   - **Operational troubleshooting**: Without unified inventory, common support scenarios require manual correlation across systems:
+     - Billing discrepancy: "We're billed for 8TB but only see 6TB in our clusters" → must query vendor-specific backend APIs, map hardware volume IDs back to PVCs across isolated clusters
+     - Quota exhaustion: "Why can't I create a new PVC?" → must check OSAC quota dashboard, then separately query each storage backend's quota API to determine which tier is exhausted, but backend quota data may be stale
 
 3. **Network Trust Boundary Violation**: Direct backend access requires tenant cluster worker nodes (low-trust zone) to access storage backend control APIs on the storage management network (high-trust zone). This violates network segmentation principles for sovereign environments where low-trust tenant infrastructure must remain isolated from high-trust storage control infrastructure. With the OSAC CSI driver proxy, tenant clusters communicate only with the OSAC control plane via the existing tenant-to-control-plane network path, while only the management cluster (high-trust) accesses the storage control network. The data path remains direct (iSCSI/NVMe-TCP from worker nodes to storage data network), but the **control path** (CreateVolume, DeleteVolume, ControllerPublishVolume) is proxied through the high-trust zone, maintaining clear network trust boundaries.
 
