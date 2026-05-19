@@ -25,15 +25,26 @@ OSAC's product positioning requires demonstrable data sovereignty and centralize
 
 If tenant clusters deploy vendor CSI drivers (e.g., VAST, Ceph) directly and communicate with storage arrays over an out-of-band network, OSAC faces several showstopping issues:
 
-1. **Sovereignty Claims Invalidated**: OSAC cannot claim strict governance over tenant data when tenants can provision volumes directly on shared storage infrastructure without control plane visibility or approval.
+1. **Evidence Locker Compliance Violation**: OSAC's sovereign cloud architecture requires an evidence locker—a cryptographically signed, immutable audit repository proving compliance with data residency laws and operational boundaries. Storage backends can isolate tenants via dedicated pools (separate namespaces with QoS, quotas, redundancy controls), but the core question is: Does OSAC need control-plane visibility into what happens in those pools? For evidence locker compliance, the answer is yes:
 
-2. **Fragmented Audit Trail**: Storage lifecycle events (volume creation, deletion, snapshots) are recorded only in vendor backend logs, not in OSAC's centralized audit system. This breaks the immutable audit log requirement.
+   - **Tenant clusters are untrusted**: A compromised cluster could suppress audit logs, forge timestamps, or modify webhook configurations. The evidence locker cannot accept events from sources outside the trust boundary.
+   
+   - **Backend logs lack identity context**: Storage arrays log pool-level operations (e.g., "Namespace pool-12345 created volume vol-abc-123") but are missing who (user identity), why (organization/project context), and policy approval (was this authorized?).
+   
+   - **Multi-source correlation is unverifiable**: Reconstructing compliance events from tenant K8s audit logs + backend storage logs + OSAC tenant mappings produces a composite event that cannot be cryptographically signed by a single authority.
 
-3. **Information Leakage and Credential Distribution**: While storage backends can provide tenant-scoped credentials (separate API keys or management endpoints per tenant), distributing these into tenant clusters leaks infrastructure details (management IPs, storage backend identity) that OSAC otherwise abstracts. This is analogous to leaking which physical host a VM runs on. Additionally, credential rotation becomes operationally complex (must update secrets in all tenant clusters) compared to centralizing credentials in the management cluster only.
+   Without OSAC in the control path, storage lifecycle events cannot be attested by the OSAC control plane, breaking the evidence locker's trust model.
 
-4. **Fragmented Quota Enforcement**: OSAC must rely on vendor-specific quota mechanisms, meaning different quota models, enforcement behaviors, and reporting across storage backends. No single unified enforcement point or consistent quota semantics.
+2. **Fragmented Volume Inventory and Governance**: Without OSAC control plane visibility, CaaS volumes exist only as Kubernetes PVCs in tenant cluster etcd, invisible to OSAC's unified resource inventory. This prevents:
 
-5. **Operational Complexity**: Each storage vendor has different API patterns, authentication mechanisms, and multi-tenancy models. OSAC would need to query each backend separately to load usage data, breaking the single-source-of-truth control plane pattern. Usage data will lag behind actual values (polling/caching), causing confusing UX where quota appears available but requests are rejected by the backend.
+   - **Cross-workload governance**: Cannot apply policies like "snapshot all production volumes daily" uniformly across VMs, clusters, and bare-metal hosts.
+   - **Unified inventory**: `osac volumes list --organization acme-corp` returns VMaaS and BMaaS volumes but omits CaaS PVCs.
+   - **Consistent quota enforcement**: Different backends enforce quotas differently (VAST: hard limit at provision, Ceph: soft limit with grace, Pure: configurable burst). OSAC cannot provide consistent API-level quota enforcement across storage tiers.
+   - **Account lifecycle control**: Suspending an organization requires revoking credentials in every tenant cluster instead of a single control-plane operation.
+   
+   Operational scenarios become fragmented: troubleshooting "We're billed for 8TB but only see 6TB" requires querying vendor-specific backend APIs, manually mapping hardware volume IDs back to PVCs across isolated clusters, and reconstructing inventory by hand.
+
+3. **Operational Complexity**: Each storage vendor has different API patterns, authentication mechanisms, and multi-tenancy models. OSAC would need to query each backend separately to load usage data, breaking the single-source-of-truth control plane pattern. Usage data will lag behind actual values (polling/caching), causing confusing UX where quota appears available but requests are rejected by the backend.
 
 ### User Stories
 
