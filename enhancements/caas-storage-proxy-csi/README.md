@@ -41,6 +41,7 @@ If tenant clusters deploy vendor CSI drivers (e.g., VAST, Ceph) directly and com
    - **Unified inventory**: `osac volumes list --organization acme-corp` returns VMaaS and BMaaS volumes but omits CaaS PVCs.
    - **Consistent quota enforcement**: Different backends enforce quotas differently (VAST: hard limit at provision, Ceph: soft limit with grace, Pure: configurable burst). OSAC cannot provide consistent API-level quota enforcement across storage tiers.
    - **Account lifecycle control**: Suspending an organization requires revoking credentials in every tenant cluster instead of a single control-plane operation.
+   - **Encryption key management**: Storage backends like NetApp ONTAP that support per-volume encryption with external KMIP servers (NetApp Volume Encryption with unique keys per volume) require OSAC to broker key requests from the central KMS (e.g., Vault). Without OSAC in the path, either volumes remain unencrypted (compliance violation), tenant clusters need direct KMIP access (security risk, credential distribution), or encryption keys are managed per-cluster (fragmented, no central audit trail of which volumes are encrypted with which keys).
    
    Operational scenarios become fragmented: troubleshooting "We're billed for 8TB but only see 6TB" requires querying vendor-specific backend APIs, manually mapping hardware volume IDs back to PVCs across isolated clusters, and reconstructing inventory by hand.
 
