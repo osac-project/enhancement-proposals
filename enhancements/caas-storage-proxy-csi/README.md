@@ -160,14 +160,15 @@ The proposed architecture establishes a three-tier control plane for CaaS storag
 
 2. **Kubernetes** detects the unbound PVC and triggers the CSI external-provisioner sidecar, which calls `CreateVolume` on the OSAC CSI driver controller plugin.
 
-3. **OSAC CSI Driver (Controller)** extracts the request parameters (size, storage tier, access mode) and forwards a `CreateVolume` gRPC request to the OSAC Volume API, including:
-   - Tenant identity (extracted from ServiceAccount token)
-   - Organization ID (from tenant cluster metadata)
+3. **OSAC CSI Driver (Controller)** extracts the request parameters (size, storage tier, access mode) and forwards a `CreateVolume` gRPC request to the OSAC Volume API over mTLS, including:
    - Storage tier (from StorageClass parameter)
    - Volume size and access mode
+   - Workload identity (optional: ServiceAccount token for finer-grained RBAC)
 
 4. **OSAC Volume API** (fulfillment-service):
-   - Authenticates the tenant cluster's request using mTLS and RBAC
+   - Authenticates cluster/organization identity via mTLS client certificate
+   - Optionally validates ServiceAccount token for workload-specific authorization
+   - Enforces RBAC policies based on cluster identity (organization quota, storage tier access)
    - Enforces organization quotas and writes an immutable audit log entry
    - Creates a `Volume` resource in the database
    - Calls the appropriate vendor CSI driver in the management cluster (e.g., VAST CSI driver) via the Kubernetes CSI interface
@@ -314,9 +315,10 @@ These API calls enforce quota, RBAC, and audit logging before delegating to vend
 **Rationale for Reusing Vendor Node Plugins**: Vendor CSI node plugins are complex, protocol-specific, and well-tested. Reusing them reduces OSAC's implementation burden, improves supportability (CSPs can leverage vendor support channels), and ensures compatibility with vendor storage features (multipath, CHAP auth, etc.).
 
 **Authentication**:
-- Tenant cluster → OSAC API: mTLS with cluster-specific client certificates
-- OSAC API identifies the tenant cluster and organization from the client certificate
-- OSAC API enforces RBAC policies (organization quota, storage tier access)
+- Tenant cluster → OSAC API: mTLS with cluster-specific client certificates (provides transport security and cluster/organization identity)
+- OSAC API extracts organization and cluster identity from the mTLS client certificate
+- Optionally, the OSAC CSI driver can forward ServiceAccount tokens for workload-specific authorization (e.g., project-scoped storage tier access)
+- Authorization decisions use the mTLS-authenticated cluster/org identity; ServiceAccount tokens enable finer-grained RBAC when needed
 
 #### OSAC Volume API Changes (OSAC-48 Dependency)
 
@@ -375,7 +377,8 @@ OSAC Volume API delegates to vendor CSI drivers running in the management cluste
 - Vendor CSI node plugins deployed as DaemonSets (VAST, Ceph, etc.)
 - StorageClasses created with `provisioner: csi.osac.io` and tier parameters
 - Client certificate for mTLS to OSAC Volume API
-- No storage backend credentials
+- No admin/control-plane credentials for storage backends (control operations go through OSAC API)
+- Data-plane secrets provided per-volume by OSAC API (e.g., Ceph authentication secrets for node plugin to mount RBD volumes)
 
 ### Risks and Mitigations
 
