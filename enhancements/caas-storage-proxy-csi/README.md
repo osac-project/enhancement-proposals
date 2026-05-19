@@ -28,9 +28,9 @@ If tenant clusters deploy vendor CSI drivers (e.g., VAST, Ceph) directly and com
 1. **Evidence Locker Compliance Violation**: OSAC's sovereign cloud architecture requires an evidence locker - a cryptographically signed, immutable audit repository proving compliance with data residency laws and operational boundaries. Storage backends can isolate tenants via dedicated pools (separate namespaces with QoS, quotas, redundancy controls), but OSAC needs control-plane visibility into what happens in those pools:
 
    - **Tenant clusters are untrusted**: A compromised cluster could suppress audit logs, forge timestamps, or modify webhook configurations. The evidence locker cannot accept events from sources outside the trust boundary.
-   
+
    - **Backend logs lack identity context**: Storage arrays log pool-level operations (e.g., "Namespace pool-12345 created volume vol-abc-123") but are missing who (user identity), why (organization/project context), and policy approval (was this authorized?).
-   
+
    - **Multi-source correlation is unverifiable**: Reconstructing compliance events from tenant K8s audit logs + backend storage logs + OSAC tenant mappings produces a composite event that cannot be cryptographically signed by a single authority.
 
    Without OSAC in the control path, storage lifecycle events cannot be attested by the OSAC control plane, breaking the evidence locker's trust model.
