@@ -45,7 +45,9 @@ If tenant clusters deploy vendor CSI drivers (e.g., VAST, Ceph) directly and com
    
    Operational scenarios become fragmented: troubleshooting "We're billed for 8TB but only see 6TB" requires querying vendor-specific backend APIs, manually mapping hardware volume IDs back to PVCs across isolated clusters, and reconstructing inventory by hand.
 
-3. **Operational Complexity**: Each storage vendor has different API patterns, authentication mechanisms, and multi-tenancy models. OSAC would need to query each backend separately to load usage data, breaking the single-source-of-truth control plane pattern. Usage data will lag behind actual values (polling/caching), causing confusing UX where quota appears available but requests are rejected by the backend.
+3. **Network Trust Boundary Violation**: Direct backend access requires tenant cluster worker nodes (low-trust zone) to access storage backend control APIs on the storage management network (high-trust zone). This violates network segmentation principles for sovereign environments where low-trust tenant infrastructure must remain isolated from high-trust storage control infrastructure. With the OSAC CSI driver proxy, tenant clusters communicate only with the OSAC control plane via the existing tenant-to-control-plane network path, while only the management cluster (high-trust) accesses the storage control network. The data path remains direct (iSCSI/NVMe-TCP from worker nodes to storage data network), but the **control path** (CreateVolume, DeleteVolume, ControllerPublishVolume) is proxied through the high-trust zone, maintaining clear network trust boundaries.
+
+4. **Operational Complexity**: Each storage vendor has different API patterns, authentication mechanisms, and multi-tenancy models. OSAC would need to query each backend separately to load usage data, breaking the single-source-of-truth control plane pattern. Usage data will lag behind actual values (polling/caching), causing confusing UX where quota appears available but requests are rejected by the backend.
 
 ### User Stories
 
