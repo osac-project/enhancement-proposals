@@ -23,7 +23,7 @@ OSAC's product positioning requires demonstrable data sovereignty and centralize
 
 ### The Problem
 
-If tenant clusters deploy vendor CSI drivers (e.g., VAST, Ceph) directly and communicate with storage arrays over an out-of-band network, OSAC faces several showstopping issues:
+If tenant clusters deploy vendor CSI drivers (e.g., VAST, Ceph) directly and communicate with storage arrays over an out-of-band network for control plane operations (CreateVolume, DeleteVolume, ControllerPublishVolume), OSAC faces several showstopping issues:
 
 1. **Evidence Locker Compliance Violation**: OSAC's sovereign cloud architecture requires an evidence locker—a cryptographically signed, immutable audit repository proving compliance with data residency laws and operational boundaries. Storage backends can isolate tenants via dedicated pools (separate namespaces with QoS, quotas, redundancy controls), but the core question is: Does OSAC need control-plane visibility into what happens in those pools? For evidence locker compliance, the answer is yes:
 
