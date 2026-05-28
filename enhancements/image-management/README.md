@@ -19,7 +19,7 @@ superseded-by:
 
 ## Summary
 
-This enhancement introduces a **ComputeImage** API resource for managing virtual machine images as first-class entities in OSAC. Instead of users specifying arbitrary image URLs when creating a ComputeInstance, administrators register images that point to OCI-compatible artifacts in a registry, and users select from this curated catalog. This first milestone focuses on metadata-level image management with out-of-band image upload — OSAC tracks and serves the image catalog but does not handle the binary upload itself. The design supports both provider-global images (available to all tenants) and tenant-scoped images (visible only within a single tenant).
+This enhancement introduces a **ComputeImage** API resource for managing virtual machine images as first-class entities in OSAC. Instead of users specifying arbitrary image URLs when creating a ComputeInstance, administrators register images that point to OCI-compatible artifacts in a registry, and users select from this curated list of images. This first milestone focuses on metadata-level image management with out-of-band image upload — OSAC tracks and serves the list of images but does not handle the binary upload itself. The design supports both provider-global images (available to all tenants) and tenant-scoped images (visible only within a single tenant).
 
 ## Terminology
 
@@ -50,9 +50,9 @@ Every major cloud provider (AWS AMI, GCP Images, Azure VM Images) treats VM imag
 
 * As a provider administrator, I want to set a human-readable display name and description on each ComputeImage so that users can make informed selections without understanding OCI artifact conventions.
 
-* As a provider administrator, I want to list all registered images (global and tenant-scoped) so that I can audit the image catalog across the platform.
+* As a provider administrator, I want to list all registered images (global and tenant-scoped) so that I can audit the list across the platform.
 
-* As a provider administrator, I want to update the metadata of a global image (e.g., change description, fix a typo in the display name) so that I can maintain the platform's base image catalog.
+* As a provider administrator, I want to update the metadata of a global image (e.g., change description, fix a typo in the display name) so that I can maintain the platform's list of base imagesƒ.
 
 * As a provider administrator, I want to delete a global image that is no longer supported so that tenants are not using outdated or insecure base images.
 
@@ -697,7 +697,7 @@ The osac-operator does not need a new CRD for ComputeImage — image management 
 
 #### Impact on ComputeInstanceTemplate
 
-The `ComputeInstanceTemplate` resource also uses `ComputeInstanceImage`. It will be updated to reference a `compute_image` (ComputeImage ID) instead. Templates that specify an image will point to a registered ComputeImage, ensuring that template-based VM creation also goes through the catalog.
+The `ComputeInstanceTemplate` resource also uses `ComputeInstanceImage`. It will be updated to reference a `compute_image` (ComputeImage ID) instead. Templates that specify an image will point to a registered ComputeImage, ensuring that images are chosen from the list.
 
 ### Risks and Mitigations
 
@@ -706,7 +706,7 @@ The `ComputeInstanceTemplate` resource also uses `ComputeInstanceImage`. It will
 | Breaking change to ComputeInstance API | Existing clients using `source_type`/`source_ref` will break | Two-phase migration: (1) Transitional release retains `image` (field 4, deprecated) only for existing resources and enforces the usage of `compute_image` (field 14) for new instances. (2) Removal release deletes field 4 and reserves it. |
 | Global images visible across all tenants | Potential information leakage if image names/descriptions contain sensitive info | Provider admin is trusted; document that global image metadata is visible to all tenants. |
 | Orphaned ComputeImages | Deleted images still referenced by running VMs | Running VMs retain the resolved OCI reference. Only new VM creation is blocked. Document this behavior. |
-| Performance of List with many images | Large catalogs could slow listing | Standard pagination support via `page` and `size` parameters. Index on tenants array. |
+| Performance of List with many images | A large image list could slow listing | Standard pagination support via `page` and `size` parameters. Index on tenants array. |
 
 ### Drawbacks
 
@@ -720,7 +720,7 @@ The `ComputeInstanceTemplate` resource also uses `ComputeInstanceImage`. It will
 
 Instead of a new resource, add validation rules to the existing `source_ref` field — for example, an allowlist of permitted registries or image patterns.
 
-**Rejected because**: This provides no discoverability (users can't list available images), no human-readable metadata, and no centralized governance. It addresses only the "prevent arbitrary URLs" goal without solving the catalog problem.
+**Rejected because**: This provides no discoverability (users can't list available images), no human-readable metadata, and no centralized governance. It addresses only the "prevent arbitrary URLs" goal without solving the list of offering problem.
 
 ### Alternative 2: Use CatalogItems for Image Selection
 
@@ -738,7 +738,7 @@ Introduce an `ImageClass` resource (like NetworkClass) representing different im
 
 Build the ComputeImage API with integrated binary upload (similar to AWS EC2 `ImportImage`).
 
-**Deferred**: Building a reliable image upload pipeline (chunked upload, resumption, progress tracking, virus scanning) is a significant effort that would delay the core catalog functionality. The out-of-band upload approach unblocks VM governance immediately while the upload API is designed separately.
+**Deferred**: Building a reliable image upload pipeline (chunked upload, resumption, progress tracking, virus scanning) is a significant effort that would delay the core image list functionality. The out-of-band upload approach unblocks VM governance immediately while the upload API is designed separately.
 
 ## Open Questions
 
