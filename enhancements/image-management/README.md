@@ -484,7 +484,7 @@ message ComputeInstanceSpec {
   string template = 1;
   map<string, google.protobuf.Any> template_parameters = 2;
   optional google.protobuf.Timestamp restart_requested_at = 3;
-  string compute_image = 4;
+  string compute_image = 4 [(buf.validate.field).string.min_len = 1];
   string instance_type = 5;
   optional string ssh_key = 7;
   optional ComputeInstanceDisk boot_disk = 8;
