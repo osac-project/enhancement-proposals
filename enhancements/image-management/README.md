@@ -52,7 +52,7 @@ Every major cloud provider (AWS AMI, GCP Images, Azure VM Images) treats VM imag
 
 * As a provider administrator, I want to list all registered images (global and tenant-scoped) so that I can audit the list across the platform.
 
-* As a provider administrator, I want to update the metadata of a global image (e.g., change description, fix a typo in the display name) so that I can maintain the platform's list of base imagesƒ.
+* As a provider administrator, I want to update the metadata of a global image (e.g., change description, fix a typo in the display name) so that I can maintain the platform's list of base images.
 
 * As a provider administrator, I want to delete a global image that is no longer supported so that tenants are not using outdated or insecure base images.
 
