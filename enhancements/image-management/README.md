@@ -378,8 +378,7 @@ This enhancement introduces a new ComputeImage resource and modifies existing OS
 #### Modified Resources
 
 **ComputeInstanceSpec** (`proto/public/osac/public/v1/compute_instance_type.proto`)
-- Add: `compute_image` field (string, required) — reference to ComputeImage by ID
-- Deprecate: `image` field (ComputeInstanceImage with `source_type`/`source_ref`) — retained as read-only for pre-migration ComputeInstances, not accepted on Create
+- Replace: `image` field (ComputeInstanceImage with `source_type`/`source_ref`) with `compute_image` field (string, required) — reference to ComputeImage by ID
 - Note: The fulfillment-service resolves the `compute_image` ID to the OCI `source_ref` when creating the CR. The osac-operator continues to receive the resolved OCI reference, unchanged from today.
 
 **CreateComputeInstanceResponse** (`proto/public/osac/public/v1/compute_instances_service.proto`)
@@ -485,12 +484,7 @@ message ComputeInstanceSpec {
   string template = 1;
   map<string, google.protobuf.Any> template_parameters = 2;
   optional google.protobuf.Timestamp restart_requested_at = 3;
-
-  // DEPRECATED: Retained read-only for pre-migration ComputeInstances.
-  // Not accepted on Create — new instances must use compute_image.
-  optional ComputeInstanceImage image = 4 [deprecated = true,
-    (google.api.field_behavior) = OUTPUT_ONLY];
-
+  string compute_image = 4;
   string instance_type = 5;
   optional string ssh_key = 7;
   optional ComputeInstanceDisk boot_disk = 8;
@@ -499,9 +493,6 @@ message ComputeInstanceSpec {
   optional string user_data = 11;
   optional string subnet = 12;
   repeated string security_groups = 13;
-
-  // NEW: Required ComputeImage reference (replaces inline image specification)
-  string compute_image = 14;
 }
 
 // CreateComputeInstanceResponse includes warnings for DEPRECATED images
@@ -703,7 +694,6 @@ The `ComputeInstanceTemplate` resource also uses `ComputeInstanceImage`. It will
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Breaking change to ComputeInstance API | Existing clients using `source_type`/`source_ref` will break | Two-phase migration: (1) Transitional release retains `image` (field 4, deprecated) only for existing resources and enforces the usage of `compute_image` (field 14) for new instances. (2) Removal release deletes field 4 and reserves it. |
 | Global images visible across all tenants | Potential information leakage if image names/descriptions contain sensitive info | Provider admin is trusted; document that global image metadata is visible to all tenants. |
 | Orphaned ComputeImages | Deleted images still referenced by running VMs | Running VMs retain the resolved OCI reference. Only new VM creation is blocked. Document this behavior. |
 | Performance of List with many images | A large image list could slow listing | Standard pagination support via `page` and `size` parameters. Index on tenants array. |
@@ -711,7 +701,6 @@ The `ComputeInstanceTemplate` resource also uses `ComputeInstanceImage`. It will
 ### Drawbacks
 
 - **Additional indirection**: Users must now discover and select a ComputeImage before creating a VM, adding a step to the workflow. This is intentional — it trades convenience for governance — but may feel heavy for simple deployments with few images.
-- **Migration burden**: Existing deployments must register ComputeImages for all currently-used image URLs and update any automation that creates ComputeInstances with direct `source_ref`. This is a one-time cost.
 - **No upload API**: Requiring out-of-band upload for this milestone means administrators must use separate tooling (skopeo, Quay UI) to push images. This is a deliberate scope limitation but may frustrate administrators who expect a unified experience.
 
 ## Alternatives (Not Implemented)
@@ -828,39 +817,13 @@ This enhancement establishes the foundation for a complete image management life
 - Existing VM continues running unaffected
 - Multi-tenant isolation: tenant B cannot see tenant A's tenant-scoped images
 
-**Migration Testing:**
-
-- Run migration on test database with existing ComputeInstances using legacy source_ref field
-- Verify ComputeImage records created from unique source_ref values
-- Verify existing ComputeInstances retain their resolved OCI references
-- Verify new ComputeInstance creation requires compute_image field post-migration
-
 ## Graduation Criteria
 
 Graduation criteria will be defined when targeting a release. Expected stages:
 
 - **Dev Preview**: ComputeImage CRUD API available. ComputeInstance accepts `compute_image` reference.
-- **Tech Preview**: Migration tooling for existing `source_ref` usage. Multi-tenant visibility enforced.
+- **Tech Preview**: Multi-tenant visibility enforced.
 - **GA**: Production-hardened. Performance validated at scale. Upgrade/downgrade tested. Documentation complete.
-
-### Removing a deprecated feature
-
-#### Deprecation of ComputeInstanceImage fields
-
-This enhancement deprecates the `ComputeInstanceImage` message type and its inline fields (`source_type`, `source_ref`) on `ComputeInstanceSpec`, replacing them with a `compute_image` reference to the new ComputeImage resource.
-
-**Deprecation timeline:**
-
-1. **Transitional release**: The old fields (`source_type`/`source_ref`) are maintained for existing resources. The new `compute_image` field is required on `CreateComputeInstance`. On `UpdateComputeInstance`, `compute_image` is immutable — clients may omit it and the server rejects attempts to change it. The old fields are marked `deprecated` in the proto definition and API documentation, with a clear message directing users to `compute_image`.
-2. **Removal release** (next release after transitional): The `source_type` and `source_ref` fields are removed from `ComputeInstanceSpec`. The `ComputeInstanceImage` message type is deleted from the proto definition. Requests using the old fields return an error.
-
-**Impact on existing resources:**
-
-Existing ComputeInstances are not affected by the deprecation. They retain their resolved OCI references regardless of how the image was originally specified. The removal applies only to the API surface — stored data is not modified.
-
-**Migration tooling:**
-
-A migration script will be provided during the transitional release to create ComputeImage records from existing `source_ref` values. The script scans active ComputeInstances, extracts unique `source_ref` URLs, registers corresponding ComputeImage resources, and outputs a mapping report. Operators can run this script before adopting the `compute_image` field in their templates.
 
 ## Upgrade / Downgrade Strategy
 
