@@ -97,6 +97,10 @@ Provisioning is driven by a chain of components: the `osac-operator` reconciles 
    GET /api/fulfillment/v1/baremetal_instances/{id}
    ```
 
+#### Failure Handling
+
+If any step in the provisioning chain fails (playbook error, OpenStack API failure, `HostLease` stuck), the osac-operator sets `BaremetalInstance.status.state` to `BAREMETAL_INSTANCE_STATE_FAILED` via the `Signal` RPC. The tenant can inspect the `conditions` field for details. To retry, the tenant deletes and recreates the `BaremetalInstance`.
+
 #### Deprovisioning
 
 1. The Tenant User deletes the instance:
@@ -126,6 +130,8 @@ Provisioning is driven by a chain of components: the `osac-operator` reconciles 
 - `POST   /api/fulfillment/v1/baremetal_instances`
 - `PATCH  /api/fulfillment/v1/baremetal_instances/{object.id}`
 - `DELETE /api/fulfillment/v1/baremetal_instances/{id}`
+
+**PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `ssh_key`, `user_data`, `run_strategy`, and `restart_requested_at`. The `template` field is immutable after creation; requests that attempt to modify it are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
 
 ### Implementation Details/Notes/Constraints
 
@@ -173,13 +179,15 @@ message BaremetalInstanceSpec {
   string template = 1;
 
   // SSH public key injected into the OS at provisioning time.
+  // Must be a valid SSH public key in OpenSSH format (ssh-rsa, ssh-ed25519, etc.).
+  // Invalid keys are rejected at create time with a 400 error.
   optional string ssh_key = 2;
 
-  // User data (e.g. cloud-init). Passed to the OS at first boot.
+  // User data (e.g. cloud-init). Passed to the OS at first boot. Maximum size: 64 KB.
   optional string user_data = 3;
 
-  // Run strategy for the bare metal instance (e.g. "Always" or "Halted").
-  optional string run_strategy = 4;
+  // Run strategy for the bare metal instance.
+  optional BaremetalInstanceRunStrategy run_strategy = 4;
 
   // RestartRequestedAt is a timestamp signal to request a power cycle.
   // Set to the current time to trigger an immediate restart.
@@ -191,11 +199,21 @@ message BaremetalInstanceStatus {
   BaremetalInstanceState state = 1;
   repeated BaremetalInstanceCondition conditions = 2;
 
-  // Primary IP address assigned by the backend.
-  string ip_address = 3;
+  // Primary IP address assigned by the backend. Unset until the instance reaches RUNNING state.
+  optional string ip_address = 3;
 
   // LastRestartedAt records when the last restart was initiated by the controller.
   optional google.protobuf.Timestamp last_restarted_at = 4;
+}
+
+enum BaremetalInstanceRunStrategy {
+  BAREMETAL_INSTANCE_RUN_STRATEGY_UNSPECIFIED = 0;
+
+  // The instance is kept powered on.
+  BAREMETAL_INSTANCE_RUN_STRATEGY_ALWAYS      = 1;
+
+  // The instance is powered off.
+  BAREMETAL_INSTANCE_RUN_STRATEGY_HALTED      = 2;
 }
 
 enum BaremetalInstanceState {
@@ -244,6 +262,8 @@ type BaremetalProvider interface {
 
 The active provider is selected at startup via configuration. Future backends (ESI, direct Ironic, Redfish) can be added as additional implementations of this interface without modifying the API, operator, or AAP playbooks.
 
+The baremetal fulfillment component is responsible for mapping `HostLeaseStatus` conditions and state to the corresponding `BaremetalInstanceStatus` fields surfaced via the `Signal` RPC.
+
 #### Alignment with ComputeInstance
 
 `BaremetalInstance` intentionally mirrors `ComputeInstance`:
@@ -266,6 +286,12 @@ Fields specific to VMs (network attachments) are absent from `BaremetalInstance`
 **Risk:** Tenant isolation errors — one tenant accesses or deprovisions another tenant's bare metal instance.
 **Mitigation:** Follows the same OPA-based authorization model as `ComputeInstance`. Tenant scoping is enforced at the fulfillment-service layer via existing middleware.
 
+**Risk:** Tenants provision unlimited bare metal instances, exhausting backend capacity.
+**Mitigation:** Per-tenant quotas are enforced at the fulfillment-service layer, mirroring the `ComputeInstance` quota model. Create requests that would exceed quota are rejected before reaching the provisioning chain. Quota visibility is exposed via the API so tenants can monitor utilization.
+
+**Risk:** Compromised backend credentials expose the OpenStack API to unauthorized access.
+**Mitigation:** Backend credentials are stored in encrypted Kubernetes Secrets (or a dedicated secret management system such as Vault), scoped to least-privilege project-level permissions, and rotated regularly. Credential retrieval and management are infrastructure concerns outside this EP; the baremetal fulfillment component consumes credentials at runtime without embedding them in CRDs or API responses.
+
 ### Drawbacks
 
 Introducing `BaremetalInstance` alongside the existing `bare-metal-fulfillment` EP's `Host`/`HostPool` model creates two partially overlapping designs. Teams will need to reconcile these over time. The cost is justified by the simpler MVP scope and the need to deliver a functional baremetal API without waiting for the full ESI-integrated `HostPool` model. The `BaremetalInstance` naming and API shape also align more naturally with the existing `ComputeInstance` pattern, reducing the learning curve for tenants already familiar with OSAC.
@@ -286,11 +312,11 @@ Introducing `BaremetalInstance` alongside the existing `bare-metal-fulfillment` 
 
 Test plan will be finalized during the implementation phase. Expected coverage:
 
-- **Unit tests:** Proto field validation, state machine transitions, provider interface mocking.
-- **Integration tests:** `BaremetalInstance` CRUD via gRPC, template List/Get, Signal RPC feedback loop, OPA authorization enforcement.
+- **Unit tests:** Proto field validation, state machine transitions, provider interface mocking, quota enforcement logic.
+- **Integration tests:** `BaremetalInstance` CRUD via gRPC, template List/Get, Signal RPC feedback loop, OPA authorization enforcement, PATCH immutability enforcement.
 - **E2E tests:** Full provisioning and deprovisioning workflow against OpenStack; CI pipeline configured to run E2E tests on merge.
 
-Tricky areas: asynchronous provisioning lifecycle (tests must handle delays or mock the provider), template immutability enforcement after create, and tenant isolation boundary checks.
+Tricky areas: asynchronous provisioning lifecycle (tests must handle delays or mock the provider), template immutability enforcement after create, tenant isolation boundary checks, and failure-path recovery (FAILED state → delete → recreate).
 
 ## Graduation Criteria
 
@@ -314,11 +340,15 @@ The fulfillment-service and osac-operator must be upgraded together for the `Bar
 **Diagnosis:** Check osac-operator logs for reconciliation errors, osac-aap job logs for playbook failures, and baremetal fulfillment component logs for backend errors. Verify that the `HostLease` CR was created and that backend credentials are valid.
 **Resolution:** If the backend node was allocated but configuration failed, delete the `HostLease` CR manually and delete the `BaremetalInstance` to trigger a clean retry.
 
+**Symptom:** All `BaremetalInstance` creations transition to `BAREMETAL_INSTANCE_STATE_FAILED`.
+**Diagnosis:** Check baremetal fulfillment component logs for backend API errors. Validate OpenStack credentials (rotate if expired), verify OpenStack API availability, check quota exhaustion, and confirm network connectivity between the baremetal fulfillment component and the OpenStack API.
+**Resolution:** Rotate credentials if expired, request quota increases if exhausted, or resolve network connectivity issues. Re-trigger provisioning by deleting the failed `BaremetalInstance` and recreating it.
+
 **Symptom:** Create returns `404 Not Found` for the template ID.
 **Diagnosis:** The `BaremetalInstanceTemplate` does not exist or is not visible to the tenant's organization.
 **Resolution:** Cloud Provider Admin must create and publish the appropriate template via `osac-aap`.
 
-**Disabling the API:** Scale the fulfillment-service baremetal controller to 0 replicas. Existing `BaremetalInstance` resources persist but do not reconcile. Re-enabling resumes reconciliation without data loss.
+**Disabling the API:** Scale the baremetal fulfillment component and the osac-operator baremetal controller to 0 replicas. Existing `BaremetalInstance` and `HostLease` resources persist but do not reconcile. Re-enabling both resumes reconciliation without data loss.
 
 ## Infrastructure Needed
 
