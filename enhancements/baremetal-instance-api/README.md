@@ -54,6 +54,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 * UI and UX — covered in companion work.
 * E2E test implementation — covered in companion work.
 * Support for non-OpenStack bare metal backends in this initial release — the architecture is designed for future extensibility.
+* Quota enforcement for `BaremetalInstance` — deferred to a future enhancement.
 
 ## Proposal
 
@@ -131,7 +132,7 @@ If any step in the provisioning chain fails (playbook error, OpenStack API failu
 - `PATCH  /api/fulfillment/v1/baremetal_instances/{object.id}`
 - `DELETE /api/fulfillment/v1/baremetal_instances/{id}`
 
-**PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `ssh_key`, `user_data`, `run_strategy`, and `restart_requested_at`. The `template` field is immutable after creation; requests that attempt to modify it are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
+**PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `run_strategy` and `restart_requested_at`. The `template`, `ssh_key`, and `user_data` fields are immutable after creation; requests that attempt to modify them are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
 
 ### Implementation Details/Notes/Constraints
 
@@ -178,12 +179,13 @@ message BaremetalInstanceSpec {
   // Reference to the BaremetalInstanceTemplate. Required on create; immutable after creation.
   string template = 1;
 
-  // SSH public key injected into the OS at provisioning time.
+  // SSH public key injected into the OS at provisioning time. Immutable after creation.
   // Must be a valid SSH public key in OpenSSH format (ssh-rsa, ssh-ed25519, etc.).
   // Invalid keys are rejected at create time with a 400 error.
   optional string ssh_key = 2;
 
-  // User data (e.g. cloud-init). Passed to the OS at first boot. Maximum size: 64 KB.
+  // User data (e.g. cloud-init). Passed to the OS at first boot. Immutable after creation.
+  // Maximum size: 64 KB.
   optional string user_data = 3;
 
   // Run strategy for the bare metal instance.
@@ -287,7 +289,7 @@ Fields specific to VMs (network attachments) are absent from `BaremetalInstance`
 **Mitigation:** Follows the same OPA-based authorization model as `ComputeInstance`. Tenant scoping is enforced at the fulfillment-service layer via existing middleware.
 
 **Risk:** Tenants provision unlimited bare metal instances, exhausting backend capacity.
-**Mitigation:** Per-tenant quotas are enforced at the fulfillment-service layer, mirroring the `ComputeInstance` quota model. Create requests that would exceed quota are rejected before reaching the provisioning chain. Quota visibility is exposed via the API so tenants can monitor utilization.
+**Mitigation:** Quota enforcement for `BaremetalInstance` is deferred to a future enhancement. Until quotas are implemented, capacity limits must be managed out-of-band by the Cloud Provider Admin.
 
 **Risk:** Compromised backend credentials expose the OpenStack API to unauthorized access.
 **Mitigation:** Backend credentials are stored in encrypted Kubernetes Secrets (or a dedicated secret management system such as Vault), scoped to least-privilege project-level permissions, and rotated regularly. Credential retrieval and management are infrastructure concerns outside this EP; the baremetal fulfillment component consumes credentials at runtime without embedding them in CRDs or API responses.
