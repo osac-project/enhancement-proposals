@@ -26,14 +26,14 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 ### User Stories
 
-* As a **Tenant User**, I want to provision a bare metal server from an OSAC template so that I can run workloads that require direct hardware access without manual coordination with the cloud provider.
+* As a **Tenant User**, I want to browse available `BaremetalInstanceTemplate` objects so that I can select the one that matches my workload requirements.
+* As a **Tenant User**, I want to provision a bare metal server by specifying a `BaremetalInstanceTemplate` so that I can run workloads that require direct hardware access without manual coordination with the cloud provider.
 * As a **Tenant User**, I want to monitor the lifecycle state of my bare metal server (provisioning, running, failed) so that I can take corrective action if provisioning fails.
 * As a **Tenant User**, I want to control the run strategy (power on/off) of my bare metal server so that I can manage its operational state without deprovisioning it.
 * As a **Tenant User**, I want to restart my bare metal server so that I can perform maintenance without deprovisioning it.
-* As a **Tenant User**, I want to deprovision my bare metal server when my workload is complete so that resources are returned to the pool.
+* As a **Tenant User**, I want to deprovision my bare metal server when my workload is complete so that resources are released.
 * As a **Cloud Provider Admin**, I want to define and publish `BaremetalInstanceTemplate` objects so that I can control which hardware profiles and OS images are available to tenants.
-* As a **Cloud Infrastructure Admin**, I want the OSAC fulfillment service to integrate with the OpenStack API so that bare metal provisioning is automated through the existing control plane.
-* As a **Tenant Admin**, I want to see the bare metal templates available to my organization so that I can advise users on the available options.
+* As a **Cloud Infrastructure Admin**, I want the OSAC stack to integrate with the OpenStack API so that bare metal provisioning is automated through the existing control plane.
 
 ### Goals
 
@@ -105,7 +105,7 @@ Provisioning is driven by a chain of components: the `osac-operator` reconciles 
    ```
 2. The fulfillment service marks the CRD for deletion; `status.state` transitions to `BAREMETAL_INSTANCE_STATE_DELETING`.
 3. The osac-operator triggers `osac-aap` playbooks to delete the `HostLease` CR.
-4. The baremetal fulfillment component reconciles the `HostLease` deletion and releases the node back to the pool.
+4. The baremetal fulfillment component reconciles the `HostLease` deletion and releases the node.
 5. The osac-operator watches the `HostLease` CR deletion and pushes final status via the `Signal` RPC.
 6. The `BaremetalInstance` resource is removed once deprovisioning completes.
 
