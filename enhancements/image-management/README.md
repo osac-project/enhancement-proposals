@@ -146,6 +146,8 @@ Users interact with ComputeImages through List and Get operations. When creating
 3. The Fulfillment Service validates the request and creates the ComputeImage resource with `metadata.tenant` empty (global).
 4. The image is immediately available (state=AVAILABLE by default) to all tenants.
 
+**Note:** The fulfillment-service does not verify the existence or accessibility of the OCI artifact at `source_ref` during image registration. The image may exist at creation time and be deleted later, or may not yet be pushed at registration time. It is the responsibility of the administrator (provider or tenant) to ensure the address is correct and the image remains available in the registry for as long as it is registered with OSAC.
+
 **Deprecating a ComputeImage**
 
 1. Provider administrator marks a ComputeImage as deprecated with optional transition timeline:
@@ -211,6 +213,8 @@ Users interact with ComputeImages through List and Get operations. When creating
    ```
 3. The Fulfillment Service validates the request and automatically sets `metadata.tenant` to the caller's tenant.
 4. The image is visible only to users within that tenant.
+
+**Note:** The fulfillment-service does not verify the existence or accessibility of the OCI artifact at `source_ref` during image registration. The image may exist at creation time and be deleted later, or may not yet be pushed at registration time. It is the responsibility of the tenant administrator to ensure the address is correct and the image remains available in the registry for as long as it is registered with OSAC.
 
 Tenant administrators can also deprecate, obsolete, update, and delete their own tenant-scoped images using the same commands shown above for provider administrators. Tenant administrators cannot modify or delete global images or other tenants' images.
 
@@ -317,6 +321,8 @@ Tenant administrators can also deprecate, obsolete, update, and delete their own
    ```
 5. The osac-operator reconciles the ComputeInstance, reading the resolved `source_ref` from the image spec.
 6. The VM is provisioned via KubeVirt using the OCI artifact from the registry.
+
+**Note:** The fulfillment-service does not verify the existence or accessibility of the OCI artifact at the ComputeImage's `source_ref` during VM creation. If the artifact is unreachable or invalid, the error will surface at VM provisioning time from KubeVirt/osac-operator, not from the fulfillment-service API.
 
 **Error Cases**
 
