@@ -3,7 +3,7 @@ title: baremetal-instance-api
 authors:
   - agentil@redhat.com
 creation-date: 2026-05-29
-last-updated: 2026-05-29
+last-updated: 2026-06-01
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1118
 see-also:
@@ -33,14 +33,14 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 * As a **Tenant User**, I want to restart my bare metal server so that I can perform maintenance without deprovisioning it.
 * As a **Tenant User**, I want to deprovision my bare metal server when my workload is complete so that resources are released.
 * As a **Cloud Provider Admin**, I want to define and publish `BaremetalInstanceTemplate` objects so that I can control which hardware profiles and OS images are available to tenants.
-* As a **Cloud Infrastructure Admin**, I want the OSAC stack to integrate with the OpenStack API so that bare metal provisioning is automated through the existing control plane.
+* As a **Cloud Infrastructure Admin**, I want the OSAC stack to integrate with the BCM (NVIDIA Base Command Manager) API so that bare metal provisioning is automated through the existing control plane.
 
 ### Goals
 
 * Provide a self-service API for tenants to create `BaremetalInstance` resources referencing a `BaremetalInstanceTemplate`.
 * Define `BaremetalInstanceTemplate` as a provider-managed global catalog resource exposing the available hardware profile, OS base image, and default network configuration.
 * Align the `BaremetalInstance` API shape with the existing `ComputeInstance` API (same `id`, `metadata`, `spec`, `status` envelope, same condition and state patterns, same run strategy and restart signal mechanism).
-* Define a pluggable provider abstraction in the baremetal fulfillment component so that the initial OpenStack backend can be replaced or extended without API changes.
+* Define a pluggable provider abstraction in the baremetal fulfillment component so that the initial BCM backend can be replaced or extended without API changes.
 * Expose the API through both gRPC and the existing REST gateway.
 
 ### Non-Goals
@@ -53,7 +53,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 * Baremetal fulfillment component implementation — covered in companion work.
 * UI and UX — covered in companion work.
 * E2E test implementation — covered in companion work.
-* Support for non-OpenStack bare metal backends in this initial release — the architecture is designed for future extensibility.
+* Support for non-BCM bare metal backends in this initial release — the architecture is designed for future extensibility.
 * Quota enforcement for `BaremetalInstance` — deferred to a future enhancement.
 
 ## Proposal
@@ -64,7 +64,7 @@ The proposal introduces two new resource types to the fulfillment-service public
 
 **`BaremetalInstance`** is a tenant-created resource representing a provisioned bare metal server. Its `spec` references a template and carries provisioning parameters (SSH public key, user data, run strategy, restart signal). Its `status` exposes the lifecycle state and conditions aligned with the `ComputeInstance` pattern.
 
-Provisioning is driven by a chain of components: the `osac-operator` reconciles the CRD and triggers `osac-aap` playbooks, which create a `HostLease` CR. The baremetal fulfillment component reconciles `HostLease` CRs and drives the backend (initially OpenStack). The pluggable provider interface lives in the baremetal fulfillment component, allowing future backends to be swapped without modifying the API, operator, or AAP playbooks.
+Provisioning is driven by a chain of components: the `osac-operator` reconciles the CRD and triggers `osac-aap` playbooks, which create a `HostLease` CR. The baremetal fulfillment component reconciles `HostLease` CRs and drives the backend (initially BCM). The pluggable provider interface lives in the baremetal fulfillment component, allowing future backends to be swapped without modifying the API, operator, or AAP playbooks.
 
 ### Workflow Description
 
@@ -74,8 +74,8 @@ Provisioning is driven by a chain of components: the `osac-operator` reconciles 
 - **Fulfillment Service** — translates resource CRUD into CRDs and forwards to the osac-operator.
 - **osac-operator** — reconciles `BaremetalInstance` CRDs, triggers `osac-aap` playbooks, and watches `HostLease` CRs for status updates.
 - **osac-aap** — executes Ansible playbooks and the baremetal template role, resulting in the creation of a `HostLease` CR.
-- **Baremetal Fulfillment Component** — reconciles `HostLease` CRs and drives the backend (OpenStack or any future integration).
-- **OpenStack** — the initial bare metal backend that physically provisions machines.
+- **Baremetal Fulfillment Component** — reconciles `HostLease` CRs and drives the backend (BCM or any future integration).
+- **BCM (NVIDIA Base Command Manager)** — the initial bare metal backend that physically provisions machines.
 
 #### Provisioning
 
@@ -91,7 +91,7 @@ Provisioning is driven by a chain of components: the `osac-operator` reconciles 
 4. The fulfillment service creates the corresponding `BaremetalInstance` CRD in the management cluster.
 5. The osac-operator reconciles the CRD and triggers `osac-aap` playbooks.
 6. `osac-aap` executes the baremetal template role, creating a `HostLease` CR.
-7. The baremetal fulfillment component reconciles the `HostLease` CR and drives OpenStack to provision the node.
+7. The baremetal fulfillment component reconciles the `HostLease` CR and drives BCM to provision the node.
 8. The osac-operator watches the `HostLease` CR for status updates and pushes them to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BaremetalInstance.status`.
 9. The Tenant User polls until `status.state` is `BAREMETAL_INSTANCE_STATE_RUNNING`:
    ```
@@ -100,7 +100,7 @@ Provisioning is driven by a chain of components: the `osac-operator` reconciles 
 
 #### Failure Handling
 
-If any step in the provisioning chain fails (playbook error, OpenStack API failure, `HostLease` stuck), the osac-operator sets `BaremetalInstance.status.state` to `BAREMETAL_INSTANCE_STATE_FAILED` via the `Signal` RPC. The tenant can inspect the `conditions` field for details. To retry, the tenant deletes and recreates the `BaremetalInstance`.
+If any step in the provisioning chain fails (playbook error, BCM API failure, `HostLease` stuck), the osac-operator sets `BaremetalInstance.status.state` to `BAREMETAL_INSTANCE_STATE_FAILED` via the `Signal` RPC. The tenant can inspect the `conditions` field for details. To retry, the tenant deletes and recreates the `BaremetalInstance`.
 
 #### Deprovisioning
 
@@ -154,10 +154,10 @@ message BaremetalInstanceTemplate {
 }
 
 message BaremetalInstanceTemplateSpecDefaults {
-  // Backend flavor or instance-type reference (e.g. OpenStack flavor name or ID).
+  // BCM instance type name or ID.
   string instance_type = 1;
 
-  // OS image reference (e.g. OpenStack image name or ID).
+  // BCM OS image name or ID.
   string image = 2;
 
   // Default network configuration (backend-specific, opaque to tenants).
@@ -280,7 +280,7 @@ Fields specific to VMs (network attachments) are absent from `BaremetalInstance`
 ### Risks and Mitigations
 
 **Risk:** Backend API changes break the provisioning path.
-**Mitigation:** The provider abstraction in the baremetal fulfillment component isolates backend-specific code. Integration tests run against an OpenStack-compatible environment in CI.
+**Mitigation:** The provider abstraction in the baremetal fulfillment component isolates backend-specific code. Integration tests run against a BCM-compatible environment in CI.
 
 **Risk:** Long provisioning times (bare metal typically takes 10–30 minutes) confuse tenants or expose timeout issues.
 **Mitigation:** The `PROVISIONING` state and condition set give clear asynchronous progress signals. No API call blocks on physical provisioning; the osac-operator and baremetal fulfillment component reconcile asynchronously.
@@ -291,7 +291,7 @@ Fields specific to VMs (network attachments) are absent from `BaremetalInstance`
 **Risk:** Tenants provision unlimited bare metal instances, exhausting backend capacity.
 **Mitigation:** Quota enforcement for `BaremetalInstance` is deferred to a future enhancement. Until quotas are implemented, capacity limits must be managed out-of-band by the Cloud Provider Admin.
 
-**Risk:** Compromised backend credentials expose the OpenStack API to unauthorized access.
+**Risk:** Compromised backend credentials expose the BCM API to unauthorized access.
 **Mitigation:** Backend credentials are stored in encrypted Kubernetes Secrets (or a dedicated secret management system such as Vault), scoped to least-privilege project-level permissions, and rotated regularly. Credential retrieval and management are infrastructure concerns outside this EP; the baremetal fulfillment component consumes credentials at runtime without embedding them in CRDs or API responses.
 
 ### Drawbacks
@@ -304,7 +304,7 @@ Introducing `BaremetalInstance` alongside the existing `bare-metal-fulfillment` 
 
 **Map `BaremetalInstance` to the existing `ComputeInstance` resource with a baremetal flag.** This avoids a new resource type but conflates VM and bare metal semantics, complicates template definitions, and requires dispatching on a field value rather than resource type. A dedicated resource type provides cleaner separation of concerns and allows independent API evolution.
 
-**Expose the OpenStack API directly to tenants.** This bypasses OSAC entirely, eliminating tenant isolation, quota enforcement, and the pluggable backend architecture. Not viable for a multi-tenant cloud platform.
+**Expose the BCM API directly to tenants.** This bypasses OSAC entirely, eliminating tenant isolation, quota enforcement, and the pluggable backend architecture. Not viable for a multi-tenant cloud platform.
 
 ## Open Questions
 
@@ -316,7 +316,7 @@ Test plan will be finalized during the implementation phase. Expected coverage:
 
 - **Unit tests:** Proto field validation, state machine transitions, provider interface mocking, quota enforcement logic.
 - **Integration tests:** `BaremetalInstance` CRUD via gRPC, template List/Get, Signal RPC feedback loop, OPA authorization enforcement, PATCH immutability enforcement.
-- **E2E tests:** Full provisioning and deprovisioning workflow against OpenStack; CI pipeline configured to run E2E tests on merge.
+- **E2E tests:** Full provisioning and deprovisioning workflow against BCM; CI pipeline configured to run E2E tests on merge.
 
 Tricky areas: asynchronous provisioning lifecycle (tests must handle delays or mock the provider), template immutability enforcement after create, tenant isolation boundary checks, and failure-path recovery (FAILED state → delete → recreate).
 
@@ -324,7 +324,7 @@ Tricky areas: asynchronous provisioning lifecycle (tests must handle delays or m
 
 Graduation criteria will be defined when targeting a release. Expected progression:
 
-- **Dev Preview:** API available, OpenStack backend functional, basic CRUD working end-to-end.
+- **Dev Preview:** API available, BCM backend functional, basic CRUD working end-to-end.
 - **Tech Preview:** E2E tests passing in CI, UX available, pluggable backend architecture validated with at least one additional backend stub.
 - **GA:** Production deployment, full test coverage, support procedures operationally validated.
 
@@ -339,11 +339,11 @@ The fulfillment-service and osac-operator must be upgraded together for the `Bar
 ## Support Procedures
 
 **Symptom:** `BaremetalInstance` stuck in `BAREMETAL_INSTANCE_STATE_PROVISIONING`.
-**Diagnosis:** Check osac-operator logs for reconciliation errors, osac-aap job logs for playbook failures, and baremetal fulfillment component logs for backend errors. Verify that the `HostLease` CR was created and that backend credentials are valid.
+**Diagnosis:** Check osac-operator logs for reconciliation errors, osac-aap job logs for playbook failures, and baremetal fulfillment component logs for backend errors. Verify that the `HostLease` CR was created and that BCM credentials are valid.
 **Resolution:** If the backend node was allocated but configuration failed, delete the `HostLease` CR manually and delete the `BaremetalInstance` to trigger a clean retry.
 
 **Symptom:** All `BaremetalInstance` creations transition to `BAREMETAL_INSTANCE_STATE_FAILED`.
-**Diagnosis:** Check baremetal fulfillment component logs for backend API errors. Validate OpenStack credentials (rotate if expired), verify OpenStack API availability, check quota exhaustion, and confirm network connectivity between the baremetal fulfillment component and the OpenStack API.
+**Diagnosis:** Check baremetal fulfillment component logs for BCM API errors. Validate BCM credentials (rotate if expired), verify BCM API availability, check quota exhaustion, and confirm network connectivity between the baremetal fulfillment component and the BCM API.
 **Resolution:** Rotate credentials if expired, request quota increases if exhausted, or resolve network connectivity issues. Re-trigger provisioning by deleting the failed `BaremetalInstance` and recreating it.
 
 **Symptom:** Create returns `404 Not Found` for the template ID.
@@ -354,4 +354,4 @@ The fulfillment-service and osac-operator must be upgraded together for the `Bar
 
 ## Infrastructure Needed
 
-OpenStack access (credentials, project, network) is required for integration and E2E testing. This infrastructure is managed by the cloud provider and is partially available through existing OSAC CI workflows.
+BCM (NVIDIA Base Command Manager) access (credentials, API endpoint) is required for integration and E2E testing. This infrastructure is managed by the cloud provider and must be provisioned as part of the OSAC CI environment setup.
