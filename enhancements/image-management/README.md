@@ -102,6 +102,7 @@ Every major cloud provider (AWS AMI, GCP Images, Azure VM Images) treats VM imag
 7. **Image versioning or tagging**: Tracking multiple versions of the same logical image (e.g., RHEL 9.1, 9.2, 9.3) is left to the administrator's naming conventions for now.
 8. **Image caching on workload clusters**: This milestone does not change the osac-operator's image handling. Pre-pulling or caching images on target clusters for faster VM startup is out of scope.
 9. **Private registry authentication**: This milestone assumes the OCI registry referenced by `source_ref` is accessible without additional credentials from the workload cluster. Authentication to private registries (e.g., pull secrets, registry credentials management) is not addressed. A future milestone will either add private registry support with credential management, or make it unnecessary by requiring all images to be uploaded to an OSAC-managed registry via the planned upload API.
+10. **Multi-disk image support**: Since ComputeInstance currently supports only a single disk image, ComputeImage follows the same single-disk model. Future implementations may add support for multi-disk images similar to AWS AMIs, where a single image definition bundles multiple block device mappings.
 
 ## Proposal
 
