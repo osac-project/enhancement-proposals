@@ -45,8 +45,8 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 ### Non-Goals
 
-* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement.
-* Custom hardware profile or OS image selection by tenants at provision time — fixed by the template.
+* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement. Until networking integration is available, tenants can use `user_data` (cloud-init) to configure post-boot networking on the instance.
+* Custom hardware profile or OS image selection by tenants at provision time — fixed by the template. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new template.
 * Per-organization template scoping — templates are global; a BMaaS catalog feature is deferred to a future enhancement.
 * `osac-operator` CRD definitions and controller implementation — covered in companion work.
 * AAP playbook implementation — covered in companion work.
@@ -264,7 +264,16 @@ type BaremetalProvider interface {
 
 The active provider is selected at startup via configuration. Future backends (ESI, direct Ironic, Redfish) can be added as additional implementations of this interface without modifying the API, operator, or AAP playbooks.
 
-The baremetal fulfillment component is responsible for mapping `HostLeaseStatus` conditions and state to the corresponding `BaremetalInstanceStatus` fields surfaced via the `Signal` RPC.
+The baremetal fulfillment component maps `HostLeaseStatus` to `BaremetalInstanceStatus` as follows before pushing updates via the `Signal` RPC:
+
+| HostLease state / condition | BaremetalInstance state / condition |
+|-----------------------------|--------------------------------------|
+| Pending | `BAREMETAL_INSTANCE_STATE_PROVISIONING` |
+| Provisioned | `BAREMETAL_INSTANCE_CONDITION_TYPE_PROVISIONED` = True |
+| ConfigurationApplied | `BAREMETAL_INSTANCE_CONDITION_TYPE_CONFIGURATION_APPLIED` = True |
+| Ready | `BAREMETAL_INSTANCE_STATE_RUNNING` + `BAREMETAL_INSTANCE_CONDITION_TYPE_READY` = True |
+| Failed | `BAREMETAL_INSTANCE_STATE_FAILED` |
+| Deleting | `BAREMETAL_INSTANCE_STATE_DELETING` |
 
 #### Alignment with ComputeInstance
 
@@ -291,8 +300,8 @@ Fields specific to VMs (network attachments) are absent from `BaremetalInstance`
 **Risk:** Tenants provision unlimited bare metal instances, exhausting backend capacity.
 **Mitigation:** Quota enforcement for `BaremetalInstance` is deferred to a future enhancement. Until quotas are implemented, capacity limits must be managed out-of-band by the Cloud Provider Admin.
 
-**Risk:** Compromised backend credentials expose the BCM API to unauthorized access.
-**Mitigation:** Backend credentials are stored in encrypted Kubernetes Secrets (or a dedicated secret management system such as Vault), scoped to least-privilege project-level permissions, and rotated regularly. Credential retrieval and management are infrastructure concerns outside this EP; the baremetal fulfillment component consumes credentials at runtime without embedding them in CRDs or API responses.
+**Risk:** Compromised backend credentials expose the bare metal backend to unauthorized access.
+**Mitigation:** Credential management is a cross-cutting concern owned by the fulfillment-service infrastructure layer. The baremetal fulfillment component consumes credentials at runtime via the fulfillment-service credential retrieval mechanism, without embedding them in CRDs or API responses.
 
 ### Drawbacks
 
@@ -314,7 +323,7 @@ Introducing `BaremetalInstance` alongside the existing `bare-metal-fulfillment` 
 
 Test plan will be finalized during the implementation phase. Expected coverage:
 
-- **Unit tests:** Proto field validation, state machine transitions, provider interface mocking, quota enforcement logic.
+- **Unit tests:** Proto field validation, state machine transitions, provider interface mocking.
 - **Integration tests:** `BaremetalInstance` CRUD via gRPC, template List/Get, Signal RPC feedback loop, OPA authorization enforcement, PATCH immutability enforcement.
 - **E2E tests:** Full provisioning and deprovisioning workflow against BCM; CI pipeline configured to run E2E tests on merge.
 
