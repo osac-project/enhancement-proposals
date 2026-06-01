@@ -301,7 +301,7 @@ Fields specific to VMs (network attachments) are absent from `BaremetalInstance`
 **Mitigation:** Quota enforcement for `BaremetalInstance` is deferred to a future enhancement. Until quotas are implemented, capacity limits must be managed out-of-band by the Cloud Provider Admin.
 
 **Risk:** Compromised backend credentials expose the bare metal backend to unauthorized access.
-**Mitigation:** Credential management is a cross-cutting concern owned by the fulfillment-service infrastructure layer. The baremetal fulfillment component consumes credentials at runtime via the fulfillment-service credential retrieval mechanism, without embedding them in CRDs or API responses.
+**Mitigation:** Credential storage and management for the baremetal backend are out of scope for this EP and will be defined in a dedicated security enhancement. The baremetal fulfillment component must not embed credentials in CRDs or API responses.
 
 ### Drawbacks
 
