@@ -154,13 +154,13 @@ message BaremetalInstanceTemplate {
 }
 
 message BaremetalInstanceTemplateSpecDefaults {
-  // Hardware profile or instance-type identifier (backend-specific, opaque to tenants).
+  // Hardware profile or instance-type identifier.
   string instance_type = 1;
 
-  // OS image identifier (backend-specific, opaque to tenants).
+  // OS image identifier.
   string image = 2;
 
-  // Default network configuration (backend-specific, opaque to tenants).
+  // Default network configuration.
   string network = 3;
 }
 ```
