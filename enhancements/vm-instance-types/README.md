@@ -3,7 +3,7 @@ title: vm-instance-types
 authors:
   - atraeger@redhat.com
 creation-date: 2026-05-06
-last-updated: 2026-05-17
+last-updated: 2026-06-01
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-46
 see-also:
@@ -260,7 +260,7 @@ This enhancement modifies existing OSAC APIs and introduces new resources:
 
 **InstanceTypes Service** (proto/public/osac/public/v1/instance_types_service.proto)
 - Public API: ListInstanceTypes, GetInstanceType
-- Private API: CreateInstanceType, UpdateInstanceType, DeleteInstanceType
+- Private API: ListInstanceTypes, GetInstanceType, CreateInstanceType, UpdateInstanceType, DeleteInstanceType
 
 #### Modified Resources
 
@@ -292,6 +292,7 @@ Note: The Kubernetes CR schema retains cores/memory_gib fields. The fulfillment-
 - CreateInstanceType: Default state to ACTIVE if not specified
 - UpdateInstanceType: Reject changes to name, cores, or memory_gib (immutable)
 - UpdateInstanceType: Allow changes to description, state, and deprecation fields
+- UpdateInstanceType: State transitions are bidirectional (e.g., DEPRECATED → ACTIVE is allowed to "resurrect" an instance type if needed)
 - UpdateInstanceType: When transitioning to DEPRECATED, auto-populate deprecation.deprecated timestamp (set to current time) if not provided
 - UpdateInstanceType: When transitioning to OBSOLETE, auto-populate deprecation.obsolete timestamp (set to current time) if not provided
 - UpdateInstanceType: If deprecation.deprecated is provided explicitly, allow any timestamp (past or future) - represents when deprecation was/will be announced
@@ -299,13 +300,14 @@ Note: The Kubernetes CR schema retains cores/memory_gib fields. The fulfillment-
 - UpdateInstanceType: If deprecation.obsolete is provided explicitly when transitioning to OBSOLETE, allow any timestamp (past or future) - represents when it became/will become obsolete
 - UpdateInstanceType: API behavior is based on state field, not timestamps (future deprecation timestamps do not affect current behavior)
 - DeleteInstanceType: Reject if any ComputeInstances reference this instance type by name
+- DeleteInstanceType: Uses soft-delete pattern (sets deletion_timestamp), consistent with OSAC resource lifecycle management
 
 #### Deletion Protection
 
 **InstanceType deletion checks:**
 - fulfillment-service queries database for ComputeInstances using this instance type name (via osac.io/instance-type-name label)
 - If any references exist, deletion is rejected with 409 Conflict
-- Returns list of affected ComputeInstance names in error message
+- Error message indicates the instance type is in use (e.g., "Cannot delete instance type 'standard-4-16': instance type is in use")
 - Deletion succeeds only when no ComputeInstances reference the instance type name
 
 ### Implementation Details/Notes/Constraints
@@ -317,12 +319,13 @@ Note: The Kubernetes CR schema retains cores/memory_gib fields. The fulfillment-
 CREATE TABLE instance_types (
     name TEXT PRIMARY KEY,                  -- User-specified name (globally unique, immutable, never reusable, e.g., "standard-4-16")
     creation_timestamp TIMESTAMPTZ NOT NULL,
+    update_timestamp TIMESTAMPTZ NOT NULL,  -- Last modification time for auditing
     deletion_timestamp TIMESTAMPTZ,
     finalizers TEXT[],
     creators TEXT[],
     tenants TEXT[],                         -- Empty for global instance types in Phase 1
-    labels JSONB,
-    annotations JSONB,
+    labels JSONB,                           -- Reserved for future extensibility (not exposed in Phase 1 Create/List APIs)
+    annotations JSONB,                      -- Reserved for future extensibility (not exposed in Phase 1 Create/List APIs)
     data JSONB NOT NULL                     -- Serialized InstanceType protobuf
 );
 
@@ -330,7 +333,7 @@ CREATE TABLE instance_types (
 -- Instance type names are never reusable, even after soft deletion
 ```
 
-The `data` JSONB column contains the serialized InstanceType protobuf.
+The `data` JSONB column contains the serialized InstanceType protobuf. This follows OSAC's standard database pattern of storing proto messages as JSONB for schema flexibility and consistency across resources.
 
 Example of an ACTIVE instance type:
 ```json
