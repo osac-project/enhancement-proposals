@@ -39,13 +39,14 @@ don't have the ability to add or modify ansible roles.
 
 ### User Stories
 
-* As a Cloud Provider Admin, I want to publish multiple catalog item that are similar to each other.
-* As a Cloud Provider Admin, I want to publish multiple catalog item without having to create a new ansible role.
-* As a Cloud Provider Admin, I want to offer catalog item to my users that pre-define the values for certain fields.
-* As a Cloud Provider Admin, I want to offer catalog item to my users that prevent them from setting certain fields.
+* As a Cloud Provider Admin, I need to create global catalog items that reference templates and define which fields are pre-set vs. editable, so I can offer curated options to all tenants.
+* As a Cloud Provider Admin, I need to publish/unpublish catalog items to control visibility to Tenant Users.
 
-* As a Tenant Admin, I want to offer catalog item to my users that pre-define the values for certain fields.
-* As a Tenant Admin, I want to offer catalog item to my users that prevent them from setting certain fields.
+* As a Tenant Admin, I need to create organization-specific catalog items from available templates, so I can offer tenant-specific configurations.
+* As a Tenant Admin, I need to control which global catalog items are visible to users in my organization.
+
+* As a Tenant User, I need to list available catalog items via API and provision resources through them.
+* As a Tenant User, I need to browse catalog items to find infrastructure automation options.
 
 ### Goals
 
