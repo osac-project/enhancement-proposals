@@ -33,7 +33,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 * As a **Tenant User**, I want to restart my bare metal server so that I can perform maintenance without deprovisioning it.
 * As a **Tenant User**, I want to deprovision my bare metal server when my workload is complete so that resources are released.
 * As a **Cloud Provider Admin**, I want to define and publish `BaremetalInstanceTemplate` objects so that I can control which hardware profiles and OS images are available to tenants.
-* As a **Cloud Infrastructure Admin**, I want the OSAC stack to integrate with the BCM (NVIDIA Base Command Manager) API so that bare metal provisioning is automated through the existing control plane.
+* As a **Cloud Infrastructure Admin**, I want the OSAC stack to integrate with BCM (NVIDIA Base Command Manager) so that bare metal provisioning is automated through the existing control plane.
 
 ### Goals
 
@@ -53,7 +53,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 * Baremetal fulfillment component implementation — covered in companion work.
 * UI and UX — covered in companion work.
 * E2E test implementation — covered in companion work.
-* Support for non-BCM bare metal backends in this initial release — the architecture is designed for future extensibility.
+* Support for multiple bare metal backends in this initial release — the architecture is designed for future extensibility.
 * Quota enforcement for `BaremetalInstance` — deferred to a future enhancement.
 
 ## Proposal
@@ -154,10 +154,10 @@ message BaremetalInstanceTemplate {
 }
 
 message BaremetalInstanceTemplateSpecDefaults {
-  // BCM instance type name or ID.
+  // Hardware profile or instance-type identifier (backend-specific, opaque to tenants).
   string instance_type = 1;
 
-  // BCM OS image name or ID.
+  // OS image identifier (backend-specific, opaque to tenants).
   string image = 2;
 
   // Default network configuration (backend-specific, opaque to tenants).
@@ -304,7 +304,7 @@ Introducing `BaremetalInstance` alongside the existing `bare-metal-fulfillment` 
 
 **Map `BaremetalInstance` to the existing `ComputeInstance` resource with a baremetal flag.** This avoids a new resource type but conflates VM and bare metal semantics, complicates template definitions, and requires dispatching on a field value rather than resource type. A dedicated resource type provides cleaner separation of concerns and allows independent API evolution.
 
-**Expose the BCM API directly to tenants.** This bypasses OSAC entirely, eliminating tenant isolation, quota enforcement, and the pluggable backend architecture. Not viable for a multi-tenant cloud platform.
+**Expose the bare metal backend API directly to tenants.** This bypasses OSAC entirely, eliminating tenant isolation, quota enforcement, and the pluggable backend architecture. Not viable for a multi-tenant cloud platform.
 
 ## Open Questions
 
