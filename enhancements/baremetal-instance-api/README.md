@@ -264,16 +264,7 @@ type BaremetalProvider interface {
 
 The active provider is selected at startup via configuration. Future backends (ESI, direct Ironic, Redfish) can be added as additional implementations of this interface without modifying the API, operator, or AAP playbooks.
 
-The baremetal fulfillment component maps `HostLeaseStatus` to `BaremetalInstanceStatus` as follows before pushing updates via the `Signal` RPC:
-
-| HostLease state / condition | BaremetalInstance state / condition |
-|-----------------------------|--------------------------------------|
-| Pending | `BAREMETAL_INSTANCE_STATE_PROVISIONING` |
-| Provisioned | `BAREMETAL_INSTANCE_CONDITION_TYPE_PROVISIONED` = True |
-| ConfigurationApplied | `BAREMETAL_INSTANCE_CONDITION_TYPE_CONFIGURATION_APPLIED` = True |
-| Ready | `BAREMETAL_INSTANCE_STATE_RUNNING` + `BAREMETAL_INSTANCE_CONDITION_TYPE_READY` = True |
-| Failed | `BAREMETAL_INSTANCE_STATE_FAILED` |
-| Deleting | `BAREMETAL_INSTANCE_STATE_DELETING` |
+The baremetal fulfillment component is responsible for mapping `HostLease` status to `BaremetalInstanceStatus` and pushing updates via the `Signal` RPC. The exact mapping will be defined once the `HostLease` CRD schema is finalized.
 
 #### Alignment with ComputeInstance
 
