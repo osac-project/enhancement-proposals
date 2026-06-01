@@ -45,7 +45,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 ### Non-Goals
 
-* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement. Until networking integration is available, tenants can use `user_data` (cloud-init) to configure post-boot networking on the instance.
+* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement. Network configuration is defined by the Cloud Provider Admin as part of the `BaremetalInstanceTemplate`; tenants have no mechanism to configure networking at provision time.
 * Custom hardware profile or OS image selection by tenants at provision time — fixed by the template. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new template.
 * Per-organization template scoping — templates are global; a BMaaS catalog feature is deferred to a future enhancement.
 * `osac-operator` CRD definitions and controller implementation — covered in companion work.
