@@ -60,6 +60,8 @@ Every major cloud provider (AWS AMI, GCP Images, Azure VM Images) treats VM imag
 
 * As a provider administrator, I want to mark an obsolete global image so that new VM creation with that image is blocked while existing VMs remain unaffected.
 
+* As a provider administrator, I want to reactivate a previously deprecated or obsolete global image so that tenants can resume using it if circumstances change (e.g., a replacement image is recalled, or the original image receives a critical security patch).
+
 **Tenant Administrator:**
 
 * As a tenant administrator, I want to register custom images for my organization so that my users can create VMs from our internally approved golden images.
@@ -73,6 +75,8 @@ Every major cloud provider (AWS AMI, GCP Images, Azure VM Images) treats VM imag
 * As a tenant administrator, I want to deprecate a tenant-scoped image and point users to a replacement so that my team migrates to newer images on a clear timeline.
 
 * As a tenant administrator, I want to mark a tenant-scoped image as obsolete so that my users cannot create new VMs with an unsupported image.
+
+* As a tenant administrator, I want to reactivate a previously deprecated or obsolete tenant-scoped image so that my users can resume using it if needed.
 
 **Tenant User:**
 
@@ -174,6 +178,17 @@ Users interact with ComputeImages through List and Get operations. When creating
 4. `GetComputeImage` returns any image regardless of state, so direct lookups still work.
 5. Existing ComputeInstances using this image continue to run unchanged.
 6. New VM creation requests with this image are rejected with 409 Conflict.
+
+**Reactivating a ComputeImage**
+
+1. Provider administrator reactivates a previously deprecated or obsolete ComputeImage:
+   ```bash
+   osac update compute-image <image-id> --state AVAILABLE
+   ```
+2. The Fulfillment Service updates the ComputeImage state to AVAILABLE.
+3. The image becomes fully available for new VM creation without warnings.
+4. Deprecation metadata (timestamps, replacement) is retained for historical reference.
+5. The image appears in default `ListComputeImages` results again (if it was OBSOLETE and previously hidden).
 
 **Updating a ComputeImage**
 
@@ -359,6 +374,16 @@ Error: compute_image field is required
 | AVAILABLE | Succeeds | Shown by default | Always returned |
 | DEPRECATED | Succeeds with warning | Shown by default | Always returned |
 | OBSOLETE | Rejected (409 Conflict) | Hidden by default (requires explicit filter) | Always returned |
+
+**State transitions are bidirectional.** All transitions between the three states are supported:
+
+| From \ To | AVAILABLE | DEPRECATED | OBSOLETE |
+|-----------|-----------|------------|----------|
+| AVAILABLE | — | Yes | Yes |
+| DEPRECATED | Yes (reactivation) | — | Yes |
+| OBSOLETE | Yes (reactivation) | Yes | — |
+
+When reactivating a ComputeImage (transitioning back to AVAILABLE from DEPRECATED or OBSOLETE), the image becomes fully available for new VM creation without warnings. Deprecation metadata (timestamps, replacement) is retained for historical reference.
 
 **Validation rules:**
 
@@ -549,6 +574,8 @@ The CR retains the `image` block with the resolved `source_ref` (unchanged from 
 - CreateComputeImage: Tenant users cannot create images (authorization rejection)
 - UpdateComputeImage: Reject changes to `source_ref` (immutable after creation)
 - UpdateComputeImage: Allow changes to `display_name`, `description`, `os_version`, `architecture`, `min_requirements`, `state`, and `deprecation` fields
+- UpdateComputeImage: State transitions are bidirectional — AVAILABLE↔DEPRECATED, AVAILABLE↔OBSOLETE, DEPRECATED↔OBSOLETE are all valid
+- UpdateComputeImage: When transitioning to AVAILABLE (reactivation), deprecation metadata is retained for historical reference
 - UpdateComputeImage: When transitioning to DEPRECATED, auto-populate `deprecation.deprecated` timestamp (set to current time) if not provided
 - UpdateComputeImage: When transitioning to OBSOLETE, auto-populate `deprecation.obsolete` timestamp (set to current time) if not provided
 - UpdateComputeImage: If `deprecation.obsolete` is provided when transitioning to DEPRECATED, validate it is in the future
@@ -776,7 +803,8 @@ This enhancement establishes the foundation for a complete image management life
 - ComputeInstance validation rejects compute_image not visible to caller's tenant
 - ComputeInstance validation rejects OBSOLETE compute_image
 - ComputeInstance with DEPRECATED compute_image succeeds with warning (includes obsolete timestamp and replacement in warning)
-- ComputeImage state transitions (AVAILABLE → DEPRECATED → OBSOLETE)
+- ComputeImage state transitions are bidirectional (AVAILABLE↔DEPRECATED, AVAILABLE↔OBSOLETE, DEPRECATED↔OBSOLETE)
+- ComputeImage reactivation (DEPRECATED → AVAILABLE, OBSOLETE → AVAILABLE) retains deprecation metadata for historical reference
 - ComputeImage deprecation metadata auto-population (deprecated timestamp on DEPRECATED transition, obsolete timestamp on OBSOLETE transition)
 - ComputeImage validation rejects obsolete timestamp in the past when transitioning to DEPRECATED
 - ComputeImage deletion rejected when active ComputeInstances reference it
@@ -799,6 +827,10 @@ This enhancement establishes the foundation for a complete image management life
 - Create ComputeInstance with DEPRECATED compute_image, verify warning message includes deprecation timeline and replacement
 - Set ComputeImage to DEPRECATED with future obsolete timestamp and replacement, verify deprecation metadata persisted
 - Set ComputeImage to OBSOLETE, verify it disappears from default ListComputeImages results
+- Reactivate DEPRECATED ComputeImage to AVAILABLE, verify VM creation succeeds without warnings
+- Reactivate OBSOLETE ComputeImage to AVAILABLE, verify it reappears in default ListComputeImages and VM creation succeeds
+- Transition OBSOLETE ComputeImage to DEPRECATED, verify VM creation succeeds with warning
+- Verify reactivated ComputeImage retains deprecation metadata for historical reference
 - Verify GetComputeImage returns any image regardless of state (AVAILABLE, DEPRECATED, OBSOLETE)
 - Attempt to delete ComputeImage with active ComputeInstances, verify 409 Conflict rejection
 - Delete all referencing ComputeInstances, then delete ComputeImage, verify success
@@ -821,6 +853,9 @@ This enhancement establishes the foundation for a complete image management life
 - Provider admin sets global ComputeImage to OBSOLETE
 - Tenant user no longer sees image in default list (unless explicitly filtered by state)
 - Attempt to create new VM with OBSOLETE image fails with 409 Conflict
+- Provider admin reactivates OBSOLETE ComputeImage back to AVAILABLE
+- Tenant user sees image in default list again
+- Tenant user creates new VM with reactivated image, succeeds without warnings
 - Existing VM continues running unaffected
 - Multi-tenant isolation: tenant B cannot see tenant A's tenant-scoped images
 
@@ -846,7 +881,7 @@ Not applicable - OSAC is pre-GA. This is a breaking API change.
 - **ComputeInstance creation fails with "image not found"**: Verify the referenced ComputeImage exists and is visible to the user's tenant.
 - **VM fails to start after ComputeInstance creation**: The ComputeImage's `source_ref` may point to an unreachable or invalid OCI artifact. Check KubeVirt/osac-operator logs for image pull errors. Verify the OCI reference is correct and the registry is accessible from the workload cluster.
 - **Deleting a ComputeImage**: `DeleteComputeImage` is rejected with 409 Conflict when any active ComputeInstances reference the ComputeImage ID, returning the error *"ComputeImage is in use by at least one ComputeInstance"*. Once all referencing ComputeInstances are removed, deletion proceeds as a soft-delete — the record is marked with `deletion_timestamp` and excluded from queries, but retained in the database. As an alternative to deletion, transition the image to OBSOLETE to prevent new usage while existing VMs wind down.
-- **ComputeInstance creation rejected: "ComputeImage is obsolete"**: The API returns 409 Conflict when attempting to create a VM with an OBSOLETE image. Resolution: choose a different image, or ask the administrator to change the image state back to AVAILABLE or DEPRECATED. Prevention: communicate image lifecycle changes (OBSOLETE transitions) to users before making the change.
+- **ComputeInstance creation rejected: "ComputeImage is obsolete"**: The API returns 409 Conflict when attempting to create a VM with an OBSOLETE image. Resolution: choose a different image, or ask the administrator to reactivate the image by transitioning it back to AVAILABLE or DEPRECATED (state transitions are bidirectional). Prevention: communicate image lifecycle changes (OBSOLETE transitions) to users before making the change.
 - **User sees deprecation warning on VM creation**: This is expected behavior when the referenced ComputeImage is in DEPRECATED state. The warning includes the planned obsolete date and suggested replacement (if set). Users should plan to migrate to the replacement image before the obsolete date.
 - **User cannot find an image they previously used**: The image may have been transitioned to OBSOLETE state, which hides it from default `ListComputeImages` results. Use `GetComputeImage` with the image ID for a direct lookup (returns any state), or filter the list explicitly with `state IN (AVAILABLE, DEPRECATED, OBSOLETE)` to include obsolete images.
 
