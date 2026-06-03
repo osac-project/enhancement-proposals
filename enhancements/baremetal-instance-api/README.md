@@ -64,7 +64,7 @@ The proposal introduces two new resource types to the fulfillment-service public
 
 **`BaremetalInstance`** is a tenant-created resource representing a provisioned bare metal server. Its `spec` references a template and carries provisioning parameters (SSH public key, user data, run strategy, restart signal). Its `status` exposes the lifecycle state and conditions aligned with the `ComputeInstance` pattern.
 
-Provisioning is driven by a chain of components: the `osac-operator` reconciles the CRD and triggers `osac-aap` playbooks, which create a `HostLease` CR. The baremetal fulfillment component reconciles `HostLease` CRs and drives the backend (initially BCM). The pluggable provider interface lives in the baremetal fulfillment component, allowing future backends to be swapped without modifying the API, operator, or AAP playbooks.
+Provisioning is driven by a chain of components: the `osac-operator` reconciles the CRD and triggers `osac-aap` playbooks, which create the baremetal fulfillment CRs (`BaremetalPool` and/or `HostLease`) needed to acquire and track the host. The baremetal fulfillment component reconciles those CRs and drives the backend (initially BCM). The exact set of CRs created by `osac-aap` is an implementation detail of the baremetal fulfillment component; in the initial version both `BaremetalPool` and `HostLease` may be used, and making the pool optional is not a prerequisite for this work.
 
 ### Workflow Description
 
