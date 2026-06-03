@@ -153,16 +153,10 @@ message BaremetalInstanceTemplate {
   BaremetalInstanceTemplateSpecDefaults spec_defaults = 5;
 }
 
-message BaremetalInstanceTemplateSpecDefaults {
-  // Hardware profile or instance-type identifier.
-  string instance_type = 1;
-
-  // OS image identifier.
-  string image = 2;
-
-  // Default network configuration.
-  string network = 3;
-}
+// BaremetalInstanceTemplateSpecDefaults follows the same convention as other OSAC template types.
+// No overridable spec fields are defined in this initial version; fields will be added in future
+// enhancements as tenant-configurable options are introduced (e.g. networking integration).
+message BaremetalInstanceTemplateSpecDefaults {}
 ```
 
 #### Proto: BaremetalInstance
