@@ -292,7 +292,7 @@ Introducing `BaremetalInstance` alongside the existing `bare-metal-fulfillment` 
 
 ## Open Questions
 
-1. Should `BaremetalInstance` (the fulfillment-service API resource) be the same object as `HostLease` (the CRD managed by the baremetal fulfillment component), or should they remain distinct resources with the osac-operator bridging them? Merging them would reduce indirection but couples the public API schema to the internal provisioning representation.
+1. ~~Should `BaremetalInstance` (the fulfillment-service API resource) be the same object as `HostLease` (the CRD managed by the baremetal fulfillment component), or should they remain distinct resources with the osac-operator bridging them?~~ **Closed:** They remain distinct. `HostLease` will be used for cases beyond bare metal instances managed through the fulfillment service (e.g. cluster bare metal nodes), so it must not be coupled to the `BaremetalInstance` public API shape.
 
 ## Test Plan
 
