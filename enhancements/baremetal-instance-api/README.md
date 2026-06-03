@@ -250,22 +250,6 @@ enum BaremetalInstanceConditionType {
 }
 ```
 
-#### Pluggable Provider Architecture
-
-The pluggable architecture is implemented in the baremetal fulfillment component, which reconciles `HostLease` CRs and translates them into backend-specific operations. The component exposes a provider interface:
-
-```go
-type BaremetalProvider interface {
-    Provision(ctx context.Context, lease *HostLease, template *BaremetalInstanceTemplate) error
-    Deprovision(ctx context.Context, lease *HostLease) error
-    GetStatus(ctx context.Context, lease *HostLease) (*HostLeaseStatus, error)
-}
-```
-
-The active provider is selected at startup via configuration. Future backends (ESI, direct Ironic, Redfish) can be added as additional implementations of this interface without modifying the API, operator, or AAP playbooks.
-
-The baremetal fulfillment component is responsible for mapping `HostLease` status to `BaremetalInstanceStatus` and pushing updates via the `Signal` RPC. The exact mapping will be defined once the `HostLease` CRD schema is finalized.
-
 #### Alignment with ComputeInstance
 
 `BaremetalInstance` intentionally mirrors `ComputeInstance`:
