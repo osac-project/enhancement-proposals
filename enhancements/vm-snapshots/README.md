@@ -277,6 +277,7 @@ Error: compute instance snapshot "<other-tenants-snapshot-id>" not found
 When a ComputeInstance is deleted:
 
 1. The ComputeInstance controller's deletion handler queries for all `ComputeInstanceSnapshot` CRs that reference the ComputeInstance.
+  **Security requirement:** The query must filter by both `spec.computeInstanceRef` AND the `osac.openshift.io/tenant` annotation to ensure only snapshots owned by the same tenant are deleted.
 2. Each `ComputeInstanceSnapshot` CR is deleted, triggering the ComputeInstanceSnapshot controller's deletion flow (which deletes the underlying KubeVirt `VirtualMachineSnapshot`).
 3. Only after all snapshots are fully deleted does the ComputeInstance controller proceed with its own deletion finalizer logic.
 
