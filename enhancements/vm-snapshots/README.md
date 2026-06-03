@@ -949,11 +949,11 @@ Graduation criteria will be defined when targeting a release. Expected stages:
 
 ## Upgrade / Downgrade Strategy
 
-Not applicable - OSAC is pre-GA. This is a breaking API change.
+Not applicable - OSAC is pre-GA.
 
 ## Version Skew Strategy
 
-Not applicable - OSAC is pre-GA. This is a breaking API change.
+Not applicable - OSAC is pre-GA.
 
 ## Support Procedures
 
