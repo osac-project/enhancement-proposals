@@ -3,7 +3,7 @@ title: baremetal-instance-api
 authors:
   - agentil@redhat.com
 creation-date: 2026-05-29
-last-updated: 2026-06-01
+last-updated: 2026-06-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1118
 see-also:
@@ -64,18 +64,18 @@ The proposal introduces two new resource types to the fulfillment-service public
 
 **`BaremetalInstance`** is a tenant-created resource representing a provisioned bare metal server. Its `spec` references a template and carries provisioning parameters (SSH public key, user data, run strategy, restart signal). Its `status` exposes the lifecycle state and conditions aligned with the `ComputeInstance` pattern.
 
-Provisioning is driven by a chain of components: the `osac-operator` reconciles the CRD and triggers `osac-aap` playbooks, which create the baremetal fulfillment CRs (`BaremetalPool` and/or `HostLease`) needed to acquire and track the host. The baremetal fulfillment component reconciles those CRs and drives the backend (initially BCM). The exact set of CRs created by `osac-aap` is an implementation detail of the baremetal fulfillment component; in the initial version both `BaremetalPool` and `HostLease` may be used, and making the pool optional is not a prerequisite for this work.
+Provisioning is driven by a chain of components: the fulfillment service **directly creates** a `HostLease` CR in the management cluster when a `BaremetalInstance` is created — there is no intermediate CRD reconciled by the osac-operator. The baremetal fulfillment operator picks up the `HostLease`, finds and assigns a free host from the inventory backend, and triggers `osac-aap` for host-level setup (OS image, SSH key, user data). The osac-operator watches `HostLease` CRs for status changes and pushes updates back to the fulfillment service via the `Signal` RPC. `HostLease` is an internal implementation detail; tenants never interact with it directly.
 
 ### Workflow Description
 
 **Actors:**
 - **Cloud Provider Admin** — defines `BaremetalInstanceTemplate` objects as Ansible roles in `osac-aap`; templates are published to the fulfillment service via the provisioning pipeline.
 - **Tenant User** — creates and manages `BaremetalInstance` resources via the public API.
-- **Fulfillment Service** — translates resource CRUD into CRDs and forwards to the osac-operator.
-- **osac-operator** — reconciles `BaremetalInstance` CRDs, triggers `osac-aap` playbooks, and watches `HostLease` CRs for status updates.
-- **osac-aap** — executes Ansible playbooks and the baremetal template role, resulting in the creation of a `HostLease` CR.
-- **Baremetal Fulfillment Component** — reconciles `HostLease` CRs and drives the backend (BCM or any future integration).
-- **BCM (NVIDIA Base Command Manager)** — the initial bare metal backend that physically provisions machines.
+- **Fulfillment Service** — handles `BaremetalInstance` CRUD and creates `HostLease` CRs directly in the management cluster.
+- **osac-operator** — watches `HostLease` CRs for status changes and pushes them to the fulfillment service via the `Signal` RPC; does not create any CRs in this flow.
+- **baremetal-fulfillment-operator** — reconciles `HostLease` CRs: finds and assigns a free host from the inventory backend, then triggers `osac-aap` for host-level provisioning.
+- **osac-aap** — executes the provisioning and deprovisioning Ansible roles (OS image, SSH key, user data); triggered by the baremetal-fulfillment-operator.
+- **Inventory Backend** — the bare metal inventory used to find and assign free hosts (e.g. OpenStack Ironic or BCM).
 
 #### Provisioning
 
@@ -88,11 +88,10 @@ Provisioning is driven by a chain of components: the `osac-operator` reconciles 
    ```
    POST /api/fulfillment/v1/baremetal_instances
    ```
-4. The fulfillment service creates the corresponding `BaremetalInstance` CRD in the management cluster.
-5. The osac-operator reconciles the CRD and triggers `osac-aap` playbooks.
-6. `osac-aap` executes the baremetal template role, creating a `HostLease` CR.
-7. The baremetal fulfillment component reconciles the `HostLease` CR and drives BCM to provision the node.
-8. The osac-operator watches the `HostLease` CR for status updates and pushes them to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BaremetalInstance.status`.
+4. The fulfillment service creates a `HostLease` CR in the management cluster; `BaremetalInstance.status.state` is set to `BAREMETAL_INSTANCE_STATE_PROVISIONING`.
+5. The baremetal-fulfillment-operator picks up the `HostLease` and queries the inventory backend to find and assign a free host matching the requested host type and selector.
+6. The baremetal-fulfillment-operator triggers `osac-aap` to run the host-level provisioning template (OS image, SSH key, user data) and updates the `HostLease` status on completion.
+7. The osac-operator watches the `HostLease` CR and pushes status updates to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BaremetalInstance.status`.
 9. The Tenant User polls until `status.state` is `BAREMETAL_INSTANCE_STATE_RUNNING`:
    ```
    GET /api/fulfillment/v1/baremetal_instances/{id}
@@ -108,11 +107,48 @@ If any step in the provisioning chain fails (playbook error, BCM API failure, `H
    ```
    DELETE /api/fulfillment/v1/baremetal_instances/{id}
    ```
-2. The fulfillment service marks the CRD for deletion; `status.state` transitions to `BAREMETAL_INSTANCE_STATE_DELETING`.
-3. The osac-operator triggers `osac-aap` playbooks to delete the `HostLease` CR.
-4. The baremetal fulfillment component reconciles the `HostLease` deletion and releases the node.
-5. The osac-operator watches the `HostLease` CR deletion and pushes final status via the `Signal` RPC.
-6. The `BaremetalInstance` resource is removed once deprovisioning completes.
+2. The fulfillment service deletes the `HostLease` CR; `BaremetalInstance.status.state` transitions to `BAREMETAL_INSTANCE_STATE_DELETING`.
+3. The baremetal-fulfillment-operator reconciles the `HostLease` deletion: triggers `osac-aap` for the host-level deprovisioning template, then unassigns the host from the inventory backend.
+4. The osac-operator watches the `HostLease` CR deletion and pushes final status via the `Signal` RPC.
+5. The `BaremetalInstance` resource is removed once deprovisioning completes.
+
+#### Provisioning Sequence
+
+```mermaid
+sequenceDiagram
+    actor TU as Tenant User
+    participant FS as Fulfillment Service
+    participant MC as Management Cluster
+    participant OP as osac-operator
+    participant BMF as baremetal-fulfillment-operator
+    participant AAP as osac-aap
+    participant INV as Inventory Backend
+
+    TU->>FS: GET /baremetal_instance_templates
+    FS-->>TU: list of available templates
+
+    TU->>FS: POST /baremetal_instances {template_id, ssh_key, ...}
+    FS->>MC: create HostLease CR (hostType, profile, templateID, templateParameters)
+    FS-->>TU: 201 Created {id, state: PROVISIONING}
+
+    MC-->>BMF: watch: HostLease CR created (no ExternalHostID yet)
+    BMF->>INV: FindFreeHost(hostType, matchLabels)
+    INV-->>BMF: free host found
+    BMF->>INV: AssignHost(externalHostID, hostLeaseID, labels)
+    INV-->>BMF: host assigned (HostClass, NetworkClass)
+    BMF->>MC: update HostLease CR (ExternalHostID, HostClass, NetworkClass)
+    BMF->>AAP: run hostTemplate role (OS image, SSH key, user data)
+    AAP->>INV: provision node
+    INV-->>AAP: provisioning complete
+    AAP-->>BMF: host setup complete
+    BMF->>MC: update HostLease status (phase: Ready)
+
+    MC-->>OP: watch: HostLease CR Ready
+    OP->>FS: Signal RPC (state: RUNNING, ip_address)
+
+    TU->>FS: GET /baremetal_instances/{id}
+    FS-->>TU: {state: RUNNING, ip_address: ...}
+```
 
 ### API Extensions
 
@@ -274,11 +310,11 @@ Fields specific to VMs (network attachments) are absent from `BaremetalInstance`
 
 ### Drawbacks
 
-Introducing `BaremetalInstance` alongside the existing `bare-metal-fulfillment` EP's `Host`/`HostPool` model creates two partially overlapping designs. Teams will need to reconcile these over time. The cost is justified by the simpler MVP scope and the need to deliver a functional baremetal API without waiting for the full ESI-integrated `HostPool` model. The `BaremetalInstance` naming and API shape also align more naturally with the existing `ComputeInstance` pattern, reducing the learning curve for tenants already familiar with OSAC.
+The `BaremetalInstance` public API and the internal `HostLease` CRD represent the same provisioning intent at different layers. The fulfillment service maps `BaremetalInstance` CRUD directly to `HostLease` CR operations, keeping the translation thin. `HostLease` is an internal detail not visible to tenants; the two representations can be consolidated in a future release if requirements converge.
 
 ## Alternatives (Not Implemented)
 
-**Adopt the existing `bare-metal-fulfillment` EP's `HostPool`/`Host` model.** This model is more complete (multi-host pools, interface-level networking, ESI integration) but also significantly more complex. Implementing it first would delay delivery of basic single-machine provisioning. The simpler `BaremetalInstance` model allows earlier release and aligns with the `ComputeInstance` pattern already familiar to tenants and API consumers.
+**Expose `HostLease` directly as the tenant-facing API instead of introducing `BaremetalInstance`.** This avoids the translation layer between `BaremetalInstance` and `HostLease`. However, `HostLease` is also used by cluster-as-a-service and agent provisioning workflows that do not go through the fulfillment service; coupling the public API schema to it would make future consolidation a breaking change and would expose internal provisioning details to tenants. The `BaremetalInstance` API shape also aligns with OSAC conventions (`id` + `metadata` + `spec` + `status`, same `Signal` RPC feedback loop as `ComputeInstance`) in a way that `HostLease` does not.
 
 **Map `BaremetalInstance` to the existing `ComputeInstance` resource with a baremetal flag.** This avoids a new resource type but conflates VM and bare metal semantics, complicates template definitions, and requires dispatching on a field value rather than resource type. A dedicated resource type provides cleaner separation of concerns and allows independent API evolution.
 
@@ -286,7 +322,7 @@ Introducing `BaremetalInstance` alongside the existing `bare-metal-fulfillment` 
 
 ## Open Questions
 
-1. ~~Should `BaremetalInstance` (the fulfillment-service API resource) be the same object as `HostLease` (the CRD managed by the baremetal fulfillment component), or should they remain distinct resources with the osac-operator bridging them?~~ **Closed:** They remain distinct. `HostLease` will be used for cases beyond bare metal instances managed through the fulfillment service (e.g. cluster bare metal nodes), so it must not be coupled to the `BaremetalInstance` public API shape.
+1. ~~Should `BaremetalInstance` and `HostLease` be the same object, or remain distinct?~~ **Closed:** Distinct. The fulfillment service creates a `HostLease` as the internal backend CRD, but `HostLease` is also used by other workflows (cluster-as-a-service, agent provisioning) that bypass the fulfillment service entirely. Coupling the public API schema to `HostLease` would make future consolidation a breaking change.
 
 ## Test Plan
 
@@ -312,23 +348,27 @@ This is a new API with no impact on existing resources. Downgrading requires del
 
 ## Version Skew Strategy
 
-The fulfillment-service and osac-operator must be upgraded together for the `BaremetalInstance` CRD to be recognized. If the CRD is not yet installed, the fulfillment service returns `503 Service Unavailable` on `BaremetalInstance` create requests, giving tenants a clear signal that the feature is not yet available.
+The fulfillment-service, baremetal-fulfillment-operator, and osac-operator must be upgraded together. If the baremetal-fulfillment-operator is not running, `HostLease` CRs will not be reconciled and new `BaremetalInstance` create requests will remain in `PROVISIONING` indefinitely. If the osac-operator baremetal controller is not running, status updates will not propagate back to the fulfillment service.
 
 ## Support Procedures
 
 **Symptom:** `BaremetalInstance` stuck in `BAREMETAL_INSTANCE_STATE_PROVISIONING`.
-**Diagnosis:** Check osac-operator logs for reconciliation errors, osac-aap job logs for playbook failures, and baremetal fulfillment component logs for backend errors. Verify that the `HostLease` CR was created and that BCM credentials are valid.
-**Resolution:** If the backend node was allocated but configuration failed, delete the `HostLease` CR manually and delete the `BaremetalInstance` to trigger a clean retry.
+**Diagnosis:** Check baremetal-fulfillment-operator logs for inventory or AAP errors. Check osac-aap job logs for playbook failures. Verify the `HostLease` CR exists and that `ExternalHostID` has been set (indicates host was found in inventory).
+**Resolution:** If the host was allocated but provisioning failed, delete the `HostLease` CR manually and delete the `BaremetalInstance` to trigger a clean retry.
+
+**Symptom:** All `BaremetalInstance` creations remain in `BAREMETAL_INSTANCE_STATE_PROVISIONING` with no `HostLease` created.
+**Diagnosis:** The fulfillment service may not be able to reach the management cluster API. Check fulfillment-service logs for Kubernetes API errors.
+**Resolution:** Verify management cluster connectivity and credentials used by the fulfillment service.
 
 **Symptom:** All `BaremetalInstance` creations transition to `BAREMETAL_INSTANCE_STATE_FAILED`.
-**Diagnosis:** Check baremetal fulfillment component logs for BCM API errors. Validate BCM credentials (rotate if expired), verify BCM API availability, check quota exhaustion, and confirm network connectivity between the baremetal fulfillment component and the BCM API.
-**Resolution:** Rotate credentials if expired, request quota increases if exhausted, or resolve network connectivity issues. Re-trigger provisioning by deleting the failed `BaremetalInstance` and recreating it.
+**Diagnosis:** Check baremetal-fulfillment-operator logs for inventory API or AAP errors. Validate inventory backend credentials, verify AAP availability, and confirm network connectivity.
+**Resolution:** Rotate credentials if expired, resolve network connectivity issues, then retry by deleting the failed `BaremetalInstance` and recreating it.
 
 **Symptom:** Create returns `404 Not Found` for the template ID.
 **Diagnosis:** The `BaremetalInstanceTemplate` does not exist or is not visible to the tenant's organization.
 **Resolution:** Cloud Provider Admin must create and publish the appropriate template via `osac-aap`.
 
-**Disabling the API:** Scale the baremetal fulfillment component and the osac-operator baremetal controller to 0 replicas. Existing `BaremetalInstance` and `HostLease` resources persist but do not reconcile. Re-enabling both resumes reconciliation without data loss.
+**Disabling the API:** Scale the baremetal-fulfillment-operator and the osac-operator baremetal controller to 0 replicas. Existing `HostLease` CRs persist but are not reconciled. Re-enabling both resumes reconciliation without data loss.
 
 ## Infrastructure Needed
 
