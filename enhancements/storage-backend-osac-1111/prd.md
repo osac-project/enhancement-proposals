@@ -1,3 +1,11 @@
+| Field       | Value   |
+|-------------|---------|
+| Author(s)   | Roy Golan rgolan@redhat.com |
+| Status      | Draft |
+| Jira        | https://redhat.atlassian.net/browse/OSAC-1111 |
+| Date        | 2026-06-04 |
+
+
 # StorageBackend API — Product Requirements
 
 ## Summary
@@ -95,7 +103,7 @@ This enhancement introduces the StorageBackend entity as a DB-backed resource in
 
 **Mitigation:** Include a `README.md` with YAML frontmatter and stub section headers that point to the respective document. The README serves as the entry point for both the linter and GitHub's default directory rendering.
 
-**Status:** Mitigated by plan design (README.md index file included).
+**Status:** Mitigated — README.md index file included with all required section headers as stubs.
 
 ### Risk: Scope Creep into Full StorageTier Design
 
@@ -174,22 +182,6 @@ The `provider` field ("vast", "ceph", "pure") creates an ongoing maintenance bur
 
 ## Open Questions
 
-### Question 1: Hub vs. Management Cluster Terminology
+### ~~Question 1: Hub vs. Management Cluster Terminology~~ (Resolved)
 
-**Current state:** The reconciliation flow uses "hub cluster" terminology (inherited from ACM — Advanced Cluster Management). The entity model in PROJECT.md uses "management cluster" in some contexts and "hub" in others.
-
-**Question:** Is the hub cluster the same as the management cluster in OSAC? Specifically, is the management cluster the one that creates HostedClusters (OpenShift clusters provisioned via Hosted Control Planes)?
-
-**Impact:** If the hub ↔ management cluster distinction is significant, the reconciliation flow description may need adjustment. If they are the same, the terminology should be unified.
-
-**Resolution path:** Verify with the team and update PROJECT.md to standardize terminology before Phase 2 implementation.
-
-### Question 2: Jira Instance URL Verification
-
-**Current state:** OSAC enhancement proposals use different Jira instances. The `tenant-storage-tiers` EP uses `https://redhat.atlassian.net/browse/MGMT-23669`, while the `networking` EP uses `https://issues.redhat.com/browse/MGMT-22637`.
-
-**Question:** Which instance hosts OSAC-1111?
-
-**Impact:** The `tracking-link` frontmatter field may have an incorrect URL.
-
-**Resolution path:** Verify the Jira instance during PR review. The URL can be corrected in a follow-up commit if needed.
+**Resolution:** The hub cluster and management cluster are the same thing in OSAC's HCP model. The management cluster is the one that runs the Hosted Control Planes operator and creates HostedClusters. The term "hub" is inherited from ACM (Advanced Cluster Management) and refers to the same cluster. This EP uses "management cluster" consistently. PROJECT.md terminology should be unified to match.

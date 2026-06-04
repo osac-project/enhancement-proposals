@@ -1,3 +1,11 @@
+| Field       | Value   |
+|-------------|---------|
+| Author(s)   | Roy Golan rgolan@redhat.com |
+| Status      | Draft |
+| Jira        | https://redhat.atlassian.net/browse/OSAC-1111 |
+| Date        | 2026-06-04 |
+
+
 # StorageBackend API — Design Document
 
 ## Proposal
@@ -78,7 +86,9 @@ This enhancement adds a new gRPC service `StorageBackends` under the `osac.priva
 - `DeleteStorageBackend`: Soft-delete a backend
 - `Signal`: Update backend status (private-only RPC, no HTTP annotation)
 
-All CRUD RPCs include HTTP annotations for REST access via grpc-gateway (POST, GET, GET, PATCH, DELETE respectively). The `Signal` RPC is private-only and used by internal components to update status.
+All CRUD RPCs include HTTP annotations for REST access via grpc-gateway (POST, GET, GET, PATCH, DELETE respectively). The `Signal` RPC is private-only and used by internal components or admins to update status.
+
+**Signal RPC divergence from NetworkClass:** NetworkClass Signal takes only `id` (no payload) because its state transition is a simple toggle — the signal itself is the event, and the server decides the resulting state. StorageBackend Signal takes `id + StorageBackendStatus` because the caller provides observed state from an external system (connectivity result, detected model, firmware version). The status payload is necessary because the fulfillment-service has no direct knowledge of the storage array's state — it must be told by whoever probed it.
 
 **No CRDs, no webhooks, no finalizers.** The StorageBackend entity is DB-backed and managed exclusively through the fulfillment-service private API. It does not exist as a Kubernetes resource.
 
@@ -121,6 +131,18 @@ The StorageBackend entity includes the following fields:
 - `STORAGE_BACKEND_STATE_READY`: Backend is operational and available
 - `STORAGE_BACKEND_STATE_FAILED`: Backend validation or connectivity failed
 
+### State Transition Mechanism
+
+Unlike NetworkClass (which sets READY immediately on creation because it is a pure declaration with no external system), StorageBackend references a real external system (VAST endpoint, credentials) and cannot be assumed READY at registration time.
+
+**Phase 1 approach: Manual status updates via Signal RPC.** The Cloud Infrastructure Admin (or a future automation component) calls the `Signal` RPC with the backend ID and updated `StorageBackendStatus` to transition from PENDING → READY after verifying connectivity externally. This is the simplest approach that avoids adding a reconciler, VAST client, or retry logic to the StorageBackend registration scope.
+
+**Why not READY-on-create (NetworkClass pattern):** NetworkClass has no backend to probe — it is a declaration of network configuration. StorageBackend represents a live storage array with credentials that may be invalid or an endpoint that may be unreachable. Setting READY on create would provide false confidence.
+
+**Why not a full reconciler (PublicIPPool pattern):** A reconciler using the generic reconciler framework (`internal/controllers/reconciler.go`) with sync loop + event watch would require a VAST client, retry logic, and provider-specific health check endpoints. This is significant scope that belongs in a follow-up enhancement once multiple providers need automated probing.
+
+**Future evolution:** When automated backend probing is implemented, a reconciler can call Signal internally to transition backends to READY/FAILED based on connectivity checks. The Signal RPC provides the stable interface for status updates regardless of whether the caller is a human admin or an automated reconciler.
+
 ### Database Schema (Entity-Relationship Level)
 
 The `storage_backends` table stores StorageBackend entities with the following columns:
@@ -145,7 +167,7 @@ The `storage_backends` table stores StorageBackend entities with the following c
 
 **Indexes:**
 - Primary key on `id`
-- Unique index on `name` (scoped to non-deleted records: `WHERE deleted_at IS NULL`)
+- Unique index on `name` (scoped to non-deleted records: `WHERE deleted_at IS NULL`). This intentionally allows re-registering a backend with the same name after soft-deleting the original. Since StorageTier (future) references backends by ID (not name), a new backend with a reused name does not affect existing tier bindings — the soft-deleted backend retains its ID and foreign key references.
 - Index on `provider` for efficient filtering by provider type
 - Index on `deleted_at` for soft delete queries
 
@@ -180,7 +202,7 @@ The `osac.service.storage_provider` Ansible role already handles provider-specif
 
 ```protobuf
 //
-// Copyright (c) 2025 Red Hat, Inc.
+// Copyright (c) 2026 Red Hat, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
 // the License. You may obtain a copy of the License at
@@ -226,7 +248,7 @@ message StorageBackend {
   string credentials_ref = 5;
 
   // Human-readable description of the backend (e.g., "VAST cluster in US East datacenter").
-  string description = 6;
+  optional string description = 6;
 
   // Current operational status of the storage backend.
   StorageBackendStatus status = 7;
@@ -280,7 +302,7 @@ enum StorageBackendState {
 
 ```protobuf
 //
-// Copyright (c) 2025 Red Hat, Inc.
+// Copyright (c) 2026 Red Hat, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with
 // the License. You may obtain a copy of the License at
@@ -475,7 +497,7 @@ The following describes the reconciliation flow from backend registration throug
 4. **Tenant CR triggers reconciliation** (future):
    - Resolve tier → query fulfillment-service for StorageTier entity
    - Resolve StorageTierBackend refs → query for backend details
-   - For each backend: install CSI driver on hub cluster (if not already installed)
+   - For each backend: install CSI driver on management cluster (if not already installed)
    - Create Secret on hub with tenant-scoped credentials (derived from backend credentials_ref)
    - Create StorageClass on hub with tier label (`osac.openshift.io/storage-tier: fast`) and tenant label (`osac.openshift.io/tenant: tenant-123`)
 
