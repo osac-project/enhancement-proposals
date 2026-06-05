@@ -311,8 +311,6 @@ None identified.
 
 ## Alternatives (Not Implemented)
 
-**Expose `HostLease` directly as the tenant-facing API instead of introducing `BaremetalInstance`.** This avoids the translation layer between `BaremetalInstance` and `HostLease`. However, `HostLease` is also used by cluster-as-a-service and agent provisioning workflows that do not go through the fulfillment service; coupling the public API schema to it would expose internal provisioning details to tenants and prevent independent evolution of the public API. The `BaremetalInstance` API shape also aligns with OSAC conventions (`id` + `metadata` + `spec` + `status`, same `Signal` RPC feedback loop as `ComputeInstance`) in a way that `HostLease` does not.
-
 **Map `BaremetalInstance` to the existing `ComputeInstance` resource with a baremetal flag.** This avoids a new resource type but conflates VM and bare metal semantics, complicates template definitions, and requires dispatching on a field value rather than resource type. A dedicated resource type provides cleaner separation of concerns and allows independent API evolution.
 
 **Expose the bare metal backend API directly to tenants.** This bypasses OSAC entirely, eliminating tenant isolation, quota enforcement, and the pluggable backend architecture. Not viable for a multi-tenant cloud platform.
