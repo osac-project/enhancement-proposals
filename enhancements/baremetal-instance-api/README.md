@@ -217,7 +217,9 @@ message BaremetalInstanceSpec {
   // Maximum size: 64 KB.
   optional string user_data = 3;
 
-  // Run strategy for the bare metal instance.
+  // Run strategy controls the power state of the bare metal instance (on/off).
+  // Named run_strategy for alignment with ComputeInstance; an enum is used rather
+  // than a boolean to leave room for future states (e.g. suspended backends).
   optional BaremetalInstanceRunStrategy run_strategy = 4;
 
   // RestartRequestedAt is a timestamp signal to request a power cycle.
