@@ -307,7 +307,7 @@ Fields specific to VMs (network attachments) are absent from `BaremetalInstance`
 
 ### Drawbacks
 
-Adding `BaremetalInstance` as a fulfillment-service abstraction over `HostLease` introduces a translation layer. This is an explicit trade-off: it preserves tenant-facing API stability and alignment with OSAC conventions at the cost of keeping the two representations in sync.
+None identified.
 
 ## Alternatives (Not Implemented)
 
