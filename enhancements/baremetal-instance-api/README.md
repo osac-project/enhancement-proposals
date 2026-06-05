@@ -49,9 +49,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 * Per-organization template scoping — templates are global; a BMaaS catalog feature is deferred to a future enhancement.
 * `osac-operator` CRD definitions and controller implementation — covered in companion work.
 * AAP playbook implementation — covered in companion work.
-* Baremetal fulfillment component implementation — covered in companion work.
-
-  The intended division of responsibility between these two components is: the baremetal-fulfillment-operator handles host assignment and host-level provisioning (via `HostLease` CRs and `osac-aap`); the osac-operator watches `HostLease` CRs for status changes and pushes them back to the fulfillment service via the `Signal` RPC. See the Workflow Description section for details.
+* Baremetal fulfillment component implementation — covered in companion work. The intended split: the baremetal-fulfillment-operator handles host assignment and host-level provisioning (via `HostLease` CRs and `osac-aap`); the osac-operator watches `HostLease` CRs for status changes and pushes them to the fulfillment service via the `Signal` RPC. See Workflow Description for details.
 * UI and UX — covered in companion work.
 * E2E test implementation — covered in companion work.
 * Support for multiple bare metal backends in this initial release — the architecture is designed for future extensibility.
