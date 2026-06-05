@@ -40,7 +40,6 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 * Provide a self-service API for tenants to create `BaremetalInstance` resources referencing a `BaremetalInstanceTemplate`.
 * Define `BaremetalInstanceTemplate` as a provider-managed global catalog resource exposing the available hardware profile, OS base image, and default network configuration.
 * Align the `BaremetalInstance` API shape with the existing `ComputeInstance` API (same `id`, `metadata`, `spec`, `status` envelope, same condition and state patterns, same run strategy and restart signal mechanism).
-* Define a pluggable provider abstraction in the baremetal fulfillment component so that the initial BCM backend can be replaced or extended without API changes.
 * Expose the API through both gRPC and the existing REST gateway.
 
 ### Non-Goals
@@ -64,7 +63,7 @@ The proposal introduces two new resource types to the fulfillment-service public
 
 **`BaremetalInstance`** is a tenant-created resource representing a provisioned bare metal server. Its `spec` references a template and carries provisioning parameters (SSH public key, user data, run strategy, restart signal). Its `status` exposes the lifecycle state and conditions aligned with the `ComputeInstance` pattern.
 
-Provisioning is driven by a chain of components: the fulfillment service **directly creates** a `HostLease` CR in the management cluster when a `BaremetalInstance` is created — there is no intermediate CRD reconciled by the osac-operator. The baremetal fulfillment operator picks up the `HostLease`, finds and assigns a free host from the inventory backend, and triggers `osac-aap` for host-level setup (OS image, SSH key, user data). The osac-operator watches `HostLease` CRs for status changes and pushes updates back to the fulfillment service via the `Signal` RPC. `HostLease` is an internal implementation detail; tenants never interact with it directly.
+Provisioning is driven by a chain of components: the fulfillment service creates a `HostLease` CR in the management cluster when a `BaremetalInstance` is created. The baremetal fulfillment operator picks up the `HostLease`, finds and assigns a free host from the inventory backend, and triggers `osac-aap` for host-level setup (OS image, SSH key, user data). The osac-operator watches `HostLease` CRs for status changes and pushes updates back to the fulfillment service via the `Signal` RPC. `HostLease` is an internal implementation detail; tenants never interact with it directly.
 
 ### Workflow Description
 
@@ -92,14 +91,14 @@ Provisioning is driven by a chain of components: the fulfillment service **direc
 5. The baremetal-fulfillment-operator picks up the `HostLease` and queries the inventory backend to find and assign a free host matching the requested host type and selector.
 6. The baremetal-fulfillment-operator triggers `osac-aap` to run the host-level provisioning template (OS image, SSH key, user data) and updates the `HostLease` status on completion.
 7. The osac-operator watches the `HostLease` CR and pushes status updates to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BaremetalInstance.status`.
-9. The Tenant User polls until `status.state` is `BAREMETAL_INSTANCE_STATE_RUNNING`:
+8. The Tenant User polls until `status.state` is `BAREMETAL_INSTANCE_STATE_RUNNING`:
    ```
    GET /api/fulfillment/v1/baremetal_instances/{id}
    ```
 
 #### Failure Handling
 
-If any step in the provisioning chain fails (playbook error, BCM API failure, `HostLease` stuck), the osac-operator sets `BaremetalInstance.status.state` to `BAREMETAL_INSTANCE_STATE_FAILED` via the `Signal` RPC. The tenant can inspect the `conditions` field for details. To retry, the tenant deletes and recreates the `BaremetalInstance`.
+If any step in the provisioning chain fails (playbook error, BCM API failure, `HostLease` stuck), the osac-operator sets `BaremetalInstance.status.state` to `BAREMETAL_INSTANCE_STATE_FAILED` via the `Signal` RPC. The tenant can inspect the `conditions` field for details. To retry, the tenant deletes and recreates the `BaremetalInstance`; note that recreating may result in a different physical host being assigned from the inventory.
 
 #### Deprovisioning
 
@@ -144,10 +143,10 @@ sequenceDiagram
     BMF->>MC: update HostLease status (phase: Ready)
 
     MC-->>OP: watch: HostLease CR Ready
-    OP->>FS: Signal RPC (state: RUNNING, ip_address)
+    OP->>FS: Signal RPC (state: RUNNING)
 
     TU->>FS: GET /baremetal_instances/{id}
-    FS-->>TU: {state: RUNNING, ip_address: ...}
+    FS-->>TU: {state: RUNNING}
 ```
 
 ### API Extensions
@@ -165,7 +164,7 @@ sequenceDiagram
 - `GET    /api/fulfillment/v1/baremetal_instances`
 - `GET    /api/fulfillment/v1/baremetal_instances/{id}`
 - `POST   /api/fulfillment/v1/baremetal_instances`
-- `PATCH  /api/fulfillment/v1/baremetal_instances/{object.id}`
+- `PATCH  /api/fulfillment/v1/baremetal_instances/{object.id}` — `{object.id}` is the gRPC-gateway convention for PATCH: the request body carries the full object and the ID is bound via `object.id`, matching the `ComputeInstance` pattern.
 - `DELETE /api/fulfillment/v1/baremetal_instances/{id}`
 
 **PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `run_strategy` and `restart_requested_at`. The `template`, `ssh_key`, and `user_data` fields are immutable after creation; requests that attempt to modify them are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
@@ -231,11 +230,8 @@ message BaremetalInstanceStatus {
   BaremetalInstanceState state = 1;
   repeated BaremetalInstanceCondition conditions = 2;
 
-  // Primary IP address assigned by the backend. Unset until the instance reaches RUNNING state.
-  optional string ip_address = 3;
-
   // LastRestartedAt records when the last restart was initiated by the controller.
-  optional google.protobuf.Timestamp last_restarted_at = 4;
+  optional google.protobuf.Timestamp last_restarted_at = 3;
 }
 
 enum BaremetalInstanceRunStrategy {
@@ -310,11 +306,11 @@ Fields specific to VMs (network attachments) are absent from `BaremetalInstance`
 
 ### Drawbacks
 
-The `BaremetalInstance` public API and the internal `HostLease` CRD represent the same provisioning intent at different layers. The fulfillment service maps `BaremetalInstance` CRUD directly to `HostLease` CR operations, keeping the translation thin. `HostLease` is an internal detail not visible to tenants; the two representations can be consolidated in a future release if requirements converge.
+Adding `BaremetalInstance` as a fulfillment-service abstraction over `HostLease` introduces a translation layer. This is an explicit trade-off: it preserves tenant-facing API stability and alignment with OSAC conventions at the cost of keeping the two representations in sync.
 
 ## Alternatives (Not Implemented)
 
-**Expose `HostLease` directly as the tenant-facing API instead of introducing `BaremetalInstance`.** This avoids the translation layer between `BaremetalInstance` and `HostLease`. However, `HostLease` is also used by cluster-as-a-service and agent provisioning workflows that do not go through the fulfillment service; coupling the public API schema to it would make future consolidation a breaking change and would expose internal provisioning details to tenants. The `BaremetalInstance` API shape also aligns with OSAC conventions (`id` + `metadata` + `spec` + `status`, same `Signal` RPC feedback loop as `ComputeInstance`) in a way that `HostLease` does not.
+**Expose `HostLease` directly as the tenant-facing API instead of introducing `BaremetalInstance`.** This avoids the translation layer between `BaremetalInstance` and `HostLease`. However, `HostLease` is also used by cluster-as-a-service and agent provisioning workflows that do not go through the fulfillment service; coupling the public API schema to it would expose internal provisioning details to tenants and prevent independent evolution of the public API. The `BaremetalInstance` API shape also aligns with OSAC conventions (`id` + `metadata` + `spec` + `status`, same `Signal` RPC feedback loop as `ComputeInstance`) in a way that `HostLease` does not.
 
 **Map `BaremetalInstance` to the existing `ComputeInstance` resource with a baremetal flag.** This avoids a new resource type but conflates VM and bare metal semantics, complicates template definitions, and requires dispatching on a field value rather than resource type. A dedicated resource type provides cleaner separation of concerns and allows independent API evolution.
 
