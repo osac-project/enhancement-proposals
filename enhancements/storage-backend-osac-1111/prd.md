@@ -10,25 +10,25 @@
 
 ## Summary
 
-This enhancement adds a first-class StorageBackend entity to the OSAC fulfillment-service for registering and managing storage backends. Cloud Infrastructure Admins register storage arrays (VAST Data, Ceph, Pure Storage, etc.) through the private gRPC API with provider type, management endpoint, and credentials reference. The fulfillment-service PostgreSQL database becomes the source of truth for available storage infrastructure, replacing environment-variable-based configuration. The entity is DB-backed with no Kubernetes CRD, following the existing OSAC pattern for infrastructure-level resources like NetworkClass.
+This enhancement adds a first-class StorageBackend entity to the OSAC fulfillment-service for registering and managing storage backends. Cloud Provider Admins register storage arrays (VAST Data, Ceph, Pure Storage, etc.) through the private gRPC API with provider type, management endpoint, and credentials reference. The fulfillment-service PostgreSQL database becomes the source of truth for available storage infrastructure, replacing environment-variable-based configuration. The entity is DB-backed with no Kubernetes CRD, following the existing OSAC pattern for infrastructure-level resources like NetworkClass.
 
 ## Motivation
 
-OSAC currently relies on environment variables (`STORAGE_TIERS`, `VAST_ENDPOINT`) passed as Ansible Automation Platform extra vars for storage backend configuration. This approach has significant operational drawbacks: no API discoverability, no credential rotation without redeployment, no status visibility, and no integration with the OSAC data model. As OSAC matures toward production deployment, Cloud Infrastructure Admins need the ability to register and manage storage backends through the OSAC private API with full CRUD capabilities, status tracking, and credential lifecycle management.
+OSAC currently relies on environment variables (`STORAGE_TIERS`, `VAST_ENDPOINT`) passed as Ansible Automation Platform extra vars for storage backend configuration. This approach has significant operational drawbacks: no API discoverability, no credential rotation without redeployment, no status visibility, and no integration with the OSAC data model. As OSAC matures toward production deployment, Cloud Provider Admins need the ability to register and manage storage backends through the OSAC private API with full CRUD capabilities, status tracking, and credential lifecycle management.
 
-This enhancement builds on the existing tenant-specific StorageClass labeling mechanism (established in the `tenant-specific-storageclasses` and `tenant-storage-tiers` enhancement proposals) by adding the missing infrastructure layer: a registered, discoverable, API-managed inventory of storage backends. Future work will connect StorageBackend entities to StorageTier entities for multi-tiered tenant offerings, but this enhancement focuses solely on the backend registration and management problem.
+This enhancement builds on the existing tenant-specific StorageClass mechanism (established in the `tenant-specific-storageclasses` and `tenant-storage-tiers` enhancement proposals) by adding the missing infrastructure layer: a registered, discoverable, API-managed inventory of storage backends. StorageClasses are associated with tenants and tiers by labels.
 
 ### User Stories
 
-As a **Cloud Infrastructure Admin**, I want to register a storage backend (e.g., VAST Data management endpoint) through the OSAC private API with its provider type, management endpoint, and credentials reference, so that the platform has a source of truth for available storage infrastructure instead of relying on environment variables.
+As a **Cloud Provider Admin**, I want to register a storage backend (e.g., VAST Data management endpoint) through the OSAC private API with its provider type, management endpoint, and credentials reference, so that the platform has a source of truth for available storage infrastructure instead of relying on environment variables.
 
-As a **Cloud Infrastructure Admin**, I want to list all registered storage backends with their operational status (model, firmware version, state), so that I can verify which storage arrays are available to the platform and troubleshoot connectivity issues.
+As a **Cloud Provider Admin**, I want to list all registered storage backends with their operational status (model, firmware version, state, permission conditions), so that I can verify which storage arrays are available to the platform and troubleshoot connectivity issues.
 
-As a **Cloud Infrastructure Admin**, I want to update a storage backend's configuration (e.g., rotate credentials by changing the credentials_ref field), so that I can maintain secure credential hygiene without redeploying the fulfillment-service or modifying Ansible playbooks.
+As a **Cloud Provider Admin**, I want to update a storage backend's configuration (e.g., rotate credentials by changing the credentials_ref field), so that I can maintain secure credential hygiene without redeploying the fulfillment-service or modifying Ansible playbooks.
 
-As a **Cloud Infrastructure Admin**, I want to decommission a storage backend through the API (soft delete), so that the platform stops using it for new tenant storage provisioning without breaking references from existing StorageTier entities (future work).
+As a **Cloud Provider Admin**, I want to decommission a storage backend through the API (soft delete), so that the platform stops using it for new tenant storage provisioning without breaking references from existing StorageTier entities (future work).
 
-As a **Cloud Provider Admin** (future persona), I want to query the list of available storage backends when creating a StorageTier, so that I can compose tiered storage offerings from the registered infrastructure inventory.
+As a **Cloud Provider Admin**, I want to query the list of available storage backends when creating a StorageTier, so that I can compose tiered storage offerings from the registered infrastructure inventory.
 
 ### Goals
 
@@ -43,14 +43,14 @@ As a **Cloud Provider Admin** (future persona), I want to query the list of avai
 - **Full StorageTier design** — StorageTier entity design (OSAC-1110) is documented in this EP as a "Future: StorageTier" appendix showing entity model and reconciliation flow only. Full design (proto definitions, DB schema, server implementation) is deferred to a separate enhancement proposal.
 - **Provider-specific integration beyond VAST** — This enhancement defines the StorageBackend entity schema and API with a generic `provider` field (e.g., "vast", "ceph", "pure"). Provider-specific integration logic for model/firmware auto-detection and credential validation is implemented incrementally (VAST first, others follow the same pattern).
 - **Storage observability and monitoring** — Metrics, health checks, and capacity tracking for storage backends are separate features covered by the "OSAC Storage Observability" roadmap item, not this enhancement.
-- **Automatic backend discovery** — Storage backends are explicitly registered by Cloud Infrastructure Admins through the API. Automatic discovery from infrastructure management systems (e.g., VAST API auto-discovery of all arrays in a datacenter) is out of scope.
+- **Automatic backend discovery** — Storage backends are explicitly registered by Cloud Provider Admins through the API. Automatic discovery from infrastructure management systems (e.g., VAST API auto-discovery of all arrays in a datacenter) is out of scope.
 - **StorageBackend as a Kubernetes CRD** — The StorageBackend entity has no CRD. It is DB-backed and managed exclusively through the fulfillment-service private API, following the NetworkClass pattern. Reconciliation is triggered by Tenant onboarding (which references StorageTier, which references StorageBackend), not by backend registration events.
 
 ## Predecessor Evolution
 
 Storage management in OSAC has evolved through three prior stages, each addressing a specific operational gap while leaving the infrastructure-layer registration problem unsolved:
 
-### Stage 1: Environment Variables (Pre-2026-02)
+### Stage 1: Environment Variables
 
 Storage configuration flowed via Ansible Automation Platform extra vars (`storage_provider_tiers`, `storage_provider_action`, `VAST_ENDPOINT`, `VAST_USERNAME`, `VAST_PASSWORD`). The `osac.service.storage_provider` Ansible role accepted these variables to provision storage.
 
@@ -59,7 +59,7 @@ Storage configuration flowed via Ansible Automation Platform extra vars (`storag
 - Credential rotation required redeployment — updating `VAST_PASSWORD` meant modifying the deployment manifests and restarting the fulfillment-service.
 - No status visibility — failures in storage connectivity had to be diagnosed from Ansible logs, not from the OSAC API.
 
-### Stage 2: Tenant-Specific StorageClasses (EP: tenant-specific-storageclasses, 2026-02)
+### Stage 2: Tenant-Specific StorageClasses (EP: tenant-specific-storageclasses)
 
 The `tenant-specific-storageclasses` enhancement proposal introduced the `osac.openshift.io/tenant` label on StorageClasses for per-tenant resolution. The Tenant controller could now discover which StorageClass to use for a given tenant by querying label selectors.
 
@@ -67,7 +67,7 @@ The `tenant-specific-storageclasses` enhancement proposal introduced the `osac.o
 
 **Remaining gap:** StorageClasses were the source of truth, but backends were still invisible. The Tenant controller had no visibility into which storage arrays backed the StorageClasses it was using.
 
-### Stage 3: Storage Tier Labels (EP: tenant-storage-tiers, 2026-03)
+### Stage 3: Storage Tier Labels (EP: tenant-storage-tiers)
 
 The `tenant-storage-tiers` enhancement proposal added the `osac.openshift.io/storage-tier` label to StorageClasses, enabling multiple tiers per tenant (fast, standard, archival). The Tenant controller populated `status.storageClasses` with all resolved StorageClasses grouped by tier.
 
@@ -77,7 +77,7 @@ The `tenant-storage-tiers` enhancement proposal added the `osac.openshift.io/sto
 
 ### Stage 4: StorageBackend API (This EP)
 
-This enhancement introduces the StorageBackend entity as a DB-backed resource in the fulfillment-service with a private gRPC API. Cloud Infrastructure Admins register backends with provider type, endpoint, and credentials. The database becomes the source of truth for storage infrastructure inventory.
+This enhancement introduces the StorageBackend entity as a DB-backed resource in the fulfillment-service with a private gRPC API. Cloud Provider Admins register backends with provider type, endpoint, and credentials. The database becomes the source of truth for storage infrastructure inventory.
 
 **What this enables:**
 - API-driven backend registration and credential rotation
@@ -88,30 +88,6 @@ This enhancement introduces the StorageBackend entity as a DB-backed resource in
 **Reconciliation path (future work):** Tenant onboarding will trigger: resolve tier → backend(s) → install CSI driver on hub → create Secret with tenant-scoped credentials → create StorageClass for tenant on hub.
 
 ## Risks and Mitigations
-
-### Risk: Proto Appendix Divergence from Implementation
-
-**Description:** The proto definitions included in this EP's appendix may become constraints during Phase 2 implementation, limiting the ability to adopt better field names or structures discovered during coding.
-
-**Mitigation:** Label the proto appendix as "illustrative" with a note that field names and exact structure may evolve during implementation. Use a high-level field table in the narrative (name, type, required/optional, description) for requirements specification, keeping the proto appendix as an implementation guide rather than a strict contract.
-
-**Status:** Mitigated by D-04 decision (field table + proto appendix pattern).
-
-### Risk: CI Linter Compatibility with Multi-File Format
-
-**Description:** The enhancement-proposals CI linter expects a single `README.md` file with valid YAML frontmatter and all required section headers. Using `prd.md` and `design.md` without a `README.md` index may cause linter failures.
-
-**Mitigation:** Include a `README.md` with YAML frontmatter and stub section headers that point to the respective document. The README serves as the entry point for both the linter and GitHub's default directory rendering.
-
-**Status:** Mitigated — README.md index file included with all required section headers as stubs.
-
-### Risk: Scope Creep into Full StorageTier Design
-
-**Description:** The StorageTier appendix could grow beyond its intended "entity model + reconciliation flow" scope into a full design document, creating review overhead and delaying approval.
-
-**Mitigation:** Limit the appendix to: (1) entity model table with fields and relationships, (2) one-paragraph description of reconciliation flow. No proto definitions, no DB schema, no detailed workflows for StorageTier. Enforce a ~2-page limit.
-
-**Status:** Mitigated by D-01 and D-02 decisions.
 
 ## Drawbacks
 
