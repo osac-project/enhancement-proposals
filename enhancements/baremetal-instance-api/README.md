@@ -47,7 +47,6 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 * Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement; in this initial phase, network configuration is fixed by the Cloud Provider Admin as part of the `BareMetalInstanceCatalogItem` and tenants have no mechanism to configure networking at provision time. A dedicated networking enhancement will enable tenants to create their own `Subnet` and attach it to a `BareMetalInstance`.
 * Custom hardware profile or OS image selection by tenants at provision time — fixed by the catalog item. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new catalog item.
-* Per-organization catalog item scoping — catalog items are global in this initial release; per-tenant scoping via the `tenant` field is deferred to a future enhancement.
 * AAP playbook implementation — covered in companion work.
 * BareMetal fulfillment component implementation — covered in companion work.
 * UI and UX — covered in companion work.
