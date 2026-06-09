@@ -8,6 +8,7 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1118
 see-also:
   - /enhancements/bare-metal-fulfillment
+  - /enhancements/catalog-items
 replaces:
   - N/A
 superseded-by:
@@ -18,7 +19,7 @@ superseded-by:
 
 ## Summary
 
-This enhancement introduces `BareMetalInstance` and `BareMetalInstanceTemplate` resources to the OSAC fulfillment-service public API, enabling tenants to provision and manage physical bare metal servers through a self-service interface. Templates encode the default instance type, OS base image, and network configuration and are published by Cloud Provider Admins via `osac-aap`. The design adopts a pluggable provider architecture — implemented in a dedicated baremetal fulfillment component — so that future bare metal backends can be integrated without breaking the API. This EP is scoped to the fulfillment-service API layer; operator, provisioning, UX, and E2E concerns are tracked as companion work items under OSAC-1118.
+This enhancement introduces `BareMetalInstance` and `BareMetalInstanceCatalogItem` resources to the OSAC fulfillment-service public API, enabling tenants to provision and manage physical bare metal servers through a self-service interface. Catalog items are provider-managed entries that expose available hardware profiles, OS base images, and network configurations to tenants; they are published by Cloud Provider Admins via `osac-aap` and back a private `BareMetalInstanceTemplate`. The design adopts a pluggable provider architecture — implemented in a dedicated baremetal fulfillment component — so that future bare metal backends can be integrated without breaking the API. This EP is scoped to the fulfillment-service API layer; operator, provisioning, UX, and E2E concerns are tracked as companion work items under OSAC-1118.
 
 ## Motivation
 
@@ -26,27 +27,27 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 ### User Stories
 
-* As a **Tenant User**, I want to browse available `BareMetalInstanceTemplate` objects so that I can select the one that matches my workload requirements.
-* As a **Tenant User**, I want to provision a bare metal server by specifying a `BareMetalInstanceTemplate` so that I can run workloads that require direct hardware access without manual coordination with the cloud provider.
+* As a **Tenant User**, I want to browse available `BareMetalInstanceCatalogItem` objects so that I can select the one that matches my workload requirements.
+* As a **Tenant User**, I want to provision a bare metal server by specifying a `BareMetalInstanceCatalogItem` so that I can run workloads that require direct hardware access without manual coordination with the cloud provider.
 * As a **Tenant User**, I want to monitor the lifecycle state of my bare metal server (provisioning, running, failed) so that I can take corrective action if provisioning fails.
 * As a **Tenant User**, I want to control the run strategy (power on/off) of my bare metal server so that I can manage its operational state without deprovisioning it.
 * As a **Tenant User**, I want to restart my bare metal server so that I can perform maintenance without deprovisioning it.
 * As a **Tenant User**, I want to deprovision my bare metal server when my workload is complete so that resources are released.
-* As a **Cloud Provider Admin**, I want to define and publish `BareMetalInstanceTemplate` objects so that I can control which hardware profiles and OS images are available to tenants.
+* As a **Cloud Provider Admin**, I want to define and publish `BareMetalInstanceCatalogItem` objects so that I can control which hardware profiles and OS images are available to tenants.
 * As a **Cloud Infrastructure Admin**, I want the OSAC stack to integrate with BCM (NVIDIA Base Command Manager) so that bare metal provisioning is automated through the existing control plane.
 
 ### Goals
 
-* Provide a self-service API for tenants to create `BareMetalInstance` resources referencing a `BareMetalInstanceTemplate`.
-* Define `BareMetalInstanceTemplate` as a provider-managed global catalog resource exposing the available hardware profile, OS base image, and default network configuration.
+* Provide a self-service API for tenants to create `BareMetalInstance` resources referencing a `BareMetalInstanceCatalogItem`.
+* Define `BareMetalInstanceCatalogItem` as a provider-managed catalog resource through which tenants discover available hardware profiles, OS images, and network configurations; publishing control and optional tenant scoping follow the `ComputeInstanceCatalogItem` pattern.
 * Align the `BareMetalInstance` API shape with the existing `ComputeInstance` API (same `id`, `metadata`, `spec`, `status` envelope, same condition and state patterns, same run strategy and restart signal mechanism).
 * Expose the API through both gRPC and the existing REST gateway.
 
 ### Non-Goals
 
-* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement; in this initial phase, network configuration is fixed by the Cloud Provider Admin as part of the `BareMetalInstanceTemplate` and tenants have no mechanism to configure networking at provision time. A dedicated networking enhancement will enable tenants to create their own `Subnet` and attach it to a `BareMetalInstance`.
-* Custom hardware profile or OS image selection by tenants at provision time — fixed by the template. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new template.
-* Per-organization template scoping — templates are global; a BMaaS catalog feature is deferred to a future enhancement.
+* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement; in this initial phase, network configuration is fixed by the Cloud Provider Admin as part of the `BareMetalInstanceCatalogItem` and tenants have no mechanism to configure networking at provision time. A dedicated networking enhancement will enable tenants to create their own `Subnet` and attach it to a `BareMetalInstance`.
+* Custom hardware profile or OS image selection by tenants at provision time — fixed by the catalog item. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new catalog item.
+* Per-organization catalog item scoping — catalog items are global in this initial release; per-tenant scoping via the `tenant` field is deferred to a future enhancement.
 * AAP playbook implementation — covered in companion work.
 * BareMetal fulfillment component implementation — covered in companion work.
 * UI and UX — covered in companion work.
@@ -58,16 +59,16 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 The proposal introduces two new resource types to the fulfillment-service public API:
 
-**`BareMetalInstanceTemplate`** is a provider-defined, read-only resource that encodes a validated combination of hardware profile (instance flavor), OS base image, and default network configuration. Templates are defined by Cloud Provider Admins as Ansible roles in `osac-aap` and published to the fulfillment service via the provisioning pipeline. Tenants discover available templates via List/Get and reference one when creating a `BareMetalInstance`. This mirrors the role of `ComputeInstanceTemplate` for VMs.
+**`BareMetalInstanceCatalogItem`** is a provider-managed catalog entry that presents an available bare metal configuration to tenants. Cloud Provider Admins create private `BareMetalInstanceTemplate` objects via `osac-aap` and expose them to tenants through catalog items. The `published` flag controls visibility and an optional `tenant` field enables scoping to a specific tenant; unpublished or out-of-scope catalog items are invisible to tenant List/Get calls. `FieldDefinition` entries on the catalog item govern which spec fields tenants may override and apply defaults for the rest. This mirrors the role of `ComputeInstanceCatalogItem` for VMs.
 
-**`BareMetalInstance`** is a tenant-created resource representing a provisioned bare metal server. Its `spec` references a template and carries provisioning parameters (SSH public key, user data, run strategy, restart signal). Its `status` exposes the lifecycle state and conditions aligned with the `ComputeInstance` pattern.
+**`BareMetalInstance`** is a tenant-created resource representing a provisioned bare metal server. Its `spec` references a catalog item via `catalog_item` and carries provisioning parameters (SSH public key, user data, run strategy, restart signal). Its `status` exposes the lifecycle state and conditions aligned with the `ComputeInstance` pattern.
 
 Provisioning is driven by a chain of components: the fulfillment service creates a `HostLease` CR in the management cluster when a `BareMetalInstance` is created. The baremetal fulfillment operator picks up the `HostLease`, finds and assigns a free host from the inventory backend, and triggers `osac-aap` for host-level setup (OS image, SSH key, user data). The osac-operator watches `HostLease` CRs for status changes and pushes updates back to the fulfillment service via the `Signal` RPC. `HostLease` is an internal implementation detail; tenants never interact with it directly.
 
 ### Workflow Description
 
 **Actors:**
-- **Cloud Provider Admin** — defines `BareMetalInstanceTemplate` objects as Ansible roles in `osac-aap`; templates are published to the fulfillment service via the provisioning pipeline.
+- **Cloud Provider Admin** — creates `BareMetalInstanceTemplate` objects (private) via `osac-aap` and publishes them as `BareMetalInstanceCatalogItem` entries in the fulfillment service.
 - **Tenant User** — creates and manages `BareMetalInstance` resources via the public API.
 - **Fulfillment Service** — handles `BareMetalInstance` CRUD and creates `HostLease` CRs directly in the management cluster.
 - **osac-operator** — watches `HostLease` CRs for status changes and pushes them to the fulfillment service via the `Signal` RPC; does not create any CRs in this flow.
@@ -77,12 +78,12 @@ Provisioning is driven by a chain of components: the fulfillment service creates
 
 #### Provisioning
 
-1. The Cloud Provider Admin defines one or more `BareMetalInstanceTemplate` objects as Ansible roles in `osac-aap`. The provisioning pipeline applies these roles and publishes the resulting templates to the fulfillment service.
-2. The Tenant User lists available templates:
+1. The Cloud Provider Admin creates `BareMetalInstanceTemplate` objects via `osac-aap` and publishes them as `BareMetalInstanceCatalogItem` entries in the fulfillment service private API, setting `published: true`.
+2. The Tenant User lists available catalog items:
    ```
-   GET /api/fulfillment/v1/baremetal_instance_templates
+   GET /api/fulfillment/v1/baremetal_instance_catalog_items
    ```
-3. The Tenant User creates a `BareMetalInstance` referencing the desired template:
+3. The Tenant User creates a `BareMetalInstance` referencing the desired catalog item:
    ```
    POST /api/fulfillment/v1/baremetal_instances
    ```
@@ -122,11 +123,11 @@ sequenceDiagram
     participant AAP as osac-aap
     participant INV as Inventory Backend
 
-    TU->>FS: GET /baremetal_instance_templates
-    FS-->>TU: list of available templates
+    TU->>FS: GET /baremetal_instance_catalog_items
+    FS-->>TU: list of available catalog items
 
-    TU->>FS: POST /baremetal_instances {template_id, ssh_key, ...}
-    FS->>MC: create HostLease CR (hostType, profile, templateID, templateParameters)
+    TU->>FS: POST /baremetal_instances {catalog_item, ssh_key, ...}
+    FS->>MC: create HostLease CR (hostType, profile, catalogItemID, fieldValues)
     FS-->>TU: 201 Created {id, state: PROVISIONING}
 
     MC-->>BMF: watch: HostLease CR created (no ExternalHostID yet)
@@ -152,28 +153,36 @@ sequenceDiagram
 
 **New gRPC services (public API):**
 - `BareMetalInstances` — CRUD for tenant-managed bare metal instances.
-- `BareMetalInstanceTemplates` — List/Get for provider-defined templates (read-only for tenants).
+- `BareMetalInstanceCatalogItems` — List/Get for published catalog items (read-only for tenants).
 
-**New gRPC service (private API):**
+**New gRPC services (private API):**
 - `BareMetalInstances` (private) — adds the `Signal` RPC for `osac-operator` feedback, following the existing `ComputeInstances` private API pattern.
+- `BareMetalInstanceCatalogItems` (private) — full CRUD for Cloud Provider Admins to create, update, publish, and delete catalog items.
 
-**REST gateway routes:**
-- `GET    /api/fulfillment/v1/baremetal_instance_templates`
-- `GET    /api/fulfillment/v1/baremetal_instance_templates/{id}`
+**REST gateway routes (public — tenant-facing):**
+- `GET    /api/fulfillment/v1/baremetal_instance_catalog_items`
+- `GET    /api/fulfillment/v1/baremetal_instance_catalog_items/{id}`
 - `GET    /api/fulfillment/v1/baremetal_instances`
 - `GET    /api/fulfillment/v1/baremetal_instances/{id}`
 - `POST   /api/fulfillment/v1/baremetal_instances`
 - `PATCH  /api/fulfillment/v1/baremetal_instances/{object.id}` — `{object.id}` is the gRPC-gateway convention for PATCH: the request body carries the full object and the ID is bound via `object.id`, matching the `ComputeInstance` pattern.
 - `DELETE /api/fulfillment/v1/baremetal_instances/{id}`
 
-**PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `run_strategy` and `restart_requested_at`. The `template`, `ssh_key`, and `user_data` fields are immutable after creation; requests that attempt to modify them are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
+**REST gateway routes (private — Cloud Provider Admin):**
+- `GET    /api/private/v1/baremetal_instance_catalog_items`
+- `GET    /api/private/v1/baremetal_instance_catalog_items/{id}`
+- `POST   /api/private/v1/baremetal_instance_catalog_items`
+- `PATCH  /api/private/v1/baremetal_instance_catalog_items/{object.id}`
+- `DELETE /api/private/v1/baremetal_instance_catalog_items/{id}`
+
+**PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `run_strategy` and `restart_requested_at`. The `catalog_item`, `ssh_key`, and `user_data` fields are immutable after creation; requests that attempt to modify them are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
 
 ### Implementation Details/Notes/Constraints
 
-#### Proto: BareMetalInstanceTemplate
+#### Proto: BareMetalInstanceCatalogItem
 
 ```protobuf
-message BareMetalInstanceTemplate {
+message BareMetalInstanceCatalogItem {
   string id = 1;
   Metadata metadata = 2;
 
@@ -183,14 +192,25 @@ message BareMetalInstanceTemplate {
   // Human-friendly long description in Markdown format.
   string description = 4;
 
-  // Default spec values applied when creating a BareMetalInstance from this template.
-  BareMetalInstanceTemplateSpecDefaults spec_defaults = 5;
-}
+  // Reference to the underlying BareMetalInstanceTemplate (private resource).
+  string template = 5;
 
-// BareMetalInstanceTemplateSpecDefaults follows the same convention as other OSAC template types.
-// No overridable spec fields are defined in this initial version; fields will be added in future
-// enhancements as tenant-configurable options are introduced (e.g. networking integration).
-message BareMetalInstanceTemplateSpecDefaults {}
+  // Whether this catalog item is visible to tenants. Only published items are
+  // returned by tenant-facing List/Get calls.
+  bool published = 6;
+
+  // Optional tenant scope. Empty string means the item is global (visible to
+  // all tenants). When set, only the named tenant can see this catalog item.
+  string tenant = 7;
+
+  // FieldDefinition controls which BareMetalInstanceSpec fields tenants may
+  // set at provision time. Non-editable fields are always overridden by the
+  // catalog default; editable fields are validated against the provided JSON
+  // Schema and fall back to the default when not supplied by the tenant.
+  // No overridable fields are defined in this initial version; entries will
+  // be added in future enhancements (e.g. networking integration).
+  repeated FieldDefinition field_definitions = 8;
+}
 ```
 
 #### Proto: BareMetalInstance
@@ -204,8 +224,8 @@ message BareMetalInstance {
 }
 
 message BareMetalInstanceSpec {
-  // Reference to the BareMetalInstanceTemplate. Required on create; immutable after creation.
-  string template = 1;
+  // Reference to the BareMetalInstanceCatalogItem. Required on create; immutable after creation.
+  string catalog_item = 1;
 
   // SSH public key injected into the OS at provisioning time. Immutable after creation.
   // Must be a valid SSH public key in OpenSSH format (ssh-rsa, ssh-ed25519, etc.).
@@ -285,6 +305,7 @@ enum BareMetalInstanceConditionType {
 - Same CRUD service shape and REST route pattern (`/api/fulfillment/v1/<resource>`).
 - Same private API `Signal` RPC for `osac-operator` feedback loop.
 - Same run strategy (`run_strategy`) and restart signal mechanism (`restart_requested_at`, `last_restarted_at`).
+- Same catalog item pattern (`spec.catalog_item` referencing a `BareMetalInstanceCatalogItem`, with `FieldDefinition`-based field control) mirroring `ComputeInstance` → `ComputeInstanceCatalogItem`.
 
 Fields specific to VMs (network attachments) are absent from `BareMetalInstance` in this initial version and may be added in future enhancements.
 
@@ -311,7 +332,7 @@ None identified.
 
 ## Alternatives (Not Implemented)
 
-**Map `BareMetalInstance` to the existing `ComputeInstance` resource with a baremetal flag.** This avoids a new resource type but conflates VM and bare metal semantics, complicates template definitions, and requires dispatching on a field value rather than resource type. A dedicated resource type provides cleaner separation of concerns and allows independent API evolution.
+**Map `BareMetalInstance` to the existing `ComputeInstance` resource with a baremetal flag.** This avoids a new resource type but conflates VM and bare metal semantics, complicates catalog item definitions, and requires dispatching on a field value rather than resource type. A dedicated resource type provides cleaner separation of concerns and allows independent API evolution.
 
 **Expose the bare metal backend API directly to tenants.** This bypasses OSAC entirely, eliminating tenant isolation, quota enforcement, and the pluggable backend architecture. Not viable for a multi-tenant cloud platform.
 
@@ -324,10 +345,10 @@ None identified.
 Test plan will be finalized during the implementation phase. Expected coverage:
 
 - **Unit tests:** Proto field validation, state machine transitions, provider interface mocking.
-- **Integration tests:** `BareMetalInstance` CRUD via gRPC, template List/Get, Signal RPC feedback loop, OPA authorization enforcement, PATCH immutability enforcement.
+- **Integration tests:** `BareMetalInstance` CRUD via gRPC, catalog item List/Get (public and private), `published` visibility enforcement, `FieldDefinition` application, Signal RPC feedback loop, OPA authorization enforcement, PATCH immutability enforcement.
 - **E2E tests:** Full provisioning and deprovisioning workflow against BCM; CI pipeline configured to run E2E tests on merge.
 
-Tricky areas: asynchronous provisioning lifecycle (tests must handle delays or mock the provider), template immutability enforcement after create, tenant isolation boundary checks, and failure-path recovery (FAILED state → delete → recreate).
+Tricky areas: asynchronous provisioning lifecycle (tests must handle delays or mock the provider), `catalog_item` immutability enforcement after create, `published`/`tenant` visibility boundary checks, tenant isolation boundary checks, and failure-path recovery (FAILED state → delete → recreate).
 
 ## Graduation Criteria
 
@@ -339,7 +360,7 @@ Graduation criteria will be defined when targeting a release. Expected progressi
 
 ## Upgrade / Downgrade Strategy
 
-This is a new API with no impact on existing resources. Downgrading requires deleting all `BareMetalInstance` and `BareMetalInstanceTemplate` resources and uninstalling the new CRDs from the management cluster before reverting the fulfillment-service image.
+This is a new API with no impact on existing resources. Downgrading requires deleting all `BareMetalInstance` and `BareMetalInstanceCatalogItem` resources and uninstalling the new CRDs from the management cluster before reverting the fulfillment-service image.
 
 ## Version Skew Strategy
 
@@ -359,9 +380,9 @@ The fulfillment-service, baremetal-fulfillment-operator, and osac-operator must 
 **Diagnosis:** Check baremetal-fulfillment-operator logs for inventory API or AAP errors. Validate inventory backend credentials, verify AAP availability, and confirm network connectivity.
 **Resolution:** Rotate credentials if expired, resolve network connectivity issues, then retry by deleting the failed `BareMetalInstance` and recreating it.
 
-**Symptom:** Create returns `404 Not Found` for the template ID.
-**Diagnosis:** The `BareMetalInstanceTemplate` does not exist or is not visible to the tenant's organization.
-**Resolution:** Cloud Provider Admin must create and publish the appropriate template via `osac-aap`.
+**Symptom:** Create returns `404 Not Found` for the catalog item ID.
+**Diagnosis:** The `BareMetalInstanceCatalogItem` does not exist, is not published, or is scoped to a different tenant.
+**Resolution:** Cloud Provider Admin must create the catalog item via the private API, set `published: true`, and verify the `tenant` field matches the requesting tenant (or is empty for global visibility).
 
 **Disabling the API:** Scale the baremetal-fulfillment-operator and the osac-operator baremetal controller to 0 replicas. Existing `HostLease` CRs persist but are not reconciled. Re-enabling both resumes reconciliation without data loss.
 
