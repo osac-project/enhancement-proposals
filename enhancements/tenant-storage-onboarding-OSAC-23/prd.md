@@ -16,7 +16,7 @@ Storage provisioning logic is embedded in the Tenant controller and the Tenant C
 
 - Storage lifecycle operates independently from tenant lifecycle. Storage provisioning, readiness tracking, and teardown are managed by a dedicated controller without affecting tenant state transitions.
 - Per-tenant storage state (provisioned tiers, provider resources, readiness) is observable as a standalone Kubernetes resource via `kubectl get tenantstorage`.
-- The OSAC Storage Controller is the single entry point for all storage reconciliation, establishing the foundation for future storage capabilities (backend registration, CaaS cluster-side setup, resource creation storage).
+- The OSAC Storage Controller is the single entry point for all storage reconciliation, including storage for clusters, compute instances, and PVCs.
 - AAP storage playbooks are split into distinct lifecycle actions (create, ensure, cleanup, delete) so that each can be triggered independently by the controller.
 
 ### 2.2 Non-Goals
@@ -26,7 +26,7 @@ Storage provisioning logic is embedded in the Tenant controller and the Tenant C
 - CaaS Tenant Storage Setup
 - VAST Support
 - Fulfillment-service API or proto changes for storage state visibility
-- Per-cluster storage resource on target clusters for tenant visibility. TenantStorage on the hub provides the CloudProviderAdmin view. A cluster-side resource for tenant admins to observe storage readiness on their own clusters is expected to follow in CaaS scope.
+- Per-cluster storage resource on target clusters for tenant visibility. TenantStorage on the hub provides the CloudProviderAdmin view. A cluster-side resource for tenant admin visibility will follow in CaaS scope.
 
 ## 3. Requirements
 
@@ -36,7 +36,7 @@ OSAC tenant storage provisioning uses a two-stage model. Stage 1 (backend setup)
 
 These requirements establish the OSAC Storage Controller and TenantStorage API as the new home for all storage state and logic, decoupled from the Tenant controller.
 
-- **FR-1:** A TenantStorage API captures per-tenant storage state. The spec contains a `tenantRef` field referencing the owning Tenant by name. The status contains phase (Progressing, Ready, Failed, Deleting), structured status conditions, AAP job tracking, and a per-cluster entries array. Each cluster entry tracks the cluster name, delivery model (VMaaS or CaaS), storage readiness, and resolved StorageClass names. For VMaaS, the cluster entry is populated at tenant onboarding. For CaaS, cluster entries are added when a ClusterOrder reaches Ready.
+- **FR-1:** A TenantStorage API captures per-tenant storage state. The spec contains a `tenantRef` field referencing the owning Tenant by name. The status contains phase (Progressing, Ready, Failed, Deleting), status conditions, AAP job tracking, and a per-cluster entries array. Each cluster entry tracks the cluster name, delivery model (VMaaS or CaaS), storage readiness, and resolved StorageClass names. For VMaaS, the cluster entry is populated at tenant onboarding. For CaaS, cluster entries are added when a ClusterOrder reaches Ready.
 
 - **FR-2:** Remove storage-related fields from the Tenant API: StorageClasses status field, Jobs status field, StorageClassReady condition type, and storage-related print columns. Add a new `StorageBackendReady` condition type to the Tenant API, managed exclusively by the OSAC Storage Controller.
 
@@ -50,9 +50,9 @@ These requirements establish the OSAC Storage Controller and TenantStorage API a
 
 These requirements define the onboarding, readiness, and teardown workflows that run on top of the foundation above.
 
-- **FR-6 (Stage 1):** The OSAC Storage Controller watches Tenant resources. When a Tenant reaches Ready (namespace exists), the controller creates a TenantStorage resource and begins backend setup: checking for the tenant's hub Secret and triggering backend provisioning via AAP (`osac-create-tenant-storage`) if absent. When the hub Secret exists, Stage 1 is complete. The controller sets the `StorageBackendReady` condition on the Tenant so that storage readiness is visible through the primary Tenant resource.
+- **FR-6 (Stage 1):** The OSAC Storage Controller watches Tenant resources. When a Tenant reaches Ready (namespace exists), the controller creates a TenantStorage resource and begins backend setup: checking for the tenant's hub Secret and triggering backend provisioning via AAP (`osac-create-tenant-storage`) if absent. When the hub Secret exists, Stage 1 is complete. The controller sets the `StorageBackendReady` condition on the Tenant so users can see storage readiness on the Tenant resource.
 
-- **FR-7 (Stage 2):** The OSAC Storage Controller discovers StorageClasses on the target cluster and populates the corresponding cluster entry in the TenantStorage status. Stage 2 is a separate operation from Stage 1. For VMaaS, Stage 2 runs at tenant onboarding because the cluster already exists and StorageClasses are manually pre-created. For CaaS, Stage 2 runs after ClusterOrder reaches Ready. Stage 2 does not automate StorageClass creation or CSI driver installation for v0.1.
+- **FR-7 (Stage 2):** The OSAC Storage Controller discovers StorageClasses on the target cluster and populates the corresponding cluster entry in the TenantStorage status. Stage 2 is a separate operation from Stage 1. For VMaaS, Stage 2 runs at tenant onboarding because the cluster already exists and StorageClasses are manually pre-created. For CaaS, Stage 2 runs after ClusterOrder reaches Ready. StorageClass creation and CSI driver installation are automated separately.
 
 - **FR-8:** On Tenant deletion, the OSAC Storage Controller triggers backend teardown via AAP (`osac-delete-tenant-storage`) to clean up storage provider resources (VAST tenant, views, quotas) and the per-tenant hub Secret, then deletes the TenantStorage resource. No owner reference is used. The controller explicitly watches Tenant deletion events.
 
@@ -64,7 +64,7 @@ These requirements define the onboarding, readiness, and teardown workflows that
 
 - **NFR-1:** Admin credentials (VAST endpoint, username, password) are ephemeral. They are mounted as environment variables in the AAP automation pod, cleared after use, and never persisted to Kubernetes.
 
-- **NFR-2:** Per-tenant credentials are stored in a Secret in the osac-system namespace, managed exclusively by the OSAC Storage Controller. These Secrets are the handoff point to downstream workflows (VMaaS cluster-side setup, CaaS cluster-side setup).
+- **NFR-2:** Per-tenant credentials are stored in a Secret in the osac-system namespace, managed exclusively by the OSAC Storage Controller. These Secrets are used by downstream workflows (VMaaS cluster-side setup, CaaS cluster-side setup).
 
 - **NFR-3:** The AAP playbook changes and operator changes must be deployed together. The `osac-create-tenant-storage` playbook replaces the previous combined playbook that executed both Stage 1 and Stage 2. Deploying the AAP changes without the operator changes breaks existing Tenant controller provisioning.
 
