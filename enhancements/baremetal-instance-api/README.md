@@ -368,6 +368,8 @@ The fulfillment-service, baremetal-fulfillment-operator, and osac-operator must 
 
 ## Support Procedures
 
+> **Log hygiene:** Before sharing or inspecting logs, operators must verify that `ssh_key`, `user_data`, and backend credentials (inventory API tokens, AAP credentials) are redacted. These values must never appear in fulfillment-service or operator logs; if they do, treat it as a security incident and rotate the affected credentials immediately.
+
 **Symptom:** `BareMetalInstance` stuck in `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
 **Diagnosis:** Check baremetal-fulfillment-operator logs for inventory or AAP errors. Check osac-aap job logs for playbook failures. Verify the `HostLease` CR exists and that `ExternalHostID` has been set (indicates host was found in inventory).
 **Resolution:** If the host was allocated but provisioning failed, delete the `HostLease` CR manually and delete the `BareMetalInstance` to trigger a clean retry.
