@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Zoltan Szabo, Akshay Nadkarni |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-23 |
-| Date        | 2026-06-08 |
+| Date        | 2026-06-09 |
 
 ## 1. Problem Statement
 
@@ -36,15 +36,15 @@ OSAC storage provisioning uses a two-phase model. Phase 1 (backend setup) runs a
 
 - **FR-1:** A TenantStorage CRD captures per-tenant storage state. The spec contains a `tenantRef` field referencing the owning Tenant by name. The status contains phase (Progressing, Ready, Failed, Deleting), resolved StorageClass names with tier labels, structured status conditions, and AAP job tracking.
 
-- **FR-2:** The OSAC Storage Controller watches Tenant CRs. When a Tenant reaches Ready (namespace exists), the controller creates a TenantStorage CR for that tenant and begins storage onboarding — checking for the tenant's hub Secret, triggering backend provisioning via AAP if absent, and resolving StorageClasses when the Secret exists. [Clarify: R1.Q1]
+- **FR-2:** The OSAC Storage Controller watches Tenant CRs. When a Tenant reaches Ready (namespace exists), the controller creates a TenantStorage CR for that tenant and begins storage onboarding — checking for the tenant's hub Secret, triggering backend provisioning via AAP if absent, and resolving StorageClasses when the Secret exists. When storage onboarding completes, the controller sets a `StorageReady` condition on the Tenant CR so that storage readiness is visible to users through the primary Tenant resource. [Clarify: R1.Q1]
 
 - **FR-3:** The OSAC Storage Controller watches ClusterOrder CRs to prepare for future CaaS Phase 2 triggering. For v0.1, no trigger logic is implemented — only the watch and informer are set up. [Clarify: R1.Q2]
 
-- **FR-4:** Storage-related fields are removed from the Tenant CRD: StorageClasses status field, Jobs status field, StorageClassReady condition type, and storage-related print columns. [Clarify: R2.Q3]
+- **FR-4:** Storage-related fields are removed from the Tenant CRD: StorageClasses status field, Jobs status field, StorageClassReady condition type, and storage-related print columns. A new `StorageReady` condition type is added to the Tenant CRD, managed exclusively by the OSAC Storage Controller. [Clarify: R2.Q3]
 
 - **FR-5:** The ComputeInstance controller reads StorageClasses from the TenantStorage CR's status instead of the Tenant CR's status.
 
-- **FR-6:** The Tenant controller has zero storage responsibilities. It manages namespace creation, UDN reconciliation, and tenant lifecycle only. Storage readiness is entirely the OSAC Storage Controller's concern.
+- **FR-6:** The Tenant controller does not run any storage logic. It manages namespace creation, UDN reconciliation, and tenant lifecycle only. The OSAC Storage Controller is responsible for all storage operations and sets the `StorageReady` condition on the Tenant CR (and in the future, on ClusterOrder CR) so that storage readiness is visible through the resources users interact with.
 
 - **FR-7:** On Tenant deletion, the OSAC Storage Controller triggers backend teardown via AAP to clean up storage provider resources (VAST tenant, views, quotas) and the per-tenant hub Secret, then deletes the TenantStorage CR. No owner reference is used — the controller explicitly watches Tenant deletion events. [Clarify: R1.Q3]
 
@@ -67,7 +67,8 @@ OSAC storage provisioning uses a two-phase model. Phase 1 (backend setup) runs a
 - [ ] OSAC Storage Controller watches ClusterOrder CRs (informer set up, no trigger logic for v0.1)
 - [ ] OSAC Storage Controller triggers AAP provisioning when hub Secret is absent, sets phase to Ready when Secret exists and StorageClasses are resolved
 - [ ] Storage fields removed from Tenant CRD (StorageClasses, Jobs, StorageClassReady condition, storage print columns)
-- [ ] Tenant controller has no storage-related logic or RBAC
+- [ ] Tenant controller has no storage-related logic
+- [ ] `StorageReady` condition is set on Tenant CR by the OSAC Storage Controller when storage onboarding completes
 - [ ] ComputeInstance controller reads StorageClasses from TenantStorage status
 - [ ] On Tenant deletion, OSAC Storage Controller triggers AAP teardown and deletes TenantStorage CR
 - [ ] AAP playbooks split into four job templates: osac-create-tenant-storage, osac-ensure-tenant-storage, osac-cleanup-tenant-storage, osac-delete-tenant-storage
