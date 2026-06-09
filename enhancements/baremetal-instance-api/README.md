@@ -157,6 +157,7 @@ sequenceDiagram
 **New gRPC services (private API):**
 - `BareMetalInstances` (private) — adds the `Signal` RPC for `osac-operator` feedback, following the existing `ComputeInstances` private API pattern.
 - `BareMetalInstanceCatalogItems` (private) — full CRUD for Cloud Provider Admins to create, update, publish, and delete catalog items.
+- `BareMetalInstanceTemplates` (private) — full CRUD for Cloud Provider Admins to manage the underlying hardware profile definitions.
 
 **REST gateway routes (public — tenant-facing):**
 - `GET    /api/fulfillment/v1/baremetal_instance_catalog_items`
@@ -168,6 +169,11 @@ sequenceDiagram
 - `DELETE /api/fulfillment/v1/baremetal_instances/{id}`
 
 **REST gateway routes (private — Cloud Provider Admin):**
+- `GET    /api/private/v1/baremetal_instance_templates`
+- `GET    /api/private/v1/baremetal_instance_templates/{id}`
+- `POST   /api/private/v1/baremetal_instance_templates`
+- `PATCH  /api/private/v1/baremetal_instance_templates/{object.id}`
+- `DELETE /api/private/v1/baremetal_instance_templates/{id}`
 - `GET    /api/private/v1/baremetal_instance_catalog_items`
 - `GET    /api/private/v1/baremetal_instance_catalog_items/{id}`
 - `POST   /api/private/v1/baremetal_instance_catalog_items`
@@ -177,6 +183,29 @@ sequenceDiagram
 **PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `run_strategy` and `restart_requested_at`. The `catalog_item`, `ssh_key`, and `user_data` fields are immutable after creation; requests that attempt to modify them are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
 
 ### Implementation Details/Notes/Constraints
+
+#### Proto: BareMetalInstanceTemplate
+
+```protobuf
+message BareMetalInstanceTemplate {
+  string id = 1;
+  Metadata metadata = 2;
+
+  // Human-friendly short description (CLI/UI single-line display).
+  string title = 3;
+
+  // Human-friendly long description in Markdown format.
+  string description = 4;
+
+  // Default spec values applied when creating a BareMetalInstance from this template.
+  BareMetalInstanceTemplateSpecDefaults spec_defaults = 5;
+}
+
+// BareMetalInstanceTemplateSpecDefaults follows the same convention as other OSAC template types.
+// No overridable spec fields are defined in this initial version; fields will be added in future
+// enhancements as tenant-configurable options are introduced (e.g. networking integration).
+message BareMetalInstanceTemplateSpecDefaults {}
+```
 
 #### Proto: BareMetalInstanceCatalogItem
 
