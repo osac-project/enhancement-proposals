@@ -87,7 +87,7 @@ Provisioning is driven by a chain of components: the fulfillment service creates
    ```
    POST /api/fulfillment/v1/baremetal_instances
    ```
-4. The fulfillment service creates a `HostLease` CR in the management cluster; `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
+4. The fulfillment service resolves the catalog item to a `templateID` and derives `templateParameters` from the `field_definitions`, then creates a `HostLease` CR in the management cluster with those values plus `ssh_key` and `user_data`; `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
 5. The baremetal-fulfillment-operator picks up the `HostLease` and queries the inventory backend to find and assign a free host matching the requested host type and selector.
 6. The baremetal-fulfillment-operator triggers `osac-aap` to run the host-level provisioning template (OS image, SSH key, user data) and updates the `HostLease` status on completion.
 7. The osac-operator watches the `HostLease` CR and pushes status updates to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BareMetalInstance.status`.
@@ -127,7 +127,8 @@ sequenceDiagram
     FS-->>TU: list of available catalog items
 
     TU->>FS: POST /baremetal_instances {catalog_item, ssh_key, ...}
-    FS->>MC: create HostLease CR (hostType, profile, catalogItemID, fieldValues)
+    Note over FS: resolve catalog_item → templateID;<br/>apply field_definitions → templateParameters
+    FS->>MC: create HostLease CR (templateID, templateParameters, ssh_key, user_data)
     FS-->>TU: 201 Created {id, state: PROVISIONING}
 
     MC-->>BMF: watch: HostLease CR created (no ExternalHostID yet)
