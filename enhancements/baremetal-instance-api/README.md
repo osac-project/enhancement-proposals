@@ -127,7 +127,7 @@ sequenceDiagram
     FS-->>TU: list of available catalog items
 
     TU->>FS: POST /baremetal_instances {catalog_item, ssh_key, ...}
-    Note over FS: resolve catalog_item → templateID;<br/>apply field_definitions → templateParameters
+    Note over FS: resolve catalog_item → templateID, apply field_definitions → templateParameters
     FS->>MC: create HostLease CR (templateID, templateParameters, ssh_key, user_data)
     FS-->>TU: 201 Created {id, state: PROVISIONING}
 
