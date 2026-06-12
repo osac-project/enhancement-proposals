@@ -18,7 +18,7 @@ Storage provisioning logic is embedded in the Tenant controller. Backend setup, 
 - The OSAC Storage Controller owns all storage-related conditions and status fields on the Tenant CR using the condition ownership pattern. The Tenant controller has zero storage responsibilities.
 - The OSAC Storage Controller is the single entry point for all tenant storage reconciliation.
 - AAP storage playbooks are split into distinct lifecycle actions (create-backend, create-class, delete-class, delete-backend) so that each can be triggered independently by the controller.
-- Storage readiness is observable via `kubectl get tenant` print columns showing StorageBackendReady and StorageClassReady status.
+- Storage readiness is observable via `kubectl get tenant` print columns showing backend and class readiness status.
 
 ### 2.2 Non-Goals
 
@@ -44,17 +44,17 @@ This PRD covers the controller and both stages. Stage 1 and Stage 2 must be impl
 
 These requirements establish the OSAC Storage Controller as the owner of all storage-related state on the Tenant CR.
 
-- **FR-1:** The OSAC Storage Controller owns the following fields on the Tenant CR:
-  - `StorageBackendReady` condition: indicates whether the tenant's storage backend is provisioned (organization on the storage appliance, VIP pools, credentials in hub Secret, per-tier views). Set to True when Stage 1 completes successfully, False on failure with a descriptive reason.
-  - `StorageClassReady` condition: indicates whether StorageClasses and CSI drivers are installed on the VMaaS target cluster for this tenant. The VMaaS target cluster is either a remote cluster or the hub cluster itself. Set to True when Stage 2 completes during tenant storage onboarding.
-  - `status.storageClasses`: list of the tenant's resolved StorageClass names. The storage controller uses the same tier resolution algorithm (tenant-specific entry with Default fallback) previously owned by the Tenant controller. The detailed algorithm is specified in the design document.
-  - `status.jobs`: AAP job tracking for in-flight storage operations.
+- **FR-1:** The OSAC Storage Controller owns all storage-related conditions and status on the Tenant CR:
+  - A condition indicating whether the tenant's storage backend is provisioned (organization on the storage appliance, VIP pools, credentials in hub Secret, per-tier views). Set to True when Stage 1 completes successfully, False on failure with a descriptive reason.
+  - A condition indicating whether StorageClasses and CSI drivers are installed on the VMaaS target cluster for this tenant. Set to True when Stage 2 completes during tenant storage onboarding.
+  - The list of the tenant's resolved StorageClass names, using the same tier resolution algorithm (tenant-specific entry with Default fallback) previously owned by the Tenant controller.
+  - AAP job tracking for in-flight storage operations.
 
-  `kubectl get tenant` displays StorageBackendReady and StorageClassReady status via additional print columns.
+  Storage readiness is observable via `kubectl get tenant`. Exact field names and API details are specified in the design document.
 
 - **FR-2:** The Tenant controller does not run any storage logic. It manages namespace creation, UDN reconciliation, and tenant lifecycle only. All storage-related conditions and status fields are managed exclusively by the OSAC Storage Controller.
 
-- **FR-3:** The ComputeInstance controller continues to read `status.storageClasses` from the Tenant CR. No changes are required to the ComputeInstance controller.
+- **FR-3:** The ComputeInstance controller continues to read the tenant's resolved StorageClasses from the Tenant CR. No changes are required to the ComputeInstance controller.
 
 - **FR-4:** The OSAC Storage Controller checks the `osac.openshift.io/management-state` annotation and skips reconciliation when set to Unmanaged, consistent with all other OSAC controllers.
 
@@ -62,9 +62,9 @@ These requirements establish the OSAC Storage Controller as the owner of all sto
 
 These requirements define the onboarding, readiness, and teardown workflows managed by the OSAC Storage Controller.
 
-- **FR-5 (Stage 1):** The OSAC Storage Controller watches Tenant resources. When a Tenant reaches Ready (namespace exists), the controller begins backend setup: checking for the tenant's hub Secret and triggering backend provisioning via AAP (`osac-create-tenant-storage-backend`) if absent. When the hub Secret exists and is valid, Stage 1 is complete and the controller sets `StorageBackendReady=True` on the Tenant. If the AAP job fails, the controller sets `StorageBackendReady=False` with a reason reflecting the failure and retries with backoff.
+- **FR-5 (Stage 1):** The OSAC Storage Controller watches Tenant resources. When a Tenant reaches Ready (namespace exists), the controller begins backend setup: checking for the tenant's hub Secret and triggering backend provisioning via AAP (`osac-create-tenant-storage-backend`) if absent. When the hub Secret exists and is valid, Stage 1 is complete and the controller sets the backend readiness condition to True on the Tenant. If the AAP job fails, the condition is set to False with a reason reflecting the failure and the controller retries with backoff.
 
-- **FR-6 (Stage 2):** After Stage 1 completes, the OSAC Storage Controller triggers cluster-side setup via AAP (`osac-create-tenant-storage-class`) to install the CSI operator and create per-tenant StorageClasses on the VMaaS target cluster (remote or hub). The controller discovers installed StorageClasses using the `osac.openshift.io/tenant` label and populates `status.storageClasses` on the Tenant. When discovery confirms all expected StorageClasses are present, the controller sets `StorageClassReady=True` on the Tenant.
+- **FR-6 (Stage 2):** After Stage 1 completes, the OSAC Storage Controller triggers cluster-side setup via AAP (`osac-create-tenant-storage-class`) to install the CSI operator and create per-tenant StorageClasses on the VMaaS target cluster (remote or hub). The controller discovers installed StorageClasses using the `osac.openshift.io/tenant` label and populates the resolved StorageClass list on the Tenant. When discovery confirms all expected StorageClasses are present, the controller sets the class readiness condition to True on the Tenant.
 
 - **FR-7:** The OSAC Storage Controller places a finalizer on the Tenant CR to block deletion until storage teardown completes. On Tenant deletion, the teardown sequence is: first, trigger cluster-side cleanup via AAP (`osac-delete-tenant-storage-class`) to remove StorageClasses, CSI Secrets, and VolumeSnapshotClasses; then, trigger backend teardown via AAP (`osac-delete-tenant-storage-backend`) to clean up storage provider resources (VAST tenant, views, quotas) and the per-tenant hub Secret. The finalizer is removed only after both steps complete successfully. If teardown fails, the finalizer remains in place and the Tenant stays in Terminating until the issue is resolved.
 
@@ -74,7 +74,7 @@ These requirements define the onboarding, readiness, and teardown workflows mana
 
 ### 3.3 Non-Functional Requirements
 
-- **NFR-1:** Admin credentials (VAST endpoint, username, password) are ephemeral. They are mounted as environment variables in the AAP automation pod, cleared after use, and never persisted to Kubernetes.
+- **NFR-1:** Admin credentials (VAST endpoint, username, password) are mounted as environment variables in the AAP automation pod from a pre-configured Secret, cleared from playbook memory after use, and never accessed by the controller.
 
 - **NFR-2:** Per-tenant credentials are stored in a Secret in the osac-system namespace, managed exclusively by the OSAC Storage Controller. These Secrets are used by downstream cluster-side setup workflows.
 
@@ -85,23 +85,22 @@ These requirements define the onboarding, readiness, and teardown workflows mana
 ## 4. Acceptance Criteria
 
 **Controller Foundation**
-- [ ] OSAC Storage Controller owns `StorageBackendReady` and `StorageClassReady` conditions on the Tenant CR
-- [ ] OSAC Storage Controller manages `status.storageClasses` and `status.jobs` on the Tenant CR
+- [ ] OSAC Storage Controller owns storage-related conditions and status fields on the Tenant CR
 - [ ] Tenant controller has no storage-related logic
 - [ ] ComputeInstance controller reads StorageClasses from Tenant status (no change required)
-- [ ] `kubectl get tenant` displays StorageBackendReady and StorageClassReady columns
+- [ ] `kubectl get tenant` displays storage readiness columns
 - [ ] OSAC Storage Controller skips reconciliation when `osac.openshift.io/management-state` is set to Unmanaged
 
 **Stage 1 (Backend Setup)**
 - [ ] OSAC Storage Controller watches Tenant resources and begins storage onboarding when Tenant reaches Ready
 - [ ] OSAC Storage Controller triggers AAP backend provisioning (`osac-create-tenant-storage-backend`) when hub Secret is absent
-- [ ] `StorageBackendReady` condition is set to True on Tenant when Stage 1 completes
-- [ ] `StorageBackendReady` condition is set to False with reason on AAP job failure, controller retries with backoff
+- [ ] Backend readiness condition is set to True on Tenant when Stage 1 completes
+- [ ] Backend readiness condition is set to False with reason on AAP job failure, controller retries with backoff
 
 **Stage 2 (Cluster-Side Setup)**
 - [ ] After Stage 1 completes, OSAC Storage Controller triggers cluster-side setup (`osac-create-tenant-storage-class`) on the VMaaS target cluster (remote or hub)
-- [ ] OSAC Storage Controller discovers StorageClasses using `osac.openshift.io/tenant` label and populates `status.storageClasses`
-- [ ] `StorageClassReady` condition is set to True when StorageClasses are confirmed on the VMaaS target cluster
+- [ ] OSAC Storage Controller discovers StorageClasses using `osac.openshift.io/tenant` label and populates the resolved StorageClass list
+- [ ] Class readiness condition is set to True when StorageClasses are confirmed on the VMaaS target cluster
 - [ ] ClusterOrder watch is established (no action taken on events in this scope)
 
 **Teardown**
@@ -130,12 +129,7 @@ These requirements define the onboarding, readiness, and teardown workflows mana
 
 ## 7. Risks
 
-### 7.1 Breaking change in AAP playbook interface
-
-The previous combined playbook (osac-configure-tenant-storage) is replaced by four separate playbooks. The new osac-create-tenant-storage-backend playbook executes Stage 1 only, whereas the previous playbook executed both Stage 1 and Stage 2. Deploying the AAP changes without the operator changes causes the existing Tenant controller to provision storage incompletely.
-
-- **Owner:** Storage WG
-- **Mitigation:** Coordinated PR merge across osac-operator and osac-aap repos. PRs are linked in descriptions. Deployment documentation specifies both components must be updated together.
+None. The project is pre-GA — breaking changes are expected and acceptable.
 
 ## 8. Open Questions
 
