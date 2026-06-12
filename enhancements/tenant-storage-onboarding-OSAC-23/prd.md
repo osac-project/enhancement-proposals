@@ -45,12 +45,12 @@ This PRD covers the controller and both stages. Stage 1 and Stage 2 must be impl
 These requirements establish the OSAC Storage Controller as the owner of all storage-related state on the Tenant CR.
 
 - **FR-1:** The OSAC Storage Controller owns all storage-related conditions and status on the Tenant CR:
-  - A condition indicating whether the tenant's storage backend is provisioned (organization on the storage appliance, VIP pools, credentials in hub Secret, per-tier views). Set to True when Stage 1 completes successfully, False on failure with a descriptive reason.
-  - A condition indicating whether StorageClasses and CSI drivers are installed on the VMaaS target cluster for this tenant. Set to True when Stage 2 completes during tenant storage onboarding.
+  - Backend readiness: tracks whether per-tenant resources are provisioned on each configured storage backend. Set to True when Stage 1 completes successfully for all backends, False on failure with a descriptive reason. Per-backend detail (name, provider, status, error) is available in the Tenant status.
+  - Cluster storage readiness: tracks whether StorageClasses and CSI drivers are installed on each cluster associated with the tenant. For this PRD, this covers the VMaaS target cluster only. Per-cluster detail (cluster name, readiness, reason) is available in the Tenant status.
   - The list of the tenant's resolved StorageClass names, using the same tier resolution algorithm (tenant-specific entry with Default fallback) previously owned by the Tenant controller.
-  - AAP job tracking for in-flight storage operations.
+  - AAP job tracking for in-flight storage operations, written to the shared `status.jobs` field on the Tenant CR (also used by other controllers such as networking).
 
-  Storage readiness is observable via `kubectl get tenant`. Exact field names and API details are specified in the design document.
+  Storage readiness is observable via `kubectl get tenant`. Exact condition names, status structure, and API details are specified in the design document.
 
 - **FR-2:** The Tenant controller does not run any storage logic. It manages namespace creation, UDN reconciliation, and tenant lifecycle only. All storage-related conditions and status fields are managed exclusively by the OSAC Storage Controller.
 
