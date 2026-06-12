@@ -17,7 +17,7 @@ Storage provisioning logic is embedded in the Tenant controller. Backend setup, 
 - Storage lifecycle operates independently from tenant lifecycle. Storage provisioning, readiness tracking, and teardown are managed by a dedicated OSAC Storage Controller without affecting tenant state transitions.
 - The OSAC Storage Controller owns all storage-related conditions and status fields on the Tenant CR using the condition ownership pattern. The Tenant controller has zero storage responsibilities.
 - The OSAC Storage Controller is the single entry point for all tenant storage reconciliation.
-- AAP storage playbooks are split into distinct lifecycle actions (create-backend, create-class, delete-class, delete-backend) so that each can be triggered independently by the controller.
+- AAP storage playbooks are split into distinct lifecycle actions (create-storage-backend, create-cluster-storage, delete-cluster-storage, delete-storage-backend) so that each can be triggered independently by the controller.
 - Storage readiness is observable via `kubectl get tenant` print columns showing backend and class readiness status.
 
 ### 2.2 Non-Goals
@@ -64,11 +64,11 @@ These requirements define the onboarding, readiness, and teardown workflows mana
 
 - **FR-5 (Stage 1):** The OSAC Storage Controller watches Tenant resources. When a Tenant reaches Ready (namespace exists), the controller begins backend setup: checking for the tenant's hub Secret and triggering backend provisioning via AAP (`osac-create-tenant-storage-backend`) if absent. When the hub Secret exists and is valid, Stage 1 is complete and the controller sets the backend readiness condition to True on the Tenant. If the AAP job fails, the condition is set to False with a reason reflecting the failure and the controller retries with backoff.
 
-- **FR-6 (Stage 2):** After Stage 1 completes, the OSAC Storage Controller triggers cluster-side setup via AAP (`osac-create-tenant-storage-class`) to install the CSI operator and create per-tenant StorageClasses on the VMaaS target cluster (remote or hub). The controller discovers installed StorageClasses using the `osac.openshift.io/tenant` label and populates the resolved StorageClass list on the Tenant. When discovery confirms all expected StorageClasses are present, the controller sets the class readiness condition to True on the Tenant.
+- **FR-6 (Stage 2):** After Stage 1 completes, the OSAC Storage Controller triggers cluster-side setup via AAP (`osac-create-tenant-cluster-storage`) to install the CSI operator and create per-tenant StorageClasses on the VMaaS target cluster (remote or hub). The controller discovers installed StorageClasses using the `osac.openshift.io/tenant` label and populates the resolved StorageClass list on the Tenant. When discovery confirms all expected StorageClasses are present, the controller sets the class readiness condition to True on the Tenant.
 
-- **FR-7:** The OSAC Storage Controller places a finalizer on the Tenant CR to block deletion until storage teardown completes. On Tenant deletion, the teardown sequence is: first, trigger cluster-side cleanup via AAP (`osac-delete-tenant-storage-class`) to remove StorageClasses, CSI Secrets, and VolumeSnapshotClasses; then, trigger backend teardown via AAP (`osac-delete-tenant-storage-backend`) to clean up storage provider resources (VAST tenant, views, quotas) and the per-tenant hub Secret. The finalizer is removed only after both steps complete successfully. If teardown fails, the finalizer remains in place and the Tenant stays in Terminating until the issue is resolved.
+- **FR-7:** The OSAC Storage Controller places a finalizer on the Tenant CR to block deletion until storage teardown completes. On Tenant deletion, the teardown sequence is: first, trigger cluster-side cleanup via AAP (`osac-delete-tenant-cluster-storage`) to remove StorageClasses, CSI Secrets, and VolumeSnapshotClasses; then, trigger backend teardown via AAP (`osac-delete-tenant-storage-backend`) to clean up storage provider resources (VAST tenant, views, quotas) and the per-tenant hub Secret. The finalizer is removed only after both steps complete successfully. If teardown fails, the finalizer remains in place and the Tenant stays in Terminating until the issue is resolved.
 
-- **FR-8:** AAP playbooks are split into four lifecycle actions: `osac-create-tenant-storage-backend` (Stage 1 backend setup), `osac-create-tenant-storage-class` (Stage 2 cluster-side StorageClasses and CSI), `osac-delete-tenant-storage-class` (cluster-side resource removal during deletion), and `osac-delete-tenant-storage-backend` (backend teardown).
+- **FR-8:** AAP playbooks are split into four lifecycle actions: `osac-create-tenant-storage-backend` (Stage 1 backend setup), `osac-create-tenant-cluster-storage` (Stage 2 cluster-side StorageClasses and CSI), `osac-delete-tenant-cluster-storage` (cluster-side resource removal during deletion), and `osac-delete-tenant-storage-backend` (backend teardown).
 
 - **FR-9:** The OSAC Storage Controller establishes a watch on ClusterOrder resources to prepare for CaaS support. No action is taken on ClusterOrder events in this scope. CaaS Stage 2 trigger logic is defined in a separate PRD.
 
@@ -98,18 +98,18 @@ These requirements define the onboarding, readiness, and teardown workflows mana
 - [ ] Backend readiness condition is set to False with reason on AAP job failure, controller retries with backoff
 
 **Stage 2 (Cluster-Side Setup)**
-- [ ] After Stage 1 completes, OSAC Storage Controller triggers cluster-side setup (`osac-create-tenant-storage-class`) on the VMaaS target cluster (remote or hub)
+- [ ] After Stage 1 completes, OSAC Storage Controller triggers cluster-side setup (`osac-create-tenant-cluster-storage`) on the VMaaS target cluster (remote or hub)
 - [ ] OSAC Storage Controller discovers StorageClasses using `osac.openshift.io/tenant` label and populates the resolved StorageClass list
 - [ ] Class readiness condition is set to True when StorageClasses are confirmed on the VMaaS target cluster
 - [ ] ClusterOrder watch is established (no action taken on events in this scope)
 
 **Teardown**
 - [ ] OSAC Storage Controller places a finalizer on the Tenant CR to block deletion until teardown completes
-- [ ] On Tenant deletion, controller triggers cluster-side cleanup (`osac-delete-tenant-storage-class`) then backend teardown (`osac-delete-tenant-storage-backend`)
+- [ ] On Tenant deletion, controller triggers cluster-side cleanup (`osac-delete-tenant-cluster-storage`) then backend teardown (`osac-delete-tenant-storage-backend`)
 - [ ] Finalizer is removed only after both cleanup steps complete successfully
 
 **AAP Playbooks**
-- [ ] AAP playbooks split into four job templates: `osac-create-tenant-storage-backend`, `osac-create-tenant-storage-class`, `osac-delete-tenant-storage-class`, `osac-delete-tenant-storage-backend`
+- [ ] AAP playbooks split into four job templates: `osac-create-tenant-storage-backend`, `osac-create-tenant-cluster-storage`, `osac-delete-tenant-cluster-storage`, `osac-delete-tenant-storage-backend`
 
 **Testing**
 - [ ] Unit tests pass for the new OSAC Storage Controller and updated Tenant controller
@@ -120,7 +120,7 @@ These requirements define the onboarding, readiness, and teardown workflows mana
 - AAP is the only provisioning backend for v0.1. No direct API provisioning path exists.
 - VAST is the only storage provider for v0.1.
 - Tier configuration via the STORAGE_TIERS environment variable is sufficient for this PRD. The StorageTier API is a separate effort.
-- StorageClasses are created by AAP playbooks (`osac-create-tenant-storage-class`). The OSAC Storage Controller discovers them using the `osac.openshift.io/tenant` label but does not create them directly. In development environments without access to a VAST appliance, StorageClasses may need to be created manually for testing.
+- StorageClasses are created by AAP playbooks (`osac-create-tenant-cluster-storage`). The OSAC Storage Controller discovers them using the `osac.openshift.io/tenant` label but does not create them directly. In development environments without access to a VAST appliance, StorageClasses may need to be created manually for testing.
 
 ## 6. Dependencies
 
