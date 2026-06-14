@@ -72,21 +72,16 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 ## 6. Dependencies
 
 - **StorageTier (OSAC-1110):** StorageTier entities will reference StorageBackend by ID. StorageTier design depends on StorageBackend but not vice versa. StorageBackend can be implemented and deployed independently.
-- **Tenant onboarding reconciliation:** Future reconciliation flow (resolve tier → backend(s) → install CSI driver → create tenant-scoped StorageClass) depends on both StorageBackend and StorageTier being implemented. Not in scope for this work.
+- **Tenant onboarding reconciliation:** Future reconciliation flow (resolve tier → backend(s) → install CSI driver on target cluster → create tenant-scoped StorageClass on target cluster) depends on both StorageBackend and StorageTier being implemented. CSI drivers and StorageClasses are installed on target clusters (VMaaS/CaaS), not the management cluster. Not in scope for this work.
 
 ## 7. Risks
 
-### 7.1 Proto appendix divergence from implementation
-
-- **Owner:** Storage architect
-- **Mitigation:** The design document's proto appendix is labeled "illustrative." The entity model field table in the design doc is the normative specification. Field names and structure may evolve during implementation based on code review feedback and integration testing.
-
-### 7.2 Multi-provider maintenance burden
+### 7.1 Multi-provider maintenance burden
 
 - **Owner:** Storage architect
 - **Mitigation:** Start with VAST as the reference implementation. Establish a provider abstraction pattern (interface or strategy pattern for backend validation and model detection) and document the provider integration process for future contributors.
 
-### 7.3 Soft-delete name reuse ambiguity
+### 7.2 Soft-delete name reuse ambiguity
 
 - **Owner:** Storage architect
 - **Mitigation:** Name reuse after soft deletion is allowed (FR-9). If a future StorageTier references the decommissioned backend by ID (not name), there is no conflict. Document this behavior in the API reference.
