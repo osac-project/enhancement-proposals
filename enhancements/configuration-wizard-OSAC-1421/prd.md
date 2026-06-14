@@ -58,8 +58,9 @@ flowchart LR
 
 #### Review (step 4)
 
-- **FR-11:** Step 4 (Review) must display every entry from `field_definitions`: non-editable fields with their default values, and editable fields with the values the user configured in Basics and Configuration.
-- **FR-12:** Review must not display fields that are not present in `field_definitions`.
+- **FR-11:** Step 4 (Review) must always display the Basics fields collected in step 2 with the values the user entered: `metadata.name`, SSH key (`spec.ssh_public_key` for cluster; `spec.ssh_key` for VM), and `spec.pull_secret` for cluster catalog items (pull secret omitted for VM when not applicable).
+- **FR-12:** Step 4 (Review) must also display every entry from `field_definitions`: non-editable fields with their default values, and editable fields with the values the user configured in Configuration (Basics fields already shown per FR-11 must not be duplicated if they also appear in `field_definitions`).
+- **FR-13:** Review must not display spec fields beyond the Basics fields in FR-11 and entries defined in `field_definitions`.
 
 #### Field rendering
 
@@ -84,7 +85,7 @@ flowchart LR
 - [ ] The wizard presents four steps in order: catalog selection → Basics → Configuration → Review → submit.
 - [ ] Basics collects `metadata.name`, SSH key, and pull secret (cluster only; omitted for VM when not applicable).
 - [ ] Configuration shows only editable `field_definitions` in array order, excluding Basics fields; non-editable defaults are applied to the payload without appearing in the form.
-- [ ] Review displays every `field_definitions` entry: non-editable fields with defaults, editable fields with configured values; no fields outside `field_definitions` appear.
+- [ ] Review always displays Basics fields: `metadata.name`, SSH key, and pull secret for cluster catalog items (pull secret omitted for VM when not applicable); plus every `field_definitions` entry with defaults or configured values, without duplicating Basics fields already shown.
 - [ ] Integer fields render as number inputs; enum fields render as selects whose options match `validation_schema` enum values; all other field types render as plain text inputs.
 - [ ] No select field options are sourced from fulfillment list APIs (`virtual_networks`, `subnets`, etc.).
 - [ ] The wizard supports provisioning for both ComputeInstance and Cluster catalog item types.
