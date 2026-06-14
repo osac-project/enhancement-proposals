@@ -15,10 +15,11 @@
 
 ### 2.2 Non-Goals
 
-- Dynamic Template parameters - not supported for 0.1
-- Fetching select or list options from separate fulfillment list APIs (`virtual_networks`, `subnets`, etc.) when not defined in the catalog item's `field_definitions`.
-- Admin, fulfillment API, or publish-time validation that catalog items include required credential paths in `field_definitions`.
-- Specialized form widgets for JSON Schema types beyond integer (number input), enum (select), and plain text for all other types.
+The following are explicitly out of scope and **will not be supported**:
+
+- Dynamic Template parameters
+- Fetching select or list options from separate fulfillment list APIs (`virtual_networks`, `subnets`, etc.) when not defined in the catalog item's `field_definitions`
+- Specialized form widgets for JSON Schema types beyond integer (number input), enum (select), and plain text for all other types
 
 ## 3. Requirements
 
