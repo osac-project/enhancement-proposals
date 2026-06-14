@@ -28,7 +28,7 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 - Provider-specific integration beyond VAST — the `provider` field is generic ("vast", "ceph", "pure"). Provider-specific logic (model auto-detection, credential validation) is implemented incrementally, VAST first.
 - Storage observability and monitoring — metrics, health checks, and capacity tracking are covered by the "OSAC Storage Observability" roadmap item.
 - Automatic backend discovery — backends are explicitly registered by Cloud Provider Admins. No auto-discovery from infrastructure management systems.
-- StorageBackend as a Kubernetes CRD — the entity is DB-backed with no CRD, following the NetworkClass pattern. Reconciliation is triggered by Tenant onboarding, not by backend registration.
+- StorageBackend as a Kubernetes CRD — the entity is managed through the OSAC private API, not as a cluster-scoped Kubernetes resource. Reconciliation is triggered by Tenant onboarding, not by backend registration.
 - CSI proxy or volume-level interception — intercepting CSI `CreateVolume` calls to inject OSAC metadata is a separate future effort (see `.planning/storage/csi-proxy-architecture.md`).
 
 ## 3. Requirements
@@ -37,34 +37,31 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 
 - **FR-1:** The fulfillment-service must expose a `StorageBackends` gRPC service under `osac.private.v1` with Create, Get, List, Update, Delete, and Signal RPCs.
 - **FR-2:** All CRUD RPCs must include HTTP annotations for REST access via grpc-gateway (POST, GET, GET, PATCH, DELETE). The Signal RPC is private-only with no HTTP annotation.
-- **FR-3:** `CreateStorageBackend` must accept provider type, management endpoint (host + optional port), credentials reference (Kubernetes Secret), and optional description. The backend must be persisted to PostgreSQL with initial state `PENDING`.
+- **FR-3:** `CreateStorageBackend` must accept provider type, management endpoint (host + optional port), credentials reference (Kubernetes Secret), and optional description. The backend must be created with initial state `PENDING`.
 - **FR-4:** `ListStorageBackends` must support pagination (`offset`/`limit`), CEL-based filtering, and SQL-like ordering.
-- **FR-5:** `UpdateStorageBackend` must support partial updates via `google.protobuf.FieldMask` and optimistic locking via `metadata.version`.
-- **FR-6:** `DeleteStorageBackend` must perform a soft delete (set `deleted_at` timestamp). Soft-deleted backends must be excluded from List results but preserved in the database for audit and future foreign key references from StorageTier.
+- **FR-5:** `UpdateStorageBackend` must support partial updates (only specified fields are modified) and optimistic concurrency control to prevent conflicting writes.
+- **FR-6:** `DeleteStorageBackend` must perform a soft delete. Deleted backends must be excluded from List results but preserved for audit and future references from StorageTier.
 - **FR-7:** The `Signal` RPC must accept a `StorageBackendStatus` payload (state, message, model, firmware_version) to update backend status. This diverges from the NetworkClass Signal (which takes only `id`) because StorageBackend has no controller to compute status — the caller provides it. [User]
 - **FR-8:** Backend state must follow the lifecycle: `UNSPECIFIED` → `PENDING` → `READY` or `FAILED`. In Phase 1, the state transition from `PENDING` to `READY`/`FAILED` is performed manually via the Signal RPC. A reconciler that probes the management endpoint is deferred to Phase 2. [User]
-- **FR-9:** A unique index on `name` must be scoped to non-deleted records (`WHERE deleted_at IS NULL`), allowing name reuse after soft deletion.
+- **FR-9:** Backend names must be unique among active (non-deleted) backends, allowing name reuse after decommission.
 - **FR-10:** The `credentials_ref` field must reference a Kubernetes Secret. The reference format (namespace-scoped `namespace/secret-name` or implicit namespace) is determined during implementation.
 
 ### 3.2 Non-Functional Requirements
 
-- **NFR-1:** The StorageBackend entity must be DB-backed (PostgreSQL) with no Kubernetes CRD.
-- **NFR-2:** The database schema must include audit columns (`created_at`, `updated_at`, `deleted_at`) and an optimistic locking version field.
-- **NFR-3:** The proto definitions must pass `buf lint` and follow OSAC naming conventions (`snake_case` fields, `PascalCase` messages, `SCREAMING_SNAKE_CASE` enums with `STORAGE_BACKEND_STATE_` prefix).
-- **NFR-4:** Provider-specific credential schemas are not validated by the StorageBackend API. The Secret content is opaque to the fulfillment-service; validation is the responsibility of the provider-specific integration layer.
+- **NFR-1:** The StorageBackend entity must track creation and modification timestamps for auditability.
+- **NFR-2:** Provider-specific credential schemas are not validated by the StorageBackend API. The credential content is opaque; validation is the responsibility of the provider-specific integration layer.
 
 ## 4. Acceptance Criteria
 
-- [ ] `CreateStorageBackend` persists a backend to PostgreSQL with state `PENDING` and returns the created object with a generated UUID.
+- [ ] `CreateStorageBackend` creates a backend with state `PENDING` and returns the created object with a generated ID.
 - [ ] `GetStorageBackend` retrieves a backend by ID with all fields populated (including status).
-- [ ] `ListStorageBackends` returns paginated results, respects CEL filter expressions (e.g., `this.provider == "vast"`), and excludes soft-deleted records.
-- [ ] `UpdateStorageBackend` applies partial updates via FieldMask without modifying unspecified fields.
-- [ ] `UpdateStorageBackend` rejects updates with a stale `metadata.version` when optimistic locking is enabled.
-- [ ] `DeleteStorageBackend` sets `deleted_at` without removing the record. Subsequent List calls exclude the deleted backend.
+- [ ] `ListStorageBackends` returns paginated results, supports filtering by field values (e.g., by provider), and excludes soft-deleted records.
+- [ ] `UpdateStorageBackend` applies partial updates without modifying unspecified fields.
+- [ ] `UpdateStorageBackend` rejects concurrent conflicting writes.
+- [ ] `DeleteStorageBackend` soft-deletes the backend. Subsequent List calls exclude the deleted backend.
 - [ ] `Signal` RPC updates the backend's state, message, model, and firmware_version fields.
-- [ ] All CRUD RPCs are accessible via REST endpoints (`/api/private/v1/storage_backends/...`) through grpc-gateway.
-- [ ] `buf lint` passes on `storage_backend_type.proto` and `storage_backends_service.proto`.
-- [ ] Integration tests cover the full CRUD lifecycle, pagination, filtering, optimistic locking, and Signal against a PostgreSQL instance in a kind cluster.
+- [ ] All CRUD RPCs are accessible via both gRPC and REST endpoints.
+- [ ] Integration tests cover the full CRUD lifecycle, pagination, filtering, concurrency control, and Signal.
 
 ## 5. Assumptions
 
@@ -92,7 +89,7 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 ### 7.3 Soft-delete name reuse ambiguity
 
 - **Owner:** Storage architect
-- **Mitigation:** The unique index on `name WHERE deleted_at IS NULL` allows registering a new backend with the same name as a soft-deleted one. If a future StorageTier references the soft-deleted backend by ID (not name), there is no conflict. Document this behavior in the API reference.
+- **Mitigation:** Name reuse after soft deletion is allowed (FR-9). If a future StorageTier references the decommissioned backend by ID (not name), there is no conflict. Document this behavior in the API reference.
 
 ## 8. Open Questions
 
