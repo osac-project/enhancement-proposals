@@ -45,7 +45,7 @@ flowchart LR
 
 #### Basics (step 2)
 
-- **FR-5:** Step 2 (Basics) must always collect `metadata.name`. 
+- **FR-5:** Step 2 (Basics) must always collect `metadata.name`.
 - **FR-6:** Step 2 must collect SSH credentials per resource type: cluster — `spec.ssh_public_key`; VM — `spec.ssh_key`.
 - **FR-7:** Step 2 must collect `spec.pull_secret` for cluster catalog items; pull secret must be omitted for VM catalog items where not applicable.
 
@@ -64,7 +64,7 @@ flowchart LR
 
 - **FR-14:** For each editable field in Configuration, the wizard must derive the input widget from the field's `validation_schema` (JSON Schema draft 2020-12): `type: integer` → number input; `enum` present → select; all other types → plain text input.
 - **FR-15:** Select and list options for every select field must come from the `enum` values in that field's `validation_schema` within `field_definitions`. The wizard must not call separate fulfillment list APIs to populate options.
-- **FR-18:** When a field fails `validation_schema` validation, the wizard must show the error inline on that field. The user must not be able to proceed to the next step (Next) until all validation errors on the current step are resolved. 
+- **FR-18:** When a field fails `validation_schema` validation, the wizard must show the error inline on that field. The user must not be able to proceed to the next step (Next) until all validation errors on the current step are resolved.
 
 #### Create payload
 
