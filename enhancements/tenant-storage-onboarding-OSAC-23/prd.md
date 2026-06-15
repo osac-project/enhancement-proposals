@@ -24,6 +24,7 @@ Storage provisioning logic is embedded in the Tenant controller. Backend setup, 
 
 - StorageBackend API and registration automation
 - StorageTier API
+- Tier addition and removal workflows
 - CaaS Tenant Storage Setup: Stage 2 trigger logic for CaaS clusters is a separate PRD
 - VAST support for CaaS
 - Per-cluster storage resource on target clusters for tenant admin visibility
@@ -56,7 +57,7 @@ These requirements establish the OSAC Storage Controller as the owner of all sto
 
 - **FR-3:** The ComputeInstance controller continues to read the tenant's resolved StorageClasses from the Tenant CR. No changes are required to the ComputeInstance controller.
 
-- **FR-4:** The OSAC Storage Controller checks the `osac.openshift.io/management-state` annotation and skips reconciliation when set to Unmanaged, consistent with all other OSAC controllers.
+- **FR-4:** The OSAC Storage Controller checks the `osac.openshift.io/management-state` annotation and skips steady-state reconciliation when set to Unmanaged. Finalizer and deletion handling must still run to prevent Tenants from being stuck in Terminating.
 
 ### 3.2 Storage Onboarding Workflow
 
@@ -89,7 +90,7 @@ These requirements define the onboarding, readiness, and teardown workflows mana
 - [ ] Tenant controller has no storage-related logic
 - [ ] ComputeInstance controller reads StorageClasses from Tenant status (no change required)
 - [ ] `kubectl get tenant` displays storage readiness columns
-- [ ] OSAC Storage Controller skips reconciliation when `osac.openshift.io/management-state` is set to Unmanaged
+- [ ] OSAC Storage Controller skips steady-state reconciliation when `osac.openshift.io/management-state` is set to Unmanaged (finalizer and deletion handling still run)
 
 **Stage 1 (Backend Setup)**
 - [ ] OSAC Storage Controller watches Tenant resources and begins storage onboarding when Tenant reaches Ready
