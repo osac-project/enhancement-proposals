@@ -37,12 +37,12 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 
 - **FR-1:** The fulfillment-service must expose a `StorageBackends` gRPC service under `osac.private.v1` with Create, Get, List, Update, Delete, and Signal RPCs.
 - **FR-2:** All CRUD RPCs must include HTTP annotations for REST access via grpc-gateway (POST, GET, GET, PATCH, DELETE). The Signal RPC is private-only with no HTTP annotation.
-- **FR-3:** `CreateStorageBackend` must accept provider type, management endpoint (host + optional port), credentials reference (Kubernetes Secret), and optional description. The backend must be created with initial state `PENDING`.
+- **FR-3:** `CreateStorageBackend` must accept provider type, management endpoint (host + optional port), credentials reference (Kubernetes Secret), and optional description. The backend must be created with initial state `READY`.
 - **FR-4:** `ListStorageBackends` must support pagination (`offset`/`limit`), CEL-based filtering, and SQL-like ordering. This follows the established OSAC List API pattern used by all existing entities (NetworkClass, Clusters, ComputeInstances, Roles, etc.).
 - **FR-5:** `UpdateStorageBackend` must support partial updates (only specified fields are modified) and optimistic concurrency control to prevent conflicting writes.
 - **FR-6:** `DeleteStorageBackend` must perform a soft delete. Deleted backends must be excluded from List results but preserved for audit and future references from StorageTier.
 - **FR-7:** The `Signal` RPC must accept a `StorageBackendStatus` payload (state, message, model, firmware_version) to update backend status. This diverges from the NetworkClass Signal (which takes only `id`) because StorageBackend has no controller to compute status — the caller provides it. [User]
-- **FR-8:** Backend state must follow the lifecycle: `UNSPECIFIED` → `PENDING` → `READY` or `FAILED`. State meanings: `UNSPECIFIED` is the zero-value default (never set explicitly); `PENDING` means the backend is registered but not yet verified as reachable; `READY` means the backend's management endpoint has been confirmed operational; `FAILED` means the backend is unreachable or returned an error. In Phase 1, the transition from `PENDING` to `READY`/`FAILED` is performed manually via the Signal RPC because StorageBackend has no reconciler — unlike resources such as PublicIPPool that have controllers continuously reconciling state, StorageBackend is a registration-only entity in Phase 1. Automated health probing via a reconciler is deferred to Phase 2. [User]
+- **FR-8:** Backend state must include `UNSPECIFIED` (zero-value default) and `READY` (backend registered and available). Additional states (`PENDING`, `FAILED`) will be introduced as needed when reconciliation or health probing capabilities are added in future phases. [User]
 - **FR-9:** Backend names must be unique among active (non-deleted) backends, allowing name reuse after decommission.
 - **FR-10:** The `credentials_ref` field must reference a Kubernetes Secret. The reference format (namespace-scoped `namespace/secret-name` or implicit namespace) is determined during implementation.
 
@@ -53,7 +53,7 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 
 ## 4. Acceptance Criteria
 
-- [ ] `CreateStorageBackend` creates a backend with state `PENDING` and returns the created object with a generated ID.
+- [ ] `CreateStorageBackend` creates a backend with state `READY` and returns the created object with a generated ID.
 - [ ] `GetStorageBackend` retrieves a backend by ID with all fields populated (including status).
 - [ ] `ListStorageBackends` returns paginated results, supports filtering by field values (e.g., by provider), and excludes soft-deleted records.
 - [ ] `UpdateStorageBackend` applies partial updates without modifying unspecified fields.
@@ -88,10 +88,10 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 
 ## 8. Open Questions
 
-### 8.1 Should credential rotation reset backend state to PENDING?
+### 8.1 Should credential rotation trigger re-validation?
 
 - **Owner:** Storage architect
-- **Impact:** FR-3, FR-8. When `credentials_ref` is updated via `UpdateStorageBackend`, should the backend state automatically reset to `PENDING` to trigger re-validation? Or should state transitions be exclusively via Signal?
+- **Impact:** FR-3, FR-8. When `credentials_ref` is updated via `UpdateStorageBackend`, should the backend state change to indicate re-validation is needed? Deferred until additional states (e.g., `PENDING`) are introduced in a future phase.
 
 ### 8.2 What is the credentials_ref format?
 
