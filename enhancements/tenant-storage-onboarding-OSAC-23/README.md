@@ -176,6 +176,8 @@ type ClusterStorageStatus struct {
 }
 ```
 
+For v0.1, `storageBackends` has a single entry (one VAST appliance) and `clusterStorage` has a single entry (VMaaS target cluster). The list structures anticipate multi-backend support (OSAC-1111, StorageBackend API) and multi-cluster support (OSAC-1123, CaaS). When those features land, the controller iterates over multiple backends and clusters; the status structures and aggregate conditions require no schema changes.
+
 The TenantStatus struct is updated:
 
 ```go
@@ -288,11 +290,19 @@ stateDiagram-v2
 The controller does not use an explicit phase field. Instead, it derives the current stage from the state of conditions and the hub Secret:
 
 1. **Tenant not Ready**: Set both conditions to `False` with reason `TenantNotReady`. Requeue.
-2. **Stage 1 (Backend)**: Query Secrets in `OSAC_STORAGE_CONFIG_NAMESPACE` with label `osac.openshift.io/tenant=<tenantName>`. If no matching Secret exists, trigger `backendProvider.TriggerProvision()`. Poll until terminal. On success, set `StorageBackendReady=True` and populate `status.storageBackends`.
-3. **Stage 2 (Cluster Storage)**: If `StorageBackendReady=True`, trigger `clusterStorageProvider.TriggerProvision()`. Poll until terminal. Discover StorageClasses on target cluster. On success, set `ClusterStorageReady=True`, populate `status.storageClasses` and `status.clusterStorage`.
-4. **Deletion**: Two-step teardown using the respective deprovision methods. Remove finalizer only after both complete.
+2. **Stage 1 (Backend)**: Iterate over the backend list and provision each. For each backend, query Secrets in `OSAC_STORAGE_CONFIG_NAMESPACE` with label `osac.openshift.io/tenant=<tenantName>`. If no matching Secret exists for a backend, trigger `backendProvider.TriggerProvision()`. Poll until terminal. On success, update that backend's entry in `status.storageBackends`. Set `StorageBackendReady=True` only when all backends are ready; set to `False` with a message identifying the failing backend(s) otherwise.
+3. **Stage 2 (Cluster Storage)**: If `StorageBackendReady=True`, iterate over the cluster list and provision each. For each cluster, trigger `clusterStorageProvider.TriggerProvision()`. Poll until terminal. Discover StorageClasses on target cluster using the tier source. On success, update that cluster's entry in `status.clusterStorage`, populate `status.storageClasses`, and set `ClusterStorageReady=True` when all clusters are ready.
+4. **Deletion**: Two-step teardown per backend and per cluster using the respective deprovision methods. Remove finalizer only after all complete.
 
 The state machine is implicit rather than explicit: each reconciliation reads the current conditions, hub Secret state, and latest jobs to determine the next action. This follows the Kubernetes controller pattern of level-triggered reconciliation.
+
+#### Extension Points
+
+The reconciliation logic is structured around two pluggable sources that can evolve without changing the controller's core loop:
+
+**Backend list:** Determines which backends to provision for a tenant in Stage 1. For v0.1, this is a single implicit backend derived from the AAP `storage-operations-ig` configuration (one VAST appliance). When the StorageBackend API (OSAC-1111) is available, this becomes a query against StorageBackend resources associated with the tenant. The controller's iteration loop and `status.storageBackends` array remain unchanged; only the source of the list changes.
+
+**Tier source:** Determines the expected tiers for tier resolution in Stage 2. For v0.1, tiers come from the `STORAGE_TIERS` environment variable (a JSON array of tier definitions). When the StorageTier API (OSAC-1110) is available, this becomes a query against StorageTier CRs. The tier resolution algorithm (tenant-specific fallback to Default) and `status.storageClasses` array remain unchanged; only the source of the tier list changes.
 
 #### Tier Resolution Algorithm
 
