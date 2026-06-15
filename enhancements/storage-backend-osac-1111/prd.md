@@ -35,16 +35,16 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 
 ### 3.1 Functional Requirements
 
-- **FR-1:** The fulfillment-service must expose a `StorageBackends` gRPC service under `osac.private.v1` with Create, Get, List, Update, Delete, and Signal RPCs.
-- **FR-2:** All CRUD RPCs must include HTTP annotations for REST access via grpc-gateway (POST, GET, GET, PATCH, DELETE). The Signal RPC is private-only with no HTTP annotation.
+- **FR-1:** The fulfillment-service must expose a `StorageBackends` gRPC service under `osac.private.v1` with Create, Get, List, Update, and Delete RPCs.
+- **FR-2:** All CRUD RPCs must include HTTP annotations for REST access via grpc-gateway (POST, GET, GET, PATCH, DELETE).
 - **FR-3:** `CreateStorageBackend` must accept provider type, management endpoint (host + optional port), credentials reference (Kubernetes Secret), and optional description. The backend must be created with initial state `READY`.
 - **FR-4:** `ListStorageBackends` must support pagination (`offset`/`limit`), CEL-based filtering, and SQL-like ordering. This follows the established OSAC List API pattern used by all existing entities (NetworkClass, Clusters, ComputeInstances, Roles, etc.).
 - **FR-5:** `UpdateStorageBackend` must support partial updates (only specified fields are modified) and optimistic concurrency control to prevent conflicting writes.
 - **FR-6:** `DeleteStorageBackend` must perform a soft delete. Deleted backends must be excluded from List results but preserved for audit and future references from StorageTier.
-- **FR-7:** The `Signal` RPC must accept a `StorageBackendStatus` payload (state, message, model, firmware_version) to update backend status. This diverges from the NetworkClass Signal (which takes only `id`) because StorageBackend has no controller to compute status — the caller provides it. [User]
-- **FR-8:** Backend state must include `UNSPECIFIED` (zero-value default) and `READY` (backend registered and available). Additional states (`PENDING`, `FAILED`) will be introduced as needed when reconciliation or health probing capabilities are added in future phases. [User]
+- **FR-7:** Cloud Provider Admins must be able to update backend operational metadata (model, firmware_version) and status message via the standard `Update` RPC. No Signal RPC is needed — StorageBackend has no reconciler or controller.
+- **FR-8:** Backend state must include `READY` (backend registered and available). Additional states will be introduced as needed when reconciliation or health probing capabilities are added in future phases. [User]
 - **FR-9:** Backend names must be unique among active (non-deleted) backends, allowing name reuse after decommission.
-- **FR-10:** The `credentials_ref` field must reference a Kubernetes Secret. The reference format (namespace-scoped `namespace/secret-name` or implicit namespace) is determined during implementation.
+- **FR-10:** The `credentials_ref` field must reference a Kubernetes Secret. The reference format (namespace-scoped `namespace/secret-name` or implicit namespace) is determined during implementation. This credential storage mechanism is temporary — it will be revisited when OSAC core establishes a unified credential management pattern.
 
 ### 3.2 Non-Functional Requirements
 
@@ -59,9 +59,8 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 - [ ] `UpdateStorageBackend` applies partial updates without modifying unspecified fields.
 - [ ] `UpdateStorageBackend` rejects concurrent conflicting writes.
 - [ ] `DeleteStorageBackend` soft-deletes the backend. Subsequent List calls exclude the deleted backend.
-- [ ] `Signal` RPC updates the backend's state, message, model, and firmware_version fields.
 - [ ] All CRUD RPCs are accessible via both gRPC and REST endpoints.
-- [ ] Integration tests cover the full CRUD lifecycle, pagination, filtering, concurrency control, and Signal.
+- [ ] Integration tests cover the full CRUD lifecycle, pagination, filtering, and concurrency control.
 
 ## 5. Assumptions
 
