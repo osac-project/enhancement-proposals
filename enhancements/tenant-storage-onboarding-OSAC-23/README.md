@@ -4,7 +4,7 @@ authors:
   - zszabo@redhat.com
   - anadkarn@redhat.com
 creation-date: 2026-06-12
-last-updated: 2026-06-12
+last-updated: 2026-06-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-23
 prd:
