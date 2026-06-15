@@ -380,20 +380,35 @@ PR #338 (OSAC-1145) covers this playbook split. The combined playbooks are remov
 
 #### ClusterOrder Watch
 
-The storage controller establishes a watch on ClusterOrder resources to detect new CaaS clusters [FR-9]. No reconciliation logic is executed on ClusterOrder events in this scope. The watch is registered in `SetupWithManager` with an empty event handler that enqueues the parent Tenant for reconciliation:
+The storage controller establishes a watch on ClusterOrder resources to detect new CaaS clusters [FR-9]. No reconciliation logic is executed on ClusterOrder events in this scope, but the watch and mapping are wired now so the storage controller receives notifications when a ClusterOrder changes.
+
+ClusterOrder resources carry an `osac.openshift.io/tenant` annotation set by the fulfillment-service at creation time, the same annotation used by ComputeInstance, Subnet, and all other OSAC resources to associate with a Tenant [Codebase: fulfillment-service/internal/controllers/cluster/cluster_reconciler_function.go]. Since ClusterOrders and Tenants live in different namespaces (`osac-orders` vs the tenant namespace), `ownerReferences` cannot be used. The watch uses `handler.EnqueueRequestsFromMapFunc` with a mapper that reads the annotation and enqueues the corresponding Tenant:
 
 ```go
 func (r *StorageReconciler) SetupWithManager(mgr mcmanager.Manager) error {
     return mcbuilder.ControllerManagedBy(mgr).
         For(&v1alpha1.Tenant{}, /* ... */).
         Watches(&v1alpha1.ClusterOrder{},
-            mchandler.EnqueueRequestForOwner(mgr.GetLocalManager().GetScheme(),
-                mgr.GetLocalManager().GetRESTMapper(),
-                &v1alpha1.Tenant{})).
+            handler.EnqueueRequestsFromMapFunc(r.mapClusterOrderToTenant)).
         Watches(&storagev1.StorageClass{}, /* ... enqueue Tenant by label */).
         Complete(r)
 }
+
+func (r *StorageReconciler) mapClusterOrderToTenant(_ context.Context, obj client.Object) []reconcile.Request {
+    tenantName := obj.GetAnnotations()[osacTenantAnnotation]
+    if tenantName == "" {
+        return nil
+    }
+    return []reconcile.Request{{
+        NamespacedName: types.NamespacedName{
+            Name:      tenantName,
+            Namespace: r.tenantNamespace,
+        },
+    }}
+}
 ```
+
+This is consistent with how the ComputeInstance controller maps to Tenants via the same annotation [Codebase: osac-operator/internal/controller/computeinstance_resources.go, `getTenant()`]. When the CaaS PRD (OSAC-1123) adds Stage 2 trigger logic, the reconciliation handler already receives ClusterOrder events mapped to the correct Tenant.
 
 The ClusterOrder watch provides the foundation for CaaS Stage 2 trigger logic, which is defined in a separate PRD (OSAC-1123).
 
