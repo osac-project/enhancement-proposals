@@ -73,7 +73,7 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     Admin->>FS: CreateStorageBackend(provider, endpoint, credentials, description)
-    FS->>FS: Validate required fields (metadata.name, provider, endpoint.host, credentials)
+    FS->>FS: Validate required fields (metadata.name, provider, endpoint, credentials)
     FS->>FS: Set state = READY, clear caller-provided ID
     FS->>DB: Insert into storage_backends (JSONB data column)
     DB-->>FS: Return with generated UUID
@@ -88,7 +88,7 @@ The diagram shows the registration path. The admin registers the backend via the
 
 **Error cases:**
 - Duplicate name on active backend: Create returns `ALREADY_EXISTS` (enforced by the unique partial index).
-- Missing required fields (metadata.name, provider, endpoint.host, credentials): Create returns `INVALID_ARGUMENT`.
+- Missing required fields (metadata.name, provider, endpoint, credentials): Create returns `INVALID_ARGUMENT`.
 - Name change on Update: returns `INVALID_ARGUMENT` (`metadata.name` is immutable after creation).
 - Update with stale version and `lock=true`: returns `FAILED_PRECONDITION` (optimistic concurrency control).
 - Delete of non-existent backend: returns `NOT_FOUND`.
@@ -116,16 +116,9 @@ No CRDs, webhooks, or finalizers are introduced. No existing resources are modif
 | `metadata` | `Metadata` | Yes | Standard OSAC metadata (name, labels, annotations, version) |
 | `provider` | `string` | Yes | Storage provider identifier (e.g., `"vast"`, `"ceph"`, `"pure"`) |
 | `description` | `string` | No | Human-readable description of the backend |
-| `endpoint` | `StorageBackendEndpoint` | Yes | Management endpoint for the storage array |
+| `endpoint` | `string` | Yes | Management endpoint for the storage array (URL or `host:port`) |
 | `credentials` | `StorageBackendCredentials` | Yes | Provider-specific credentials stored inline, consistent with existing OSAC credential patterns |
 | `status` | `StorageBackendStatus` | System | Operational status, set on create |
-
-**`StorageBackendEndpoint` message:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `host` | `string` | Yes | Hostname or IP of the storage management API |
-| `port` | `int32` | No | Port number; provider-specific default if omitted |
 
 **`StorageBackendCredentials` message:**
 
@@ -174,7 +167,7 @@ No Signal RPC is defined. Signal exists on other entities to wake up a reconcile
 
 - Struct wraps `GenericServer[*privatev1.StorageBackend]`
 - Builder pattern: `NewPrivateStorageBackendsServer()` returns a builder with `SetLogger`, `SetNotifier`, `SetAttributionLogic`, `SetTenancyLogic`, `SetMetricsRegisterer`, `Build()`
-- `Create`: validates required fields (`metadata.name`, `provider`, `endpoint.host`, `credentials.username`, `credentials.password`), sets state to `STORAGE_BACKEND_STATE_READY`, clears caller-provided ID. The generic server's `validateName()` enforces RFC 1035 DNS label format (1–63 chars, lowercase alphanumeric + hyphens, no leading/trailing hyphens). Name uniqueness among active backends is enforced by the `storage_backends_unique_active_name` partial index.
+- `Create`: validates required fields (`metadata.name`, `provider`, `endpoint`, `credentials.username`, `credentials.password`), sets state to `STORAGE_BACKEND_STATE_READY`, clears caller-provided ID. The generic server's `validateName()` enforces RFC 1035 DNS label format (1–63 chars, lowercase alphanumeric + hyphens, no leading/trailing hyphens). Name uniqueness among active backends is enforced by the `storage_backends_unique_active_name` partial index.
 - `Update`: fetches existing object, merges via `applyStorageBackendUpdate`, validates immutability of `provider` and `metadata.name` fields, delegates to generic server
 - `Delete`: delegates directly to generic server (soft delete)
 
@@ -262,7 +255,7 @@ StorageBackend inherits the existing fulfillment-service security model:
 - **Authentication:** JWT validation via the gRPC interceptor chain. No changes to the authentication flow.
 - **Authorization:** OPA policies control access to the private API endpoint. Only Cloud Provider Admins have access. There is no public API — tenants cannot access StorageBackend at all.
 - **Credential storage:** Credentials are stored inline in the JSONB `data` column, consistent with all existing OSAC entities (`break_glass_credentials`, `identity_provider`, `user`, `cluster_template`, `hub`). Since there is no public API, credentials are never exposed to tenants.
-- **Input validation:** The server validates required fields (`metadata.name`, `provider`, `endpoint.host`, `credentials.username`, `credentials.password`), DNS label format for `metadata.name` (RFC 1035, enforced by the generic server), and immutability of `provider` and `metadata.name` on update. The `endpoint.host` field is a string stored as-is; no DNS resolution or connection attempt is made during registration.
+- **Input validation:** The server validates required fields (`metadata.name`, `provider`, `endpoint`, `credentials.username`, `credentials.password`), DNS label format for `metadata.name` (RFC 1035, enforced by the generic server), and immutability of `provider` and `metadata.name` on update. The `endpoint` field is an opaque string (URL or `host:port`) stored as-is; no DNS resolution or connection attempt is made during registration.
 
 No new authentication, authorization, or encryption mechanisms are introduced.
 
@@ -336,7 +329,7 @@ Testing follows the fulfillment-service's established Ginkgo v2 test patterns:
 
 - `private_storage_backends_server_test.go`:
   - CRUD lifecycle: Create with all fields, Get by ID, List with pagination, Update with field mask, Delete (soft-delete)
-  - Validation: missing `metadata.name`, missing `provider`, missing `endpoint.host`, missing `credentials` return `INVALID_ARGUMENT`; invalid DNS label name returns `INVALID_ARGUMENT`
+  - Validation: missing `metadata.name`, missing `provider`, missing `endpoint`, missing `credentials` return `INVALID_ARGUMENT`; invalid DNS label name returns `INVALID_ARGUMENT`
   - Immutability: Update with changed `provider` returns `INVALID_ARGUMENT`; Update with changed `metadata.name` returns `INVALID_ARGUMENT`
   - Name uniqueness: Create with duplicate active name returns `ALREADY_EXISTS`; Create after soft-delete of same name succeeds
   - Optimistic locking: Update with stale version and `lock=true` returns `FAILED_PRECONDITION`
