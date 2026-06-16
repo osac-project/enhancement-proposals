@@ -28,12 +28,12 @@ OSAC manages networking infrastructure through first-class API entities (Network
 
 This gap blocks two capabilities: (1) composing tiered storage offerings where StorageTier entities (OSAC-1110) reference registered backends by ID, and (2) credential rotation without redeploying the fulfillment-service. Three prior enhancements addressed tenant-to-StorageClass resolution but left the infrastructure layer unmanaged.
 
-StorageBackend introduces the infrastructure registration layer. It stores the provider type, management endpoint, and credentials. The entity is platform-scoped (not tenant-scoped), managed exclusively by Cloud Provider Admins through the private API, and exposed read-only through the public API with credentials stripped.
+StorageBackend introduces the infrastructure registration layer. It stores the provider type, management endpoint, and credentials. The entity is platform-scoped (not tenant-scoped), managed exclusively by Cloud Provider Admins through the private API. There is no public API — tenants do not need visibility into storage backends; they interact with storage through StorageTier (OSAC-1110).
 
 ### Goals
 
 - Reuse the NetworkClass DB-backed server pattern (generic server, generic DAO, builder construction) with no reconciler or CRD. [Codebase: internal/servers/private_network_classes_server.go]
-- Expose both private (full CRUD) and public (read-only) API layers following the established dual-API pattern.
+- Expose a private CRUD API only — no public API. Tenants interact with storage through StorageTier (OSAC-1110), not directly with backends.
 - Store credentials inline in the JSONB `data` column, consistent with all existing OSAC entities (break_glass_credentials, identity_provider, user, cluster_template, hub).
 - Keep the StorageBackend schema provider-agnostic so that non-VAST backends (Ceph, Pure) use the same entity without schema changes.
 - Provide the foundation entity for StorageTier (OSAC-1110) composition without introducing StorageTier dependencies.
@@ -50,9 +50,7 @@ StorageBackend introduces the infrastructure registration layer. It stores the p
 
 StorageBackend is a new entity in the fulfillment-service with two API surfaces:
 
-1. **Private API** (`osac.private.v1.StorageBackends`): Full CRUD (Create, Get, List, Update, Delete). Used by Cloud Provider Admins. No Signal RPC — StorageBackend has no reconciler or controller, so there is nothing to signal.
-
-2. **Public API** (`osac.public.v1.StorageBackends`): Read-only (List, Get). Delegates to the private server with field mapping. Credential fields are excluded from the public API via `AddIgnoredFields()`.
+**Private API** (`osac.private.v1.StorageBackends`): Full CRUD (Create, Get, List, Update, Delete). Used by Cloud Provider Admins and internal systems (e.g., future tenant onboarding controller that needs credentials to pass to AAP). No Signal RPC — StorageBackend has no reconciler or controller. No public API — tenants interact with storage through StorageTier, not directly with backends.
 
 The database schema follows the standard JSONB `data` column pattern with `storage_backends` and `archived_storage_backends` tables. A unique partial index on `name` enforces FR-9 (name uniqueness among active records).
 
@@ -62,7 +60,7 @@ The generic server's `setPayload()` switch statement requires a new case for `St
 
 **Actors:**
 - Cloud Provider Admin — registers and manages storage backends via the private API
-- Tenant — discovers available backends (provider, endpoint, status) via the public API; cannot see credentials
+- Tenant — no direct access to StorageBackend; interacts with storage through StorageTier (OSAC-1110)
 
 **Starting state:** The fulfillment-service is deployed with no StorageBackend records. Storage configuration exists only in Ansible extra vars.
 
@@ -99,8 +97,9 @@ The diagram shows the registration path. The admin registers the backend via the
 This enhancement adds the following API extensions:
 
 - **Private gRPC service** `osac.private.v1.StorageBackends` — CRUD, registered in the gRPC server startup alongside `NetworkClasses`.
-- **Public gRPC service** `osac.public.v1.StorageBackends` — List + Get only, registered alongside the public `NetworkClasses` server.
 - **Event payload field** `storage_backend` added to `osac.private.v1.Event` — enables event-driven notifications for StorageBackend changes.
+
+No public API is registered. Tenants do not need direct access to storage backends.
 
 No CRDs, webhooks, or finalizers are introduced. No existing resources are modified. If the fulfillment-service is unavailable, StorageBackend operations fail but no other OSAC resources are affected — StorageBackend has no controller loop that could leave resources in an inconsistent state.
 
@@ -168,25 +167,6 @@ The service defines five RPCs following the NetworkClass service pattern (withou
 
 No Signal RPC is defined. Signal exists on other entities to wake up a reconciler when external state changes — StorageBackend has no reconciler, so Signal would have no consumer. Status fields (model, firmware_version) can be updated via the standard `Update` RPC if needed in the future.
 
-#### Proto Schema — Public API
-
-**`storage_backend_type.proto`** (`osac.public.v1`):
-
-The public message mirrors the private message with these differences:
-- `credentials` is excluded entirely (not present in the message definition)
-- `endpoint.host` is included (tenants need to know which array serves their storage)
-- `status` is included (tenants need to see backend availability)
-- All fields are effectively `OUTPUT_ONLY` since the public API is read-only
-
-**`storage_backends_service.proto`** (`osac.public.v1`):
-
-| RPC | HTTP Method | Path |
-|-----|-------------|------|
-| `List` | `GET` | `/api/fulfillment/v1/storage_backends` |
-| `Get` | `GET` | `/api/fulfillment/v1/storage_backends/{id}` |
-
-No Create, Update, or Delete RPCs in the public API.
-
 #### Server Implementation
 
 **`private_storage_backends_server.go`**: Follows the `PrivateNetworkClassesServer` pattern:
@@ -198,13 +178,6 @@ No Create, Update, or Delete RPCs in the public API.
 - `Delete`: delegates directly to generic server (soft delete)
 
 **Immutable fields on update:** `provider` is immutable after creation. Changing the storage provider would invalidate the endpoint, credentials, and any downstream StorageTier references.
-
-**`storage_backends_server.go`** (public): Follows the `NetworkClassesServer` pattern:
-
-- Composes a `PrivateStorageBackendsServer` delegate + `GenericMapper` pair
-- `inMapper` is not needed (no write RPCs on public API), but the pattern requires it for consistency with the builder; unused mapper fields can be nil
-- `outMapper` maps private StorageBackend to public StorageBackend, skipping `credentials`
-- Exposes only `List` and `Get`
 
 #### Database Migration
 
@@ -270,16 +243,6 @@ This partial index permits name reuse after soft deletion while preventing dupli
 In `start_grpc_server_cmd.go`, add registration blocks for both servers following the NetworkClass pattern:
 
 ```go
-// Public StorageBackends server
-storageBackendsServer, err := servers.NewStorageBackendsServer().
-    SetLogger(logger).
-    SetNotifier(notifier).
-    SetAttributionLogic(attributionLogic).
-    SetTenancyLogic(tenancyLogic).
-    SetMetricsRegisterer(metricsRegisterer).
-    Build()
-publicv1.RegisterStorageBackendsServer(grpcServer, storageBackendsServer)
-
 // Private StorageBackends server
 privateStorageBackendsServer, err := servers.NewPrivateStorageBackendsServer().
     SetLogger(logger).
@@ -296,8 +259,8 @@ privatev1.RegisterStorageBackendsServer(grpcServer, privateStorageBackendsServer
 StorageBackend inherits the existing fulfillment-service security model:
 
 - **Authentication:** JWT validation via the gRPC interceptor chain. No changes to the authentication flow.
-- **Authorization:** OPA policies control access to private vs. public API endpoints. Cloud Provider Admins have access to private CRUD. Tenants have access to public List + Get only.
-- **Credential storage:** Credentials are stored inline in the JSONB `data` column, consistent with all existing OSAC entities. The public API excludes `credentials` entirely — tenants cannot see credential fields. This follows the same pattern as `break_glass_credentials`, `identity_provider`, `user`, `cluster_template`, and `hub`.
+- **Authorization:** OPA policies control access to the private API endpoint. Only Cloud Provider Admins have access. There is no public API — tenants cannot access StorageBackend at all.
+- **Credential storage:** Credentials are stored inline in the JSONB `data` column, consistent with all existing OSAC entities (`break_glass_credentials`, `identity_provider`, `user`, `cluster_template`, `hub`). Since there is no public API, credentials are never exposed to tenants.
 - **Input validation:** The server validates required fields (`provider`, `endpoint.host`, `credentials.username`, `credentials.password`) and provider immutability. The `endpoint.host` field is a string stored as-is; no DNS resolution or connection attempt is made during registration.
 
 No new authentication, authorization, or encryption mechanisms are introduced.
@@ -315,8 +278,8 @@ All operations are transactional (wrapped by the gRPC database transaction inter
 
 StorageBackend is platform-scoped, not tenant-scoped. It follows the same access model as NetworkClass:
 
-- **Private API:** Accessible to Cloud Provider Admins. OPA policies enforce role-based access. No Signal RPC. The `tenants` column in the database is empty (platform-scoped resources have no tenant owner).
-- **Public API:** Accessible to all authenticated users (tenants). List and Get return all active backends (no tenant filtering). Credential fields are stripped by the public server's output mapper.
+- **Private API:** Accessible to Cloud Provider Admins and internal systems (osac-operator). OPA policies enforce role-based access. The `tenants` column in the database is empty (platform-scoped resources have no tenant owner).
+- **No public API.** Tenants interact with storage through StorageTier (OSAC-1110), not directly with backends.
 
 No `osac.openshift.io/tenant` or `osac.openshift.io/owner-reference` annotations are set on StorageBackend. This is consistent with NetworkClass, which is also platform-scoped. Tenant isolation applies at the StorageTier level (OSAC-1110), where tiers are assigned to tenants.
 
@@ -336,7 +299,7 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 ### Drawbacks
 
-**Platform-scoped entity with credentials in the database.** StorageBackend stores credentials inline in the JSONB `data` column, which means credential content (username/password) lives in PostgreSQL. This is consistent with all existing OSAC entities that store credentials (break_glass_credentials, identity_provider, user, cluster_template, hub), but worth noting as the attack surface grows with the number of backends. The public API strips credentials, but the private API exposes them to all Cloud Provider Admins regardless of which backend they manage.
+**Platform-scoped entity with credentials in the database.** StorageBackend stores credentials inline in the JSONB `data` column, which means credential content (username/password) lives in PostgreSQL. This is consistent with all existing OSAC entities that store credentials (break_glass_credentials, identity_provider, user, cluster_template, hub), but worth noting as the attack surface grows with the number of backends. The private API exposes credentials to all Cloud Provider Admins regardless of which backend they manage.
 
 ## Alternatives (Not Implemented)
 
@@ -378,11 +341,6 @@ Testing follows the fulfillment-service's established Ginkgo v2 test patterns:
   - Optimistic locking: Update with stale version and `lock=true` returns `FAILED_PRECONDITION`
   - CEL filtering: List with `this.provider == "vast"` returns matching backends
   - Ordering: List with `metadata.name asc` returns sorted results
-- `storage_backends_server_test.go` (public API):
-  - List and Get delegate correctly to private server
-  - `credentials` is absent from public responses
-  - Create/Update/Delete are not exposed
-
 **Integration tests** (`it/`): StorageBackend CRUD via gRPC and REST endpoints against a kind cluster deployment, covering authentication and authorization.
 
 **E2E tests** (deferred to StorageTier integration): End-to-end tests covering the StorageBackend -> StorageTier -> tenant onboarding flow are scoped to OSAC-1110.
@@ -395,8 +353,7 @@ For initial merge:
 
 - All integration tests pass
 - `buf lint` passes with no warnings
-- Private and public API endpoints are accessible via both gRPC and REST
-- `credentials` is confirmed absent from public API responses
+- Private API endpoints are accessible via both gRPC and REST
 
 ## Upgrade / Downgrade Strategy
 
