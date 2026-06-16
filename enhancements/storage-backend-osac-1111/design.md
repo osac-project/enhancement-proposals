@@ -52,7 +52,7 @@ StorageBackend is a new entity in the fulfillment-service with two API surfaces:
 
 **Private API** (`osac.private.v1.StorageBackends`): Full CRUD (Create, Get, List, Update, Delete). Used by Cloud Provider Admins and internal systems (e.g., future tenant onboarding controller that needs credentials to pass to AAP). No Signal RPC — StorageBackend has no reconciler or controller. No public API — tenants interact with storage through StorageTier, not directly with backends.
 
-The database schema follows the standard JSONB `data` column pattern with `storage_backends` and `archived_storage_backends` tables. A unique partial index on `name` enforces FR-9 (name uniqueness among active records).
+The database schema follows the standard JSONB `data` column pattern with `storage_backends` and `archived_storage_backends` tables. A unique partial index on `name` enforces FR-9 (name uniqueness among active records). **[OPEN: The deletion strategy (soft-delete vs hard-delete) is under review — see Open Questions.]**
 
 The generic server's `setPayload()` switch statement requires a new case for `StorageBackend`, and the Event proto requires a new `storage_backend` payload field.
 
@@ -84,7 +84,7 @@ The diagram shows the registration path. The admin registers the backend via the
 
 **Credential rotation:** The admin calls `UpdateStorageBackend` with new `credentials` fields. No redeployment is required.
 
-**Decommission:** The admin calls `DeleteStorageBackend`. The backend is soft-deleted: excluded from List results but preserved in the `archived_storage_backends` table for audit. Name reuse is allowed after soft deletion.
+**Decommission:** The admin calls `DeleteStorageBackend`. The backend is soft-deleted using the standard DAO pattern (sets `deletion_timestamp`, archives the record). Delete is rejected with `FAILED_PRECONDITION` if any StorageTier references the backend — the admin must remove all tier associations first. **[OPEN: The deletion strategy (soft-delete vs hard-delete) is under review — see Open Questions.]**
 
 **Error cases:**
 - Duplicate name on active backend: Create returns `ALREADY_EXISTS` (enforced by the unique partial index).
@@ -169,7 +169,7 @@ No Signal RPC is defined. Signal exists on other entities to wake up a reconcile
 - Builder pattern: `NewPrivateStorageBackendsServer()` returns a builder with `SetLogger`, `SetNotifier`, `SetAttributionLogic`, `SetTenancyLogic`, `SetMetricsRegisterer`, `Build()`
 - `Create`: validates required fields (`metadata.name`, `provider`, `endpoint`, `credentials.username`, `credentials.password`), sets state to `STORAGE_BACKEND_STATE_READY`, clears caller-provided ID. The generic server's `validateName()` enforces RFC 1035 DNS label format (1–63 chars, lowercase alphanumeric + hyphens, no leading/trailing hyphens). Name uniqueness among active backends is enforced by the `storage_backends_unique_active_name` partial index.
 - `Update`: fetches existing object, merges via `applyStorageBackendUpdate`, validates immutability of `provider` and `metadata.name` fields, delegates to generic server
-- `Delete`: delegates directly to generic server (soft delete)
+- `Delete`: checks for referencing StorageTier records; rejects with `FAILED_PRECONDITION` if any exist, otherwise delegates to generic server (soft delete via standard DAO pattern). **[OPEN: soft-delete vs hard-delete — see Open Questions]**
 
 **Immutable fields on update:** `provider` and `metadata.name` are immutable after creation. Changing the storage provider would invalidate the endpoint, credentials, and any downstream StorageTier references. Name immutability ensures stable human-readable identifiers for operational use and prevents confusion when backends are referenced by name in logs and configurations.
 
@@ -224,7 +224,7 @@ create unique index storage_backends_unique_active_name
   where deletion_timestamp = 'epoch';
 ```
 
-This partial index permits name reuse after soft deletion while preventing duplicate names among active records. The DAO's unique violation error maps to gRPC `ALREADY_EXISTS`.
+This partial index permits name reuse after soft deletion while preventing duplicate names among active records. The DAO's unique violation error maps to gRPC `ALREADY_EXISTS`. **[OPEN: If hard-delete is chosen, this becomes a plain unique index without the partial condition.]**
 
 #### Generic Server Changes
 
@@ -265,6 +265,7 @@ No new authentication, authorization, or encryption mechanisms are introduced.
 |---|---|---|---|
 | Database unavailable during Create | gRPC interceptor rolls back the transaction | `UNAVAILABLE` error | Retry the request; the operation is idempotent (name uniqueness check prevents duplicates) |
 | Duplicate active name on Create | Unique partial index violation | `ALREADY_EXISTS` with the conflicting name | Choose a different name or delete the existing backend first |
+| Delete with referencing StorageTiers | Server checks for references before delete | `FAILED_PRECONDITION` listing the referencing tiers | Remove all StorageTier associations first, then retry |
 | Stale version on Update with `lock=true` | DAO rejects the write | `FAILED_PRECONDITION` | Re-fetch the current version and retry |
 All operations are transactional (wrapped by the gRPC database transaction interceptor) and idempotent. There is no reconciliation loop that could leave resources in a partially updated state.
 
@@ -287,9 +288,9 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 ### Risks and Mitigations
 
-**Soft-delete name reuse and StorageTier references:** When a backend is soft-deleted and its name is reused for a new backend, a StorageTier referencing the old backend by ID continues to resolve correctly (references use ID, not name). However, confusion may arise if operators expect name-based lookup to return the latest backend.
+**Referential integrity on delete:** Delete is rejected if any StorageTier references the backend. This prevents orphaned tier-to-backend references but requires the admin to manually remove all tier associations before decommissioning a backend.
 
-*Mitigation:* StorageTier references backends by ID. The API documentation explicitly states that List excludes soft-deleted backends and that name reuse is permitted after decommission.
+*Mitigation:* The `FAILED_PRECONDITION` error message lists the referencing StorageTier IDs so the admin knows exactly what to clean up.
 
 ### Drawbacks
 
@@ -319,7 +320,15 @@ Instead of storing credentials inline, the fulfillment-service could store a `cr
 
 ## Open Questions
 
-None — all prior open questions have been resolved. Credentials are stored inline (matching existing OSAC patterns), and Signal RPC has been removed (no reconciler).
+**OQ-1: Soft-delete vs hard-delete for StorageBackend decommission.**
+
+The generic DAO uses soft-delete by default (sets `deletion_timestamp`, archives the record to `archived_storage_backends`). All existing OSAC entities follow this pattern. However, StorageBackend may not need the archived record — audit can be handled by the existing observability infrastructure (structured logging, PostgreSQL NOTIFY events), and referential integrity (rejecting delete when StorageTiers reference the backend) prevents orphaned references.
+
+Options:
+- **Keep soft-delete (current DAO default):** No DAO changes needed. Archived records are preserved. Name reuse is allowed via the partial index. Follows the established pattern.
+- **Switch to hard-delete:** Requires extending the generic DAO with a hard-delete option or implementing custom delete logic in the StorageBackend server. Simpler schema (no archived table, plain unique index on name). Aligns with AWS/GCP patterns where infrastructure resources are hard-deleted and audit relies on external logs.
+
+**Owner:** Storage architect. **Impact:** Database schema, DAO usage, FR-6, FR-9.
 
 ## Test Plan
 
@@ -328,10 +337,11 @@ Testing follows the fulfillment-service's established Ginkgo v2 test patterns:
 **Unit/integration tests** (co-located in `internal/servers/`):
 
 - `private_storage_backends_server_test.go`:
-  - CRUD lifecycle: Create with all fields, Get by ID, List with pagination, Update with field mask, Delete (soft-delete)
+  - CRUD lifecycle: Create with all fields, Get by ID, List with pagination, Update with field mask, Delete
   - Validation: missing `metadata.name`, missing `provider`, missing `endpoint`, missing `credentials` return `INVALID_ARGUMENT`; invalid DNS label name returns `INVALID_ARGUMENT`
   - Immutability: Update with changed `provider` returns `INVALID_ARGUMENT`; Update with changed `metadata.name` returns `INVALID_ARGUMENT`
-  - Name uniqueness: Create with duplicate active name returns `ALREADY_EXISTS`; Create after soft-delete of same name succeeds
+  - Name uniqueness: Create with duplicate active name returns `ALREADY_EXISTS`; Create after delete of same name succeeds
+  - Referential integrity: Delete with referencing StorageTier returns `FAILED_PRECONDITION`; Delete without references succeeds
   - Optimistic locking: Update with stale version and `lock=true` returns `FAILED_PRECONDITION`
   - CEL filtering: List with `this.provider == "vast"` returns matching backends
   - Ordering: List with `metadata.name asc` returns sorted results
