@@ -82,7 +82,7 @@ flowchart LR
 ## 4. Acceptance Criteria
 
 - [ ] Selecting a ComputeInstance or Cluster catalog item and completing the wizard creates the resource without exposing spec fields outside `field_definitions` (except Basics fields per FR-5–FR-7).
-- [ ] The wizard presents four steps in order: catalog selection → Basics → Configuration → Review → submit.
+- [ ] The wizard presents four steps in order: catalog selection → Basics → Configuration → Review and submit.
 - [ ] Basics collects `metadata.name`, SSH key, and pull secret (cluster only; omitted for VM when not applicable).
 - [ ] Configuration shows only editable `field_definitions` in array order, excluding Basics fields; non-editable defaults are applied to the payload without appearing in the form.
 - [ ] Review always displays Basics fields: `metadata.name`, SSH key, and pull secret for cluster catalog items (pull secret omitted for VM when not applicable); plus every `field_definitions` entry with defaults or configured values, without duplicating Basics fields already shown.
