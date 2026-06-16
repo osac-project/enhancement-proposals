@@ -73,14 +73,14 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     Admin->>FS: CreateStorageBackend(provider, endpoint, credentials, description)
-    FS->>FS: Validate required fields (provider, endpoint.host, credentials)
+    FS->>FS: Validate required fields (metadata.name, provider, endpoint.host, credentials)
     FS->>FS: Set state = READY, clear caller-provided ID
     FS->>DB: Insert into storage_backends (JSONB data column)
     DB-->>FS: Return with generated UUID
     FS-->>Admin: StorageBackend with id, state=READY
 ```
 
-The diagram shows the registration path. The admin registers the backend via the private API with credentials provided inline. The fulfillment-service validates required fields, sets the initial state to `READY`, generates a UUID, and persists the entity. Credentials are stored in the JSONB `data` column, consistent with how all other OSAC entities store credentials.
+The diagram shows the registration path. The admin registers the backend via the private API with credentials provided inline. The fulfillment-service validates required fields (including `metadata.name`, which must be a valid DNS label per RFC 1035), sets the initial state to `READY`, generates a UUID, and persists the entity. Credentials are stored in the JSONB `data` column, consistent with how all other OSAC entities store credentials.
 
 **Credential rotation:** The admin calls `UpdateStorageBackend` with new `credentials` fields. No redeployment is required.
 
@@ -88,7 +88,8 @@ The diagram shows the registration path. The admin registers the backend via the
 
 **Error cases:**
 - Duplicate name on active backend: Create returns `ALREADY_EXISTS` (enforced by the unique partial index).
-- Missing required fields (provider, endpoint.host, credentials): Create/Update returns `INVALID_ARGUMENT`.
+- Missing required fields (metadata.name, provider, endpoint.host, credentials): Create returns `INVALID_ARGUMENT`.
+- Name change on Update: returns `INVALID_ARGUMENT` (`metadata.name` is immutable after creation).
 - Update with stale version and `lock=true`: returns `FAILED_PRECONDITION` (optimistic concurrency control).
 - Delete of non-existent backend: returns `NOT_FOUND`.
 
@@ -173,11 +174,11 @@ No Signal RPC is defined. Signal exists on other entities to wake up a reconcile
 
 - Struct wraps `GenericServer[*privatev1.StorageBackend]`
 - Builder pattern: `NewPrivateStorageBackendsServer()` returns a builder with `SetLogger`, `SetNotifier`, `SetAttributionLogic`, `SetTenancyLogic`, `SetMetricsRegisterer`, `Build()`
-- `Create`: validates required fields (`provider`, `endpoint.host`, `credentials.username`, `credentials.password`), sets state to `STORAGE_BACKEND_STATE_READY`, clears caller-provided ID
-- `Update`: fetches existing object, merges via `applyStorageBackendUpdate`, validates immutability of `provider` field, delegates to generic server
+- `Create`: validates required fields (`metadata.name`, `provider`, `endpoint.host`, `credentials.username`, `credentials.password`), sets state to `STORAGE_BACKEND_STATE_READY`, clears caller-provided ID. The generic server's `validateName()` enforces RFC 1035 DNS label format (1–63 chars, lowercase alphanumeric + hyphens, no leading/trailing hyphens). Name uniqueness among active backends is enforced by the `storage_backends_unique_active_name` partial index.
+- `Update`: fetches existing object, merges via `applyStorageBackendUpdate`, validates immutability of `provider` and `metadata.name` fields, delegates to generic server
 - `Delete`: delegates directly to generic server (soft delete)
 
-**Immutable fields on update:** `provider` is immutable after creation. Changing the storage provider would invalidate the endpoint, credentials, and any downstream StorageTier references.
+**Immutable fields on update:** `provider` and `metadata.name` are immutable after creation. Changing the storage provider would invalidate the endpoint, credentials, and any downstream StorageTier references. Name immutability ensures stable human-readable identifiers for operational use and prevents confusion when backends are referenced by name in logs and configurations.
 
 #### Database Migration
 
@@ -261,7 +262,7 @@ StorageBackend inherits the existing fulfillment-service security model:
 - **Authentication:** JWT validation via the gRPC interceptor chain. No changes to the authentication flow.
 - **Authorization:** OPA policies control access to the private API endpoint. Only Cloud Provider Admins have access. There is no public API — tenants cannot access StorageBackend at all.
 - **Credential storage:** Credentials are stored inline in the JSONB `data` column, consistent with all existing OSAC entities (`break_glass_credentials`, `identity_provider`, `user`, `cluster_template`, `hub`). Since there is no public API, credentials are never exposed to tenants.
-- **Input validation:** The server validates required fields (`provider`, `endpoint.host`, `credentials.username`, `credentials.password`) and provider immutability. The `endpoint.host` field is a string stored as-is; no DNS resolution or connection attempt is made during registration.
+- **Input validation:** The server validates required fields (`metadata.name`, `provider`, `endpoint.host`, `credentials.username`, `credentials.password`), DNS label format for `metadata.name` (RFC 1035, enforced by the generic server), and immutability of `provider` and `metadata.name` on update. The `endpoint.host` field is a string stored as-is; no DNS resolution or connection attempt is made during registration.
 
 No new authentication, authorization, or encryption mechanisms are introduced.
 
@@ -335,8 +336,8 @@ Testing follows the fulfillment-service's established Ginkgo v2 test patterns:
 
 - `private_storage_backends_server_test.go`:
   - CRUD lifecycle: Create with all fields, Get by ID, List with pagination, Update with field mask, Delete (soft-delete)
-  - Validation: missing `provider`, missing `endpoint.host`, missing `credentials` return `INVALID_ARGUMENT`
-  - Immutability: Update with changed `provider` returns `INVALID_ARGUMENT`
+  - Validation: missing `metadata.name`, missing `provider`, missing `endpoint.host`, missing `credentials` return `INVALID_ARGUMENT`; invalid DNS label name returns `INVALID_ARGUMENT`
+  - Immutability: Update with changed `provider` returns `INVALID_ARGUMENT`; Update with changed `metadata.name` returns `INVALID_ARGUMENT`
   - Name uniqueness: Create with duplicate active name returns `ALREADY_EXISTS`; Create after soft-delete of same name succeeds
   - Optimistic locking: Update with stale version and `lock=true` returns `FAILED_PRECONDITION`
   - CEL filtering: List with `this.provider == "vast"` returns matching backends
