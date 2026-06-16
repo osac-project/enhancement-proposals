@@ -21,54 +21,54 @@ superseded-by:
 
 ## Summary
 
-This enhancement extracts all storage provisioning logic from the Tenant controller into a dedicated OSAC Storage Controller that owns storage-related conditions and status on the Tenant CR using the condition ownership pattern. The storage controller manages a two-stage onboarding workflow (backend setup via AAP, then cluster-side StorageClass installation via AAP) and a two-step ordered teardown, with four independent AAP playbooks replacing the current combined playbooks. See [PRD](prd.md) for detailed requirements.
+Extract all storage provisioning logic from the Tenant controller into a dedicated OSAC Storage Controller. The new controller owns storage conditions and status on the Tenant CR, manages a two-stage onboarding workflow (backend setup, then cluster-side StorageClass installation), and performs ordered two-step teardown. Four independent AAP playbooks replace the current combined playbooks. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-Storage provisioning logic is currently embedded in the Tenant controller alongside namespace creation, UDN reconciliation, and tenant lifecycle management. The Tenant controller handles StorageClass resolution via a tier-based fallback algorithm, triggers AAP jobs for storage provisioning, polls job status, and manages the `StorageClassReady` condition. This coupling means any change to storage onboarding risks breaking tenant state transitions, and supporting different storage workflows per delivery model (VMaaS, CaaS, BMaaS) requires branching logic inside the Tenant controller.
+Storage provisioning is embedded in the Tenant controller alongside namespace creation, UDN reconciliation, and tenant lifecycle management. The controller handles StorageClass resolution, AAP job triggering, job polling, and the `StorageClassReady` condition. Any change to storage risks breaking tenant state transitions, and supporting different workflows per delivery model (VMaaS, CaaS, BMaaS) requires branching logic inside the Tenant controller.
 
-The current AAP integration compounds the coupling: a single playbook (`playbook_osac_configure_tenant_storage.yml`) executes both backend setup and cluster-side StorageClass creation in sequence. This makes it impossible for the controller to trigger or retry each stage independently, which is required when CaaS clusters are provisioned after tenant onboarding.
+The AAP integration compounds the coupling: a single playbook executes both backend setup and cluster-side StorageClass creation in sequence, making it impossible to trigger or retry each stage independently. CaaS clusters need Stage 2 to run after ClusterOrder reaches Ready, which requires independent stage control.
 
-This design introduces a dedicated OSAC Storage Controller that owns all storage lifecycle on the Tenant CR. The Tenant controller is simplified to manage only namespace and UDN reconciliation, with `Phase=Ready` determined solely by namespace readiness. Storage readiness is tracked independently via two new conditions (`StorageBackendReady` and `ClusterStorageReady`) owned by the storage controller.
+This design moves storage into a dedicated controller. The Tenant controller becomes namespace and UDN only, with `Phase=Ready` based solely on namespace readiness. Storage readiness is tracked via two new conditions (`StorageBackendReady` and `ClusterStorageReady`) owned by the storage controller.
 
 ### Goals
 
-- Reuse the existing controller reconciliation pattern (finalizer, status DeepCopy, conditional update) and the `ProvisioningProvider` interface for AAP integration.
-- Implement Stage 1 and Stage 2 as independently triggerable operations so CaaS support can be added without modifying the storage controller's core logic.
+- Reuse the existing reconciliation pattern and `ProvisioningProvider` interface without modifying `pkg/provisioning/`.
+- Keep Stage 1 and Stage 2 as independent operations so CaaS support can be added without modifying the storage controller's core logic.
 - Maintain backward compatibility for the ComputeInstance controller, which reads `status.storageClasses` from the Tenant CR.
-- Support per-backend and per-cluster status detail on the Tenant CR for observability via `kubectl get tenant`.
+- Support per-backend and per-cluster status detail for observability via `kubectl get tenant -o wide`.
 
 ### Non-Goals
 
 - StorageBackend API and registration automation (OSAC-1111).
 - StorageTier API (OSAC-1110).
 - Tier addition and removal workflows.
-- CaaS Tenant Storage Setup: Stage 2 trigger logic for CaaS clusters (OSAC-1123, separate PRD).
+- CaaS Stage 2 trigger logic (OSAC-1123, separate PRD).
 - VAST support for CaaS (OSAC-1122).
 - Per-cluster storage resource on target clusters for tenant admin visibility.
 - Fulfillment-service API or proto changes for storage state visibility.
 
 ## Proposal
 
-This design introduces three changes:
+Three changes:
 
-1. A new OSAC Storage Controller in `osac-operator` that watches Tenant resources and manages the full storage lifecycle: backend provisioning (Stage 1), cluster-side StorageClass installation (Stage 2), and ordered two-step teardown. The controller uses two `ProvisioningProvider` instances (one for backend AAP templates, one for cluster-storage AAP templates) and sets two conditions on the Tenant CR: `StorageBackendReady` and `ClusterStorageReady`.
+1. **New OSAC Storage Controller** watches Tenant CRs and manages the full storage lifecycle. It uses two `ProvisioningProvider` instances (backend and cluster-storage) and sets two conditions on the Tenant CR: `StorageBackendReady` and `ClusterStorageReady`.
 
-2. The Tenant controller is stripped of all storage logic. It retains namespace creation, UDN reconciliation, and the `NamespaceReady` condition. `Phase=Ready` is determined by namespace readiness alone. The `StorageClassReady` condition is replaced by the two new conditions managed by the storage controller.
+2. **Tenant controller stripped of storage logic.** It retains namespace creation, UDN reconciliation, and `NamespaceReady`. `Phase=Ready` means namespace is ready; storage conditions are not consulted.
 
-3. The AAP playbooks in `osac-aap` are split from two combined playbooks into four lifecycle actions (`osac-create-tenant-storage-backend`, `osac-create-tenant-cluster-storage`, `osac-delete-tenant-cluster-storage`, `osac-delete-tenant-storage-backend`), each calling the existing `osac.service.storage_provider` dispatcher role with the appropriate action.
+3. **AAP playbooks split** from two combined playbooks into four lifecycle actions: `osac-create-tenant-storage-backend`, `osac-create-tenant-cluster-storage`, `osac-delete-tenant-cluster-storage`, `osac-delete-tenant-storage-backend`.
 
 ### Workflow Description
 
 #### Actors
 
 - **Platform Admin**: Configures storage backends, deploys osac-operator and osac-aap, creates Tenant CRs.
-- **Storage Controller**: Automated actor that reconciles storage state on Tenant CRs.
-- **AAP**: Ansible Automation Platform that executes storage provisioning/teardown playbooks.
+- **Storage Controller**: Reconciles storage state on Tenant CRs.
+- **AAP**: Executes storage provisioning and teardown playbooks.
 
 #### Onboarding Workflow
 
-Starting state: A Tenant CR exists and the Tenant controller has set `Phase=Ready` (namespace exists, UDN reconciled).
+Starting state: Tenant CR exists, Tenant controller has set `Phase=Ready` (namespace exists, UDN reconciled).
 
 ```mermaid
 sequenceDiagram
@@ -100,13 +100,13 @@ sequenceDiagram
     SC->>SC: Set ClusterStorageReady=True
 ```
 
-The storage controller watches Tenant CRs for `Phase=Ready`. On detecting a ready Tenant, it begins Stage 1 by querying Secrets in `OSAC_STORAGE_CONFIG_NAMESPACE` with label `osac.openshift.io/tenant=<tenantName>`. If no matching Secret exists, the controller triggers the `osac-create-tenant-storage-backend` AAP playbook and polls until the job completes. On success, the controller sets `StorageBackendReady=True`.
+On detecting a ready Tenant, the storage controller checks for a hub Secret in `OSAC_STORAGE_CONFIG_NAMESPACE` with label `osac.openshift.io/tenant=<tenantName>`. If absent, it triggers `osac-create-tenant-storage-backend` and polls until the job completes. On success, it sets `StorageBackendReady=True`.
 
-After Stage 1 completes, Stage 2 begins. The controller triggers `osac-create-tenant-cluster-storage` on the VMaaS target cluster, polls until completion, then discovers installed StorageClasses using the `osac.openshift.io/tenant` label. When all expected StorageClasses are present, the controller populates `status.storageClasses` and sets `ClusterStorageReady=True`.
+After Stage 1, it triggers `osac-create-tenant-cluster-storage` on the VMaaS target cluster, polls until completion, discovers installed StorageClasses by label, populates `status.storageClasses`, and sets `ClusterStorageReady=True`.
 
 #### Teardown Workflow
 
-Starting state: A Tenant CR is being deleted (DeletionTimestamp set).
+Starting state: Tenant CR is being deleted (DeletionTimestamp set).
 
 ```mermaid
 sequenceDiagram
@@ -128,57 +128,45 @@ sequenceDiagram
     SC->>SC: Remove storage finalizer
 ```
 
-The storage controller places its own finalizer (`osac.openshift.io/storage`) on the Tenant CR. On deletion, it executes an ordered two-step teardown: first cluster-side cleanup via `osac-delete-tenant-cluster-storage`, then backend teardown via `osac-delete-tenant-storage-backend`. The finalizer is removed only after both steps complete successfully. If either step fails, the finalizer remains and the Tenant stays in Terminating until the issue is resolved.
+The storage controller places its own finalizer (`osac.openshift.io/storage`) on the Tenant CR. Teardown runs cluster-side cleanup first, then backend teardown. The finalizer is removed only after both steps succeed. If either fails, the Tenant stays in Terminating until the issue is resolved.
 
 #### Error Handling
 
-- **Stage 1 AAP job failure**: `StorageBackendReady` is set to `False` with a reason reflecting the failure. The controller does not auto-retry after failure. It waits for an external trigger (Tenant CR update, Secret watch event) to avoid infinite retry loops. This follows the same pattern used by the existing Tenant controller and other OSAC controllers. [Codebase: osac-operator/internal/controller/tenant_controller.go, line 250]
-- **Stage 2 AAP job failure**: `ClusterStorageReady` is set to `False` with a reason. Same retry behavior as Stage 1: waits for an external trigger (Tenant CR update, StorageClass watch event). Stage 1 status is unaffected.
-- **Teardown failure**: The finalizer remains in place. The controller waits for the next reconciliation trigger (typically a requeue from the controller-runtime error handler). The Tenant stays in Terminating, and `kubectl get tenant` shows the failure reason via conditions.
+- **Stage 1 or 2 AAP job failure**: The relevant condition is set to `False` with a reason reflecting the failure. The controller does not auto-retry; it waits for an external trigger (Tenant CR update, Secret or StorageClass watch event) to avoid infinite retry loops. This matches the pattern used by all other OSAC controllers.
+- **Teardown failure**: The finalizer remains. The controller retries on the next reconciliation trigger. The Tenant stays in Terminating and `kubectl get tenant` shows the failure reason.
 
 ### API Extensions
 
-This enhancement modifies the Tenant CRD (owned by this team) and adds a new controller. No new CRDs are introduced.
+The Tenant CRD gains new conditions (`StorageBackendReady`, `ClusterStorageReady`), new status fields (`storageBackends`, `clusterStorage`), and a new finalizer (`osac.openshift.io/storage`). The existing `StorageClassReady` condition is removed. No new CRDs.
 
-**Modified resources:**
-- `Tenant` CRD: new conditions (`StorageBackendReady`, `ClusterStorageReady`), new status fields (`storageBackends`, `clusterStorage`), removal of `StorageClassReady` condition.
+The storage finalizer coexists with the existing `osac.openshift.io/tenant` finalizer. Each controller manages its own independently.
 
-**New finalizer:**
-- `osac.openshift.io/storage` on Tenant CRs, managed by the storage controller. Coexists with the existing `osac.openshift.io/tenant` finalizer managed by the Tenant controller.
-
-**Operational impact:** If the storage controller is down, Tenant CRs continue to reach `Phase=Ready` (namespace + UDN are managed by the Tenant controller). Storage conditions remain in their last-known state. New tenants do not get storage provisioned until the storage controller recovers. Tenant deletion is blocked if the storage finalizer is present and the controller is unavailable.
+If the storage controller is down, Tenants still reach `Phase=Ready` (namespace + UDN are independent). Storage conditions remain stale until the controller recovers. Tenant deletion is blocked if the storage finalizer is present.
 
 ### Implementation Details/Notes/Constraints
 
 #### Tenant CRD Type Changes
 
-The Tenant status is extended with per-backend and per-cluster detail structs:
+New status structs for per-backend and per-cluster detail:
 
 ```go
 type StorageBackendStatus struct {
-    // Name is the storage backend identifier (e.g., "vast-1").
-    Name string `json:"name"`
-    // Provider is the storage provider type (e.g., "vast").
+    Name     string `json:"name"`
     Provider string `json:"provider"`
-    // Ready indicates whether this backend is provisioned for the tenant.
-    Ready bool `json:"ready"`
-    // Message provides human-readable status or error information.
-    Message string `json:"message,omitempty"`
+    Ready    bool   `json:"ready"`
+    Message  string `json:"message,omitempty"`
 }
 
 type ClusterStorageStatus struct {
-    // ClusterName identifies the target cluster.
     ClusterName string `json:"clusterName"`
-    // Ready indicates whether StorageClasses are installed on this cluster.
-    Ready bool `json:"ready"`
-    // Reason provides a machine-readable reason for the current state.
-    Reason string `json:"reason,omitempty"`
+    Ready       bool   `json:"ready"`
+    Reason      string `json:"reason,omitempty"`
 }
 ```
 
-For v0.1, `storageBackends` has a single entry (one VAST appliance) and `clusterStorage` has a single entry (VMaaS target cluster). The list structures anticipate multi-backend support (OSAC-1111, StorageBackend API) and multi-cluster support (OSAC-1123, CaaS). When those features land, the controller iterates over multiple backends and clusters; the status structures and aggregate conditions require no schema changes.
+For v0.1, `storageBackends` has one entry (one VAST appliance) and `clusterStorage` has one entry (VMaaS target). The list structures anticipate multi-backend (OSAC-1111) and multi-cluster (OSAC-1123) support without schema changes.
 
-The TenantStatus struct is updated:
+Updated TenantStatus:
 
 ```go
 type TenantStatus struct {
@@ -188,14 +176,10 @@ type TenantStatus struct {
     Conditions     []metav1.Condition       `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
     Jobs           []JobStatus              `json:"jobs,omitempty"`
 
-    // StorageBackends tracks per-backend provisioning status.
-    // +kubebuilder:validation:Optional
     // +listType=map
     // +listMapKey=name
     StorageBackends []StorageBackendStatus   `json:"storageBackends,omitempty"`
 
-    // ClusterStorage tracks per-cluster StorageClass installation status.
-    // +kubebuilder:validation:Optional
     // +listType=map
     // +listMapKey=clusterName
     ClusterStorage  []ClusterStorageStatus   `json:"clusterStorage,omitempty"`
@@ -211,18 +195,18 @@ const (
 )
 
 const (
-    TenantReasonProvisioning     = "Provisioning"
-    TenantReasonProvisionFailed  = "ProvisionFailed"
-    TenantReasonDeprovisioning   = "Deprovisioning"
+    TenantReasonProvisioning      = "Provisioning"
+    TenantReasonProvisionFailed   = "ProvisionFailed"
+    TenantReasonDeprovisioning    = "Deprovisioning"
     TenantReasonDeprovisionFailed = "DeprovisionFailed"
-    TenantReasonSecretNotFound   = "SecretNotFound"
-    TenantReasonTenantNotReady   = "TenantNotReady"
+    TenantReasonSecretNotFound    = "SecretNotFound"
+    TenantReasonTenantNotReady    = "TenantNotReady"
 )
 ```
 
-The existing `TenantConditionStorageClassReady` is removed. The existing `TenantConditionNamespaceReady` is unchanged.
+The existing `TenantConditionStorageClassReady` is removed. `TenantConditionNamespaceReady` is unchanged.
 
-Updated print columns:
+Print columns:
 
 ```go
 // +kubebuilder:printcolumn:name="Tenant Namespace",type=string,JSONPath=`.status.namespace`
@@ -232,14 +216,14 @@ Updated print columns:
 // +kubebuilder:printcolumn:name="Cluster Storage",type=string,JSONPath=`.status.conditions[?(@.type=="ClusterStorageReady")].status`,priority=1
 ```
 
-The storage condition columns use `priority=1`, meaning they appear only with `kubectl get tenant -o wide`. This keeps the default output compact (Namespace, Storage Classes, Phase) while making storage condition detail accessible when needed.
+Storage conditions use `priority=1` (visible with `-o wide`), keeping the default output compact.
 
 #### Storage Controller Architecture
 
-The storage controller is a new controller in `osac-operator/internal/controller/storage_controller.go` that watches Tenant CRs. It uses two `ProvisioningProvider` instances:
+New controller in `internal/controller/storage_controller.go` with two `ProvisioningProvider` instances:
 
-- `backendProvider`: configured with `OSAC_STORAGE_BACKEND_AAP_PROVISION_TEMPLATE` (default: `osac-create-tenant-storage-backend`) and `OSAC_STORAGE_BACKEND_AAP_DEPROVISION_TEMPLATE` (default: `osac-delete-tenant-storage-backend`).
-- `clusterStorageProvider`: configured with `OSAC_STORAGE_CLUSTER_AAP_PROVISION_TEMPLATE` (default: `osac-create-tenant-cluster-storage`) and `OSAC_STORAGE_CLUSTER_AAP_DEPROVISION_TEMPLATE` (default: `osac-delete-tenant-cluster-storage`).
+- `backendProvider`: templates `osac-create-tenant-storage-backend` / `osac-delete-tenant-storage-backend`
+- `clusterStorageProvider`: templates `osac-create-tenant-cluster-storage` / `osac-delete-tenant-cluster-storage`
 
 ```go
 type StorageReconciler struct {
@@ -256,9 +240,9 @@ type StorageReconciler struct {
 }
 ```
 
-#### Reconciliation State Machine
+Env vars for AAP templates: `OSAC_STORAGE_BACKEND_AAP_PROVISION_TEMPLATE`, `OSAC_STORAGE_BACKEND_AAP_DEPROVISION_TEMPLATE`, `OSAC_STORAGE_CLUSTER_AAP_PROVISION_TEMPLATE`, `OSAC_STORAGE_CLUSTER_AAP_DEPROVISION_TEMPLATE`.
 
-The storage controller reconciles Tenant CRs through a multi-stage state machine:
+#### Reconciliation State Machine
 
 ```mermaid
 stateDiagram-v2
@@ -287,59 +271,42 @@ stateDiagram-v2
     TeardownBackend --> [*]: Backend teardown done, remove finalizer
 ```
 
-The controller does not use an explicit phase field. Instead, it derives the current stage from the state of conditions and the hub Secret:
+The controller derives its current stage from conditions and hub Secret state (level-triggered):
 
-1. **Tenant not Ready**: Set both conditions to `False` with reason `TenantNotReady`. Requeue.
-2. **Stage 1 (Backend)**: Iterate over the backend list and provision each. For each backend, query Secrets in `OSAC_STORAGE_CONFIG_NAMESPACE` with label `osac.openshift.io/tenant=<tenantName>`. If no matching Secret exists for a backend (indicating Stage 1 has not run for that backend), trigger `backendProvider.TriggerProvision()`. Poll until terminal. On success, update that backend's entry in `status.storageBackends`. Set `StorageBackendReady=True` only when all backends are ready; set to `False` with a message identifying the failing backend(s) otherwise.
-3. **Stage 2 (Cluster Storage)**: If `StorageBackendReady=True` (Stage 1 complete), iterate over the cluster list and provision each. For each cluster, trigger `clusterStorageProvider.TriggerProvision()`. Poll until terminal. Discover StorageClasses on target cluster using the tier source. On success, update that cluster's entry in `status.clusterStorage`, populate `status.storageClasses`, and set `ClusterStorageReady=True` when all clusters are ready.
-4. **Deletion**: Two-step teardown per backend and per cluster using the respective deprovision methods. Remove finalizer only after all complete.
-
-The state machine is implicit rather than explicit: each reconciliation reads the current conditions, hub Secret state, and latest jobs to determine the next action. This follows the Kubernetes controller pattern of level-triggered reconciliation.
+1. **Tenant not Ready**: Both conditions set to `False` with reason `TenantNotReady`. Requeue.
+2. **Stage 1 (Backend)**: Iterate over the backend list. For each backend, query Secrets by `osac.openshift.io/tenant=<tenantName>` label. If no Secret exists (Stage 1 has not run for that backend), trigger `backendProvider.TriggerProvision()` and poll. On success, update `status.storageBackends`. Set `StorageBackendReady=True` when all backends are ready.
+3. **Stage 2 (Cluster Storage)**: If `StorageBackendReady=True` (Stage 1 complete), iterate over the cluster list. For each cluster, trigger `clusterStorageProvider.TriggerProvision()` and poll. Discover StorageClasses using the tier source. On success, update `status.clusterStorage` and `status.storageClasses`. Set `ClusterStorageReady=True` when all clusters are ready.
+4. **Deletion**: Ordered teardown per cluster then per backend. Remove finalizer only after all complete.
 
 #### Extension Points
 
-The reconciliation logic is structured around two pluggable sources that can evolve without changing the controller's core loop:
+The reconciliation is structured around two pluggable sources:
 
-**Backend list:** Determines which backends to provision for a tenant in Stage 1. For v0.1, this is a single implicit backend derived from the AAP `storage-operations-ig` configuration (one VAST appliance). When the StorageBackend API (OSAC-1111) is available, this becomes a query against StorageBackend resources associated with the tenant. The controller's iteration loop and `status.storageBackends` array remain unchanged; only the source of the list changes.
+**Backend list:** Which backends to provision for a tenant. For v0.1, a single implicit backend from the AAP `storage-operations-ig` configuration. When the StorageBackend API (OSAC-1111) is available, this becomes a query against StorageBackend resources. The iteration loop and `status.storageBackends` array stay the same; only the list source changes.
 
-**Tier source:** Determines the expected tiers for tier resolution in Stage 2. For v0.1, tiers come from the `STORAGE_TIERS` environment variable (a JSON array of tier definitions). When the StorageTier API (OSAC-1110) is available, this becomes a query against StorageTier CRs. The tier resolution algorithm (tenant-specific fallback to Default) and `status.storageClasses` array remain unchanged; only the source of the tier list changes.
+**Tier source:** Which tiers to expect during StorageClass resolution. For v0.1, tiers come from the `STORAGE_TIERS` environment variable. When the StorageTier API (OSAC-1110) is available, this becomes a query against StorageTier CRs. The resolution algorithm and `status.storageClasses` array stay the same; only the tier source changes.
 
 #### Tier Resolution Algorithm
 
-The tier resolution algorithm moves from the Tenant controller to the storage controller. The logic is identical to the current implementation in `getTenantStorageClasses()` [Codebase: osac-operator/internal/controller/tenant_controller.go]:
+Moved from the Tenant controller without modification:
 
-1. Query StorageClasses on the target cluster with label `osac.openshift.io/tenant={tenantName}`.
-2. Query StorageClasses with label `osac.openshift.io/tenant=Default`.
-3. Group both lists by the `osac.openshift.io/storage-tier` label.
-4. For each tier: use tenant-specific SC if exactly one exists; fall back to shared Default if exactly one exists; emit a warning event if duplicates are found.
+1. List StorageClasses on the target cluster with label `osac.openshift.io/tenant={tenantName}`.
+2. List StorageClasses with label `osac.openshift.io/tenant=Default`.
+3. Group by `osac.openshift.io/storage-tier` label.
+4. Per tier: use tenant-specific SC if exactly one exists; fall back to shared Default if exactly one exists; emit warning event on duplicates.
 5. Populate `status.storageClasses` with the resolved list.
 
-The tier label validation pattern (`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`) is preserved unchanged.
+Tier label validation (`^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$`) is preserved.
 
 #### Tenant Controller Simplification
 
-The Tenant controller is modified to remove all storage logic [FR-2]:
+**Removed:** `getTenantStorageClasses()`, `groupByTier()`, `handleStorageProvisioning()`, `pollProvisionJob()`, `needsProvisionJob()`, `StorageClassReady` condition, `status.StorageClasses` population, StorageClass watch, `ProvisioningProvider` field, `storagev1` import.
 
-**Removed:**
-- `getTenantStorageClasses()`, `groupByTier()`, `handleStorageProvisioning()`, `pollProvisionJob()`, `needsProvisionJob()`
-- `TenantConditionStorageClassReady` condition management
-- `status.StorageClasses` population
-- StorageClass watch in `SetupWithManager`
-- `ProvisioningProvider` field and AAP integration
-- `storagev1` import
+**Retained:** Namespace creation/verification, UDN reconciliation, `NamespaceReady` condition, `osac.openshift.io/tenant` finalizer, phase management.
 
-**Retained:**
-- Namespace creation and verification on the target cluster
-- UDN reconciliation
-- `NamespaceReady` condition management
-- `osac.openshift.io/tenant` finalizer for namespace cleanup on deletion
-- Phase management: `Progressing` until namespace exists, `Ready` when namespace is ready
-
-**Phase logic change:** `Phase=Ready` is set when `NamespaceReady=True`. Storage conditions are not consulted. This decouples the tenant lifecycle from the storage lifecycle [User].
+`Phase=Ready` is set when `NamespaceReady=True`. Storage conditions are not consulted.
 
 #### Controller Registration
-
-A new `setupStorageController()` function is added to `cmd/main.go` following the existing pattern [Codebase: osac-operator/cmd/main.go]:
 
 ```go
 func setupStorageController(mgr mcmanager.Manager, maxJobHistory int) error {
@@ -371,11 +338,9 @@ func setupStorageController(mgr mcmanager.Manager, maxJobHistory int) error {
 }
 ```
 
-The controller is gated by `OSAC_ENABLE_STORAGE_CONTROLLER` / `--enable-storage-controller`, following the existing enable-flag pattern.
+Gated by `OSAC_ENABLE_STORAGE_CONTROLLER` / `--enable-storage-controller`.
 
 #### AAP Playbook Split
-
-The two combined playbooks are split into four lifecycle playbooks [FR-8]:
 
 | Current Playbook | New Playbooks | Dispatcher Action |
 |---|---|---|
@@ -384,15 +349,13 @@ The two combined playbooks are split into four lifecycle playbooks [FR-8]:
 | `playbook_osac_delete_tenant_storage.yml` | `playbook_osac_delete_tenant_cluster_storage.yml` | `teardown_cluster_storage` |
 | | `playbook_osac_delete_tenant_storage_backend.yml` | `teardown_backend` |
 
-The `osac.service.storage_provider` dispatcher role already supports `setup` and `ensure_storage_class` actions. For the teardown split, the existing `teardown` action is replaced with two new actions: `teardown_cluster_storage` (deletes StorageClasses, VolumeSnapshotClasses, CSI Secrets on the target cluster) and `teardown_backend` (deletes VAST tenant, views, quotas, manager user, and hub Secret). The VAST provider role's `teardown.yaml` is split into `teardown_cluster_storage.yaml` and `teardown_backend.yaml` accordingly.
-
-PR #338 (OSAC-1145) covers this playbook split. The combined playbooks are removed after the split is merged.
+The dispatcher role already supports `setup` and `ensure_storage_class`. For teardown, the existing `teardown` action is replaced with `teardown_cluster_storage` and `teardown_backend`. PR #338 (OSAC-1145) covers this split.
 
 #### ClusterOrder Watch
 
-The storage controller establishes a watch on ClusterOrder resources to detect new CaaS clusters [FR-9]. No reconciliation logic is executed on ClusterOrder events in this scope, but the watch and mapping are wired now so the storage controller receives notifications when a ClusterOrder changes.
+The storage controller watches ClusterOrder resources to prepare for CaaS support (FR-9). No reconciliation action is taken on ClusterOrder events in this scope, but the watch and tenant mapping are wired now.
 
-ClusterOrder resources carry an `osac.openshift.io/tenant` annotation set by the fulfillment-service at creation time, the same annotation used by ComputeInstance, Subnet, and all other OSAC resources to associate with a Tenant [Codebase: fulfillment-service/internal/controllers/cluster/cluster_reconciler_function.go]. Since ClusterOrders and Tenants live in different namespaces (`osac-orders` vs the tenant namespace), `ownerReferences` cannot be used. The watch uses `handler.EnqueueRequestsFromMapFunc` with a mapper that reads the annotation and enqueues the corresponding Tenant:
+ClusterOrders carry an `osac.openshift.io/tenant` annotation set by the fulfillment-service at creation time, the same annotation used by ComputeInstance and all other OSAC resources. Since ClusterOrders and Tenants live in different namespaces, `ownerReferences` cannot be used. The watch uses `EnqueueRequestsFromMapFunc` to map ClusterOrder events to the owning Tenant:
 
 ```go
 func (r *StorageReconciler) SetupWithManager(mgr mcmanager.Manager) error {
@@ -418,52 +381,40 @@ func (r *StorageReconciler) mapClusterOrderToTenant(_ context.Context, obj clien
 }
 ```
 
-This is consistent with how the ComputeInstance controller maps to Tenants via the same annotation [Codebase: osac-operator/internal/controller/computeinstance_resources.go, `getTenant()`]. When the CaaS PRD (OSAC-1123) adds Stage 2 trigger logic, the reconciliation handler already receives ClusterOrder events mapped to the correct Tenant.
-
-The ClusterOrder watch provides the foundation for CaaS Stage 2 trigger logic, which is defined in a separate PRD (OSAC-1123).
+When OSAC-1123 adds CaaS Stage 2 trigger logic, only the reconcile handler needs to change; the watch plumbing is already in place.
 
 ### Security Considerations
 
-This enhancement inherits the existing OSAC security model without changes.
+The storage controller inherits the existing OSAC security model.
 
-**Credential isolation** [NFR-1, NFR-2]:
-- Admin credentials (VAST endpoint, username, password) are stored in the `storage-operations-ig` Secret, mounted as environment variables in the AAP pod, and cleared from playbook memory after use. The storage controller never accesses these credentials.
-- Per-tenant credentials are stored in hub Secrets (`vast-tenant-config-{tenant_name}`) in `OSAC_STORAGE_CONFIG_NAMESPACE`. The storage controller reads these Secrets only to verify their existence (Stage 1 gate check), never their contents.
+**Credentials** are handled in three tiers, none of which the storage controller accesses directly:
+- Admin credentials (VAST endpoint, username, password) live in the `storage-operations-ig` Secret, mounted as env vars in the AAP pod, cleared from playbook memory after use.
+- Per-tenant credentials live in hub Secrets (`vast-tenant-config-{tenant_name}`) in `OSAC_STORAGE_CONFIG_NAMESPACE`. The storage controller checks their existence (Stage 1 gate) but never reads their contents.
 - CSI credentials (`vast-csi-{tenant_name}`) are created by AAP in the tenant namespace with per-tenant manager credentials (not admin credentials).
 
-**Credential-safe logging** [NFR-4]:
-- The storage controller must not log Secret contents, AAP job parameters containing credentials, or VAST API responses containing sensitive data. Log messages reference Secret names and job IDs only.
-- Kubernetes events emitted by the controller must not include credential values.
+The fulfillment-service has no role in storage credentials. It only sets the `osac.openshift.io/tenant` annotation when creating CRs.
 
-**Tenant isolation:**
-- The storage controller operates in the `osac-system` namespace and is scoped to Tenant CRs. StorageClass discovery on the target cluster uses label-based filtering (`osac.openshift.io/tenant={tenantName}`), which prevents cross-tenant data access.
-- OPA policies continue to enforce tenant isolation at runtime.
+**Logging**: the storage controller must not log Secret contents, credential values, or sensitive AAP parameters. Log messages reference Secret names and job IDs only. Kubernetes events must not include credential values.
+
+**Tenant isolation**: StorageClass discovery uses label-based filtering (`osac.openshift.io/tenant={tenantName}`). OPA policies continue to enforce isolation at runtime.
 
 ### Failure Handling and Recovery
 
-| Failure Mode | System Behavior | User Observation | Recovery |
+| Failure Mode | Behavior | User Sees | Recovery |
 |---|---|---|---|
-| Stage 1 AAP job fails | `StorageBackendReady=False`, reason: `ProvisionFailed`, message includes AAP error. Controller waits for external trigger (Tenant update, Secret event). | `kubectl get tenant` shows `Backend Ready: False`. Events show failure reason. | Fix the underlying AAP issue. Update the Tenant CR or wait for a Secret event to trigger re-reconciliation. |
-| Stage 2 AAP job fails | `ClusterStorageReady=False`, reason: `ProvisionFailed`. Stage 1 status unaffected. Controller waits for external trigger. | `kubectl get tenant` shows `Cluster Storage: False`, `Backend Ready: True`. | Fix AAP or target cluster issue. Update the Tenant CR or wait for a StorageClass event to trigger re-reconciliation. |
-| Hub Secret missing after Stage 1 success | Controller detects inconsistency, sets `StorageBackendReady=False`, retriggers Stage 1. | Transient `Backend Ready: False` until reprovisioned. | Automatic recovery via Stage 1 reprovisioning. |
-| StorageClasses deleted on target cluster | StorageClass watch triggers reconciliation. Controller detects missing SCs, sets `ClusterStorageReady=False`, retriggers Stage 2. | `kubectl get tenant` shows `Cluster Storage: False`. | Automatic recovery via Stage 2 reprovisioning. |
-| Teardown cluster-side fails | Finalizer remains. `ClusterStorageReady` condition message reflects failure. Controller waits for next reconciliation trigger. | Tenant stuck in `Terminating`. Events show failure. | Fix target cluster issue. Controller retries on next reconcile. Manual intervention: remove finalizer if unrecoverable. |
-| Teardown backend fails | Finalizer remains. `StorageBackendReady` condition message reflects failure. Controller waits for next reconciliation trigger. | Tenant stuck in `Terminating`. | Fix VAST/AAP issue. Controller retries on next reconcile. |
-| Storage controller down | Existing conditions and status preserved. Tenant lifecycle (namespace, UDN) unaffected. | `kubectl get tenant` shows stale storage conditions. New tenants lack storage. | Restart the storage controller. It reconciles all Tenants on startup. |
-| Status update conflict (two controllers writing Tenant status) | Controller retries with conflict retry loop. | No user-visible impact. | Automatic via Kubernetes optimistic concurrency. |
+| Stage 1 AAP fails | `StorageBackendReady=False`, waits for external trigger | `Backend Ready: False` in `-o wide` | Fix AAP issue, touch Tenant CR or wait for Secret event |
+| Stage 2 AAP fails | `ClusterStorageReady=False`, waits for external trigger | `Cluster Storage: False` | Fix AAP/cluster issue, touch Tenant CR or wait for SC event |
+| Hub Secret deleted | Secret watch triggers re-reconcile, `StorageBackendReady=False` | Transient `False` | Automatic: Stage 1 re-runs |
+| StorageClasses deleted | SC watch triggers re-reconcile, `ClusterStorageReady=False` | `Cluster Storage: False` | Automatic: Stage 2 re-runs |
+| Teardown fails | Finalizer remains, Tenant stuck in `Terminating` | Events show failure | Fix issue, controller retries on next reconcile |
+| Storage controller down | Conditions stale, Tenant lifecycle unaffected | Stale storage conditions | Restart controller, it reconciles all Tenants |
+| Status conflict | controller-runtime retries automatically | No impact | Automatic (optimistic concurrency) |
 
-**Idempotency:**
-- Stage 1 is idempotent: the AAP `setup` action checks for existing VAST resources before creating. Retriggering Stage 1 is safe.
-- Stage 2 is idempotent: the AAP `ensure_storage_class` action checks for existing StorageClasses by label before creating. Retriggering Stage 2 is safe.
-- Both teardown steps are idempotent: AAP playbooks handle already-deleted resources gracefully.
-
-**Controller restart mid-reconciliation:**
-- If the controller restarts between Stage 1 and Stage 2, it reads the current state (conditions, hub Secret, StorageClasses) and resumes from the appropriate stage. No explicit checkpoint is needed.
-- If the controller restarts during teardown, it checks which teardown steps have completed (by querying the target cluster and hub Secret) and resumes the sequence.
+All operations are idempotent. AAP playbooks check for existing resources before creating and handle already-deleted resources gracefully. On restart, the controller reads current state (conditions, Secrets, StorageClasses) and resumes from the appropriate stage.
 
 ### RBAC / Tenancy
 
-The storage controller requires the following RBAC permissions on the hub (management) cluster:
+Storage controller RBAC on hub cluster:
 
 ```go
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=tenants,verbs=get;list;watch;update;patch
@@ -474,143 +425,105 @@ The storage controller requires the following RBAC permissions on the hub (manag
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 ```
 
-On the target (workload) cluster, the storage controller requires:
+On the target cluster: `storage.k8s.io/storageclasses: get;list;watch`.
 
-```go
-// +kubebuilder:rbac:groups=storage.k8s.io,resources=storageclasses,verbs=get;list;watch
-```
-
-The Tenant controller's RBAC is reduced: `storage.k8s.io/storageclasses` permissions are removed since it no longer manages StorageClasses.
-
-No tenancy model changes are required. The storage controller operates on Tenant CRs in the `osac-system` namespace. Tenant isolation is enforced by the existing `osac.openshift.io/tenant` label on StorageClasses and the namespace-scoped hub Secrets.
+The Tenant controller's StorageClass RBAC is removed. No tenancy model changes.
 
 ### Observability and Monitoring
 
-**Kubernetes events (Normal):**
-- `StorageBackendProvisioned`: Emitted when Stage 1 completes successfully for a tenant.
-- `ClusterStorageProvisioned`: Emitted when Stage 2 completes and all StorageClasses are discovered.
-- `StorageTeardownComplete`: Emitted when both teardown steps complete successfully.
+**Events (Normal):** `StorageBackendProvisioned`, `ClusterStorageProvisioned`, `StorageTeardownComplete`.
 
-**Kubernetes events (Warning):**
-- `StorageProvisionFailed`: Emitted when a Stage 1 or Stage 2 AAP job fails. Message includes the AAP job ID and error.
-- `StorageTeardownFailed`: Emitted when a teardown step fails. Message includes the step and error.
-- `DuplicateStorageClass`: Preserved from the current tenant controller. Emitted when multiple StorageClasses match for the same tier.
+**Events (Warning):** `StorageProvisionFailed` (includes AAP job ID and error), `StorageTeardownFailed`, `DuplicateStorageClass` (preserved from current controller).
 
-**Structured log events:**
-- `"start storage reconcile"`, `"end storage reconcile"`: Bookend each reconciliation with tenant name.
-- `"triggering backend provisioning"`, `"backend provisioning succeeded"`: Stage 1 lifecycle.
-- `"triggering cluster storage provisioning"`, `"cluster storage provisioning succeeded"`: Stage 2 lifecycle.
-- `"storage teardown: cluster-side complete"`, `"storage teardown: backend complete"`: Teardown progress.
+**Logs:** Structured key-value pairs via `ctrllog` at each stage transition. No credentials in logs.
 
-All log events follow the existing controller logging pattern (structured key-value pairs via `ctrllog`). No credentials or Secret contents are included in log messages [NFR-4].
-
-**Prometheus metrics:** No new metrics are introduced in this iteration. The existing controller-runtime metrics (reconciliation duration, queue depth, error count) apply to the storage controller automatically.
+**Metrics:** No new metrics. Existing controller-runtime metrics (reconciliation duration, queue depth, errors) apply automatically.
 
 ### Risks and Mitigations
 
-| Risk | Likelihood | Impact | Mitigation |
-|---|---|---|---|
-| Two controllers writing Tenant status concurrently causes conflicts | Medium | Low (transient reconciliation delays) | Kubernetes optimistic concurrency handles conflicts. Both controllers use the DeepCopy-compare-update pattern. Conflict retries are automatic. |
-| AAP playbook split (PR #338) and operator changes deployed out of sync | Medium | High (storage provisioning breaks) | NFR-3 mandates coordinated deployment. Document the deployment order in release notes. CI can validate compatibility. |
-| Storage controller reconciliation increases Tenant CR update frequency | Low | Low (minor API server load) | The storage controller only updates status when conditions change. The DeepCopy-compare pattern prevents no-op updates. |
+| Risk | Impact | Mitigation |
+|---|---|---|
+| Two controllers writing Tenant status concurrently | Low (transient delays) | Optimistic concurrency + DeepCopy-compare-update pattern |
+| Operator and AAP deployed out of sync | High (storage provisioning breaks) | Operator-first deployment order; failures are transient and self-heal once AAP catches up |
 
 ### Drawbacks
 
-The primary drawback is increased operational complexity: two controllers now manage state on the same Tenant CR. This requires understanding which controller owns which conditions and finalizers when debugging tenant issues. However, this trade-off is justified because:
-
-- The storage lifecycle is genuinely independent from the tenant lifecycle (different failure modes, different recovery paths, different AAP integrations).
-- The current approach (everything in one controller) blocks CaaS support without significant branching logic.
-- Condition ownership is a well-established Kubernetes pattern (used by cluster-api, machine-api, and other multi-controller systems).
+The main cost is operational: two controllers manage the same CR's status, requiring understanding of which controller owns which conditions. This is justified because the storage lifecycle is genuinely independent (different failure modes, different AAP integrations), and embedding CaaS support in the Tenant controller would require branching logic that couples delivery model decisions to tenant lifecycle. Condition ownership is a well-established Kubernetes pattern.
 
 ## Alternatives (Not Implemented)
 
-### Alternative 1: Dedicated TenantStorage CRD
+### TenantStorage CRD
 
-Instead of managing storage conditions on the Tenant CR, introduce a separate `TenantStorage` CRD with a 1:1 relationship to the Tenant. The storage controller would reconcile `TenantStorage` resources instead of Tenant resources.
+Separate CRD for per-tenant storage state. Clean ownership boundary, but adds a resource that must be created, watched, and garbage-collected. ComputeInstance would need to read StorageClasses from TenantStorage instead of Tenant, breaking the existing API. Rejected during PRD review in favor of condition ownership.
 
-**Pros:** Clean ownership boundary. No risk of status conflicts between controllers. The storage controller has its own Phase field.
+### Single ProvisioningProvider with Template Switching
 
-**Cons:** Adds a new CRD that must be created, watched, and garbage-collected. The ComputeInstance controller would need to read StorageClasses from `TenantStorage` instead of `Tenant`, breaking the existing API contract. Rejected during PRD review (Avishay) in favor of condition ownership.
+Extend the `ProvisioningProvider` interface to accept a template name on each call. Simpler configuration, but breaks the interface contract used by all other controllers. The two-provider approach keeps each provider independently configurable.
 
-### Alternative 2: Single ProvisioningProvider with Template Switching
+### Keep Storage Logic in Tenant Controller
 
-Instead of two `ProvisioningProvider` instances, extend the `ProvisioningProvider` interface to accept a template name parameter on each call, allowing a single provider to trigger different AAP templates.
-
-**Pros:** Single provider instance, simpler configuration.
-
-**Cons:** Breaks the existing interface contract used by all other controllers. Requires modifying the `ProvisioningProvider` interface and all implementations. The two-provider approach is cleaner: each provider is configured independently and can have different polling intervals if needed.
-
-### Alternative 3: Keep Storage Logic in Tenant Controller
-
-Do nothing. Continue managing storage in the Tenant controller, adding branching logic for VMaaS vs CaaS delivery models.
-
-**Pros:** No new controller. Simpler deployment.
-
-**Cons:** Increasing complexity in the Tenant controller. CaaS support requires Stage 2 to be triggered by ClusterOrder events, which adds a fundamentally different reconciliation trigger to the Tenant controller. Storage issues cannot be diagnosed independently. Rejected by the PRD problem statement.
+Add feature flags for CaaS vs VMaaS. No new controller, but CaaS requires ClusterOrder events to trigger the Tenant controller, coupling cluster provisioning to tenant lifecycle. Storage issues cannot be diagnosed independently.
 
 ## Test Plan
 
 ### Unit Tests
 
-Unit tests cover the storage controller reconciliation logic using a mock `ProvisioningProvider`, following the existing controller test patterns [Codebase: osac-operator/internal/controller/tenant_controller_test.go]:
+Using mock `ProvisioningProvider`, following existing controller test patterns:
 
-- **Stage 1 lifecycle:** Tenant not ready (skip), Tenant ready with no hub Secret (trigger provision), hub Secret exists (skip to Stage 2), provision job failure (set condition False, retry).
-- **Stage 2 lifecycle:** Stage 1 not complete (wait), Stage 1 complete + no SCs (trigger provision), SCs discovered (set condition True, populate list), provision job failure (set condition False, retry).
-- **Tier resolution:** Same test cases as the current tenant controller: tenant-specific SC, Default fallback, duplicate detection, missing tier, mixed scenarios.
-- **Teardown:** Ordered two-step deprovision, partial failure (cluster-side done, backend failed), finalizer removal only after both complete.
-- **Management state:** Skip steady-state reconciliation when `osac.openshift.io/management-state=Unmanaged`. Finalizer and deletion handling still run to prevent Tenants from being stuck in Terminating [FR-4].
-- **Tenant controller:** Verify Phase=Ready with only NamespaceReady, no storage logic, no StorageClassReady condition.
+- **Stage 1:** Tenant not ready (skip), no hub Secret (trigger provision), Secret exists (skip to Stage 2), job failure (condition False).
+- **Stage 2:** Stage 1 incomplete (wait), Stage 1 complete + no SCs (trigger provision), SCs discovered (condition True), job failure.
+- **Tier resolution:** Tenant-specific SC, Default fallback, duplicate detection, missing tier.
+- **Teardown:** Ordered two-step, partial failure, finalizer removal only after both complete.
+- **Management state:** `Unmanaged` skips steady-state reconciliation; finalizer and deletion handling still run (FR-4).
+- **Tenant controller:** Phase=Ready with NamespaceReady only, no storage logic.
 
 ### Integration Tests
 
-Integration tests use envtest (kind cluster) to verify end-to-end controller behavior:
+envtest with both controllers running simultaneously:
 
-- Create Tenant, verify storage controller picks it up after Tenant reaches Ready.
-- Verify condition updates propagate correctly.
-- Verify finalizer coexistence (tenant + storage finalizers).
-- Verify status conflict resolution when both controllers update simultaneously.
+- Condition updates propagate correctly.
+- Finalizer coexistence (tenant + storage).
+- Status conflict resolution.
 
 ### E2E Tests
 
-E2E tests in `osac-test-infra` validate the full storage onboarding lifecycle against a VAST appliance:
+Full lifecycle against a VAST appliance:
 
-- Tenant creation triggers Stage 1 (hub Secret created) then Stage 2 (StorageClasses appear on target cluster).
-- Tenant deletion triggers ordered teardown (cluster-side first, then backend).
-- Verify StorageClasses are usable by ComputeInstance (PVC creation succeeds).
+- Tenant creation triggers Stage 1 then Stage 2.
+- Tenant deletion triggers ordered teardown.
+- StorageClasses usable by ComputeInstance.
 
 ## Graduation Criteria
 
-Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview -> Tech Preview -> GA based on production deployment feedback.
+To be defined when targeting a release. Expected: Dev Preview, Tech Preview, GA.
 
 ## Upgrade / Downgrade Strategy
 
-This is a pre-GA change. No upgrade migration is required. The existing `StorageClassReady` condition is removed and replaced by `StorageBackendReady` and `ClusterStorageReady`. Since there are no production tenants, no migration logic is needed.
+Pre-GA change, no migration needed. `StorageClassReady` is removed and replaced by `StorageBackendReady` and `ClusterStorageReady`.
 
-**Deployment order:** Deploy the osac-operator changes first, then the osac-aap playbook split (PR #338). If the operator is deployed before AAP is updated, the storage controller calls templates that do not yet exist; AAP returns a "template not found" error, the controller records a Failed job, and retries automatically once AAP is updated. If AAP is deployed first, the old Tenant controller calls the old template name (`osac-create-tenant-storage` / `osac-create-org`) which no longer exists, breaking storage provisioning for all tenants until the operator catches up. Operator-first is the safer order because failures are transient and self-healing [NFR-3].
+**Deployment order:** Operator first, then AAP. If the operator is deployed before AAP, the storage controller calls templates that don't exist yet; AAP returns "template not found", the controller records a Failed job, and retries once AAP is updated. If AAP is deployed first, the old Tenant controller calls the old template names which no longer exist, breaking storage for all tenants. Operator-first is safer because failures are transient and self-heal.
 
 ## Version Skew Strategy
 
-During a rolling upgrade, the old Tenant controller and new storage controller may run briefly in parallel. Since the old controller writes `StorageClassReady` and the new controller writes `StorageBackendReady`/`ClusterStorageReady`, there is no condition name conflict. The old controller's `StorageClassReady` condition becomes orphaned after the upgrade and can be cleaned up manually or by a one-time migration script.
+During upgrade, the old Tenant controller writes `StorageClassReady` while the new storage controller writes `StorageBackendReady`/`ClusterStorageReady`. No conflict. The orphaned `StorageClassReady` condition can be cleaned up manually after the upgrade.
 
-The storage controller does not interact with the fulfillment-service gRPC API, so there is no version skew concern with the fulfillment-service.
+No fulfillment-service version skew concern (the storage controller does not use the gRPC API).
 
 ## Support Procedures
 
-**Detecting storage provisioning failures:**
-- `kubectl get tenant` shows `Backend Ready` or `Cluster Storage` as `False`.
-- `kubectl describe tenant <name>` shows conditions with failure reasons and AAP job IDs.
-- `kubectl get events --field-selector involvedObject.name=<tenant>` shows Warning events.
+**Detecting failures:**
+- `kubectl get tenant -o wide` shows `Backend Ready` and `Cluster Storage` columns.
+- `kubectl describe tenant <name>` shows conditions with reasons and AAP job IDs.
 - Controller logs: `kubectl logs -n osac-system deployment/osac-operator-controller-manager | grep "storage"`.
 
 **Disabling the storage controller:**
-- Set `OSAC_ENABLE_STORAGE_CONTROLLER=false` or remove the `--enable-storage-controller` flag.
-- Consequences: No new tenants get storage provisioned. Existing storage is unaffected. Tenant deletion is blocked if the storage finalizer is present (remove manually with `kubectl edit tenant <name>`).
+- Set `OSAC_ENABLE_STORAGE_CONTROLLER=false`. New tenants won't get storage. Tenant deletion is blocked if the storage finalizer is present (remove manually).
 
 **Disabling storage for a single tenant:**
-- Set `osac.openshift.io/management-state: Unmanaged` annotation on the individual Tenant CR. The storage controller skips steady-state reconciliation for that tenant while continuing to manage storage for all others. Finalizer and deletion handling still run, so the Tenant can be deleted cleanly. Useful for debugging or manually managing storage for one tenant.
+- Set `osac.openshift.io/management-state: Unmanaged` on the Tenant CR. Steady-state reconciliation is skipped; finalizer and deletion handling still run so the Tenant can be deleted cleanly.
 
 **Re-enabling:**
-- Set the enable flag and restart the operator. The storage controller reconciles all Tenants on startup and provisions storage for any tenants that lack it. Consistency is maintained because all operations are idempotent.
+- Remove the flag or annotation. The controller reconciles all Tenants on next run. All operations are idempotent.
 
 ## Infrastructure Needed
 
