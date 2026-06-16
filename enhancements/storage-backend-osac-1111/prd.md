@@ -17,7 +17,7 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 ### 2.1 Goals
 
 - Cloud Provider Admins can register, list, update, and decommission storage backends through the OSAC private gRPC API without modifying environment variables or Ansible playbooks.
-- Cloud Provider Admins can rotate storage backend credentials by updating the `credentials_ref` field, without redeploying the fulfillment-service.
+- Cloud Provider Admins can rotate storage backend credentials by updating the credential fields, without redeploying the fulfillment-service.
 - Cloud Provider Admins can inspect backend operational status (state, model, firmware version) through the API to verify availability and troubleshoot connectivity.
 - The StorageBackend entity follows the same DB-backed private API pattern as NetworkClass and PublicIPPool, maintaining consistency across OSAC infrastructure entities.
 - The StorageBackend entity provides the foundation for future StorageTier composition (OSAC-1110), where tiers reference registered backends.
@@ -37,14 +37,14 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 
 - **FR-1:** The fulfillment-service must expose a `StorageBackends` gRPC service under `osac.private.v1` with Create, Get, List, Update, and Delete RPCs.
 - **FR-2:** All CRUD RPCs must include HTTP annotations for REST access via grpc-gateway (POST, GET, GET, PATCH, DELETE).
-- **FR-3:** `CreateStorageBackend` must accept provider type, management endpoint (host + optional port), credentials reference (Kubernetes Secret), and optional description. The backend must be created with initial state `READY`.
+- **FR-3:** `CreateStorageBackend` must accept provider type, management endpoint (host + optional port), credentials (username and password), and optional description. The backend must be created with initial state `READY`.
 - **FR-4:** `ListStorageBackends` must support pagination (`offset`/`limit`), CEL-based filtering, and SQL-like ordering. This follows the established OSAC List API pattern used by all existing entities (NetworkClass, Clusters, ComputeInstances, Roles, etc.).
 - **FR-5:** `UpdateStorageBackend` must support partial updates (only specified fields are modified) and optimistic concurrency control to prevent conflicting writes.
 - **FR-6:** `DeleteStorageBackend` must perform a soft delete. Deleted backends must be excluded from List results but preserved for audit and future references from StorageTier.
 - **FR-7:** Cloud Provider Admins must be able to update backend operational metadata (model, firmware_version) and status message via the standard `Update` RPC. No Signal RPC is needed — StorageBackend has no reconciler or controller.
 - **FR-8:** Backend state must include `READY` (backend registered and available). Additional states will be introduced as needed when reconciliation or health probing capabilities are added in future phases. [User]
 - **FR-9:** Backend names must be unique among active (non-deleted) backends, allowing name reuse after decommission.
-- **FR-10:** The `credentials_ref` field must reference a Kubernetes Secret. The reference format (namespace-scoped `namespace/secret-name` or implicit namespace) is determined during implementation. This credential storage mechanism is temporary — it will be revisited when OSAC core establishes a unified credential management pattern.
+- **FR-10:** Credentials (username, password) must be stored inline in the StorageBackend entity, consistent with how all existing OSAC entities store credentials (break_glass_credentials, identity_provider, user, cluster_template, hub). Credentials must be excluded from the public API.
 
 ### 3.2 Non-Functional Requirements
 
@@ -66,7 +66,7 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 
 - The management cluster (hub) is the same cluster that runs the fulfillment-service and creates HostedClusters via Hosted Control Planes. The terms "hub" (ACM terminology) and "management cluster" refer to the same cluster.
 - StorageClasses are associated with tenants and tiers by naming convention, not by Kubernetes labels. The prior EP label-based approach (`osac.openshift.io/tenant`, `osac.openshift.io/storage-tier`) is superseded.
-- The `credentials_ref` Secret is created and managed by the Cloud Provider Admin outside of the StorageBackend API. The API stores only the reference, not the credential content.
+- Credentials are provided by the Cloud Provider Admin during backend registration and stored inline in the database, consistent with all existing OSAC credential patterns.
 
 ## 6. Dependencies
 
@@ -90,9 +90,4 @@ Three prior enhancements addressed tenant-to-StorageClass resolution (`tenant-sp
 ### 8.1 Should credential rotation trigger re-validation?
 
 - **Owner:** Storage architect
-- **Impact:** FR-3, FR-8. When `credentials_ref` is updated via `UpdateStorageBackend`, should the backend state change to indicate re-validation is needed? Deferred until additional states (e.g., `PENDING`) are introduced in a future phase.
-
-### 8.2 What is the credentials_ref format?
-
-- **Owner:** Storage architect, fulfillment-service maintainers
-- **Impact:** FR-10. The reference format — namespace-scoped (`namespace/secret-name`) vs. implicit namespace (`secret-name` assuming `osac-system`) — has security implications for cross-namespace access. A decision is needed before implementation.
+- **Impact:** FR-3, FR-8. When credentials are updated via `UpdateStorageBackend`, should the backend state change to indicate re-validation is needed? Deferred until additional states (e.g., `PENDING`) are introduced in a future phase.

@@ -28,13 +28,13 @@ OSAC manages networking infrastructure through first-class API entities (Network
 
 This gap blocks two capabilities: (1) composing tiered storage offerings where StorageTier entities (OSAC-1110) reference registered backends by ID, and (2) credential rotation without redeploying the fulfillment-service. Three prior enhancements addressed tenant-to-StorageClass resolution but left the infrastructure layer unmanaged.
 
-StorageBackend introduces the infrastructure registration layer. It stores the provider type, management endpoint, and a reference to a Kubernetes Secret containing credentials. The entity is platform-scoped (not tenant-scoped), managed exclusively by Cloud Provider Admins through the private API, and exposed read-only through the public API with credential references stripped.
+StorageBackend introduces the infrastructure registration layer. It stores the provider type, management endpoint, and credentials. The entity is platform-scoped (not tenant-scoped), managed exclusively by Cloud Provider Admins through the private API, and exposed read-only through the public API with credentials stripped.
 
 ### Goals
 
 - Reuse the NetworkClass DB-backed server pattern (generic server, generic DAO, builder construction) with no reconciler or CRD. [Codebase: internal/servers/private_network_classes_server.go]
 - Expose both private (full CRUD) and public (read-only) API layers following the established dual-API pattern.
-- Store credentials as opaque Kubernetes Secret references — no credential content touches the fulfillment-service database.
+- Store credentials inline in the JSONB `data` column, consistent with all existing OSAC entities (break_glass_credentials, identity_provider, user, cluster_template, hub).
 - Keep the StorageBackend schema provider-agnostic so that non-VAST backends (Ceph, Pure) use the same entity without schema changes.
 - Provide the foundation entity for StorageTier (OSAC-1110) composition without introducing StorageTier dependencies.
 
@@ -52,7 +52,7 @@ StorageBackend is a new entity in the fulfillment-service with two API surfaces:
 
 1. **Private API** (`osac.private.v1.StorageBackends`): Full CRUD (Create, Get, List, Update, Delete). Used by Cloud Provider Admins. No Signal RPC — StorageBackend has no reconciler or controller, so there is nothing to signal.
 
-2. **Public API** (`osac.public.v1.StorageBackends`): Read-only (List, Get). Delegates to the private server with field mapping. The `credentials_ref` field is excluded from the public API via `AddIgnoredFields()`.
+2. **Public API** (`osac.public.v1.StorageBackends`): Read-only (List, Get). Delegates to the private server with field mapping. Credential fields are excluded from the public API via `AddIgnoredFields()`.
 
 The database schema follows the standard JSONB `data` column pattern with `storage_backends` and `archived_storage_backends` tables. A unique partial index on `name` enforces FR-9 (name uniqueness among active records).
 
@@ -71,28 +71,26 @@ The generic server's `setPayload()` switch statement requires a new case for `St
 ```mermaid
 sequenceDiagram
     participant Admin as Cloud Provider Admin
-    participant K8s as Kubernetes API
     participant FS as fulfillment-service (private)
     participant DB as PostgreSQL
 
-    Admin->>K8s: Create Secret with storage credentials
-    Admin->>FS: CreateStorageBackend(provider, endpoint, credentials_ref, description)
-    FS->>FS: Validate required fields (provider, endpoint.host, credentials_ref)
+    Admin->>FS: CreateStorageBackend(provider, endpoint, credentials, description)
+    FS->>FS: Validate required fields (provider, endpoint.host, credentials)
     FS->>FS: Set state = READY, clear caller-provided ID
     FS->>DB: Insert into storage_backends (JSONB data column)
     DB-->>FS: Return with generated UUID
     FS-->>Admin: StorageBackend with id, state=READY
 ```
 
-The diagram shows the registration path. The admin first creates a Kubernetes Secret containing provider-specific credentials, then registers the backend via the private API. The fulfillment-service validates required fields, sets the initial state to `READY`, generates a UUID, and persists the entity.
+The diagram shows the registration path. The admin registers the backend via the private API with credentials provided inline. The fulfillment-service validates required fields, sets the initial state to `READY`, generates a UUID, and persists the entity. Credentials are stored in the JSONB `data` column, consistent with how all other OSAC entities store credentials.
 
-**Credential rotation:** The admin calls `UpdateStorageBackend` with a new `credentials_ref` pointing to a rotated Secret. No redeployment is required.
+**Credential rotation:** The admin calls `UpdateStorageBackend` with new `credentials` fields. No redeployment is required.
 
 **Decommission:** The admin calls `DeleteStorageBackend`. The backend is soft-deleted: excluded from List results but preserved in the `archived_storage_backends` table for audit. Name reuse is allowed after soft deletion.
 
 **Error cases:**
 - Duplicate name on active backend: Create returns `ALREADY_EXISTS` (enforced by the unique partial index).
-- Missing required fields (provider, endpoint.host, credentials_ref): Create/Update returns `INVALID_ARGUMENT`.
+- Missing required fields (provider, endpoint.host, credentials): Create/Update returns `INVALID_ARGUMENT`.
 - Update with stale version and `lock=true`: returns `FAILED_PRECONDITION` (optimistic concurrency control).
 - Delete of non-existent backend: returns `NOT_FOUND`.
 
@@ -119,7 +117,7 @@ No CRDs, webhooks, or finalizers are introduced. No existing resources are modif
 | `provider` | `string` | Yes | Storage provider identifier (e.g., `"vast"`, `"ceph"`, `"pure"`) |
 | `description` | `string` | No | Human-readable description of the backend |
 | `endpoint` | `StorageBackendEndpoint` | Yes | Management endpoint for the storage array |
-| `credentials_ref` | `string` | Yes | Reference to a Kubernetes Secret (`namespace/secret-name` or `secret-name`). **Temporary** — the credential storage mechanism will be revisited when OSAC core establishes a unified credential management pattern. |
+| `credentials` | `StorageBackendCredentials` | Yes | Provider-specific credentials stored inline, consistent with existing OSAC credential patterns |
 | `status` | `StorageBackendStatus` | System | Operational status, set on create |
 
 **`StorageBackendEndpoint` message:**
@@ -128,6 +126,15 @@ No CRDs, webhooks, or finalizers are introduced. No existing resources are modif
 |-------|------|----------|-------------|
 | `host` | `string` | Yes | Hostname or IP of the storage management API |
 | `port` | `int32` | No | Port number; provider-specific default if omitted |
+
+**`StorageBackendCredentials` message:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `username` | `string` | Yes | Username for storage management API authentication |
+| `password` | `string` | Yes | Password for storage management API authentication |
+
+Credentials are stored inline in the JSONB `data` column, following the same pattern as `break_glass_credentials.password`, `identity_provider.client_secret`, `user.password`, `cluster_template.pull_secret`, and `hub.kubeconfig`. The credential content is opaque to the fulfillment-service — no provider-specific validation is performed (NFR-2).
 
 **`StorageBackendStatus` message:**
 
@@ -166,7 +173,7 @@ No Signal RPC is defined. Signal exists on other entities to wake up a reconcile
 **`storage_backend_type.proto`** (`osac.public.v1`):
 
 The public message mirrors the private message with these differences:
-- `credentials_ref` is excluded entirely (not present in the message definition)
+- `credentials` is excluded entirely (not present in the message definition)
 - `endpoint.host` is included (tenants need to know which array serves their storage)
 - `status` is included (tenants need to see backend availability)
 - All fields are effectively `OUTPUT_ONLY` since the public API is read-only
@@ -186,7 +193,7 @@ No Create, Update, or Delete RPCs in the public API.
 
 - Struct wraps `GenericServer[*privatev1.StorageBackend]`
 - Builder pattern: `NewPrivateStorageBackendsServer()` returns a builder with `SetLogger`, `SetNotifier`, `SetAttributionLogic`, `SetTenancyLogic`, `SetMetricsRegisterer`, `Build()`
-- `Create`: validates required fields (`provider`, `endpoint.host`, `credentials_ref`), sets state to `STORAGE_BACKEND_STATE_READY`, clears caller-provided ID
+- `Create`: validates required fields (`provider`, `endpoint.host`, `credentials.username`, `credentials.password`), sets state to `STORAGE_BACKEND_STATE_READY`, clears caller-provided ID
 - `Update`: fetches existing object, merges via `applyStorageBackendUpdate`, validates immutability of `provider` field, delegates to generic server
 - `Delete`: delegates directly to generic server (soft delete)
 
@@ -196,7 +203,7 @@ No Create, Update, or Delete RPCs in the public API.
 
 - Composes a `PrivateStorageBackendsServer` delegate + `GenericMapper` pair
 - `inMapper` is not needed (no write RPCs on public API), but the pattern requires it for consistency with the builder; unused mapper fields can be nil
-- `outMapper` maps private StorageBackend to public StorageBackend, skipping `credentials_ref`
+- `outMapper` maps private StorageBackend to public StorageBackend, skipping `credentials`
 - Exposes only `List` and `Get`
 
 #### Database Migration
@@ -290,8 +297,8 @@ StorageBackend inherits the existing fulfillment-service security model:
 
 - **Authentication:** JWT validation via the gRPC interceptor chain. No changes to the authentication flow.
 - **Authorization:** OPA policies control access to private vs. public API endpoints. Cloud Provider Admins have access to private CRUD. Tenants have access to public List + Get only.
-- **Credential isolation:** The `credentials_ref` field stores a Secret reference string, not credential content. The fulfillment-service never reads, decrypts, or forwards the Secret's data. The public API excludes `credentials_ref` entirely — tenants cannot discover Secret names. This mechanism is temporary — it will be revisited when OSAC core establishes a unified credential management pattern across all entities.
-- **Input validation:** The server validates required fields (`provider`, `endpoint.host`, `credentials_ref`) and provider immutability. The `endpoint.host` field is a string stored as-is; no DNS resolution or connection attempt is made during registration. The `credentials_ref` format is validated syntactically (non-empty string) but not resolved against the Kubernetes API.
+- **Credential storage:** Credentials are stored inline in the JSONB `data` column, consistent with all existing OSAC entities. The public API excludes `credentials` entirely — tenants cannot see credential fields. This follows the same pattern as `break_glass_credentials`, `identity_provider`, `user`, `cluster_template`, and `hub`.
+- **Input validation:** The server validates required fields (`provider`, `endpoint.host`, `credentials.username`, `credentials.password`) and provider immutability. The `endpoint.host` field is a string stored as-is; no DNS resolution or connection attempt is made during registration.
 
 No new authentication, authorization, or encryption mechanisms are introduced.
 
@@ -309,7 +316,7 @@ All operations are transactional (wrapped by the gRPC database transaction inter
 StorageBackend is platform-scoped, not tenant-scoped. It follows the same access model as NetworkClass:
 
 - **Private API:** Accessible to Cloud Provider Admins. OPA policies enforce role-based access. No Signal RPC. The `tenants` column in the database is empty (platform-scoped resources have no tenant owner).
-- **Public API:** Accessible to all authenticated users (tenants). List and Get return all active backends (no tenant filtering). The `credentials_ref` field is stripped by the public server's output mapper.
+- **Public API:** Accessible to all authenticated users (tenants). List and Get return all active backends (no tenant filtering). Credential fields are stripped by the public server's output mapper.
 
 No `osac.openshift.io/tenant` or `osac.openshift.io/owner-reference` annotations are set on StorageBackend. This is consistent with NetworkClass, which is also platform-scoped. Tenant isolation applies at the StorageTier level (OSAC-1110), where tiers are assigned to tenants.
 
@@ -319,13 +326,9 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 - The gRPC Prometheus interceptor records request counts, latencies, and error rates for all StorageBackend RPCs automatically (same as all other gRPC services).
 - PostgreSQL NOTIFY events for StorageBackend CRUD operations are published through the existing event infrastructure.
-- Structured logging via `slog` in the server implementation covers validation failures, Signal updates, and DAO errors.
+- Structured logging via `slog` in the server implementation covers validation failures and DAO errors.
 
 ### Risks and Mitigations
-
-**Credential reference format ambiguity:** The `credentials_ref` format (namespace-scoped `namespace/secret-name` vs. implicit namespace) is deferred to implementation. Choosing the wrong format creates a breaking API change later.
-
-*Mitigation:* The `credentials_ref` is an opaque string. Namespace-scoped format (`namespace/secret-name`) is the safer default because it avoids ambiguity when backends span namespaces. The format is documented in the proto field comments and validated syntactically (must contain `/`).
 
 **Soft-delete name reuse and StorageTier references:** When a backend is soft-deleted and its name is reused for a new backend, a StorageTier referencing the old backend by ID continues to resolve correctly (references use ID, not name). However, confusion may arise if operators expect name-based lookup to return the latest backend.
 
@@ -333,7 +336,7 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 ### Drawbacks
 
-**Platform-scoped entity with credentials.** StorageBackend stores a reference to a Kubernetes Secret. Although the fulfillment-service never reads the Secret, the reference itself (namespace + name) is sensitive metadata. The public API strips it, but the private API exposes it to all Cloud Provider Admins regardless of which backend they manage. In a multi-admin scenario, this provides full visibility of all credential Secret names. This is consistent with NetworkClass, where all admins see all configuration, but worth noting as the attack surface grows with the number of backends.
+**Platform-scoped entity with credentials in the database.** StorageBackend stores credentials inline in the JSONB `data` column, which means credential content (username/password) lives in PostgreSQL. This is consistent with all existing OSAC entities that store credentials (break_glass_credentials, identity_provider, user, cluster_template, hub), but worth noting as the attack surface grows with the number of backends. The public API strips credentials, but the private API exposes them to all Cloud Provider Admins regardless of which backend they manage.
 
 ## Alternatives (Not Implemented)
 
@@ -347,19 +350,19 @@ StorageBackend could be a Kubernetes Custom Resource (like VirtualNetwork or Sub
 
 *Rejection:* The DB-backed pattern is simpler, already proven for this use case, and aligns with the NetworkClass precedent. A CRD can be introduced later if reconciliation requirements emerge.
 
-### Credentials stored in the database
+### Credentials as Kubernetes Secret reference
 
-Instead of referencing a Kubernetes Secret, the fulfillment-service could store credentials directly in the JSONB `data` column (encrypted at rest).
+Instead of storing credentials inline, the fulfillment-service could store a `credentials_ref` string referencing a Kubernetes Secret.
 
-*Pros:* Self-contained entity — no dependency on Kubernetes Secret management. Simpler operational model for credential rotation.
+*Pros:* Credential content never touches the database. Delegates security to the Kubernetes Secret infrastructure (encryption at rest, RBAC, integration with external secret managers like Vault via External Secrets Operator).
 
-*Cons:* Credential content in PostgreSQL requires application-level encryption, key rotation, and access auditing. The fulfillment-service becomes a credential store, expanding its attack surface. Kubernetes Secrets already provide encryption at rest (via etcd encryption), RBAC-controlled access, and integration with external secret managers (e.g., Vault via External Secrets Operator).
+*Cons:* Introduces a new credential pattern that no existing OSAC entity uses — all current entities (break_glass_credentials, identity_provider, user, cluster_template, hub) store credentials inline. Adds operational complexity (Secret must exist, namespace resolution, lifecycle management). Creates an inconsistency in the codebase.
 
-*Rejection:* Storing credential references delegates security responsibility to the Kubernetes Secret infrastructure, which is purpose-built for this function. However, this is a temporary approach — all existing OSAC entities currently store credentials inline. The credential storage mechanism will be revisited when OSAC core establishes a unified pattern, and StorageBackend will adopt whatever pattern is chosen.
+*Rejection:* Consistency with existing OSAC patterns outweighs the security benefit for phase 1. All other entities store credentials inline, and introducing a divergent pattern without an OSAC-core decision on unified credential management would create unnecessary complexity. This can be revisited when OSAC establishes a platform-wide credential storage strategy.
 
 ## Open Questions
 
-1. **credentials_ref format and longevity.** Should the format be `namespace/secret-name` (explicit namespace) or `secret-name` (implicit `osac-system` namespace)? Explicit namespace is more flexible but requires the admin to know the Secret's namespace. Implicit namespace is simpler but constrains all credential Secrets to a single namespace. Note: existing OSAC entities (break_glass_credentials, identity_provider, user, cluster_template, hub) all store credentials inline in the JSONB data column. The `credentials_ref` approach is a temporary divergence — the credential storage mechanism will be revisited when OSAC core establishes a unified pattern.
+None — all prior open questions have been resolved. Credentials are stored inline (matching existing OSAC patterns), and Signal RPC has been removed (no reconciler).
 
 ## Test Plan
 
@@ -369,7 +372,7 @@ Testing follows the fulfillment-service's established Ginkgo v2 test patterns:
 
 - `private_storage_backends_server_test.go`:
   - CRUD lifecycle: Create with all fields, Get by ID, List with pagination, Update with field mask, Delete (soft-delete)
-  - Validation: missing `provider`, missing `endpoint.host`, missing `credentials_ref` return `INVALID_ARGUMENT`
+  - Validation: missing `provider`, missing `endpoint.host`, missing `credentials` return `INVALID_ARGUMENT`
   - Immutability: Update with changed `provider` returns `INVALID_ARGUMENT`
   - Name uniqueness: Create with duplicate active name returns `ALREADY_EXISTS`; Create after soft-delete of same name succeeds
   - Optimistic locking: Update with stale version and `lock=true` returns `FAILED_PRECONDITION`
@@ -377,7 +380,7 @@ Testing follows the fulfillment-service's established Ginkgo v2 test patterns:
   - Ordering: List with `metadata.name asc` returns sorted results
 - `storage_backends_server_test.go` (public API):
   - List and Get delegate correctly to private server
-  - `credentials_ref` is absent from public responses
+  - `credentials` is absent from public responses
   - Create/Update/Delete are not exposed
 
 **Integration tests** (`it/`): StorageBackend CRUD via gRPC and REST endpoints against a kind cluster deployment, covering authentication and authorization.
@@ -393,7 +396,7 @@ For initial merge:
 - All integration tests pass
 - `buf lint` passes with no warnings
 - Private and public API endpoints are accessible via both gRPC and REST
-- `credentials_ref` is confirmed absent from public API responses
+- `credentials` is confirmed absent from public API responses
 
 ## Upgrade / Downgrade Strategy
 
