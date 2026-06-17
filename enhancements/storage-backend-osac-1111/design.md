@@ -52,7 +52,7 @@ StorageBackend is a new entity in the fulfillment-service with two API surfaces:
 
 **Private API** (`osac.private.v1.StorageBackends`): Full CRUD (Create, Get, List, Update, Delete). Used by Cloud Provider Admins and internal systems (e.g., future tenant onboarding controller that needs credentials to pass to AAP). No Signal RPC — StorageBackend has no reconciler or controller. No public API — tenants interact with storage through StorageTier, not directly with backends.
 
-The database schema follows the standard JSONB `data` column pattern with `storage_backends` and `archived_storage_backends` tables. A unique partial index on `name` enforces FR-9 (name uniqueness among active records). **[OPEN: see OQ-1]**
+The database schema follows the standard JSONB `data` column pattern with `storage_backends` and `archived_storage_backends` tables (the archived table is required by the generic DAO, not user-facing). A unique partial index on `name` enforces FR-9 (name uniqueness among active records).
 
 The generic server's `setPayload()` switch statement requires a new case for `StorageBackend`, and the Event proto requires a new `storage_backend` payload field.
 
@@ -84,7 +84,9 @@ The diagram shows the registration path. The admin registers the backend via the
 
 **Credential rotation:** The admin calls `UpdateStorageBackend` with new `credentials` fields. No redeployment is required.
 
-**Decommission:** The admin calls `DeleteStorageBackend`. By default the backend is soft-deleted (standard DAO pattern — sets `deletion_timestamp`, archives the record). When `purge=true` is set on the request, the backend is permanently removed from the database. Both modes reject the delete with `FAILED_PRECONDITION` if any StorageTier references the backend — the admin must remove all tier associations first. **[OPEN: see OQ-1]**
+**Decommission (phase 0.2):** The admin transitions the backend to `DECOMMISSIONED` state via `UpdateStorageBackend`. The record remains in the database and is visible via Get and List, but the backend is no longer available for new StorageTier associations. This is a terminal state — the backend cannot return to `READY`. An intermediate `MAINTENANCE` state is available for temporary unavailability (e.g., firmware upgrade) and can be reversed back to `READY`.
+
+**Permanent removal:** The admin calls `DeleteStorageBackend`. Delete is only allowed on `DECOMMISSIONED` backends (phase 0.2) or any backend with no StorageTier references (phase 1). The DAO performs the standard archive-and-delete internally, but the archived table is an infrastructure detail, not a user-facing feature.
 
 **Error cases:**
 - Duplicate name on active backend: Create returns `ALREADY_EXISTS` (enforced by the unique partial index).
@@ -144,8 +146,22 @@ Credentials are stored inline in the JSONB `data` column, following the same pat
 |-------|--------|-------------|
 | `STORAGE_BACKEND_STATE_UNSPECIFIED` | 0 | Default zero value |
 | `STORAGE_BACKEND_STATE_READY` | 1 | Backend registered and available |
+| `STORAGE_BACKEND_STATE_MAINTENANCE` | 2 | Backend temporarily unavailable (reversible — can return to `READY`) |
+| `STORAGE_BACKEND_STATE_DECOMMISSIONED` | 3 | Backend permanently retired (terminal — cannot return to `READY`) |
 
-The enum starts with `READY` as the only operational state. Additional states (e.g., `PENDING`, `FAILED`, `DEGRADED`) are added when health probing or reconciliation capabilities are introduced. The `UNSPECIFIED` sentinel follows proto3 convention.
+**Phase 1** implements only `READY`. The `MAINTENANCE` and `DECOMMISSIONED` states are defined in the proto enum from the start but rejected by the server until phase 0.2.
+
+**State transitions (phase 0.2):**
+
+```
+READY ⇄ MAINTENANCE    (reversible)
+READY → DECOMMISSIONED (terminal, one-way)
+MAINTENANCE → DECOMMISSIONED (terminal, one-way)
+```
+
+`DECOMMISSIONED` replaces the traditional soft-delete pattern — the record stays in the database and remains visible via Get and List (filterable by state), but the backend is no longer available for new StorageTier associations. Delete (permanent removal) is only allowed on `DECOMMISSIONED` backends with no remaining StorageTier references.
+
+The `UNSPECIFIED` sentinel follows proto3 convention.
 
 **`storage_backends_service.proto`** (`osac.private.v1`):
 
@@ -169,9 +185,11 @@ No Signal RPC is defined. Signal exists on other entities to wake up a reconcile
 - Builder pattern: `NewPrivateStorageBackendsServer()` returns a builder with `SetLogger`, `SetNotifier`, `SetAttributionLogic`, `SetTenancyLogic`, `SetMetricsRegisterer`, `Build()`
 - `Create`: validates required fields (`metadata.name`, `provider`, `endpoint`, `credentials.username`, `credentials.password`), sets state to `STORAGE_BACKEND_STATE_READY`, clears caller-provided ID. The generic server's `validateName()` enforces RFC 1035 DNS label format (1–63 chars, lowercase alphanumeric + hyphens, no leading/trailing hyphens). Name uniqueness among active backends is enforced by the `storage_backends_unique_active_name` partial index.
 - `Update`: fetches existing object, merges via `applyStorageBackendUpdate`, validates immutability of `provider` and `metadata.name` fields, delegates to generic server
-- `Delete`: checks for referencing StorageTier records; rejects with `FAILED_PRECONDITION` if any exist. Default: soft-delete via standard DAO. When `purge=true`: hard-delete, permanently removing the record. **[OPEN: see OQ-1]**
+- `Delete`: checks for referencing StorageTier records; rejects with `FAILED_PRECONDITION` if any exist. In phase 0.2, also rejects unless the backend is in `DECOMMISSIONED` state. Delegates to the generic server (standard DAO archive-and-delete)
 
 **Immutable fields on update:** `provider` and `metadata.name` are immutable after creation. Changing the storage provider would invalidate the endpoint, credentials, and any downstream StorageTier references. Name immutability ensures stable human-readable identifiers for operational use and prevents confusion when backends are referenced by name in logs and configurations.
+
+**State transition validation (phase 0.2):** The server enforces the state machine — `READY ⇄ MAINTENANCE` (reversible), `READY → DECOMMISSIONED` and `MAINTENANCE → DECOMMISSIONED` (terminal). Any other transition returns `INVALID_ARGUMENT`.
 
 #### Database Migration
 
@@ -224,7 +242,7 @@ create unique index storage_backends_unique_active_name
   where deletion_timestamp = 'epoch';
 ```
 
-This partial index permits name reuse after soft deletion while preventing duplicate names among active records. The DAO's unique violation error maps to gRPC `ALREADY_EXISTS`. **[OPEN: see OQ-1 — the partial condition is needed for soft-delete; hard-delete via `purge` removes the row entirely so the partial index still works correctly.]**
+This partial index permits name reuse after deletion while preventing duplicate names among active records. The DAO's unique violation error maps to gRPC `ALREADY_EXISTS`.
 
 #### Generic Server Changes
 
@@ -288,9 +306,9 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 ### Risks and Mitigations
 
-**Referential integrity on delete:** Delete is rejected if any StorageTier references the backend. This prevents orphaned tier-to-backend references but requires the admin to manually remove all tier associations before decommissioning a backend.
+**Referential integrity on delete:** Delete is rejected if any StorageTier references the backend. This prevents orphaned tier-to-backend references but requires the admin to decommission the backend and remove all tier associations before permanent removal.
 
-*Mitigation:* The `FAILED_PRECONDITION` error message lists the referencing StorageTier IDs so the admin knows exactly what to clean up.
+*Mitigation:* The `FAILED_PRECONDITION` error message lists the referencing StorageTier IDs so the admin knows exactly what to clean up. The `DECOMMISSIONED` state (phase 0.2) provides a safe intermediate step — the backend is visible but no longer available for new associations.
 
 ### Drawbacks
 
@@ -316,22 +334,18 @@ Instead of storing credentials inline, the fulfillment-service could store a `cr
 
 *Cons:* Introduces a new credential pattern that no existing OSAC entity uses — all current entities (break_glass_credentials, identity_provider, user, cluster_template, hub) store credentials inline. Adds operational complexity (Secret must exist, namespace resolution, lifecycle management). Creates an inconsistency in the codebase.
 
-*Rejection:* OSAC core are aware of the need for a credentials solution for the system(this is not a specific to storage backends) - see this ticket https://redhat.atlassian.net/browse/OSAC-1567 . Also, consistency with existing OSAC patterns outweighs the security benefit for phase 1. All other entities store credentials inline, and introducing a divergent pattern without an OSAC-core decision on unified credential management would create unnecessary complexity. This can be revisited when OSAC establishes a platform-wide credential storage strategy.
+*Rejection:* Consistency with existing OSAC patterns outweighs the security benefit for phase 1. All other entities store credentials inline, and introducing a divergent pattern without an OSAC-core decision on unified credential management would create unnecessary complexity. This can be revisited when OSAC establishes a platform-wide credential storage strategy.
 
 ## Open Questions
 
-**OQ-1: Deletion strategy — soft-delete by default, optional hard-delete with `purge` flag.**
+**OQ-1 (resolved): Deletion strategy — state-based lifecycle replaces soft-delete.**
 
-**Proposed resolution:** Support both modes. `DeleteStorageBackend` performs a soft-delete by default (standard DAO pattern — sets `deletion_timestamp`, archives to `archived_storage_backends`). When `purge=true` is set on the request, the backend is permanently removed from the database.
+Decommissioning is modeled as a state transition rather than the DAO's archive pattern:
+- `MAINTENANCE` (phase 0.2): temporary unavailability, reversible to `READY`.
+- `DECOMMISSIONED` (phase 0.2): terminal state, backend is retired but remains visible via Get/List.
+- `Delete` RPC: permanent removal via the standard DAO (archive-and-delete). In phase 0.2, only allowed on `DECOMMISSIONED` backends with no StorageTier references. In phase 1, allowed on any backend with no StorageTier references.
 
-Both modes enforce referential integrity — delete is rejected with `FAILED_PRECONDITION` if any StorageTier references the backend, regardless of soft vs hard delete.
-
-This requires:
-- A `bool purge` field on the `DeleteStorageBackendRequest` message.
-- Extending the generic DAO or adding custom delete logic in `PrivateStorageBackendsServer.Delete()` to bypass the archive step when `purge=true`.
-- The `archived_storage_backends` table and partial unique index are still needed for the soft-delete path.
-
-**Owner:** Storage architect. **Impact:** Proto schema (`DeleteStorageBackendRequest`), DAO usage, FR-6.
+The `archived_storage_backends` table is required by the generic DAO infrastructure but is not exposed as a user-facing feature.
 
 ## Test Plan
 
