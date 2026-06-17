@@ -230,7 +230,6 @@ Indexes:
 ```sql
 create index storage_backends_by_name on storage_backends (name);
 create index storage_backends_by_creator on storage_backends (creator);
-create index storage_backends_by_tenant on storage_backends (tenant);
 create index storage_backends_by_label on storage_backends using gin (labels);
 ```
 
