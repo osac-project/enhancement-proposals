@@ -9,21 +9,79 @@
 
 ### 2.1 Goals
 
-- Tenant users provision VMs and clusters by selecting a catalog offering, completing a short guided wizard, and submitting — without seeing the full resource spec.
-- All configurable fields and select options are driven by the selected catalog item's `field_definitions`; the wizard adds no resource-specific form fields beyond the fixed Basics step.
+- Tenant users provision VMs and clusters by selecting a catalog offering, completing a guided wizard with a **fixed field set per resource type**, and submitting — without exposing the full resource spec or internal-only API fields.
+- The wizard always renders the same static fields for each resource type (see §3.1.1). Catalog items do **not** determine which fields appear.
+- For each static field, when the selected catalog item defines a matching `field_definitions` entry (same `path`), the wizard uses that entry for **display name**, **editability**, **default**, **required**, and **validation_schema**. When no matching entry exists, the field is still shown and remains editable with wizard/API defaults.
+- Networking for ComputeInstance uses an intuitive workflow (virtual network, subnet, security groups) backed by fulfillment list APIs — not raw `network_attachments` JSON.
 - A single wizard implementation flow for both ComputeInstance and Cluster catalog item types.
 
 ### 2.2 Non-Goals
 
-The following are explicitly out of scope and **will not be supported**:
+The following are explicitly out of scope and **will not be supported** in this release:
 
-- Dynamic Template parameters
-- Fetching select or list options from separate fulfillment list APIs (`virtual_networks`, `subnets`, etc.) when not defined in the catalog item's `field_definitions`
-- Specialized form widgets for JSON Schema types beyond integer (number input), enum (select), and plain text for all other types
+- **BareMetalInstance** provisioning (separate PRD)
+- **Template parameters** — dynamic fields from the catalog item's referenced template (`Templates.Get` / `ParameterDefinition`); planned for a follow-on release
+- Exposing internal-only or provider-managed spec fields directly in the wizard
+- Specialized widgets for arbitrary JSON Schema types beyond: number input, enum select, plain text, and the dedicated networking pickers defined in this PRD
 
 ## 3. Requirements
 
 ### 3.1 Functional Requirements
+
+#### 3.1.1 Static wizard fields
+
+The wizard must always present the fields below for the selected resource type. These fields are **not** discovered from `field_definitions`; they are hardcoded in the UI per resource type.
+
+**Shared (all types)**
+
+| Path | Label | Widget | Required |
+|------|-------|--------|----------|
+| `metadata.name` | Name | Text | Yes |
+
+**ComputeInstance**
+
+| Path | Label | Widget | Options source | Required |
+|------|-------|--------|----------------|----------|
+| `metadata.name` | Name | Text | — | Yes |
+| `spec.ssh_key` | SSH public key | Text (multiline) | — | Yes |
+| `spec.cores` | vCPUs | Number | — | Yes |
+| `spec.memory_gib` | Memory (GiB) | Number | — | Yes |
+| `spec.image.source_ref` | Image | Text | — | Yes |
+| `spec.boot_disk.size_gib` | Boot disk size (GiB) | Number | — | Yes |
+| `spec.run_strategy` | Run strategy | Select | `Always`, `Halted` | Yes |
+| Networking | Virtual network, subnet, security groups | Dedicated pickers (see FR-19) | List APIs (see §5) | Yes |
+
+The Networking row does not map to a single spec path. The wizard collects virtual network, subnet, and security group selections and **assembles** `spec.network_attachments` in the create payload (see FR-19).
+
+**Cluster**
+
+| Path | Label | Widget | Required |
+|------|-------|--------|----------|
+| `metadata.name` | Name | Text | Yes |
+| `spec.ssh_public_key` | SSH public key | Text (multiline) | Yes |
+| `spec.pull_secret` | Pull secret | Text (multiline, masked) | Yes |
+| `spec.release_image` | OpenShift version (release image) | Text | Yes |
+| `spec.network.pod_cidr` | Pod network CIDR | Text | Yes (default allowed) |
+| `spec.network.service_cidr` | Service network CIDR | Text | Yes (default allowed) |
+
+Cluster catalog items always collect pull secret; ComputeInstance wizard never collects pull secret.
+
+#### 3.1.2 Catalog overlay (`field_definitions`)
+
+For each static wizard field, the wizard looks up a `field_definitions` entry in the selected catalog item with a matching `path`:
+
+| Aspect | When matching `field_definitions` entry exists | When no matching entry |
+|--------|-----------------------------------------------|-------------------------|
+| Display label | `display_name` if set; else wizard default label | Wizard default label |
+| Editable | `editable` (default `false` in API → treat as non-editable) | `true` |
+| Default | `default` when user does not supply a value | Wizard/API default for that field |
+| Required | `required` on `FieldDefinition` when present; else wizard static required table | Wizard static required table |
+| Validation | `validation_schema` (JSON Schema draft 2020-12, per-field value) | API/wizard validation only |
+
+- **FR-3:** Non-editable static fields (`editable: false` in matching `field_definitions`) must not appear as inputs in the wizard; their `default` values must appear on Review and be included in the create payload.
+- **FR-3a:** If a static field has a matching non-editable `field_definitions` entry **without** a `default` value, the wizard must block proceeding past catalog selection and show an error — the catalog item is not provisionable through this wizard.
+
+`field_definitions` entries whose `path` does not match any static wizard field are **not rendered** in the wizard for this release. Non-editable entries still apply their `default` to the create payload silently; editable entries for non-static paths are out of scope until template-parameter support (see Non-Goals).
 
 #### Wizard structure
 
@@ -37,8 +95,8 @@ flowchart LR
   D --> E[Submit Create]
 ```
 
-- **FR-1:** The OSAC UI must provide a catalog-item-driven provisioning wizard for ComputeInstance and Cluster resources.
-- **FR-2:** After the user opens the wizard, the flow must consist of four steps in order: (1) catalog selection, (2) Basics, (3) Configuration, (4) Review — then submit.
+- **FR-1:** The OSAC UI must provide a provisioning wizard for ComputeInstance and Cluster resources that uses the static field sets in §3.1.1, with catalog overlay per §3.1.2.
+- **FR-2:** After the user opens the wizard, the flow must consist of four steps in order: (1) catalog selection, (2) Basics, (3) Configuration, (4) Review. Submit is an action from Review, not a separate step.
 
 #### Catalog selection (step 1)
 
@@ -46,70 +104,79 @@ flowchart LR
 
 #### Basics (step 2)
 
-- **FR-5:** Step 2 (Basics) must always collect `metadata.name`.
-- **FR-6:** Step 2 must collect SSH credentials per resource type: cluster — `spec.ssh_public_key`; VM — `spec.ssh_key`.
-- **FR-7:** Step 2 must collect `spec.pull_secret` for cluster catalog items; pull secret must be omitted for VM catalog items where not applicable.
+- **FR-5:** Step 2 must collect all static **Basics** fields for the resource type:
+  - **Shared:** `metadata.name`
+  - **ComputeInstance:** `spec.ssh_key`
+  - **Cluster:** `spec.ssh_public_key`, `spec.pull_secret`
 
 #### Configuration (step 3)
 
-- **FR-8:** Step 3 must render every **editable** entry in the selected catalog item's `field_definitions` array in array order, excluding fields already collected in Basics (`metadata.name`, SSH key, pull secret when shown).
-- **FR-9:** Step 3 must not render **non-editable** `field_definitions`; their `default` values must be included silently in the create payload.
-- **FR-10:** The Configuration step must include only fields defined in the selected catalog item's `field_definitions`.
+- **FR-6:** Step 3 must collect all remaining static fields for the resource type not collected in Basics (§3.1.1), honoring catalog overlay editability (§3.1.2):
+  - **ComputeInstance:** `spec.cores`, `spec.memory_gib`, `spec.image.source_ref`, `spec.boot_disk.size_gib`, `spec.run_strategy`, Networking (FR-19)
+  - **Cluster:** `spec.release_image`, `spec.network.pod_cidr`, `spec.network.service_cidr`
+- **FR-7:** Step 3 must not render static fields that are non-editable per catalog overlay; their defaults apply per FR-3.
 
 #### Review (step 4)
 
-- **FR-11:** Step 4 (Review) must always display the Basics fields collected in step 2 with the values the user entered: `metadata.name`, SSH key (`spec.ssh_public_key` for cluster; `spec.ssh_key` for VM), and `spec.pull_secret` for cluster catalog items (pull secret omitted for VM when not applicable).
-- **FR-12:** Step 4 (Review) must also display every entry from `field_definitions`: non-editable fields with their default values, and editable fields with the values the user configured in Configuration (Basics fields already shown per FR-11 must not be duplicated if they also appear in `field_definitions`).
-- **FR-13:** Review must not display spec fields beyond the Basics fields in FR-11 and entries defined in `field_definitions`.
+- **FR-8:** Step 4 (Review) must display every static wizard field for the resource type with the value that will be sent in the create request: user-entered values for editable fields, and `default` values for non-editable fields (including Networking assembled per FR-19).
+- **FR-9:** Review must also display non-editable `field_definitions` entries for non-static paths with their default values (so tenants can see catalog-preset values they did not configure).
+- **FR-10:** Review must not display spec fields beyond the static wizard field set and non-editable catalog defaults in FR-9.
 
 #### Field rendering
 
-- **FR-14:** For each editable field in Configuration, the wizard must derive the input widget from the field's `validation_schema` (JSON Schema draft 2020-12): `type: integer` → number input; `enum` present → select; all other types → plain text input.
-- **FR-15:** Select and list options for every select field must come from the `enum` values in that field's `validation_schema` within `field_definitions`. The wizard must not call separate fulfillment list APIs to populate options.
-- **FR-18:** When a field fails `validation_schema` validation, the wizard must show the error inline on that field. The user must not be able to proceed to the next step (Next) until all validation errors on the current step are resolved.
+- **FR-14:** For editable static fields with a `validation_schema` in the matching `field_definitions` entry: `type: integer` → number input; `enum` present → select; all other types → plain text input (unless FR-19 applies).
+- **FR-15:** Select options from `validation_schema` `enum` values apply only to fields using enum-based selects (e.g., `spec.run_strategy` when not overridden by catalog schema).
+- **FR-18:** When a field fails `validation_schema` validation, the wizard must show the error inline on that field. The user must not be able to proceed to the next step until all validation errors on the current step are resolved.
+- **FR-19:** For ComputeInstance Networking, the wizard must present:
+  1. **Virtual network** — select from `VirtualNetworks.List`
+  2. **Subnet** — select from `Subnets.List`, filtered to the chosen virtual network
+  3. **Security groups** — multi-select from `SecurityGroups.List`, filtered to the chosen virtual network
+
+  The wizard must assemble these selections into `spec.network_attachments` in the create payload. The raw `network_attachments` structure must not be shown to the user.
 
 #### Create payload
 
-- **FR-16:** On submit, the create request must include tenant-provided values from Basics and Configuration plus default values for all non-editable `field_definitions`.
-- **FR-17:** Field paths in the payload must match the `path` values defined in `field_definitions` (dot-notation spec paths).
+- **FR-16:** On submit, the create request must include: tenant-provided values for editable static fields; `default` values for non-editable static fields and non-editable `field_definitions`; and silently merged defaults for non-static non-editable `field_definitions` (§3.1.2).
+- **FR-17:** Field paths in the payload must use the API spec paths from §3.1.1 (dot notation). The selected catalog item must be referenced per existing create API conventions.
 
 ### 3.2 Non-Functional Requirements
 
-- **NFR-1:** The wizard must consume catalog item data from the fulfillment catalog item APIs (`ComputeInstanceCatalogItem`, `ClusterCatalogItem`) including `field_definitions`, `display_name`, `editable`, `default`, and `validation_schema`.
-- **NFR-2:** Client-side field validation must honor each editable field's `validation_schema`. Validation failures must be shown inline per field and must block Next on the current step until all errors are cleared; the same rule applies before submit from Review.
-- **NFR-3:** The wizard must not expose spec fields, API surfaces, or fulfillment list endpoints beyond what `field_definitions` defines, except for the fixed Basics fields in FR-5 through FR-7.
+- **NFR-1:** The wizard must consume catalog item data from `ComputeInstanceCatalogItem` and `ClusterCatalogItem` APIs, including `field_definitions` (`path`, `display_name`, `editable`, `default`, `required`, `validation_schema`).
+- **NFR-2:** Client-side validation must honor `validation_schema` on matching `field_definitions` entries. Failures are inline per field and block Next until resolved.
+- **NFR-3:** The wizard must not expose spec fields beyond the static wizard field set (§3.1.1), except non-editable catalog defaults shown on Review (FR-9).
 
 ## 4. Acceptance Criteria
 
-- [ ] Selecting a ComputeInstance or Cluster catalog item and completing the wizard creates the resource without exposing spec fields outside `field_definitions` (except Basics fields per FR-5–FR-7).
-- [ ] The wizard presents four steps in order: catalog selection → Basics → Configuration → Review and submit.
-- [ ] Basics collects `metadata.name`, SSH key, and pull secret (cluster only; omitted for VM when not applicable).
-- [ ] Configuration shows only editable `field_definitions` in array order, excluding Basics fields; non-editable defaults are applied to the payload without appearing in the form.
-- [ ] Review always displays Basics fields: `metadata.name`, SSH key, and pull secret for cluster catalog items (pull secret omitted for VM when not applicable); plus every `field_definitions` entry with defaults or configured values, without duplicating Basics fields already shown.
-- [ ] Integer fields render as number inputs; enum fields render as selects whose options match `validation_schema` enum values; all other field types render as plain text inputs.
-- [ ] No select field options are sourced from fulfillment list APIs (`virtual_networks`, `subnets`, etc.).
-- [ ] The wizard supports provisioning for both ComputeInstance and Cluster catalog item types.
-- [ ] Validation errors from `validation_schema` appear inline on the offending field; Next is disabled until every error on the current step is resolved.
-- [ ] Submitting from Review sends a create request that merges tenant inputs and non-editable defaults.
+- [ ] Selecting a ComputeInstance or Cluster catalog item and completing the wizard creates the resource using only the static field set (§3.1.1) plus non-editable catalog defaults.
+- [ ] The wizard presents four steps in order: catalog selection → Basics → Configuration → Review; submit is triggered from Review.
+- [ ] Basics collects name and credentials (`spec.ssh_key` for VM; `spec.ssh_public_key` and `spec.pull_secret` for cluster).
+- [ ] Configuration collects all remaining static fields for the resource type; non-editable catalog overlays hide inputs and apply defaults.
+- [ ] ComputeInstance Networking uses virtual network, subnet, and security group pickers backed by list APIs; payload contains assembled `spec.network_attachments`, not user-edited raw JSON.
+- [ ] Review shows every static field value (entered or defaulted) and non-editable non-static catalog defaults.
+- [ ] Catalog overlay: matching `field_definitions` control display name, editability, default, required, and validation; static fields without a matching entry remain editable with wizard defaults.
+- [ ] Selecting a catalog item with a non-editable static field lacking `default` blocks the wizard with a clear error.
+- [ ] Validation errors appear inline; Next is disabled until the current step is valid.
+- [ ] The wizard supports both ComputeInstance and Cluster catalog item types.
 
 ## 5. Dependencies
 
-- **Catalog item APIs:** Published `ComputeInstanceCatalogItem` and `ClusterCatalogItem` resources with populated `field_definitions` must be available via fulfillment REST/gRPC APIs consumed by the OSAC UI.
-- **Create APIs:** ComputeInstance and Cluster create endpoints must accept payloads shaped by catalog item `field_definitions` paths.
+- **Catalog item APIs:** `ComputeInstanceCatalogItem` and `ClusterCatalogItem` with `field_definitions`.
+- **Networking list APIs:** `VirtualNetworks.List`, `Subnets.List`, `SecurityGroups.List` (tenant-scoped, for ComputeInstance Networking pickers).
+- **Create APIs:** ComputeInstance and Cluster create endpoints accepting the static spec paths in §3.1.1.
+- **API extension:** `required` boolean on `FieldDefinition` (backend; coordinates with catalog authoring).
 
-## 6. Open Questions
+## 6. Resolved Decisions
 
-### 6.1 How should required fields be specified?
+### 6.1 Required fields
 
-Each `FieldDefinition` carries its own `validation_schema` string — JSON Schema draft 2020-12 scoped to **that field's value** (the data at `path`), not to the full resource spec object. The `FieldDefinition` message has no separate `required` flag; requiredness must be inferred from how the wizard and schema are used.
+- **Static wizard fields** are required per §3.1.1 unless a matching `field_definitions` entry sets `required: false` or marks the field non-editable with a default.
+- **Catalog overlay:** Add a `required` boolean to `FieldDefinition`. When present on a matching entry, it controls whether an editable static field blocks Next when empty. Per-field `validation_schema` constraints (`minLength`, `minimum`, etc.) provide additional validation.
+- **Backend follow-up:** API/catalog authoring owns the `FieldDefinition.required` schema addition (per review feedback).
 
-Because of that shape, **object-level JSON Schema `required` (a list of property names) is not a meaningful way to mark a catalog field as required.** The `required` keyword applies when validating an object with multiple `properties`; here the UI validates one value at a time against one schema. Admins cannot express “this field is mandatory” by adding `"required": ["spec.foo"]` to `validation_schema`.
+### 6.2 Field source model (review alignment)
 
-Per-field constraints can still enforce non-emptiness or bounds — for example `minLength`, `minimum`, or `enum` — but that is value validation, not a first-class “required field” declaration on the catalog item.
-
-**Basics fields** (`metadata.name`, SSH key, pull secret when applicable) are required by wizard rules (FR-5–FR-7), independent of `field_definitions`.
-
-**Still open:** For editable Configuration fields, should the wizard treat every shown field as required by default (empty blocks Next), require admins to encode requiredness only via per-value schema constraints (`minLength`, etc.), or should a future API change add an explicit required indicator on `FieldDefinition`?
-
-- **Owner:** API / catalog authoring
-- **Impact:** FR-8, FR-14, NFR-2, and client validation for Configuration-step fields
+| Source | Role in this PRD |
+|--------|------------------|
+| **Static wizard field set** (§3.1.1) | Determines which fields always appear |
+| **Catalog `field_definitions`** | Overrides display, editability, default, required, validation for matching paths |
+| **Template parameters** | Out of scope — follow-on release |
