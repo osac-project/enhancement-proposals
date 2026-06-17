@@ -12,8 +12,8 @@
 - Tenant users provision VMs and clusters by selecting a catalog offering, completing a guided wizard with a **fixed field set per resource type**, and submitting — without exposing the full resource spec or internal-only API fields.
 - The wizard always renders the same static fields for each resource type (see §3.1.1). Catalog items do **not** determine which fields appear.
 - For each static field, when the selected catalog item defines a matching `field_definitions` entry (same `path`), the wizard uses that entry for **display name**, **editability**, **default**, **required**, and **validation_schema**. When no matching entry exists, the field is still shown and remains editable with wizard/API defaults.
-- Networking for ComputeInstance uses an intuitive workflow (virtual network, subnet, security groups) backed by fulfillment list APIs — not raw `network_attachments` JSON.
-- A single wizard implementation flow for both ComputeInstance and Cluster catalog item types.
+- Networking is a dedicated wizard step: ComputeInstance uses virtual network, subnet, and security group pickers; Cluster collects pod and service CIDRs.
+- A single five-step wizard flow for both ComputeInstance and Cluster catalog item types.
 
 ### 2.2 Non-Goals
 
@@ -32,39 +32,33 @@ The following are explicitly out of scope and **will not be supported** in this 
 
 The wizard must always present the fields below for the selected resource type. These fields are **not** discovered from `field_definitions`; they are hardcoded in the UI per resource type.
 
-**Shared (all types)**
-
-| Path | Label | Widget | Required |
-|------|-------|--------|----------|
-| `metadata.name` | Name | Text | Yes |
-
 **ComputeInstance**
 
-| Path | Label | Widget | Options source | Required |
-|------|-------|--------|----------------|----------|
-| `metadata.name` | Name | Text | — | Yes |
-| `spec.ssh_key` | SSH public key | Text (multiline) | — | Yes |
-| `spec.cores` | vCPUs | Number | — | Yes |
-| `spec.memory_gib` | Memory (GiB) | Number | — | Yes |
-| `spec.image.source_ref` | Image | Text | — | Yes |
-| `spec.boot_disk.size_gib` | Boot disk size (GiB) | Number | — | Yes |
-| `spec.run_strategy` | Run strategy | Select | `Always`, `Halted` | Yes |
-| Networking | Virtual network, subnet, security groups | Dedicated pickers (see FR-19) | List APIs (see §5) | Yes |
+| Wizard step | Path | Label | Widget | Options source | Required |
+|-------------|------|-------|--------|----------------|----------|
+| General | `metadata.name` | Name | Text | — | Yes |
+| General | `spec.ssh_key` | SSH public key | Text (multiline) | — | Yes |
+| Compute | `spec.cores` | vCPUs | Number | — | Yes |
+| Compute | `spec.memory_gib` | Memory (GiB) | Number | — | Yes |
+| Compute | `spec.image.source_ref` | Image | Text | — | Yes |
+| Compute | `spec.boot_disk.size_gib` | Boot disk size (GiB) | Number | — | Yes |
+| Compute | `spec.run_strategy` | Run strategy | Select | `Always`, `Halted` | Yes |
+| Networking | Networking | Virtual network, subnet, security groups | Dedicated pickers (see FR-20) | List APIs (see §5) | Yes |
 
-The Networking row does not map to a single spec path. The wizard collects virtual network, subnet, and security group selections and **assembles** `spec.network_attachments` in the create payload (see FR-19).
+The Networking row does not map to a single spec path. The wizard collects virtual network, subnet, and security group selections on the Networking step and **assembles** `spec.network_attachments` in the create payload (see FR-20).
 
 **Cluster**
 
-| Path | Label | Widget | Required |
-|------|-------|--------|----------|
-| `metadata.name` | Name | Text | Yes |
-| `spec.ssh_public_key` | SSH public key | Text (multiline) | Yes |
-| `spec.pull_secret` | Pull secret | Text (multiline, masked) | Yes |
-| `spec.release_image` | OpenShift version (release image) | Text | Yes |
-| `spec.network.pod_cidr` | Pod network CIDR | Text | Yes (default allowed) |
-| `spec.network.service_cidr` | Service network CIDR | Text | Yes (default allowed) |
+| Wizard step | Path | Label | Widget | Required |
+|-------------|------|-------|--------|----------|
+| General | `metadata.name` | Name | Text | Yes |
+| General | `spec.ssh_public_key` | SSH public key | Text (multiline) | Yes |
+| General | `spec.pull_secret` | Pull secret | Text (multiline, masked) | Yes |
+| Compute | `spec.release_image` | OpenShift version (release image) | Text | Yes |
+| Networking | `spec.network.pod_cidr` | Pod network CIDR | Text | Yes (default allowed) |
+| Networking | `spec.network.service_cidr` | Service network CIDR | Text | Yes (default allowed) |
 
-Cluster catalog items always collect pull secret; ComputeInstance wizard never collects pull secret.
+Cluster wizard always collects pull secret on General; ComputeInstance wizard never collects pull secret.
 
 #### 3.1.2 Catalog overlay (`field_definitions`)
 
@@ -85,49 +79,55 @@ For each static wizard field, the wizard looks up a `field_definitions` entry in
 
 #### Wizard structure
 
-The wizard guides tenant users from catalog selection through submit in four steps.
+The wizard guides tenant users from catalog selection through submit in five steps.
 
 ```mermaid
 flowchart LR
-  A[Catalog Selection] --> B[Basics]
-  B --> C[Configuration]
-  C --> D[Review]
-  D --> E[Submit Create]
+  A[Catalog] --> B[General]
+  B --> C[Compute]
+  C --> D[Networking]
+  D --> E[Review]
+  E --> F[Submit Create]
 ```
 
 - **FR-1:** The OSAC UI must provide a provisioning wizard for ComputeInstance and Cluster resources that uses the static field sets in §3.1.1, with catalog overlay per §3.1.2.
-- **FR-2:** After the user opens the wizard, the flow must consist of four steps in order: (1) catalog selection, (2) Basics, (3) Configuration, (4) Review. Submit is an action from Review, not a separate step.
+- **FR-2:** After the user opens the wizard, the flow must consist of five steps in order: (1) Catalog, (2) General, (3) Compute, (4) Networking, (5) Review. Submit is an action from Review, not a separate step.
 
-#### Catalog selection (step 1)
+#### Catalog (step 1)
 
-- **FR-4:** Step 1 must present published catalog items for the target resource type (ComputeInstance or Cluster) and require the user to select one catalog item before proceeding.
+- **FR-4:** Step 1 (Catalog) must present published catalog items for the target resource type (ComputeInstance or Cluster) and require the user to select one catalog item before proceeding.
 
-#### Basics (step 2)
+#### General (step 2)
 
-- **FR-5:** Step 2 must collect all static **Basics** fields for the resource type:
-  - **Shared:** `metadata.name`
-  - **ComputeInstance:** `spec.ssh_key`
-  - **Cluster:** `spec.ssh_public_key`, `spec.pull_secret`
+- **FR-5:** Step 2 (General) must collect identity and access fields for the resource type:
+  - **ComputeInstance:** `metadata.name`, `spec.ssh_key`
+  - **Cluster:** `metadata.name`, `spec.ssh_public_key`, `spec.pull_secret`
 
-#### Configuration (step 3)
+#### Compute (step 3)
 
-- **FR-6:** Step 3 must collect all remaining static fields for the resource type not collected in Basics (§3.1.1), honoring catalog overlay editability (§3.1.2):
-  - **ComputeInstance:** `spec.cores`, `spec.memory_gib`, `spec.image.source_ref`, `spec.boot_disk.size_gib`, `spec.run_strategy`, Networking (FR-19)
-  - **Cluster:** `spec.release_image`, `spec.network.pod_cidr`, `spec.network.service_cidr`
-- **FR-7:** Step 3 must not render static fields that are non-editable per catalog overlay; their defaults apply per FR-3.
+- **FR-6:** Step 3 (Compute) must collect compute and platform-sizing fields for the resource type, honoring catalog overlay editability (§3.1.2):
+  - **ComputeInstance:** `spec.cores`, `spec.memory_gib`, `spec.image.source_ref`, `spec.boot_disk.size_gib`, `spec.run_strategy`
+  - **Cluster:** `spec.release_image`
 
-#### Review (step 4)
+#### Networking (step 4)
 
-- **FR-8:** Step 4 (Review) must display every static wizard field for the resource type with the value that will be sent in the create request: user-entered values for editable fields, and `default` values for non-editable fields (including Networking assembled per FR-19).
-- **FR-9:** Review must also display non-editable `field_definitions` entries for non-static paths with their default values (so tenants can see catalog-preset values they did not configure).
-- **FR-10:** Review must not display spec fields beyond the static wizard field set and non-editable catalog defaults in FR-9.
+- **FR-7:** Step 4 (Networking) must collect networking fields for the resource type, honoring catalog overlay editability (§3.1.2):
+  - **ComputeInstance:** virtual network, subnet, and security groups (FR-20)
+  - **Cluster:** `spec.network.pod_cidr`, `spec.network.service_cidr`
+- **FR-8:** General, Compute, and Networking steps must not render static fields that are non-editable per catalog overlay; their defaults apply per FR-3.
+
+#### Review (step 5)
+
+- **FR-9:** Step 5 (Review) must display every static wizard field for the resource type with the value that will be sent in the create request: user-entered values for editable fields, and `default` values for non-editable fields (including Networking assembled per FR-20).
+- **FR-10:** Review must also display non-editable `field_definitions` entries for non-static paths with their default values (so tenants can see catalog-preset values they did not configure).
+- **FR-11:** Review must not display spec fields beyond the static wizard field set and non-editable catalog defaults in FR-10.
 
 #### Field rendering
 
-- **FR-14:** For editable static fields with a `validation_schema` in the matching `field_definitions` entry: `type: integer` → number input; `enum` present → select; all other types → plain text input (unless FR-19 applies).
+- **FR-14:** For editable static fields with a `validation_schema` in the matching `field_definitions` entry: `type: integer` → number input; `enum` present → select; all other types → plain text input (unless FR-20 applies).
 - **FR-15:** Select options from `validation_schema` `enum` values apply only to fields using enum-based selects (e.g., `spec.run_strategy` when not overridden by catalog schema).
 - **FR-18:** When a field fails `validation_schema` validation, the wizard must show the error inline on that field. The user must not be able to proceed to the next step until all validation errors on the current step are resolved.
-- **FR-19:** For ComputeInstance Networking, the wizard must present:
+- **FR-20:** On the ComputeInstance Networking step, the wizard must present:
   1. **Virtual network** — select from `VirtualNetworks.List`
   2. **Subnet** — select from `Subnets.List`, filtered to the chosen virtual network
   3. **Security groups** — multi-select from `SecurityGroups.List`, filtered to the chosen virtual network
@@ -143,15 +143,17 @@ flowchart LR
 
 - **NFR-1:** The wizard must consume catalog item data from `ComputeInstanceCatalogItem` and `ClusterCatalogItem` APIs, including `field_definitions` (`path`, `display_name`, `editable`, `default`, `required`, `validation_schema`).
 - **NFR-2:** Client-side validation must honor `validation_schema` on matching `field_definitions` entries. Failures are inline per field and block Next until resolved.
-- **NFR-3:** The wizard must not expose spec fields beyond the static wizard field set (§3.1.1), except non-editable catalog defaults shown on Review (FR-9).
+- **NFR-3:** The wizard must not expose spec fields beyond the static wizard field set (§3.1.1), except non-editable catalog defaults shown on Review (FR-10).
 
 ## 4. Acceptance Criteria
 
 - [ ] Selecting a ComputeInstance or Cluster catalog item and completing the wizard creates the resource using only the static field set (§3.1.1) plus non-editable catalog defaults.
-- [ ] The wizard presents four steps in order: catalog selection → Basics → Configuration → Review; submit is triggered from Review.
-- [ ] Basics collects name and credentials (`spec.ssh_key` for VM; `spec.ssh_public_key` and `spec.pull_secret` for cluster).
-- [ ] Configuration collects all remaining static fields for the resource type; non-editable catalog overlays hide inputs and apply defaults.
-- [ ] ComputeInstance Networking uses virtual network, subnet, and security group pickers backed by list APIs; payload contains assembled `spec.network_attachments`, not user-edited raw JSON.
+- [ ] The wizard presents five steps in order: Catalog → General → Compute → Networking → Review; submit is triggered from Review.
+- [ ] General collects name and credentials (`spec.ssh_key` for VM; `spec.ssh_public_key` and `spec.pull_secret` for cluster).
+- [ ] Compute collects sizing and platform fields (`spec.cores`, `spec.memory_gib`, `spec.image.source_ref`, `spec.boot_disk.size_gib`, `spec.run_strategy` for VM; `spec.release_image` for cluster).
+- [ ] Networking collects network configuration (virtual network, subnet, and security groups for VM; pod and service CIDRs for cluster).
+- [ ] Non-editable catalog overlays hide inputs on General, Compute, and Networking; defaults appear on Review and in the payload.
+- [ ] ComputeInstance Networking uses list APIs; payload contains assembled `spec.network_attachments`, not user-edited raw JSON.
 - [ ] Review shows every static field value (entered or defaulted) and non-editable non-static catalog defaults.
 - [ ] Catalog overlay: matching `field_definitions` control display name, editability, default, required, and validation; static fields without a matching entry remain editable with wizard defaults.
 - [ ] Selecting a catalog item with a non-editable static field lacking `default` blocks the wizard with a clear error.
@@ -161,7 +163,7 @@ flowchart LR
 ## 5. Dependencies
 
 - **Catalog item APIs:** `ComputeInstanceCatalogItem` and `ClusterCatalogItem` with `field_definitions`.
-- **Networking list APIs:** `VirtualNetworks.List`, `Subnets.List`, `SecurityGroups.List` (tenant-scoped, for ComputeInstance Networking pickers).
+- **Networking list APIs:** `VirtualNetworks.List`, `Subnets.List`, `SecurityGroups.List` (tenant-scoped, for ComputeInstance Networking step).
 - **Create APIs:** ComputeInstance and Cluster create endpoints accepting the static spec paths in §3.1.1.
 - **API extension:** `required` boolean on `FieldDefinition` (backend; coordinates with catalog authoring).
 
@@ -177,6 +179,10 @@ flowchart LR
 
 | Source | Role in this PRD |
 |--------|------------------|
-| **Static wizard field set** (§3.1.1) | Determines which fields always appear |
+| **Static wizard field set** (§3.1.1) | Determines which fields always appear and on which step |
 | **Catalog `field_definitions`** | Overrides display, editability, default, required, validation for matching paths |
 | **Template parameters** | Out of scope — follow-on release |
+
+### 6.3 Wizard step model
+
+Five steps: **Catalog → General → Compute → Networking → Review**. Networking is a dedicated step so list APIs and network validation are isolated from compute sizing and platform configuration.
