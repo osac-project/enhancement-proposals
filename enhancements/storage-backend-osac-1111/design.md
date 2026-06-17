@@ -20,7 +20,7 @@ superseded-by:
 
 ## Summary
 
-This enhancement adds a `StorageBackend` entity to the fulfillment-service, providing a private gRPC API (CRUD) and a public read-only API for managing storage array registrations. StorageBackend follows the NetworkClass pattern: DB-backed with no Kubernetes CRD and no reconciler. See [PRD](prd.md) for detailed requirements.
+This enhancement adds a `StorageBackend` entity to the fulfillment-service, providing a private gRPC API (CRUD) for managing storage array registrations. StorageBackend follows the NetworkClass pattern: DB-backed with no Kubernetes CRD and no reconciler. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -48,7 +48,7 @@ StorageBackend introduces the infrastructure registration layer. It stores the p
 
 ## Proposal
 
-StorageBackend is a new entity in the fulfillment-service with two API surfaces:
+StorageBackend is a new entity in the fulfillment-service with a private API surface:
 
 **Private API** (`osac.private.v1.StorageBackends`): Full CRUD (Create, Get, List, Update, Delete). Used by Cloud Provider Admins and internal systems (e.g., future tenant onboarding controller that needs credentials to pass to AAP). No Signal RPC — StorageBackend has no reconciler or controller. No public API — tenants interact with storage through StorageTier, not directly with backends.
 
@@ -230,7 +230,6 @@ Indexes:
 ```sql
 create index storage_backends_by_name on storage_backends (name);
 create index storage_backends_by_owner on storage_backends using gin (creators);
-create index storage_backends_by_tenant on storage_backends using gin (tenants);
 create index storage_backends_by_label on storage_backends using gin (labels);
 ```
 
@@ -380,7 +379,11 @@ For initial merge:
 
 This is a new API with no upgrade impact. The database migration (`54_create_storage_backends_tables.up.sql`) is additive — it creates new tables and indexes without modifying existing schema.
 
-**Downgrade:** Requires deleting all StorageBackend records and then reverting the database migration (dropping the `storage_backends` and `archived_storage_backends` tables). No other OSAC entities reference StorageBackend in this phase, so deletion has no cascading effects.
+**Phase 1 → Phase 0.2 behavioral change:** In phase 1, `Delete` is allowed on any backend with no StorageTier references. In phase 0.2, `Delete` is restricted to backends in `DECOMMISSIONED` state. Admins who previously deleted backends directly must first transition them to `DECOMMISSIONED`. This is a deliberate tightening — document in release notes.
+
+**Downgrade (phase 0.2 → phase 1):** Any backends in `MAINTENANCE` or `DECOMMISSIONED` state must be transitioned back to `READY` or deleted before downgrading, since phase 1 only recognizes the `READY` state.
+
+**Downgrade (phase 1 → removal):** Requires deleting all StorageBackend records and then reverting the database migration (dropping the `storage_backends` and `archived_storage_backends` tables). No other OSAC entities reference StorageBackend in this phase, so deletion has no cascading effects.
 
 ## Version Skew Strategy
 
