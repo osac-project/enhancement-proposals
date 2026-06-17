@@ -389,6 +389,8 @@ This is a new API with no upgrade impact. The database migration (`54_create_sto
 
 StorageBackend exists entirely within the fulfillment-service. There is no CRD in osac-operator and no cross-component API dependency. Version skew between fulfillment-service and osac-operator does not affect StorageBackend.
 
+**Intra-component skew (rolling upgrades):** During a rolling upgrade from phase 1 to phase 0.2, a phase 1 instance may read backends from PostgreSQL with state values it does not recognize (`MAINTENANCE` = 2, `DECOMMISSIONED` = 3). Proto3 preserves unknown enum values as their integer representation, so the data is not corrupted. The phase 1 instance will serve these backends with the numeric state value in API responses. This is acceptable for the brief duration of a rolling upgrade. Downgrades from phase 0.2 to phase 1 require all backends in `MAINTENANCE` or `DECOMMISSIONED` state to be transitioned back to `READY` or deleted before the rollback (see Upgrade / Downgrade Strategy above).
+
 When StorageTier (OSAC-1110) is implemented, it will reference StorageBackend by ID. At that point, the StorageTier implementation must handle the case where a referenced StorageBackend does not exist (fulfillment-service upgraded with StorageTier before StorageBackend records are created, or downgrade removes StorageBackend). This is scoped to OSAC-1110.
 
 ## Support Procedures
