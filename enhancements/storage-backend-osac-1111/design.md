@@ -137,8 +137,6 @@ Credentials are stored inline in the JSONB `data` column, following the same pat
 |-------|------|----------|-------------|
 | `state` | `StorageBackendState` | Yes | Current lifecycle state |
 | `message` | `string` | No | Human-readable status detail |
-| `model` | `string` | No | Storage array model (e.g., `"VAST C-100"`) |
-| `firmware_version` | `string` | No | Reported firmware version |
 
 **`StorageBackendState` enum:**
 
@@ -175,7 +173,7 @@ The service defines five RPCs following the NetworkClass service pattern (withou
 | `Update` | `PATCH` | `/api/private/v1/storage_backends/{object.id}` | `body: "object"`, `response_body: "object"` |
 | `Delete` | `DELETE` | `/api/private/v1/storage_backends/{id}` | |
 
-No Signal RPC is defined. Signal exists on other entities to wake up a reconciler when external state changes — StorageBackend has no reconciler, so Signal would have no consumer. Status fields (model, firmware_version) can be updated via the standard `Update` RPC if needed in the future.
+No Signal RPC is defined. Signal exists on other entities to wake up a reconciler when external state changes — StorageBackend has no reconciler, so Signal would have no consumer.
 
 #### Server Implementation
 
@@ -204,11 +202,12 @@ create table storage_backends (
   creation_timestamp timestamp with time zone not null default now(),
   deletion_timestamp timestamp with time zone not null default 'epoch',
   finalizers text[] not null default '{}',
-  creators text[] not null default '{}',
-  tenants text[] not null default '{}',
+  creator text not null default '',
+  tenant text not null default '',
   labels jsonb not null default '{}'::jsonb,
   annotations jsonb not null default '{}'::jsonb,
-  data jsonb not null
+  data jsonb not null,
+  version integer not null default 0
 );
 
 create table archived_storage_backends (
@@ -217,11 +216,12 @@ create table archived_storage_backends (
   creation_timestamp timestamp with time zone not null,
   deletion_timestamp timestamp with time zone not null,
   archival_timestamp timestamp with time zone not null default now(),
-  creators text[] not null default '{}',
-  tenants text[] not null default '{}',
+  creator text not null default '',
+  tenant text not null default '',
   labels jsonb not null default '{}'::jsonb,
   annotations jsonb not null default '{}'::jsonb,
-  data jsonb not null
+  data jsonb not null,
+  version integer not null default 0
 );
 ```
 
@@ -229,7 +229,8 @@ Indexes:
 
 ```sql
 create index storage_backends_by_name on storage_backends (name);
-create index storage_backends_by_owner on storage_backends using gin (creators);
+create index storage_backends_by_creator on storage_backends (creator);
+create index storage_backends_by_tenant on storage_backends (tenant);
 create index storage_backends_by_label on storage_backends using gin (labels);
 ```
 
