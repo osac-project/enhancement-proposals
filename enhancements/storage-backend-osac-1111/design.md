@@ -52,7 +52,7 @@ StorageBackend is a new entity in the fulfillment-service with two API surfaces:
 
 **Private API** (`osac.private.v1.StorageBackends`): Full CRUD (Create, Get, List, Update, Delete). Used by Cloud Provider Admins and internal systems (e.g., future tenant onboarding controller that needs credentials to pass to AAP). No Signal RPC — StorageBackend has no reconciler or controller. No public API — tenants interact with storage through StorageTier, not directly with backends.
 
-The database schema follows the standard JSONB `data` column pattern with `storage_backends` and `archived_storage_backends` tables. A unique partial index on `name` enforces FR-9 (name uniqueness among active records). **[OPEN: The deletion strategy (soft-delete vs hard-delete) is under review — see Open Questions.]**
+The database schema follows the standard JSONB `data` column pattern with `storage_backends` and `archived_storage_backends` tables. A unique partial index on `name` enforces FR-9 (name uniqueness among active records). **[OPEN: see OQ-1]**
 
 The generic server's `setPayload()` switch statement requires a new case for `StorageBackend`, and the Event proto requires a new `storage_backend` payload field.
 
@@ -84,7 +84,7 @@ The diagram shows the registration path. The admin registers the backend via the
 
 **Credential rotation:** The admin calls `UpdateStorageBackend` with new `credentials` fields. No redeployment is required.
 
-**Decommission:** The admin calls `DeleteStorageBackend`. The backend is soft-deleted using the standard DAO pattern (sets `deletion_timestamp`, archives the record). Delete is rejected with `FAILED_PRECONDITION` if any StorageTier references the backend — the admin must remove all tier associations first. **[OPEN: The deletion strategy (soft-delete vs hard-delete) is under review — see Open Questions.]**
+**Decommission:** The admin calls `DeleteStorageBackend`. By default the backend is soft-deleted (standard DAO pattern — sets `deletion_timestamp`, archives the record). When `purge=true` is set on the request, the backend is permanently removed from the database. Both modes reject the delete with `FAILED_PRECONDITION` if any StorageTier references the backend — the admin must remove all tier associations first. **[OPEN: see OQ-1]**
 
 **Error cases:**
 - Duplicate name on active backend: Create returns `ALREADY_EXISTS` (enforced by the unique partial index).
@@ -169,7 +169,7 @@ No Signal RPC is defined. Signal exists on other entities to wake up a reconcile
 - Builder pattern: `NewPrivateStorageBackendsServer()` returns a builder with `SetLogger`, `SetNotifier`, `SetAttributionLogic`, `SetTenancyLogic`, `SetMetricsRegisterer`, `Build()`
 - `Create`: validates required fields (`metadata.name`, `provider`, `endpoint`, `credentials.username`, `credentials.password`), sets state to `STORAGE_BACKEND_STATE_READY`, clears caller-provided ID. The generic server's `validateName()` enforces RFC 1035 DNS label format (1–63 chars, lowercase alphanumeric + hyphens, no leading/trailing hyphens). Name uniqueness among active backends is enforced by the `storage_backends_unique_active_name` partial index.
 - `Update`: fetches existing object, merges via `applyStorageBackendUpdate`, validates immutability of `provider` and `metadata.name` fields, delegates to generic server
-- `Delete`: checks for referencing StorageTier records; rejects with `FAILED_PRECONDITION` if any exist, otherwise delegates to generic server (soft delete via standard DAO pattern). **[OPEN: soft-delete vs hard-delete — see Open Questions]**
+- `Delete`: checks for referencing StorageTier records; rejects with `FAILED_PRECONDITION` if any exist. Default: soft-delete via standard DAO. When `purge=true`: hard-delete, permanently removing the record. **[OPEN: see OQ-1]**
 
 **Immutable fields on update:** `provider` and `metadata.name` are immutable after creation. Changing the storage provider would invalidate the endpoint, credentials, and any downstream StorageTier references. Name immutability ensures stable human-readable identifiers for operational use and prevents confusion when backends are referenced by name in logs and configurations.
 
@@ -224,7 +224,7 @@ create unique index storage_backends_unique_active_name
   where deletion_timestamp = 'epoch';
 ```
 
-This partial index permits name reuse after soft deletion while preventing duplicate names among active records. The DAO's unique violation error maps to gRPC `ALREADY_EXISTS`. **[OPEN: If hard-delete is chosen, this becomes a plain unique index without the partial condition.]**
+This partial index permits name reuse after soft deletion while preventing duplicate names among active records. The DAO's unique violation error maps to gRPC `ALREADY_EXISTS`. **[OPEN: see OQ-1 — the partial condition is needed for soft-delete; hard-delete via `purge` removes the row entirely so the partial index still works correctly.]**
 
 #### Generic Server Changes
 
@@ -316,19 +316,22 @@ Instead of storing credentials inline, the fulfillment-service could store a `cr
 
 *Cons:* Introduces a new credential pattern that no existing OSAC entity uses — all current entities (break_glass_credentials, identity_provider, user, cluster_template, hub) store credentials inline. Adds operational complexity (Secret must exist, namespace resolution, lifecycle management). Creates an inconsistency in the codebase.
 
-*Rejection:* Consistency with existing OSAC patterns outweighs the security benefit for phase 1. All other entities store credentials inline, and introducing a divergent pattern without an OSAC-core decision on unified credential management would create unnecessary complexity. This can be revisited when OSAC establishes a platform-wide credential storage strategy.
+*Rejection:* OSAC core are aware of the need for a credentials solution for the system(this is not a specific to storage backends) - see this ticket https://redhat.atlassian.net/browse/OSAC-1567 . Also, consistency with existing OSAC patterns outweighs the security benefit for phase 1. All other entities store credentials inline, and introducing a divergent pattern without an OSAC-core decision on unified credential management would create unnecessary complexity. This can be revisited when OSAC establishes a platform-wide credential storage strategy.
 
 ## Open Questions
 
-**OQ-1: Soft-delete vs hard-delete for StorageBackend decommission.**
+**OQ-1: Deletion strategy — soft-delete by default, optional hard-delete with `purge` flag.**
 
-The generic DAO uses soft-delete by default (sets `deletion_timestamp`, archives the record to `archived_storage_backends`). All existing OSAC entities follow this pattern. However, StorageBackend may not need the archived record — audit can be handled by the existing observability infrastructure (structured logging, PostgreSQL NOTIFY events), and referential integrity (rejecting delete when StorageTiers reference the backend) prevents orphaned references.
+**Proposed resolution:** Support both modes. `DeleteStorageBackend` performs a soft-delete by default (standard DAO pattern — sets `deletion_timestamp`, archives to `archived_storage_backends`). When `purge=true` is set on the request, the backend is permanently removed from the database.
 
-Options:
-- **Keep soft-delete (current DAO default):** No DAO changes needed. Archived records are preserved. Name reuse is allowed via the partial index. Follows the established pattern.
-- **Switch to hard-delete:** Requires extending the generic DAO with a hard-delete option or implementing custom delete logic in the StorageBackend server. Simpler schema (no archived table, plain unique index on name). Aligns with AWS/GCP patterns where infrastructure resources are hard-deleted and audit relies on external logs.
+Both modes enforce referential integrity — delete is rejected with `FAILED_PRECONDITION` if any StorageTier references the backend, regardless of soft vs hard delete.
 
-**Owner:** Storage architect. **Impact:** Database schema, DAO usage, FR-6, FR-9.
+This requires:
+- A `bool purge` field on the `DeleteStorageBackendRequest` message.
+- Extending the generic DAO or adding custom delete logic in `PrivateStorageBackendsServer.Delete()` to bypass the archive step when `purge=true`.
+- The `archived_storage_backends` table and partial unique index are still needed for the soft-delete path.
+
+**Owner:** Storage architect. **Impact:** Proto schema (`DeleteStorageBackendRequest`), DAO usage, FR-6.
 
 ## Test Plan
 
