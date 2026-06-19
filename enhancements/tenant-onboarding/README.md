@@ -101,6 +101,7 @@ spec:
 - **FR-11:** Adoption adds the `managed-by: fulfillment-service` annotation to existing CRs if they match a tenant in the database (matched by `metadata.name`)
 - **FR-12:** After adoption, legacy tenants participate in full lifecycle management: updates, deletes, and reconciliation recovery
 - **FR-13:** Tenant CRs that exist in the cluster but have no corresponding database entry are left unmanaged (no annotation added) to preserve manually created test/development tenants
+- **FR-14:** During adoption, if a legacy Tenant CR is missing required fields (`spec.displayName` or `spec.emailDomains`), the controller backfills them from the fulfillment database before adding the `managed-by` annotation. If the corresponding tenant record is not found in the database or lacks the required fields, the CR is left unmanaged (no annotation added)
 
 ## Dependencies
 
