@@ -22,7 +22,7 @@ superseded-by:
 ### 1.1 Goals
 
 - Tenants provision VMs and clusters by selecting a catalog offering and completing a guided wizard with a **fixed field set per resource type** ([§2.1.1](#211-static-wizard-fields)).
-- Both resource types use the same five steps: **Catalog → Access → Configuration → Networking → Review** (submit from Review). **Access** collects identity and credentials; **Configuration** collects image/release, sizing, and platform parameters — not networking placement.
+- Both resource types use the same five steps: **Catalog Item → Access → Configuration → Networking → Review** (submit from Review). **Access** collects identity and credentials; **Configuration** collects image/release, sizing, and platform parameters — not networking placement.
 - Catalog `field_definitions` overlay matching static paths on **Configuration** and **Networking** steps only (not Access) for **display name**, **editability**, **default**, and **validation_schema** — they do not add fields or payload paths ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
 ### 1.2 Non-Goals
@@ -106,7 +106,7 @@ Non-editable fields (`editable: false`) are **read-only** on the wizard step (Co
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `spec.run_strategy` | Pre-select `Always` when no catalog `default`                                                                            |
 | OS family (VM)      | Pre-select **Linux** (`is_windows: false`) when no catalog `default`                                                     |
-| Instance type (VM)  | **auto-select** when `InstanceTypes.List` returns exactly one option — subject to catalog overlay decision ([§5](#5-open-decisions)) |                  |
+| Instance type (VM)  | **auto-select** when `InstanceTypes.List` returns exactly one option — subject to catalog overlay decision ([§5](#5-open-decisions)) |
 | Networking pickers  | **auto-select** when a list returns exactly one option (VN → subnet → SGs) — subject to catalog overlay decision ([§5](#5-open-decisions)) |
 
 #### 2.1.3 Open required fields
@@ -186,20 +186,20 @@ Do **not** send `cores` or `memory_gib` — they are mutually exclusive with `in
 
 ```mermaid
 flowchart LR
-  A[Catalog] --> B[Access]
+  A[Catalog Item] --> B[Access]
   B --> C[Configuration]
   C --> D[Networking]
   D --> E[Review and Submit]
 ```
 
-- **Catalog step:** Require catalog item selection.
+- **Catalog Item:** Require catalog item selection.
 - **Review:** Shows the same values the user sees on wizard step fields (Access, Configuration, Networking) — blank, catalog- or wizard-defaulted, or user-entered — with the same labels as on each step. Submit from Review.
 - **Step navigation:** Next is always enabled. On click, validate every field on the current step — including fields that have not yet blurred and therefore have no inline error shown. Surface any hidden errors inline; if validation fails, show an alert asking the user to fix the errors and do not advance.
 
 ## 3. Acceptance Criteria
 
 - Wizard provisions VM or Cluster using only [§2.1.1](#211-static-wizard-fields) payload paths plus hardcoded VM `source_type` and catalog item reference.
-- Five-step flow: Catalog → Access → Configuration → Networking → Review; submit from Review.
+- Five-step flow: Catalog Item → Access → Configuration → Networking → Review; submit from Review.
 - Review shows the same values as on wizard step fields (blank, default-driven, or user-entered).
 - Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on Configuration and Networking only (Access ignores `field_definitions`); picker-backed field overlay resolved per [§5](#5-open-decisions); non-editable fields without `default` appear blank and read-only on their wizard step and on Review; non-editable fields with `default` appear read-only with value on their wizard step and on Review.
 - VM: single `network_attachments` entry assembled from picker APIs; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
