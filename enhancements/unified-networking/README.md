@@ -604,11 +604,13 @@ resource.
 message ComputeNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
+  bool primary = 3;                     // optional, immutable: designates default gateway
 }
 ```
 
 Each entry maps one virtual NIC to one subnet. Multiple entries create
-a multi-homed VM.
+a multi-homed VM. See [Multi-NIC Behavior](#multi-nic-behavior) for
+primary designation and default gateway semantics.
 
 **BareMetalNetworkAttachment** (for BaremetalInstance):
 
@@ -617,14 +619,17 @@ message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
   string interface = 3;                 // optional, immutable: physical interface identifier from BMaaS
+  bool primary = 4;                     // optional, immutable: designates default gateway
 }
 ```
 
 Each entry maps one physical interface to one subnet. The `interface`
 field references an interface identifier provided by BMaaS.
-If omitted, the fabric manager picks a default. See the
-[Resource Creation](#resource-creation-differs-by-type) section for
-interface discovery and multi-interface examples.
+If omitted, the fabric manager picks a default. Multiple entries create
+a multi-homed BM server. See [Multi-NIC Behavior](#multi-nic-behavior)
+for primary designation and default gateway semantics, and
+[Resource Creation](#resource-creation-differs-by-type) for interface
+discovery and multi-interface examples.
 
 **ClusterNetworkAttachment** (for Cluster):
 
@@ -769,11 +774,44 @@ subnets. Cluster supports multiple `network_attachments` with the
 `node_set` field to place different node sets on different subnets. All
 subnets must belong to the same VN across all resource types.
 
-For multi-subnet resources (VMs with multiple virtual NICs or bare-metal
-servers with multiple physical interfaces), default gateway configuration
-— which subnet provides the default route, how additional subnets are
-configured without conflicting gateways — is an implementation detail of
-the responsible manager (k8sManager for VMs, fabric manager for BM).
+#### Multi-NIC Behavior
+
+When a resource has multiple network attachments, the tenant designates
+one as **primary** via `primary: true` on the attachment. The primary
+attachment determines:
+
+- Which subnet provides the **default gateway** for the resource
+- Which subnet IP is used as the **DNAT target** for ExternalIPAttachment
+- Which subnet IP is used as the **source** for NATGateway SNAT
+
+**Validation:**
+- If only one attachment exists, it is primary by default
+- If multiple attachments exist, exactly one must be marked `primary: true`
+- If multiple attachments exist and none is marked primary, the request is
+  rejected
+- `primary` is immutable after creation
+
+**IPAM and DHCP:** The responsible manager (k8sManager for VMs, fabric
+manager for BM) configures DHCP per subnet based on the primary
+designation:
+
+| Subnet role | DHCP provides |
+|-------------|--------------|
+| Primary | IP address + default gateway + DNS |
+| Secondary | IP address + connected route only (no gateway) |
+
+This ensures the resource has exactly one default route. Secondary subnets
+are reachable via directly connected routes.
+
+**ExternalIPAttachment:** When targeting a multi-homed resource, the fabric
+manager creates a DNAT rule to the resource's primary subnet IP. The tenant
+does not need to specify which interface — the primary designation
+determines the target.
+
+**Cluster multi-NIC:** `ClusterNetworkAttachment` uses `node_set` rather
+than per-NIC attachment. Multi-NIC for individual cluster nodes is handled
+by the CaaS template (provider-configured). The `primary` field does not
+apply to `ClusterNetworkAttachment`.
 
 #### Multiple Hosting Clusters Per Region
 
