@@ -219,7 +219,7 @@ flowchart LR
 
 ## 5. Open decisions
 
-Resolve before implementation. 
+Resolve before implementation.
 
 ### Required vs optional (`?`)
 
