@@ -3,7 +3,7 @@ title: Configuration Wizard for Cluster and VM Resources
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-14
-last-updated: 2026-06-22
+last-updated: 2026-06-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 see-also:
@@ -23,7 +23,7 @@ superseded-by:
 
 - Tenants provision VMs and clusters by selecting a catalog offering and completing a guided wizard with a **fixed field set per resource type** ([§2.1.1](#211-static-wizard-fields)).
 - Both resource types use the same five steps: **Catalog Item → Access → Configuration → Networking → Review** (submit from Review). **Access** collects identity and credentials; **Configuration** collects image/release, sizing, and platform parameters — not networking placement.
-- Catalog `field_definitions` overlay matching static paths on **Configuration** and **Networking** steps only (not Access) for **display name**, **editability**, **default**, and **validation_schema** — they do not add fields or payload paths ([§2.1.2](#212-catalog-overlay-and-defaults)).
+- Catalog `field_definitions` overlay matching static paths on **Configuration** and **Networking** steps only (not Access, not picker-backed fields in v1) for **display name**, **editability**, **default**, and **validation_schema** — they do not add fields or payload paths ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
 ### 1.2 Non-Goals
 
@@ -61,9 +61,9 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 - **`spec.user_data`**: plain multiline string (cloud-init or Ignition); omit from payload when empty. Stored as Secret → KubeVirt `cloudInitNoCloud`.
 - **`spec.image`**: wizard collects `source_ref` only; payload always sets `spec.image.source_type` to **`registry`**. Future: ComputeImage list picker ([OSAC-979](https://redhat.atlassian.net/browse/OSAC-979)).
 - **`spec.is_windows`**: Configuration-step **OS family** radio — **Linux** → `is_windows: false`; **Windows** → `is_windows: true`. Maps to the optional boolean added in [fulfillment-service PR #734](https://github.com/osac-project/fulfillment-service/pull/734) ([OSAC-13](https://redhat.atlassian.net/browse/OSAC-13)); the reconciler maps this to CR `guestOSFamily` for AAP provisioning. Required on the wizard; default selection **Linux** when no catalog `default` ([§2.1.2](#212-catalog-overlay-and-defaults)). The wizard always sends an explicit value.
-- **`spec.instance_type`**: Configuration-step **instance type** picker — tenant selects a named compute bundle (cores + memory) from [§2.1.5](#215-vm-instance-type-picker-api). Payload sends **`spec.instance_type` only** (instance type name); the wizard does **not** collect or send `spec.cores` or `spec.memory_gib` ([VM Instance Types EP](/enhancements/vm-instance-types), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735) / OSAC-1217). The API validates the name and state; the reconciler resolves cores/memory on the CR. Catalog overlay interaction is **undecided** ([§5](#5-open-decisions)).
+- **`spec.instance_type`**: Configuration-step **instance type** picker — tenant selects a named compute bundle (cores + memory) from [§2.1.5](#215-vm-instance-type-picker-api). Payload sends **`spec.instance_type` only** (instance type name); the wizard does **not** collect or send `spec.cores` or `spec.memory_gib` ([VM Instance Types EP](/enhancements/vm-instance-types), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735) / OSAC-1217). The API validates the name and state; the reconciler resolves cores/memory on the CR. Catalog `field_definitions` for this path are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)).
 - **Disks**: wizard collects `spec.boot_disk.size_gib` only unless [§5](#5-open-decisions) chooses `spec.additional_disks`.
-- **Networking**: pickers assemble a single `spec.network_attachments` entry; raw JSON not shown. Catalog overlay interaction is **undecided** ([§5](#5-open-decisions)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
+- **Networking**: pickers assemble a single `spec.network_attachments` entry; raw JSON not shown. Catalog `field_definitions` for this path (including nested paths) are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
 
 **Cluster**
 
@@ -86,11 +86,11 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 
 #### 2.1.2 Catalog overlay and defaults
 
-For each static field on **Configuration** and **Networking** steps, match `field_definitions` by `path`. **Access** step fields ignore catalog `field_definitions` entirely (wizard labels, editability, and validation only). Non-matching paths are **ignored** (not on Review, not in payload).
+For each static **non-picker** field on **Configuration** and **Networking** steps, match `field_definitions` by `path`. **Access** step fields ignore catalog `field_definitions` entirely (wizard labels, editability, and validation only). Non-matching paths are **ignored** (not on Review, not in payload).
 
-**Picker-backed fields:** `spec.instance_type` and `spec.network_attachments` load options from list APIs ([§2.1.5](#215-vm-instance-type-picker-api), [§2.1.4](#214-vm-networking-picker-apis)). How catalog `field_definitions` interact with those pickers (overlay, defaults, auto-select) is **undecided** ([§5](#5-open-decisions)).
+**Picker-backed fields (v1):** `spec.instance_type` and `spec.network_attachments` (including nested paths such as `spec.network_attachments.subnet`) load options from list APIs ([§2.1.5](#215-vm-instance-type-picker-api), [§2.1.4](#214-vm-networking-picker-apis)). Matching catalog `field_definitions` for these paths are **ignored** — wizard labels, editability, validation, and defaults come from wizard defaults and list-API behavior only. Catalog overlay on picker fields is **deferred** to a later release ([§5](#5-open-decisions)).
 
-| Aspect     | Matching entry                                                              | No matching entry     |
+| Aspect     | Matching entry (non-picker fields only)                                     | No matching entry     |
 | ---------- | --------------------------------------------------------------------------- | --------------------- |
 | Label      | `display_name` or wizard default                                            | Wizard default        |
 | Editable   | `editable: false` → read-only on wizard step; blank when no catalog `default` | `true`                |
@@ -106,8 +106,8 @@ Non-editable fields (`editable: false`) are **read-only** on the wizard step (Co
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `spec.run_strategy` | Pre-select `Always` when no catalog `default`                                                                            |
 | OS family (VM)      | Pre-select **Linux** (`is_windows: false`) when no catalog `default`                                                     |
-| Instance type (VM)  | **auto-select** when `InstanceTypes.List` returns exactly one option — subject to catalog overlay decision ([§5](#5-open-decisions)) |
-| Networking pickers  | **auto-select** when a list returns exactly one option (VN → subnet → SGs) — subject to catalog overlay decision ([§5](#5-open-decisions)) |
+| Instance type (VM)  | **Auto-select** when `InstanceTypes.List` returns exactly one option |
+| Networking pickers  | **Auto-select** when a list returns exactly one option (VN → subnet → SGs) |
 
 #### 2.1.3 Open required fields
 
@@ -150,7 +150,7 @@ this.spec.virtual_network == "<vn-id>"
 
 Per `NetworkAttachment` in `compute_instance_type.proto`. The wizard does not send virtual network ID in `network_attachments`; placement is implied by the subnet (security groups must belong to the same virtual network).
 
-**Load order:** virtual network list → on selection, load filtered subnet and security group lists → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)); catalog `default` interaction subject to [§5](#5-open-decisions).
+**Load order:** virtual network list → on selection, load filtered subnet and security group lists → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
 ### 2.1.5 VM instance type picker API
 
@@ -180,7 +180,7 @@ Do **not** send `cores` or `memory_gib` — they are mutually exclusive with `in
 
 **Deprecation handling:** if the selected type is DEPRECATED, create may succeed with **warnings** in the response; the wizard surfaces those warnings after submit (non-blocking). OBSOLETE types are not offered in the picker.
 
-**Load order:** load instance type list when entering Configuration → auto-select when the list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)); catalog `default` interaction subject to [§5](#5-open-decisions).
+**Load order:** load instance type list when entering Configuration → auto-select when the list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
 ### 2.2 Wizard behavior
 
@@ -201,10 +201,10 @@ flowchart LR
 - Wizard provisions VM or Cluster using only [§2.1.1](#211-static-wizard-fields) payload paths plus hardcoded VM `source_type` and catalog item reference.
 - Five-step flow: Catalog Item → Access → Configuration → Networking → Review; submit from Review.
 - Review shows the same values as on wizard step fields (blank, default-driven, or user-entered).
-- Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on Configuration and Networking only (Access ignores `field_definitions`); picker-backed field overlay resolved per [§5](#5-open-decisions); non-editable fields without `default` appear blank and read-only on their wizard step and on Review; non-editable fields with `default` appear read-only with value on their wizard step and on Review.
+- Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on Configuration and Networking **non-picker** fields only (Access and picker-backed paths ignore `field_definitions` in v1); non-editable fields without `default` appear blank and read-only on their wizard step and on Review; non-editable fields with `default` appear read-only with value on their wizard step and on Review.
 - VM: single `network_attachments` entry assembled from picker APIs; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
 - Cluster: `node_sets` matches template pool keys with template `host_type` and tenant `size` > 0; empty template `node_sets` handling per [§5](#5-open-decisions).
-- All **?** requiredness decisions and picker overlay questions resolved before release ([§5](#5-open-decisions)).
+- All **?** requiredness decisions resolved before release ([§5](#5-open-decisions)).
 - On Next click, validate all fields on the current step (including untouched fields); surface hidden inline errors; show an alert if invalid; do not advance until the step is valid.
 
 ## 4. Dependencies
@@ -229,18 +229,11 @@ Resolve before implementation.
 | `spec.boot_disk.size_gib` | ComputeInstance |
 | `spec.network.pod_cidr`, `spec.network.service_cidr` | Cluster |
 
-### Catalog overlay vs picker-backed fields
+### Catalog overlay on picker-backed fields (deferred)
 
-Picker-backed paths: `spec.instance_type`, `spec.network_attachments` (and nested paths such as `spec.network_attachments.subnet`). **Open question:** when a catalog item defines matching `field_definitions`, how do they interact with list-API pickers?
+**Resolved for v1:** Ignore catalog `field_definitions` for picker-backed paths (`spec.instance_type`, `spec.network_attachments`, and nested networking paths). Picker UX is API-driven only; see [§2.1.2](#212-catalog-overlay-and-defaults).
 
-| Question | Options |
-| -------- | ------- |
-| **Overlay applies to picker fields?** | **Yes** — catalog `display_name`, `editable`, `default`, and `validation_schema` apply like other static fields; picker lists still populate options from APIs. **No** — picker UX is API-driven only; matching `field_definitions` are ignored for these paths. |
-| **Catalog `default` vs single-option auto-select?** | When both a catalog `default` and a single-option list API result exist: **Catalog default wins** (pre-select catalog value; skip auto-select). **Auto-select wins** (use sole API option when no catalog `default`). **Fail** — wizard blocks if the sole API option differs from catalog `default`. **Other** — describe precedence rule. |
-| **Catalog `default` not in list API options?** | When a matching `field_definitions` entry has a `default` that is **not** among the options returned by the picker list API: **Fail** — wizard blocks after catalog selection (or when the list loads) with an error; tenant cannot proceed until the catalog item or environment is corrected. **Ignore default** — treat as no catalog `default`; picker starts blank (or auto-selects if exactly one API option). **Warn and blank** — show a non-blocking warning; picker starts blank. **Other** — describe behavior. |
-| **Nested networking paths?** | If overlay applies: do `field_definitions` on nested paths (e.g. `spec.network_attachments.subnet`) constrain picker defaults/validation, or only the top-level path? |
-
-Resolve before implementation; document the chosen rule in [§2.1.2](#212-catalog-overlay-and-defaults) and update acceptance criteria.
+**Deferred:** Catalog overlay on picker fields (including `display_name`, `editable`, `default`, `validation_schema`, catalog-default vs auto-select precedence, and defaults not present in list API options) is out of scope for v1 and may be addressed in a later release.
 
 ### Cluster template `node_sets`
 
