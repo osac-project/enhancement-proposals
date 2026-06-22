@@ -1,5 +1,5 @@
 ---
-title: baremetal-instance-types
+title: bare-metal-instance-types
 authors:
   - ajamias@redhat.com
 creation-date: 2026-06-15
@@ -18,118 +18,111 @@ superseded-by:
 
 ## Summary
 
-This enhancement introduces `BareMetalInstanceType` as a cluster-scoped Kubernetes CRD that
-represents a class of bare metal hardware available for tenant provisioning. Each
-`BareMetalInstanceType` resource corresponds to a `hostType` value used by `BareMetalInstance` and
-`BareMetalPool`, bridging the pluggable inventory interface with the OSAC BMaaS public API. Cloud
-Provider Admins define and manage instance types via the `osac` CLI; the fulfillment service
-creates and manages the corresponding CRDs in Kubernetes on their behalf. The fulfillment service
-reads these CRDs to serve `ListBareMetalInstanceTypes` and `GetBareMetalInstanceType` API calls,
-enabling Tenant Users to self-select hardware for provisioning without direct knowledge of the
-underlying inventory. When the baremetal-fulfillment-operator reconciles a `BareMetalInstance`, it
-reads the associated `BareMetalInstanceType` and uses its fields to filter available hosts from the
-inventory backend in an inventory-client-specific manner.
-
-Storage is explicitly excluded from instance type specifications: bare metal storage is offloaded to
-NFS and is not a hardware differentiator at the instance type level.
+This enhancement introduces `BareMetalInstanceType` as a discoverable list of bare metal hardware
+types automatically derived from the inventory backend. Each `BareMetalInstanceType` corresponds
+to a unique `hostType` value found in the inventory, providing structured hardware specifications
+for the OSAC BMaaS public API. The bare-metal-fulfillment-operator automatically discovers distinct
+host types from the inventory, samples representative hosts to extract hardware characteristics,
+and creates/updates corresponding fulfillment service resources. Cloud Provider Admins can overlay
+lifecycle states (ACTIVE/DEPRECATED/OBSOLETE), display names, and descriptions via configuration,
+while hardware specifications and inventory count remain auto-synchronized on a recurring interval.
+This approach eliminates manual catalog maintenance and ensures specifications always match actual
+available hardware.
 
 ## Motivation
 
 Currently, `hostType` in `BareMetalInstance.spec.hostType` and
-`BareMetalPool.spec.hostSets[].hostType` is an opaque string. There is no structured resource that:
+`BareMetalPool.spec.hostSets[].hostType` is an opaque string corresponding to inventory backend
+classifications. There is no structured resource that:
 
-- Documents what hardware a given type provides (CPUs, memory, accelerators, network ports)
-- Manages the type's lifecycle (active, deprecated, obsolete)
-- Exposes the type catalog to the BMaaS API layer for tenant self-service
-- Provides structured fields the operator can use to filter available hosts from inventory
+- Documents what hardware a given type provides (CPUs, memory, storage, accelerators,
+  network ports)
+- Automatically discovers available types from the inventory to ensure consistency
+- Manages the type's lifecycle (ACTIVE, DEPRECATED, OBSOLETE) with administrative permissions
+- Exposes the type list to the BMaaS API layer for tenant self-service
+- Handles host subcategorization/filtering when the same host type has different availability
+  characteristics
 
-Without this, the BMaaS API cannot present meaningful instance type choices to Tenant Users, and
-the inventory discovery interface has nowhere to publish availability data.
+Without this, there is no way for Tenant Users to choose what hardware they want from the BMaaS
+API, and there is no automated way to maintain consistent info presented as the inventory changes.
 
 ### User Stories
 
 * As a **Cloud Provider Admin**, I want to define and expose available bare metal instance types
   so that the OSAC BMaaS API can present them to Tenant Users for self-service provisioning.
-* As a **Cloud Provider Admin**, I want to annotate each instance type with CPU, memory, and
-  network specifications so that Tenant Users can select the right hardware for their workloads
-  without needing to contact the infrastructure team.
-* As a **Cloud Provider Admin**, I want to manage instance type lifecycle states (Active /
-  Deprecated / Obsolete) so that I can retire aging hardware classes gracefully without deleting the
+* As a **Cloud Provider Admin**, I don't want to have to annotate each instance type with CPU,
+  memory, and network specifications. The list of `BareMetalInstanceTypes` should automatically
+  update as new hardware gets installed or old hardware gets removed.
+* As a **Cloud Provider Admin**, I want to manage instance type lifecycle states (ACTIVE /
+  DEPRECATED / OBSOLETE) so that I can retire aging hardware classes gracefully without deleting the
   definitions or breaking existing `BareMetalInstance` records.
 * As a **Cloud Provider Admin**, I want to provide a replacement suggestion and timeline when
   deprecating an instance type so that Tenant Users have clear guidance on how to migrate workloads.
 * As a **Tenant User**, I want to list available bare metal instance types with hardware
   specifications so that I can choose the right type for my workload.
 * As a **Tenant User**, I want to provision a `BareMetalInstance` by selecting an instance type
-  name so that I do not need to know the underlying inventory structure.
+  name so that I do not need to know the underlying inventory implementation.
 * As a **Tenant User**, I want to be warned when I select a deprecated instance type so that I can
   plan a migration to the recommended replacement.
 
 ### Goals
 
-* Provide a cluster-scoped `BareMetalInstanceType` CRD as the authoritative catalog of hardware
-  types, with `metadata.name` as the canonical `hostType` key shared across `BareMetalInstance`,
-  `BareMetalPool`, and the BMaaS API.
-* Allow Cloud Provider Admins to manage instance types via the `osac` CLI; the fulfillment service
-  creates and manages the corresponding CRDs in Kubernetes.
-* Expose hardware specifications (CPU, memory, accelerators, network) and a freeform `capabilities`
-  map for display to Tenant Users via the BMaaS API.
-* Support instance type lifecycle states — `Active`, `Deprecated`, `Obsolete` — with bidirectional
-  transitions and deprecation metadata (replacement suggestion, timeline timestamps).
+* Provide auto-discovered `BareMetalInstanceType` resources by querying inventory for distinct
+  `hostType` values and extracting hardware specifications from representative hosts.
+* Enable the bare-metal-fulfillment-operator to automatically maintain accurate hardware
+  specifications by periodically sampling inventory hosts per type.
+* Allow Cloud Provider Admins to overlay lifecycle states (`ACTIVE`, `DEPRECATED`, `OBSOLETE`),
+  display names, and descriptions via configuration while hardware specs remain auto-synchronized.
+* Separate instance types in the frontend for hosts with different `managed_by` fields
+  while maintaining the core hostType-based identity model.
+* Expose hardware specifications (CPU, memory, accelerators, network, local storage)
+  and a freeform `capabilities` for display to Tenant Users via the BMaaS API.
 * Enable the fulfillment service to serve `ListBareMetalInstanceTypes` and
-  `GetBareMetalInstanceType` by reading CRDs directly, with state-based filtering (Active and
-  Deprecated by default; Obsolete on request).
-* Enable the baremetal-fulfillment-operator to read the `BareMetalInstanceType` associated with a
-  `BareMetalInstance` during reconciliation and use its fields to filter available hosts from the
-  inventory backend in an inventory-client-specific manner.
-* Validate that `BareMetalInstance` creation via BMaaS API references an Active or Deprecated
-  instance type, with a warning returned for Deprecated types.
-* Reject `BareMetalInstance` creation for Obsolete instance types.
+  `GetBareMetalInstanceType` by reading CRDs directly, with state-based filtering.
+* Validate that `BareMetalInstance` creation via BMaaS API references an ACTIVE or DEPRECATED
+  instance type, with a warning returned for DEPRECATED types.
+* Reject `BareMetalInstance` creation for OBSOLETE instance types.
 
 ### Non-Goals
 
 The following are explicitly out of scope:
 
-* Storage specifications as part of instance types.
 * Organization-scoped or tenant-scoped instance types — all types are globally defined by Cloud
-  Provider Admins in Phase 1.
+  Provider Admins
 * Quota enforcement based on instance types — deferred to the OSAC quota system.
 * Pricing or metering metadata associated with instance types.
 * Automatic state transitions (e.g., scheduled DEPRECATED -> OBSOLETE at a specified timestamp) --
-  Cloud Provider Admin must perform transitions manually in Phase 1.
+  Cloud Provider Admin must perform transitions manually
 * Per-organization instance type restrictions (hiding specific types from specific tenants).
-* Network bandwidth constraints or network performance tiers beyond the existing network port spec.
-* Validation that a `BareMetalInstance`'s `hostType` references an existing `BareMetalInstanceType`
-  at the Kubernetes API layer -- enforcement is at the BMaaS API boundary only, consistent with the
-  VM instance types pattern.
+* Manual catalog management -- instance types are auto-discovered from inventory, eliminating
+  the need for manual hardware specification maintenance.
 
 ## Proposal
 
-This proposal introduces the `BareMetalInstanceType` CRD as the bridge between the bare metal
-inventory backend and the OSAC BMaaS public API. Cloud Provider Admins create and manage instance
-types via the `osac` CLI; the fulfillment service translates those operations into CRD creates,
-updates, and deletes in Kubernetes. The baremetal-fulfillment-operator reads the CRD during
-`BareMetalInstance` reconciliation to obtain structured hardware criteria and applies them as
-inventory filters when querying for available hosts. The fulfillment service also reads these CRDs
-to expose instance types to Tenant Users.
+This proposal introduces the `BareMetalInstanceType` resource as an auto-discovered list of bare
+metal hardware types derived directly from the inventory backend. The bare-metal-fulfillment-operator
+periodically queries the inventory for distinct `hostType` values, obtains representative hosts
+to extract hardware characteristics, and creates/updates corresponding fulfillment service
+resources. Cloud Provider Admins can overlay administrative metadata (lifecycle states, descriptions)
+via osac cli configuration, while hardware specifications remain automatically synchronized from
+inventory. This approach ensures accuracy and eliminates manual synchronization overhead.
 
 ### Key Resources
 
-**BareMetalInstanceType** -- provider-defined hardware type catalog entry
-* Cluster-scoped (no namespace); globally visible to all tenants via the BMaaS API
-* `metadata.name` is the canonical `hostType` identifier used by `BareMetalInstance` and
-  `BareMetalPool`
-* Created and managed by the fulfillment service on behalf of Cloud Provider Admin CLI operations
-* Mutable: `displayName`, `description`, `state`, `hardware`, `capabilities`
-* Immutable: `metadata.name` (the hostType key must never change to avoid breaking existing
-  resource references)
-* State lifecycle: `Active` <-> `Deprecated` <-> `Obsolete` (bidirectional transitions supported)
-* Deprecation metadata: replacement suggestion and timeline timestamps on `Deprecated` or `Obsolete`
-  transitions
+**BareMetalInstanceType** -- auto-discovered hardware type catalog entry
+* Globally scoped, visible to all organizations
+* `metadata.name` is the canonical `hostType` identifier used by `BareMetalInstance` and `BareMetalPool`
+* Auto-created and updated by the bare-metal-fulfillment-operator via inventory discovery
+* Administrative overlay via osac cli for lifecycle states and descriptions
+* Auto-synchronized: `hardware` specifications extracted from inventory host
+* Mutable via admin config: `description`, `state`, deprecation metadata
+* Immutable: `metadata.name`, `spec.hardware`
+* State lifecycle: `ACTIVE` <-> `DEPRECATED` <-> `OBSOLETE` (bidirectional transitions supported)
+* Frontend separation: hosts with different `managed_by` fields are presented as separate instance types
 
 **BareMetalInstance (existing, no API change)** -- tenant-provisioned bare metal server
-* `spec.hostType` references a `BareMetalInstanceType` name; this field is already immutable
-* No changes to CR schema -- validation is enforced at the BMaaS API boundary
+* `spec.hostType` references `BareMetalInstanceType` names
+* No changes to CR schema
 
 **BareMetalPool (existing, no API change)** -- pool of bare metal hosts
 * `spec.hostSets[].hostType` references `BareMetalInstanceType` names
@@ -138,90 +131,98 @@ to expose instance types to Tenant Users.
 ### Scoping and Visibility
 
 All `BareMetalInstanceType` resources in Phase 1 are globally scoped:
-* **Created and managed by:** Cloud Provider Admin only, via the `osac` CLI (which calls the
-  private BMaaS admin API; the fulfillment service creates and manages the CRD in Kubernetes)
-* **Lifecycle states:**
-  - **Active**: Fully available for new `BareMetalInstance` provisioning, no warnings
-  - **Deprecated**: Available for provisioning with a warning returned in the API response;
-    migration to the suggested replacement is recommended
-  - **Obsolete**: Not available for new provisioning (rejected at API boundary); still visible for
-    `Get` and `List` (with explicit filter) for historical reference
+* **Auto-discovered by:** bare-metal-fulfillment-operator via inventory queries
+* **Administratively controlled by:** Cloud Provider Admin via osac cli configuration
+* **Lifecycle states (detailed definitions):**
+  - **ACTIVE**: Fully available for new `BareMetalInstance` provisioning
+    - API behavior: Creation succeeds without warnings
+    - Operator behavior: Normal host allocation and provisioning
+    - Display: Shown in default `ListBareMetalInstanceTypes` results
+  - **DEPRECATED**: Available for provisioning with migration recommendations
+    - API behavior: Creation succeeds with warning in response (includes replacement suggestion and obsolete timeline)
+    - Operator behavior: Normal host allocation and provisioning
+    - Display: Shown in default lists with deprecation metadata
+    - Purpose: Signal planned retirement while maintaining backwards compatibility
+  - **OBSOLETE**: Not available for new provisioning, preserved for reference
+    - API behavior: Creation rejected with 409 Conflict error
+    - Operator behavior: Existing `BareMetalInstance` resources continue unchanged, no impact on running workloads
+    - Display: Hidden from default lists, available via explicit filter (`state IN (ACTIVE, DEPRECATED, OBSOLETE)`)
+    - Purpose: Block new usage while preserving historical records and existing deployments
 
 **BMaaS API behavior by state:**
-* `ListBareMetalInstanceTypes`: Returns Active and Deprecated types by default; supports filter
-  parameter to include Obsolete (e.g., `filter: "state IN (ACTIVE, DEPRECATED, OBSOLETE)"`)
+* `ListBareMetalInstanceTypes`: Returns ACTIVE and DEPRECATED types by default; supports filter
+  parameter to include OBSOLETE (e.g., `filter: "state IN (ACTIVE, DEPRECATED, OBSOLETE)"`)
 * `GetBareMetalInstanceType`: Returns any type regardless of state
-* `CreateBareMetalInstance`: Active succeeds; Deprecated succeeds with warning in
-  `CreateBareMetalInstanceResponse.warnings`; Obsolete is rejected with 409 Conflict
+* `CreateBareMetalInstance`: ACTIVE succeeds; DEPRECATED succeeds with warning in
+  `CreateBareMetalInstanceResponse.warnings`; OBSOLETE is rejected with 409 Conflict
 
 ### Naming and Uniqueness
 
-* `BareMetalInstanceType` names are globally unique (enforced by Kubernetes cluster-scoped
-  resource semantics)
+* `BareMetalInstanceType` names are globally unique
 * The name is the primary identifier; it is immutable after creation to prevent reference breakage
   in existing `BareMetalInstance` and `BareMetalPool` resources
 * Names should be meaningful and descriptive (e.g., `gpu-a100-2x`, `hpc-icelake-96c`,
   `edge-arm-32c`) rather than opaque IDs
+* Database uses `name` as the primary key
+* Hosts with same hostType but different `managed_by` fields are presented as separate instance types in the frontend
 
 ### Workflow Description
 
 #### Instance Type Management (Cloud Provider Admin)
 
-**Creating an Instance Type**
+**Auto-Discovery Process**
 
-1. Cloud Provider Admin creates an instance type via the `osac` CLI:
-   ```bash
-   osac-admin create baremetal-instance-type hpc-icelake-96c \
-     --display-name "HPC - Intel Icelake 96-core" \
-     --description "High-performance compute node with 96 physical cores and 100 GbE" \
-     --cpu-count 2 --cpu-cores 48 --cpu-threads 96 \
-     --cpu-arch x86_64 --cpu-model "Intel Xeon Platinum 8362" \
-     --memory-gib 512 \
-     --network-speed-gbps 100 --network-count 2 \
-     --capability rdma=true --capability hpc=true
-   ```
-2. The fulfillment service validates the request and creates the `BareMetalInstanceType` CRD in
-   Kubernetes with `spec.state: Active`.
-3. The instance type is immediately visible in `ListBareMetalInstanceTypes`.
+1. The bare-metal-fulfillment-operator periodically queries the inventory backend for distinct `hostType` values.
+2. For each `hostType`, the operator samples one representative host to extract hardware characteristics:
+   - CPU specifications (count, cores, threads, architecture, model, speed)
+   - Memory size
+   - Accelerators (type, model, count, memory, interconnect)
+   - Storage capacity
+   - Network interfaces (speed, count, identifiers)
+   - Capabilities derived from inventory metadata
+3. The operator creates or updates the corresponding `BareMetalInstanceType` resource in the fulfillment database with auto-discovered hardware specifications.
+4. Inventory count is automatically kept synchronized as inventory changes.
 
 **Deprecating an Instance Type**
 
-1. Cloud Provider Admin marks an instance type as deprecated:
+1. Cloud Provider Admin sets the type to deprecated:
+
    ```bash
-   osac-admin update baremetal-instance-type hpc-icelake-96c \
-     --state Deprecated \
-     --replacement hpc-sapphirerapids-128c \
-     --obsolete-at 2027-03-31T23:59:59Z
+   osac-admin update baremetalinstancetype fc430 --state deprecated
    ```
-2. The fulfillment service updates `spec.state: Deprecated` and records deprecation metadata on
-   the CRD.
-3. The fulfillment service begins returning a warning on `CreateBareMetalInstance` requests
-   referencing this type: "Instance type 'hpc-icelake-96c' is deprecated and will become obsolete
-   on 2027-03-31. Consider migrating to 'hpc-sapphirerapids-128c'."
-4. Existing `BareMetalInstance` and `BareMetalPool` resources continue to operate unchanged.
+
+2. The fulfillment service updates `state: DEPRECATED` in the database.
+3. The instance type still appears from the default `ListBareMetalInstanceTypes` response for Tenant
+   Users.
+4. The fulfillment service begins returning a warning on `CreateBareMetalInstance` requests.
+5. Existing `BareMetalInstance` and `BareMetalPool` resources continue to operate unchanged.
 
 **Obsoleting an Instance Type**
 
 1. Cloud Provider Admin sets the type to Obsolete:
+
    ```bash
-   osac-admin update baremetal-instance-type hpc-icelake-96c --state Obsolete
+   osac-admin update baremetalinstancetype fc430 --state obsolete
    ```
-2. The fulfillment service updates `spec.state: Obsolete` on the CRD.
+
+2. The fulfillment service updates `state: OBSOLETE` in the database.
 3. The instance type disappears from the default `ListBareMetalInstanceTypes` response for Tenant
    Users.
 4. New `BareMetalInstance` provisioning requests referencing this type are rejected with 409
    Conflict.
-   allocated hosts unless they are the obsoleted instance type, then they will get deleted.
-5. Existing `BareMetalInstance` resources whose `spec.hostType` matches this instance type will
-   be deleted by the operator.
+5. **Existing `BareMetalInstance` resources whose `spec.hostType` matches this instance type continue
+   to operate unchanged.** The OBSOLETE state only prevents new provisioning; it does not affect
+   existing resources.
 
 **Reactivating an Instance Type**
 
 1. Cloud Provider Admin restores the type:
+
    ```bash
-   osac-admin update baremetal-instance-type hpc-icelake-96c --state Active
+   osac-admin update baremetalinstancetype fc430 --state active
    ```
-2. The fulfillment service updates `spec.state: Active` on the CRD.
+
+2. The fulfillment service updates `state: ACTIVE` in the database.
 3. The instance type becomes fully available again without warnings.
 4. Deprecation metadata is retained for historical reference.
 
@@ -230,17 +231,18 @@ All `BareMetalInstanceType` resources in Phase 1 are globally scoped:
 **Listing Available Instance Types**
 
 1. Tenant User calls `ListBareMetalInstanceTypes`:
+
    ```bash
    osac get baremetalinstancetypes
    ```
-2. The fulfillment service reads `BareMetalInstanceType` CRDs from the management cluster and
-   returns Active and Deprecated types:
+
+2. The fulfillment service queries `BareMetalInstanceType` records from the database and
+   returns ACTIVE and DEPRECATED types:
    ```json
    {
      "items": [
        {
-         "name": "hpc-icelake-96c",
-         "display_name": "HPC - Intel Icelake 96-core",
+         "name": "fc430",
          "description": "High-performance compute node with 96 physical cores and 100 GbE",
          "state": "ACTIVE",
          "hardware": {
@@ -254,8 +256,8 @@ All `BareMetalInstanceType` resources in Phase 1 are globally scoped:
          "capabilities": { "rdma": "true", "hpc": "true" }
        },
        {
-         "name": "hpc-skylake-48c",
-         "display_name": "HPC - Intel Skylake 48-core (deprecated)",
+         "name": "fc830",
+         "description": "High-performance compute node with 2x96 physical cores and 100 GbE",
          "state": "DEPRECATED",
          "hardware": { "cpu": { "cores": 48 }, "memory": { "size_gib": 256 } },
          "deprecation": {
@@ -271,12 +273,16 @@ All `BareMetalInstanceType` resources in Phase 1 are globally scoped:
 **Error Cases**
 
 **Obsolete instance type:**
-```
-Error: bare metal instance type "hpc-skylake-32c" is obsolete and cannot be used for new provisioning
+
+```bash
+$ osac create baremetal-instance my-bm --instance-type obsolete-instance
+Error: bare metal instance type "obsolete-instance" is obsolete and cannot be used for new provisioning
 ```
 
 **Non-existent instance type:**
-```
+
+```bash
+$ osac create baremetal-instance my-bm --instance-type nonexistent
 Error: bare metal instance type "nonexistent" not found
 ```
 
@@ -299,24 +305,24 @@ Error: bare metal instance type "nonexistent" not found
 **Public API (Tenant Users):**
 - `CreateBareMetalInstance`: Require `instance_type` field (string matching a
   `BareMetalInstanceType` name)
-- `CreateBareMetalInstance`: Validate `spec.state` is `Active` or `Deprecated`; reject `Obsolete`
+- `CreateBareMetalInstance`: Validate `spec.state` is `ACTIVE` or `DEPRECATED`; reject `OBSOLETE`
   with 409 Conflict
-- `CreateBareMetalInstance`: If `Deprecated`, include deprecation warning in
+- `CreateBareMetalInstance`: If `DEPRECATED`, include deprecation warning in
   `CreateBareMetalInstanceResponse.warnings`
 - `CreateBareMetalInstance`: If name not found, reject with 404 Not Found
 - `UpdateBareMetalInstance`: Reject changes to `instance_type` field (immutable, consistent with
   `spec.hostType` immutability in the CR)
 
 **Private API (Cloud Provider Admin):**
-- `CreateBareMetalInstanceType`: Require `name` and `display_name`; default `state` to `Active`
+- `CreateBareMetalInstanceType`: Require `name` and `display_name`; default `state` to `ACTIVE`
 - `UpdateBareMetalInstanceType`: Reject changes to `name` (immutable)
-- `UpdateBareMetalInstanceType`: Allow changes to `display_name`, `description`, `state`,
+- `UpdateBareMetalInstanceType`: Allow changes to `description`, `state`,
   `hardware`, `capabilities`, and deprecation metadata
-- `UpdateBareMetalInstanceType`: State transitions are bidirectional (e.g., `Obsolete` -> `Active`
+- `UpdateBareMetalInstanceType`: State transitions are bidirectional (e.g., `OBSOLETE` -> `ACTIVE`
   is permitted)
-- `UpdateBareMetalInstanceType`: When transitioning to `Deprecated`, auto-populate
+- `UpdateBareMetalInstanceType`: When transitioning to `DEPRECATED`, auto-populate
   `deprecation.deprecated` timestamp if not provided
-- `UpdateBareMetalInstanceType`: When transitioning to `Obsolete`, auto-populate
+- `UpdateBareMetalInstanceType`: When transitioning to `OBSOLETE`, auto-populate
   `deprecation.obsolete` timestamp if not provided
 - `DeleteBareMetalInstanceType`: Reject if any `BareMetalInstance` or `BareMetalPool` resources
   reference this `hostType` value
@@ -325,7 +331,7 @@ Error: bare metal instance type "nonexistent" not found
 
 `BareMetalInstanceType` deletion is blocked if any `BareMetalInstance` CRs have `spec.hostType`
 matching the resource name. The fulfillment service checks for live references before deleting the
-CRD from Kubernetes:
+resource from the fulfillment database:
 - Query `BareMetalInstance` and `BareMetalPool` resources in the management cluster by
   `spec.hostType`
 - If any exist: reject with 409 Conflict -- "Cannot delete bare metal instance type
@@ -338,7 +344,7 @@ CRD from Kubernetes:
 // proto/public/osac/public/v1/baremetal_instance_type_type.proto
 
 enum BareMetalInstanceTypeState {
-  INSTANCE_TYPE_STATE_UNSPECIFIED = 0;
+  BARE_METAL_INSTANCE_TYPE_STATE_UNSPECIFIED = 0;
   ACTIVE = 1;       // Fully available for new BareMetalInstance provisioning
   DEPRECATED = 2;   // Available with warnings, migration recommended
   OBSOLETE = 3;     // Not available for new provisioning, visible for lookups only
@@ -369,15 +375,21 @@ message BareMetalAcceleratorSpec {
 }
 
 message BareMetalNetworkPortSpec {
-  int32 speed_gbps = 1;       // Port line speed in gigabits per second
-  int32 count = 2;            // Number of ports at this speed
+  string identifier = 1;      // Unique identifier for this network interface group
+  int32 speed_gbps = 2;       // Port line speed in gigabits per second
+  int32 count = 3;            // Number of ports at this speed
+}
+
+message BareMetalStorageSpec {
+  int64 size_gib = 1;         // Total local storage capacity in gibibytes
 }
 
 message BareMetalHardwareSpec {
   BareMetalCPUSpec cpu = 1;
   BareMetalMemorySpec memory = 2;
   repeated BareMetalAcceleratorSpec accelerators = 3;
-  repeated BareMetalNetworkPortSpec network = 4;
+  BareMetalStorageSpec storage = 4;
+  repeated BareMetalNetworkPortSpec network = 5;
 }
 
 message BareMetalInstanceTypeDeprecation {
@@ -388,14 +400,14 @@ message BareMetalInstanceTypeDeprecation {
 }
 
 message BareMetalInstanceType {
-  string name = 1;                          // Primary identifier (matches CRD metadata.name)
-  Metadata metadata = 2;
-  string display_name = 3;                  // Human-readable name for BMaaS API display
-  string description = 4;                   // Optional description for users
-  BareMetalInstanceTypeState state = 5;
-  BareMetalHardwareSpec hardware = 6;
-  map<string, string> capabilities = 7;     // Freeform hardware features (e.g. "rdma": "true")
-  BareMetalInstanceTypeDeprecation deprecation = 8; // Only set when DEPRECATED or OBSOLETE
+  string name = 1;                          // Primary identifier (globally unique, immutable)
+  Metadata metadata = 2;                    // Standard metadata (name field matches top-level name)
+  string description = 3;                   // Optional description for users
+  BareMetalInstanceTypeState state = 4;
+  BareMetalHardwareSpec hardware = 5;       // Auto-discovered hardware specifications
+  map<string, string> capabilities = 6;     // Auto-discovered capabilities from inventory metadata
+  BareMetalInstanceTypeDeprecation deprecation = 7; // Only set when DEPRECATED or OBSOLETE
+  string managed_by = 8;                    // Inventory managed_by field value for frontend separation
 }
 
 // proto/public/osac/public/v1/baremetal_instance_types_service.proto
@@ -422,11 +434,11 @@ service BareMetalInstanceTypes {
 }
 
 message GetBareMetalInstanceTypeRequest {
-  string name = 1;
+  string name = 1;  // References metadata.name from BareMetalInstanceType
 }
 
 message DeleteBareMetalInstanceTypeRequest {
-  string name = 1;
+  string name = 1;  // References metadata.name from BareMetalInstanceType
 }
 
 // CreateBareMetalInstanceResponse (modified)
@@ -438,184 +450,128 @@ message CreateBareMetalInstanceResponse {
 
 ### Implementation Details/Notes/Constraints
 
-#### CRD as Source of Truth
+#### Inventory Discovery as Source of Truth
 
-Unlike VMaaS instance types (which are stored in the fulfillment service database),
-`BareMetalInstanceType` resources live exclusively as Kubernetes CRDs in the management cluster.
-The fulfillment service owns the full lifecycle of these CRDs -- creating them on admin `Create`
-calls, patching them on `Update`, and deleting them on `Delete` -- rather than writing to a
-separate database table. This design provides:
+`BareMetalInstanceType` resources are auto-discovered from the inventory backend and materialized
+as fulfillment resource. The bare-metal-fulfillment-operator serves as the discovery engine, periodically
+querying inventory for host types and extracting hardware specifications. This design provides:
 
-- **No database table required:** All state lives in the CRD; the fulfillment service uses its
-  existing Kubernetes client for all CRUD operations.
-- **Direct operator integration:** The baremetal-fulfillment-operator reads `BareMetalInstanceType`
-  CRDs natively during `BareMetalInstance` reconciliation with no additional API calls to the
-  fulfillment-service.
-- **Auditability:** CRD creates, updates, and deletes are captured in the Kubernetes audit log.
-- **GitOps-compatible:** The CRD state is inspectable and diffable via standard Kubernetes tooling.
+- **Guaranteed accuracy:** Hardware specifications always match actual inventory state.
+- **Zero maintenance overhead:** No manual catalog synchronization required.
+- **Automatic updates:** New host types appear automatically as inventory changes.
+- **Administrative overlay:** Cloud Provider Admins control presentation via osac cli without
+  affecting hardware accuracy.
 
-#### Kubernetes CRD Schema
+#### Discovery Process
 
-The `BareMetalInstanceType` CRD is defined in the baremetal-fulfillment-operator:
+The bare-metal-fulfillment-operator implements an inventory discovery controller that:
 
-```yaml
-# Example BareMetalInstanceType CR
-apiVersion: osac.openshift.io/v1alpha1
-kind: BareMetalInstanceType
-metadata:
-  name: gpu-a100-2x          # hostType key; immutable
-spec:
-  displayName: "GPU - NVIDIA A100 2x"
-  description: "GPU-accelerated node with 2x NVIDIA A100 80GB"
-  state: Active
-  hardware:
-    cpu:
-      count: 2
-      cores: 32
-      threads: 128
-      architecture: x86_64
-      model: "AMD EPYC 7543"
-      speedGHz: "2.8"
-    memory:
-      sizeGiB: 1024
-    accelerators:
-      - type: GPU
-        model: "NVIDIA A100 80GB"
-        count: 2
-        memoryGiB: 80
-        interconnect: "NVLink4"
-    network:
-      - speedGbps: 200
-        count: 2
-  capabilities:
-    rdma: "true"
-status:
-  phase: Available
-  availableCount: 4
-  totalCount: 8
-  conditions:
-    - type: HostsAvailable
-      status: "True"
-      reason: HostsAvailable
-      lastTransitionTime: "2026-06-15T12:00:00Z"
-```
-
-**`oc get bmit` output:**
-```
-NAME             PHASE       AVAILABLE   TOTAL   STATE      DISPLAYNAME              AGE
-gpu-a100-2x      Available   4           8       Active     GPU - NVIDIA A100 2x     5d
-hpc-icelake-96c  Available   12          20      Active     HPC - Intel Icelake 96c  12d
-hpc-skylake-48c  Unavailable 0           8       Deprecated HPC - Intel Skylake 48c  45d
-```
+1. **Queries inventory backend** for all available hosts with their hostType classifications
+2. **Groups hosts by hostType** and samples one representative host per type
+3. **Extracts hardware characteristics** from the sampled host:
+   - CPU specifications from inventory host properties
+   - Memory size from inventory host properties
+   - Accelerator devices and specifications
+   - Storage capacity information
+   - Network interface details with identifiers
+   - Capabilities derived from inventory metadata/labels
+4. **Creates/updates CRDs** with combined auto + admin data
 
 #### BareMetalInstance Reconciler Integration
 
-The bare-metal-fulfillment-operator's existing `BareMetalInstance` reconciler is extended to read
-the associated `BareMetalInstanceType` during host allocation. The flow is:
+The bare-metal-fulfillment-operator implements two reconciliation loops:
 
-1. Reconciler receives a `BareMetalInstance` with `spec.hostType` set (e.g. `gpu-a100-2x`).
-2. Reconciler fetches the `BareMetalInstanceType` CRD named `gpu-a100-2x` from the cluster. If
-   the CRD does not exist, the reconciler sets an error condition on the `BareMetalInstance` and
-   requeues.
-3. Reconciler passes the `BareMetalInstanceType`'s `spec.hardware` and `spec.capabilities` fields
-   to the inventory client as filter criteria when querying for available hosts. The exact mapping
-   from hardware fields to inventory query parameters is inventory-client-specific and defined by
-   the pluggable inventory interface implementation.
-4. The inventory client returns a list of hosts matching the criteria; the reconciler selects and
-   allocates one.
+**Discovery Controller:**
+1. Periodically queries inventory backend for distinct hostTypes
+2. Samples hosts per type to extract hardware specifications
+4. Creates/updates `BareMetalInstanceType` in fulfillment service
 
-The `BareMetalInstanceType`'s status is written to by the reconciler to update the amount of hosts
-the backend contains.
+**BareMetalInstance Controller (enhanced):**
+1. Receives a `BareMetalInstance` with `spec.hostType` set (e.g. `gpu-a100-2x`)
+2. Reads the corresponding `BareMetalInstanceType` to check lifecycle state
+3. Sets appropriate conditions on `BareMetalInstance`:
+   - `InstanceTypeDeprecated` if hostType is DEPRECATED
+   - `InstanceTypeObsolete` if hostType becomes OBSOLETE (informational)
+4. Passes the `hostType` value to inventory client for host filtering
+5. Applies the managed_by field for inventory filtering as needed
+6. Inventory client returns matching hosts; reconciler selects and allocates one
 
 #### Fulfillment Service Integration
 
-The fulfillment service manages `BareMetalInstanceType` CRDs via the same Kubernetes client it
-uses for other cluster resources. No new database table is required.
+The fulfillment service reads auto-discovered `BareMetalInstanceType` directly from the
+fulfillment database for API operations.
 
 **`ListBareMetalInstanceTypes` flow:**
-1. fulfillment-service calls `List` on `BareMetalInstanceType` CRDs (cluster-scoped).
-2. Filters by `spec.state` per the request filter (default: exclude Obsolete).
-3. Maps each CRD to a `BareMetalInstanceType` proto message.
+1. fulfillment-service queries `BareMetalInstanceType` from the fulfillment database.
+2. Filters by `spec.state` per the request filter (default: exclude OBSOLETE).
+3. Maps each row to a `BareMetalInstanceType` proto message.
 4. Returns the filtered list to the caller.
-
-**`CreateBareMetalInstanceType` flow (admin):**
-1. fulfillment-service validates the request (unique name, required fields).
-2. fulfillment-service creates a `BareMetalInstanceType` CRD in Kubernetes.
-3. Returns the created resource to the caller.
-
-**`CreateBareMetalInstance` flow (instance type validation):**
-1. Tenant User specifies `instance_type: "gpu-a100-2x"` in the request.
-2. fulfillment-service reads the `BareMetalInstanceType` CRD named `gpu-a100-2x`.
-3. If not found: return 404 Not Found.
-4. If `spec.state == Obsolete`: return 409 Conflict.
-5. If `spec.state == Deprecated`: add deprecation warning to response; proceed.
-6. Creates `BareMetalInstance` CR with `spec.hostType: gpu-a100-2x`.
-7. Returns `CreateBareMetalInstanceResponse` with optional `warnings`.
 
 ### Risks and Mitigations
 
-**Risk: Fulfillment service requires write access to `BareMetalInstanceType` CRDs**
-- Mitigation: The fulfillment service already uses the Kubernetes API client for other resources;
-  adding write RBAC for `baremetalinstancetypes` is consistent with the existing pattern.
-- Mitigation: Write access is scoped to the `baremetalinstancetypes` resource only; no broader
-  cluster permissions are required.
+**Risk: Instance type reference becomes stale if type is deleted**
+- Mitigation: Soft-delete pattern ensures `BareMetalInstanceType` records remain in the database
+  even after deletion (archived table).
+- Mitigation: Deletion protection check prevents deletion while `BareMetalInstance` or `BareMetalPool`
+  resources reference the type.
 
-**Risk: `BareMetalInstanceType` CRD not found during `BareMetalInstance` reconciliation**
-- Mitigation: The reconciler sets an error condition on the `BareMetalInstance` and requeues. The
-  condition message directs the operator to verify the `BareMetalInstanceType` exists.
-- Mitigation: The fulfillment service validates `instance_type` at the API boundary, so a missing
-  CRD indicates an out-of-band deletion -- the operator's error surface handles this case.
+**Risk: Inventory filtering no longer uses structured hardware specs**
+- Mitigation: Inventory client configuration can be updated to map `hostType` values to appropriate
+  filter criteria
+- Mitigation: Hardware specifications remain available in instance types for display and planning
+  purposes.
 
-**Risk: Deleting a `BareMetalInstanceType` while `BareMetalPool` resources reference it**
-- Mitigation: The deletion protection check scans both `BareMetalPool.spec.hostSets[].hostType`
-  and `BareMetalInstance.spec.hostType` references.
-- Mitigation: Cloud Provider Admin should set `state: Obsolete` and wait for all references to be
-  removed before deleting.
+**Risk: Accidental workload impact when transitioning to OBSOLETE state**
+- Mitigation: OBSOLETE state only prevents new provisioning; existing `BareMetalInstance` resources
+  continue to operate unchanged.
+- Mitigation: The CLI displays the count of affected references before state transitions.
 
-**Risk: `BareMetalInstanceType` name reuse after deletion**
-- Mitigation: Kubernetes does not prevent name reuse after deletion (unlike the DB soft-delete
-  pattern used for VMaaS instance types). Cloud Provider Admins must treat deleted type names as
-  permanently retired. Document this operational constraint.
+**Risk: Name reuse concerns after soft deletion**
+- Mitigation: Soft-delete pattern prevents name reuse; archived records maintain historical references.
+- Mitigation: Primary key uniqueness constraint spans both active and archived tables.
 
 ### Drawbacks
 
-**Inventory filter semantics are inventory-client-specific**
-- The mapping from `BareMetalInstanceType` hardware fields to inventory query parameters is defined
-  per inventory implementation, not enforced by the CRD schema.
-- Trade-off: Flexibility to support heterogeneous inventory backends vs. less predictable filtering
-  behavior across installations.
+**Hardware specifications become display-only metadata**
+- Instance types provide hardware specifications for tenant selection and capacity planning, but
+  do not directly drive inventory filtering logic.
+- Trade-off: Consistent architecture with VM instance types vs. direct operator integration for
+  hardware filtering.
 
-**Fulfillment service requires write access to `BareMetalInstanceType` CRDs**
-- The fulfillment service's RBAC must grant `create`, `update`, `patch`, and `delete` on
-  `baremetalinstancetypes`, not just `get` and `list`.
-- Trade-off: Broader RBAC scope for the fulfillment service vs. avoiding a database table and a
-  separate admin path.
+**Inventory filtering remains implementation-specific**
+- Each inventory backend (OpenStack Ironic, BCM) must implement its own `hostType` to filter
+  mapping, which is configured separately from the instance type catalog.
+- Trade-off: Flexibility to support diverse inventory systems vs. standardized hardware filtering.
 
 ## Alternatives (Not Implemented)
 
-**Alternative 1: Store instance types in the fulfillment service database (VMaaS pattern)**
-- Mirrors the VMaaS instance types design: DB table, no CRD.
-- Rejected: The baremetal-fulfillment-operator reads the CRD directly during reconciliation;
-  storing types in the DB would require the operator to call the fulfillment service API, adding a
-  cross-service dependency to the hot reconciliation path.
-- Rejected: CRD-native approach integrates directly with the operator's Kubernetes client.
-
-**Alternative 2: Keep `hostType` as an opaque string with no structured resource**
-- Simplest approach: no new CRD.
+**Alternative 1: Keep `hostType` as an opaque string with no structured resource**
+- Simplest approach: no new database tables or CRDs.
 - Rejected: No mechanism to expose type metadata (hardware specs, capabilities) to Tenant Users
   via BMaaS API.
 - Rejected: No lifecycle state management; retiring a type requires out-of-band coordination.
-- Rejected: No structured fields for the operator to use as inventory filter criteria.
+- Rejected: No structured catalog for capacity planning and tenant self-service.
 
-**Alternative 4: Source instance types from a ConfigMap or annotation convention**
+**Alternative 2: Source instance types from a ConfigMap or annotation convention**
 - Cloud Provider Admins annotate or label hosts; a controller derives types from host metadata.
 - Rejected: ConfigMaps are not strongly typed; no validation or lifecycle management.
 - Rejected: Deriving types from host annotations is brittle and hard to manage at scale.
 
+**Alternative 3: Manual CLI-based catalog management**
+- Cloud Provider Admin creates instance types via `osac-admin` CLI with manual hardware specifications.
+- Rejected: Manual specification of hardware details is error-prone and requires constant synchronization
+  with inventory changes.
+- Rejected: Inventory discovery eliminates the need for manual catalog maintenance.
+
+**Alternative 4: Unified instance types for VM and bare metal**
+- Use the same `InstanceType` resource for both VM and bare metal provisioning.
+- Rejected: VM and bare metal have fundamentally different hardware characteristics and provisioning
+  patterns; separate catalogs provide better type safety and user experience.
+
 ## Test Plan
 
 **Unit Tests:**
-- `BareMetalInstanceType` CRD validation (required fields, enum constraints, immutable name)
+- `BareMetalInstanceType` fulfillment validation (required fields, enum constraints, immutable name)
 - `ListBareMetalInstanceTypes`: default filter excludes Obsolete; explicit filter includes it
 - `GetBareMetalInstanceType`: returns type regardless of state
 - `CreateBareMetalInstance` rejects Obsolete instance type with 409 Conflict
@@ -629,37 +585,35 @@ uses for other cluster resources. No new database table is required.
 - Obsolete timestamp auto-population on `Obsolete` transition
 - `DeleteBareMetalInstanceType` rejected when `BareMetalInstance` resources reference the type
 - `DeleteBareMetalInstanceType` rejected when `BareMetalPool` resources reference the type
-- `BareMetalInstance` reconciler: fetches `BareMetalInstanceType` and passes `spec.hardware` and
-  `spec.capabilities` to the inventory client as filter criteria
-- `BareMetalInstance` reconciler: sets error condition and requeues when `BareMetalInstanceType`
-  CRD is not found
+- Database reconciliation: verify database changes sync to CRDs correctly
+- `BareMetalInstance` reconciler: uses `hostType` as opaque identifier for inventory client filtering
+  (hardware specs are metadata-only)
 
 **Integration Tests:**
-- Admin creates `BareMetalInstanceType` via CLI; verify CRD appears in cluster and in
-  `ListBareMetalInstanceTypes` response
-- `GetBareMetalInstanceType` returns hardware specs
-- Provision `BareMetalInstance` referencing Active type: succeeds, no warnings
-- Provision `BareMetalInstance` referencing Deprecated type: succeeds, warning in response
-- Provision `BareMetalInstance` referencing Obsolete type: rejected with 409 Conflict
-- Set type to Deprecated; verify it appears in list with deprecation metadata
-- Set type to Obsolete; verify it disappears from default `ListBareMetalInstanceTypes` response
-- Verify `GetBareMetalInstanceType` still returns Obsolete type for admin inspection
+- Admin creates `BareMetalInstanceType` via CLI; verify database record and reconciled CRD appear;
+  verify it appears in `ListBareMetalInstanceTypes` response
+- `GetBareMetalInstanceType` returns hardware specs from database
+- Provision `BareMetalInstance` referencing ACTIVE type: succeeds, no warnings
+- Provision `BareMetalInstance` referencing DEPRECATED type: succeeds, warning in response
+- Provision `BareMetalInstance` referencing OBSOLETE type: rejected with 409 Conflict
+- Set type to DEPRECATED; verify it appears in list with deprecation metadata
+- Set type to OBSOLETE; verify it disappears from default `ListBareMetalInstanceTypes` response
+- Verify `GetBareMetalInstanceType` still returns OBSOLETE type for admin inspection
 - Attempt to delete type with active `BareMetalInstance` references: rejected
-- Deprovision all `BareMetalInstance` resources, then delete type: CRD removed from cluster
-- Reactivate Deprecated type: returns to Active, no warnings on new provisioning
-- `BareMetalInstance` reconciler fetches `BareMetalInstanceType` by `spec.hostType` and passes
-  `spec.hardware` and `spec.capabilities` to the inventory client as filter criteria; verify
-  via operator debug logs that filter parameters match the BMIT fields
-- Hardware filter chain: provision `BareMetalInstance` with a GPU type; verify the allocated
-  host has accelerators matching `spec.hardware.accelerators` from the `BareMetalInstanceType`
-- Hardware filter chain: `BareMetalInstanceType` not found during reconcile sets an error
-  condition on `BareMetalInstance` and requeues without allocating a host
+- Deprovision all `BareMetalInstance` resources, then delete type: database record archived, CRD removed
+- Reactivate DEPRECATED type: returns to ACTIVE, no warnings on new provisioning
+- Database to CRD reconciliation: verify changes to database records sync to CRDs correctly
+- `BareMetalInstance` reconciler uses `hostType` for inventory filtering (hardware specs are display-only)
+- **Inventory integration validation:** Test that inventory clients correctly map `hostType` values
+  to appropriate filter criteria; provision `BareMetalInstance` resources and verify allocated hosts
+  match the expected characteristics for each `hostType`; hardware specifications in instance types
+  should be for display/planning but not directly used for filtering
 
 **End-to-End Tests:**
 - Cloud Provider Admin creates `BareMetalInstanceType` via `osac` CLI
 - Tenant User lists instance types and sees the new type with hardware specs
 - Tenant User provisions `BareMetalInstance` selecting the new type
-- baremetal-fulfillment-operator reads BMIT, applies hardware filters to inventory query, allocates
+- bare-metal-fulfillment-operator uses `hostType` for inventory client filtering, allocates
   a matching host, and provisions it
 - `BareMetalInstance` reaches Ready state
 - Cloud Provider Admin sets type to Deprecated with replacement and future obsolete timestamp
@@ -702,38 +656,28 @@ Not applicable -- OSAC is pre-GA.
 
 ### Operational Impact of API Extensions
 
-**New CRD:**
-- `BareMetalInstanceType` (cluster-scoped, lifecycle managed by fulfillment service)
-- Requires `ClusterRole` granting the fulfillment service `get`, `list`, `watch`, `create`,
-  `update`, `patch`, and `delete` on `baremetalinstancetypes`
-- Requires `ClusterRole` granting the baremetal-fulfillment-operator `get` and `list` on
-  `baremetalinstancetypes` (read-only; the operator does not mutate these resources)
-
 **New API resources:**
-- `BareMetalInstanceTypes` service (public + private) in fulfillment-service
+- `BareMetalInstanceTypes` service (public) in fulfillment-service (read-only)
+- Enhanced inventory discovery controller in bare-metal-fulfillment-operator
 
 **Failure Modes and Troubleshooting:**
 
 **`ListBareMetalInstanceTypes` returns empty list**
-- **Detection:** API returns empty `items`; `oc get bmit` in management cluster shows resources
-  exist
-- **Diagnosis:** fulfillment-service RBAC may not permit reading `baremetalinstancetypes` resources
-- **Resolution:** Verify fulfillment-service `ClusterRole` includes `baremetalinstancetypes` in
-  `get`/`list` verbs
+- **Detection:** API returns empty `items`; `oc get bmit` shows CRDs exist
+- **Diagnosis:** fulfillment-service cannot read CRDs from management cluster
+- **Resolution:** Check fulfillment-service RBAC for `baremetalinstancetypes` and cluster connectivity
 
-**`CreateBareMetalInstanceType` fails with permission error**
-- **Detection:** Admin CLI returns a permission-denied error
-- **Diagnosis:** fulfillment-service `ClusterRole` does not include write verbs on
-  `baremetalinstancetypes`
-- **Resolution:** Update the fulfillment-service `ClusterRole` to include `create`, `update`,
-  `patch`, and `delete` on `baremetalinstancetypes`
+**Instance types not auto-discovered**
+- **Detection:** Expected `hostType` values from inventory don't appear as CRDs
+- **Diagnosis:** Discovery controller may not be running or failing to query inventory
+- **Resolution:** Check bare-metal-fulfillment-operator logs; verify inventory backend connectivity;
+  ensure discovery controller is running
 
-**`BareMetalInstance` stuck with error condition: "BareMetalInstanceType not found"**
-- **Detection:** `oc get bmi <name> -o yaml` shows an error condition referencing a missing BMIT
-- **Diagnosis:** The `BareMetalInstanceType` CRD referenced by `spec.hostType` was deleted or
-  never created in the cluster
-- **Resolution:** Recreate the `BareMetalInstanceType` via the admin CLI, or delete the
-  `BareMetalInstance` if the instance type is no longer available
+**`BareMetalInstance` creation rejected: "instance type not found"**
+- **Detection:** API returns 404 Not Found for a valid `hostType` that exists in inventory
+- **Diagnosis:** The `BareMetalInstanceType` CRD was not auto-discovered or was deleted
+- **Resolution:** Check discovery controller logs; verify hostType exists in inventory; manually
+  trigger discovery if needed
 
 **`CreateBareMetalInstance` returns 409 for a type that appears Active in list**
 - **Detection:** List shows Active type; provisioning rejected with "is obsolete"
@@ -741,24 +685,11 @@ Not applicable -- OSAC is pre-GA.
   create
 - **Resolution:** Re-list instance types; if type is genuinely Active, retry after cache TTL expires
 
-**`BareMetalInstanceType` cannot be deleted: "referenced by active resources"**
-- **Detection:** `osac-admin delete baremetal-instance-type` returns a 409 Conflict error
-- **Diagnosis:** One or more `BareMetalInstance` or `BareMetalPool` resources reference this
-  `hostType`
-- **Resolution:** List referencing resources:
-  `oc get bmi --all-namespaces -o jsonpath='{.items[?(@.spec.hostType=="<name>")].metadata.name}'`;
-  deprovision or delete them before retrying
-
-**`BareMetalInstance` allocated to host that does not match expected hardware**
-- **Detection:** Provisioned host does not meet the CPU, memory, accelerator, or network specs
-  defined in the `BareMetalInstanceType`
-- **Diagnosis:** The inventory client's hardware filter mapping may not correctly translate
-  `BareMetalInstanceType.spec.hardware` fields to backend query parameters; mapping is
-  inventory-client-specific (see pluggable inventory interface implementation)
-- **Resolution:** Enable debug logging on the baremetal-fulfillment-operator to inspect which
-  filter parameters are passed to the inventory client; compare against the inventory client's
-  filter documentation; verify that `spec.hardware` and `spec.capabilities` values in the
-  `BareMetalInstanceType` CR use the field values and formats the inventory backend recognizes
+**Hardware specifications outdated**
+- **Detection:** CRD shows hardware specs that don't match current inventory state
+- **Diagnosis:** Discovery controller may not be running periodic inventory updates
+- **Resolution:** Check discovery controller schedule and logs; manually trigger discovery;
+  verify inventory backend connectivity
 
 ### Disabling / Rollback
 
