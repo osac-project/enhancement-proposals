@@ -3,7 +3,7 @@ title: cluster-and-vm-provisioning-wizard
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-22
-last-updated: 2026-06-24
+last-updated: 2026-06-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 prd:
@@ -74,7 +74,7 @@ sequenceDiagram
 | Networking | Adapter | VM: VN → subnet → SG pickers (single `network_attachments` entry). Cluster: pod/service CIDR |
 | Review | Shared | `adapter.getReviewSections()` — same labels and values as wizard steps; submit via `buildCreatePayload` |
 
-Register `/vms/create` and `/clusters/create` before `:id` routes. On failure: inline errors on the step; create 4xx stays on Review; deprecated instance type warnings from create response are non-blocking and surfaced after submit.
+Register `/vms/create` and `/clusters/create` before `:id` routes. On failure: inline errors on the step; any non-2xx create response stays on Review; deprecated instance type warnings from create response are non-blocking and surfaced after submit.
 
 **Catalog overlay (non-picker fields on Configuration and Networking):**
 
@@ -133,7 +133,8 @@ interface CatalogProvisionAdapter<TItem, TValues, TPayload> {
   ConfigurationStep: ComponentType<{ catalogItem: TItem | null }>;
   NetworkingStep: ComponentType<{ catalogItem: TItem | null }>;
   generalFields: GeneralFieldDescriptor[];
-  getStepSchema: (stepId: WizardStepId, fieldDefinitions: FieldDefinition[]) => AnyObjectSchema;
+  getWizardSchema: (fieldDefinitions: FieldDefinition[]) => AnyObjectSchema;
+  getStepFieldPaths: (stepId: WizardStepId) => string[];
   getReviewSections: (values: TValues, catalogItem: TItem) => ReviewSection[];
   onCatalogItemSelected?: (item: TItem, helpers: FormikHelpers<TValues>) => void | Promise<void>;
 }
@@ -142,15 +143,16 @@ interface CatalogProvisionAdapter<TItem, TValues, TPayload> {
 **Module layout:**
 
 ```text
+libs/ui-components/src/components/form/
+  InputField, SelectField, RadioButtonField — shared Formik-connected controls (reusable outside wizard)
 wizard/
-  fields/           InputField, SelectField, RadioButtonField — shared Formik-connected controls
   adapters/
     computeInstanceAdapter.ts, clusterAdapter.ts, types.ts
     computeInstance/  VmConfigurationStep, VmNetworkingStep, fields.ts, schemas.ts
     cluster/            ClusterConfigurationStep, ClusterNetworkingStep, fields.ts, schemas.ts
 ```
 
-**Shared form field components:** Wizard steps render inputs through shared components under `wizard/fields/` that bind to the parent `<Formik>` context — not local `useState` or manual `value`/`onChange` props. At minimum:
+**Shared form field components:** Wizard steps render inputs through shared components under `libs/ui-components/src/components/form/` that bind to the parent `<Formik>` context — not local `useState` or manual `value`/`onChange` props. These live in `@osac/ui-components` so other forms can reuse them. At minimum:
 
 | Component | PatternFly control | Formik binding |
 |-----------|-------------------|----------------|
@@ -164,9 +166,11 @@ Each component wraps a PatternFly `FormGroup` (label, `fieldId`, `isRequired`, h
 
 **i18n:** All user-visible wizard copy uses i18next via `useTranslation` from `@osac/ui-components/hooks/useTranslation` (never import from `react-i18next` directly). Use hardcoded string keys in `t('...')` so `pnpm i18n` can extract keys into `libs/i18n/locales/en/translation.json` (committed with source changes; CI fails if out of sync). Apply to step titles, intros, field labels (wizard defaults), buttons, validation alert text, empty-`node_sets` warning, and Review section headings. Catalog `display_name` from `field_definitions` overrides the wizard default label when present and is shown as-is (server-provided, not passed through `t()`). Pure helpers (e.g. `getReviewSections`, static field descriptors) accept `t: TFunction` from the calling component rather than calling `useTranslation` internally.
 
-Adapter steps use Formik context, own API hooks and loading UI, and export Yup fragments. Shared helpers: `buildStepSchema` (overlay merge for non-picker Configuration/Networking paths), `applyCatalogOverlay`. Paths use PRD `spec.*` notation; wire builders output camelCase OpenAPI shapes.
+Adapter steps use Formik context, own API hooks and loading UI, and export Yup fragments. Shared helpers: `buildWizardSchema` (compose adapter fragments + overlay merge for non-picker Configuration/Networking paths), `applyCatalogOverlay`, `validateStepFields` (subset validation for the current step). Paths use PRD `spec.*` notation; wire builders output camelCase OpenAPI shapes.
 
-**Formik/Yup:** Single `<Formik>` in the orchestrator; `enableReinitialize` on catalog change. Each step body: `OsacForm` → shared `InputField` / `SelectField` / `RadioButtonField` components bound to Formik state — no raw PatternFly `Form` and no duplicated error wiring. Overlay merge applies only to non-picker Configuration and Networking fields. `editable: false` forces catalog default at build time when present and passes `isDisabled` to field components; merge `validation_schema` into Yup for the supported JSON Schema subset. Validate-on-Next uses the same Formik `errors` / `touched` state those components display. Yup validation messages that surface to the user should use i18n keys where the schema supports message overrides.
+**Formik/Yup:** Single `<Formik>` in the orchestrator with one wizard-level Yup schema from `adapter.getWizardSchema(fieldDefinitions)` — not per-step schemas. A single schema lets future cross-step rules reference values from any step (e.g. Networking validation depending on Configuration choices) without re-plumbing. Validate-on-Next runs Yup against only the current step's field paths via `adapter.getStepFieldPaths(stepId)` while the full schema retains access to all `values`. Each step body: `OsacForm` → shared `InputField` / `SelectField` / `RadioButtonField` from `@osac/ui-components` bound to Formik state — no raw PatternFly `Form` and no duplicated error wiring. Overlay merge applies only to non-picker Configuration and Networking fields. `editable: false` forces catalog default at build time when present and passes `isDisabled` to field components; merge `validation_schema` into Yup for the supported JSON Schema subset. Validate-on-Next uses the same Formik `errors` / `touched` state those components display. Yup validation messages that surface to the user should use i18n keys where the schema supports message overrides.
+
+**Catalog item change:** Do not use `enableReinitialize` — it would reset user edits whenever `initialValues` changes. Instead, `onCatalogItemSelected` explicitly calls `resetForm({ values: getInitialValues(item) })` (and fetches cluster template when applicable) so reinitialization happens only on intentional catalog selection, not on unrelated parent re-renders.
 
 **PRD §5 decisions (v1):** Ignore catalog `field_definitions` on picker-backed paths (`spec.instance_type`, `spec.network_attachments`). No wizard UI for `spec.additional_disks` — boot disk only. Empty cluster template `node_sets`: warn on Configuration, do not block step navigation (see Cluster Configuration specifics above). PRD `?` fields are **optional**: `spec.ssh_key` / `spec.ssh_public_key`, `spec.boot_disk.size_gib`, `spec.network.pod_cidr`, and `spec.network.service_cidr` — omit from payload when blank; Yup does not require them on Next.
 
@@ -184,7 +188,7 @@ No auth changes. Session-scoped REST via the generated OpenAPI client; tenant is
 |---------|-----------|
 | Catalog / template / picker API error | Step or field error; refetch |
 | Step validation | Inline errors on all invalid fields + alert; no advance |
-| Create 4xx | Error on Review |
+| Create non-2xx | Error on Review |
 | Create 2xx without `id` | Error on Review |
 | Create 2xx with `id` | Navigate to Details page; show non-blocking warnings if present |
 | Cancel / browser back with draft | Discard confirmation → list |
