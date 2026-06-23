@@ -10,7 +10,7 @@
 
 OSAC has no API-managed catalog of storage tier offerings. Tier configuration flows through environment variables (`STORAGE_TIERS`) and Kubernetes label conventions on StorageClasses (`osac.openshift.io/storage-tier`). Neither mechanism exposes tiers through the OSAC API, captures QoS properties (IOPS limits, encryption), or establishes referential relationships with registered storage backends (StorageBackend, OSAC-1111). Without a tier abstraction, all tenants get the same storage characteristics, and downstream workflows (Tenant Storage Onboarding, Resource Creation) have no mechanism to determine which StorageClasses to create or what QoS policies to apply.
 
-StorageBackend (OSAC-1111) registers infrastructure — endpoints, credentials, provider type. The tenant-storage-tiers EP introduced label-based tier resolution — which StorageClass serves a given tier for a given tenant. The missing layer is a tier definition that binds a named offering to registered backends with QoS properties, enabling Cloud Provider Admins to compose differentiated storage offerings (e.g., fast, standard, archive) and making them queryable by internal services.
+[StorageBackend](../storage-backend-osac-1111/prd.md) (OSAC-1111) registers infrastructure — endpoints, credentials, provider type. The [tenant-storage-tiers EP](../tenant-storage-tiers/README.md) introduced label-based tier resolution — which StorageClass serves a given tier for a given tenant. The missing layer is a tier definition that binds a named offering to registered backends with QoS properties, enabling Cloud Provider Admins to compose differentiated storage offerings (e.g., fast, standard, archive) and making them queryable by internal services.
 
 ## 2. Goals and Non-Goals
 
@@ -75,6 +75,7 @@ StorageBackend (OSAC-1111) registers infrastructure — endpoints, credentials, 
 - QoS property updates on a StorageTier propagate to the storage provider's policy (e.g., VAST QoS policy) and take effect for existing and new volumes. However, certain properties that are baked into Kubernetes StorageClass parameters (e.g., encryption settings, QoS policy *name*) require StorageClass recreation to take effect for new volumes — existing volumes are unaffected. A future CSI proxy layer could decouple QoS enforcement from StorageClass immutability entirely, but that is out of scope (see `.planning/storage/csi-proxy-architecture.md`).
 - StorageTier is a catalog entity — it declares which backends can serve a tier and with what QoS properties. Backend selection for a specific tenant (which backend within the tier to provision on) is determined at the tier-to-tenant assignment layer (OSAC-23), not by the StorageTier API.
 - StorageTier replaces the `STORAGE_TIERS` environment variable. Migration from env-var-based configuration to API-managed tiers is a one-time operation.
+- Automatic StorageClass refresh when QoS properties change on a StorageTier is not in v0.1 scope. StorageClass lifecycle management (creation, recreation on parameter drift) is handled by the OSAC Storage Controller (OSAC-23).
 
 ## 6. Dependencies
 
