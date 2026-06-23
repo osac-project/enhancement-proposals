@@ -87,7 +87,7 @@ Provisioning is driven by a chain of components: the fulfillment service creates
    ```
    POST /api/fulfillment/v1/baremetal_instances
    ```
-4. The fulfillment service resolves the catalog item to a `templateID` and derives `templateParameters` from the `field_definitions`, then creates a `HostLease` CR in the management cluster with those values plus `ssh_key` and `user_data`; `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
+4. The fulfillment service resolves the catalog item to a `templateID` and derives `templateParameters` from the `field_definitions`, then creates a `HostLease` CR in the management cluster with those values plus `ssh_public_key` and `user_data`; `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
 5. The baremetal-fulfillment-operator picks up the `HostLease` and queries the inventory backend to find and assign a free host matching the requested host type and selector.
 6. The baremetal-fulfillment-operator triggers `osac-aap` to run the host-level provisioning template (OS image, SSH key, user data) and updates the `HostLease` status on completion.
 7. The osac-operator watches the `HostLease` CR and pushes status updates to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BareMetalInstance.status`.
@@ -126,9 +126,9 @@ sequenceDiagram
     TU->>FS: GET /baremetal_instance_catalog_items
     FS-->>TU: list of available catalog items
 
-    TU->>FS: POST /baremetal_instances {catalog_item, ssh_key, ...}
+    TU->>FS: POST /baremetal_instances {catalog_item, ssh_public_key, ...}
     Note over FS: resolve catalog_item → templateID, apply field_definitions → templateParameters
-    FS->>MC: create HostLease CR (templateID, templateParameters, ssh_key, user_data)
+    FS->>MC: create HostLease CR (templateID, templateParameters, ssh_public_key, user_data)
     FS-->>TU: 201 Created {id, state: PROVISIONING}
 
     MC-->>BMF: watch: HostLease CR created (no ExternalHostID yet)
@@ -188,7 +188,7 @@ sequenceDiagram
 - `PATCH  /api/private/v1/baremetal_instance_catalog_items/{object.id}`
 - `DELETE /api/private/v1/baremetal_instance_catalog_items/{id}`
 
-**PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `run_strategy` and `restart_requested_at`. The `catalog_item`, `ssh_key`, and `user_data` fields are immutable after creation; requests that attempt to modify them are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
+**PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `run_strategy` and `restart_requested_at`. The `catalog_item`, `ssh_public_key`, and `user_data` fields are immutable after creation; requests that attempt to modify them are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
 
 ### Implementation Details/Notes/Constraints
 
@@ -293,7 +293,7 @@ message BareMetalInstanceSpec {
   // SSH public key injected into the OS at provisioning time. Immutable after creation.
   // Must be a valid SSH public key in OpenSSH format (ssh-rsa, ssh-ed25519, etc.).
   // Invalid keys are rejected at create time with a 400 error.
-  optional string ssh_key = 2;
+  optional string ssh_public_key = 2;
 
   // User data (e.g. cloud-init). Passed to the OS at first boot. Immutable after creation.
   // Maximum size: 64 KB.
@@ -431,7 +431,7 @@ The fulfillment-service, baremetal-fulfillment-operator, and osac-operator must 
 
 ## Support Procedures
 
-> **Log hygiene:** Before sharing or inspecting logs, operators must verify that `ssh_key`, `user_data`, and backend credentials (inventory API tokens, AAP credentials) are redacted. These values must never appear in fulfillment-service or operator logs; if they do, treat it as a security incident and rotate the affected credentials immediately.
+> **Log hygiene:** Before sharing or inspecting logs, operators must verify that `ssh_public_key`, `user_data`, and backend credentials (inventory API tokens, AAP credentials) are redacted. These values must never appear in fulfillment-service or operator logs; if they do, treat it as a security incident and rotate the affected credentials immediately.
 
 **Symptom:** `BareMetalInstance` stuck in `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
 **Diagnosis:** Check baremetal-fulfillment-operator logs for inventory or AAP errors. Check osac-aap job logs for playbook failures. Verify the `HostLease` CR exists and that `ExternalHostID` has been set (indicates host was found in inventory).
