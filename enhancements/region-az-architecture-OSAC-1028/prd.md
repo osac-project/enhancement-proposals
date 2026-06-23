@@ -115,4 +115,3 @@ OpenShift Hosted Control Planes may have constraints on distributing control pla
 
 - **Owner:** To be determined
 - **Mitigation:** Validate HCP AZ distribution capabilities early in the design phase. Document any limitations as constraints on FR-7.
-
