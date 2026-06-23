@@ -663,7 +663,7 @@ message ComputeInstanceSpec {
 ```protobuf
 message BaremetalInstanceSpec {
   string template = 1;
-  optional string ssh_key = 2;
+  optional string ssh_public_key = 2;
   optional string user_data = 3;
   optional BaremetalInstanceRunStrategy run_strategy = 4;
   optional google.protobuf.Timestamp restart_requested_at = 5;
