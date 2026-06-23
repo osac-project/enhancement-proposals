@@ -63,8 +63,8 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 
 #### High Availability
 
-- **FR-14:** The OSAC control plane (fulfillment-service, operators, database) must be deployable across multiple AZs within a region so that loss of a single AZ does not cause control plane downtime. [User]
-- **FR-15:** A deployment and upgrade strategy must be defined for OSAC services that maintains availability during rolling upgrades across AZs. [User]
+- **FR-14:** A region must support a minimum of 2 availability zones. The OSAC control plane (fulfillment-service, operators, database) must be deployable across multiple AZs within a region so that loss of a single AZ does not cause control plane downtime. [User]
+- **FR-15:** The region must have no single point of failure. A deployment and upgrade strategy must be defined for OSAC services that maintains zero downtime during upgrades. [User]
 
 ### 3.2 Non-Functional Requirements
 
@@ -81,8 +81,8 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 - [ ] Virtual networks span all AZs within the region.
 - [ ] Hub selection uses AZ topology instead of random selection when an AZ constraint is specified.
 - [ ] The inventory model includes AZ assignment per host, and the enclave installer consumes this topology.
-- [ ] The OSAC control plane can survive the loss of a single AZ without service interruption.
-- [ ] OSAC services can be upgraded with zero downtime using a rolling strategy across AZs.
+- [ ] A region with 2 AZs can be deployed, and the OSAC control plane survives the loss of one AZ without service interruption.
+- [ ] The region has no single point of failure. OSAC services can be upgraded with zero downtime.
 - [ ] No shared state exists between regions other than IAM — validated by architecture review.
 
 ## 5. Assumptions
@@ -116,19 +116,3 @@ OpenShift Hosted Control Planes may have constraints on distributing control pla
 - **Owner:** To be determined
 - **Mitigation:** Validate HCP AZ distribution capabilities early in the design phase. Document any limitations as constraints on FR-7.
 
-## 8. Open Questions
-
-### 8.1 How should AZ-aware hub selection interact with existing capacity and affinity considerations?
-
-- **Owner:** fulfillment-service team
-- **Impact:** FR-8. The current random selection has no capacity awareness. AZ-aware selection could be combined with capacity checks, or capacity could be addressed separately.
-
-### 8.2 What is the minimum number of AZs required for a highly available region deployment?
-
-- **Owner:** Architecture team
-- **Impact:** FR-14, FR-15. Determines whether 2-AZ or 3-AZ configurations are supported and what availability guarantees each provides.
-
-### 8.3 How does the HA upgrade strategy interact with the OpenShift upgrade lifecycle?
-
-- **Owner:** Cloud Infrastructure Admin / osac-installer team
-- **Impact:** FR-15. OSAC services run on OpenShift — the upgrade strategy must account for both OSAC component upgrades and underlying OpenShift cluster upgrades.
