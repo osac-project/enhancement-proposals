@@ -3,7 +3,7 @@ title: Configuration Wizard for Cluster and VM Resources
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-14
-last-updated: 2026-06-23
+last-updated: 2026-06-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 see-also:
@@ -22,8 +22,8 @@ superseded-by:
 ### 1.1 Goals
 
 - Tenants provision VMs and clusters by selecting a catalog offering and completing a guided wizard with a **fixed field set per resource type** ([§2.1.1](#211-static-wizard-fields)).
-- Both resource types use the same five steps: **Catalog Item → Access → Configuration → Networking → Review** (submit from Review). **Access** collects identity and credentials; **Configuration** collects image/release, sizing, and platform parameters — not networking placement.
-- Catalog `field_definitions` overlay matching static paths on **Configuration** and **Networking** steps only (not Access, not picker-backed fields in v1) for **display name**, **editability**, **default**, and **validation_schema** — they do not add fields or payload paths ([§2.1.2](#212-catalog-overlay-and-defaults)).
+- Both resource types use the same five steps: **Catalog Item → General → Configuration → Networking → Review** (submit from Review). **General** collects name and credentials; **Configuration** collects image/release, sizing, and platform parameters — not networking placement.
+- Catalog `field_definitions` overlay matching static paths on **Configuration** and **Networking** steps only (not General, not picker-backed fields in v1) for **display name**, **editability**, **default**, and **validation_schema** — they do not add fields or payload paths ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
 ### 1.2 Non-Goals
 
@@ -39,15 +39,15 @@ superseded-by:
 
 #### 2.1.1 Static wizard fields
 
-Fields are hardcoded per resource type, not discovered from `field_definitions`. **Access** step fields always use wizard defaults (labels, editability, validation); catalog `field_definitions` are **ignored** on Access ([§2.1.2](#212-catalog-overlay-and-defaults)). **Required** column: **?** = required vs optional not yet decided ([§5](#5-open-decisions)).
+Fields are hardcoded per resource type, not discovered from `field_definitions`. **General** step fields always use wizard defaults (labels, editability, validation); catalog `field_definitions` are **ignored** on General ([§2.1.2](#212-catalog-overlay-and-defaults)). **Required** column: **?** = required vs optional not yet decided ([§5](#5-open-decisions)).
 
 **ComputeInstance**
 
 
 | Step            | Path                      | Label                                    | Widget                                 | Required |
 | --------------- | ------------------------- | ---------------------------------------- | -------------------------------------- | -------- |
-| Access          | `metadata.name`           | Name                                     | Text                                   | Required |
-| Access          | `spec.ssh_key`            | SSH public key                           | Text (multiline)                       | ?        |
+| General         | `metadata.name`           | Name                                     | Text                                   | Required |
+| General         | `spec.ssh_key`            | SSH public key                           | Text (multiline)                       | ?        |
 | Configuration   | `spec.image.source_ref`   | VM image (OCI reference)                 | Text                                   | Required |
 | Configuration   | `spec.is_windows`         | OS family                                | Radio (`Linux`, `Windows`)             | Required |
 | Configuration   | `spec.instance_type`      | Instance type                            | Picker ([§2.1.5](#215-vm-instance-type-picker-api)) | Required |
@@ -70,9 +70,9 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 
 | Step            | Path                        | Label                                                         | Widget                               | Required |
 | --------------- | --------------------------- | ------------------------------------------------------------- | ------------------------------------ | -------- |
-| Access          | `metadata.name`             | Name                                                          | Text                                 | Required |
-| Access          | `spec.ssh_public_key`       | SSH public key                                                | Text (multiline)                     | ?        |
-| Access          | `spec.pull_secret`          | Pull secret                                                   | Text (multiline, masked)             | Required |
+| General         | `metadata.name`             | Name                                                          | Text                                 | Required |
+| General         | `spec.ssh_public_key`       | SSH public key                                                | Text (multiline)                     | ?        |
+| General         | `spec.pull_secret`          | Pull secret                                                   | Text (multiline, masked)             | Required |
 | Configuration   | `spec.release_image`        | OpenShift version (release image)                             | Text                                 | Required |
 | Configuration   | `spec.node_sets`            | Worker node pools                                             | Table | Required |
 | Networking      | `spec.network.pod_cidr`     | Pod network CIDR                                              | Text                                 | ?        |
@@ -86,7 +86,7 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 
 #### 2.1.2 Catalog overlay and defaults
 
-For each static **non-picker** field on **Configuration** and **Networking** steps, match `field_definitions` by `path`. **Access** step fields ignore catalog `field_definitions` entirely (wizard labels, editability, and validation only). Non-matching paths are **ignored** (not on Review, not in payload).
+For each static **non-picker** field on **Configuration** and **Networking** steps, match `field_definitions` by `path`. **General** step fields ignore catalog `field_definitions` entirely (wizard labels, editability, and validation only). Non-matching paths are **ignored** (not on Review, not in payload).
 
 **Picker-backed fields (v1):** `spec.instance_type` and `spec.network_attachments` (including nested paths such as `spec.network_attachments.subnet`) load options from list APIs ([§2.1.5](#215-vm-instance-type-picker-api), [§2.1.4](#214-vm-networking-picker-apis)). Matching catalog `field_definitions` for these paths are **ignored** — wizard labels, editability, validation, and defaults come from wizard defaults and list-API behavior only. Catalog overlay on picker fields is **deferred** to a later release ([§5](#5-open-decisions)).
 
@@ -186,22 +186,22 @@ Do **not** send `cores` or `memory_gib` — they are mutually exclusive with `in
 
 ```mermaid
 flowchart LR
-  A[Catalog Item] --> B[Access]
+  A[Catalog Item] --> B[General]
   B --> C[Configuration]
   C --> D[Networking]
   D --> E[Review and Submit]
 ```
 
 - **Catalog Item:** Require catalog item selection.
-- **Review:** Shows the same values the user sees on wizard step fields (Access, Configuration, Networking) — blank, catalog- or wizard-defaulted, or user-entered — with the same labels as on each step. Submit from Review.
+- **Review:** Shows the same values the user sees on wizard step fields (General, Configuration, Networking) — blank, catalog- or wizard-defaulted, or user-entered — with the same labels as on each step. Submit from Review.
 - **Step navigation:** Next is always enabled. On click, validate every field on the current step — including fields that have not yet blurred and therefore have no inline error shown. Surface any hidden errors inline; if validation fails, show an alert asking the user to fix the errors and do not advance.
 
 ## 3. Acceptance Criteria
 
 - Wizard provisions VM or Cluster using only [§2.1.1](#211-static-wizard-fields) payload paths plus hardcoded VM `source_type` and catalog item reference.
-- Five-step flow: Catalog Item → Access → Configuration → Networking → Review; submit from Review.
+- Five-step flow: Catalog Item → General → Configuration → Networking → Review; submit from Review.
 - Review shows the same values as on wizard step fields (blank, default-driven, or user-entered).
-- Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on Configuration and Networking **non-picker** fields only (Access and picker-backed paths ignore `field_definitions` in v1); non-editable fields without `default` appear blank and read-only on their wizard step and on Review; non-editable fields with `default` appear read-only with value on their wizard step and on Review.
+- Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on Configuration and Networking **non-picker** fields only (General and picker-backed paths ignore `field_definitions` in v1); non-editable fields without `default` appear blank and read-only on their wizard step and on Review; non-editable fields with `default` appear read-only with value on their wizard step and on Review.
 - VM: single `network_attachments` entry assembled from picker APIs; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
 - Cluster: `node_sets` matches template pool keys with template `host_type` and tenant `size` > 0; empty template `node_sets` handling per [§5](#5-open-decisions).
 - All **?** requiredness decisions resolved before release ([§5](#5-open-decisions)).
