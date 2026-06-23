@@ -205,4 +205,3 @@ No server writes until create succeeds.
 - Lint passes.
 - i18n: `pnpm i18n` passes after wizard string changes; spot-check translated labels in General, Configuration, and Review steps.
 - Manual: end-to-end VM and cluster provision via `/vms/create` and `/clusters/create`; cluster catalog item whose template has empty `node_sets` (warning shown, wizard completable); submit with optional fields left blank.
-
