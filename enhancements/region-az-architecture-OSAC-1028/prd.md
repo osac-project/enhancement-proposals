@@ -8,23 +8,22 @@
 
 ## 1. Problem Statement
 
-OSAC lacks a formalized region and availability zone architecture. Tenant users have no way to select fault domains for workload placement, and cloud infrastructure admins have no standard mechanism to map physical infrastructure to logical failure domains. Hub selection is currently random, virtual networks carry a region string but no corresponding deployment model defines what a region is, and availability zones are entirely absent from the data model. Without these constructs, OSAC cannot offer the high-availability guarantees and placement controls that cloud-native workloads require.
+OSAC lacks a formalized region and availability zone architecture. Tenant users have no way to select fault domains for workload placement, and cloud infrastructure admins have no standard mechanism to map physical infrastructure to logical failure domains. Virtual networks carry a region string but no corresponding deployment model defines what a region is, and availability zones are entirely absent from the data model. Without these constructs, OSAC cannot offer the high-availability guarantees and placement controls that cloud-native workloads require.
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
 
-- Tenant users can place VMs, bare-metal instances, and OpenShift clusters in specific availability zones through the API and UI.
+- Tenant users can place VMs, bare-metal instances, and worker nodes in specific availability zones through the API and UI.
 - Cloud infrastructure admins can deploy an OSAC region as a highly available, cross-AZ deployment with no single AZ as a point of failure.
-- Regions are fully independent — nothing shared between regions except IAM — so that a failure in one region does not impact another.
+- All workloads and OSAC services are contained within a region, so that a failure in one region does not impact another.
 - Virtual networks span all AZs within a region, enabling cross-AZ communication without cross-region networking.
 - OSAC services can be deployed and upgraded in a highly available manner without downtime.
 
 ### 2.3 Non-Goals
 
-- Cross-region networking or federation.
+- Multi-region support — this PRD scopes a single region. Topics such as cross-region networking and IAM federation are out of scope.
 - IAM service implementation.
-- Multi-region failover or disaster recovery automation.
 - Specific hardware topology within an AZ (e.g., rack-level placement within a single AZ).
 - Automated discovery of physical-to-AZ mappings (admins define AZ assignments in inventory).
 - A cross-region API or portal for listing/selecting regions (each region is accessed via its own endpoint).
@@ -36,24 +35,24 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 #### Region
 
 - **FR-1:** A region is defined as an OSAC deployment — the OpenShift cluster running fulfillment-service plus everything it manages (workload clusters, tenant VMs, bare-metal hosts, networking). Each region operates its own API endpoint, database, and operator instances. [User]
-- **FR-2:** Regions must share nothing except IAM. No database, message bus, or control plane state is shared between regions. [User]
+- **FR-2:** All workloads and OSAC services are contained within a region. Users work with a specific region to deploy workloads. [User]
 
 #### Availability Zone
 
-- **FR-3:** An Availability Zone is an independent failure domain within a region — the failure of one AZ must not impact workloads running in other AZs. An AZ maps to a set of physical infrastructure (racks, power, network) that share common failure characteristics. An Availability Zone entity must be defined in the protobuf data model (public and private APIs). [User]
+- **FR-3:** An Availability Zone is a logical grouping of infrastructure within a region, with independent power, cooling, and networking from other AZs. An Availability Zone entity must be exposed so tenants and admins can discover and select AZs. [User]
 - **FR-4:** Availability zones must be exposed in the public API and UI as a selectable attribute so tenant users can list available AZs and choose placement. [User]
 - **FR-5:** Cloud infrastructure admins must be able to create and manage availability zones within a region via the private API. [User]
 
 #### Workload Placement
 
 - **FR-6:** ComputeInstance creation must accept an optional availability zone parameter, placing the VM or bare-metal instance in the specified AZ. [User]
-- **FR-7:** Cluster creation must accept optional availability zone parameters for both control plane and worker node placement, enabling cross-AZ clusters. [User]
-- **FR-8:** The control plane must use AZ information when scheduling tenant workloads onto hubs, replacing the current random hub selection. [User]
-- **FR-9:** Tenant workloads must run in separate workload cluster(s) from the OSAC control plane. [User]
+- **FR-7:** Cluster creation must accept optional availability zone parameters for worker node placement, enabling cross-AZ worker distribution. [User]
+- **FR-8:** When a tenant specifies an availability zone for workload placement, the system must schedule the workload in the requested AZ. [User]
+- **FR-9:** Tenant workloads should run in separate workload cluster(s) from the OSAC control plane for production deployments. Single-cluster deployments must also be supported for smaller environments. [User]
 
 #### Networking
 
-- **FR-10:** Virtual networks must be region-wide, spanning all availability zones within a region. The existing `region` field on VirtualNetworkSpec continues to identify the region this deployment belongs to. [User]
+- **FR-10:** Virtual networks must be region-wide, spanning all availability zones within a region. [User]
 - **FR-11:** Subnets inherit their region scope from their parent virtual network. No changes to subnet region behavior are required. [User]
 
 #### Inventory and Installation
@@ -64,42 +63,28 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 #### High Availability
 
 - **FR-14:** For HA deployments, a region must support a minimum of 2 availability zones. The OSAC control plane (fulfillment-service, operators, database) must be deployable across multiple AZs so that loss of a single AZ does not cause control plane downtime. Single-AZ regions must also be supported for non-HA use cases (test, dev, smaller providers). [User]
-- **FR-15:** The region must have no single point of failure. A deployment and upgrade strategy must be defined for OSAC services that maintains zero downtime during upgrades. [User]
-
-### 3.2 Non-Functional Requirements
-
-- **NFR-1:** AZ-aware hub selection must not add more than 50ms latency to workload scheduling compared to the current random selection.
-- **NFR-2:** The AvailabilityZone data model must follow existing OSAC protobuf conventions (metadata, spec/status pattern, CRUD services with HTTP annotations).
-- **NFR-3:** Region isolation must be validated by architecture review — no shared state between regions other than IAM federation.
+- **FR-15:** OSAC services must support HA deployment and a zero-downtime upgrade strategy when deployed across multiple AZs. [User]
 
 ## 4. Acceptance Criteria
 
-- [ ] AvailabilityZone protobuf type exists in both public and private API definitions, following OSAC conventions (metadata, spec, status, CRUD service).
-- [ ] A tenant user can list available availability zones via the public API.
+- [ ] A tenant user can list available availability zones via the API.
 - [ ] A tenant user can create a ComputeInstance specifying an availability zone, and the instance is placed in that AZ.
-- [ ] A tenant user can create a Cluster specifying AZ placement for control plane and workers, and the cluster nodes are distributed accordingly.
+- [ ] A tenant user can create a cluster specifying AZ placement for worker nodes, and the nodes are distributed accordingly.
 - [ ] Virtual networks span all AZs within the region.
-- [ ] Hub selection uses AZ topology instead of random selection when an AZ constraint is specified.
+- [ ] When a tenant specifies an AZ, the system places the workload in the requested AZ.
 - [ ] The inventory model includes AZ assignment per host, and the enclave installer consumes this topology.
 - [ ] A single-AZ region can be deployed for non-HA use cases.
-- [ ] An HA region with 2 AZs can be deployed, and the OSAC control plane survives the loss of one AZ without service interruption.
-- [ ] The region has no single point of failure. OSAC services can be upgraded with zero downtime.
-- [ ] No shared state exists between regions other than IAM — validated by architecture review.
+- [ ] When deployed in HA mode with 2+ AZs, the OSAC control plane can survive the loss of one AZ without service interruption.
+- [ ] OSAC services can be upgraded with zero downtime when deployed in HA mode.
 
 ## 5. Assumptions
 
-- IAM exists as an external service that supports federation across regions.
-- The existing `region` field on VirtualNetworkSpec (currently a free-form string) remains valid as a region identifier without requiring migration to a new entity type.
 - OpenShift Hosted Control Planes support distributing control plane and worker nodes across availability zones via topology-aware scheduling.
 - The enclave installation tooling (osac-installer) can be extended to accept AZ topology as input without a fundamental redesign.
 
 ## 6. Dependencies
 
-- **IAM service:** Region isolation requires IAM to be the only shared service. IAM federation must support cross-region identity without sharing other state.
-- **osac-installer / enclave:** The installation process must be updated to consume AZ topology and distribute components accordingly (FR-13).
-- **osac-aap:** Ansible roles for network provisioning and hosted cluster deployment must be updated to support AZ-aware placement.
-- **osac-operator:** Controllers must be updated to pass AZ constraints during reconciliation (hub selection, workload scheduling).
-- **fulfillment-service:** Protobuf definitions, database schema, server implementations, and controllers must be extended for the AvailabilityZone entity and AZ-aware scheduling.
+- **fulfillment-service:** The AvailabilityZone entity and AZ-aware scheduling must be added to the fulfillment service.
 
 ## 7. Risks
 
