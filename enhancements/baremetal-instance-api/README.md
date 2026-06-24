@@ -87,7 +87,7 @@ Provisioning is driven by a chain of components: the fulfillment service creates
    ```
    POST /api/fulfillment/v1/baremetal_instances
    ```
-4. The fulfillment service resolves the catalog item to a `templateID` and derives `templateParameters` from the `field_definitions`, then creates a `HostLease` CR in the management cluster with those values plus `ssh_public_key` and `user_data`; `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
+4. The fulfillment service resolves the catalog item to a `templateID`, validates tenant-provided `template_parameters` against the template's parameter definitions (applying defaults for optional parameters), and derives additional `templateParameters` from the `field_definitions`. It then creates a `HostLease` CR in the management cluster with those values plus `ssh_public_key` and `user_data`; `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
 5. The baremetal-fulfillment-operator picks up the `HostLease` and queries the inventory backend to find and assign a free host matching the requested host type and selector.
 6. The baremetal-fulfillment-operator triggers `osac-aap` to run the host-level provisioning template (OS image, SSH key, user data) and updates the `HostLease` status on completion.
 7. The osac-operator watches the `HostLease` CR and pushes status updates to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BareMetalInstance.status`.
@@ -126,8 +126,8 @@ sequenceDiagram
     TU->>FS: GET /baremetal_instance_catalog_items
     FS-->>TU: list of available catalog items
 
-    TU->>FS: POST /baremetal_instances {catalog_item, ssh_public_key, ...}
-    Note over FS: resolve catalog_item → templateID, apply field_definitions → templateParameters
+    TU->>FS: POST /baremetal_instances {catalog_item, ssh_public_key, template_parameters, ...}
+    Note over FS: resolve catalog_item → templateID, validate template_parameters, apply field_definitions
     FS->>MC: create HostLease CR (templateID, templateParameters, ssh_public_key, user_data)
     FS-->>TU: 201 Created {id, state: PROVISIONING}
 
@@ -188,7 +188,7 @@ sequenceDiagram
 - `PATCH  /api/private/v1/baremetal_instance_catalog_items/{object.id}`
 - `DELETE /api/private/v1/baremetal_instance_catalog_items/{id}`
 
-**PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `run_strategy` and `restart_requested_at`. The `catalog_item`, `ssh_public_key`, and `user_data` fields are immutable after creation; requests that attempt to modify them are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
+**PATCH semantics:** The `PATCH` endpoint supports partial updates to mutable fields only: `run_strategy` and `restart_requested_at`. The `catalog_item`, `ssh_public_key`, `user_data`, and `template_parameters` fields are immutable after creation; requests that attempt to modify them are rejected with `400 Bad Request`. A `FieldMask` is applied automatically from the fields present in the request body.
 
 ### Implementation Details/Notes/Constraints
 
@@ -211,6 +211,19 @@ message BareMetalInstanceTemplate {
 
   // Default spec values applied when creating a BareMetalInstance from this template.
   BareMetalInstanceTemplateSpecDefaults spec_defaults = 5;
+
+  // Definitions of the parameters that can be used to customize the template.
+  // These are parameter *definitions* — actual values are in BareMetalInstanceSpec.template_parameters.
+  repeated BareMetalInstanceTemplateParameterDefinition parameters = 6;
+}
+
+message BareMetalInstanceTemplateParameterDefinition {
+  string name = 1;        // Parameter name (used as key in template_parameters map).
+  string title = 2;       // Human-friendly short description.
+  string description = 3; // Human-friendly long description (Markdown).
+  bool required = 4;      // Whether the parameter must be provided at create time.
+  string type = 5;        // Type URL (e.g. "type.googleapis.com/google.protobuf.StringValue").
+  google.protobuf.Any default = 6; // Default value for optional parameters.
 }
 
 // No overridable spec fields in this initial version; fields will be added in future
@@ -307,6 +320,13 @@ message BareMetalInstanceSpec {
   // Set to the current time to trigger an immediate restart.
   // The controller executes the restart if this timestamp is greater than status.last_restarted_at.
   optional google.protobuf.Timestamp restart_requested_at = 5;
+
+  // Values of the template parameters passed to the provisioning template. Immutable after creation.
+  // Validated against the parameter definitions in the BareMetalInstanceTemplate referenced by
+  // the catalog item. Default values from the template are applied for optional parameters not
+  // provided by the tenant. Propagated to the BareMetalInstance CR's templateParameters field
+  // as a JSON-encoded string alongside system parameters (sshPublicKey, userDataSecret).
+  map<string, google.protobuf.Any> template_parameters = 6;
 }
 
 message BareMetalInstanceStatus {
@@ -368,7 +388,8 @@ Where possible, the BareMetalInstance API is consistent with ComputeInstance:
 - Private `Signal` RPC for `osac-operator` feedback loop.
 - `run_strategy` and restart signal mechanism (`restart_requested_at`, `last_restarted_at`).
 - `spec.catalog_item` referencing a `BareMetalInstanceCatalogItem` with `FieldDefinition`-based field control.
-- `BareMetalInstanceTemplate` with `spec_defaults`; managed via private API, readable via public List/Get.
+- `spec.template_parameters` for tenant-provided template customization, validated against `BareMetalInstanceTemplateParameterDefinition` entries.
+- `BareMetalInstanceTemplate` with `spec_defaults` and `parameters` (parameter definitions); managed via private API, readable via public List/Get.
 
 Fields specific to VMs (network attachments, image, cores, memory) are absent from `BareMetalInstance` in this initial version.
 
