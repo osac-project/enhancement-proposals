@@ -76,8 +76,7 @@ A tenant can have multiple CaaS clusters. Each cluster's storage is set up and t
 
 ## 6. Dependencies
 
-- **Tenant Storage Onboarding (OSAC-23):** Merged. Provides the storage automation framework that this PRD extends for CaaS clusters.
-- **Playbook split (osac-aap PR #338):** Merged. Provides independent setup and teardown actions required for per-cluster operations.
+- **Tenant Storage Onboarding (OSAC-23):** Merged. Provides the storage automation framework and independent per-cluster setup and teardown actions that this PRD extends for CaaS clusters.
 - **VAST for CaaS (OSAC-1122):** In progress. The storage provider must support CaaS clusters as a target. Required for end-to-end functionality.
 - **Tier API (OSAC-1110):** In progress. Not blocking. The system integrates when available, falls back to existing configuration.
 - **StorageBackend API (OSAC-1111):** In progress. Not blocking. The system integrates when available, falls back to single implicit backend.
