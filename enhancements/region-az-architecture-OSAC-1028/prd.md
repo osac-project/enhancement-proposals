@@ -20,7 +20,7 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 - Virtual networks span all AZs within a region, enabling cross-AZ communication without cross-region networking.
 - OSAC services can be deployed and upgraded in a highly available manner without downtime.
 
-### 2.3 Non-Goals
+### 2.2 Non-Goals
 
 - Multi-region support — this PRD scopes a single region. Topics such as cross-region networking and IAM federation are out of scope.
 - IAM service implementation.
@@ -75,6 +75,7 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 - [ ] The inventory model includes AZ assignment per host, and the enclave installer consumes this topology.
 - [ ] A single-AZ region can be deployed for non-HA use cases.
 - [ ] When deployed in HA mode with 2+ AZs, the OSAC control plane can survive the loss of one AZ without service interruption.
+- [ ] A tenant user can view and select availability zones in the UI when creating a workload.
 - [ ] OSAC services can be upgraded with zero downtime when deployed in HA mode.
 
 ## 5. Assumptions
