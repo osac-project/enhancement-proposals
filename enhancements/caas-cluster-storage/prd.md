@@ -8,7 +8,7 @@
 
 ## 1. Problem Statement
 
-CaaS tenant clusters are provisioned without persistent storage. When a ClusterOrder reaches Ready, the cluster has compute but no StorageClasses or CSI driver, so tenant workloads cannot create PVCs. The OSAC Storage Controller already handles backend setup (Stage 1) at tenant onboarding and cluster-side setup (Stage 2) for VMaaS, but it ignores ClusterOrder events. There is no automation connecting CaaS cluster readiness to storage installation.
+CaaS tenant clusters are provisioned without persistent storage. When a ClusterOrder reaches Ready, the cluster has compute but no StorageClasses or CSI driver, so tenant workloads cannot create PVCs. The OSAC Storage Controller already handles backend setup (Stage 1) at tenant onboarding and cluster-side setup (Stage 2) for VMaaS, but it ignores ClusterOrder events. There is no automation connecting CaaS cluster readiness to storage installation. This affects Tenant Admins and Tenant Users (who provision clusters and need to know when storage is ready) and Cloud Provider Admins (who monitor tenant-level storage status across clusters).
 
 ## 2. Goals and Non-Goals
 
@@ -20,12 +20,19 @@ CaaS tenant clusters are provisioned without persistent storage. When a ClusterO
 - Handle multiple CaaS clusters per tenant independently, each with its own storage readiness.
 - Integrate with the Storage Tier API (OSAC-1110) and StorageBackend API (OSAC-1111) when available, falling back to `STORAGE_TIERS` env var and single implicit backend otherwise.
 
-### 2.2 Non-Goals
+### 2.2 Success Metrics
+
+| Metric | Target | Baseline |
+|--------|--------|----------|
+| Time from ClusterOrder Ready to ClusterStorageReady=True | < 5 minutes | N/A (new feature) |
+
+### 2.3 Non-Goals
 
 - VAST provider CaaS changes (tenant-UID paths, RBAC credentials, `hcp_data_plane` target). Covered by OSAC-1122.
 - UI for storage.
 - Stage 1 (backend setup). Assumed complete before any CaaS cluster reaches Ready.
 - VMaaS cluster-side storage. Existing flow is unchanged.
+- Cloud Infrastructure Admin responsibilities (storage backend configuration, tier definitions). Covered by OSAC-1122 and OSAC-1110.
 
 ## 3. Requirements
 
@@ -40,14 +47,19 @@ CaaS tenant clusters are provisioned without persistent storage. When a ClusterO
 
 #### Storage Readiness
 
-- **FR-5:** The storage controller sets a `ClusterStorageReady` condition on the ClusterOrder CR: `True` when the AAP job succeeds and StorageClasses are confirmed, `False` with reason on failure.
-- **FR-6:** The storage controller records per-cluster detail in the Tenant CR's `status.clusterStorage` array (ClusterOrder name, readiness, reason).
+- **FR-5:** The storage controller sets a `ClusterStorageReady` condition on the ClusterOrder CR: `True` when the AAP job succeeds and all expected StorageClasses (derived from resolved tiers) are present on the CaaS cluster, `False` with reason on failure. This is the primary readiness signal for Tenant Admins and Tenant Users.
+- **FR-6:** The storage controller records per-cluster detail in the Tenant CR's `status.clusterStorage` array (ClusterOrder name, readiness, reason). This provides Cloud Provider Admins a tenant-level view of storage across all CaaS clusters.
 - **FR-7:** `kubectl get clusterorder -o wide` shows a `ClusterStorageReady` column.
 
 #### Teardown
 
 - **FR-8:** The storage controller places a finalizer on each ClusterOrder where storage was set up. On deletion, it triggers `osac-delete-tenant-cluster-storage` to remove StorageClasses, VolumeSnapshotClasses, and CSI Secret from the CaaS cluster. The finalizer is removed only after cleanup completes.
 - **FR-9:** After cleanup, the storage controller removes the ClusterOrder's entry from `status.clusterStorage` on the Tenant CR.
+
+#### API Surface
+
+- **ClusterOrder CR:** New `ClusterStorageReady` condition, `osac.openshift.io/storage` finalizer, `status.clusterStorageJobs` for AAP job tracking.
+- **Tenant CR:** New entries in `status.clusterStorage[]` array (field introduced by OSAC-23, extended here for CaaS clusters).
 
 ### 3.2 Non-Functional Requirements
 
@@ -78,6 +90,9 @@ CaaS tenant clusters are provisioned without persistent storage. When a ClusterO
 - [ ] Second ClusterOrder for the same tenant gets independent storage setup
 - [ ] Deleting one ClusterOrder does not affect other clusters
 
+**Security**
+- [ ] Controller logs and Kubernetes events from CaaS storage operations contain no credential values or Secret contents
+
 **Testing**
 - [ ] Unit tests with mock AAP providers cover trigger, readiness, teardown, and multi-cluster
 - [ ] (Stretch) E2E against live VAST + CaaS cluster
@@ -88,11 +103,12 @@ CaaS tenant clusters are provisioned without persistent storage. When a ClusterO
 - AAP playbooks accept `hcp_data_plane` and use the passed kubeconfig to target the CaaS cluster. Delivered by OSAC-1122.
 - VAST is the only storage provider for v0.1. A global VIP Pool is shared by all tenants.
 - The kubeconfig for a CaaS cluster is obtainable from the HostedControlPlane status via the ClusterOrder's cluster reference. Exact mechanism pending CaaS working group confirmation.
+- CaaS cluster nodes have network reachability to the VAST VIP pools for CSI volume operations. This is an infrastructure prerequisite managed by the Cloud Infrastructure Admin.
 
 ## 6. Dependencies
 
-- **OSAC-23 (Storage Controller):** Implemented and merged (osac-operator PR #299). This PRD extends the controller's ClusterOrder handling.
-- **osac-aap PR #338 (playbook split):** Under review. Required for CaaS setup and teardown to operate independently from backend operations.
+- **OSAC-23 (Storage Controller):** Implemented and merged (osac-operator PR #299). This PRD extends the controller's ClusterOrder handling. The osac-operator Helm chart needs to be updated to expose the storage controller enable flag (`controllers.storage`) and storage AAP template env vars.
+- **osac-aap PR #338 (playbook split):** Merged. Registers the four split AAP templates required for CaaS setup and teardown to operate independently from backend operations.
 - **OSAC-1122 (VAST for CaaS):** VAST provider must accept `hcp_data_plane` and use the passed kubeconfig. Without this, the trigger fires but the playbook cannot act.
 - **OSAC-1110 (Tier API):** Not blocking. Controller integrates when available, falls back to env var.
 - **OSAC-1111 (StorageBackend API):** Not blocking. In development (fulfillment-service PR #728). Controller integrates when available, falls back to single implicit backend.
