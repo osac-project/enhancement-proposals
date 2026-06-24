@@ -40,7 +40,7 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 
 #### Availability Zone
 
-- **FR-3:** An Availability Zone entity must be defined in the protobuf data model (public and private APIs) representing a failure domain within a region. [User]
+- **FR-3:** An Availability Zone is an independent failure domain within a region — the failure of one AZ must not impact workloads running in other AZs. An AZ maps to a set of physical infrastructure (racks, power, network) that share common failure characteristics. An Availability Zone entity must be defined in the protobuf data model (public and private APIs). [User]
 - **FR-4:** Availability zones must be exposed in the public API and UI as a selectable attribute so tenant users can list available AZs and choose placement. [User]
 - **FR-5:** Cloud infrastructure admins must be able to create and manage availability zones within a region via the private API. [User]
 
@@ -63,7 +63,7 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 
 #### High Availability
 
-- **FR-14:** A region must support a minimum of 2 availability zones. The OSAC control plane (fulfillment-service, operators, database) must be deployable across multiple AZs within a region so that loss of a single AZ does not cause control plane downtime. [User]
+- **FR-14:** For HA deployments, a region must support a minimum of 2 availability zones. The OSAC control plane (fulfillment-service, operators, database) must be deployable across multiple AZs so that loss of a single AZ does not cause control plane downtime. Single-AZ regions must also be supported for non-HA use cases (test, dev, smaller providers). [User]
 - **FR-15:** The region must have no single point of failure. A deployment and upgrade strategy must be defined for OSAC services that maintains zero downtime during upgrades. [User]
 
 ### 3.2 Non-Functional Requirements
@@ -81,7 +81,8 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 - [ ] Virtual networks span all AZs within the region.
 - [ ] Hub selection uses AZ topology instead of random selection when an AZ constraint is specified.
 - [ ] The inventory model includes AZ assignment per host, and the enclave installer consumes this topology.
-- [ ] A region with 2 AZs can be deployed, and the OSAC control plane survives the loss of one AZ without service interruption.
+- [ ] A single-AZ region can be deployed for non-HA use cases.
+- [ ] An HA region with 2 AZs can be deployed, and the OSAC control plane survives the loss of one AZ without service interruption.
 - [ ] The region has no single point of failure. OSAC services can be upgraded with zero downtime.
 - [ ] No shared state exists between regions other than IAM — validated by architecture review.
 
