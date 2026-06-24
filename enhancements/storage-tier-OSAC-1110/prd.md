@@ -54,6 +54,7 @@ OSAC has no API-managed catalog of storage tier offerings. Tier configuration fl
 
 - **NFR-1:** The StorageTier entity must track creation and modification timestamps for auditability.
 - **NFR-2:** QoS properties are provider-neutral: protocol (enum: `nfs`, `block`), max read bandwidth (integer, MB/s), max write bandwidth (integer, MB/s), quota (integer, bytes), and encryption (boolean). The design document maps these to provider-specific parameters (e.g., VAST QoS policy `static_limits`, VAST view quota). Provider-specific fields are not exposed in the StorageTier API.
+- **NFR-3:** Deleting a StorageTier removes the tier definition from the fulfillment-service database. It does not delete or modify Kubernetes StorageClasses that were created based on the tier. StorageClass lifecycle management is handled by the OSAC Storage Controller (OSAC-23).
 
 ## 4. Acceptance Criteria
 
