@@ -21,13 +21,7 @@ CaaS tenant clusters are provisioned without persistent storage. When a cluster 
 - Multiple CaaS clusters per tenant are handled independently, each with its own storage readiness.
 - When the Storage Tier API (OSAC-1110) and StorageBackend API (OSAC-1111) are available, the system uses them. Otherwise it falls back to the existing configuration.
 
-### 2.2 Success Metrics
-
-| Metric | Target | Baseline |
-|--------|--------|----------|
-| Time from cluster ready to storage available | < 5 minutes | N/A (new feature) |
-
-### 2.3 Non-Goals
+### 2.2 Non-Goals
 
 - VAST provider CaaS-specific changes (storage path conventions, credential scoping, CaaS provisioning targets). Covered by OSAC-1122.
 - Storage UI.
@@ -59,19 +53,18 @@ A tenant can have multiple CaaS clusters. Each cluster's storage is set up and t
 
 ### 3.1 Operational Expectations
 
-- Storage setup completes within 5 minutes of a CaaS cluster becoming ready.
+- Storage should be available shortly after the cluster is ready.
 - Credentials and secrets are never exposed in user-visible error messages, status fields, or events.
 
 ## 4. Acceptance Criteria
 
 - [ ] A tenant user can create a PVC on a newly provisioned CaaS cluster without manual storage configuration
 - [ ] A Cloud Provider Admin can see storage readiness status for each tenant's CaaS clusters
-- [ ] A Tenant Admin can see whether their specific CaaS cluster's storage is ready and the reason if it failed
+- [ ] A Tenant Admin or User can see whether their specific CaaS cluster's storage is ready and the reason if it failed
 - [ ] When a CaaS cluster is deleted, storage resources on that cluster are cleaned up
 - [ ] Deleting one CaaS cluster does not affect storage on other clusters belonging to the same tenant
 - [ ] Backend resources are unaffected by CaaS cluster deletion
 - [ ] A second CaaS cluster for the same tenant gets independent storage setup
-- [ ] Unit tests cover setup, readiness, teardown, and multi-cluster scenarios
 
 ## 5. Assumptions
 
@@ -83,9 +76,8 @@ A tenant can have multiple CaaS clusters. Each cluster's storage is set up and t
 
 ## 6. Dependencies
 
-- **Tenant Storage Onboarding (OSAC-23):** The storage automation framework, two-stage model, and cluster watch are implemented and merged (osac-operator PR #299). This PRD extends the framework to act on CaaS cluster events. The Helm chart needs to be updated to expose the storage controller configuration.
+- **Tenant Storage Onboarding (OSAC-23):** The storage automation framework, two-stage model, and cluster watch are implemented and merged (osac-operator PR #299). This PRD extends the framework to act on CaaS cluster events.
 - **Playbook split (osac-aap PR #338):** Merged. Provides the independent setup and teardown actions required for CaaS cluster-scoped operations.
 - **VAST for CaaS (OSAC-1122):** The storage provider automation must support CaaS clusters as a provisioning target. Without this, the trigger fires but setup cannot complete.
 - **Tier API (OSAC-1110):** Not blocking. The system integrates when available, falls back to existing configuration otherwise.
 - **StorageBackend API (OSAC-1111):** Not blocking. In development (fulfillment-service PR #728). The system integrates when available, falls back to single implicit backend otherwise.
-
