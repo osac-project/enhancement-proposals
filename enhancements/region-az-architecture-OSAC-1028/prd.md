@@ -45,8 +45,8 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 
 #### Workload Placement
 
-- **FR-6:** ComputeInstance creation must accept an optional availability zone parameter, placing the VM or bare-metal instance in the specified AZ. [User]
-- **FR-7:** Cluster creation must accept optional availability zone parameters for worker node placement, enabling cross-AZ worker distribution. [User]
+- **FR-6:** ComputeInstance creation must accept an availability zone parameter, placing the VM or bare-metal instance in the specified AZ. [User]
+- **FR-7:** Cluster creation must accept availability zone parameters for worker node placement, enabling cross-AZ worker distribution. [User]
 - **FR-8:** When a tenant specifies an availability zone for workload placement, the system must schedule the workload in the requested AZ. [User]
 - **FR-9:** Tenant workloads should run in separate workload cluster(s) from the OSAC control plane for production deployments. Single-cluster deployments must also be supported for smaller environments. [User]
 
@@ -58,7 +58,6 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 #### Inventory and Installation
 
 - **FR-12:** The inventory model must include an AZ assignment for each host, so the system knows which AZ a bare-metal host or node belongs to. [User]
-- **FR-13:** The enclave installation process must consume AZ topology information when deploying the region, distributing infrastructure components across AZs. [User]
 
 #### High Availability
 
@@ -72,7 +71,7 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 - [ ] A tenant user can create a cluster specifying AZ placement for worker nodes, and the nodes are distributed accordingly.
 - [ ] Virtual networks span all AZs within the region.
 - [ ] When a tenant specifies an AZ, the system places the workload in the requested AZ.
-- [ ] The inventory model includes AZ assignment per host, and the enclave installer consumes this topology.
+- [ ] The inventory model includes AZ assignment per host.
 - [ ] A single-AZ region can be deployed for non-HA use cases.
 - [ ] When deployed in HA mode with 2+ AZs, the OSAC control plane can survive the loss of one AZ without service interruption.
 - [ ] A tenant user can view and select availability zones in the UI when creating a workload.
@@ -81,7 +80,7 @@ OSAC lacks a formalized region and availability zone architecture. Tenant users 
 ## 5. Assumptions
 
 - OpenShift Hosted Control Planes support distributing control plane and worker nodes across availability zones via topology-aware scheduling.
-- The enclave installation tooling (osac-installer) can be extended to accept AZ topology as input without a fundamental redesign.
+
 
 ## 6. Dependencies
 
