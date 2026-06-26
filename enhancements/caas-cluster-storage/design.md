@@ -176,10 +176,14 @@ New permissions for the storage controller's ClusterRole:
 ```go
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=clusterorders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=clusterorders/finalizers,verbs=update
-// +kubebuilder:rbac:groups=hypershift.openshift.io,resources=hostedcontrolplanes,verbs=get;list;watch
 ```
 
 These are added to the existing `osac-operator-controller-manager` ClusterRole.
+
+To read the kubeconfig, the controller needs access to `hostedcontrolplanes` and `secrets` in HostedCluster namespaces on the hub cluster. Today, the `hub-access-hosted-clusters` ClusterRole (in osac-installer) grants `get` on `hostedclusters` and `secrets`, and the ClusterOrder controller binds it per namespace. Two changes needed:
+
+1. Add `hostedcontrolplanes: get` to the `hub-access-hosted-clusters` ClusterRole.
+2. Add the storage controller's ServiceAccount to the per-namespace RoleBinding.
 
 If the storage controller is down, ClusterOrders still reach `Phase=Ready`. The `ClusterStorageReady` condition remains stale until the controller recovers. Deletion is blocked by the finalizer.
 
@@ -245,7 +249,7 @@ When the Tier API ([OSAC-1110](https://redhat.atlassian.net/browse/OSAC-1110)) i
 
 CaaS cluster storage inherits the existing security model:
 
-- **Kubeconfig handling:** The kubeconfig Secret is read from the HostedCluster namespace on the hub cluster and passed to AAP without being persisted. The storage controller's RBAC permissions ([API Extensions](#rbac)) grant it read access to HostedControlPlane resources and Secrets in those namespaces.
+- **Kubeconfig handling:** The storage controller reads the kubeconfig Secret from the hub cluster and passes it to AAP as an extra variable. It is not stored anywhere else. On the AAP side, playbook tasks that handle the kubeconfig use `no_log: true` so it does not appear in job output or logs.
 - **Tenant isolation:** StorageClasses are scoped to tenants via the `osac.openshift.io/tenant` label, and the tier resolution algorithm only returns StorageClasses matching the tenant. CSI credentials are scoped per-tenant via VAST RBAC Realms ([OSAC-1326](https://redhat.atlassian.net/browse/OSAC-1326)).
 - **API-level authorization:** No new Open Policy Agent (OPA) authorization policies are needed in fulfillment-service, because storage provisioning is triggered by the platform (storage controller), not by tenant API calls.
 
@@ -281,7 +285,7 @@ Structured log entries include `clusterOrder`, `tenant`, and `clusterName` field
 
 | Risk | Mitigation |
 |---|---|
-| Kubeconfig Secret rotation between provisioning and discovery | Controller reads kubeconfig fresh on each reconciliation. |
+| Kubeconfig Secret rotates while an AAP job is running | The job fails with an authentication error (`ProvisionFailed`). The controller reads the new kubeconfig on the next reconciliation and retries. |
 | ClusterOrder count per tenant grows large | Acceptable for v0.1 (single-digit expected). Can split to a separate controller later. |
 | ClusterOrder deleted while provisioning is in progress | Finalizer prevents premature deletion. Controller transitions to teardown on next reconciliation. |
 | HyperShift API changes break kubeconfig path | Import HyperShift API types as a Go module for compile-time checking. |
