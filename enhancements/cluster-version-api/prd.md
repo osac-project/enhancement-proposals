@@ -10,15 +10,15 @@
 
 The Cluster API requires users to provide a full OCI release image URL (e.g., `quay.io/openshift-release-dev/ocp-release:4.17.0-multi`) when creating a cluster. This leaks infrastructure implementation details into the user-facing API: users must know the exact registry path and tag format, typos are caught only at provisioning time rather than at API validation, and there is no way to discover which versions are available.
 
-The cost compounds across layers. Catalog items resort to regex patterns to constrain the image URL prefix — a workaround that cannot verify the version actually exists or is supported. Multiple components independently construct release image URLs from version numbers, duplicating format knowledge with no central validation. Each layer works around the same missing abstraction: a managed catalog of validated cluster versions.
+Without a managed version catalog, every layer that needs to validate or constrain versions must do so ad hoc — there is no central source of which versions exist, which are supported, and which are end-of-life.
 
-A ClusterVersion resource eliminates these workarounds. Users select from a curated, queryable list of versions — no URLs, no guessing. Catalog items reference versions by name instead of embedding URL patterns. Automation receives pre-validated release images from the API, removing URL construction. And the version catalog becomes the foundation for future upgrade operations (OSAC-1415) and ACM version synchronization, which require a queryable set of available versions and their upgrade paths.
+A managed version catalog provides that missing abstraction. Users select from a curated, queryable list of versions — no URLs, no guessing. It also becomes the foundation for future upgrade operations (OSAC-1415) and ACM version synchronization, which require a queryable set of available versions and their lifecycle states.
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
 
-- Users specify an OpenShift version by number (e.g., "4.17.0") instead of a raw OCI URL when creating a cluster, with the server resolving the version to the correct release image internally.
+- Users specify an OpenShift version by number (e.g., "4.17.0") instead of a raw OCI release image URL when creating a cluster.
 - Users receive immediate, descriptive feedback when specifying an invalid, obsolete, or deprecated version — before any provisioning begins.
 - Cloud Provider Admins manage available cluster versions through the CLI and UI console.
 - Tenant Users can discover and select from available versions when creating a cluster — in the CLI, UI, and API.
