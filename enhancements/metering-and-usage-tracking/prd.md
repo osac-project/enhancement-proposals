@@ -44,7 +44,8 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 - Costing, billing, and quota enforcement — deferred to a separate PRD
 - Workload-level metering inside tenant clusters (OSAC has no visibility into tenant-managed workloads)
-- BMaaS, Storage-aaS, Object Storage metering (deferred to a future PRD)
+- BMaaS, Storage-aaS, Object Storage metering (deferred to a future PRD). When storage metering comes in scope, storage tier (e.g., fast, standard, archival — per the [tenant-storage-tiers](/enhancements/tenant-storage-tiers) EP) must be a pricing dimension.
+- Networking resource metering — VirtualNetworks, Subnets, PublicIPs, NAT Gateways (deferred to a future PRD). When networking metering comes in scope, it covers multiple resource types with region as a dimension (per the [networking](/enhancements/networking) EP).
 - Network bandwidth metering (ingress/egress traffic per tenant) — unclear which component has access to the primary data; deferred to custom service metering if a networking vendor provides the data source
 
 ### 2.3 Services in Scope
@@ -157,7 +158,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 ### 9.1 Should Tenant Users see only their own resource usage or all usage within their tenant?
 
 - **Owner:** OSAC platform team / UI team
-- **Impact:** CAP-8, CAP-10. The metering system scopes data at the tenant level. Per-user filtering within a tenant is a UI/RBAC concern to be addressed in the Usage API or landing zone design.
+- **Impact:** CAP-8, CAP-10. The metering system scopes data at the tenant level. Per-user filtering within a tenant is a UI/RBAC concern to be addressed in the Usage API or landing zone design. The [Organizations](/enhancements/organizations) EP defines project-level permissions (e.g., `VIEW_PROJECT`) — metering data visibility should respect these same permissions so users only see usage for projects they have access to.
 
 ### 9.2 Should OSAC provide a combined "current footprint" view joining live resource state with metering data?
 
@@ -175,9 +176,11 @@ OSAC provides usage data. The provider applies their own price schedule to gener
 
 ### VMaaS
 
+The primary VMaaS grouping dimension is the instance type name (per the [vm-instance-types](/enhancements/vm-instance-types) EP). Core-seconds and GiB-seconds are derived dimensions available for providers who prefer resource-based pricing over flat-rate per instance type.
+
 | Pricing Model | Meter | Formula | Example (2-core, 8 GiB VM, 1 hour) |
 |--------------|-------|---------|--------------------------------------|
-| Flat per-template | vm uptime | uptime × price/s | 3600s × $0.001/s = $3.60 |
+| Flat per-instance-type | vm uptime | uptime × price/s | 3600s × $0.001/s = $3.60 |
 | Per-core | cpu core-seconds | core-seconds × price | 7200 × $0.0001 = $0.72 |
 | Per-memory | memory GiB-seconds | GiB-seconds × price | 28800 × $0.00005 = $1.44 |
 | Combined | cpu + memory | sum | $0.72 + $1.44 = $2.16 |
