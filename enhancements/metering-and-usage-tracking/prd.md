@@ -198,4 +198,3 @@ OSAC provides usage data. The provider applies their own price schedule to gener
 | Input tokens | input tokens | tokens × price/1K tokens | 1M × $0.003/1K = $3.00 |
 | Output tokens | output tokens | tokens × price/1K tokens | 500K × $0.015/1K = $7.50 |
 | Cached tokens | cached tokens | tokens × discounted price/1K | 200K × $0.0015/1K = $0.30 |
-
