@@ -86,7 +86,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 - **CAP-11:** VMaaS metering is consumption-based — only active VMs (while running) are metered. Allocated but idle VMs (stopped, paused) are not metered. Providers who need allocation-based charging for VMs should raise this during PRD review.
 - **CAP-12:** CaaS metering is consumption-based — only active clusters (ready or progressing) are metered. Clusters in failed state are not metered. All metered resources belonging to a cluster (control plane, worker nodes, and — when in scope — storage, networking) must be attributable to the parent cluster so that the full cost of a cluster can be queried as a unified view. Providers who need allocation-based charging for clusters should raise this during PRD review.
-- **CAP-19:** MaaS metering is consumption-based — charged per token and per inference request, not per allocated model instance. GPU infrastructure cost is embedded in the provider's per-token/per-model pricing. Metering events must be emitted within 30 seconds of the inference request completing, and the cost management stack must process them and update budget/quota balances within 60 seconds of receipt, so that subsequent requests can be evaluated against an up-to-date balance. These latency requirements do not apply to VMaaS or CaaS, where delays up to the polling interval are acceptable.
+- **CAP-19:** MaaS metering is consumption-based — charged per token and per inference request, not per allocated model instance. GPU infrastructure cost is embedded in the provider's per-token/per-model pricing. Metering events must be emitted within 30 seconds of the inference request completing, and processed within 60 seconds of receipt, so that downstream systems (e.g., quota enforcement, when available) can evaluate against near-real-time balances. These latency requirements do not apply to VMaaS or CaaS, where delays up to the polling interval are acceptable.
 - **CAP-14:** The metering system can be deployed independently without affecting existing OSAC provisioning. Some providers may prefer to use their own metering solution — independent deployment ensures OSAC emits lifecycle events that any metering system can consume.
 - **CAP-15:** Upgrading the metering system does not cause loss of collected metering data or gaps in measurement of ongoing workloads.
 - **CAP-16:** Duplicate events do not cause double-counting in any meter.
@@ -109,12 +109,13 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 - [ ] An active cluster generates separate usage data for the control plane and for each worker node set
 - [ ] Worker node usage can be broken down by resource class, enabling differentiated pricing for GPU vs CPU
+- [ ] All metered resources belonging to a cluster (control plane, worker nodes) can be queried as a unified cluster-level usage view
 
 ### MaaS
 
 - [ ] An inference request generates usage data with input tokens, output tokens, and total tokens queryable per tenant and per model
 - [ ] MaaS usage can be broken down by tenant, project, and model
-- [ ] A metering event is emitted within 30 seconds of an inference request completing, and processed within 60 seconds so that budget/quota balances reflect the consumption before the next request is evaluated
+- [ ] A metering event is emitted within 30 seconds of an inference request completing, and processed within 60 seconds so that downstream systems can evaluate against near-real-time balances
 
 ### Cross-cutting
 
