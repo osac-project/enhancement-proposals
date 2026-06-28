@@ -36,23 +36,23 @@ A ClusterVersion resource eliminates these workarounds. Users select from a cura
 
 #### Version Catalog Management
 
-- **FR-1:** Each version in the catalog is identified by its version number (e.g., "4.17.0"), maps to a release image, has a lifecycle state (active, deprecated, or obsolete), can optionally be marked as the default, and is associated with update channels (e.g., "stable-4.17", "fast-4.17"). Channels are informational metadata in v0.2; channel-based selection and propagation are deferred to OSAC-1415. [Clarify: R1.Q1, R1.Q8]
+- **FR-1:** Admins can create, update, and delete version catalog entries. Each entry requires a version number (e.g., "4.17.0") and release image URL; lifecycle state, channels (e.g., "stable-4.17", "fast-4.17"), and default flag are optional. Channels are informational metadata in v0.2; channel-based selection and propagation are deferred to OSAC-1415. [Clarify: R1.Q1, R1.Q6, R1.Q8, R3.Q1]
 
-- **FR-2:** Admins can create, update, and delete catalog entries. Users can list versions filtered to active and deprecated entries by default; obsolete versions are hidden from the default list but visible via explicit filter. Viewing a specific version by identifier returns it regardless of its lifecycle state, so users can inspect versions referenced by their existing clusters. [Clarify: R1.Q6, R3.Q1]
+- **FR-2:** Users can browse and view available versions. Release image URLs are not exposed to users — they see version number, lifecycle state, and channels. Listings return active and deprecated versions by default; obsolete versions require an explicit filter. A specific version can be viewed regardless of its state, so users can inspect versions referenced by their existing clusters. [Clarify: R1.Q6, R3.Q1]
 
-- **FR-3:** At most one version can be marked as default. The default version is used when no version is specified by the user or template. [Clarify: R1.Q1]
+- **FR-3:** At most one version can be marked as default. An obsolete version cannot be marked as default. The default is used when no version is specified by the user or template. [Clarify: R1.Q1]
 
 #### Cluster Creation
 
-- **FR-4:** Users specify a version number (e.g., "4.17.0") when creating a cluster. Release image URLs are not visible in cluster creation or listing responses — only the version is exposed. [Clarify: R1.Q2, R1.Q5, R2.Q1, R2.Q4, R3.Q3, R3.Q4]
+- **FR-4:** Users specify a version number (e.g., "4.17.0") when creating a cluster. [Clarify: R1.Q2, R1.Q5, R2.Q1, R2.Q4, R3.Q3, R3.Q4]
 
 - **FR-5:** Templates can specify a default version (e.g., "4.17.0"). Any version can be used with any template; templates provide defaults but do not constrain version selection. [Clarify: R2.Q1]
 
-- **FR-6:** A cluster's version is visible in responses when viewing or listing clusters.
+- **FR-6:** A cluster's version and its current lifecycle state are visible when viewing or listing clusters. If the version is deprecated or obsolete, the state is surfaced so users can identify clusters that need attention.
 
 #### Validation
 
-- **FR-7:** Version is validated at creation time with descriptive error messages that include the invalid value and valid alternatives. Validation covers: version not found and version obsolete. Creating a cluster with a deprecated version succeeds but includes a warning identifying the replacement version, if one is set. [Clarify: R2.Q3, R3.Q6]
+- **FR-7:** Version is validated at creation time with descriptive error messages. Validation covers: version not found, version obsolete, and no version resolvable (no explicit version, no template default, and no system default). Creating a cluster with a deprecated version succeeds but includes a warning identifying the replacement version, if one is set. [Clarify: R2.Q3, R3.Q6]
 
 #### User Interfaces
 
@@ -82,11 +82,11 @@ A ClusterVersion resource eliminates these workarounds. Users select from a cura
 
 ## 4. Acceptance Criteria
 
-- [ ] A user can create a cluster by specifying a version number (e.g., 4.17.0) instead of a release image URL. The server resolves the version to the correct release image internally. Release image URLs are not visible in cluster creation or listing responses. Version is immutable after creation.
+- [ ] A user can create a cluster by specifying a version number (e.g., 4.17.0) instead of a release image URL. The server resolves the version to the correct release image internally. Release image URLs are not exposed to users — neither in the version catalog nor in cluster responses. Version is immutable after creation. The version's current lifecycle state is visible when viewing or listing clusters.
 - [ ] Specifying a non-existent, deleted, or obsolete version is rejected with a descriptive error indicating the reason and identifying the replacement if one is set. Deprecated versions allow creation with a warning. Validation applies to both cluster creation and template defaults.
 - [ ] Admins can create, update, and delete version catalog entries. Deleting a version referenced by an active cluster or template defaults is rejected with a message identifying the referencing resource.
 - [ ] Admins can transition a version between active, deprecated, and obsolete in any direction, even when referenced by active clusters or templates. Listing versions returns active and deprecated entries by default; obsolete versions are hidden unless explicitly filtered. Deprecation and obsolescence timestamps are recorded automatically on each transition.
-- [ ] At most one version is marked as default at any time — setting a new default clears the previous one. When a user omits the version and template defaults do not supply one, the server uses the default version. Templates can specify a default version, and the server resolves it to a release image.
+- [ ] At most one version is marked as default at any time — setting a new default clears the previous one. An obsolete version cannot be marked as default. When a user omits the version and template defaults do not supply one, the server uses the default version. Templates can specify a default version, and the server resolves it to a release image.
 - [ ] The CLI supports version catalog management and cluster creation with a version option. Catalog items can reference version in their field definitions. The UI console supports catalog management for admins and version selection in the cluster creation wizard.
 
 ## 5. Assumptions
@@ -125,8 +125,8 @@ This feature applies to **CaaS** (Cluster as a Service) only. VMaaS has an analo
 
 | Persona | Interaction |
 |---------|-------------|
-| Cloud Provider Admin | Creates and manages the version catalog via CLI, API, and UI. Populates available versions. Sets the default version. |
-| Tenant User | Selects a version when creating a cluster via CLI, UI wizard, or catalog items. Discovers available versions via the API and UI. |
+| Cloud Provider Admin | Creates version entries by providing version number, release image URL, channels, and lifecycle state. Manages the catalog via CLI, API, and UI. Sets the default version. |
+| Tenant User | Browses available versions (version number, state, channels — no release image URLs). Selects a version when creating a cluster via CLI, UI wizard, or catalog items. |
 | Cloud Infrastructure Admin | Not affected. |
 | Tenant Admin | Same as Tenant User. May also reference versions when authoring org-specific catalog items. |
 
