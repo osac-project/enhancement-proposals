@@ -46,7 +46,7 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - **FR-17:** The UI must provide a "Create security group" action (available from both the SG list page and the VN detail Security Groups tab) that opens a side panel form with fields for Virtual Network (required dropdown, pre-selected if triggered from VN detail), Name (required, DNS-valid), and expandable Inbound/Outbound Rules sections
 - **FR-18:** The Create SecurityGroup form must allow users to add multiple inbound and outbound rules inline, with each rule having fields for Protocol (dropdown: TCP/UDP/ICMP/All), Port Range (text input, disabled for ICMP), and Source/Destination CIDR (text with CIDR validation)
 - **FR-19:** The UI must provide a SecurityGroup detail page (`/networking/security-groups/:id`) with tabs for Inbound Rules, Outbound Rules, and Details
-- **FR-20:** The Inbound Rules and Outbound Rules tabs must display rules in a table (columns: Protocol, Port Range, Source/Destination CIDR) with "Add Rule" action and row-level Edit/Delete actions. Rule edits use `PATCH /v1/securitygroups/{id}` to replace the full rule set (the API does not support individual rule-level endpoints)
+- **FR-20:** The Inbound Rules and Outbound Rules tabs must display rules in a table (columns: Protocol, Port Range, Source/Destination CIDR) with "Add Rule" action and row-level Edit/Delete actions. Rule edits use `PATCH /api/fulfillment/v1/security_groups/{id}` to replace the full rule set (the API does not support individual rule-level endpoints)
 - **FR-21:** SecurityGroups must be accessible from both the sidebar (top-level) and the VirtualNetwork detail page (Pattern 3: top-level but VN-scoped)
 - **FR-22:** The UI must block deletion of a SecurityGroup if it is attached to compute instances, showing an error message directing the user to remove it from all instances first
 
@@ -67,7 +67,7 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 #### VMaaS Wizard Integration
 
 - **FR-31:** The VM creation wizard (`/vms/create/:catalogItemId`) must include a Network Configuration step after basic VM settings (name, SSH key, etc.) with sections for Network Attachment and Public IP (optional)
-- **FR-32:** The Network Attachment section must provide fields for Virtual Network (required dropdown showing all tenant VNs with name and CIDR, with "Create new VN" link), Subnet (required dropdown filtered to selected VN, showing CIDR and available IP count, with "Create new Subnet" link), and Security Groups (optional multi-select checkboxes showing SGs scoped to selected VN with rule count summary, with "Create new Security Group" link)
+- **FR-32:** The Network Attachment section must provide fields for Virtual Network (required dropdown showing all tenant VNs with name and CIDR, with "Create new VN" link), Subnet (required dropdown filtered to selected VN, showing CIDR, with "Create new Subnet" link), and Security Groups (optional multi-select checkboxes showing SGs scoped to selected VN with rule count summary, with "Create new Security Group" link)
 - **FR-33:** When a user clicks "Create new VN" from the wizard, the UI must open the Create VN side panel that overlays the wizard—after VN creation, the new VN must be auto-selected in the wizard
 - **FR-34:** The wizard must support multi-NIC configuration via an "[+ Add another network attachment]" button—each attachment has its own VN/Subnet/SG selection, and exactly one attachment must be marked as Primary (radio button) which determines the default gateway. Note: All subnets must belong to the same VirtualNetwork (OSAC platform constraint to simplify initial networking model; future phases may support cross-VN attachments)
 - **FR-35:** The wizard's Public IP section must provide radio button options: No public IP, Use existing (dropdown of Available PublicIPs), or Allocate new from pool (dropdown of pools with IP count)—if "Allocate new" is selected, a new PublicIP must be allocated and attached during VM creation
@@ -123,15 +123,14 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - [ ] Status badges use correct colors (Ready=green, Provisioning=blue with spinner, Failed=red, Deleting=orange, Available=green for PublicIPs, Attached=blue for PublicIPs) and include aria-labels for accessibility
 ## 5. Assumptions
 - The OSAC UI codebase uses a pnpm monorepo structure with the UI components in `libs/ui-components/src/`
-- The fulfillment API endpoints listed in Section 3.1 (FR-45) are already implemented and stable. Note: PublicIP attach/detach (FR-27, FR-28, FR-35) requires the private API endpoint `/api/private/v1/public_ip_attachments`, which is not exposed in the public API—the UI will need appropriate permissions to call the private API for these operations
+- The fulfillment API endpoints listed in Section 3.1 (FR-45) are already implemented and stable, including PublicIP attach/detach operations (FR-27, FR-28, FR-35) which are available in the public API at `/api/fulfillment/v1/public_ip_attachments`
 - The existing VM creation wizard at `/vms/create/:catalogItemId` has a NetworkAttachmentFields component that can be extended or replaced with the new Network Configuration step
 - The existing AdminNetworksPage (topology view) does not require changes as part of this feature—it will be preserved as-is under Infrastructure > Networks for tenant admins
 - PatternFly components (DrawerPanelContent, Modal, Wizard, etc.) provide sufficient accessibility support (keyboard navigation, focus management, aria-labels) without additional custom implementation
 - The protobuf-generated types in `libs/types/src/osac/public/v1/` include all necessary types for VirtualNetwork, Subnet, SecurityGroup, PublicIP, and PublicIPPool
 ## 6. Dependencies
-- fulfillment-service REST gateway endpoints must be available and stable (GET/POST/PATCH/DELETE for /api/fulfillment/v1/virtual_networks, /api/fulfillment/v1/subnets, /api/fulfillment/v1/security_groups, /api/fulfillment/v1/public_ips)
-- fulfillment-service private API endpoint `/api/private/v1/public_ip_attachments` (POST/DELETE) for PublicIP attach/detach operations (FR-27, FR-28, FR-35)
-- protobuf-generated TypeScript types must be available in `libs/types/src/osac/public/v1/` for VirtualNetwork, Subnet, SecurityGroup, PublicIP, PublicIPPool, NetworkClass
+- fulfillment-service REST gateway endpoints must be available and stable (GET/POST/PATCH/DELETE for /api/fulfillment/v1/virtual_networks, /api/fulfillment/v1/subnets, /api/fulfillment/v1/security_groups, /api/fulfillment/v1/public_ips, /api/fulfillment/v1/public_ip_attachments)
+- protobuf-generated TypeScript types must be available in `libs/types/src/osac/public/v1/` for VirtualNetwork, Subnet, SecurityGroup, PublicIP, PublicIPPool, PublicIPAttachment, NetworkClass
 - The existing OSAC UI navigation/sidebar framework must support adding a new "Networking" section with sub-items
 - The existing VM creation wizard framework must support adding a new Network Configuration step with inline resource creation
 ## 7. Risks
