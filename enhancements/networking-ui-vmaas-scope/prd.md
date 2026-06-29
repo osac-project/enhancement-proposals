@@ -23,7 +23,7 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 #### Virtual Networks
 - **FR-1:** The UI must provide a VirtualNetworks list page (`/networking/virtual-networks`) displaying all VirtualNetworks owned by the tenant with columns for Name, IPv4 CIDR, Subnets count, and Status
 - **FR-2:** The VirtualNetworks list page must support filtering by Status, sorting by Name/Status, and searching by Name
-- **FR-3:** The UI must provide a "Create virtual network" action that opens a side panel form with fields for NetworkClass (required dropdown showing available NetworkClasses with name and region), Name (required, DNS-valid, unique within tenant), IPv4 CIDR (required, /16 to /24 range), and IPv6 CIDR (optional)
+- **FR-3:** The UI must provide a "Create virtual network" action that opens a side panel form with fields for NetworkClass (required dropdown showing available NetworkClasses with name and description), Name (required, DNS-valid, unique within tenant), IPv4 CIDR (required, /16 to /24 range), and IPv6 CIDR (optional)
 - **FR-4:** The Create VirtualNetwork form must validate inputs inline (show validation errors below each field) and disable the Create button until all required fields are valid
 - **FR-5:** After successful VirtualNetwork creation, the UI must close the form, refresh the list, show a success toast notification, and display the new VN with "Provisioning" status
 - **FR-6:** The UI must provide a VirtualNetwork detail page (`/networking/virtual-networks/:id`) showing the VN name as page title, breadcrumb navigation, status badge, IPv4 CIDR (and IPv6 CIDR if configured) as key properties, and a Delete action in the header
