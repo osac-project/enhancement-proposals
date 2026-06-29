@@ -17,7 +17,7 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - NATGateway, ExternalIPAttachment, NetworkClass management (these are provider-only or future scope)
 - PublicIPPool CRUD operations (pools are provider-managed, read-only for tenants)
 - BaremetalInstance networking or Cluster networking (out of scope for VMaaS phase)
-- Migration of the existing AdminNetworksPage topology view (preserved as-is, enhancements are future work)
+- Migration or enhancement of the existing AdminNetworksPage topology view (future scope)
 ## 3. Requirements
 ### 3.1 Functional Requirements
 #### Virtual Networks
@@ -26,21 +26,21 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - **FR-3:** The UI must provide a "Create virtual network" action that opens a side panel form with fields for Name (required, DNS-valid, unique within tenant), IPv4 CIDR (required, /16 to /24 range), and IPv6 CIDR (optional)
 - **FR-4:** The Create VirtualNetwork form must validate inputs inline (show validation errors below each field) and disable the Create button until all required fields are valid
 - **FR-5:** After successful VirtualNetwork creation, the UI must close the form, refresh the list, show a success toast notification, and display the new VN with "Provisioning" status
-- **FR-6:** The UI must provide a VirtualNetwork detail page (`/networking/virtual-networks/:id`) showing the VN name as page title, breadcrumb navigation, status badge, CIDR as key properties, and a Delete action in the header
+- **FR-6:** The UI must provide a VirtualNetwork detail page (`/networking/virtual-networks/:id`) showing the VN name as page title, breadcrumb navigation, status badge, IPv4 CIDR (and IPv6 CIDR if configured) as key properties, and a Delete action in the header
 - **FR-7:** The VirtualNetwork detail page must display three tabs: Subnets (default), Security Groups, and Details
 - **FR-8:** The UI must block deletion of a VirtualNetwork if it has subnets or security groups, showing an error message directing the user to delete child resources first
 #### Subnets
 - **FR-9:** The Subnets tab on the VirtualNetwork detail page must display all subnets belonging to that VN in a table with columns for Name, CIDR, Available IPs (used/total), and Status
 - **FR-10:** The Subnets tab must provide a "Create subnet" action that opens a side panel form with the parent VN pre-selected and fields for Name (required, DNS-valid) and CIDR (required, must be within parent VN CIDR, must not overlap existing subnets)
 - **FR-11:** The Create Subnet form must show the parent VN CIDR as context and display existing subnet CIDRs to help users select a non-overlapping range
-- **FR-12:** Clicking on a subnet name must show a detail panel (side drawer or inline expansion) displaying subnet metadata and a list of attached resources (compute instances)
+- **FR-12:** Clicking on a subnet name must show subnet metadata and a list of attached resources (compute instances) in a side drawer
 - **FR-13:** Subnets must not have their own top-level sidebar entry—they are managed exclusively from the VirtualNetwork detail page
 - **FR-14:** The UI must block deletion of a Subnet if it has attached compute instances, showing an error message directing the user to remove or migrate instances first
 #### Security Groups
 - **FR-15:** The UI must provide a SecurityGroups list page (`/networking/security-groups`) displaying all SecurityGroups across all VirtualNetworks with columns for Name, Virtual Network (link to VN detail), Inbound Rules count, Outbound Rules count, and Status
 - **FR-16:** The SecurityGroups list page must support filtering by Virtual Network and Status, and searching by Name
 - **FR-17:** The UI must provide a "Create security group" action (available from both the SG list page and the VN detail Security Groups tab) that opens a side panel form with fields for Virtual Network (required dropdown, pre-selected if triggered from VN detail), Name (required, DNS-valid), and expandable Inbound/Outbound Rules sections
-- **FR-18:** The Create SecurityGroup form must allow users to add multiple inbound and outbound rules inline, with each rule having fields for Protocol (dropdown: TCP/UDP/ICMP/All), Port Range (text input, disabled for ICMP), Source/Destination CIDR (text with CIDR validation), and Description (optional)
+- **FR-18:** The Create SecurityGroup form must allow users to add multiple inbound and outbound rules inline, with each rule having fields for Protocol (dropdown: TCP/UDP/ICMP/All), Port Range (text input, disabled for ICMP), Source/Destination CIDR (text with CIDR validation), Description (optional), and Priority (integer, determines rule evaluation order)
 - **FR-19:** The UI must provide a SecurityGroup detail page (`/networking/security-groups/:id`) with tabs for Inbound Rules, Outbound Rules, and Details
 - **FR-20:** The Inbound Rules and Outbound Rules tabs must display rules in a table (columns: Priority, Protocol, Port Range, Source/Destination CIDR, Description) with "Add Rule" action and row-level Edit/Delete actions, ordered by priority
 - **FR-21:** SecurityGroups must be accessible from both the sidebar (top-level) and the VirtualNetwork detail page (Pattern 3: top-level but VN-scoped)
@@ -51,7 +51,7 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - **FR-25:** The UI must provide an "Allocate IP" action that opens a modal dialog with fields for Pool (required dropdown showing available pools with remaining IP count, e.g., "external-pool-1 (Available: 245 IPs)") and Name (required, label for this allocation)
 - **FR-26:** After successful IP allocation, the UI must close the modal and show the new IP as "Available" (unattached) in the list
 - **FR-27:** The UI must provide Attach and Detach row actions for PublicIPs—Attach (if Available) opens a side panel listing eligible resources (ComputeInstances/VMs) in a searchable table; Detach (if Attached) opens a confirmation modal warning the user that the VM will lose external connectivity on this IP
-- **FR-28:** The UI must provide a Release (delete) action for PublicIPs with confirmation, blocked if the IP is currently attached
+- **FR-28:** The UI must provide a Release action for PublicIPs with confirmation, blocked if the IP is currently attached
 #### Sidebar Navigation
 - **FR-29:** The tenant user sidebar must add a new "Networking" section with sub-items: Virtual Networks, Security Groups, Public IPs (Subnets are not a sidebar item)
 - **FR-30:** The tenant admin sidebar must add the same "Networking" section under the existing Management section, preserving the existing Infrastructure (Networks topology view) section
@@ -59,20 +59,20 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - **FR-31:** The VM creation wizard (`/vms/create/:catalogItemId`) must include a Network Configuration step after basic VM settings (name, SSH key, etc.) with sections for Network Attachment and Public IP (optional)
 - **FR-32:** The Network Attachment section must provide fields for Virtual Network (required dropdown showing all tenant VNs with name and CIDR, with "Create new VN" link), Subnet (required dropdown filtered to selected VN, showing CIDR and available IP count, with "Create new Subnet" link), and Security Groups (optional multi-select checkboxes showing SGs scoped to selected VN with rule count summary, with "Create new Security Group" link)
 - **FR-33:** When a user clicks "Create new VN" from the wizard, the UI must open the Create VN side panel that overlays the wizard—after VN creation, the new VN must be auto-selected in the wizard
-- **FR-34:** The wizard must support multi-NIC configuration via an "[+ Add another network attachment]" button—each attachment has its own VN/Subnet/SG selection, all subnets must belong to the same VN (enforced with validation error), and exactly one attachment must be marked as Primary (radio button) which determines the default gateway
+- **FR-34:** The wizard must support multi-NIC configuration via an "[+ Add another network attachment]" button—each attachment has its own VN/Subnet/SG selection, and exactly one attachment must be marked as Primary (radio button) which determines the default gateway. Note: All subnets must belong to the same VirtualNetwork (OSAC platform constraint to simplify initial networking model; future phases may support cross-VN attachments)
 - **FR-35:** The wizard's Public IP section must provide radio button options: No public IP, Use existing (dropdown of Available PublicIPs), or Allocate new from pool (dropdown of pools with IP count)—if "Allocate new" is selected, a new PublicIP must be allocated and attached during VM creation
 - **FR-36:** The wizard must enforce that VirtualNetwork is required (block VM creation without network attachment), Subnet is required and must belong to the selected VN, and show a warning if no Security Groups are selected ("No security groups selected. Your VM will have no firewall rules.")
 - **FR-37:** The wizard must implement smart defaults: if the tenant has exactly one VN auto-select it, if the selected VN has exactly one subnet auto-select it, if the selected VN has exactly one SG pre-check it, if only one PublicIP pool exists pre-select it for "Allocate new"
-- **FR-38:** If no VNs exist when the wizard reaches the Network Configuration step, the UI must show a prominent message "You need to create a virtual network before provisioning a VM" with a "Create Virtual Network" button that navigates to `/networking/virtual-networks` (or opens inline creation with return path to wizard)
+- **FR-38:** If no VNs exist when the wizard reaches the Network Configuration step, the UI must show a prominent message "You need to create a virtual network before provisioning a VM" with a "Create Virtual Network" button that opens the inline Create VN side panel (see FR-33) with automatic return to the wizard after creation
 #### Error States and Edge Cases
 - **FR-39:** When no resources exist, list pages must show empty states with illustrations, helpful headings (e.g., "No virtual networks yet"), descriptions, and primary action buttons (e.g., "Create virtual network")
 - **FR-40:** When PublicIP pools are unavailable, the PublicIPs list page must show an informational banner: "No IP pools available. Contact your provider to provision IP address pools."
 - **FR-41:** While a resource is in Provisioning or Deleting state, the UI must disable Delete actions, show a spinner next to the status badge, and auto-refresh the list every 5 seconds until the resource reaches a terminal state (Ready or Failed)
-- **FR-42:** For failed resources, the UI must show the error message from the API in a collapsible alert on the detail page and provide Retry and Delete actions
+- **FR-42:** For failed resources, the UI must show the error message from the API in a collapsible alert on the detail page and provide Retry and Delete actions. Retry re-submits the original creation request (POST) to the same endpoint; the UI does not persist intermediate state—users must re-enter form data if the retry also fails
 - **FR-43:** The UI must use TanStack Query's stale-while-revalidate pattern for concurrent modification handling, show a Refresh button in the toolbar, auto-refetch on window focus, and show optimistic updates for delete operations (gray out the row immediately)
 #### API Integration
 - **FR-44:** The UI must use protobuf-generated types from `libs/types/src/osac/public/v1/` and create TanStack Query hooks for each resource (useVirtualNetworks, useVirtualNetwork, useCreateVirtualNetwork, useDeleteVirtualNetwork, etc.)
-- **FR-45:** The UI must call the following REST gateway endpoints: VirtualNetworks (GET /v1/virtualnetworks, GET /v1/virtualnetworks/{id}, POST /v1/virtualnetworks, PATCH /v1/virtualnetworks/{id}, DELETE /v1/virtualnetworks/{id}), Subnets (GET /v1/subnets with filter by virtual_network, GET /v1/subnets/{id}, POST /v1/subnets, DELETE /v1/subnets/{id}), SecurityGroups (GET /v1/securitygroups with filter by virtual_network, GET /v1/securitygroups/{id}, POST /v1/securitygroups, PATCH /v1/securitygroups/{id}, DELETE /v1/securitygroups/{id}), PublicIPs (GET /v1/publicips, GET /v1/publicips/{id}, POST /v1/publicips, DELETE /v1/publicips/{id}), PublicIPPools (GET /v1/publicippools, read-only)
+- **FR-45:** The UI must call the following REST gateway endpoints: VirtualNetworks (GET /v1/virtualnetworks, GET /v1/virtualnetworks/{id}, POST /v1/virtualnetworks, PATCH /v1/virtualnetworks/{id}, DELETE /v1/virtualnetworks/{id}), Subnets (GET /v1/subnets with filter by virtual_network, GET /v1/subnets/{id}, POST /v1/subnets, DELETE /v1/subnets/{id}—note: Subnets are create/delete only, no PATCH endpoint), SecurityGroups (GET /v1/securitygroups with filter by virtual_network, GET /v1/securitygroups/{id}, POST /v1/securitygroups, PATCH /v1/securitygroups/{id}, DELETE /v1/securitygroups/{id}), PublicIPs (GET /v1/publicips, GET /v1/publicips/{id}, POST /v1/publicips, DELETE /v1/publicips/{id}), PublicIPPools (GET /v1/publicippools, read-only)
 ### 3.2 Non-Functional Requirements
 - **NFR-1:** The UI must be built with React 19 and TypeScript using the PatternFly 6 design system (Red Hat design system)
 - **NFR-2:** The UI must use react-router-dom v7 for routing, TanStack Query (React Query) for data fetching, and Connect-ES for gRPC-Web client integration
@@ -82,8 +82,7 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - **NFR-6:** Tables must be responsive using PatternFly's responsive table breakpoints—on small screens, use compound expansion to show row details instead of navigating to a detail page
 - **NFR-7:** Side panels (create forms) must become full-width drawers on mobile, and the sidebar must remain collapsible as in the current OSAC UI
 - **NFR-8:** All form inputs must have associated labels (PatternFly FormGroup handles this), status badges must have aria-labels (include text like "Status: Ready," not just color), table row actions must be keyboard-navigable, modal focus must be trapped (PatternFly Modal handles this), status changes must be announced via aria-live regions, and CIDR inputs must have helper text explaining the expected format
-- **NFR-9:** The UI must use PatternFly 6 components as specified in NFR-1 and NFR-4, consistent with the current OSAC UI codebase
-- **NFR-10:** The UI must handle at least 100 VirtualNetworks, 500 Subnets, 200 SecurityGroups, and 1000 PublicIPs per tenant with acceptable performance—pagination should be enforced when counts exceed these thresholds
+- **NFR-9:** The UI must handle at least 100 VirtualNetworks, 500 Subnets, 200 SecurityGroups, and 1000 PublicIPs per tenant with acceptable performance—pagination should be enforced when counts exceed these thresholds
 ## 4. Acceptance Criteria
 - [ ] A tenant user can navigate to Networking > Virtual Networks from the sidebar and see a list of all their VirtualNetworks with Name, IPv4 CIDR, Subnets count, and Status columns
 - [ ] A tenant user can click "Create virtual network" and successfully create a VN by filling in Name and IPv4 CIDR fields with inline validation
@@ -136,7 +135,7 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - **Impact:** Affects the wizard integration implementation (FR-33). Option (A) is an inline side panel overlay that preserves wizard state. Option (B) navigates to `/networking/virtual-networks` and loses wizard state. Option (C) is an inline drawer within the wizard step itself. The specification leans toward Option (A) but doesn't definitively resolve this.
 ### 8.2 What specific enhancements to the AdminNetworksPage topology view are in scope?
 - **Owner:** Product Owner
-- **Impact:** Non-Goals section states topology view enhancements are future work, but the specification says the topology view "should be preserved and enhanced." Clarify whether any enhancements (e.g., integration with the new Networking section, updated styling) are expected in this phase or if it remains fully as-is.
+- **Impact:** Non-Goals section states topology view enhancements are future scope. Clarify whether any enhancements (e.g., integration with the new Networking section, updated styling) are expected in a future phase.
 ### 8.3 What testing strategy is required for this feature?
 - **Owner:** QE team / Product Owner
 - **Impact:** Determines deliverables and acceptance criteria. Should the feature include: (a) unit tests for all components, (b) E2E tests for critical flows (VN creation, wizard integration), (c) accessibility testing with specific tools (e.g., axe, NVDA), (d) manual testing only, or (e) a combination? The specification does not specify testing requirements.
