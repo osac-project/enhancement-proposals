@@ -17,7 +17,7 @@
 | **Usage** | Measured consumption of a resource (e.g., CPU core-seconds consumed while a VM was running). |
 | **Allocation** | Reserved capacity of a resource, regardless of whether it is actively used. |
 | **Resource class** | A provider-defined category for differentiated pricing. Examples: host type for CaaS worker nodes (e.g., `gpu-h100`, `cpu-only`), template for VMaaS, machine class for BMaaS, storage tier for Storage-aaS. To the metering system, it is an opaque label used for grouping. |
-| **Template** | A configuration defining a resource offering (cores, memory, node sets). In metering, `template` enables per-offering pricing. |
+| **Template** | A `ComputeInstanceTemplate` or `ClusterTemplate` that defines the default resource configuration (cores, memory, image, node sets). Not to be confused with Ansible role templates. In metering, `template` is a groupBy dimension; for VMaaS, the primary pricing dimension is the instance type name (per the [vm-instance-types](/enhancements/vm-instance-types) EP). |
 | **Cost Model** | A configuration mapping meters to rates, defining how consumption becomes charges. May differ by audience (provider-internal vs. tenant-facing). |
 | **Price List** | A set of rates within a cost model with a defined validity period. |
 | **Budget** | A spending limit on a scope (tenant, project, resource type) for a configurable time period. |
@@ -43,7 +43,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 ### 2.2 Non-Goals
 
 - Costing, billing, and quota enforcement — deferred to a separate PRD
-- Workload-level metering inside tenant clusters (OSAC has no visibility into tenant-managed workloads)
+- Workload-level metering inside tenant clusters, VMs, or hosts (OSAC has no visibility into tenant-managed workloads)
 - BMaaS, Storage-aaS, Object Storage metering (deferred to a future PRD). When storage metering comes in scope, storage tier (e.g., fast, standard, archival — per the [tenant-storage-tiers](/enhancements/tenant-storage-tiers) EP) must be a pricing dimension.
 - Networking resource metering — VirtualNetworks, Subnets, PublicIPs, NAT Gateways (deferred to a future PRD). When networking metering comes in scope, it covers multiple resource types with region as a dimension (per the [networking](/enhancements/networking) EP).
 - Network bandwidth metering (ingress/egress traffic per tenant) — unclear which component has access to the primary data; deferred to custom service metering if a networking vendor provides the data source
@@ -84,7 +84,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 ### 3.5 Cross-cutting
 
-- **CAP-11:** VMaaS metering is consumption-based — only active VMs (while running) are metered. Allocated but idle VMs (stopped, paused) are not metered. Providers who need allocation-based charging for VMs should raise this during PRD review.
+- **CAP-11:** VMaaS metering is consumption-based — only active VMs (while running) are metered. Allocated but idle VMs (stopped, paused) and VMs in failed state are not metered. All metered resources belonging to a VM (and — when in scope — storage, public IPs) must be attributable to the parent VM so that the full cost of a VM can be queried as a unified view. Providers who need allocation-based charging for VMs should raise this during PRD review.
 - **CAP-12:** CaaS metering is consumption-based — only active clusters (ready or progressing) are metered. Clusters in failed state are not metered. All metered resources belonging to a cluster (control plane, worker nodes, and — when in scope — storage, networking) must be attributable to the parent cluster so that the full cost of a cluster can be queried as a unified view. Providers who need allocation-based charging for clusters should raise this during PRD review.
 - **CAP-19:** MaaS metering is consumption-based — charged per token and per inference request, not per allocated model instance. GPU infrastructure cost is embedded in the provider's per-token/per-model pricing. Metering events must be emitted within 30 seconds of the inference request completing, and processed within 60 seconds of receipt, so that downstream systems (e.g., quota enforcement, when available) can evaluate against near-real-time balances. These latency requirements do not apply to VMaaS or CaaS, where delays up to the polling interval are acceptable.
 - **CAP-14:** The metering system can be deployed independently without affecting existing OSAC provisioning. Some providers may prefer to use their own metering solution — independent deployment ensures OSAC emits lifecycle events that any metering system can consume.
