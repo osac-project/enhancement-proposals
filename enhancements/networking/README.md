@@ -45,22 +45,27 @@ This section defines the key networking terms used throughout this enhancement:
   to an AWS VPC or Azure VNet. VirtualNetwork is scoped to a Region. It provides
   logical isolation and defines the overall address space via optional `ipv4`
   and `ipv6` sections (each with a `cidr`). Single-stack = one section;
-  dual-stack = both.
+  dual-stack = both. The `region`, `networkClass`, `implementationStrategy`, and
+  CIDRs are immutable after creation.
 
 - **Subnet**: A subdivision of a VirtualNetwork's IP address space, scoped to a
   Region (the same Region as the VirtualNetwork). Subnets use optional `ipv4`
   and `ipv6` sections (each with a `cidr`), consistent with the VirtualNetwork.
-  Resources are attached to Subnets to receive IP addresses and network
-  connectivity.
+  The `virtualNetwork` (parent reference) and CIDRs are immutable after
+  creation. Resources are attached to Subnets to receive IP addresses and
+  network connectivity.
 
 - **SecurityGroup**: A stateful firewall that controls inbound and outbound
   traffic for resources. Rules specify allowed protocols, ports, and source/
   destination addresses (IPv4 or IPv6 CIDRs). SecurityGroups are applied to
-  resources within a VirtualNetwork.
+  resources within a VirtualNetwork. The `virtualNetwork` and
+  `implementationStrategy` are immutable after creation.
 
 - **PublicIPPool**: A provider-defined pool of public IP addresses. Each pool is
   either IPv4 or IPv6 (not both), defined via `ipv4.cidrs` or `ipv6.cidrs`.
-  Pools are scoped to a region. Tenants allocate PublicIPs from a PublicIPPool.
+  Pools are scoped to a region. The `cidrs`, IP family (IPv4 vs IPv6), and
+  `implementationStrategy` are immutable after creation. Tenants allocate
+  PublicIPs from a PublicIPPool.
 
 - **PublicIP** (also known as **Floating IP**): A public IP address (IPv4 or
   IPv6) allocated from a PublicIPPool. PublicIPs can be dynamically attached to
@@ -687,6 +692,16 @@ apply SecurityGroups for traffic control.
   pool's family. SecurityGroup rules use CIDR notation (e.g. `0.0.0.0/0`,
   `::/0`). Implementation support for IPv6 depends on the NetworkClass and
   underlying platform (e.g. OVN-Kubernetes / UDN).
+- **Field Immutability**: Several spec fields are immutable after creation
+  across networking resources. The Fulfillment Service and O-SAC Operator both
+  reject update requests that modify immutable fields; to change them, the
+  resource must be deleted and re-created.
+  - **VirtualNetwork**: `region`, `networkClass`, `implementationStrategy`,
+    `ipv4.cidr`, `ipv6.cidr`
+  - **Subnet**: `virtualNetwork`, `ipv4.cidr`, `ipv6.cidr`
+  - **SecurityGroup**: `virtualNetwork`, `implementationStrategy`
+  - **PublicIPPool**: `cidrs`, IP family (IPv4 vs IPv6),
+    `implementationStrategy`
 - **Namespace per Subnet** (`udn-net`): Each Subnet has its own namespace and
   UserDefinedNetwork; VirtualNetwork is a logical grouping. UDN and namespace
   are created with the Subnet and removed with it; VirtualNetwork can be deleted
