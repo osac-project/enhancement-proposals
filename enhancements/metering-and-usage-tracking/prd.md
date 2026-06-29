@@ -115,7 +115,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 - [ ] An inference request generates usage data with input tokens, output tokens, and total tokens queryable per tenant and per model
 - [ ] MaaS usage can be broken down by tenant, project, and model
-- [ ] A metering event is emitted within 30 seconds of an inference request completing, and processed within 60 seconds so that downstream systems can evaluate against near-real-time balances
+- [ ] A metering event is emitted within 30 seconds of an inference request completing, and processed within 60 seconds so that downstream systems (e.g., quota enforcement, when available) can evaluate against near-real-time balances
 
 ### Cross-cutting
 
