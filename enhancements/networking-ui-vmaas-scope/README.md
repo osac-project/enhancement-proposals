@@ -40,12 +40,12 @@ The proposed UI leverages PatternFly 6 components (Table, Drawer, Modal, Wizard)
 - Support inline networking resource creation from the VMaaS wizard without leaving the wizard flow
 - Provide accessible, responsive UI following PatternFly 6 design system and WCAG standards
 - Handle resource lifecycle states (Provisioning, Ready, Failed, Deleting) with appropriate UI feedback and auto-refresh
-- Enforce platform constraints (e.g., all NIC attachments must use the same VirtualNetwork) in the wizard UX
+- Enforce single network attachment per VM (one VirtualNetwork, one Subnet, optional SecurityGroups) in the wizard UX
 
 ### Non-Goals
 
 - Provider-only resource management (NetworkClass CRUD, PublicIPPool CRUD, NATGateway, ExternalIPAttachment)
-- BaremetalInstance or Cluster networking UI (out of scope for VMaaas phase)
+- BaremetalInstance or Cluster networking UI (out of scope for VMaaS phase)
 - Migration or enhancement of the existing AdminNetworksPage topology view
 - Multi-region VirtualNetwork support, cross-VN NIC attachments, and multi-NIC (multiple network attachments per VM) support (deferred to future phase)
 
@@ -174,7 +174,7 @@ sequenceDiagram
     end
 ```
 
-This sequence diagram illustrates the list-fetch, create, and polling workflow for VirtualNetwork creation. The same pattern applies to Subnets, SecurityGroups, and PublicIPs.
+The same pattern applies to Subnets, SecurityGroups, and PublicIPs (with state names adjusted per resource type: PublicIPs use AVAILABLE/ATTACHED states, both non-terminal for polling purposes).
 
 ### API Extensions
 
@@ -187,7 +187,6 @@ This design does not introduce new API extensions. The fulfillment API already p
 - `PublicIPAttachments` service: Create (attach), Delete (detach)
 - `PublicIPPools` service: List (read-only for tenants)
 - `NetworkClasses` service: List (read-only for tenants)
-
 The UI consumes these services via the REST gateway (`/api/fulfillment/v1/*`). No CRD changes, webhooks, or finalizers are required—this is a pure frontend implementation.
 
 ### Implementation Details/Notes/Constraints
@@ -272,7 +271,7 @@ export const usePatchSecurityGroup = () => {
       apiFetch<SecurityGroup>('v1/security_groups', {
         pathParams: [id],
         method: 'PATCH',
-        body: { object: patch, field_mask: { paths: Object.keys(patch) } },
+        body: { object: patch, field_mask: { paths: Object.keys(patch) } }, // Note: assumes flat patch; for nested updates, use a helper to generate dot-path field masks
         decode: SecurityGroupSchema,
       }),
     onSuccess: () => invalidateSecurityGroupsQueries(qc),
@@ -287,7 +286,7 @@ export const useAttachPublicIP = () => {
     mutationFn: ({ publicIpId, resourceId, resourceType }: AttachPublicIPInput) =>
       apiFetch<PublicIPAttachment>('v1/public_ip_attachments', {
         method: 'POST',
-        body: { public_ip_id: publicIpId, resource_id: resourceId, resource_type: resourceType },
+        body: { object: { public_ip_id: publicIpId, resource_id: resourceId, resource_type: resourceType } },
         decode: PublicIPAttachmentSchema,
       }),
     onSuccess: () => {
@@ -462,6 +461,7 @@ All forms use Formik for state management and Yup for schema validation. Validat
 - `metadata.name`: required, DNS-valid (RFC 1123 subdomain: lowercase alphanumeric, hyphens, max 63 chars), unique within tenant (uniqueness checked server-side, client shows conflict error from 409 response)
 - `spec.network_class`: assigned automatically by the platform (hidden from tenant users, omitted from create request)
 - `spec.ipv4_cidr`: required, valid CIDR notation, prefix length between /16 and /24 (Yup regex: `/^(\d{1,3}\.){3}\d{1,3}\/(1[6-9]|2[0-4])$/`)
+  Note: This regex is illustrative only and does not fully validate IPv4 octets (e.g., allows 999.999.999.999). Implementation should use a proper CIDR validation library such as `cidr-regex` or `ip-address`.
 - `spec.ipv6_cidr`: optional, valid IPv6 CIDR if provided
 
 **Subnet:**
@@ -521,9 +521,9 @@ Detail pages use the same pattern. On window focus, TanStack Query auto-refetche
 
 **Delete action behavior:**
 
-- If resource has children (VN with subnets/SGs, Subnet with attached VMs, SG attached to VMs, PublicIP in ATTACHED state), DELETE request returns 400 with error message. UI shows error modal with message from API response and does not retry.
+- If DELETE fails with 400 (business rule violation, e.g., VN has children), show error modal with API message.
 - If resource is in PENDING or DELETING state, Delete action is disabled (button grayed out).
-- Optimistic update: when user clicks Delete and confirms, the row is immediately grayed out and a spinner appears. If the DELETE request fails, the row returns to normal state and an error toast is shown.
+- If DELETE fails with 500 (server error), rollback optimistic update and show error toast.
 
 #### Accessibility
 
@@ -658,13 +658,13 @@ FR-20 states "Rule edits use `PATCH /api/fulfillment/v1/security_groups/{id}` to
 
 - **Mitigation:** Use immediate PATCH on each Edit/Delete action (simpler UX, no client-side batching). Accept the additional API calls as a trade-off for simpler state management. If performance issues arise (e.g., user edits 10 rules rapidly), implement client-side batching with a "Save changes" button in a future iteration.
 
-**Risk 5: PublicIPPool available IP count staleness**
+**Risk 4: PublicIPPool available IP count staleness**
 
 FR-25 displays "Available: N IPs" in the pool dropdown. If `spec.available_count` is eventually consistent (updated by a background reconciliation loop), the displayed count may be stale.
 
 - **Mitigation:** Refetch PublicIPPools when the Allocate IP modal opens (`enabled: isModalOpen` in query options). Accept minor staleness risk—if allocation fails due to pool exhaustion, the API returns 400 and the user selects a different pool.
 
-**Risk 6: Wizard VN requirement enforcement ambiguity**
+**Risk 5: Wizard VN requirement enforcement ambiguity**
 
 FR-36 states "block VM creation without network attachment." It is unclear whether the fulfillment API enforces this constraint (returns 400 on POST ComputeInstance without networking spec) or if the UI must prevent form submission.
 
