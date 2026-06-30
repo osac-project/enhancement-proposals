@@ -19,13 +19,16 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - BaremetalInstance networking or Cluster networking (out of scope for VMaaS phase)
   - Multi-NIC (multiple network attachments per VM) support (future phase)
 - Migration or enhancement of the existing AdminNetworksPage topology view (future scope)
+
 ## 3. Requirements
+
 ### 3.1 Functional Requirements
+
 #### Virtual Networks
+
 - **FR-1:** The UI must provide a VirtualNetworks list page (`/networking/virtual-networks`) displaying all VirtualNetworks owned by the tenant with columns for Name, IPv4 CIDR, Subnets count, and Status
 - **FR-2:** The VirtualNetworks list page must support filtering by Status, sorting by Name/Status, and searching by Name
-- **FR-3:** The UI must provide a "Create virtual network" action that opens a side panel form with fields for Name (required, DNS-valid, unique within tenant), IPv4 CIDR (required, /16 to /24 range), and IPv6 CIDR (optional)
-  Note: NetworkClass is assigned automatically by the platform and hidden from tenant users.
+- **FR-3:** The UI must provide a "Create virtual network" action that opens a side panel form with fields for Name (required, DNS-valid, unique within tenant), IPv4 CIDR (required, /16 to /24 range), and IPv6 CIDR (optional). NetworkClass is assigned automatically by the platform and is not exposed to tenant users.
 - **FR-4:** The Create VirtualNetwork form must validate inputs inline (show validation errors below each field) and disable the Create button until all required fields are valid
 - **FR-5:** After successful VirtualNetwork creation, the UI must close the form, refresh the list, show a success toast notification, and display the new VN with "Provisioning" status
 - **FR-6:** The UI must provide a VirtualNetwork detail page (`/networking/virtual-networks/:id`) showing the VN name as page title, breadcrumb navigation, status badge, IPv4 CIDR (and IPv6 CIDR if configured) as key properties, and a Delete action in the header
@@ -112,6 +115,7 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - [ ] A new tenant can click "Create Virtual Network" from the wizard, create a VN inline (side panel overlay), and the new VN is auto-selected in the wizard after creation
 - [ ] A new tenant can create Subnets and SecurityGroups inline from the wizard using "Create new Subnet" and "Create new Security Group" links, with the current VN pre-selected
 - [ ] A returning tenant with one VN, one Subnet, and one SG sees all three auto-selected in the VM wizard Network Configuration step
+- [ ] A new tenant creating their first VM has "Allocate Public IP" checkbox pre-checked and IP Family defaulted to IPv4 in the Network Configuration step
 - [ ] The wizard blocks VM creation if no VirtualNetwork is selected and shows a warning if no SecurityGroups are selected
 - [ ] Empty states show helpful illustrations and "Create" buttons on all list pages when no resources exist
 - [ ] Resources in Provisioning or Deleting state show a spinner, disable Delete actions, and auto-refresh every 5 seconds
@@ -123,11 +127,12 @@ Tenant users and tenant admins currently lack a dedicated UI for managing networ
 - [ ] Status badges use correct colors (Ready=green, Provisioning=blue with spinner, Failed=red, Deleting=orange, Available=green for PublicIPs, Attached=blue for PublicIPs) and include aria-labels for accessibility
 ## 5. Assumptions
 - The OSAC UI codebase uses a pnpm monorepo structure with the UI components in `libs/ui-components/src/`
-- The fulfillment API endpoints listed in Section 3.1 (FR-45) are already implemented and stable, including PublicIP attach/detach operations (FR-27, FR-28, FR-35) which are available in the public API at `/api/fulfillment/v1/public_ip_attachments`
+- The fulfillment API endpoints listed in Section 3.1 (FR-43 to FR-44) are already implemented and stable, including PublicIP attach/detach operations (FR-27, FR-28, FR-35) which are available in the public API at `/api/fulfillment/v1/public_ip_attachments`
 - The existing VM creation wizard at `/vms/create/:catalogItemId` has a NetworkAttachmentFields component that can be extended or replaced with the new Network Configuration step
 - The existing AdminNetworksPage (topology view) does not require changes as part of this feature—it will be preserved as-is under Infrastructure > Networks for tenant admins
 - PatternFly components (DrawerPanelContent, Modal, Wizard, etc.) provide sufficient accessibility support (keyboard navigation, focus management, aria-labels) without additional custom implementation
-- The protobuf-generated types in `libs/types/src/osac/public/v1/` include all necessary types for VirtualNetwork, Subnet, SecurityGroup, PublicIP, and PublicIPPool. NetworkClass is assigned automatically by the platform and is not selectable by tenant users.
+- The protobuf-generated types in `libs/types/src/osac/public/v1/` include all necessary types for VirtualNetwork, Subnet, SecurityGroup, PublicIP, and PublicIPPool
+- NetworkClass is assigned automatically by the platform and hidden from tenant users (not exposed in the tenant API)
 ## 6. Dependencies
 - fulfillment-service REST gateway endpoints must be available and stable (GET/POST/PATCH/DELETE for /api/fulfillment/v1/virtual_networks, /api/fulfillment/v1/subnets, /api/fulfillment/v1/security_groups, /api/fulfillment/v1/public_ips, /api/fulfillment/v1/public_ip_attachments)
 - protobuf-generated TypeScript types must be available in `libs/types/src/osac/public/v1/` for VirtualNetwork, Subnet, SecurityGroup, PublicIP, PublicIPPool, PublicIPAttachment, NetworkClass
