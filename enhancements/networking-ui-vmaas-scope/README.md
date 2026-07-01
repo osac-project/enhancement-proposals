@@ -137,7 +137,7 @@ The design leverages the existing fulfillment API endpoints (`/api/fulfillment/v
 
 - **Validation failure:** Form submission blocked, inline error messages appear below invalid fields with specific guidance (e.g., "CIDR must be within parent VN range 10.0.0.0/16")
 - **API error (4xx/5xx):** Toast notification with error message, form remains open with user's input preserved, "Retry" button available
-- **Provisioning failure:** Resource transitions to "Failed" status, detail page shows collapsible alert with error message from `status.message`, "Retry" and "Delete" actions available. Retry re-submits the original POST request.
+- **Provisioning failure:** Resource transitions to "Failed" status. Detail page shows ResourceStatusLabel in header (via resource-specific wrapper) and a non-dismissible inline danger Alert (`variant="danger" isInline`) below the header with title "Provisioning failed", `status.message` as body, and `actionLinks` for Retry/Delete. Details tab shows Status + Message in DescriptionList. Retry re-submits the original POST request.
 - **Delete blocked:** If VirtualNetwork has subnets or security groups, DELETE request returns 400, UI shows error modal: "Cannot delete VirtualNetwork. Delete all subnets and security groups first."
 
 ```mermaid
@@ -595,11 +595,17 @@ No new security mechanisms are required for this UI-only enhancement.
 
 **Provisioning failures:**
 - If a VirtualNetwork/Subnet/SecurityGroup/PublicIP fails to provision (transitions to FAILED state), the resource remains in the database with `status.state = FAILED` and `status.message` containing the error reason.
-- The detail page shows a collapsible `Alert` component (PatternFly) with the error message.
+- The detail page header shows ResourceStatusLabel (via networking-specific wrapper like `VirtualNetworkStatusLabel`) displaying "Failed" status.
+- Below the header, a non-dismissible inline danger Alert (`variant="danger" isInline`) appears with:
+  - **Title:** "Provisioning failed"
+  - **Body:** `status.message` from the API
+  - **actionLinks:** "Retry" and "Delete"
+- The Details tab shows a DescriptionList with Status and Message rows (same pattern as cluster Conditions).
 - Two actions are available: "Retry" and "Delete".
   - "Retry" re-submits the original POST request with the same parameters. This creates a new resource (the API does not support updating a FAILED resource to retry provisioning).
   - "Delete" removes the failed resource via DELETE request.
 - The UI does not persist intermediate state—users must re-enter form data if retry also fails.
+- **Rationale:** PatternFly guidance states error alerts for page-wide failures should remain visible until resolved, not hidden behind expand/collapse. The inline alert pattern matches existing osac-ui for VM/cluster provisioning failures.
 
 **Delete failures:**
 - If DELETE returns 400 (e.g., VirtualNetwork has children), the UI shows a modal with the error message: "Cannot delete VirtualNetwork '{name}'. Delete all subnets and security groups first."
