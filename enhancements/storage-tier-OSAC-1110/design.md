@@ -3,7 +3,7 @@ title: storage-tier-api
 authors:
   - rgolan@redhat.com
 creation-date: 2026-06-24
-last-updated: 2026-06-24
+last-updated: 2026-07-01
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1110
 prd:
@@ -21,11 +21,11 @@ superseded-by:
 
 ## Summary
 
-This design introduces a `StorageTiers` gRPC service under `osac.private.v1` that enables Cloud Provider Admins to define named storage offerings backed by registered StorageBackends with typed, provider-neutral QoS properties. The entity is DB-backed with no CRD or controller, following the NetworkClass pattern. See [PRD](prd.md) for detailed requirements.
+This design introduces a `StorageTiers` gRPC service under `osac.private.v1` that enables Cloud Provider Admins to define named storage offerings backed by registered StorageBackends with typed, provider-neutral QoS properties. The entity is DB-backed with no CRD or controller. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-OSAC currently configures storage tiers through the `STORAGE_TIERS` environment variable and Kubernetes label conventions (`osac.openshift.io/storage-tier`). Neither mechanism is queryable through the OSAC API, captures QoS properties, or enforces referential integrity with registered storage backends. This prevents internal services (the OSAC Storage Controller, osac-operator) from programmatically discovering which tiers exist, what QoS properties they offer, and which backends serve them.
+OSAC currently configures storage tiers through the `STORAGE_TIERS` environment variable and Kubernetes label conventions (`osac.openshift.io/storage-tier`). The osac-operator can already discover tiers by filtering StorageClasses with the `osac.openshift.io/storage-tier` label (via `tenant_controller.go:groupByTier`), so basic tier discovery works. The gaps are structured QoS metadata and a central catalog that exists before any StorageClasses are created — neither the env var nor the label convention captures QoS properties or enforces referential integrity with registered storage backends.
 
 StorageBackend (OSAC-1111) registers storage infrastructure — endpoints, credentials, provider type. The missing layer is a tier definition that binds a named offering (e.g., "fast", "standard", "archive") to one or more registered backends with per-backend QoS properties. StorageTier fills this gap by providing an API-managed catalog that downstream workflows — specifically Tenant Storage Onboarding (OSAC-23) — consume to determine which StorageClasses to create and what QoS policies to apply.
 
@@ -33,7 +33,7 @@ The design follows the established fulfillment-service patterns: private gRPC se
 
 ### Goals
 
-- Reuse the existing generic server, DAO, and migration patterns from NetworkClass to minimize implementation risk.
+- Reuse the existing generic server, DAO, and migration patterns to minimize implementation risk.
 - Store QoS properties as typed proto fields (not JSON) for schema evolution and compile-time safety.
 - Enforce referential integrity between StorageTier and StorageBackend at the database level using triggers.
 - Include Signal RPC to support future consumption by the OSAC Storage Controller.
@@ -49,7 +49,7 @@ The design follows the established fulfillment-service patterns: private gRPC se
 
 StorageTier is a new private API resource in the fulfillment-service. It consists of two new proto files (`storage_tier_type.proto`, `storage_tiers_service.proto`), a private server implementation (`private_storage_tiers_server.go`), a database migration for the `storage_tiers` table with referential integrity triggers, and registration in the gRPC server startup.
 
-A StorageTier binds a named offering to a StorageBackend with protocol and QoS properties. The tier name is immutable after creation (like `implementation_strategy` on NetworkClass), while QoS properties are mutable to allow in-place updates that propagate to the storage provider's policies. Referential integrity ensures that backends cannot be deleted while tiers reference them, and tiers cannot be deleted while tenants reference them.
+A StorageTier binds a named offering to a StorageBackend with protocol and QoS properties. The tier name is immutable after creation, while QoS properties are mutable to allow in-place updates that propagate to the storage provider's policies. Referential integrity ensures that backends cannot be deleted while tiers reference them, and tiers cannot be deleted while tenants reference them.
 
 ### Workflow Description
 
@@ -165,11 +165,11 @@ message StorageTier {
 
 Design notes:
 - `metadata.name` carries the tier name (e.g., "fast", "standard"). It is immutable after creation — enforced in the server's Update method by rejecting name changes.
-- `quota_gib` uses `int64` for petabyte-scale headroom, consistent with OSAC's `_gib` suffix convention [Codebase: ComputeInstance Disk.size_gib].
+- `quota_gib` uses `int64` for petabyte-scale headroom, consistent with OSAC's `_gib` suffix convention (see [`compute_instance_type.proto`](https://github.com/osac-project/fulfillment-service/blob/main/proto/public/osac/public/v1/compute_instance_type.proto) `Disk.size_gib`).
 - `backends` is `repeated` to support future multi-backend tiers, but v0.1 validates that exactly one backend is provided.
 - No `status` sub-message — StorageTier has no async provisioning lifecycle. The `state` field is sufficient.
 
-**`storage_tiers_service.proto`** follows the NetworkClasses service pattern [Codebase: network_classes_service.proto]:
+**`storage_tiers_service.proto`** follows the established private service pattern (see [`network_classes_service.proto`](https://github.com/osac-project/fulfillment-service/blob/main/proto/private/osac/private/v1/network_classes_service.proto) for reference):
 
 ```protobuf
 service StorageTiers {
@@ -204,17 +204,17 @@ service StorageTiers {
 }
 ```
 
-Request and response messages follow the same structure as `NetworkClassesListRequest` / `NetworkClassesUpdateRequest` (offset, limit, filter, order for List; FieldMask and lock for Update).
+Request and response messages follow the established List/Update pattern (offset, limit, filter, order for List; FieldMask and lock for Update).
 
 #### Server Implementation
 
-`private_storage_tiers_server.go` follows the `PrivateNetworkClassesServer` pattern [Codebase: private_network_classes_server.go]:
+`private_storage_tiers_server.go` follows the established private server pattern (see [`private_network_classes_server.go`](https://github.com/osac-project/fulfillment-service/blob/main/internal/servers/private_network_classes_server.go) for reference):
 
 - Builder pattern: `PrivateStorageTiersServerBuilder` with `SetLogger`, `SetNotifier`, `SetAttributionLogic`, `SetTenancyLogic`, `SetMetricsRegisterer`.
 - Embeds `GenericServer[*privatev1.StorageTier]` for standard CRUD delegation.
 - Custom validation in `Create` and `Update`:
   1. Validate exactly one backend in `backends` (v0.1 constraint).
-  2. For each `backend_id`, call `storageBakendsDAO.Get(ctx, backendID)` to verify the backend exists and is active. Return `NOT_FOUND` if any backend is missing.
+  2. For each `backend_id`, call `storageBackendsDAO.Get(ctx, backendID)` to verify the backend exists and is active. Return `NOT_FOUND` if any backend is missing. A `BEFORE INSERT/UPDATE` trigger on `storage_tiers` also validates backend existence with `FOR SHARE` locking to prevent TOCTOU races with concurrent backend deletion (matching the [Subnet/VirtualNetwork creation trigger pattern](https://github.com/osac-project/fulfillment-service/blob/main/internal/database/migrations/55_add_virtual_network_child_ref_triggers.up.sql#L94)).
   3. On `Create`: set `state = STORAGE_TIER_STATE_ACTIVE`.
   4. On `Update`: reject changes to `metadata.name` (immutable field check).
 
@@ -224,9 +224,9 @@ Request and response messages follow the same structure as `NetworkClassesListRe
 
 #### Database Migration
 
-Two migrations are required. StorageBackend (OSAC-1111) takes migration 60; StorageTier takes migrations 61 and 62.
+Two migrations are required. The StorageBackend table migration (OSAC-1111) must be applied first; StorageTier's migrations follow.
 
-**Migration 61: `61_create_storage_tiers_tables.up.sql`**
+**Storage tiers table migration (`create_storage_tiers_tables.up.sql`)**
 
 Creates the `storage_tiers` and `archived_storage_tiers` tables plus the name uniqueness constraint:
 
@@ -268,9 +268,9 @@ create unique index storage_tiers_unique_name
   where deletion_timestamp = 'epoch' and name != '';
 ```
 
-**Migration 62: `62_add_storage_tier_ref_triggers.up.sql`**
+**Referential integrity triggers migration (`add_storage_tier_ref_triggers.up.sql`)**
 
-Creates the materialized helper table and referential integrity triggers. This migration depends on the `storage_backends` table from OSAC-1111 (migration 60).
+Creates the materialized helper table and referential integrity triggers. This migration depends on the `storage_backends` table from OSAC-1111.
 
 ```sql
 -- Helper table: extracts backend IDs from the JSONB backends array for trigger-based
@@ -308,6 +308,42 @@ create trigger materialize_storage_tier_backends
 
 -- Backfill existing rows (if any):
 update storage_tiers set data = data;
+
+-- Validate that all backend IDs in a new/updated StorageTier exist and are active.
+-- Uses FOR SHARE to prevent TOCTOU races with concurrent backend deletion.
+create function check_storage_tier_backend_refs() returns trigger as $$
+declare
+  bid text;
+  found_id text;
+begin
+  for bid in
+    select jsonb_array_elements(new.data->'backends')->>'backendId'
+  loop
+    select id into found_id
+    from storage_backends
+    where id = bid
+      and deletion_timestamp = 'epoch'
+    for share;
+
+    if found_id is null then
+      raise exception using
+        errcode = 'Z0002',
+        message = format(
+          'StorageBackend ''%s'' does not exist or has been deleted',
+          bid
+        );
+    end if;
+  end loop;
+
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger check_storage_tier_backend_refs
+  before insert or update on storage_tiers
+  for each row
+  when (new.deletion_timestamp = 'epoch')
+  execute function check_storage_tier_backend_refs();
 
 -- Prevent deleting a StorageBackend that is referenced by an active StorageTier:
 create function check_storage_backend_not_in_use_by_tier() returns trigger as $$
@@ -444,7 +480,7 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 ### Risks and Mitigations
 
-**Trigger ordering with OSAC-1111:** StorageTier's migration 62 creates a trigger on the `storage_backends` table. If OSAC-1111 (migration 60) is not applied first, migration 62 fails. Mitigation: migrations are numbered sequentially and applied in order; OSAC-1111 is a stated dependency and must merge first.
+**Trigger ordering with OSAC-1111:** The referential integrity triggers migration creates a trigger on the `storage_backends` table. If the StorageBackend table migration (OSAC-1111) is not applied first, the triggers migration fails. Mitigation: migrations are numbered sequentially and applied in order; OSAC-1111 is a stated dependency and must merge first.
 
 **Tenant reference path uncertainty:** The `check_storage_tier_not_in_use` trigger references the Tenant's JSONB path for storage tier assignments (`data->'spec'->'storageTiers'`). This path depends on the Tenant proto schema changes in OSAC-23, which is not yet implemented. Mitigation: the trigger path is updated during OSAC-23 implementation to match the actual Tenant proto field. If OSAC-23 lands after StorageTier, the trigger can be added in a separate migration at that time.
 
@@ -489,12 +525,12 @@ Graduation criteria will be defined when targeting a release. Expected stages: D
 
 ## Upgrade / Downgrade Strategy
 
-This is a new API with no upgrade impact. The database migration (61, 62) adds new tables and triggers without modifying existing tables.
+This is a new API with no upgrade impact. The database migrations add new tables and triggers without modifying existing tables.
 
 Downgrade requires:
 1. Deleting all StorageTier instances via the API.
-2. Reverting migration 62 (drop triggers, drop helper table).
-3. Reverting migration 61 (drop `storage_tiers` and `archived_storage_tiers` tables).
+2. Reverting the referential integrity triggers migration (drop triggers, drop `storage_tier_backends` helper table).
+3. Reverting the storage tiers table migration (drop `storage_tiers` and `archived_storage_tiers` tables).
 
 No other components depend on StorageTier at initial deployment. When OSAC-23 (Tenant Storage Onboarding) is deployed, downgrade must also consider removing tier references from Tenant resources.
 
@@ -506,7 +542,7 @@ StorageTier is entirely within the fulfillment-service — no cross-component ve
 
 **Failure detection:**
 - gRPC error rate increase on `osac.private.v1.StorageTiers/*` RPCs (visible in existing Prometheus dashboards).
-- PostgreSQL migration failure logs during service startup (migration 61/62 apply errors).
+- PostgreSQL migration failure logs during service startup (storage tier migration apply errors).
 - Trigger errors (Z0003) logged at WARN level with the resource ID and referencing entity count.
 
 **Disabling the feature:**
