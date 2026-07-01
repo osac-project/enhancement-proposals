@@ -529,8 +529,10 @@ default subnet with the default SecurityGroup.
 #### Auto ExternalIP
 
 A new `external_ip_mode` field on resource specs controls automatic
-ExternalIP provisioning. The provider designates a default ExternalIPPool
-per region (via `is_default` on ExternalIPPool) for auto-allocation.
+ExternalIP provisioning. The system auto-selects a pool using the same
+strategy as manual ExternalIP creation: pick the READY pool in the region
+with the most available capacity matching the requested IP family
+(defaulting to IPv4).
 
 **ComputeInstance and BaremetalInstance:**
 
@@ -554,8 +556,9 @@ enum ClusterExternalIPMode {
 
 When `external_ip_mode` is set to an AUTO value:
 
-1. The fulfillment service identifies the default ExternalIPPool for the
-   resource's region
+1. The fulfillment service selects the READY ExternalIPPool in the
+   resource's region with the most available capacity (same auto-selection
+   logic as manual ExternalIP creation)
 2. The service creates an ExternalIP from that pool, labeled with
    `osac.openshift.io/auto-provisioned: "true"` and an owner-reference
    annotation pointing to the parent resource
@@ -577,8 +580,8 @@ enum NATGatewayMode {
 ```
 
 When `AUTO`, the system creates a NATGateway on the resource's
-VirtualNetwork (default or explicit) with an ExternalIP from the default
-pool. Since the design constrains NATGateway to one per VN, auto-creation
+VirtualNetwork (default or explicit) with an ExternalIP auto-selected from
+the best available pool in the region. Since the design constrains NATGateway to one per VN, auto-creation
 is idempotent — if a NATGateway already exists on the VN, no new one is
 created. The NATGateway is owned by the VirtualNetwork, not the individual
 resource.
@@ -592,7 +595,7 @@ ExternalIP solves this:
 1. On Cluster create with `external_ip_mode = AUTO_ALL`:
    a. Default networking resources are resolved/created
    b. NATGateway is created if `nat_gateway_mode = AUTO`
-   c. ExternalIPs are allocated from the default pool
+   c. ExternalIPs are auto-selected from the best available pool
    d. ExternalIPAttachments are created in Pending state
    e. ExternalIP addresses are passed as template parameters
    f. The Cluster is dispatched for provisioning
@@ -641,13 +644,12 @@ osac admin create externalippool \
   --region moc-region-1 \
   --cidrs 203.0.113.0/24 \
   --ip-family ipv4 \
-  --is-default \
   --name external-pool-1
 ```
 
-The `--is-default` flag designates this pool for auto ExternalIP allocation
-in the region. One default pool per region. The fabric manager registers
-the IP range in its IPAM for allocation.
+The fabric manager registers the IP range in its IPAM for allocation.
+When auto ExternalIP is requested, the system selects the READY pool in
+the region with the most available capacity matching the IP family.
 
 #### Networking Setup (Same for All Resource Types)
 
@@ -878,7 +880,7 @@ System actions:
    Subnet + SG)
 3. Wait for default networking to reach READY
 4. Populate `network_attachments` with default Subnet + default SG
-5. Allocate ExternalIP from region's default pool
+5. Auto-select ExternalIP from best available pool in region
 6. Create ExternalIPAttachment (Pending until VM IP is assigned)
 7. Dispatch VM creation
 8. On VM running: ExternalIPAttachment transitions to Ready
@@ -895,7 +897,7 @@ System actions:
 1. Resolve region from template
 2. Look up/create default networking (VN + Subnet + SG)
 3. Create NATGateway on default VN (or reuse existing)
-4. Allocate 2 ExternalIPs (API + ingress) from default pool
+4. Auto-select 2 ExternalIPs (API + ingress) from best available pool
 5. Create 2 ExternalIPAttachments (Pending state)
 6. Populate `network_attachments` with default Subnet + default SG
 7. Pass ExternalIP addresses as template parameters
@@ -921,8 +923,8 @@ osac create computeinstance --template ocp_virt_vm \
 ```
 
 Explicit `network_attachments` are used (no defaults). Auto ExternalIP
-still works — the system allocates from the region's default pool and
-attaches to the resource.
+still works — the system auto-selects from the best available pool in
+the region and attaches to the resource.
 
 ### API Extensions
 
@@ -1229,22 +1231,23 @@ idempotent creation — concurrent resource creates for the same tenant and
 region do not create duplicate defaults. The table uses a unique constraint
 on `(tenant, region)`.
 
-#### ExternalIPPool Region and Default Designation
+#### ExternalIPPool Region Scoping
 
-ExternalIPPool gains two fields:
+ExternalIPPool gains a region field:
 
 ```protobuf
 message ExternalIPPoolSpec {
   // ... existing fields ...
   string region = 5;           // required, immutable
-  optional bool is_default = 6;
 }
 ```
 
-The `region` field scopes the pool. The `is_default` flag designates the
-pool for auto ExternalIP allocation in that region. One default pool per
-region. When auto ExternalIP is requested and no default pool exists, the
-create request fails with a clear error.
+The `region` field scopes the pool. When auto ExternalIP is requested, the
+system selects the READY pool in the region with the most available
+capacity matching the IP family (defaulting to IPv4) — the same
+auto-selection strategy used for manual ExternalIP creation. When no pool
+in the region has available capacity, the create request fails with a
+clear error.
 
 ### Risks and Mitigations
 
@@ -1256,7 +1259,7 @@ create request fails with a clear error.
 | ExternalIPAttachment target validation | Target may not exist yet (CaaS) or may be deleted | Pending state for forward references; attachment tracks target lifecycle |
 | CIDR overlap | Overlapping subnets cause routing ambiguity | Operator validates at creation time; rejected with clear error |
 | Default CIDR supernet exhaustion (isolated_cidr mode) | No more tenants can get defaults in the region | Provider monitoring on allocation count; clear error; provider can widen supernet |
-| Default ExternalIPPool exhaustion | Auto ExternalIP requests fail | Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool |
+| ExternalIPPool exhaustion in region | Auto ExternalIP requests fail | Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool |
 | Race condition on default creation | Concurrent resource creates could create duplicate defaults | Materialized helper table with unique constraint on (tenant, region); first writer wins |
 | Default SecurityGroup too permissive | Security exposure for new tenants | Provider configures default rules per region; tenant can tighten after creation |
 | Auto ExternalIP orphans on partial failure | ExternalIP allocated but attachment creation fails | Standard finalizer pattern; controller retries; if permanently failed, ExternalIP is GC'd with parent |

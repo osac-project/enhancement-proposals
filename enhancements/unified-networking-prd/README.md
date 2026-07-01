@@ -279,8 +279,9 @@ for VMs), which does not work for CaaS.
 - As a provider, I want to configure a default CIDR range and default
   SecurityGroup rules per region, so that the system can auto-create
   default networking resources for tenants on first use
-- As a provider, I want to designate a default ExternalIPPool per region,
-  so that tenants using `--external-ip=auto` do not need to specify a pool
+- As a provider, I want ExternalIPPools to be region-scoped, so that the
+  system can auto-select the best available pool when tenants use
+  `--external-ip=auto`
 
 ## Non-Goals
 
@@ -463,9 +464,10 @@ default Subnet and default SecurityGroup for the resource's region.
 #### R10: Auto ExternalIP provisioning
 
 Resources can request automatic ExternalIP allocation at creation time. The
-system allocates an ExternalIP from the region's default ExternalIPPool,
-creates an ExternalIPAttachment, and establishes ownership so that
-auto-created resources are garbage-collected when the parent is deleted.
+system auto-selects the READY ExternalIPPool in the region with the most
+available capacity, creates an ExternalIP and ExternalIPAttachment, and
+establishes ownership so that auto-created resources are garbage-collected
+when the parent is deleted.
 
 **Acceptance criteria:**
 - ComputeInstance and BaremetalInstance support an `external_ip_mode` field
@@ -475,9 +477,9 @@ auto-created resources are garbage-collected when the parent is deleted.
   ingress)
 - All resource types support a `nat_gateway_mode` field with values `NONE`
   (default) and `AUTO`
-- When `AUTO` is requested, the system creates an ExternalIP from the
-  region's default ExternalIPPool and an ExternalIPAttachment binding it to
-  the resource
+- When `AUTO` is requested, the system auto-selects the READY pool in the
+  region with the most available capacity, creates an ExternalIP and an
+  ExternalIPAttachment binding it to the resource
 - For clusters with `AUTO_ALL`, two ExternalIPs and two
   ExternalIPAttachments are created (one for API, one for ingress)
 - For clusters, ExternalIPs are allocated before provisioning is dispatched,
@@ -488,8 +490,8 @@ auto-created resources are garbage-collected when the parent is deleted.
   ExternalIPAttachments are garbage-collected
 - Auto-created resources are visible in List/Get operations and are labeled
   with `osac.openshift.io/auto-provisioned: "true"`
-- If the default ExternalIPPool has no available addresses or no default
-  pool exists for the region, the resource creation fails with a clear error
+- If no ExternalIPPool in the region has available capacity, the resource
+  creation fails with a clear error
 - When `nat_gateway_mode=AUTO`, the system creates a NATGateway on the
   resource's VirtualNetwork if one does not already exist; if one exists,
   it is reused (one NATGateway per VN)
