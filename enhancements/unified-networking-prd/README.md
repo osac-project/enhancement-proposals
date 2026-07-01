@@ -55,7 +55,7 @@ This section defines key terms used throughout this document.
     [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api)).
 
 - **VirtualNetwork**: A tenant's isolated network environment with its own
-  address space (CIDR). Analogous to an AWS VPC or Azure VNet. Scoped to a
+  address space (CIDR). Analogous to a cloud VPC or VNet. Scoped to a
   region.
 
 - **Subnet**: A subdivision of a VirtualNetwork's IP address space. Resources
@@ -417,7 +417,7 @@ descriptions provided by the template.
 On first use, the system provisions a set of default networking resources
 (VirtualNetwork, Subnet, SecurityGroup) per tenant per region, eliminating
 the need for tenants to understand the networking resource model before
-creating their first resource. This follows the AWS Default VPC model
+creating their first resource. This follows a Default VPC model
 adapted for OSAC's single-region, fabric-first architecture.
 
 **Acceptance criteria:**
