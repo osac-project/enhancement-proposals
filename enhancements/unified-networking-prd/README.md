@@ -414,25 +414,27 @@ descriptions provided by the template.
 
 #### R8: Default networking resources per tenant
 
-On first use, the system provisions a set of default networking resources
-(VirtualNetwork, Subnet, SecurityGroup) per tenant, eliminating the need
-for tenants to understand the networking resource model before creating
-their first resource.
+At tenant onboarding, the system provisions a set of default networking
+resources (VirtualNetwork, Subnet, SecurityGroup) per tenant, eliminating
+the need for tenants to understand the networking resource model before
+creating their first resource.
 
 **Acceptance criteria:**
-- When a resource is created without `network_attachments`, the system
-  resolves defaults for the tenant
+- Default VirtualNetwork, Subnet, and SecurityGroup are created at tenant
+  onboarding, before the tenant creates any resources
+- The tenant transitions to READY only after all default networking
+  resources are also READY
 - Default VirtualNetwork is created per tenant using the
   provider-configured default CIDR on the NetworkClass
 - Default Subnet is created within the default VirtualNetwork
 - Default SecurityGroup is created within the default VirtualNetwork with
   provider-configured default rules
+- When a resource is created without `network_attachments`, the system
+  resolves the tenant's defaults
 - Default resources are labeled with `osac.openshift.io/default: "true"`
   and are visible in List/Get operations
 - Default resources can be modified by the tenant (e.g., adding
   SecurityGroup rules) but cannot be deleted while resources depend on them
-- If default resources already exist for the tenant, they are reused, not
-  recreated
 - Creating custom VirtualNetworks does not affect default resources — both
   coexist
 - Two CIDR modes are supported, configured per NetworkClass: `shared_cidr`

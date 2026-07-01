@@ -345,21 +345,21 @@ handles IP allocation — one pool serves all resource types.
 
 ### Default Networking Resources
 
-OSAC provisions a set of default networking resources per tenant on first
-use. This eliminates the need for tenants to understand the networking
-resource model before creating their first resource.
+OSAC provisions a set of default networking resources per tenant at tenant
+onboarding. This eliminates the need for tenants to understand the
+networking resource model before creating their first resource.
 
 #### What Is Auto-Created
 
-For each tenant, on first use:
+At tenant creation, the system provisions:
 
 1. **Default VirtualNetwork** — one per tenant
 2. **Default Subnet** — one within the default VN
 3. **Default SecurityGroup** — one within the default VN
 
-Default resources are created **lazily** — on the first resource creation
-request that omits `network_attachments`. They are not created eagerly at
-tenant onboarding.
+Default resources are created **eagerly** at tenant onboarding. By the
+time a tenant creates their first resource, defaults are already in READY
+state — no mid-request provisioning or waiting needed.
 
 #### CIDR Allocation
 
@@ -500,12 +500,11 @@ When `network_attachments` is empty on a ComputeInstance, Cluster, or
 BaremetalInstance create request, the fulfillment service resolves defaults
 before persisting:
 
-1. Look up the default VirtualNetwork for the tenant
-3. If none exists, trigger default resource creation (VN + Subnet + SG) and
-   wait for READY state
-4. Populate `network_attachments` with the default Subnet and default
+1. Look up the tenant's default Subnet and default SecurityGroup (created
+   at tenant onboarding, already in READY state)
+2. Populate `network_attachments` with the default Subnet and default
    SecurityGroup
-5. Store the resolved spec — the resource is self-describing after creation
+3. Store the resolved spec — the resource is self-describing after creation
 
 The resolved `network_attachments` are written to the spec before the
 resource is persisted. Get/List always shows the actual attachments, even if
@@ -868,13 +867,12 @@ osac create computeinstance --template ocp_virt_vm \
 ```
 
 System actions:
-1. Look up default VN for tenant — create if missing (VN + Subnet + SG)
-2. Wait for default networking to reach READY
-3. Populate `network_attachments` with default Subnet + default SG
-4. Auto-select ExternalIP from best available pool
-5. Create ExternalIPAttachment (Pending until VM IP is assigned)
-6. Dispatch VM creation
-7. On VM running: ExternalIPAttachment transitions to Ready
+1. Resolve tenant's default Subnet + default SG (already READY)
+2. Populate `network_attachments`
+3. Auto-select ExternalIP from best available pool
+4. Create ExternalIPAttachment (Pending until VM IP is assigned)
+5. Dispatch VM creation
+6. On VM running: ExternalIPAttachment transitions to Ready
 
 **1-call cluster with full connectivity:**
 
@@ -885,14 +883,14 @@ osac create cluster --template ocp_4_17_small \
 ```
 
 System actions:
-1. Look up/create default networking for tenant (VN + Subnet + SG)
-3. Create NATGateway on default VN (or reuse existing)
-4. Auto-select 2 ExternalIPs (API + ingress) from best available pool
-5. Create 2 ExternalIPAttachments (Pending state)
-6. Populate `network_attachments` with default Subnet + default SG
-7. Pass ExternalIP addresses as template parameters
-8. Dispatch cluster provisioning
-9. On cluster ready: ExternalIPAttachments activate
+1. Resolve tenant's default Subnet + default SG (already READY)
+2. Create NATGateway on default VN (or reuse existing)
+3. Auto-select 2 ExternalIPs (API + ingress) from best available pool
+4. Create 2 ExternalIPAttachments (Pending state)
+5. Populate `network_attachments`
+6. Pass ExternalIP addresses as template parameters
+7. Dispatch cluster provisioning
+8. On cluster ready: ExternalIPAttachments activate
 
 **1-call bare-metal server:**
 
@@ -1214,11 +1212,10 @@ VirtualNetwork at creation time.
 
 #### Default Resource Tracking
 
-The system tracks default networking resources per tenant using a
-materialized helper table with columns `(tenant, virtual_network_id,
-subnet_id, security_group_id)`. This ensures idempotent creation —
-concurrent resource creates for the same tenant do not create duplicate
-defaults. The table uses a unique constraint on `(tenant)`.
+Default networking resources are created at tenant onboarding, not
+lazily. The Tenant controller provisions the default VN, Subnet, and SG
+as part of the tenant creation flow. The tenant transitions to READY
+only after all default networking resources are also READY.
 
 #### ExternalIPPool Auto-Selection
 
@@ -1239,7 +1236,6 @@ request fails with a clear error.
 | CIDR overlap | Overlapping subnets cause routing ambiguity | Operator validates at creation time; rejected with clear error |
 | Default CIDR supernet exhaustion (isolated_cidr mode) | No more tenants can get defaults | Provider monitoring on allocation count; clear error; provider can widen supernet |
 | ExternalIPPool exhaustion | Auto ExternalIP requests fail | Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool |
-| Race condition on default creation | Concurrent resource creates could create duplicate defaults | Materialized helper table with unique constraint on tenant; first writer wins |
 | Default SecurityGroup too permissive | Security exposure for new tenants | Provider configures default rules; tenant can tighten after creation |
 | Auto ExternalIP orphans on partial failure | ExternalIP allocated but attachment creation fails | Standard finalizer pattern; controller retries; if permanently failed, ExternalIP is GC'd with parent |
 
@@ -1320,15 +1316,13 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
     node set) — a shared type with optional fields would accumulate
     dead weight per resource type.
 
-12. **Default resource creation is lazy.** Defaults are created on first
-    resource creation that omits `network_attachments`, not at tenant
-    onboarding.
+12. **Default resource creation is eager.** Defaults are created at tenant
+    onboarding, not lazily on first use. The tenant transitions to READY
+    only after all default networking resources are also READY.
 
-13. **CIDR allocation uses a materialized helper table.** Per-tenant
-    defaults are tracked in a helper table with a unique constraint on
-    `(tenant)`. The system allocates the next available prefix from the
-    supernet (in `isolated_cidr` mode) or reuses the same CIDR (in
-    `shared_cidr` mode).
+13. **CIDR allocation.** In `shared_cidr` mode (default), all tenants
+    receive the same CIDR. In `isolated_cidr` mode, the system allocates
+    the next available prefix from the provider's supernet.
 
 14. **Auto ExternalIPs are owned by the parent resource.** They use the
     standard owner-reference annotation and are garbage-collected on parent
