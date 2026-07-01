@@ -348,7 +348,7 @@ handles IP allocation — one pool serves all resource types.
 OSAC provisions a set of default networking resources per tenant per region
 on first use. This eliminates the need for tenants to understand the
 networking resource model before creating their first resource. The design
-follows the AWS Default VPC model adapted for OSAC's architecture — one
+follows a Default VPC model adapted for OSAC's architecture — one
 default VirtualNetwork per tenant per region, with one default Subnet and
 one default SecurityGroup (OSAC has no availability zones).
 
