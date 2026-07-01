@@ -53,11 +53,11 @@ The proposed UI leverages PatternFly 6 components (Table, Drawer, Modal, Wizard)
 
 This design adds three categories of UI components to osac-ui:
 
-1. **Pages and components** in `libs/ui-components/src`: list pages for VirtualNetworks, SecurityGroups, and PublicIPs; detail pages with tabbed views for Subnets (VN detail) and Rules (SG detail); create/edit forms in side drawers; delete confirmation modals.
+1. **Pages and components** in `libs/ui-components/src`: list pages for VirtualNetworks, SecurityGroups, and PublicIPs; detail pages with tabbed views for Subnets (VN detail) and Rules (SG detail); create/edit forms in modals; delete confirmation modals.
 
 2. **API hooks** in `libs/ui-components/src/api/v1/networking.ts`: mutation hooks (`useCreateVirtualNetwork`, `useDeleteVirtualNetwork`, `usePatchSecurityGroup`, etc.) following the established pattern in `compute-instance.ts`; single-resource query hooks (`useVirtualNetwork(id)`, `useSecurityGroup(id)`, `usePublicIP(id)`); and invalidation helpers for cache management.
 
-3. **Wizard extensions** in `libs/ui-components/src/components/catalogProvision/wizard/adapters/computeInstance/VmNetworkingStep.tsx`: inline create drawers for VirtualNetwork, Subnet, and SecurityGroup; single network attachment UI; PublicIP allocation with IP family selection.
+3. **Wizard extensions** in `libs/ui-components/src/components/catalogProvision/wizard/adapters/computeInstance/VmNetworkingStep.tsx`: inline VirtualNetwork creation modal; single network attachment UI; PublicIP allocation with IP family selection. Note: Subnet and SecurityGroup selection already exist in `VmNetworkingStep` (SelectField for subnets, MultiSelectField with chips for security groups).
 
 Routing changes in `apps/app-frontend/src/shell` add a "Networking" section to the tenant user and tenant admin sidebars with navigation to `/networking/virtual-networks`, `/networking/security-groups`, and `/networking/public-ips`.
 
@@ -71,12 +71,12 @@ The design leverages the existing fulfillment API endpoints (`/api/fulfillment/v
 
 1. User navigates to Networking > Virtual Networks from the sidebar
 2. User clicks "Create virtual network" button
-3. Side panel opens with form fields: Name (text input), IPv4 CIDR (text input with /16-/24 validation), IPv6 CIDR (optional text input). Note: NetworkClass is assigned automatically by the platform.
-4. User fills required fields, sees inline validation errors below invalid fields
-5. User clicks "Create" (disabled until all validations pass)
+3. Modal opens with form fields: Name (text input), IPv4 CIDR (text input with /16-/24 validation), IPv6 CIDR (optional text input). Note: NetworkClass is assigned automatically by the platform.
+4. User fills required fields, sees inline validation errors below invalid fields after blur or submit attempt
+5. User clicks "Create" (enabled; validation errors highlighted on submit if present)
 6. POST `/api/fulfillment/v1/virtual_networks` with request body `{ object: { metadata: { name }, spec: { ipv4_cidr, ipv6_cidr } } }` (network_class assigned by backend)
-7. Side panel closes, TanStack Query invalidates the VirtualNetworks list query, success toast appears
-8. New VirtualNetwork appears in list with "Provisioning" status badge (blue, spinner)
+7. On success: modal closes, navigate to VirtualNetwork detail page (`/networking/virtual-networks/{id}`)
+8. Detail page shows "Provisioning" status badge (blue, spinner)
 9. Auto-refresh polls every 5 seconds until status becomes "Ready" (green) or "Failed" (red)
 
 **Workflow 2: Create a Subnet from VirtualNetwork detail page**
@@ -84,17 +84,17 @@ The design leverages the existing fulfillment API endpoints (`/api/fulfillment/v
 1. User navigates to VirtualNetwork detail page (`/networking/virtual-networks/{id}`)
 2. User is on the Subnets tab (default)
 3. User clicks "Create subnet" button
-4. Side panel opens with parent VN pre-selected (read-only), helper text shows parent VN CIDR and existing subnet CIDRs
+4. Modal opens with parent VN pre-selected (read-only), helper text shows parent VN CIDR and existing subnet CIDRs
 5. User enters Name and CIDR (validated: within parent VN CIDR, no overlap with existing subnets)
-6. User clicks "Create"
+6. User clicks "Create" (enabled; validation errors highlighted on submit if present)
 7. POST `/api/fulfillment/v1/subnets` with request body `{ object: { metadata: { name }, spec: { virtual_network, ipv4_cidr } } }`
-8. Side panel closes, Subnets table refreshes, new Subnet appears with "Provisioning" status
+8. On success: modal closes, navigate to Subnet detail page (if detail pages exist for Subnets) or remain on VN detail with refreshed Subnets table
 
 **Workflow 3: Create a SecurityGroup with inbound/outbound rules**
 
 1. User navigates to Networking > Security Groups
 2. User clicks "Create security group"
-3. Side panel opens with fields: Virtual Network (dropdown), Name (text input), Inbound Rules (expandable section with "Add rule" button), Outbound Rules (expandable section)
+3. Modal opens with fields: Virtual Network (dropdown), Name (text input), Inbound Rules (expandable section with "Add rule" button), Outbound Rules (expandable section)
 4. User selects VirtualNetwork, enters Name
 5. User expands Inbound Rules, clicks "Add rule"
 6. Inline rule form appears: Protocol (dropdown: TCP/UDP/ICMP/All), Port Range (text input, disabled if ICMP selected), Source CIDR (text input with CIDR validation)
@@ -122,11 +122,11 @@ The design leverages the existing fulfillment API endpoints (`/api/fulfillment/v
 2. Wizard opens, user fills basic fields (name, SSH key)
 3. User reaches Network Configuration step
 4. If no VirtualNetworks exist: prominent message "You need to create a virtual network before provisioning a VM" with "Create Virtual Network" button
-   - User clicks button, Create VN side drawer overlays wizard
-   - User creates VN, drawer closes, wizard auto-selects the new VN
+   - User clicks button, Create VN modal overlays wizard
+   - User creates VN, modal closes, wizard auto-selects the new VN
 5. Network Attachment section shows: Virtual Network (dropdown, auto-selected if only 1), "Create new VN" link
-6. Subnet dropdown filters to selected VN (auto-selected if only 1), "Create new Subnet" link
-7. Security Groups multi-select checkboxes filter to selected VN (pre-checked if only 1), "Create new Security Group" link
+6. Subnet dropdown (SelectField) filters to selected VN, auto-selected if only 1. Note: Subnet selection already exists in `VmNetworkingStep`; no new "Create Subnet" link is added.
+7. Security Groups multi-select (MultiSelectField with chips) filters to selected VN, pre-checked if only 1. Note: SecurityGroup selection already exists in `VmNetworkingStep`; no new "Create Security Group" link is added.
 8. Public IP section: checkbox "Allocate Public IP" (default checked for new tenants with no existing IPs), IP Family dropdown (IPv4/IPv6, default IPv4)
 9. If checkbox is checked, PublicIP is automatically allocated from available pool based on IP family
 10. User clicks "Create VM"
@@ -155,26 +155,26 @@ sequenceDiagram
     UI-->>User: Render list page
 
     User->>UI: Click "Create virtual network"
-    UI-->>User: Open side panel form
+    UI-->>User: Open modal form
 
     User->>UI: Fill form, click "Create"
     UI->>Proxy: POST /api/fulfillment/v1/virtual_networks
     Proxy->>API: POST (with tenant annotation injection)
     API-->>Proxy: VirtualNetwork (status: PENDING)
     Proxy-->>UI: VirtualNetwork
-    UI->>UI: Invalidate list query, refetch
-    UI-->>User: Close panel, show toast, display new VN with "Provisioning" badge
+    UI->>UI: Navigate to /networking/virtual-networks/{id}
+    UI-->>User: Close modal, navigate to detail page, display "Provisioning" badge
 
     loop Every 5 seconds while status != READY|FAILED
-        UI->>Proxy: GET /api/fulfillment/v1/virtual_networks
+        UI->>Proxy: GET /api/fulfillment/v1/virtual_networks/{id}
         Proxy->>API: GET
-        API-->>Proxy: VirtualNetworksListResponse (status updated)
-        Proxy-->>UI: VirtualNetworksListResponse
-        UI-->>User: Update status badge
+        API-->>Proxy: VirtualNetwork (status updated)
+        Proxy-->>UI: VirtualNetwork
+        UI-->>User: Update status badge on detail page
     end
 ```
 
-The same pattern applies to Subnets, SecurityGroups, and PublicIPs (with state names adjusted per resource type: PublicIPs use AVAILABLE/ATTACHED states, both non-terminal for polling purposes).
+The same pattern applies to Subnets, SecurityGroups, and PublicIPs (with state names adjusted per resource type: PublicIPs use AVAILABLE/ATTACHED states, both non-terminal for polling purposes). Note: Post-create navigation to detail page applies to resources with dedicated detail pages (VirtualNetworks, SecurityGroups, PublicIPs); Subnets may remain on parent VN detail page if no Subnet detail page exists.
 
 ### API Extensions
 
@@ -186,7 +186,9 @@ This design does not introduce new API extensions. The fulfillment API already p
 - `PublicIPs` service: List, Get, Create, Delete
 - `PublicIPAttachments` service: Create (attach), Delete (detach)
 - `PublicIPPools` service: List (read-only for tenants)
-- `NetworkClasses` service: List (read-only for tenants)
+
+Note: `NetworkClasses` is platform-assigned and not exposed to tenant users in the UI. The fulfillment API assigns `spec.network_class` automatically during VirtualNetwork creation.
+
 The UI consumes these services via the REST gateway (`/api/fulfillment/v1/*`). No CRD changes, webhooks, or finalizers are required—this is a pure frontend implementation.
 
 ### Implementation Details/Notes/Constraints
@@ -203,12 +205,15 @@ Following NFR-3, the implementation adds these files to `libs/ui-components/src`
 - `pages/networking/PublicIPsPage.tsx` — list page with Allocate/Attach/Detach/Release actions
 
 **Components** (new directory: `components/networking/`):
-- `components/networking/VirtualNetworkForm.tsx` — create/edit form for VirtualNetwork (used in side drawer and wizard inline creation)
-- `components/networking/SubnetForm.tsx` — create form with parent VN CIDR helper text
-- `components/networking/SecurityGroupForm.tsx` — create/edit form with inline rule management
+- `components/networking/VirtualNetworkCreateModal.tsx` — create modal for VirtualNetwork (used in list page and wizard inline creation)
+- `components/networking/SubnetCreateModal.tsx` — create modal with parent VN CIDR helper text
+- `components/networking/SecurityGroupCreateModal.tsx` — create modal with inline rule management
 - `components/networking/SecurityGroupRuleRow.tsx` — reusable rule input row (Protocol dropdown, Port Range input, CIDR input)
+- `components/networking/VirtualNetworkStatusLabel.tsx` — wrapper for ResourceStatusLabel with VN state mapping
+- `components/networking/SecurityGroupStatusLabel.tsx` — wrapper for ResourceStatusLabel with SG state mapping
+- `components/networking/PublicIPStatusLabel.tsx` — wrapper for ResourceStatusLabel with PublicIP state mapping
 - `components/networking/PublicIPAllocateModal.tsx` — modal dialog for IP allocation
-- `components/networking/PublicIPAttachDrawer.tsx` — side drawer with VM selection table
+- `components/networking/PublicIPAttachDrawer.tsx` — side drawer with VM selection table (attach flow only—not a create form)
 - `components/networking/SubnetsTable.tsx` — table component for Subnets tab
 - `components/networking/SecurityGroupsTable.tsx` — table component for SG list and VN detail SG tab
 - `components/networking/SecurityGroupRulesTable.tsx` — table component for Inbound/Outbound rules tabs with Add/Edit/Delete actions
@@ -320,9 +325,14 @@ Pattern follows `api/v1/compute-instance.ts`: mutation hooks use `useMutation` f
 
 **Wizard integration** (extend existing file):
 
-`libs/ui-components/src/components/catalogProvision/wizard/adapters/computeInstance/VmNetworkingStep.tsx` currently fetches VirtualNetworks, Subnets, SecurityGroups and renders SelectField/MultiSelectField. The design extends it with:
+`libs/ui-components/src/components/catalogProvision/wizard/adapters/computeInstance/VmNetworkingStep.tsx` currently implements:
+- VirtualNetwork selection via `SelectField` (auto-selected if only 1)
+- Subnet selection via `SelectField` (filtered by selected VN, auto-selected if only 1)
+- SecurityGroup selection via `MultiSelectField` with chips (filtered by selected VN, pre-checked if only 1)
 
-1. **Inline create drawers:** "Create new VN" link opens a Drawer overlay with `<VirtualNetworkForm />`. After successful creation (onSuccess callback), the drawer closes and the wizard's VirtualNetwork dropdown refetches and auto-selects the new VN. Same pattern for Subnet and SecurityGroup inline creation.
+The design extends it with:
+
+1. **Inline VirtualNetwork creation modal:** "Create new VN" link opens a Modal overlay with `<VirtualNetworkForm />`. After successful creation (onSuccess callback), the modal closes and the wizard's VirtualNetwork dropdown refetches and auto-selects the new VN. **Note:** Subnet and SecurityGroup inline creation are NOT added—those selection controls already exist and work as-is.
 
 2. **Single network attachment:** State variable `attachment: { virtualNetworkId, subnetId, securityGroupIds }`. Platform constraint enforced: exactly one network attachment per VM in this phase (multi-NIC deferred to future phase).
 
@@ -492,12 +502,16 @@ Error messages follow a consistent template: "{Field name} {validation rule}". E
 Resources transition through states: PENDING → READY, PENDING → FAILED, READY → DELETING → (deleted), AVAILABLE → ATTACHED (PublicIPs).
 
 **Status badge rendering:**
-- PENDING (Provisioning): blue (`pf-m-blue`), spinner icon
-- READY: green (`pf-m-green`)
-- FAILED: red (`pf-m-red`)
-- DELETING: orange (`pf-m-orange`), spinner icon
-- AVAILABLE (PublicIPs): green
-- ATTACHED (PublicIPs): blue
+
+Status badges use the shared `ResourceStatusLabel` component (`libs/ui-components/src/components/Resource/ResourceStatusLabel.tsx`) with resource-specific wrappers (e.g., `VirtualNetworkStatusLabel`, `SecurityGroupStatusLabel`, `PublicIPStatusLabel`) that map API state to `StatusKind` and display text. This follows the same pattern as `VmStatusLabel` and `ClusterStatusLabel`.
+
+State → StatusKind mapping:
+- PENDING (Provisioning): `StatusKind.InProgress` (blue, spinner icon)
+- READY: `StatusKind.Success` (green)
+- FAILED: `StatusKind.Danger` (red)
+- DELETING: `StatusKind.InProgress` (blue, spinner icon)
+- AVAILABLE (PublicIPs): `StatusKind.Success` (green)
+- ATTACHED (PublicIPs): `StatusKind.Info` (blue)
 
 **Auto-refresh logic:**
 
@@ -530,36 +544,19 @@ Detail pages use the same pattern. On window focus, TanStack Query auto-refetche
 Following NFR-8:
 
 - **Form labels:** All inputs use PatternFly `FormGroup` with `label` prop, which generates associated `<label>` elements.
-- **Status badges:** Use `aria-label` prop on `Label` component: `aria-label="Status: Ready"` (not just color).
+- **Status badges:** Use `ResourceStatusLabel` component (via resource-specific wrappers like `VirtualNetworkStatusLabel`) which handles `aria-label` automatically based on state (e.g., `aria-label="Status: Ready"`, not just color).
 - **Keyboard navigation:** All interactive elements (buttons, links, table rows) are keyboard-accessible. PatternFly components handle focus management by default.
 - **Modal focus trap:** PatternFly `Modal` component traps focus within the modal when open.
 - **Live regions:** Status changes (e.g., Provisioning → Ready) are announced via `aria-live="polite"` region wrapping the status badge.
 - **Helper text:** CIDR inputs include helper text explaining expected format: "Enter a CIDR range (e.g., 10.0.0.0/16)".
 
-#### Performance and Pagination
+#### Performance
 
-Following NFR-9, pagination is enforced when resource counts exceed thresholds:
+**Pagination is out of scope** for this feature. Existing osac-ui list tables (VMs, clusters, catalog) do not use PatternFly `Pagination` today. Networking list pages follow the same non-paginated pattern for consistency across the UI.
 
-- VirtualNetworks: 100
-- Subnets: 500
-- SecurityGroups: 200
-- PublicIPs: 1000
+Table pagination should be tracked as a **separate Jira** to implement holistically for all resource list pages (not only networking). This ensures consistent UX and avoids partial pagination where some tables paginate and others don't.
 
-List pages use PatternFly `Pagination` component with TanStack Query pagination support:
-
-```typescript
-const [page, setPage] = useState(1);
-const pageSize = 20;
-
-const { data, isLoading } = useVirtualNetworks({
-  limit: pageSize,
-  offset: (page - 1) * pageSize,
-});
-
-// data.total is used to calculate total page count for Pagination component
-```
-
-When total count exceeds threshold, the Pagination component is always visible (not just when > 1 page). Below the threshold, pagination is hidden.
+For performance: if operational monitoring reveals high latency on List endpoints when tenant resource counts grow large, pagination can be addressed in that cross-cutting Jira rather than as part of this networking-specific feature.
 
 #### Responsive Design
 
@@ -591,7 +588,7 @@ No new security mechanisms are required for this UI-only enhancement.
 - Mutation errors (POST/PATCH/DELETE) are not retried automatically. The UI shows a toast notification with the error message and keeps the form open with user input preserved. User can click "Retry" to re-submit.
 
 **Validation errors:**
-- Client-side validation (Yup schema) shows inline error messages below each invalid field. Submit button remains disabled until all validations pass.
+- Client-side validation (Yup schema) shows inline error messages below each invalid field after blur or failed submit attempt. The Create/Submit button stays **enabled** (following the VM wizard pattern in `CatalogProvisionWizard`). When the user clicks Create with invalid fields, validation runs and errors are surfaced via `FieldValidationContext` / `getVisibleFieldError` (errors on touched fields, plus all invalid fields after submit). An inline validation alert appears if submit is attempted with errors.
 - Server-side validation errors (400 responses) are shown as toast notifications with the API-provided error message. For example, a duplicate name returns 400 with message "VirtualNetwork with name 'prod-network' already exists", and the UI displays this verbatim.
 
 #### API-Side Failures
@@ -834,7 +831,7 @@ No data migration or manual steps required for upgrade or downgrade.
 
 ## Version Skew Strategy
 
-The osac-ui frontend and fulfillment-service backend are versioned independently. This design assumes the fulfillment API endpoints (VirtualNetworks, Subnets, SecurityGroups, PublicIPs, PublicIPAttachments, PublicIPPools, NetworkClasses) are stable and available in the deployed fulfillment-service version.
+The osac-ui frontend and fulfillment-service backend are versioned independently. This design assumes the fulfillment API endpoints (VirtualNetworks, Subnets, SecurityGroups, PublicIPs, PublicIPAttachments, PublicIPPools) are stable and available in the deployed fulfillment-service version.
 
 **Version skew handling:**
 - If osac-ui is upgraded before fulfillment-service, and the PublicIP attach/detach endpoints are not yet available, the Attach/Detach actions return 404. The UI shows a toast: "Feature not available. Please contact your administrator." [Assumption: osac-ui and fulfillment-service are deployed together, so this scenario is unlikely]
