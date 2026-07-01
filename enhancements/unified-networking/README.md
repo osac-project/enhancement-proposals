@@ -345,25 +345,26 @@ handles IP allocation — one pool serves all resource types.
 
 ### Default Networking Resources
 
-OSAC provisions a set of default networking resources per tenant per region
-on first use. This eliminates the need for tenants to understand the
-networking resource model before creating their first resource. The design
-follows a Default VPC model adapted for OSAC's architecture — one
-default VirtualNetwork per tenant per region, with one default Subnet and
-one default SecurityGroup (OSAC has no availability zones).
+OSAC provisions a set of default networking resources per tenant on first
+use. This eliminates the need for tenants to understand the networking
+resource model before creating their first resource.
+
+Note: region is not yet a fully defined concept in OSAC. When region
+support is implemented, default networking resources will be scoped per
+tenant per region. Until then, the design assumes a single-region
+deployment.
 
 #### What Is Auto-Created
 
-For each (tenant, region) pair, on first use:
+For each tenant, on first use:
 
-1. **Default VirtualNetwork** — one per tenant per region
+1. **Default VirtualNetwork** — one per tenant
 2. **Default Subnet** — one within the default VN
 3. **Default SecurityGroup** — one within the default VN
 
 Default resources are created **lazily** — on the first resource creation
-request that omits `network_attachments` in a given region. They are not
-created eagerly at tenant onboarding. This avoids provisioning networking
-infrastructure in regions the tenant never uses.
+request that omits `network_attachments`. They are not created eagerly at
+tenant onboarding.
 
 #### CIDR Allocation
 
@@ -383,7 +384,7 @@ modes are supported:
 
 #### NetworkClass Defaults Configuration
 
-The provider configures defaults on the NetworkClass at region setup:
+The provider configures defaults on the NetworkClass:
 
 ```yaml
 apiVersion: osac.openshift.io/v1alpha1
@@ -391,7 +392,6 @@ kind: NetworkClass
 metadata:
   name: moc-region-1
 spec:
-  region: moc-region-1
   fabricManager: netris
   k8sManager: cudn_localnet
   defaults:
@@ -439,7 +439,6 @@ metadata:
   labels:
     osac.openshift.io/default: "true"
 spec:
-  region: <region>
   ipv4_cidr: "10.0.0.0/24"
 ```
 
@@ -483,7 +482,7 @@ spec:
 #### Coexistence with Custom VNs
 
 Creating custom VirtualNetworks does not affect default resources. A tenant
-can have both default and custom VNs in the same region. Resources created
+can have both default and custom VNs. Resources created
 without `network_attachments` always use the defaults. Resources created
 with explicit `network_attachments` use the specified resources — no
 defaults are applied.
@@ -506,8 +505,7 @@ When `network_attachments` is empty on a ComputeInstance, Cluster, or
 BaremetalInstance create request, the fulfillment service resolves defaults
 before persisting:
 
-1. Determine the resource's region (from the template's region)
-2. Look up the default VirtualNetwork for (tenant, region)
+1. Look up the default VirtualNetwork for the tenant
 3. If none exists, trigger default resource creation (VN + Subnet + SG) and
    wait for READY state
 4. Populate `network_attachments` with the default Subnet and default
@@ -530,8 +528,8 @@ default subnet with the default SecurityGroup.
 
 A new `external_ip_mode` field on resource specs controls automatic
 ExternalIP provisioning. The system auto-selects a pool using the same
-strategy as manual ExternalIP creation: pick the READY pool in the region
-with the most available capacity matching the requested IP family
+strategy as manual ExternalIP creation: pick the READY pool with the most
+available capacity matching the requested IP family
 (defaulting to IPv4).
 
 **ComputeInstance and BaremetalInstance:**
@@ -556,9 +554,9 @@ enum ClusterExternalIPMode {
 
 When `external_ip_mode` is set to an AUTO value:
 
-1. The fulfillment service selects the READY ExternalIPPool in the
-   resource's region with the most available capacity (same auto-selection
-   logic as manual ExternalIP creation)
+1. The fulfillment service selects the READY ExternalIPPool with the most
+   available capacity (same auto-selection logic as manual ExternalIP
+   creation)
 2. The service creates an ExternalIP from that pool, labeled with
    `osac.openshift.io/auto-provisioned: "true"` and an owner-reference
    annotation pointing to the parent resource
@@ -581,7 +579,7 @@ enum NATGatewayMode {
 
 When `AUTO`, the system creates a NATGateway on the resource's
 VirtualNetwork (default or explicit) with an ExternalIP auto-selected from
-the best available pool in the region. Since the design constrains NATGateway to one per VN, auto-creation
+the best available pool. Since the design constrains NATGateway to one per VN, auto-creation
 is idempotent — if a NATGateway already exists on the VN, no new one is
 created. The NATGateway is owned by the VirtualNetwork, not the individual
 resource.
@@ -875,15 +873,13 @@ osac create computeinstance --template ocp_virt_vm \
 ```
 
 System actions:
-1. Resolve region from template
-2. Look up default VN for (tenant, region) — create if missing (VN +
-   Subnet + SG)
-3. Wait for default networking to reach READY
-4. Populate `network_attachments` with default Subnet + default SG
-5. Auto-select ExternalIP from best available pool in region
-6. Create ExternalIPAttachment (Pending until VM IP is assigned)
-7. Dispatch VM creation
-8. On VM running: ExternalIPAttachment transitions to Ready
+1. Look up default VN for tenant — create if missing (VN + Subnet + SG)
+2. Wait for default networking to reach READY
+3. Populate `network_attachments` with default Subnet + default SG
+4. Auto-select ExternalIP from best available pool
+5. Create ExternalIPAttachment (Pending until VM IP is assigned)
+6. Dispatch VM creation
+7. On VM running: ExternalIPAttachment transitions to Ready
 
 **1-call cluster with full connectivity:**
 
@@ -894,8 +890,7 @@ osac create cluster --template ocp_4_17_small \
 ```
 
 System actions:
-1. Resolve region from template
-2. Look up/create default networking (VN + Subnet + SG)
+1. Look up/create default networking for tenant (VN + Subnet + SG)
 3. Create NATGateway on default VN (or reuse existing)
 4. Auto-select 2 ExternalIPs (API + ingress) from best available pool
 5. Create 2 ExternalIPAttachments (Pending state)
@@ -923,8 +918,8 @@ osac create computeinstance --template ocp_virt_vm \
 ```
 
 Explicit `network_attachments` are used (no defaults). Auto ExternalIP
-still works — the system auto-selects from the best available pool in
-the region and attaches to the resource.
+still works — the system auto-selects from the best available pool and
+attaches to the resource.
 
 ### API Extensions
 
@@ -1224,30 +1219,19 @@ VirtualNetwork at creation time.
 
 #### Default Resource Tracking
 
-The system tracks default networking resources for each (tenant, region)
-pair using a materialized helper table with columns `(tenant, region,
-virtual_network_id, subnet_id, security_group_id)`. This ensures
-idempotent creation — concurrent resource creates for the same tenant and
-region do not create duplicate defaults. The table uses a unique constraint
-on `(tenant, region)`.
+The system tracks default networking resources per tenant using a
+materialized helper table with columns `(tenant, virtual_network_id,
+subnet_id, security_group_id)`. This ensures idempotent creation —
+concurrent resource creates for the same tenant do not create duplicate
+defaults. The table uses a unique constraint on `(tenant)`.
 
-#### ExternalIPPool Region Scoping
+#### ExternalIPPool Auto-Selection
 
-ExternalIPPool gains a region field:
-
-```protobuf
-message ExternalIPPoolSpec {
-  // ... existing fields ...
-  string region = 5;           // required, immutable
-}
-```
-
-The `region` field scopes the pool. When auto ExternalIP is requested, the
-system selects the READY pool in the region with the most available
-capacity matching the IP family (defaulting to IPv4) — the same
-auto-selection strategy used for manual ExternalIP creation. When no pool
-in the region has available capacity, the create request fails with a
-clear error.
+When auto ExternalIP is requested, the system selects the READY
+ExternalIPPool with the most available capacity matching the IP family
+(defaulting to IPv4) — the same auto-selection strategy used for manual
+ExternalIP creation. When no pool has available capacity, the create
+request fails with a clear error.
 
 ### Risks and Mitigations
 
@@ -1258,10 +1242,10 @@ clear error.
 | CaaS prerequisite ordering | ExternalIPs may be needed before cluster | Pending state for attachments; template validates its own prerequisites |
 | ExternalIPAttachment target validation | Target may not exist yet (CaaS) or may be deleted | Pending state for forward references; attachment tracks target lifecycle |
 | CIDR overlap | Overlapping subnets cause routing ambiguity | Operator validates at creation time; rejected with clear error |
-| Default CIDR supernet exhaustion (isolated_cidr mode) | No more tenants can get defaults in the region | Provider monitoring on allocation count; clear error; provider can widen supernet |
-| ExternalIPPool exhaustion in region | Auto ExternalIP requests fail | Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool |
-| Race condition on default creation | Concurrent resource creates could create duplicate defaults | Materialized helper table with unique constraint on (tenant, region); first writer wins |
-| Default SecurityGroup too permissive | Security exposure for new tenants | Provider configures default rules per region; tenant can tighten after creation |
+| Default CIDR supernet exhaustion (isolated_cidr mode) | No more tenants can get defaults | Provider monitoring on allocation count; clear error; provider can widen supernet |
+| ExternalIPPool exhaustion | Auto ExternalIP requests fail | Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool |
+| Race condition on default creation | Concurrent resource creates could create duplicate defaults | Materialized helper table with unique constraint on tenant; first writer wins |
+| Default SecurityGroup too permissive | Security exposure for new tenants | Provider configures default rules; tenant can tighten after creation |
 | Auto ExternalIP orphans on partial failure | ExternalIP allocated but attachment creation fails | Standard finalizer pattern; controller retries; if permanently failed, ExternalIP is GC'd with parent |
 
 ### Drawbacks
@@ -1343,13 +1327,12 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 12. **Default resource creation is lazy.** Defaults are created on first
     resource creation that omits `network_attachments`, not at tenant
-    onboarding. This avoids provisioning networking infrastructure in
-    unused regions.
+    onboarding.
 
 13. **CIDR allocation uses a materialized helper table.** Per-tenant
     defaults are tracked in a helper table with a unique constraint on
-    `(tenant, region)`. The system allocates the next available prefix from
-    the supernet (in `isolated_cidr` mode) or reuses the same CIDR (in
+    `(tenant)`. The system allocates the next available prefix from the
+    supernet (in `isolated_cidr` mode) or reuses the same CIDR (in
     `shared_cidr` mode).
 
 14. **Auto ExternalIPs are owned by the parent resource.** They use the
