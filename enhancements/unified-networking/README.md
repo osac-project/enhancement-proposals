@@ -349,11 +349,6 @@ OSAC provisions a set of default networking resources per tenant on first
 use. This eliminates the need for tenants to understand the networking
 resource model before creating their first resource.
 
-Note: region is not yet a fully defined concept in OSAC. When region
-support is implemented, default networking resources will be scoped per
-tenant per region. Until then, the design assumes a single-region
-deployment.
-
 #### What Is Auto-Created
 
 For each tenant, on first use:

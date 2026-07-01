@@ -290,6 +290,8 @@ for VMs), which does not work for CaaS.
 - Load Balancer API
 - Internet Gateway API
 - Quota enforcement for networking resources
+- Region-scoped networking (region is not yet a fully defined concept in
+  OSAC — this design assumes a single-region deployment)
 
 ## Requirements
 
@@ -416,11 +418,6 @@ On first use, the system provisions a set of default networking resources
 (VirtualNetwork, Subnet, SecurityGroup) per tenant, eliminating the need
 for tenants to understand the networking resource model before creating
 their first resource.
-
-Note: region is not yet a fully defined concept in OSAC. When region
-support is implemented, default networking resources will be scoped per
-tenant per region. Until then, the design assumes a single-region
-deployment.
 
 **Acceptance criteria:**
 - When a resource is created without `network_attachments`, the system
