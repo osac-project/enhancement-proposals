@@ -304,10 +304,8 @@ $$ language plpgsql;
 create trigger materialize_storage_tier_backends
   after insert or update on storage_tiers
   for each row
+  when (new.deletion_timestamp = 'epoch')
   execute function materialize_storage_tier_backends();
-
--- Backfill existing rows (if any):
-update storage_tiers set data = data;
 
 -- Validate that all backend IDs in a new/updated StorageTier exist and are active.
 -- Uses FOR SHARE to prevent TOCTOU races with concurrent backend deletion.
@@ -375,40 +373,18 @@ create trigger check_storage_backend_not_in_use_by_tier
   when (old.deletion_timestamp = 'epoch' and new.deletion_timestamp != 'epoch')
   execute function check_storage_backend_not_in_use_by_tier();
 
--- Prevent deleting a StorageTier that is referenced by an active Tenant:
-create function check_storage_tier_not_in_use() returns trigger as $$
-declare
-  tenant_count bigint;
-begin
-  select count(*) into tenant_count
-  from tenants
-  where deletion_timestamp = 'epoch'
-    and data->'spec'->'storageTiers' ? old.id;
-
-  if tenant_count > 0 then
-    raise exception using
-      errcode = 'Z0003',
-      message = format(
-        'cannot delete StorageTier ''%s'': %s Tenant(s) still reference it',
-        old.id, tenant_count
-      );
-  end if;
-
-  return new;
-end;
-$$ language plpgsql;
-
-create trigger check_storage_tier_not_in_use
-  before update on storage_tiers
-  for each row
-  when (old.deletion_timestamp = 'epoch' and new.deletion_timestamp != 'epoch')
-  execute function check_storage_tier_not_in_use();
+-- Backfill existing rows (if any — table is expected to be empty at migration time):
+update storage_tiers set data = data;
 ```
+
+**Note:** The tenant-reference trigger (`check_storage_tier_not_in_use`) that prevents deleting a StorageTier while tenants reference it is **deferred to a follow-up migration that ships with OSAC-23**. The trigger depends on the Tenant proto schema for storage tier assignments, which is not yet finalized. No tenants can reference tiers until OSAC-23 lands, so there is no protection gap.
 
 Design notes on the triggers:
 - The `storage_tier_backends` helper table enables efficient reverse lookup from backend ID to tiers, avoiding a full-table scan of `storage_tiers` JSONB data.
+- The materialization trigger only fires for active tiers (`WHEN (new.deletion_timestamp = 'epoch')`). On soft-delete, stale helper rows remain until archival hard-deletes the tier row (cleaned up via `ON DELETE CASCADE` FK).
+- The backend validation trigger (`check_storage_tier_backend_refs`) uses `FOR SHARE` locking to prevent TOCTOU races with concurrent backend deletion.
 - The StorageBackend deletion trigger joins `storage_tier_backends` with `storage_tiers` to check only active (non-deleted) tiers.
-- The Tenant deletion trigger uses the JSONB `?` operator to check if the tier ID exists in the Tenant's `storageTiers` array. The exact JSON path (`data->'spec'->'storageTiers'`) depends on the Tenant proto schema from OSAC-23; the implementation must adjust the path when that schema is finalized.
+- The tenant-reference trigger is deferred to OSAC-23 (see note above).
 - The `storage_tier_backends` table must be excluded from schema validation in `database_tool.go` (helper table pattern).
 
 #### Component Interaction
@@ -433,7 +409,7 @@ graph LR
 
     ST -.->|trigger: materialize| STB
     SB -.->|trigger: block delete| STB
-    ST -.->|trigger: block delete| T
+    ST -.->|trigger: block delete<br/>(deferred to OSAC-23)| T
 ```
 
 The diagram shows that the fulfillment-service is the sole writer to `storage_tiers`. The OSAC Storage Controller (future) reads tier definitions via the gRPC API. Referential integrity is enforced at the database layer through triggers on `storage_backends` and `storage_tiers`, with `storage_tier_backends` serving as the materialized lookup table.
@@ -482,7 +458,7 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 **Trigger ordering with OSAC-1111:** The referential integrity triggers migration creates a trigger on the `storage_backends` table. If the StorageBackend table migration (OSAC-1111) is not applied first, the triggers migration fails. Mitigation: migrations are numbered sequentially and applied in order; OSAC-1111 is a stated dependency and must merge first.
 
-**Tenant reference path uncertainty:** The `check_storage_tier_not_in_use` trigger references the Tenant's JSONB path for storage tier assignments (`data->'spec'->'storageTiers'`). This path depends on the Tenant proto schema changes in OSAC-23, which is not yet implemented. Mitigation: the trigger path is updated during OSAC-23 implementation to match the actual Tenant proto field. If OSAC-23 lands after StorageTier, the trigger can be added in a separate migration at that time.
+**Tenant reference trigger deferred:** The trigger preventing StorageTier deletion when tenants reference it is deferred to a follow-up migration that ships with OSAC-23. The trigger depends on the Tenant proto schema for storage tier assignments, which is not yet finalized. No protection gap exists because no tenants can reference tiers until OSAC-23 lands.
 
 **QoS update propagation limits:** Changes to QoS properties that map to Kubernetes StorageClass parameters (e.g., encryption settings) require StorageClass recreation to take effect for new volumes. Existing volumes are unaffected. Mitigation: the OSAC Storage Controller (OSAC-23) handles StorageClass lifecycle, including parameter drift detection.
 
