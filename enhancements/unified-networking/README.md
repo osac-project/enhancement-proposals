@@ -343,6 +343,285 @@ The API and flow are identical regardless of the deployment topology.
 ExternalIPPools are provider-managed and region-scoped. The fabric manager
 handles IP allocation — one pool serves all resource types.
 
+### Default Networking Resources
+
+OSAC provisions a set of default networking resources per tenant per region
+on first use. This eliminates the need for tenants to understand the
+networking resource model before creating their first resource. The design
+follows the AWS Default VPC model adapted for OSAC's architecture — one
+default VirtualNetwork per tenant per region, with one default Subnet and
+one default SecurityGroup (OSAC has no availability zones).
+
+#### What Is Auto-Created
+
+For each (tenant, region) pair, on first use:
+
+1. **Default VirtualNetwork** — one per tenant per region
+2. **Default Subnet** — one within the default VN
+3. **Default SecurityGroup** — one within the default VN
+
+Default resources are created **lazily** — on the first resource creation
+request that omits `network_attachments` in a given region. They are not
+created eagerly at tenant onboarding. This avoids provisioning networking
+infrastructure in regions the tenant never uses.
+
+#### CIDR Allocation
+
+The provider configures a `defaults` block on the NetworkClass. Two CIDR
+modes are supported:
+
+- **`shared_cidr`** (default): All tenants receive the same default CIDR
+  range. This is the natural choice for OSAC's fabric-first model — tenants
+  are already isolated at the fabric level (separate VLANs/VRFs), so
+  overlapping IPs between tenants are not a problem. Simpler, no supernet
+  carving needed.
+
+- **`isolated_cidr`**: The system carves non-overlapping CIDR slices from
+  the supernet. Each tenant gets a unique prefix (e.g., /24) from the
+  provider's supernet. Used when the provider wants IP-level uniqueness in
+  addition to fabric-level isolation.
+
+#### NetworkClass Defaults Configuration
+
+The provider configures defaults on the NetworkClass at region setup:
+
+```yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: NetworkClass
+metadata:
+  name: moc-region-1
+spec:
+  region: moc-region-1
+  fabricManager: netris
+  k8sManager: cudn_localnet
+  defaults:
+    ipv4_cidr: "10.0.0.0/24"
+    cidr_mode: shared_cidr
+    security_group:
+      ingress:
+        - protocol: tcp
+          port_from: 22
+          port_to: 22
+          ipv4_cidr: "0.0.0.0/0"
+      egress:
+        - protocol: all
+          ipv4_cidr: "0.0.0.0/0"
+```
+
+For `isolated_cidr` mode, the provider specifies a supernet and prefix
+length instead:
+
+```yaml
+  defaults:
+    ipv4_supernet: "10.0.0.0/16"
+    tenant_prefix_length: 24
+    cidr_mode: isolated_cidr
+```
+
+When `defaults` is not set on the NetworkClass, creating a resource without
+`network_attachments` returns an error directing the tenant to specify
+networking explicitly or ask the provider to configure defaults.
+
+#### Default Resource Specs
+
+Default resources are regular OSAC resources. They appear in List/Get
+responses, can be modified by the tenant (e.g., adding SecurityGroup
+rules), and participate in standard lifecycle operations. The
+`osac.openshift.io/default: "true"` label identifies them as system-created
+defaults.
+
+**Default VirtualNetwork:**
+
+```yaml
+metadata:
+  name: default
+  tenant: <tenant-id>
+  labels:
+    osac.openshift.io/default: "true"
+spec:
+  region: <region>
+  ipv4_cidr: "10.0.0.0/24"
+```
+
+**Default Subnet:**
+
+```yaml
+metadata:
+  name: default
+  tenant: <tenant-id>
+  labels:
+    osac.openshift.io/default: "true"
+  annotations:
+    osac.openshift.io/owner-reference: <default-vn-id>
+spec:
+  virtual_network: <default-vn-id>
+  ipv4_cidr: "10.0.0.0/24"
+```
+
+**Default SecurityGroup:**
+
+```yaml
+metadata:
+  name: default
+  tenant: <tenant-id>
+  labels:
+    osac.openshift.io/default: "true"
+  annotations:
+    osac.openshift.io/owner-reference: <default-vn-id>
+spec:
+  virtual_network: <default-vn-id>
+  ingress:
+    - protocol: tcp
+      port_from: 22
+      port_to: 22
+      ipv4_cidr: "0.0.0.0/0"
+  egress:
+    - protocol: all
+      ipv4_cidr: "0.0.0.0/0"
+```
+
+#### Coexistence with Custom VNs
+
+Creating custom VirtualNetworks does not affect default resources. A tenant
+can have both default and custom VNs in the same region. Resources created
+without `network_attachments` always use the defaults. Resources created
+with explicit `network_attachments` use the specified resources — no
+defaults are applied.
+
+Default resources cannot be deleted while any resource depends on them
+(standard referential integrity).
+
+### Simplified Resource Creation
+
+Two mechanisms reduce the number of API calls needed to create a reachable
+resource from 6+ to 1:
+
+1. **Optional `network_attachments`** — omitting them resolves to defaults
+2. **Auto ExternalIP** — a field on the resource spec requests automatic
+   ExternalIP and ExternalIPAttachment creation
+
+#### Optional network_attachments
+
+When `network_attachments` is empty on a ComputeInstance, Cluster, or
+BaremetalInstance create request, the fulfillment service resolves defaults
+before persisting:
+
+1. Determine the resource's region (from the template's region)
+2. Look up the default VirtualNetwork for (tenant, region)
+3. If none exists, trigger default resource creation (VN + Subnet + SG) and
+   wait for READY state
+4. Populate `network_attachments` with the default Subnet and default
+   SecurityGroup
+5. Store the resolved spec — the resource is self-describing after creation
+
+The resolved `network_attachments` are written to the spec before the
+resource is persisted. Get/List always shows the actual attachments, even if
+the tenant omitted them at creation.
+
+For BaremetalInstance with multiple physical interfaces, omitting
+`network_attachments` places the default interface on the default subnet.
+The fabric manager picks the default interface (same as existing behavior
+when `interface` is omitted).
+
+For Cluster, omitting `network_attachments` places all node sets on the
+default subnet with the default SecurityGroup.
+
+#### Auto ExternalIP
+
+A new `external_ip_mode` field on resource specs controls automatic
+ExternalIP provisioning. The provider designates a default ExternalIPPool
+per region (via `is_default` on ExternalIPPool) for auto-allocation.
+
+**ComputeInstance and BaremetalInstance:**
+
+```protobuf
+enum ExternalIPMode {
+  EXTERNAL_IP_MODE_NONE = 0;   // default: no auto ExternalIP
+  EXTERNAL_IP_MODE_AUTO = 1;   // auto-provision ExternalIP + attachment
+}
+```
+
+**Cluster:**
+
+```protobuf
+enum ClusterExternalIPMode {
+  CLUSTER_EXTERNAL_IP_MODE_NONE         = 0;
+  CLUSTER_EXTERNAL_IP_MODE_AUTO_API     = 1;  // API server only
+  CLUSTER_EXTERNAL_IP_MODE_AUTO_INGRESS = 2;  // ingress only
+  CLUSTER_EXTERNAL_IP_MODE_AUTO_ALL     = 3;  // both API and ingress
+}
+```
+
+When `external_ip_mode` is set to an AUTO value:
+
+1. The fulfillment service identifies the default ExternalIPPool for the
+   resource's region
+2. The service creates an ExternalIP from that pool, labeled with
+   `osac.openshift.io/auto-provisioned: "true"` and an owner-reference
+   annotation pointing to the parent resource
+3. Once the ExternalIP reaches ALLOCATED state, the service creates an
+   ExternalIPAttachment binding it to the parent
+4. For clusters with `AUTO_ALL`, steps 2–3 repeat for both API and ingress
+   endpoints (two ExternalIPs, two ExternalIPAttachments)
+
+#### Auto NATGateway
+
+A `nat_gateway_mode` field on all resource specs (ComputeInstance,
+BaremetalInstance, Cluster) controls automatic NATGateway provisioning:
+
+```protobuf
+enum NATGatewayMode {
+  NAT_GATEWAY_MODE_NONE = 0;   // default: no auto NATGateway
+  NAT_GATEWAY_MODE_AUTO = 1;   // auto-provision NATGateway on the VN
+}
+```
+
+When `AUTO`, the system creates a NATGateway on the resource's
+VirtualNetwork (default or explicit) with an ExternalIP from the default
+pool. Since the design constrains NATGateway to one per VN, auto-creation
+is idempotent — if a NATGateway already exists on the VN, no new one is
+created. The NATGateway is owned by the VirtualNetwork, not the individual
+resource.
+
+#### CaaS Prerequisite Ordering
+
+For clusters, ExternalIPs for API and ingress are prerequisites for
+provisioning (worker nodes reach the API server via hairpin NAT). Auto
+ExternalIP solves this:
+
+1. On Cluster create with `external_ip_mode = AUTO_ALL`:
+   a. Default networking resources are resolved/created
+   b. NATGateway is created if `nat_gateway_mode = AUTO`
+   c. ExternalIPs are allocated from the default pool
+   d. ExternalIPAttachments are created in Pending state
+   e. ExternalIP addresses are passed as template parameters
+   f. The Cluster is dispatched for provisioning
+2. Once cluster provisioning completes and VIPs are populated in
+   ClusterStatus, the ExternalIPAttachments transition to Ready
+
+This ensures ExternalIPs exist before provisioning, resolving gap #9
+without requiring the tenant to orchestrate the ordering manually.
+
+#### Ownership and Garbage Collection
+
+Auto-created resources use the existing owner-reference annotation pattern
+(`osac.openshift.io/owner-reference`):
+
+| Auto-created resource | Owner | GC behavior |
+|---|---|---|
+| Default VirtualNetwork | Tenant (no owner-ref) | Persists until tenant deletes it |
+| Default Subnet | Default VirtualNetwork | GC'd when default VN is deleted |
+| Default SecurityGroup | Default VirtualNetwork | GC'd when default VN is deleted |
+| Auto ExternalIP | Parent resource (CI/Cluster/BMI) | GC'd when parent is deleted |
+| Auto ExternalIPAttachment | Parent resource (CI/Cluster/BMI) | GC'd when parent is deleted |
+| Auto NATGateway | VirtualNetwork | Persists with VN |
+
+When a parent resource is deleted, the system deletes auto-created
+ExternalIPAttachments first, then ExternalIPs, following the standard
+finalizer pattern. Auto-created resources can be manually deleted by the
+tenant (e.g., detaching an auto ExternalIP), but the parent resource
+continues to function without it.
+
 ### End-to-End Flows
 
 This section shows how the unified networking API works from the tenant's
@@ -362,10 +641,13 @@ osac admin create externalippool \
   --region moc-region-1 \
   --cidrs 203.0.113.0/24 \
   --ip-family ipv4 \
+  --is-default \
   --name external-pool-1
 ```
 
-The fabric manager registers the IP range in its IPAM for allocation.
+The `--is-default` flag designates this pool for auto ExternalIP allocation
+in the region. One default pool per region. The fabric manager registers
+the IP range in its IPAM for allocation.
 
 #### Networking Setup (Same for All Resource Types)
 
@@ -576,6 +858,72 @@ The fabric manager creates a SNAT rule for the VN: all egress traffic from
 the VN's CIDR is source-NATted to the ExternalIP. Applies to all resources
 in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 
+#### Simplified Flows (Default Networking + Auto ExternalIP)
+
+The explicit flows above show the full manual workflow. With default
+networking and auto ExternalIP, the same outcome is achieved in a single
+call. The explicit flow remains available for tenants who need custom
+networking.
+
+**1-call VM with external IP:**
+
+```bash
+osac create computeinstance --template ocp_virt_vm \
+  --external-ip=auto --name my-vm
+```
+
+System actions:
+1. Resolve region from template
+2. Look up default VN for (tenant, region) — create if missing (VN +
+   Subnet + SG)
+3. Wait for default networking to reach READY
+4. Populate `network_attachments` with default Subnet + default SG
+5. Allocate ExternalIP from region's default pool
+6. Create ExternalIPAttachment (Pending until VM IP is assigned)
+7. Dispatch VM creation
+8. On VM running: ExternalIPAttachment transitions to Ready
+
+**1-call cluster with full connectivity:**
+
+```bash
+osac create cluster --template ocp_4_17_small \
+  --external-ip=auto-all --nat-gateway=auto \
+  --node-set workers=large,size=3 --name my-cluster
+```
+
+System actions:
+1. Resolve region from template
+2. Look up/create default networking (VN + Subnet + SG)
+3. Create NATGateway on default VN (or reuse existing)
+4. Allocate 2 ExternalIPs (API + ingress) from default pool
+5. Create 2 ExternalIPAttachments (Pending state)
+6. Populate `network_attachments` with default Subnet + default SG
+7. Pass ExternalIP addresses as template parameters
+8. Dispatch cluster provisioning
+9. On cluster ready: ExternalIPAttachments activate
+
+**1-call bare-metal server:**
+
+```bash
+osac create baremetalinstance --template bcm_h100 \
+  --external-ip=auto --name my-server
+```
+
+System actions follow the same pattern as ComputeInstance — default
+interface is placed on the default subnet by the fabric manager.
+
+**Mixed: explicit networking with auto ExternalIP:**
+
+```bash
+osac create computeinstance --template ocp_virt_vm \
+  --network-attachment subnet=my-subnet,security-groups=my-sg \
+  --external-ip=auto --name my-vm
+```
+
+Explicit `network_attachments` are used (no defaults). Auto ExternalIP
+still works — the system allocates from the region's default pool and
+attaches to the resource.
+
 ### API Extensions
 
 #### VirtualNetwork
@@ -653,9 +1001,15 @@ compute workers on a standard one).
 ```protobuf
 message ComputeInstanceSpec {
   // ... existing fields ...
-  repeated ComputeNetworkAttachment network_attachments = 14;
+  repeated ComputeNetworkAttachment network_attachments = 14;  // optional
+  ExternalIPMode external_ip_mode = 18;                        // NEW: auto ExternalIP
+  NATGatewayMode nat_gateway_mode = 19;                        // NEW: auto NATGateway
 }
 ```
+
+`network_attachments` is optional. When omitted, the system resolves
+defaults (default Subnet + default SecurityGroup for the region).
+`external_ip_mode` and `nat_gateway_mode` are immutable after creation.
 
 **BaremetalInstance** (new — defined in the
 [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api)):
@@ -669,7 +1023,9 @@ message BaremetalInstanceSpec {
   optional google.protobuf.Timestamp restart_requested_at = 5;
 
   // NEW: OSAC networking
-  repeated BareMetalNetworkAttachment network_attachments = 6;
+  repeated BareMetalNetworkAttachment network_attachments = 6;  // optional
+  ExternalIPMode external_ip_mode = 7;                          // NEW: auto ExternalIP
+  NATGatewayMode nat_gateway_mode = 8;                          // NEW: auto NATGateway
 }
 ```
 
@@ -682,7 +1038,9 @@ message ClusterSpec {
   map<string, ClusterNodeSet> node_sets = 3;
 
   // NEW: networking
-  repeated ClusterNetworkAttachment network_attachments = 4;
+  repeated ClusterNetworkAttachment network_attachments = 4;    // optional
+  ClusterExternalIPMode external_ip_mode = 5;                   // NEW: auto ExternalIP
+  NATGatewayMode nat_gateway_mode = 6;                          // NEW: auto NATGateway
 }
 ```
 
@@ -690,6 +1048,27 @@ message ClusterSpec {
 - The cluster's template determines whether nodes are VMs or BM. Both
   types are placed on the same subnet — VMs via the K8s overlay (already
   bridged to the fabric), BM nodes directly on the fabric.
+
+**Shared enums for simplified resource creation:**
+
+```protobuf
+enum ExternalIPMode {
+  EXTERNAL_IP_MODE_NONE = 0;   // default: no auto ExternalIP
+  EXTERNAL_IP_MODE_AUTO = 1;   // auto-provision ExternalIP + attachment
+}
+
+enum ClusterExternalIPMode {
+  CLUSTER_EXTERNAL_IP_MODE_NONE         = 0;  // default
+  CLUSTER_EXTERNAL_IP_MODE_AUTO_API     = 1;  // API server only
+  CLUSTER_EXTERNAL_IP_MODE_AUTO_INGRESS = 2;  // ingress only
+  CLUSTER_EXTERNAL_IP_MODE_AUTO_ALL     = 3;  // both API and ingress
+}
+
+enum NATGatewayMode {
+  NAT_GATEWAY_MODE_NONE = 0;   // default: no auto NATGateway
+  NAT_GATEWAY_MODE_AUTO = 1;   // auto-provision on the resource's VN
+}
+```
 
 The Cluster resource also gains two fields populated by the system
 during provisioning:
@@ -841,6 +1220,32 @@ k8sManager — there is no K8s overlay to place the VM on.
 The operator validates that Subnet CIDRs do not overlap within a
 VirtualNetwork at creation time.
 
+#### Default Resource Tracking
+
+The system tracks default networking resources for each (tenant, region)
+pair using a materialized helper table with columns `(tenant, region,
+virtual_network_id, subnet_id, security_group_id)`. This ensures
+idempotent creation — concurrent resource creates for the same tenant and
+region do not create duplicate defaults. The table uses a unique constraint
+on `(tenant, region)`.
+
+#### ExternalIPPool Region and Default Designation
+
+ExternalIPPool gains two fields:
+
+```protobuf
+message ExternalIPPoolSpec {
+  // ... existing fields ...
+  string region = 5;           // required, immutable
+  optional bool is_default = 6;
+}
+```
+
+The `region` field scopes the pool. The `is_default` flag designates the
+pool for auto ExternalIP allocation in that region. One default pool per
+region. When auto ExternalIP is requested and no default pool exists, the
+create request fails with a clear error.
+
 ### Risks and Mitigations
 
 | Risk | Impact | Mitigation |
@@ -850,6 +1255,11 @@ VirtualNetwork at creation time.
 | CaaS prerequisite ordering | ExternalIPs may be needed before cluster | Pending state for attachments; template validates its own prerequisites |
 | ExternalIPAttachment target validation | Target may not exist yet (CaaS) or may be deleted | Pending state for forward references; attachment tracks target lifecycle |
 | CIDR overlap | Overlapping subnets cause routing ambiguity | Operator validates at creation time; rejected with clear error |
+| Default CIDR supernet exhaustion (isolated_cidr mode) | No more tenants can get defaults in the region | Provider monitoring on allocation count; clear error; provider can widen supernet |
+| Default ExternalIPPool exhaustion | Auto ExternalIP requests fail | Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool |
+| Race condition on default creation | Concurrent resource creates could create duplicate defaults | Materialized helper table with unique constraint on (tenant, region); first writer wins |
+| Default SecurityGroup too permissive | Security exposure for new tenants | Provider configures default rules per region; tenant can tighten after creation |
+| Auto ExternalIP orphans on partial failure | ExternalIP allocated but attachment creation fails | Standard finalizer pattern; controller retries; if permanently failed, ExternalIP is GC'd with parent |
 
 ### Drawbacks
 
@@ -927,6 +1337,37 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
     type has a different selector concept (virtual NIC, physical interface,
     node set) — a shared type with optional fields would accumulate
     dead weight per resource type.
+
+12. **Default resource creation is lazy.** Defaults are created on first
+    resource creation that omits `network_attachments`, not at tenant
+    onboarding. This avoids provisioning networking infrastructure in
+    unused regions.
+
+13. **CIDR allocation uses a materialized helper table.** Per-tenant
+    defaults are tracked in a helper table with a unique constraint on
+    `(tenant, region)`. The system allocates the next available prefix from
+    the supernet (in `isolated_cidr` mode) or reuses the same CIDR (in
+    `shared_cidr` mode).
+
+14. **Auto ExternalIPs are owned by the parent resource.** They use the
+    standard owner-reference annotation and are garbage-collected on parent
+    deletion. They are visible and can be manually detached by the tenant.
+
+15. **Cluster ExternalIP allocation happens before provisioning dispatch.**
+    The system allocates ExternalIPs synchronously during the Cluster
+    create flow, passes the addresses to the CaaS template as parameters,
+    and creates ExternalIPAttachments in Pending state. This resolves the
+    CaaS prerequisite ordering problem (gap #9).
+
+16. **NATGateway auto-creation is per-VN, not per-resource.** Since the
+    design constrains NATGateway to one per VN, auto-creation is
+    idempotent — if a NATGateway already exists on the VN, no new one is
+    created.
+
+17. **Default CIDR mode is `shared_cidr`.** In OSAC's fabric-first model,
+    tenants are already isolated at the fabric level. Overlapping CIDRs
+    between tenants are not a problem. `isolated_cidr` is available for
+    providers who want IP-level uniqueness.
 
 ## Test Plan
 
