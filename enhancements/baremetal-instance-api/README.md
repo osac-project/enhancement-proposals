@@ -3,7 +3,7 @@ title: baremetal-instance-api
 authors:
   - agentil@redhat.com
 creation-date: 2026-05-29
-last-updated: 2026-06-04
+last-updated: 2026-07-02
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1118
 see-also:
@@ -43,11 +43,12 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 * Define `BareMetalInstanceTemplate` as a resource managed by Cloud Provider Admins through the private API and readable by tenants through the public API (List/Get); `BareMetalInstanceCatalogItem` as a catalog resource where Cloud Provider Admins publish global entries via the private API and Tenant Admins create tenant-scoped ones via the public API; publishing control and tenant scoping are enforced by the server.
 * Maintain API consistency with `ComputeInstance` where possible — same resource shape, service structure, template and catalog item patterns, run strategy and restart signal mechanism, and authorization model.
 * Expose the API through both gRPC and the existing REST gateway.
+* Allow tenants to specify an OS base image when creating a `BareMetalInstance` via the `image` spec field, with template defaults and catalog item `FieldDefinition` control.
 
 ### Non-Goals
 
 * Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement; in this initial phase, network configuration is fixed by the Cloud Provider Admin as part of the `BareMetalInstanceCatalogItem` and tenants have no mechanism to configure networking at provision time. A dedicated networking enhancement will enable tenants to create their own `Subnet` and attach it to a `BareMetalInstance`.
-* Custom hardware profile or OS image selection by tenants at provision time — fixed by the catalog item. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new catalog item.
+* Custom hardware profile selection by tenants at provision time — fixed by the catalog item. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new catalog item.
 * AAP playbook, baremetal fulfillment component, UI/UX, and E2E test implementation — covered in companion work.
 * Support for multiple bare metal backends in this initial release — the architecture is designed for future extensibility.
 * Quota enforcement for `BareMetalInstance` — deferred to a future enhancement.
@@ -87,9 +88,9 @@ Provisioning is driven by a chain of components: the fulfillment service creates
    ```
    POST /api/fulfillment/v1/baremetal_instances
    ```
-4. The fulfillment service resolves the catalog item to a `templateID` and derives `templateParameters` from the `field_definitions`, then creates a `HostLease` CR in the management cluster with those values plus `ssh_public_key` and `user_data`; `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
+4. The fulfillment service resolves the catalog item to a `templateID` and derives `templateParameters` from the `field_definitions`, then creates a `HostLease` CR in the management cluster with those values plus `ssh_public_key`, `user_data`, and `image`; `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
 5. The baremetal-fulfillment-operator picks up the `HostLease` and queries the inventory backend to find and assign a free host matching the requested host type and selector.
-6. The baremetal-fulfillment-operator triggers `osac-aap` to run the host-level provisioning template (OS image, SSH key, user data) and updates the `HostLease` status on completion.
+6. The baremetal-fulfillment-operator triggers `osac-aap` to run the host-level provisioning template (OS image, SSH key, user data) and updates the `HostLease` status on completion. The OS image is resolved from the tenant's spec or the template default.
 7. The osac-operator watches the `HostLease` CR and pushes status updates to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BareMetalInstance.status`.
 8. The Tenant User polls until `status.state` is `BARE_METAL_INSTANCE_STATE_RUNNING`:
    ```
@@ -126,9 +127,9 @@ sequenceDiagram
     TU->>FS: GET /baremetal_instance_catalog_items
     FS-->>TU: list of available catalog items
 
-    TU->>FS: POST /baremetal_instances {catalog_item, ssh_public_key, ...}
-    Note over FS: resolve catalog_item → templateID, apply field_definitions → templateParameters
-    FS->>MC: create HostLease CR (templateID, templateParameters, ssh_public_key, user_data)
+    TU->>FS: POST /baremetal_instances {catalog_item, ssh_public_key, image, ...}
+    Note over FS: resolve catalog_item → templateID, apply field_definitions → templateParameters, resolve image
+    FS->>MC: create HostLease CR (templateID, templateParameters, ssh_public_key, user_data, image)
     FS-->>TU: 201 Created {id, state: PROVISIONING}
 
     MC-->>BMF: watch: HostLease CR created (no ExternalHostID yet)
@@ -213,9 +214,10 @@ message BareMetalInstanceTemplate {
   BareMetalInstanceTemplateSpecDefaults spec_defaults = 5;
 }
 
-// No overridable spec fields in this initial version; fields will be added in future
-// enhancements as tenant-configurable options are introduced (e.g. networking integration).
-message BareMetalInstanceTemplateSpecDefaults {}
+message BareMetalInstanceTemplateSpecDefaults {
+  // Default OS base image used when the tenant does not specify one.
+  optional BareMetalInstanceImage image = 1;
+}
 ```
 
 #### Proto: BareMetalInstanceCatalogItem
@@ -251,8 +253,11 @@ message BareMetalInstanceCatalogItem {
   // set at provision time. Non-editable fields are always overridden by the
   // catalog default; editable fields are validated against the provided JSON
   // Schema and fall back to the default when not supplied by the tenant.
-  // No overridable fields are defined in this initial version; entries will
-  // be added in future enhancements (e.g. networking integration).
+  // The `image` field is controllable via FieldDefinition. When editable is
+  // false, the catalog item's default image is forced; when editable is true,
+  // the tenant's choice is validated against the provided JSON Schema.
+  // Additional fields will be added in future enhancements (e.g. networking
+  // integration).
   repeated FieldDefinition field_definitions = 8;
 }
 ```
@@ -279,6 +284,15 @@ message BareMetalInstanceCatalogItem {
 #### Proto: BareMetalInstance
 
 ```protobuf
+// Contains the image configuration for a bare metal instance.
+message BareMetalInstanceImage {
+  // Image source type (e.g. "registry").
+  string source_type = 1;
+
+  // Image reference (e.g. OCI image URL like "quay.io/org/rhel9:latest").
+  string source_ref = 2;
+}
+
 message BareMetalInstance {
   string id = 1;
   Metadata metadata = 2;
@@ -307,6 +321,12 @@ message BareMetalInstanceSpec {
   // Set to the current time to trigger an immediate restart.
   // The controller executes the restart if this timestamp is greater than status.last_restarted_at.
   optional google.protobuf.Timestamp restart_requested_at = 5;
+
+  // Container image reference for the OS base image.
+  // Specifies the OCI image to provision on the bare metal host.
+  // If not provided, the template's default image is used.
+  // Immutable after creation.
+  optional BareMetalInstanceImage image = 6 [(google.api.field_behavior) = IMMUTABLE];
 }
 
 message BareMetalInstanceStatus {
@@ -369,8 +389,9 @@ Where possible, the BareMetalInstance API is consistent with ComputeInstance:
 - `run_strategy` and restart signal mechanism (`restart_requested_at`, `last_restarted_at`).
 - `spec.catalog_item` referencing a `BareMetalInstanceCatalogItem` with `FieldDefinition`-based field control.
 - `BareMetalInstanceTemplate` with `spec_defaults`; managed via private API, readable via public List/Get.
+- `image` field for OS base image selection via `BareMetalInstanceImage` (`source_type` + `source_ref`).
 
-Fields specific to VMs (network attachments, image, cores, memory) are absent from `BareMetalInstance` in this initial version.
+Fields specific to VMs (network attachments, cores, memory) are absent from `BareMetalInstance` in this initial version.
 
 ### Risks and Mitigations
 
