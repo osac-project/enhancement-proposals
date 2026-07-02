@@ -28,18 +28,44 @@ where a single create command produces a reachable instance.
 - Auto-provisioned networking resources are visible, editable, and follow
   the same lifecycle as manually created ones
 
-### 2.3 Non-Goals
+### 2.2 Non-Goals
 
-- Region-scoped default networking (region is not yet a fully defined
-  concept in OSAC — this design assumes a single-region deployment)
 - Custom default configurations per tenant (all tenants in a deployment
   receive the same default CIDR and SecurityGroup rules)
 - Auto-provisioning of VirtualNetworks or Subnets beyond the initial
   default (tenants create additional VNs manually)
 
-## 3. Requirements
+## 3. User Stories
 
-### 3.1 Functional Requirements
+### Tenant Stories
+
+- As a tenant, I want to create a resource (VM, cluster, or bare-metal
+  server) without pre-creating networking resources, so that the system
+  provides sensible defaults and I can get started quickly
+- As a tenant, I want to create a resource with `--external-ip=auto` and
+  have it externally reachable in a single API call, without manually
+  creating ExternalIP and ExternalIPAttachment resources
+- As a tenant, I want to inspect and customize my default networking
+  resources (e.g., modify SecurityGroup rules) after they are auto-created
+- As a tenant, I want auto-provisioned ExternalIPs to be automatically
+  cleaned up when I delete the parent resource, so that I do not accumulate
+  orphaned resources
+- As a tenant, I want to create a Cluster with `--external-ip=auto` and
+  have the system automatically provision ExternalIPs for both the API
+  server and ingress endpoints before cluster provisioning begins
+- As a tenant, I want to create a Cluster with `--nat-gateway=auto` and
+  have the system automatically provision a NATGateway on the VirtualNetwork
+  so that cluster nodes have outbound connectivity without manual setup
+
+### Provider Stories
+
+- As a provider, I want to configure a default CIDR range and default
+  SecurityGroup rules, so that the system can auto-create default
+  networking resources for tenants on first use
+
+## 4. Requirements
+
+### 4.1 Functional Requirements
 
 #### Default Networking
 
@@ -101,7 +127,7 @@ where a single create command produces a reachable instance.
   VirtualNetwork using that ExternalIP as the SNAT source. If a NATGateway
   already exists on the VN, it is reused. [User]
 
-## 4. Acceptance Criteria
+## 5. Acceptance Criteria
 
 - [ ] A tenant can create a ComputeInstance with `--external-ip=auto` and
   no `network_attachments` — the VM is created on the default subnet with
