@@ -270,8 +270,6 @@ for VMs), which does not work for CaaS.
 - Load Balancer API
 - Internet Gateway API
 - Quota enforcement for networking resources
-- Region-scoped networking (region is not yet a fully defined concept in
-  OSAC — this design assumes a single-region deployment)
 
 ## Requirements
 
