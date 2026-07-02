@@ -228,17 +228,6 @@ for VMs), which does not work for CaaS.
   clusters, or bare-metal servers for inbound access
 - As a tenant, I want to create a NATGateway for outbound access from my
   VirtualNetwork
-- As a tenant, I want to create a resource (VM, cluster, or bare-metal
-  server) without pre-creating networking resources, so that the system
-  provides sensible defaults and I can get started quickly
-- As a tenant, I want to create a resource with `--external-ip=auto` and
-  have it externally reachable in a single API call, without manually
-  creating ExternalIP and ExternalIPAttachment resources
-- As a tenant, I want to inspect and customize my default networking
-  resources (e.g., modify SecurityGroup rules) after they are auto-created
-- As a tenant, I want auto-provisioned ExternalIPs to be automatically
-  cleaned up when I delete the parent resource, so that I do not accumulate
-  orphaned resources
 
 ### CaaS-Specific Stories
 
@@ -248,12 +237,6 @@ for VMs), which does not work for CaaS.
   ingress endpoints before provisioning
 - As a tenant, I want my cluster to work in air-gapped environments using
   data-center-routable IPs
-- As a tenant, I want to create a Cluster with `--external-ip=auto` and
-  have the system automatically provision ExternalIPs for both the API
-  server and ingress endpoints before cluster provisioning begins
-- As a tenant, I want to create a Cluster with `--nat-gateway=auto` and
-  have the system automatically provision a NATGateway on the VirtualNetwork
-  so that cluster nodes have outbound connectivity without manual setup
 
 ### BMaaS-Specific Stories
 
@@ -276,9 +259,6 @@ for VMs), which does not work for CaaS.
 - As a provider, I want to add new networking managers by deploying a
   ConfigMap and an Ansible role
 - As a provider, I want to be able to provision ExternalIP pools for tenants
-- As a provider, I want to configure a default CIDR range and default
-  SecurityGroup rules, so that the system can auto-create default
-  networking resources for tenants on first use
 
 ## Non-Goals
 
@@ -410,92 +390,6 @@ descriptions provided by the template.
 - The same interface cannot appear in multiple attachments
 - All referenced subnets must belong to the same VirtualNetwork
 
-### Simplified Resource Creation
-
-#### R8: Default networking resources per tenant
-
-At tenant onboarding, the system provisions a set of default networking
-resources (VirtualNetwork, Subnet, SecurityGroup) per tenant, eliminating
-the need for tenants to understand the networking resource model before
-creating their first resource.
-
-**Acceptance criteria:**
-- Default VirtualNetwork, Subnet, and SecurityGroup are created at tenant
-  onboarding, before the tenant creates any resources
-- The tenant transitions to READY only after all default networking
-  resources are also READY
-- Default VirtualNetwork is created per tenant using the
-  provider-configured default CIDR on the NetworkClass
-- Default Subnet is created within the default VirtualNetwork
-- Default SecurityGroup is created within the default VirtualNetwork with
-  provider-configured default rules
-- When a resource is created without `network_attachments`, the system
-  resolves the tenant's defaults
-- Default resources are labeled with `osac.openshift.io/default: "true"`
-  and are visible in List/Get operations
-- Default resources can be modified by the tenant (e.g., adding
-  SecurityGroup rules) but cannot be deleted while resources depend on them
-- Creating custom VirtualNetworks does not affect default resources — both
-  coexist
-- Two CIDR modes are supported, configured per NetworkClass: `shared_cidr`
-  (default — all tenants receive the same CIDR range, fabric-level
-  isolation separates them) and `isolated_cidr` (each tenant gets a unique
-  CIDR slice from the provider's supernet)
-
-#### R9: Optional network_attachments for simplified resource creation
-
-The `network_attachments` field on ComputeInstance, Cluster, and
-BaremetalInstance is optional. When omitted, the system resolves defaults:
-default Subnet and default SecurityGroup for the tenant.
-
-**Acceptance criteria:**
-- ComputeInstance, Cluster, and BaremetalInstance can be created without
-  specifying `network_attachments`
-- The system populates `network_attachments` using the tenant's default
-  Subnet and default SecurityGroup
-- The resolved `network_attachments` are stored in the resource spec (the
-  resource spec is self-describing after creation)
-- If the resource is created with explicit `network_attachments`, no
-  defaults are applied
-- If defaults cannot be resolved (e.g., no defaults configured on the
-  NetworkClass), the create request fails with a clear error
-
-#### R10: Auto ExternalIP provisioning
-
-Resources can request automatic ExternalIP allocation at creation time. The
-system auto-selects the READY ExternalIPPool with the most available
-capacity, creates an ExternalIP and ExternalIPAttachment, and establishes
-ownership so that auto-created resources are garbage-collected when the
-parent is deleted.
-
-**Acceptance criteria:**
-- ComputeInstance and BaremetalInstance support an `external_ip_mode` field
-  with values `NONE` (default) and `AUTO`
-- Cluster supports a `external_ip_mode` field with values `NONE`
-  (default), `AUTO_API`, `AUTO_INGRESS`, and `AUTO_ALL` (both API and
-  ingress)
-- All resource types support a `nat_gateway_mode` field with values `NONE`
-  (default) and `AUTO`
-- When `AUTO` is requested, the system auto-selects the READY pool with
-  the most available capacity, creates an ExternalIP and an
-  ExternalIPAttachment binding it to the resource
-- For clusters with `AUTO_ALL`, two ExternalIPs and two
-  ExternalIPAttachments are created (one for API, one for ingress)
-- For clusters, ExternalIPs are allocated before provisioning is dispatched,
-  resolving the CaaS prerequisite ordering requirement
-- Auto-created ExternalIP and ExternalIPAttachment resources have an
-  owner-reference annotation pointing to the parent resource
-- When the parent resource is deleted, auto-created ExternalIPs and
-  ExternalIPAttachments are garbage-collected
-- Auto-created resources are visible in List/Get operations and are labeled
-  with `osac.openshift.io/auto-provisioned: "true"`
-- If no ExternalIPPool has available capacity, the resource creation fails
-  with a clear error
-- When `nat_gateway_mode=AUTO`, the system auto-selects an ExternalIP
-  from the best available pool and creates a NATGateway on the resource's
-  VirtualNetwork using that ExternalIP as the SNAT source; if a NATGateway
-  already exists on the VN, it is reused (one NATGateway per VN)
-
 ## Success Metrics
 
 - All three service types consume the same networking API (R3)
@@ -503,11 +397,6 @@ parent is deleted.
 - A new manager can be added without modifying existing managers or the API (R6)
 - Tenant experience is uniform across service types — same resources, same
   workflow, same CLI patterns (R3, R4)
-- A tenant can create a fully connected VM or bare-metal server (inbound +
-  outbound) with a single API call, without pre-creating any networking
-  resources (R8, R9, R10)
-- A tenant can create a fully connected cluster (API + ingress + outbound)
-  with a single API call (R8, R9, R10)
 
 ## Technical Design
 
