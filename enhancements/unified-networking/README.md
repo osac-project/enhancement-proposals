@@ -585,7 +585,7 @@ provisioning (worker nodes reach the API server via hairpin NAT). Auto
 ExternalIP solves this:
 
 1. On Cluster create with `external_ip_mode = AUTO_ALL`:
-   a. Default networking resources are resolved/created
+   a. Default networking resources are resolved (already READY)
    b. NATGateway is created if `nat_gateway_mode = AUTO`
    c. ExternalIPs are auto-selected from the best available pool
    d. ExternalIPAttachments are created in Pending state
@@ -998,7 +998,7 @@ message ComputeInstanceSpec {
 ```
 
 `network_attachments` is optional. When omitted, the system resolves
-defaults (default Subnet + default SecurityGroup for the region).
+defaults (tenant's default Subnet + default SecurityGroup).
 `external_ip_mode` and `nat_gateway_mode` are immutable after creation.
 
 **BaremetalInstance** (new — defined in the
