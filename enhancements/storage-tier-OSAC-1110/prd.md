@@ -44,17 +44,17 @@ OSAC has no API-managed catalog of storage tier offerings. Tier configuration fl
 - **FR-3:** `CreateStorageTier` must accept a tier name, optional description, and one or more backend associations. Each backend association references a StorageBackend by ID, declares the storage protocol (`nfs` or `block`), and declares provider-neutral QoS properties: maximum read bandwidth (MB/s), maximum write bandwidth (MB/s), quota (bytes), and encryption enabled. The tier must be created with initial state `ACTIVE`.
 - **FR-4:** `ListStorageTiers` must support pagination (`offset`/`limit`), CEL-based filtering, and SQL-like ordering, following the established OSAC List API pattern.
 - **FR-5:** `UpdateStorageTier` must support partial updates — including backend association QoS properties — and optimistic concurrency control to prevent conflicting writes. QoS properties (e.g., IOPS limits) are mutable because the underlying storage provider policies (e.g., VAST QoS policies) can be updated in-place, and changes take effect for both existing and new volumes without StorageClass recreation.
-- **FR-6:** `DeleteStorageTier` must permanently delete the tier. Delete must be rejected if any Tenant references the tier (referential integrity).
+- **FR-6:** `DeleteStorageTier` must perform a soft delete, consistent with StorageBackend (OSAC-1111). Deleted tiers must be excluded from `ListStorageTiers` results but preserved in the database for audit. Delete must be rejected if any Tenant references the tier (referential integrity).
 - **FR-7:** `CreateStorageTier` and `UpdateStorageTier` must validate that all referenced StorageBackend IDs exist. Referencing a non-existent backend must return an error.
 - **FR-8:** Tier names must be unique among active (non-deleted) tiers, allowing name reuse after deletion.
-- **FR-9:** StorageTier state must include `ACTIVE` (tier available for new tenant assignments). Additional states (`DEPRECATED` for retiring tiers with existing tenant assignments) are deferred to a later phase.
-- **FR-10:** Deleting a StorageBackend (OSAC-1111) must be rejected if any StorageTier references it. This requirement is already captured in OSAC-1111 FR-6 and is restated here to confirm the bidirectional referential integrity contract.
+- **FR-9:** StorageTier state must include `ACTIVE` (tier available for new tenant assignments). StorageTier uses `ACTIVE` rather than StorageBackend's `READY` because tiers are catalog offerings that can be assigned to tenants, not infrastructure endpoints. Additional states (`DEPRECATED` for retiring tiers with existing tenant assignments) are deferred to a later phase.
+- **FR-10:** Deleting a StorageBackend (OSAC-1111) must be rejected if any active StorageTier references it. This referential integrity check will be added to the StorageBackend delete path as part of the StorageTier implementation, since StorageBackend can be deployed independently before StorageTier exists.
 
 ### 3.2 Non-Functional Requirements
 
 - **NFR-1:** The StorageTier entity must track creation and modification timestamps for auditability.
 - **NFR-2:** QoS properties are provider-neutral: protocol (enum: `nfs`, `block`), max read bandwidth (integer, MB/s), max write bandwidth (integer, MB/s), quota (integer, bytes), and encryption (boolean). The design document maps these to provider-specific parameters (e.g., VAST QoS policy `static_limits`, VAST view quota). Provider-specific fields are not exposed in the StorageTier API.
-- **NFR-3:** Deleting a StorageTier removes the tier definition from the fulfillment-service database. It does not delete or modify Kubernetes StorageClasses that were created based on the tier. StorageClass lifecycle management is handled by the OSAC Storage Controller (OSAC-23).
+- **NFR-3:** Deleting a StorageTier soft-deletes the tier definition in the fulfillment-service database. It does not delete or modify Kubernetes StorageClasses that were created based on the tier. StorageClass lifecycle management is handled by the OSAC Storage Controller (OSAC-23).
 
 ## 4. Acceptance Criteria
 
@@ -64,7 +64,9 @@ OSAC has no API-managed catalog of storage tier offerings. Tier configuration fl
 - [ ] `ListStorageTiers` returns paginated results and supports filtering by field values (e.g., by state, by referenced backend).
 - [ ] `UpdateStorageTier` applies partial updates — including QoS property changes on backend associations — without modifying unspecified fields.
 - [ ] `UpdateStorageTier` rejects concurrent conflicting writes.
-- [ ] `DeleteStorageTier` deletes the tier. Delete is rejected if any Tenant references the tier.
+- [ ] `DeleteStorageTier` soft-deletes the tier. Subsequent List calls exclude the deleted tier. Delete is rejected if any Tenant references the tier.
+- [ ] `CreateStorageTier` rejects duplicate tier names among active (non-deleted) tiers. Deleted tier names can be reused.
+- [ ] `DeleteStorageTier` does not delete or modify Kubernetes StorageClasses that were created based on the tier.
 - [ ] `DeleteStorageBackend` (OSAC-1111) is rejected if any StorageTier references the backend.
 - [ ] All CRUD RPCs are accessible via both gRPC and REST endpoints.
 - [ ] Integration tests cover the full CRUD lifecycle, backend reference validation, pagination, filtering, and concurrency control.
@@ -81,7 +83,7 @@ OSAC has no API-managed catalog of storage tier offerings. Tier configuration fl
 ## 6. Dependencies
 
 - **StorageBackend (OSAC-1111):** StorageTier references StorageBackend by ID. StorageBackend must be implemented first. Backend reference validation (FR-7) and referential integrity on backend deletion (FR-10) depend on the StorageBackend entity existing.
-- **Tenant storage onboarding (OSAC-23):** The OSAC Storage Controller consumes StorageTier definitions when provisioning tenant storage. StorageTier can be implemented and deployed independently, but the full onboarding flow requires both.
+- **Tenant storage onboarding (OSAC-23):** The OSAC Storage Controller consumes StorageTier definitions via the fulfillment-service gRPC API (not Kubernetes CRs) when provisioning tenant storage. The OSAC-23 design document references StorageTier "CRs" in its future-state section — that reference should be read as "StorageTier API entities" since StorageTier is DB-backed with no CRD (see Non-Goals 2.3). StorageTier can be implemented and deployed independently, but the full onboarding flow requires both.
 
 ## 7. Risks
 
