@@ -1,0 +1,57 @@
+name: EP Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - '**/prd.md'
+      - '**/design.md'
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install agentic-ci PyJWT cryptography requests
+
+      - name: Clone skills repo
+        run: git clone --depth 1 https://github.com/osac-project/osac-workspace /opt/skills
+
+      - name: Set up GCP credentials
+        run: echo "$GCP_SA_KEY" | base64 -d > /tmp/gcp-sa-key.json
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Run EP review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-sa-key.json
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
+          CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
+          EP_REVIEW_SHADOW: ${{ vars.EP_REVIEW_SHADOW || 'true' }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python .github/scripts/ep_review.py
+
+      - name: Upload verdict artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ep-review-verdict
+          path: |
+            workdir/verdict.json
+            workdir/.context/
+          retention-days: 30
