@@ -503,8 +503,9 @@ parent is deleted.
 - A new manager can be added without modifying existing managers or the API (R6)
 - Tenant experience is uniform across service types — same resources, same
   workflow, same CLI patterns (R3, R4)
-- A tenant can create a reachable VM or bare-metal server with a single
-  API call, without pre-creating any networking resources (R8, R9, R10)
+- A tenant can create a fully connected VM or bare-metal server (inbound +
+  outbound) with a single API call, without pre-creating any networking
+  resources (R8, R9, R10)
 - A tenant can create a fully connected cluster (API + ingress + outbound)
   with a single API call (R8, R9, R10)
 
