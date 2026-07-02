@@ -37,13 +37,9 @@ This section defines key terms used throughout this document.
   SecurityGroups, ExternalIPs) and place workloads on them.
 
 - **Provider**: The cloud administrator who deploys and configures OSAC
-  infrastructure. Providers define regions, install networking managers,
-  configure NetworkClasses, and manage ExternalIPPools. Tenants do not see
+  infrastructure. Providers install networking managers, configure
+  NetworkClasses, and manage ExternalIPPools. Tenants do not see
   provider-level configuration.
-
-- **Region**: A management boundary representing a deployment location (e.g.,
-  a data center). Networking resources are scoped to a region. Each region has
-  its own networking infrastructure and manager configuration.
 
 - **Service Types**: The three workload types OSAC supports:
   - **VMaaS** (Virtual Machine as a Service): Provisions virtual machines.
@@ -55,8 +51,7 @@ This section defines key terms used throughout this document.
     [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api)).
 
 - **VirtualNetwork**: A tenant's isolated network environment with its own
-  address space (CIDR). Analogous to a cloud VPC or VNet. Scoped to a
-  region.
+  address space (CIDR). Analogous to a cloud VPC or VNet.
 
 - **Subnet**: A subdivision of a VirtualNetwork's IP address space. Resources
   are attached to subnets to receive IP addresses and network connectivity.
@@ -81,18 +76,18 @@ This section defines key terms used throughout this document.
   egress but without a controlled source identity.
 
 - **NetworkClass**: A provider-configured resource that defines how networking
-  is implemented in a region. Specifies which fabric manager and K8s manager
-  handle networking for the region. In the current design, tenants select it
-  when creating a VirtualNetwork (this is one of the gaps — see #2).
+  is implemented. Specifies which fabric manager and K8s manager handle
+  networking. In the current design, tenants select it when creating a
+  VirtualNetwork (this is one of the gaps — see #2).
 
 - **Fabric Manager**: A single product (e.g., Netris, Neutron) that manages
-  all physical networking for a region: tenant isolation, ACLs, IP
-  allocation, DNAT, SNAT. The physical fabric is one infrastructure — one
-  controller manages it all.
+  all physical networking: tenant isolation, ACLs, IP allocation, DNAT,
+  SNAT. The physical fabric is one infrastructure — one controller manages
+  it all.
 
 - **K8s Manager**: Handles everything needed to make VMs part of the fabric:
   creates the K8s overlay and bridges it to the fabric segment. Only needed
-  for regions that host VMs.
+  for deployments that host VMs.
 
 - **Fabric**: The physical network infrastructure — switches, routers,
   gateways — that connects bare-metal servers and provides external
@@ -117,7 +112,7 @@ each service type to implement networking independently:
   A tenant running VMs, clusters, and bare-metal servers must use three
   different networking models.
 - **Providers** cannot swap network managers without API changes. Adding a
-  new fabric manager or changing the one for a region requires modifying the
+  new fabric manager or changing the active one requires modifying the
   fulfillment service and operator.
 
 The result is fragmented networking with no consistency, no reuse, and no
@@ -194,7 +189,7 @@ cluster. Bare-metal servers use physical VLANs configured on switches in the
 fabric. These are fundamentally different L2 domains. A K8s manager using
 LocalNet mode can bridge OVN to the physical fabric, making VMs first-class
 participants alongside BM servers. The current design does not address how
-VMs and bare-metal servers coexist in the same region, whether they can share
+VMs and bare-metal servers coexist in the same deployment, whether they can share
 a VirtualNetwork, or how traffic flows between them.
 
 ### 8. Air-gapped environments not considered
@@ -252,8 +247,8 @@ for VMs), which does not work for CaaS.
 
 ### Provider Stories
 
-- As a provider, I want to configure a fabric manager and K8s manager per
-  region without exposing implementation details to tenants
+- As a provider, I want to configure a fabric manager and K8s manager
+  without exposing implementation details to tenants
 - As a provider, I want to register new managers without modifying the API
   or the operator
 - As a provider, I want to add new networking managers by deploying a
@@ -298,7 +293,7 @@ fabric is the single source of truth for isolation across all resource types.
 
 The same subnet must be able to host VMs, BM servers, and cluster nodes.
 The tenant does not declare the resource type when creating a VirtualNetwork
-or Subnet. Multiple hosting clusters per region are supported — VMs on
+or Subnet. Multiple hosting clusters are supported — VMs on
 different hosting clusters share the same subnet via the fabric.
 
 **Acceptance criteria:**
@@ -356,8 +351,8 @@ The API must clearly separate inbound and outbound external access.
 
 #### R6: Pluggable managers with transparent selection
 
-Providers configure which fabric manager and K8s manager handle networking
-for a region. Tenants never choose networking managers — the system selects
+Providers configure which fabric manager and K8s manager handle networking.
+Tenants never choose networking managers — the system selects
 them based on the provider's NetworkClass configuration.
 
 **Acceptance criteria:**
