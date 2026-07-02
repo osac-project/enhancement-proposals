@@ -237,8 +237,8 @@ create table storage_tiers (
   creation_timestamp timestamp with time zone not null default now(),
   deletion_timestamp timestamp with time zone not null default 'epoch',
   finalizers text[] not null default '{}',
-  creators text[] not null default '{}',
-  tenants text[] not null default '{}',
+  creator text not null default '',
+  tenant text not null default '',
   labels jsonb not null default '{}'::jsonb,
   annotations jsonb not null default '{}'::jsonb,
   data jsonb not null
@@ -250,16 +250,16 @@ create table archived_storage_tiers (
   creation_timestamp timestamp with time zone not null,
   deletion_timestamp timestamp with time zone not null,
   archival_timestamp timestamp with time zone not null default now(),
-  creators text[] not null default '{}',
-  tenants text[] not null default '{}',
+  creator text not null default '',
+  tenant text not null default '',
   labels jsonb not null default '{}'::jsonb,
   annotations jsonb not null default '{}'::jsonb,
   data jsonb not null
 );
 
 create index storage_tiers_by_name on storage_tiers (name);
-create index storage_tiers_by_owner on storage_tiers using gin (creators);
-create index storage_tiers_by_tenant on storage_tiers using gin (tenants);
+create index storage_tiers_by_owner on storage_tiers (creator);
+create index storage_tiers_by_tenant on storage_tiers (tenant);
 create index storage_tiers_by_label on storage_tiers using gin (labels);
 
 -- Platform-scoped name uniqueness among active tiers:
