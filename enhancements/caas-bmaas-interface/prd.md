@@ -37,7 +37,7 @@ CaaS requires bare metal compute to back cluster worker nodes and currently leve
 - **FR-2:** Hosts provisioned with the InfraEnv discovery ISO must automatically register as Agent CRs when they boot. [Clarify: D5]
 - **FR-3:** Cloud Infrastructure Admins must be able to provision multiple agents in a batch operation (exact mechanism is an open question, see Section 8.4). [Clarify: D16]
 - **FR-4:** Hosts must transition through network attachments during the provisioning lifecycle: from a provisioning network (for agent boot) to an admin network (post-registration). [Clarify: D15]
-- **FR-9:** The BMaaS workflow must verify that an Agent CR is created and reaches the appropriate state after a host is provisioned with the discovery ISO, enabling detection and reporting of agent registration failures. [User]
+- **FR-9:** The agent provisioning workflow (e.g., Ansible playbook orchestrating BMaaS and other steps) must verify that an Agent CR is created and reaches the appropriate state after a host is provisioned with the discovery ISO, enabling detection and reporting of agent registration failures. [User]
 
 #### Agent Discovery and Consumption
 
@@ -47,7 +47,7 @@ CaaS requires bare metal compute to back cluster worker nodes and currently leve
 
 #### Error Handling
 
-- **FR-7:** BMaaS must report provisioning failures through BareMetalInstance status mechanisms to the admin workflow that initiated provisioning. [Clarify: D14]
+- **FR-7:** BMaaS must report provisioning failures through the existing BareMetalInstance status contract to the admin workflow that initiated provisioning. [Clarify: D14]
 
 ### 3.2 Non-Functional Requirements
 
@@ -59,10 +59,9 @@ CaaS requires bare metal compute to back cluster worker nodes and currently leve
 - [ ] A Cloud Infrastructure Admin can provision a BareMetalInstance with an InfraEnv-derived ISO URL via BMaaS
 - [ ] A host booted with the discovery ISO automatically registers as an Agent CR
 - [ ] CaaS can query or watch Agent CRs to discover available agents
-- [ ] A Cloud Infrastructure Admin can provision multiple agents at a time (exact mechanism—BareMetalPool vs. multiple BareMetalInstances—is an open question, see Section 8.4)
+- [ ] A Cloud Infrastructure Admin can provision multiple agents in a single workflow
 - [ ] Hosts transition from provisioning network to admin network during the agent provisioning workflow
 - [ ] BMaaS reports provisioning failures to the admin workflow via BareMetalInstance status
-- [ ] A standalone enhancement proposal documenting the integration workflow is reviewed and approved by both OSAC and CaaS teams
 
 ## 5. Assumptions
 
