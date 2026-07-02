@@ -46,13 +46,13 @@ A managed version catalog provides that missing abstraction. Users select from a
 
 - **FR-4:** Users specify a version number (e.g., "4.17.0") when creating a cluster. [Clarify: R1.Q2, R1.Q5, R2.Q1, R2.Q4, R3.Q3, R3.Q4]
 
-- **FR-5:** Templates can specify a default version (e.g., "4.17.0"). Any version can be used with any template; templates provide defaults but do not constrain version selection. [Clarify: R2.Q1]
+- **FR-5:** Templates can specify a default version (e.g., "4.17.0"). [Clarify: R2.Q1]
 
 - **FR-6:** A cluster's version and its current lifecycle state are visible when viewing or listing clusters. If the version is deprecated or obsolete, the state is surfaced so users can identify clusters that need attention.
 
 #### Validation
 
-- **FR-7:** Version is validated at creation time with descriptive error messages. Validation covers: version not found, version obsolete, and no version resolvable (no explicit version, no template default, and no system default). Creating a cluster with a deprecated version succeeds but includes a warning identifying the replacement version, if one is set. [Clarify: R2.Q3, R3.Q6]
+- **FR-7:** Version is validated at creation time with descriptive error messages. Validation covers: version not found, version obsolete, and no version resolvable (no explicit version, no template default, and no system default). Creating a cluster with a deprecated version succeeds. The deprecation is surfaced with the replacement version, if one is set. [Clarify: R2.Q3, R3.Q6]
 
 #### User Interfaces
 
@@ -83,7 +83,7 @@ A managed version catalog provides that missing abstraction. Users select from a
 ## 4. Acceptance Criteria
 
 - [ ] A user can create a cluster by specifying a version number (e.g., 4.17.0) instead of a release image URL. The server resolves the version to the correct release image internally. Release image URLs are not exposed to users — neither in the version catalog nor in cluster responses. Version is immutable after creation. The version's current lifecycle state is visible when viewing or listing clusters.
-- [ ] Specifying a non-existent, deleted, or obsolete version is rejected with a descriptive error indicating the reason and identifying the replacement if one is set. Deprecated versions allow creation with a warning. Validation applies to both cluster creation and template defaults.
+- [ ] Specifying a non-existent, deleted, or obsolete version is rejected with a descriptive error indicating the reason and identifying the replacement if one is set. Deprecated versions allow creation; the deprecation is surfaced to the user. Validation applies to both cluster creation and template defaults.
 - [ ] Admins can create, update, and delete version catalog entries. Deleting a version referenced by an active cluster or template defaults is rejected with a message identifying the referencing resource.
 - [ ] Admins can transition a version between active, deprecated, and obsolete in any direction, even when referenced by active clusters or templates. Listing versions returns active and deprecated entries by default; obsolete versions are hidden unless explicitly filtered. Deprecation and obsolescence timestamps are recorded automatically on each transition.
 - [ ] At most one version is marked as default at any time — setting a new default clears the previous one. An obsolete version cannot be marked as default. When a user omits the version and template defaults do not supply one, the server uses the default version. Templates can specify a default version, and the server resolves it to a release image.
@@ -139,7 +139,7 @@ Version resolution occurs during cluster creation. The provisioning flow for the
 | Surface | Impact |
 |---------|--------|
 | Fulfillment API (gRPC/REST) | New version catalog resource. Cluster creation uses version instead of release image URL. Template defaults updated. Deletion protection when referenced. |
-| OSAC CRDs | No change. |
+| OSAC CRDs | New ClusterVersion CRD. ClusterOrder gains version and channel fields. |
 | UI Console | Version catalog management for admins. Version selection in the cluster creation wizard. |
 | Catalog Items | Support version selection. |
 
