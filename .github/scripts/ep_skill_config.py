@@ -6,7 +6,7 @@ except ImportError:
     SkillConfig = None
 
 
-def build_skill_config(hooks, skill_name, skills_path, skill_path):
+def build_skill_config(hooks, skill_name, skills_path):
     if SkillConfig is None:
         raise ImportError("agentic-ci not installed")
 

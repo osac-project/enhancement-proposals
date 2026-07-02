@@ -17,8 +17,9 @@ from ep_hooks import EPHooks
 from ep_skill_config import build_skill_config
 
 
-REPO = "osac-project/enhancement-proposals"
+REPO = os.environ.get("GITHUB_REPOSITORY", "osac-project/enhancement-proposals")
 SKILLS_PATH = "/opt/skills"
+IN_CI = os.environ.get("GITHUB_ACTIONS") == "true"
 
 
 def gh(args):
@@ -26,7 +27,10 @@ def gh(args):
         ["gh"] + args, capture_output=True, text=True, timeout=120
     )
     if result.returncode != 0:
-        print(f"gh error: {result.stderr[:300]}", file=sys.stderr)
+        msg = f"gh {' '.join(args[:3])}... failed: {result.stderr[:300]}"
+        if IN_CI:
+            raise RuntimeError(msg)
+        print(f"gh error: {msg}", file=sys.stderr)
     return result.stdout
 
 
@@ -36,15 +40,59 @@ def get_changed_files(pr_number):
     return json.loads(raw) if raw.strip() else []
 
 
-def detect_skill(files):
+def detect_skills(files):
+    skills = []
     has_prd = any(f.endswith("prd.md") for f in files)
     has_design = any(f.endswith("design.md") for f in files)
 
     if has_prd:
-        return "prd-review", "skills/prd-review/SKILL.md"
+        skills.append(("prd-review", "skills/prd-review/SKILL.md"))
     if has_design:
-        return "ep-review", "skills/ep-review/SKILL.md"
-    return None, None
+        skills.append(("ep-review", "skills/ep-review/SKILL.md"))
+    return skills
+
+
+def run_review(hooks, skill_name, skill_path, ticket_key, ticket, work_dir):
+    ticket = {**ticket, "_skill_name": skill_name, "_skill_path": skill_path}
+
+    try:
+        from agentic_ci.skill import run_skill
+
+        config = build_skill_config(
+            hooks=hooks,
+            skill_name=skill_name,
+            skills_path=SKILLS_PATH,
+        )
+
+        rc = run_skill(
+            config,
+            ticket_key=ticket_key,
+            work_dir=work_dir,
+            config_dir=Path("."),
+            mode="resolve",
+            ticket=ticket,
+        )
+
+        verdict_path = work_dir / "verdict.json"
+        if verdict_path.exists():
+            with open(verdict_path) as f:
+                v = json.load(f)
+            total = v.get("total", 0)
+            verdict_str = v.get("verdict", "unknown")
+            print(f"  [{skill_name}] score={total}, verdict={verdict_str} (rc={rc})")
+        else:
+            print(f"  [{skill_name}] no verdict.json (rc={rc})")
+
+    except ImportError:
+        if IN_CI:
+            print("agentic-ci not installed in CI — this is a fatal error",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(f"  [{skill_name}] dry-run (agentic-ci not available)")
+        hooks.write_pr_context(
+            ticket_key=ticket_key, ticket=ticket,
+            mode="resolve", work_dir=work_dir,
+        )
 
 
 def main():
@@ -65,12 +113,13 @@ def main():
         print("No files changed in PR")
         return
 
-    skill_name, skill_path = detect_skill(files)
-    if not skill_name:
+    skills = detect_skills(files)
+    if not skills:
         print("No prd.md or design.md found in changed files — skipping")
         return
 
-    print(f"Detected: {skill_name} (from {', '.join(f for f in files if f.endswith('.md'))})")
+    print(f"Detected: {', '.join(s[0] for s in skills)} "
+          f"(from {', '.join(f for f in files if f.endswith('.md'))})")
 
     pr_raw = gh(["pr", "view", str(pr_number), "--repo", REPO,
                   "--json", "number,title,body,author,labels,headRefOid"])
@@ -79,21 +128,10 @@ def main():
         sys.exit(1)
     pr = json.loads(pr_raw)
 
-    ticket_key = f"EP-{pr_number}"
-    work_dir = Path("workdir")
-    work_dir.mkdir(parents=True, exist_ok=True)
-
-    ticket = {
-        "number": int(pr_number),
-        "title": pr.get("title", ""),
-        "body": pr.get("body", ""),
-        "author": pr.get("author", {}).get("login", "unknown"),
-        "authorAssociation": "MEMBER",
-        "headRefOid": pr.get("headRefOid", head_sha),
-        "labels": [l.get("name", "") for l in pr.get("labels", [])],
-        "_skill_name": skill_name,
-        "_skill_path": skill_path,
-    }
+    live_sha = pr.get("headRefOid", "")
+    if head_sha and live_sha and live_sha != head_sha:
+        print(f"Stale run: PR head moved from {head_sha[:8]} to {live_sha[:8]} — aborting")
+        return
 
     hooks = EPHooks(
         repo=REPO,
@@ -103,48 +141,30 @@ def main():
         reviewed_label="rfe-creator-auto-reviewed",
     )
 
-    try:
-        from agentic_ci.skill import run_skill
+    ticket_base = {
+        "number": int(pr_number),
+        "title": pr.get("title", ""),
+        "body": pr.get("body", ""),
+        "author": pr.get("author", {}).get("login", "unknown"),
+        "authorAssociation": "MEMBER",
+        "headRefOid": pr.get("headRefOid", head_sha),
+        "labels": [l.get("name", "") for l in pr.get("labels", [])],
+    }
 
-        config = build_skill_config(
-            hooks=hooks,
-            skill_name=skill_name,
-            skills_path=SKILLS_PATH,
-            skill_path=skill_path,
-        )
+    for skill_name, skill_path in skills:
+        ticket_key = f"EP-{pr_number}"
+        work_dir = Path(f"workdir-{skill_name}")
+        work_dir.mkdir(parents=True, exist_ok=True)
 
-        rc = run_skill(
-            config,
-            ticket_key=ticket_key,
-            work_dir=work_dir,
-            config_dir=Path("."),
-            mode="resolve",
-            ticket=ticket,
-        )
-
-        verdict_path = work_dir / "verdict.json"
-        if verdict_path.exists():
-            with open(verdict_path) as f:
-                v = json.load(f)
-            total = v.get("total", 0)
-            verdict_str = v.get("verdict", "unknown")
-            print(f"Review complete: score={total}, verdict={verdict_str} (rc={rc})")
-        else:
-            print(f"Review completed but no verdict.json found (rc={rc})")
-
-    except ImportError:
-        print("agentic-ci not available — running in dry-run mode")
-        hooks.write_pr_context(
-            ticket_key=ticket_key, ticket=ticket,
-            mode="resolve", work_dir=work_dir,
-        )
-        print(f"Context written to {work_dir}/.context/")
-
-    except Exception as e:
-        print(f"Review failed: {e}", file=sys.stderr)
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+        print(f"\nRunning {skill_name}...")
+        try:
+            run_review(hooks, skill_name, skill_path, ticket_key, ticket_base, work_dir)
+        except Exception as e:
+            print(f"  [{skill_name}] failed: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            if IN_CI:
+                sys.exit(1)
 
 
 if __name__ == "__main__":
