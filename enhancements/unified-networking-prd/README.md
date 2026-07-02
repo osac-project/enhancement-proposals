@@ -491,9 +491,10 @@ parent is deleted.
   with `osac.openshift.io/auto-provisioned: "true"`
 - If no ExternalIPPool has available capacity, the resource creation fails
   with a clear error
-- When `nat_gateway_mode=AUTO`, the system creates a NATGateway on the
-  resource's VirtualNetwork if one does not already exist; if one exists,
-  it is reused (one NATGateway per VN)
+- When `nat_gateway_mode=AUTO`, the system auto-selects an ExternalIP
+  from the best available pool and creates a NATGateway on the resource's
+  VirtualNetwork using that ExternalIP as the SNAT source; if a NATGateway
+  already exists on the VN, it is reused (one NATGateway per VN)
 
 ## Success Metrics
 
