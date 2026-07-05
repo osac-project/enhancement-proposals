@@ -8,7 +8,7 @@
 
 ## 1. Problem Statement
 
-OSAC test infrastructure is split across two repos: osac-test-infra (E2E tests) and netris-test-infra (Netris lab provisioning). This creates fragmented CI ownership, duplicated patterns, and forces contributors to understand two separate repos to work with a single test flow. Adding a new infrastructure backend or test suite requires changes across multiple repos with no shared contract, making the system brittle and hard to extend.
+OSAC test infrastructure is fragmented across three places: osac-test-infra (E2E tests), netris-test-infra (Netris lab provisioning), and Prow step scripts in openshift/release (cluster-tool and baremetal provisioning logic). This creates fragmented CI ownership, duplicated patterns, and forces contributors to navigate multiple repos and CI config to work with a single test flow. Infrastructure provisioning logic for cluster-tool and baremetal exists only as inline shell scripts in Prow step definitions, making it untestable locally and invisible to developers outside the CI system. Adding a new infrastructure backend or test suite requires changes across multiple repos with no shared contract, making the system brittle and hard to extend.
 
 ## 2. Goals and Non-Goals
 
