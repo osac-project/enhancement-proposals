@@ -49,7 +49,9 @@ OSAC test infrastructure is fragmented across three places: osac-test-infra (E2E
 
 - [ ] A user can run `make e2e INFRA=netris SUITE=caas` and the system provisions a Netris lab, deploys OSAC, sets up CaaS infrastructure, and runs CaaS tests.
 - [ ] A user can run `make e2e INFRA=cluster-tool SUITE=vmaas` and the system boots a snapshot cluster, deploys OSAC, and runs VMaaS tests.
+- [ ] A user can run `make deploy-infra INFRA=netris` and `make deploy-osac INFRA=netris` independently to provision the lab and deploy OSAC as separate steps.
 - [ ] A user can run `make destroy-osac INFRA=netris` followed by `make deploy-osac INFRA=netris` to redeploy OSAC without reprovisioning the lab.
+- [ ] A user can run `make destroy-infra INFRA=netris` to tear down the entire lab independently.
 - [ ] Running `make e2e INFRA=cluster-tool SUITE=caas` fails early with a clear message that cluster-tool does not support CaaS.
 - [ ] Running a test suite against a backend that does not provide a required variable fails early with a clear message identifying the missing variable.
 - [ ] A new backend can be added by creating `infra/<name>/` with a Makefile and capabilities file, without modifying any existing code.
