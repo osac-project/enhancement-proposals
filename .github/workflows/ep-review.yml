@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      pull-requests: read
+      pull-requests: write
     outputs:
       pr_number: ${{ steps.resolve.outputs.pr_number }}
       head_sha: ${{ steps.resolve.outputs.head_sha }}
