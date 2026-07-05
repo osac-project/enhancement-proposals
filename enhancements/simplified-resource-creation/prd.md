@@ -37,31 +37,37 @@ where a single create command produces a reachable instance.
 
 ## 3. User Stories
 
-### Tenant Stories
+### Tenant User Stories
 
-- As a tenant, I want to create a resource (VM, cluster, or bare-metal
-  server) without pre-creating networking resources, so that the system
-  provides sensible defaults and I can get started quickly
-- As a tenant, I want to create a resource with `--external-ip=auto` and
-  have it externally reachable in a single API call, without manually
+- As a Tenant User, I want to create a resource (VM, cluster, or
+  bare-metal server) without pre-creating networking resources, so that
+  the system provides sensible defaults and I can get started quickly
+- As a Tenant User, I want to create a resource with `--external-ip=auto`
+  and have it externally reachable in a single API call, without manually
   creating ExternalIP and ExternalIPAttachment resources
-- As a tenant, I want to inspect and customize my default networking
+- As a Tenant User, I want auto-provisioned ExternalIPs to be
+  automatically cleaned up when I delete the parent resource, so that I do
+  not accumulate orphaned resources
+- As a Tenant User, I want to create a Cluster with
+  `--external-ip=auto-all` and have the system automatically provision
+  ExternalIPs for both the API server and ingress endpoints before cluster
+  provisioning begins
+- As a Tenant User, I want to create a Cluster with `--nat-gateway=auto`
+  and have the system automatically provision a NATGateway on the
+  VirtualNetwork so that cluster nodes have outbound connectivity without
+  manual setup
+
+### Tenant Admin Stories
+
+- As a Tenant Admin, I want to inspect and customize my default networking
   resources (e.g., modify SecurityGroup rules) after they are auto-created
-- As a tenant, I want auto-provisioned ExternalIPs to be automatically
-  cleaned up when I delete the parent resource, so that I do not accumulate
-  orphaned resources
-- As a tenant, I want to create a Cluster with `--external-ip=auto` and
-  have the system automatically provision ExternalIPs for both the API
-  server and ingress endpoints before cluster provisioning begins
-- As a tenant, I want to create a Cluster with `--nat-gateway=auto` and
-  have the system automatically provision a NATGateway on the VirtualNetwork
-  so that cluster nodes have outbound connectivity without manual setup
 
-### Provider Stories
+### Cloud Infrastructure Admin Stories
 
-- As a provider, I want to configure a default CIDR range and default
-  SecurityGroup rules, so that the system can auto-create default
-  networking resources for tenants on first use
+- As a Cloud Infrastructure Admin, I want to configure a default CIDR
+  range and default SecurityGroup rules on the NetworkClass, so that the
+  system can auto-create default networking resources for tenants at
+  onboarding
 
 ## 4. Requirements
 
@@ -73,18 +79,19 @@ where a single create command produces a reachable instance.
   VirtualNetwork, Subnet, and SecurityGroup for the tenant. The tenant
   transitions to READY only after all default networking resources are
   also READY. [User]
-- **FR-2:** The provider configures default networking parameters (CIDR,
-  SecurityGroup rules, CIDR mode) on the NetworkClass. When defaults are
-  not configured, creating a resource without explicit `network_attachments`
-  fails with a clear error. [User]
-- **FR-3:** Two CIDR modes are supported: `shared_cidr` (default — all
-  tenants receive the same CIDR, isolated at the fabric level) and
-  `isolated_cidr` (each tenant gets a unique CIDR slice from the
-  provider's supernet). [User]
+- **FR-2:** The Cloud Infrastructure Admin configures default networking
+  parameters (CIDR, SecurityGroup rules) on the NetworkClass. When
+  defaults are not configured, creating a resource without explicit
+  `network_attachments` fails with a clear error. [User]
+- **FR-3:** All tenants receive the same default CIDR range as configured
+  on the NetworkClass. Tenants are isolated at the fabric level — the
+  unified networking API provides VirtualNetworks with any IP subnet, and
+  the fabric manager enforces isolation regardless of overlapping CIDRs
+  between tenants. [User]
 - **FR-4:** Default resources are labeled `osac.openshift.io/default:
-  "true"`, visible in list and detail views, and editable by the tenant
-  (e.g., adding SecurityGroup rules). Default resources cannot be deleted
-  while any resource depends on them. [User]
+  "true"`, visible in list and detail views, and editable by the Tenant
+  Admin (e.g., adding SecurityGroup rules). Default resources cannot be
+  deleted while any resource depends on them. [User]
 - **FR-5:** Creating custom VirtualNetworks does not affect default
   resources — both coexist. [User]
 
@@ -108,15 +115,18 @@ where a single create command produces a reachable instance.
 - **FR-9:** Cluster supports a `external_ip_mode` field with values
   `NONE` (default), `AUTO_API` (API server only), `AUTO_INGRESS` (ingress
   only), and `AUTO_ALL` (both). For `AUTO_ALL`, two ExternalIPs and two
-  ExternalIPAttachments are created. [User]
+  ExternalIPAttachments are created. The CLI maps `--external-ip=auto-all`
+  to `AUTO_ALL`, `--external-ip=auto-api` to `AUTO_API`, and
+  `--external-ip=auto-ingress` to `AUTO_INGRESS`. [User]
 - **FR-10:** For clusters, ExternalIPs are allocated before provisioning
   is dispatched and passed as template parameters, resolving the CaaS
   prerequisite ordering requirement. ExternalIPAttachments are created in
   Pending state and activate once VIPs are discovered. [User]
 - **FR-11:** Auto-created ExternalIP and ExternalIPAttachment resources
-  are labeled `osac.openshift.io/auto-provisioned: "true"` and have an
-  owner-reference annotation pointing to the parent resource. When the
-  parent is deleted, auto-created resources are garbage-collected. [User]
+  are labeled `osac.openshift.io/auto-provisioned: "true"`. When the
+  parent resource is deleted, the parent's finalizer deletes the
+  auto-created ExternalIPAttachments first, then ExternalIPs, before the
+  parent resource is removed. [User]
 
 #### Auto NATGateway
 
@@ -129,25 +139,25 @@ where a single create command produces a reachable instance.
 
 ## 5. Acceptance Criteria
 
-- [ ] A tenant can create a ComputeInstance with `--external-ip=auto` and
-  no `network_attachments` — the VM is created on the default subnet with
-  an auto-provisioned ExternalIP for inbound access
-- [ ] A tenant can create a Cluster with `--external-ip=auto-all
+- [ ] A Tenant User can create a ComputeInstance with `--external-ip=auto`
+  and no `network_attachments` — the VM is created on the default subnet
+  with an auto-provisioned ExternalIP for inbound access
+- [ ] A Tenant User can create a Cluster with `--external-ip=auto-all
   --nat-gateway=auto` and no `network_attachments` — the cluster is
   provisioned with ExternalIPs for API and ingress plus a NATGateway for
   outbound, all resolved automatically
-- [ ] A tenant can create a BaremetalInstance with `--external-ip=auto`
-  and no `network_attachments` — the server is placed on the default
-  subnet with an auto-provisioned ExternalIP
+- [ ] A Tenant User can create a BaremetalInstance with
+  `--external-ip=auto` and no `network_attachments` — the server is
+  placed on the default subnet with an auto-provisioned ExternalIP
 - [ ] Default VN, Subnet, and SG exist and are READY before the tenant's
   first resource creation
 - [ ] Default resources appear in list views with the
   `osac.openshift.io/default: "true"` label
-- [ ] A tenant can modify default SecurityGroup rules (e.g., add ingress
-  rules) and the changes take effect
+- [ ] A Tenant Admin can modify default SecurityGroup rules (e.g., add
+  ingress rules) and the changes take effect
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the
-  auto-created ExternalIP and ExternalIPAttachment to be
-  garbage-collected
+  auto-created ExternalIP and ExternalIPAttachment to be cleaned up via
+  the parent's finalizer
 - [ ] Creating a resource with explicit `network_attachments` bypasses
   defaults entirely — no default resources are referenced
 - [ ] When no ExternalIPPool has available capacity, resource creation
@@ -169,26 +179,21 @@ where a single create command produces a reachable instance.
 
 ## 7. Risks
 
-### 7.1 Default CIDR supernet exhaustion (isolated_cidr mode)
+### 7.1 ExternalIPPool exhaustion
 
-- **Owner:** Provider
-- **Mitigation:** Provider monitors allocation count; clear error on
-  exhaustion; provider can widen supernet
-
-### 7.2 ExternalIPPool exhaustion
-
-- **Owner:** Provider
+- **Owner:** Cloud Provider Admin
 - **Mitigation:** Pool capacity visible in status; clear error directs
   tenant to explicit allocation from another pool
 
-### 7.3 Default SecurityGroup too permissive
+### 7.2 Default SecurityGroup too permissive
 
-- **Owner:** Provider
-- **Mitigation:** Provider configures default rules on NetworkClass;
-  tenant can tighten rules after creation
+- **Owner:** Cloud Infrastructure Admin
+- **Mitigation:** Cloud Infrastructure Admin configures default rules on
+  NetworkClass; Tenant Admin can tighten rules after creation
 
-### 7.4 Auto ExternalIP orphans on partial failure
+### 7.3 Auto ExternalIP orphans on partial failure
 
 - **Owner:** Platform
-- **Mitigation:** Standard finalizer pattern; controller retries; if
-  permanently failed, ExternalIP is GC'd with parent resource
+- **Mitigation:** Parent resource finalizer handles cleanup; controller
+  retries on transient failures; if permanently failed, ExternalIP is
+  cleaned up when the parent resource is deleted
