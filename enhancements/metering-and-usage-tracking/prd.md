@@ -17,7 +17,7 @@
 | **Usage** | Measured consumption of a resource (e.g., CPU core-seconds consumed while a VM was running). |
 | **Allocation** | Reserved capacity of a resource, regardless of whether it is actively used. |
 | **Resource class** | A provider-defined category for differentiated pricing. Examples: host type for CaaS worker nodes (e.g., `gpu-h100`, `cpu-only`), template for VMaaS, machine class for BMaaS, storage tier for Storage-aaS. To the metering system, it is an opaque label used for grouping. |
-| **Template** | A `ComputeInstanceTemplate` or `ClusterTemplate` that defines the default resource configuration (cores, memory, image, node sets). Not to be confused with Ansible role templates. In metering, `template` is a groupBy dimension; for VMaaS, the primary pricing dimension is the instance type name (per the [vm-instance-types](/enhancements/vm-instance-types) EP). |
+| **Service** | A discrete provider-defined offering that bundles one or more metered resources into a single billable entity (per the [FOCUS](https://focus.finops.org/) specification). In OSAC, a catalog item (per the [catalog-items](/enhancements/catalog-items) EP) maps to a Service — it's what the tenant provisions from. A Service may include compute, storage, networking, and other components, all attributable to the parent resource for unified cost views. |
 | **Cost Model** | A configuration mapping meters to rates, defining how consumption becomes charges. May differ by audience (provider-internal vs. tenant-facing). |
 | **Price List** | A set of rates within a cost model with a defined validity period. |
 | **Budget** | A spending limit on a scope (tenant, project, resource type) for a configurable time period. |
@@ -65,7 +65,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 - **CAP-2:** Choose which meters are active for the deployment — enable metering for VMaaS, CaaS, and MaaS, or disable meters for resource types that the provider does not offer or does not wish to charge for. A disabled meter stops event emission entirely — no events generated, no storage consumed, no pipeline load.
 - **CAP-3:** View usage of tenant-provisioned cluster worker nodes broken down by resource class (e.g., GPU vs CPU), so that different hardware classes can be priced independently.
 - **CAP-4:** View AI model inference usage broken down by tenant, model, and token type — including input tokens, output tokens, cached tokens, and total tokens consumed.
-- **CAP-5:** Receive accurate metering data for resources that exist for less than one minute — no resource goes unmetered due to brevity.
+- **CAP-5:** Receive accurate metering data for resources that exist for less than one minute — no resource goes unmetered due to brevity. The minimum metering resolution is 1 second; sub-second resources are not captured.
 
 ### 3.2 Cloud Infrastructure Admin
 
@@ -170,6 +170,11 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 - **Owner:** OSAC platform team
 - **Impact:** CAP-15. Three options: (1) block provisioning when metering is unavailable, to prevent untracked resources; (2) allow provisioning and accept temporary metering gaps; (3) allow provisioning with a reconciliation service that periodically syncs OSAC's provisioned resource state with the metering system, ensuring all resources are eventually metered. The right choice may be configurable per provider. Failure types also matter — failing to record a provisioning event is different from a temporary processing delay.
+
+### 9.4 How does metering handle tenant-defined Services (catalog items)?
+
+- **Owner:** OSAC platform team
+- **Impact:** CAP-9, CAP-12. If Tenant Admins can define their own catalog items (e.g., a custom VM with specific hardware + a custom application not managed by OSAC), the tenant's custom Service would need to be linked back to the CSP's underlying metered resources at the tenant level. The CSP must still see the infrastructure cost, while the tenant sees their custom Service view. This requires clarification of the relationship between tenant-defined catalog items and provider-level metering.
 
 ## Charge Calculation Model
 
