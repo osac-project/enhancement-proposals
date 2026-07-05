@@ -32,7 +32,7 @@ OSAC deploys across multiple clusters — a management cluster (fulfillment-serv
 
 #### Deployment Topology
 
-- **FR-1:** The installer must provide Helm charts that align with OSAC's multi-cluster deployment boundaries. It must be clear which chart(s) to install on each cluster type (management, hub, workload). `[User: sk-ilya review]`
+- **FR-1:** The installer must provide Helm charts that align with OSAC's multi-cluster deployment boundaries. Each cluster type (management, hub, workload) must be installable with a single `helm install` command producing a complete manifest for that cluster. `[User: sk-ilya review, rccrdpccl review]`
 - **FR-2:** For single-cluster development and testing environments, the charts must be installable together on one cluster with appropriate values.
 - **FR-3:** The same charts must be usable across all environments (production, development, CI) — environment differences are expressed through values, not different charts or tools. `[User: rccrdpccl review]`
 
@@ -56,10 +56,20 @@ OSAC deploys across multiple clusters — a management cluster (fulfillment-serv
 
 - **FR-11:** OSAC releases must be versioned with semantic versioning. Each release represents a tested combination of component versions.
 - **FR-12:** Component charts must be publishable to an OCI registry, enabling air-gapped deployments via registry mirroring.
+- **FR-13:** Chart versions must have a clear relationship to their container image versions. Semver must be enforced across both charts and images to ensure smooth lifecycle management (install, upgrade, rollback). `[User: rccrdpccl review]`
+
+#### Secret Management
+
+- **FR-14:** The installer must define a strategy for how secrets (AAP credentials, network backend passwords, SSH keys, Keycloak configuration, cloud provider credentials) are provided to the Helm chart at install time. `[User: rccrdpccl review]`
+- **FR-15:** The secret management approach must support both manual pre-creation (user creates secrets before helm install) and integration with external secret management systems (e.g., External Secrets Operator, Vault).
+
+#### Chart Ownership
+
+- **FR-16:** Each chart must have a clearly defined owning team responsible for its maintenance, versioning, and release lifecycle. `[User: rccrdpccl review]`
 
 #### Repository Scope
 
-- **FR-13:** The osac-installer repository must contain only production installation artifacts (charts, profiles, documentation). CI-only scripts, developer convenience scripts, and teardown tooling belong in osac-test-infra.
+- **FR-17:** The osac-installer repository must contain only production installation artifacts (charts, profiles, documentation). CI-only scripts, developer convenience scripts, and teardown tooling belong in osac-test-infra.
 
 ### 3.2 Non-Functional Requirements
 
@@ -67,6 +77,7 @@ OSAC deploys across multiple clusters — a management cluster (fulfillment-serv
 - **NFR-2:** The installer must be deployable in air-gapped environments. No installation step may require internet access beyond the chart and image registries.
 - **NFR-3:** CI must validate that a full deployment from Helm charts alone (no scripts) produces a healthy OSAC installation.
 - **NFR-4:** The Helm values schema must validate required configuration fields at install time, providing clear error messages when mandatory values are missing.
+- **NFR-5:** The installer must be compatible with GitOps deployment tools (ArgoCD, Flux). Charts must produce valid manifests via `helm template` without requiring Helm hooks or other lifecycle features that GitOps tools do not support well. `[User: rccrdpccl review]`
 
 ## 4. Acceptance Criteria
 
@@ -77,6 +88,8 @@ OSAC deploys across multiple clusters — a management cluster (fulfillment-serv
 - [ ] `helm upgrade` from OSAC version N to version N+1 completes without errors and preserves existing configuration.
 - [ ] CI runs a full Helm-only deployment and verifies OSAC services are healthy without invoking any shell scripts.
 - [ ] Each OSAC release is published with a semantic version and documents the component versions it includes.
+- [ ] `helm template` produces a valid, complete manifest for each cluster type without relying on hooks.
+- [ ] Secrets can be provided via pre-created Kubernetes secrets or via an external secrets integration.
 
 ## 5. Assumptions
 
@@ -101,10 +114,10 @@ Defining clean chart boundaries across management, hub, and workload clusters re
 
 ### 7.2 Imperative post-install operations may be difficult to automate
 
-Some post-install operations (hub registration, AAP project sync) involve external API calls with retry logic that may be challenging to express reliably within Helm's lifecycle.
+Some post-install operations (hub registration, AAP project sync) involve external API calls with retry logic. Helm hooks are one approach but conflict with GitOps/ArgoCD compatibility (NFR-5). Moving these into operator reconciliation loops is more GitOps-friendly but requires more development.
 
 - **Owner:** OSAC platform team
-- **Mitigation:** Evaluate whether these operations belong in Helm hooks (Jobs) or in the osac-operator's reconciliation loop. Prototype the most complex operation early.
+- **Mitigation:** Evaluate operator-driven reconciliation as the primary approach, since it aligns with both GitOps compatibility and Kubernetes-native patterns. Prototype the most complex operation early.
 
 ### 7.3 Component repos not ready for versioned publishing
 
@@ -136,7 +149,21 @@ Published Helm packages do not bundle arbitrary values files. Should profiles li
 - **Owner:** OSAC platform team
 - **Impact:** Affects FR-10 and the user experience for selecting a deployment configuration.
 
-### 8.4 Should prerequisites be subcharts or a separate chart?
+### 8.4 Who owns each chart?
+
+Should component charts be maintained by the component team (osac-operator team owns the operator chart) or centrally by the installer/platform team? How are dependency-of-dependency charts managed?
+
+- **Owner:** OSAC platform team
+- **Impact:** Affects FR-16 and the release coordination process.
+
+### 8.5 What is the secret management strategy?
+
+How should secrets be provided at install time? Options include: manual pre-creation, Helm values with sops-encrypted files, External Secrets Operator, HashiCorp Vault integration. The strategy must work for both initial install and day-2 secret rotation.
+
+- **Owner:** OSAC platform team (cc @trewest)
+- **Impact:** Affects FR-14, FR-15, and the overall security posture.
+
+### 8.6 Should prerequisites be subcharts or a separate chart?
 
 Including prerequisites as optional subcharts within the main chart(s) enables a single `helm install`. A separate chart gives more flexibility for environments where prerequisites are already managed externally.
 
