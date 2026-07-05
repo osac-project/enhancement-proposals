@@ -75,12 +75,3 @@ Absorbing netris-test-infra brings netris-lab as a nested git submodule, which c
 
 - **Owner:** Dan Manor
 - **Mitigation:** To be determined.
-
-## 8. Open Questions
-
-### 8.1 Should CaaS Prow jobs run pytest after infrastructure deployment?
-
-Today the CaaS "test" in Prow is `make deploy-caas` (deployment validation). Should the unified repo run `pytest tests/caas/` as the test step instead?
-
-- **Owner:** Dan Manor
-- **Impact:** FR-7, FR-9, acceptance criteria
