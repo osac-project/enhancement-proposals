@@ -32,15 +32,11 @@ OSAC deploys across multiple clusters — a management cluster (fulfillment-serv
 
 #### Deployment Topology
 
-- **FR-1:** The installer must provide Helm charts that align with OSAC's multi-cluster deployment boundaries. Each cluster type (management, hub, workload) must be installable with a single `helm install` command producing a complete manifest for that cluster. `[User: sk-ilya review, rccrdpccl review]`
-- **FR-2:** For single-cluster development and testing environments, the charts must be installable together on one cluster with appropriate values.
-- **FR-3:** The same charts must be usable across all environments (production, development, CI) — environment differences are expressed through values, not different charts or tools. `[User: rccrdpccl review]`
-
+- **FR-1:** The installer must provide Helm charts that align with OSAC's multi-cluster deployment boundaries. Each cluster type (management, hub, workload) must be installable with a single `helm install` command producing a complete manifest for that cluster.- **FR-2:** For single-cluster development and testing environments, the charts must be installable together on one cluster with appropriate values.
+- **FR-3:** The same charts must be usable across all environments (production, development, CI) — environment differences are expressed through values, not different charts or tools.
 #### Prerequisites
 
-- **FR-4:** Cluster prerequisites (cert-manager, trust-manager, Keycloak, AAP operator, LVMS, MetalLB, CNV, MCE) must be installable as optional components with per-component enable/disable toggles (e.g., `certManager.enabled: true`). `[Clarify: R1.Q1]`
-- **FR-5:** The installer should aim for a single `helm install` experience where prerequisites that are not already present on the cluster can be included in the installation, avoiding a mandatory two-step process. `[User: rccrdpccl review]`
-
+- **FR-4:** Cluster prerequisites (cert-manager, trust-manager, Keycloak, AAP operator, LVMS, MetalLB, CNV, MCE) must be installable as optional components with per-component enable/disable toggles (e.g., `certManager.enabled: true`).- **FR-5:** The installer should aim for a single `helm install` experience where prerequisites that are not already present on the cluster can be included in the installation, avoiding a mandatory two-step process.
 #### Configuration
 
 - **FR-6:** All configuration currently applied by post-deploy scripts (AAP instance group settings, Keycloak credentials, network backend settings, hub registration) must be expressible through Helm values with no external patching required.
@@ -48,25 +44,20 @@ OSAC deploys across multiple clusters — a management cluster (fulfillment-serv
 
 #### Deployment Profiles
 
-- **FR-8:** The installer must define deployment profiles for supported configurations: CaaS (cluster provisioning), VMaaS (compute instances), VMaaS dedicated-cluster mode, BMaaS (bare metal), and full-stack (all capabilities). `[User: sk-ilya review, rccrdpccl review]`
-- **FR-9:** Users must be able to compose profiles with site-specific overrides to customize their deployment.
-- **FR-10:** Profile definitions must be distributable separately from the packaged chart, since published Helm packages do not bundle arbitrary values files. `[User: rccrdpccl review]`
-
+- **FR-8:** The installer must define deployment profiles for supported configurations: CaaS (cluster provisioning), VMaaS (compute instances), VMaaS dedicated-cluster mode, BMaaS (bare metal), and full-stack (all capabilities).- **FR-9:** Users must be able to compose profiles with site-specific overrides to customize their deployment.
+- **FR-10:** Profile definitions must be distributable separately from the packaged chart, since published Helm packages do not bundle arbitrary values files.
 #### Versioning and Distribution
 
 - **FR-11:** OSAC releases must be versioned with semantic versioning. Each release represents a tested combination of component versions.
 - **FR-12:** Component charts must be publishable to an OCI registry, enabling air-gapped deployments via registry mirroring.
-- **FR-13:** Chart versions must have a clear relationship to their container image versions. Semver must be enforced across both charts and images to ensure smooth lifecycle management (install, upgrade, rollback). `[User: rccrdpccl review]`
-
+- **FR-13:** Chart versions must have a clear relationship to their container image versions. Semver must be enforced across both charts and images to ensure smooth lifecycle management (install, upgrade, rollback).
 #### Secret Management
 
-- **FR-14:** The installer must define a strategy for how secrets (AAP credentials, network backend passwords, SSH keys, Keycloak configuration, cloud provider credentials) are provided to the Helm chart at install time. `[User: rccrdpccl review]`
-- **FR-15:** The secret management approach must support both manual pre-creation (user creates secrets before helm install) and integration with external secret management systems (e.g., External Secrets Operator, Vault).
+- **FR-14:** The installer must define a strategy for how secrets (AAP credentials, network backend passwords, SSH keys, Keycloak configuration, cloud provider credentials) are provided to the Helm chart at install time.- **FR-15:** The secret management approach must support both manual pre-creation (user creates secrets before helm install) and integration with external secret management systems (e.g., External Secrets Operator, Vault).
 
 #### Chart Ownership
 
-- **FR-16:** Each chart must have a clearly defined owning team responsible for its maintenance, versioning, and release lifecycle. `[User: rccrdpccl review]`
-
+- **FR-16:** Each chart must have a clearly defined owning team responsible for its maintenance, versioning, and release lifecycle.
 #### Repository Scope
 
 - **FR-17:** The osac-installer repository must contain only production installation artifacts (charts, profiles, documentation). CI-only scripts, developer convenience scripts, and teardown tooling belong in osac-test-infra.
@@ -77,8 +68,7 @@ OSAC deploys across multiple clusters — a management cluster (fulfillment-serv
 - **NFR-2:** The installer must be deployable in air-gapped environments. No installation step may require internet access beyond the chart and image registries.
 - **NFR-3:** CI must validate that a full deployment from Helm charts alone (no scripts) produces a healthy OSAC installation.
 - **NFR-4:** The Helm values schema must validate required configuration fields at install time, providing clear error messages when mandatory values are missing.
-- **NFR-5:** The installer must be compatible with GitOps deployment tools (ArgoCD, Flux). Charts must produce valid manifests via `helm template` without requiring Helm hooks or other lifecycle features that GitOps tools do not support well. `[User: rccrdpccl review]`
-
+- **NFR-5:** The installer must be compatible with GitOps deployment tools (ArgoCD, Flux). Charts must produce valid manifests via `helm template` without requiring Helm hooks or other lifecycle features that GitOps tools do not support well.
 ## 4. Acceptance Criteria
 
 - [ ] A Cloud Provider Admin can install OSAC on a clean OpenShift cluster using `helm install` with a profile values file — no scripts, no manual steps beyond providing site-specific values.
