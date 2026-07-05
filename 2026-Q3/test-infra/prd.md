@@ -69,9 +69,9 @@ OSAC test infrastructure is fragmented across three places: osac-test-infra (E2E
 
 ## 7. Risks
 
-### 7.1 Netris submodule nesting
+### 7.1 CI downtime during migration
 
-Absorbing netris-test-infra brings netris-lab as a nested git submodule, which can complicate cloning and CI.
+Updating Prow step refs and GitHub Actions workflows to point at the unified repo requires coordinated changes across osac-test-infra and openshift/release. Mistimed or partial updates can break CI for all OSAC component repos.
 
 - **Owner:** Dan Manor
 - **Mitigation:** To be determined.
