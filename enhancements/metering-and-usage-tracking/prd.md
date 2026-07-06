@@ -202,11 +202,15 @@ For CaaS, worker node pricing is per-node-seconds grouped by host class — the 
 
 ### VMaaS
 
+`instance-type-seconds` measures how long (in seconds) a VM of a specific instance type is running. The instance type is the natural billing unit for VMaaS — it is what the tenant chose from the catalog, it encodes the hardware bundle (CPU, RAM, boot disk), and it maps directly to the provider's pricing schedule. Measuring in seconds aligns with commercial cloud billing practices and ensures all consumption is captured regardless of how briefly the VM runs.
+
 | Meter | Formula | Example (1 hour) |
 |-------|---------|-----------------|
 | instance-type-seconds | uptime × price/s | 3600s × $0.001/s = $3.60 |
 
 ### CaaS
+
+CaaS uses two meters because its cost structure has two independent components. The **control plane** is a dedicated infrastructure component that runs on behalf of the tenant regardless of worker count — it has a fixed cost to the provider that must be recovered independently. **Worker nodes** are the primary compute resource and vary significantly in cost by hardware class: a GPU node carries far higher infrastructure cost than a CPU node. Metering workers grouped by host class enables differentiated pricing that reflects this cost difference.
 
 | Component | Meter | Formula | Example (1 hour, 2 GPU + 1 CPU worker) |
 |-----------|-------|---------|----------------------------------------|
@@ -216,6 +220,8 @@ For CaaS, worker node pricing is per-node-seconds grouped by host class — the 
 | **Total** | | | **$198.00/hour** |
 
 ### MaaS
+
+MaaS uses per-token meters rather than per-time meters because inference cost is proportional to the number of tokens processed and generated, not wall-clock time. Three token types are metered separately: **input tokens** (the prompt the model must process), **output tokens** (the generated response — more expensive per token because they are generated sequentially), and **cached tokens** (input tokens served from a prompt cache at significantly lower compute cost, enabling the provider to pass a discount to tenants).
 
 | Component | Meter | Formula | Example |
 |-----------|-------|---------|---------|
