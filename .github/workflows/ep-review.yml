@@ -16,7 +16,7 @@ jobs:
       github.event_name == 'pull_request_target'
       || (github.event_name == 'issue_comment'
           && github.event.issue.pull_request
-          && startsWith(github.event.comment.body, '/review-ep')
+          && contains(github.event.comment.body, '/review-ep')
           && contains(fromJSON('["MEMBER","COLLABORATOR","OWNER"]'),
                       github.event.comment.author_association))
     runs-on: ubuntu-latest
@@ -28,6 +28,19 @@ jobs:
       head_sha: ${{ steps.resolve.outputs.head_sha }}
       base_ref: ${{ steps.resolve.outputs.base_ref }}
     steps:
+      - name: Validate slash command
+        if: github.event_name == 'issue_comment'
+        id: validate
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          if echo "$COMMENT_BODY" | grep -qP '(?m)^\s*/review-ep'; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Comment contains '/review-ep' but not as a line-starting command"
+            exit 1
+          fi
+
       - name: Acknowledge comment
         if: github.event_name == 'issue_comment'
         env:
