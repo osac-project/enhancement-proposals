@@ -34,6 +34,7 @@ where a single create command produces a reachable instance.
   receive the same default CIDR and SecurityGroup rules)
 - Auto-provisioning of VirtualNetworks or Subnets beyond the initial
   default (tenants create additional VNs manually)
+- UI support for simplified creation (deferred — API and CLI only for now)
 
 ## 3. User Stories
 
@@ -69,6 +70,12 @@ where a single create command produces a reachable instance.
   system can auto-create default networking resources for tenants at
   onboarding
 
+### Cloud Provider Admin Stories
+
+- As a Cloud Provider Admin, I want visibility into whether a tenant's
+  default networking resources were successfully provisioned, so I can
+  troubleshoot onboarding failures
+
 ## 4. Requirements
 
 ### 4.1 Functional Requirements
@@ -78,7 +85,10 @@ where a single create command produces a reachable instance.
 - **FR-1:** At tenant onboarding, the system provisions a default
   VirtualNetwork, Subnet, and SecurityGroup for the tenant. The tenant
   transitions to READY only after all default networking resources are
-  also READY. [User]
+  also READY. If default networking provisioning fails, the tenant
+  remains in a non-READY state with a status condition describing the
+  failure. The Cloud Provider Admin can inspect the failure and retry
+  by deleting and re-creating the tenant. [User]
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
   parameters (CIDR, SecurityGroup rules) on the NetworkClass. When
   defaults are not configured, creating a resource without explicit
@@ -111,7 +121,11 @@ where a single create command produces a reachable instance.
   `external_ip_mode` field with values `NONE` (default) and `AUTO`. When
   `AUTO`, the system auto-selects the READY ExternalIPPool with the most
   available capacity, creates an ExternalIP, and creates an
-  ExternalIPAttachment binding it to the resource. [User]
+  ExternalIPAttachment binding it to the resource. The auto-selection
+  algorithm is identical to OSAC-1712: pick the READY pool with the most
+  available capacity matching the requested IP family (defaulting to
+  IPv4). When multiple pools have equal capacity, selection is
+  deterministic but implementation-defined. [User]
 - **FR-9:** Cluster supports a `external_ip_mode` field with values
   `NONE` (default), `AUTO_API` (API server only), `AUTO_INGRESS` (ingress
   only), and `AUTO_ALL` (both). For `AUTO_ALL`, two ExternalIPs and two
@@ -126,7 +140,10 @@ where a single create command produces a reachable instance.
   are labeled `osac.openshift.io/auto-provisioned: "true"`. When the
   parent resource is deleted, the parent's finalizer deletes the
   auto-created ExternalIPAttachments first, then ExternalIPs, before the
-  parent resource is removed. [User]
+  parent resource is removed. If cleanup of auto-created resources fails
+  permanently, the finalizer is removed and the parent resource is deleted
+  — orphaned ExternalIPs remain and must be cleaned up manually by the
+  Tenant Admin or Cloud Provider Admin. [User]
 
 #### Auto NATGateway
 
@@ -135,7 +152,9 @@ where a single create command produces a reachable instance.
   and `AUTO`. When `AUTO`, the system auto-selects an ExternalIP from the
   best available pool and creates a NATGateway on the resource's
   VirtualNetwork using that ExternalIP as the SNAT source. If a NATGateway
-  already exists on the VN, it is reused. [User]
+  already exists on the VN, it is reused regardless of which ExternalIP it
+  uses, its current state, or whether it was manually or auto-created.
+  [User]
 
 ## 5. Acceptance Criteria
 
@@ -160,8 +179,8 @@ where a single create command produces a reachable instance.
   the parent's finalizer
 - [ ] Creating a resource with explicit `network_attachments` bypasses
   defaults entirely — no default resources are referenced
-- [ ] When no ExternalIPPool has available capacity, resource creation
-  with `external_ip_mode=AUTO` fails with a clear error
+- [ ] When no ExternalIPPool has available capacity, the create API call
+  returns an error and the resource is not persisted
 - [ ] A resource created without `network_attachments` shows the resolved
   default attachments in its spec when retrieved via Get
 
@@ -172,10 +191,12 @@ where a single create command produces a reachable instance.
   ExternalIPAttachment, NATGateway) defined in the
   [Unified Networking EP](/enhancements/unified-networking)
 - **OSAC-1712 (automatic pool selection)** — the auto ExternalIP pool
-  selection reuses the same strategy: pick the READY pool with the most
-  available capacity matching the IP family
+  selection reuses the identical algorithm: pick the READY pool with the
+  most available capacity matching the IP family
 - **Tenant onboarding flow** — default resource creation hooks into the
   existing Tenant controller lifecycle
+- **osac-installer** — NetworkClass default configuration must be included
+  in setup.sh and installation overlays
 
 ## 7. Risks
 
@@ -195,5 +216,31 @@ where a single create command produces a reachable instance.
 
 - **Owner:** Platform
 - **Mitigation:** Parent resource finalizer handles cleanup; controller
-  retries on transient failures; if permanently failed, ExternalIP is
-  cleaned up when the parent resource is deleted
+  retries on transient failures. If cleanup permanently fails, the
+  finalizer is removed and the parent is deleted — orphaned ExternalIPs
+  must be cleaned up manually
+
+### 7.4 Deployment misconfiguration
+
+- **Owner:** Cloud Infrastructure Admin
+- **Mitigation:** If NetworkClass defaults are not configured, tenant
+  onboarding still succeeds but resource creation without explicit
+  `network_attachments` fails with a clear error directing the tenant to
+  use explicit networking or contact the admin. This is a deployment
+  issue, not a runtime failure
+
+## 8. Open Questions
+
+### 8.1 Should capacity exhaustion return an API error or create a Failed resource?
+
+- **Owner:** API design team
+- **Impact:** Affects FR-8 and acceptance criteria. Returning an error
+  (resource not persisted) is simpler but gives no audit trail. Creating
+  a Failed resource provides visibility but adds cleanup burden.
+
+### 8.2 E2E test coverage for simplified creation
+
+- **Owner:** QE / osac-test-infra
+- **Impact:** Which user journeys (1-call VM, 1-call cluster, explicit
+  bypass) must be covered by E2E tests at milestone boundary? Deferred
+  to design phase.
