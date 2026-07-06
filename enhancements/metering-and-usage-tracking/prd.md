@@ -14,7 +14,7 @@
 | **Event** | A discrete, immutable record of a resource lifecycle change. Events are the source of truth for billing-grade metering. |
 | **Meter** | A named aggregation that turns events into a measurable quantity (e.g., total VM uptime grouped by tenant). |
 | **Metric** | The aggregated output of a meter over a time window — the queryable result. |
-| **Usage** | Measured consumption of a resource (e.g., CPU core-seconds consumed while a VM was running). |
+| **Usage** | Measured consumption of a resource (e.g., instance-type-seconds consumed while a VM was running). |
 | **Allocation** | Reserved capacity of a resource, regardless of whether it is actively used. |
 | **Resource class** | A provider-defined category for differentiated pricing. Examples: host type for CaaS worker nodes (e.g., `gpu-h100`, `cpu-only`), template for VMaaS, machine class for BMaaS, storage tier for Storage-aaS. To the metering system, it is an opaque label used for grouping. |
 | **Service** | A discrete provider-defined offering that bundles one or more metered resources into a single billable entity (per the [FOCUS](https://focus.finops.org/) specification). In OSAC, a catalog item (per the [catalog-items](/enhancements/catalog-items) EP) maps to a Service — it's what the tenant provisions from. A Service may include compute, storage, networking, and other components, all attributable to the parent resource for unified cost views. |
@@ -101,7 +101,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 ### VMaaS
 
-- [ ] A running VM generates usage data queryable as aggregated uptime per tenant. Both instance-type-seconds (for flat-rate pricing) and core-seconds / GiB-seconds (for resource-based pricing) are available.
+- [ ] A running VM generates usage data queryable as aggregated instance-type-seconds per tenant, broken down by instance type
 - [ ] A stopped or paused VM does not generate usage data
 - [ ] VM usage can be broken down by tenant, project, template, and instance
 
@@ -180,16 +180,19 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 OSAC provides usage data. The provider applies their own price schedule to generate charges. OSAC does not enforce prices or generate invoices. A separate PRD will address the costing layer to automate charge calculation.
 
+### Metering Units and Relationship to Existing OSAC Instance Types
+
+OSAC already defines instance types for VMaaS (per the [vm-instance-types](/enhancements/vm-instance-types) EP) and host classes for CaaS worker nodes (e.g., `gpu-h100`, `cpu-only`). The metering system does not define, replace, or constrain these — it treats the instance type name and host class name as opaque string labels used for grouping. No changes to the existing instance type or host class model are required.
+
+VMaaS metering uses `instance-type-seconds` as its single meter. This aligns with how commercial clouds operate — CSPs define instance types that bundle CPU, RAM, and fixed boot disk into a named unit, and billing is expressed as uptime × rate per instance type. The instance type name from the OSAC catalog is used directly as a grouping dimension; the metering system is agnostic to the hardware composition behind the name. Storage is implicitly bundled when the CSP defines instance types that include a fixed boot disk.
+
+For CaaS, worker node pricing is per-node-seconds grouped by host class — the same instance-type-seconds model applied at the node level. The control plane is a separate flat-rate meter.
+
 ### VMaaS
 
-The primary VMaaS grouping dimension is the instance type name (per the [vm-instance-types](/enhancements/vm-instance-types) EP). Core-seconds and GiB-seconds are derived dimensions available for providers who prefer resource-based pricing over flat-rate per instance type.
-
-| Pricing Model | Meter | Formula | Example (2-core, 8 GiB VM, 1 hour) |
-|--------------|-------|---------|--------------------------------------|
-| Flat per-instance-type | instance-type-seconds | uptime × price/s | 3600s × $0.001/s = $3.60 |
-| Per-core | cpu core-seconds | core-seconds × price | 7200 × $0.0001 = $0.72 |
-| Per-memory | memory GiB-seconds | GiB-seconds × price | 28800 × $0.00005 = $1.44 |
-| Combined | cpu + memory | sum | $0.72 + $1.44 = $2.16 |
+| Meter | Formula | Example (1 hour) |
+|-------|---------|-----------------|
+| instance-type-seconds | uptime × price/s | 3600s × $0.001/s = $3.60 |
 
 ### CaaS
 
