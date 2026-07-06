@@ -123,6 +123,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 - [ ] A Tenant Admin can view their own usage but cannot see other tenants' data
 - [ ] A Tenant Admin can view their organization's usage in the osac-ui console, broken down by project
+- [ ] A Tenant User can view usage for the projects they belong to in the osac-ui console
 - [ ] A Cloud Provider Admin can view usage across all tenants
 - [ ] A Cloud Provider Admin can view usage across all tenants in the osac-ui console
 - [ ] A Cloud Provider Admin can disable a meter and no events are emitted for that resource type
