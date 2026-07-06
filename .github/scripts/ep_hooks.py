@@ -181,9 +181,14 @@ class EPHooks:
         errors = []
         scores = verdict.get("scores", {})
 
-        skill = (ticket or {}).get("_skill_name", "")
-        expected_keys = DESIGN_KEYS if skill == "ep-review" else PRD_KEYS
         actual_keys = set(scores.keys())
+        if actual_keys & DESIGN_KEYS and not (actual_keys & PRD_KEYS):
+            expected_keys = DESIGN_KEYS
+        elif actual_keys & PRD_KEYS and not (actual_keys & DESIGN_KEYS):
+            expected_keys = PRD_KEYS
+        else:
+            skill = (ticket or {}).get("_skill_name", "")
+            expected_keys = DESIGN_KEYS if skill == "ep-review" else PRD_KEYS
         unexpected = actual_keys - expected_keys
         missing = expected_keys - actual_keys
         if unexpected:
