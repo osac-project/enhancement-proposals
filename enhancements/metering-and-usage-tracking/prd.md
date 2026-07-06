@@ -39,6 +39,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 - CaaS metering supports per-resource-class billing so that different hardware classes (e.g., GPU vs CPU workers) can be priced independently
 - All metering is configurable — Cloud Provider Admins enable/disable meters per resource type
 - The metering and costing stack runs on-premises under the provider's control — no data leaves the provider's infrastructure
+- Tenant Admins and Tenant Users can view their organization's usage through the osac-ui console; Cloud Provider Admins can view usage across all tenants through the same console
 
 ### 2.2 Non-Goals
 
@@ -84,7 +85,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 
 ### 3.5 Cross-cutting
 
-- **CAP-12:** VMaaS metering is consumption-based. Compute metering (instance-type-seconds) runs only while the VM is active (running). Stopped and paused VMs do not actively consume host compute resources (the hypervisor reclaims CPU cycles and can page out memory), so compute is not metered in those states. However, resources allocated to a VM that remain reserved regardless of VM state — including storage volumes, public IPs, and DNS records — continue to consume infrastructure capacity (storage space, IP pool addresses, DNS service entries) and must continue to be metered for the full duration of the VM's existence, even while the VM is stopped or paused. VMs in failed state are not metered (see §9.6 for the open question on infra-caused failures). All metered resources belonging to a VM (and — when in scope — storage, public IPs) must be attributable to the parent VM so that the full cost of a VM can be queried as a unified view.
+- **CAP-12:** VMaaS metering is consumption-based. Compute metering (instance-type-seconds) runs only while the VM is active (running). Stopped and paused VMs do not actively consume host compute resources, so compute is not metered in those states. However, resources allocated to a VM that remain reserved regardless of VM state — including storage volumes, public IPs, and DNS records — continue to consume infrastructure capacity (storage space, IP pool addresses, DNS service entries) and must continue to be metered for the full duration of the VM's existence, even while the VM is stopped or paused. VMs in failed state are not metered (see §9.6 for the open question on infra-caused failures). All metered resources belonging to a VM (and — when in scope — storage, public IPs) must be attributable to the parent VM so that the full cost of a VM can be queried as a unified view.
 - **CAP-13:** CaaS metering is consumption-based — only active clusters (ready or progressing) are metered. A failed cluster is not reliably serving workloads and its constituent nodes may be in an indeterminate state; metering a failed cluster risks double-counting alongside any replacement the provider spins up. All metered resources belonging to a cluster (control plane, worker nodes, and — when in scope — storage, networking) must be attributable to the parent cluster so that the full cost of a cluster can be queried as a unified view.
 - **CAP-14:** MaaS metering is consumption-based — charged per token and per inference request, not per allocated model instance. GPU infrastructure cost is embedded in the provider's per-token/per-model pricing. Metering events must be emitted within 30 seconds of the inference request completing, and processed within 60 seconds of receipt, so that downstream systems (e.g., quota enforcement, when available) can evaluate against near-real-time balances. These latency requirements do not apply to VMaaS or CaaS, where delays up to the polling interval are acceptable.
 - **CAP-15:** The metering system can be deployed independently without affecting existing OSAC provisioning. Some providers may prefer to use their own metering solution — independent deployment ensures OSAC emits lifecycle events that any metering system can consume.
@@ -102,7 +103,8 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 ### VMaaS
 
 - [ ] A running VM generates usage data queryable as aggregated instance-type-seconds per tenant, broken down by instance type
-- [ ] A stopped or paused VM does not generate usage data
+- [ ] A stopped or paused VM does not generate compute usage data (instance-type-seconds)
+- [ ] Storage, public IP, and DNS resources allocated to a stopped or paused VM continue to generate metering data for the duration of the VM's existence
 - [ ] VM usage can be broken down by tenant, project, template, and instance
 
 ### CaaS
