@@ -25,7 +25,7 @@ A managed version catalog provides that missing abstraction. Users select from a
 
 ### 2.2 Non-Goals
 
-- Cluster upgrade operations and channel propagation to the hosted cluster — triggering, tracking, or rolling back upgrades, and propagating the version's channel to the hosted cluster. Owned by OSAC-1415. Channels are stored as version catalog metadata but not propagated to the cluster in v0.2. [Clarify: R1.Q3, R2.Q2]
+- Cluster upgrade operations — triggering, tracking, or rolling back upgrades. Owned by OSAC-1415. [Clarify: R1.Q3, R2.Q2]
 - ACM ClusterImageSet auto-sync — automatic discovery and population of version catalog entries from ACM. Versions are admin-managed in v0.2. [Clarify: R1.Q7]
 - VM image management — the VM image catalog (OSAC-979) uses a separate resource. Both features share the same architectural pattern (raw URL to managed catalog with server-side resolution) but are distinct resources. [Clarify: R1.Q4]
 - In-place upgrade migration — OSAC does not support in-place upgrades. This feature assumes fresh deployment. [Clarify: R2.Q4]
@@ -36,9 +36,9 @@ A managed version catalog provides that missing abstraction. Users select from a
 
 #### Version Catalog Management
 
-- **FR-1:** Admins can create, update, and delete version catalog entries. Each entry requires a version number (e.g., "4.17.0") and release image URL; lifecycle state, channels (e.g., "stable-4.17", "fast-4.17"), and default flag are optional. Channels are informational metadata in v0.2; channel-based selection and propagation are deferred to OSAC-1415. [Clarify: R1.Q1, R1.Q6, R1.Q8, R3.Q1]
+- **FR-1:** Admins can create, update, and delete version catalog entries. Each entry requires a version number (e.g., "4.17.0") and release image URL; lifecycle state and default flag are optional. [Clarify: R1.Q1, R1.Q6, R1.Q8, R3.Q1]
 
-- **FR-2:** Users can browse and view available versions. Release image URLs are not exposed to users — they see version number, lifecycle state, and channels. Listings return active and deprecated versions by default; obsolete versions require an explicit filter. A specific version can be viewed regardless of its state, so users can inspect versions referenced by their existing clusters. [Clarify: R1.Q6, R3.Q1]
+- **FR-2:** Users can browse and view available versions. Release image URLs are not exposed to users — they see version number and lifecycle state. Listings return active and deprecated versions by default; obsolete versions require an explicit filter. A specific version can be viewed regardless of its state, so users can inspect versions referenced by their existing clusters. [Clarify: R1.Q6, R3.Q1]
 
 - **FR-3:** At most one version can be marked as default. An obsolete version cannot be marked as default. The default is used when no version is specified by the user or template. [Clarify: R1.Q1]
 
@@ -46,13 +46,13 @@ A managed version catalog provides that missing abstraction. Users select from a
 
 - **FR-4:** Users specify a version number (e.g., "4.17.0") when creating a cluster. [Clarify: R1.Q2, R1.Q5, R2.Q1, R2.Q4, R3.Q3, R3.Q4]
 
-- **FR-5:** Templates can specify a default version (e.g., "4.17.0"). Any version can be used with any template; templates provide defaults but do not constrain version selection. [Clarify: R2.Q1]
+- **FR-5:** Templates can specify a default version (e.g., "4.17.0"). [Clarify: R2.Q1]
 
 - **FR-6:** A cluster's version and its current lifecycle state are visible when viewing or listing clusters. If the version is deprecated or obsolete, the state is surfaced so users can identify clusters that need attention.
 
 #### Validation
 
-- **FR-7:** Version is validated at creation time with descriptive error messages. Validation covers: version not found, version obsolete, and no version resolvable (no explicit version, no template default, and no system default). Creating a cluster with a deprecated version succeeds but includes a warning identifying the replacement version, if one is set. [Clarify: R2.Q3, R3.Q6]
+- **FR-7:** Version is validated at creation time with descriptive error messages. Validation covers: version not found, version obsolete, and no version resolvable (no explicit version, no template default, and no system default). Creating a cluster with a deprecated version succeeds. The deprecation is surfaced to the user. [Clarify: R2.Q3, R3.Q6]
 
 #### User Interfaces
 
@@ -70,20 +70,20 @@ A managed version catalog provides that missing abstraction. Users select from a
 
 - **FR-13:** Lifecycle state transitions (active, deprecated, obsolete) are always allowed regardless of references. Existing clusters and templates referencing a deprecated or obsolete version are not affected. Admins can transition a version between any states in any direction. [Clarify: R3.Q5]
 
-- **FR-14:** Version is immutable after cluster creation. [Clarify: R2.Q3]
+- **FR-14:** A version entry cannot be redefined after creation. Its version number and release image always refer to the same release. [Clarify: R2.Q3]
 
-- **FR-15:** A version can be marked as deprecated with an optional replacement version. Deprecated versions remain available for new cluster creation but include a warning identifying the replacement, if one is set. Obsolete versions are blocked for new cluster creation. Deprecation and obsolescence timestamps are recorded automatically when the version enters each state.
+- **FR-15:** A version can be marked as deprecated. Deprecated versions remain available for new cluster creation but include a deprecation warning. Obsolete versions are blocked for new cluster creation. Deprecation and obsolescence timestamps are recorded automatically when the version enters each state.
 
 ### 3.2 Non-Functional Requirements
 
 - **NFR-1:** Admins manage the version catalog using the same patterns they already know from other admin-managed resources — consistent commands, access model, lifecycle states (active/deprecated/obsolete), and visibility rules with no new interaction model to learn. [Clarify: R1.Q6, R3.Q1]
 
-- **NFR-2:** Future additions to the version catalog (e.g., upgrade paths, channel-based selection) must not break existing cluster creation workflows. [Clarify: R2.Q2]
+- **NFR-2:** Future additions to the version catalog (e.g., upgrade paths, channel metadata, channel-based selection) must not break existing cluster creation workflows. [Clarify: R2.Q2]
 
 ## 4. Acceptance Criteria
 
-- [ ] A user can create a cluster by specifying a version number (e.g., 4.17.0) instead of a release image URL. The server resolves the version to the correct release image internally. Release image URLs are not exposed to users — neither in the version catalog nor in cluster responses. Version is immutable after creation. The version's current lifecycle state is visible when viewing or listing clusters.
-- [ ] Specifying a non-existent, deleted, or obsolete version is rejected with a descriptive error indicating the reason and identifying the replacement if one is set. Deprecated versions allow creation with a warning. Validation applies to both cluster creation and template defaults.
+- [ ] A user can create a cluster by specifying a version number (e.g., 4.17.0) instead of a release image URL. The server resolves the version to the correct release image internally. Release image URLs are not exposed to users — neither in the version catalog nor in cluster responses. A version entry's version number and release image cannot be changed after creation. The version's current lifecycle state is visible when viewing or listing clusters.
+- [ ] Specifying a non-existent, deleted, or obsolete version is rejected with a descriptive error indicating the reason. Deprecated versions allow creation; the deprecation is surfaced to the user. Validation applies to both cluster creation and template defaults.
 - [ ] Admins can create, update, and delete version catalog entries. Deleting a version referenced by an active cluster or template defaults is rejected with a message identifying the referencing resource.
 - [ ] Admins can transition a version between active, deprecated, and obsolete in any direction, even when referenced by active clusters or templates. Listing versions returns active and deprecated entries by default; obsolete versions are hidden unless explicitly filtered. Deprecation and obsolescence timestamps are recorded automatically on each transition.
 - [ ] At most one version is marked as default at any time — setting a new default clears the previous one. An obsolete version cannot be marked as default. When a user omits the version and template defaults do not supply one, the server uses the default version. Templates can specify a default version, and the server resolves it to a release image.
@@ -97,7 +97,7 @@ A managed version catalog provides that missing abstraction. Users select from a
 ## 6. Dependencies
 
 - **OSAC-1531 (Default Catalog Items)** — Default version catalog entries should ship alongside default catalog items. Version catalog population is a prerequisite for catalog items that reference version-based clusters.
-- **OSAC-1415 (Cluster Upgrade)** — The version catalog is designed as an extension point. OSAC-1415 is expected to add upgrade capabilities, channel-based version selection, and channel propagation to the hosted cluster. This PRD does not constrain OSAC-1415's design. [Clarify: R2.Q2]
+- **OSAC-1415 (Cluster Upgrade)** — The version catalog is designed as an extension point. OSAC-1415 is expected to add upgrade capabilities and channel-based version selection. This PRD does not constrain OSAC-1415's design. [Clarify: R2.Q2]
 
 ## 7. Risks
 
@@ -125,14 +125,14 @@ This feature applies to **CaaS** (Cluster as a Service) only. VMaaS has an analo
 
 | Persona | Interaction |
 |---------|-------------|
-| Cloud Provider Admin | Creates version entries by providing version number, release image URL, channels, and lifecycle state. Manages the catalog via CLI, API, and UI. Sets the default version. |
-| Tenant User | Browses available versions (version number, state, channels — no release image URLs). Selects a version when creating a cluster via CLI, UI wizard, or catalog items. |
+| Cloud Provider Admin | Creates version entries by providing version number, release image URL, and lifecycle state. Manages the catalog via CLI, API, and UI. Sets the default version. |
+| Tenant User | Browses available versions (version number, state — no release image URLs). Selects a version when creating a cluster via CLI, UI wizard, or catalog items. |
 | Cloud Infrastructure Admin | Not affected. |
 | Tenant Admin | Same as Tenant User. May also reference versions when authoring org-specific catalog items. |
 
 ### Provisioning
 
-Version resolution occurs during cluster creation. The provisioning flow for the cluster itself is unchanged — this feature adds version selection and validation, not new provisioning steps.
+Version resolution occurs during cluster creation: the fulfillment-service validates the selected version and stores the version reference on the cluster. The provisioning flow for the cluster itself is unchanged — this feature adds version selection and validation, not new provisioning steps.
 
 ### User-Facing API
 
@@ -146,7 +146,7 @@ Version resolution occurs during cluster creation. The provisioning flow for the
 ### Milestone Scoping
 
 - **Target milestone:** v0.2
-- **Deferred:** Cluster upgrades (OSAC-1415), ACM version auto-sync, channel-based version selection, channel propagation to hosted cluster, in-place migration of existing data.
+- **Deferred:** Cluster upgrades (OSAC-1415), ACM version auto-sync, channel metadata and channel-based version selection, in-place migration of existing data.
 - **Upgrades:** OSAC does not support in-place upgrades. No data migration is in scope.
 
 ### Installation
