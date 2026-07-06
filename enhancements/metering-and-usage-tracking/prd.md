@@ -37,7 +37,6 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 - Tenant Admins can view their organization's usage with tenant-scoped access control
 - All metered resources support per-second granularity
 - CaaS metering supports per-resource-class billing so that different hardware classes (e.g., GPU vs CPU workers) can be priced independently
-- All metering is configurable — Cloud Provider Admins enable/disable meters per resource type
 - The metering and costing stack runs on-premises under the provider's control — no data leaves the provider's infrastructure
 - Tenant Admins and Tenant Users can view their organization's usage through the osac-ui console; Cloud Provider Admins can view usage across all tenants through the same console
 
@@ -63,7 +62,6 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 ### 3.1 Cloud Provider Admin
 
 - **CAP-1:** View aggregated usage across all tenants for a billing period, broken down by tenant, resource type, and template.
-- **CAP-2:** Choose which meters are active for the deployment — enable metering for VMaaS, CaaS, and MaaS, or disable meters for resource types that the provider does not offer or does not wish to charge for. A disabled meter stops event emission entirely — no events generated, no storage consumed, no pipeline load.
 - **CAP-3:** View usage of tenant-provisioned cluster worker nodes broken down by resource class (e.g., GPU vs CPU), so that different hardware classes can be priced independently.
 - **CAP-4:** View AI model inference usage broken down by tenant, model, and token type — including input tokens, output tokens, cached tokens, and total tokens consumed.
 - **CAP-5:** Receive accurate metering data for resources that exist for less than one minute — no resource goes unmetered due to brevity. The minimum metering resolution is 1 second; sub-second resources are not captured.
@@ -126,7 +124,6 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 - [ ] A Tenant User can view usage for the projects they belong to in the osac-ui console
 - [ ] A Cloud Provider Admin can view usage across all tenants
 - [ ] A Cloud Provider Admin can view usage across all tenants in the osac-ui console
-- [ ] A Cloud Provider Admin can disable a meter and no events are emitted for that resource type
 - [ ] A resource that exists for 30 seconds appears in the usage data
 - [ ] Deploying the metering system does not require changes to existing OSAC resources or workflows
 - [ ] A Tenant Admin can view usage grouped by project and see consumption per project within their tenant
