@@ -62,11 +62,13 @@ class EPHooks:
         if self.reviewed_label in labels:
             head = ticket.get("headRefOid", "")
             pr_number = ticket_key.replace("EP-", "")
+            skill = ticket.get("_skill_name", "")
+            marker = "AI EP Review:" if skill == "prd-review" else "AI Design Review:"
             existing = self._gh([
                 "api", f"repos/{self.repo}/issues/{pr_number}/comments",
                 "--jq",
                 f'[.[] | select(.user.login == "{self.bot_login}") '
-                f'| select(.body | contains("AI EP Review:") or contains("AI Design Review:"))][0].body // empty'
+                f'| select(.body | contains("{marker}"))][0].body // empty'
             ]).strip()
             if existing and head and head[:8] in existing:
                 return f"Already reviewed at SHA {head[:8]}"
@@ -282,7 +284,7 @@ class EPHooks:
             "api", f"repos/{self.repo}/issues/{pr_number}/comments",
             "--jq",
             f'[.[] | select(.user.login == "{self.bot_login}") '
-            f'| select(.body | startswith("## AI EP Review:") or startswith("## AI Design Review:"))][0].id // empty'
+            f'| select(.body | startswith("## {marker}"))][0].id // empty'
         ]).strip()
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
