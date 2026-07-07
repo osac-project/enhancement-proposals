@@ -118,3 +118,12 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           EVENT_BEFORE_SHA: ${{ github.event.before }}
         run: python .github/scripts/ep_review.py
+
+      - name: Upload OTEL metrics
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4
+        with:
+          name: ep-review-otel-pr${{ needs.resolve-pr.outputs.pr_number }}-run${{ github.run_id }}
+          path: workdir-*/_run/claude-otel.jsonl
+          retention-days: 90
+          if-no-files-found: ignore

@@ -1,4 +1,4 @@
-agentic-ci>=0.3.11
+agentic-ci>=0.3.15
 PyJWT>=2.8.0
 cryptography>=42.0.0
 requests>=2.31.0
