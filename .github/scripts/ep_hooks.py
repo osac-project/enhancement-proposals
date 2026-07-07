@@ -350,26 +350,23 @@ class EPHooks:
                 cache_read = tokens.get("cacheRead", 0)
                 cost = cost_totals.get(model, 0)
 
-                parts = [
-                    f"**Model:** {model}",
-                    f"**Cost:** ${cost:.4f}",
+                lines.append(f"**Model:** {model}")
+                lines.append(f"**Cost:** ${cost:.4f}")
+                lines.append(
                     f"**Tokens:** {EPHooks._format_tokens(input_t)} in / "
-                    f"{EPHooks._format_tokens(output_t)} out",
-                ]
+                    f"{EPHooks._format_tokens(output_t)} out"
+                )
                 if cache_read:
-                    parts.append(
+                    lines.append(
                         f"**Cache:** {EPHooks._format_tokens(cache_read)} read"
                     )
-                lines.append(" | ".join(parts))
 
             total_secs = sum(active_time.values())
             if total_secs:
                 mins, secs = divmod(int(total_secs), 60)
                 time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
-                lines.append(
-                    f"**Active time:** {time_str} | "
-                    f"**API calls:** {len(api_requests)}"
-                )
+                lines.append(f"**Active time:** {time_str}")
+            lines.append(f"**API calls:** {len(api_requests)}")
 
             return "\n".join(lines) if lines else None
         except (TypeError, ValueError, AttributeError):
