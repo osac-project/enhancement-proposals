@@ -34,11 +34,10 @@ Credentials across OSAC services — cluster kubeconfigs, identity provider secr
 ### Cloud Infrastructure Admin
 
 - As a Cloud Infrastructure Admin, I want secrets encrypted at rest, so that database access does not expose sensitive credentials.
-- As a Cloud Infrastructure Admin, I want to declare available secret backends, so that the platform knows where to store and retrieve secrets for different use cases.
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to choose from pluggable secret backends, so that I can match secret storage to my infrastructure and compliance requirements.
+- As a Cloud Provider Admin, I want tenant secrets securely managed and isolated per tenant, so that the platform meets data-at-rest compliance requirements.
 
 ### Tenant Admin
 
