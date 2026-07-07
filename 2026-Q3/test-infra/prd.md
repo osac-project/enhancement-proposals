@@ -19,11 +19,11 @@ OSAC test infrastructure is fragmented across three places: osac-test-infra (E2E
 - Test suites are infrastructure-agnostic — they run the same way regardless of which backend provisioned the cluster.
 - Infrastructure and OSAC deployment are independently destroyable, allowing OSAC iteration without full reprovisioning.
 
-### 2.3 Non-Goals
+### 2.2 Non-Goals
 
 - Rewriting existing Ansible roles or test code — existing implementations move as-is.
 - Unifying secret management across CI systems (Vault, Prow cluster profiles).
-- Replacing cluster-tool or assisted-installer with Ansible.
+- Embedding cluster-tool as a backend — cluster-tool is an independent OSAC project repo consumed as an external dependency, not an embedded infrastructure workflow.
 
 ## 3. Requirements
 
@@ -37,13 +37,13 @@ OSAC test infrastructure is fragmented across three places: osac-test-infra (E2E
 - **FR-6:** Each test suite declares its requirements (required and optional configuration, required tools). The system validates the backend's output against the suite's requirements before running tests. [User]
 - **FR-7:** Suite-specific infrastructure setup is handled by the backend. For example, CaaS requires InfraEnv creation, discovery VM boot, and agent registration on the Netris backend, while VMaaS requires no additional setup on any backend. [User]
 - **FR-8:** A top-level orchestration runs the full E2E flow: deploy lab, deploy OSAC, suite setup, and tests in sequence. Each phase can also be run independently. [User]
-- **FR-9:** Three initial backends are supported: Netris (Ansible-based, supports VMaaS and CaaS), cluster-tool (shell-based, supports VMaaS, catalog, storage), and baremetal (shell-based, supports VMaaS). [User]
+- **FR-9:** The initial backend is Netris (Ansible-based, supports VMaaS and CaaS). Additional backends can be added later following the same contract. [User]
 - **FR-10:** Test suites remain infrastructure-agnostic. Tests consume configuration and do not contain backend-specific logic. [User]
 
 ### 3.2 Non-Functional Requirements
 
-- **NFR-1:** Adding a new infrastructure backend requires only creating a new directory under `infra/`, implementing the Makefile contract, and declaring capabilities. No changes to test code or the top-level orchestration are needed. [User]
-- **NFR-2:** Adding a new test suite requires only creating a new directory under `tests/`, adding a contract file, and updating backend capabilities where applicable. No changes to infrastructure code are needed. [User]
+- **NFR-1:** Adding a new infrastructure backend requires only implementing the contract and declaring capabilities. No changes to test code or the top-level orchestration are needed. [User]
+- **NFR-2:** Adding a new test suite requires only adding the tests and declaring requirements. No changes to infrastructure code are needed. [User]
 
 ## 4. Acceptance Criteria
 
@@ -57,12 +57,14 @@ OSAC test infrastructure is fragmented across three places: osac-test-infra (E2E
 
 ## 5. Assumptions
 
-- The existing Netris Ansible roles, cluster-tool binary, and assisted-installer tooling continue to work as-is and do not require modification beyond being wrapped in the new contract.
+- The existing Netris Ansible roles and test suites continue to work as-is and do not require modification beyond being wrapped in the new contract.
 - The existing pytest test suites do not contain infrastructure-specific logic and can run against any backend that satisfies their contract.
+- netris-test-infra remains intact during migration — content is copied, not moved, until the unified repo is proven.
 
 ## 6. Dependencies
 
-- **netris-test-infra** — its Ansible roles, playbooks, inventory, and netris-lab submodule must be absorbed into the new repo structure.
+- **netris-test-infra** — its Ansible roles, playbooks, inventory, and netris-lab submodule must be copied into the new repo structure.
+- **cluster-tool** — consumed as an external dependency, not embedded.
 - **openshift/release step registry** — Prow steps under `osac-project/netris/` must be updated to reference the unified repo.
 - **osac-test-infra GitHub Actions** — existing workflows must be updated to use the new directory structure.
 
