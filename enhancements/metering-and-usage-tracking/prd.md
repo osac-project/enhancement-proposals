@@ -62,33 +62,33 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 ### 3.1 Cloud Provider Admin
 
 - **CAP-1:** View aggregated usage across all tenants for a billing period, broken down by tenant, resource type, and template.
-- **CAP-3:** View usage of tenant-provisioned cluster worker nodes broken down by resource class (e.g., GPU vs CPU), so that different hardware classes can be priced independently.
-- **CAP-4:** View AI model inference usage broken down by tenant, model, and token type — including input tokens, output tokens, cached tokens, and total tokens consumed.
-- **CAP-5:** Receive accurate metering data for resources that exist for less than one minute — no resource goes unmetered due to brevity. The minimum metering resolution is 1 second; sub-second resources are not captured.
+- **CAP-2:** View usage of tenant-provisioned cluster worker nodes broken down by resource class (e.g., GPU vs CPU), so that different hardware classes can be priced independently.
+- **CAP-3:** View AI model inference usage broken down by tenant, model, and token type — including input tokens, output tokens, cached tokens, and total tokens consumed.
+- **CAP-4:** Receive accurate metering data for resources that exist for less than one minute — no resource goes unmetered due to brevity. The minimum metering resolution is 1 second; sub-second resources are not captured.
 
 ### 3.2 Cloud Infrastructure Admin
 
-- **CAP-6:** Deploy, upgrade, and monitor the metering system using standard Kubernetes tooling — including adding or removing meters, updating the metering stack version, and observing pipeline health (ingestion lag, storage usage). Example: a provider starts offering DBaaS and adds a new meter to track database instance uptime; or a provider stops offering a service and removes its meter to stop collecting unused data.
-- **CAP-7:** Emit metering events for custom services not covered by built-in meters, so that providers can track consumption of additional offerings alongside core services.
-- **CAP-8:** Configure retention periods for raw events and aggregated data independently.
+- **CAP-5:** Deploy, upgrade, and monitor the metering system using standard Kubernetes tooling — including adding or removing meters, updating the metering stack version, and observing pipeline health (ingestion lag, storage usage). Example: a provider starts offering DBaaS and adds a new meter to track database instance uptime; or a provider stops offering a service and removes its meter to stop collecting unused data.
+- **CAP-6:** Emit metering events for custom services not covered by built-in meters, so that providers can track consumption of additional offerings alongside core services.
+- **CAP-7:** Configure retention periods for raw events and aggregated data independently.
 
 ### 3.3 Tenant Admin
 
-- **CAP-9:** View usage for their own organization over a period of time, broken down by project, resource type, and template. Cannot see other tenants' data.
-- **CAP-10:** View usage aggregated by project (including nested projects), so that costs can be attributed to specific teams, grants, or departments.
+- **CAP-8:** View usage for their own organization over a period of time, broken down by project, resource type, and template. Cannot see other tenants' data.
+- **CAP-9:** View usage aggregated by project (including nested projects), so that costs can be attributed to specific teams, grants, or departments.
 
 ### 3.4 Tenant User
 
-- **CAP-11:** View their own tenant's usage over a period of time — what resources are being consumed and for how long.
+- **CAP-10:** View their own tenant's usage over a period of time — what resources are being consumed and for how long.
 
 ### 3.5 Cross-cutting
 
-- **CAP-12:** VMaaS metering is consumption-based. Compute metering (instance-type-seconds) runs only while the VM is active (running). Stopped and paused VMs do not actively consume host compute resources, so compute is not metered in those states. However, resources allocated to a VM that remain reserved regardless of VM state — including storage volumes, public IPs, and DNS records — continue to consume infrastructure capacity (storage space, IP pool addresses, DNS service entries) and must continue to be metered for the full duration of the VM's existence, even while the VM is stopped or paused. VMs in failed state are not metered (see §9.6 for the open question on infra-caused failures). All metered resources belonging to a VM (and — when in scope — storage, public IPs) must be attributable to the parent VM so that the full cost of a VM can be queried as a unified view.
-- **CAP-13:** CaaS metering is consumption-based — only active clusters (ready or progressing) are metered. A failed cluster is not reliably serving workloads and its constituent nodes may be in an indeterminate state; metering a failed cluster risks double-counting alongside any replacement the provider spins up. All metered resources belonging to a cluster (control plane, worker nodes, and — when in scope — storage, networking) must be attributable to the parent cluster so that the full cost of a cluster can be queried as a unified view.
-- **CAP-14:** MaaS metering is consumption-based — charged per token and per inference request, not per allocated model instance. GPU infrastructure cost is embedded in the provider's per-token/per-model pricing. Metering events must be emitted within 30 seconds of the inference request completing, and processed within 60 seconds of receipt, so that downstream systems (e.g., quota enforcement, when available) can evaluate against near-real-time balances. These latency requirements do not apply to VMaaS or CaaS, where delays up to the polling interval are acceptable.
-- **CAP-15:** The metering system can be deployed independently without affecting existing OSAC provisioning. Some providers may prefer to use their own metering solution — independent deployment ensures OSAC emits lifecycle events that any metering system can consume.
-- **CAP-16:** Upgrading the metering system does not cause loss of collected metering data or gaps in measurement of ongoing workloads.
-- **CAP-17:** Duplicate events do not cause double-counting in any meter.
+- **CAP-11:** VMaaS metering is consumption-based. Compute metering (instance-type-seconds) runs only while the VM is active (running). Stopped and paused VMs do not actively consume host compute resources, so compute is not metered in those states. However, resources allocated to a VM that remain reserved regardless of VM state — including storage volumes, public IPs, and DNS records — continue to consume infrastructure capacity (storage space, IP pool addresses, DNS service entries) and must continue to be metered for the full duration of the VM's existence, even while the VM is stopped or paused. VMs in failed state are not metered (see §9.6 for the open question on infra-caused failures). All metered resources belonging to a VM (and — when in scope — storage, public IPs) must be attributable to the parent VM so that the full cost of a VM can be queried as a unified view.
+- **CAP-12:** CaaS metering is consumption-based — only active clusters (ready or progressing) are metered. A failed cluster is not reliably serving workloads and its constituent nodes may be in an indeterminate state; metering a failed cluster risks double-counting alongside any replacement the provider spins up. All metered resources belonging to a cluster (control plane, worker nodes, and — when in scope — storage, networking) must be attributable to the parent cluster so that the full cost of a cluster can be queried as a unified view.
+- **CAP-13:** MaaS metering is consumption-based — charged per token and per inference request, not per allocated model instance. GPU infrastructure cost is embedded in the provider's per-token/per-model pricing. Metering events must be emitted within 30 seconds of the inference request completing, and processed within 60 seconds of receipt, so that downstream systems (e.g., quota enforcement, when available) can evaluate against near-real-time balances. These latency requirements do not apply to VMaaS or CaaS, where delays up to the polling interval are acceptable.
+- **CAP-14:** The metering system can be deployed independently without affecting existing OSAC provisioning. Some providers may prefer to use their own metering solution — independent deployment ensures OSAC emits lifecycle events that any metering system can consume.
+- **CAP-15:** Upgrading the metering system does not cause loss of collected metering data or gaps in measurement of ongoing workloads.
+- **CAP-16:** Duplicate events do not cause double-counting in any meter.
 
 ## 4. Operational Expectations
 
@@ -161,7 +161,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 ### 9.1 Should Tenant Users see only their own resource usage or all usage within their tenant?
 
 - **Owner:** OSAC platform team / UI team
-- **Impact:** CAP-9, CAP-11. The metering system scopes data at the tenant level. Per-user filtering within a tenant is a UI/RBAC concern to be addressed in the Usage API or landing zone design. The [Organizations](/enhancements/organizations) EP defines project-level permissions (e.g., `VIEW_PROJECT`) — metering data visibility should respect these same permissions so users only see usage for projects they have access to.
+- **Impact:** CAP-8, CAP-10. The metering system scopes data at the tenant level. Per-user filtering within a tenant is a UI/RBAC concern to be addressed in the Usage API or landing zone design. The [Organizations](/enhancements/organizations) EP defines project-level permissions (e.g., `VIEW_PROJECT`) — metering data visibility should respect these same permissions so users only see usage for projects they have access to.
 
 ### 9.2 Should OSAC provide a combined "current footprint" view joining live resource state with metering data?
 
@@ -171,22 +171,22 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 ### 9.3 What should happen when the metering system is unavailable?
 
 - **Owner:** OSAC platform team
-- **Impact:** CAP-15. Three options: (1) block provisioning when metering is unavailable, to prevent untracked resources; (2) allow provisioning and accept temporary metering gaps; (3) allow provisioning with a reconciliation service that periodically syncs OSAC's provisioned resource state with the metering system, ensuring all resources are eventually metered. The right choice may be configurable per provider. Failure types also matter — failing to record a provisioning event is different from a temporary processing delay.
+- **Impact:** CAP-14. Three options: (1) block provisioning when metering is unavailable, to prevent untracked resources; (2) allow provisioning and accept temporary metering gaps; (3) allow provisioning with a reconciliation service that periodically syncs OSAC's provisioned resource state with the metering system, ensuring all resources are eventually metered. The right choice may be configurable per provider. Failure types also matter — failing to record a provisioning event is different from a temporary processing delay.
 
 ### 9.4 How does metering handle tenant-defined Services (catalog items)?
 
 - **Owner:** OSAC platform team
-- **Impact:** CAP-9, CAP-12. If Tenant Admins can define their own catalog items (e.g., a custom VM with specific hardware + a custom application not managed by OSAC), the tenant's custom Service would need to be linked back to the CSP's underlying metered resources at the tenant level. The CSP must still see the infrastructure cost, while the tenant sees their custom Service view. This requires clarification of the relationship between tenant-defined catalog items and provider-level metering.
+- **Impact:** CAP-8, CAP-11. If Tenant Admins can define their own catalog items (e.g., a custom VM with specific hardware + a custom application not managed by OSAC), the tenant's custom Service would need to be linked back to the CSP's underlying metered resources at the tenant level. The CSP must still see the infrastructure cost, while the tenant sees their custom Service view. This requires clarification of the relationship between tenant-defined catalog items and provider-level metering.
 
 ### 9.5 Should allocation-based metering be supported for VMaaS and CaaS?
 
 - **Owner:** OSAC platform team / providers
-- **Impact:** CAP-12, CAP-13. The current model meters only active consumption — a stopped VM or a reserved-but-idle GPU node is not metered. In some environments, particularly GPU-intensive research infrastructure, a reserved node that is idle still blocks access for other tenants and incurs the same infrastructure cost for the provider. Allocation-based metering would charge tenants for the capacity reserved on their behalf regardless of active utilization. If providers require this model, the event schema and meter definitions would need to distinguish allocation events (resource reserved) from consumption events (resource actively running), and the metering system would need to track allocation duration independently. Providers with this requirement should surface it during the design phase.
+- **Impact:** CAP-11, CAP-12. The current model meters only active consumption — a stopped VM or a reserved-but-idle GPU node is not metered. In some environments, particularly GPU-intensive research infrastructure, a reserved node that is idle still blocks access for other tenants and incurs the same infrastructure cost for the provider. Allocation-based metering would charge tenants for the capacity reserved on their behalf regardless of active utilization. If providers require this model, the event schema and meter definitions would need to distinguish allocation events (resource reserved) from consumption events (resource actively running), and the metering system would need to track allocation duration independently. Providers with this requirement should surface it during the design phase.
 
 ### 9.6 Should VMs that enter an error state due to an infrastructure failure be exempt from metering?
 
 - **Owner:** OSAC platform team / providers
-- **Impact:** CAP-12. The current model excludes VMs in failed state from metering without distinguishing the cause of failure. When a VM enters an error state due to an infrastructure fault that is the provider's responsibility — hardware failure, hypervisor crash, network partition — the resource is unusable through no fault of the tenant. Charging the tenant for a VM they cannot use during a provider-caused outage is analogous to billing during an SLA breach. However, determining the root cause of a failure programmatically is non-trivial: OSAC would need a way to distinguish tenant-caused errors (e.g., misconfigured boot image) from provider-caused errors (e.g., host failure), and to track the duration of the infra-caused error period.
+- **Impact:** CAP-11. The current model excludes VMs in failed state from metering without distinguishing the cause of failure. When a VM enters an error state due to an infrastructure fault that is the provider's responsibility — hardware failure, hypervisor crash, network partition — the resource is unusable through no fault of the tenant. Charging the tenant for a VM they cannot use during a provider-caused outage is analogous to billing during an SLA breach. However, determining the root cause of a failure programmatically is non-trivial: OSAC would need a way to distinguish tenant-caused errors (e.g., misconfigured boot image) from provider-caused errors (e.g., host failure), and to track the duration of the infra-caused error period.
 
 ## Charge Calculation Model
 
