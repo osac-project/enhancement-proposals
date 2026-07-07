@@ -278,27 +278,14 @@ class EPHooks:
             print(f"  [{ticket_key}] SHADOW: score {total}/{max_total} ({pass_fail})")
             return
 
-        existing_id = self._gh([
-            "api", f"repos/{self.repo}/issues/{pr_number}/comments",
-            "--jq",
-            f'[.[] | select(.user.login == "{self.bot_login}") '
-            f'| select(.body | startswith("## AI EP Review:") or startswith("## AI Design Review:"))][0].id // empty'
-        ]).strip()
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
             f.write(comment)
             comment_file = f.name
 
-        if existing_id:
-            self._gh(["api", f"repos/{self.repo}/issues/comments/{existing_id}",
-                       "--method", "PATCH", "--field", f"body=@{comment_file}"],
-                      check=True)
-            print(f"  [{ticket_key}] Updated review comment")
-        else:
-            self._gh(["pr", "comment", pr_number, "--repo", self.repo,
-                       "--body-file", comment_file],
-                      check=True)
-            print(f"  [{ticket_key}] Posted new review comment")
+        self._gh(["pr", "comment", pr_number, "--repo", self.repo,
+                   "--body-file", comment_file],
+                  check=True)
+        print(f"  [{ticket_key}] Posted new review comment")
 
         os.unlink(comment_file)
 

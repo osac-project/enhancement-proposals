@@ -114,4 +114,7 @@ jobs:
           EP_REVIEW_SHADOW: ${{ vars.EP_REVIEW_SHADOW || 'true' }}
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
           PR_HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_BEFORE_SHA: ${{ github.event.before }}
         run: python .github/scripts/ep_review.py
