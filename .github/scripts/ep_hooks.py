@@ -62,13 +62,11 @@ class EPHooks:
         if self.reviewed_label in labels:
             head = ticket.get("headRefOid", "")
             pr_number = ticket_key.replace("EP-", "")
-            skill = ticket.get("_skill_name", "")
-            marker = "AI EP Review:" if skill == "prd-review" else "AI Design Review:"
             existing = self._gh([
                 "api", f"repos/{self.repo}/issues/{pr_number}/comments",
                 "--jq",
                 f'[.[] | select(.user.login == "{self.bot_login}") '
-                f'| select(.body | contains("{marker}"))][0].body // empty'
+                f'| select(.body | contains("AI EP Review:") or contains("AI Design Review:"))][0].body // empty'
             ]).strip()
             if existing and head and head[:8] in existing:
                 return f"Already reviewed at SHA {head[:8]}"
@@ -280,27 +278,14 @@ class EPHooks:
             print(f"  [{ticket_key}] SHADOW: score {total}/{max_total} ({pass_fail})")
             return
 
-        existing_id = self._gh([
-            "api", f"repos/{self.repo}/issues/{pr_number}/comments",
-            "--jq",
-            f'[.[] | select(.user.login == "{self.bot_login}") '
-            f'| select(.body | startswith("## {marker}"))][0].id // empty'
-        ]).strip()
-
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
             f.write(comment)
             comment_file = f.name
 
-        if existing_id:
-            self._gh(["api", f"repos/{self.repo}/issues/comments/{existing_id}",
-                       "--method", "PATCH", "--field", f"body=@{comment_file}"],
-                      check=True)
-            print(f"  [{ticket_key}] Updated review comment")
-        else:
-            self._gh(["pr", "comment", pr_number, "--repo", self.repo,
-                       "--body-file", comment_file],
-                      check=True)
-            print(f"  [{ticket_key}] Posted new review comment")
+        self._gh(["pr", "comment", pr_number, "--repo", self.repo,
+                   "--body-file", comment_file],
+                  check=True)
+        print(f"  [{ticket_key}] Posted new review comment")
 
         os.unlink(comment_file)
 

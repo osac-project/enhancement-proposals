@@ -40,6 +40,12 @@ def get_changed_files(pr_number):
     return json.loads(raw) if raw.strip() else []
 
 
+def get_incremental_files(before_sha, head_sha):
+    raw = gh(["api", f"repos/{REPO}/compare/{before_sha}...{head_sha}",
+              "--jq", "[.files[].filename]"])
+    return json.loads(raw) if raw.strip() else []
+
+
 def detect_skills(files):
     skills = []
     has_prd = any(f.lower().endswith("prd.md") for f in files)
@@ -112,18 +118,28 @@ def main():
     if shadow:
         print("SHADOW MODE: review will run but no comment will be posted")
 
-    files = get_changed_files(pr_number)
+    event_name = os.environ.get("EVENT_NAME", "")
+    event_action = os.environ.get("EVENT_ACTION", "")
+    before_sha = os.environ.get("EVENT_BEFORE_SHA", "")
+
+    # For synchronize events, only review files changed in the latest push
+    if event_action == "synchronize" and before_sha and head_sha:
+        files = get_incremental_files(before_sha, head_sha)
+        print(f"Synchronize: checking incremental diff ({before_sha[:8]}..{head_sha[:8]})")
+    else:
+        files = get_changed_files(pr_number)
+
     if not files:
-        print("No files changed in PR")
+        print("No files changed")
         return
 
     skills = detect_skills(files)
     if not skills:
-        print("No prd.md or design.md found in changed files — skipping")
+        print("No reviewable docs found in changed files — skipping")
         return
 
     print(f"Detected: {', '.join(s[0] for s in skills)} "
-          f"(from {', '.join(f for f in files if f.endswith('.md'))})")
+          f"(from {', '.join(f for f in files if f.lower().endswith('.md'))})")
 
     pr_raw = gh(["pr", "view", str(pr_number), "--repo", REPO,
                   "--json", "number,title,body,author,labels,headRefOid"])
