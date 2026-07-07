@@ -6,6 +6,9 @@ on:
     paths:
       - '**/prd.md'
       - '**/design.md'
+      - '**/DESIGN.md'
+      - '**/Design.md'
+      - 'enhancements/**/README.md'
 
   issue_comment:
     types: [created]
