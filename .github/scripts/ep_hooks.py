@@ -55,6 +55,13 @@ class EPHooks:
                        '[link removed]', text)
         return text.strip()[:max_len]
 
+    @staticmethod
+    def _write_step_summary(ticket_key, cost_summary):
+        summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_file and cost_summary:
+            with open(summary_file, "a") as f:
+                f.write(f"\n### Review Cost — {ticket_key}\n{cost_summary}\n")
+
     # ── Pre-gate ──
 
     def check_pr_state(self, ticket_key, ticket, mode, work_dir, **kw):
@@ -271,11 +278,24 @@ class EPHooks:
             else:
                 lines.append("None.")
 
+        cost_summary = verdict.get("_cost_summary")
+        if cost_summary:
+            lines.append("")
+            lines.append("---")
+            lines.append(
+                f"<details><summary>Review cost</summary>\n\n"
+                f"{cost_summary}\n</details>"
+            )
+
         comment = "\n".join(lines)
+
+        self._write_step_summary(ticket_key, cost_summary)
 
         if self.shadow:
             print(f"  [{ticket_key}] SHADOW: would post comment ({len(comment)} chars)")
             print(f"  [{ticket_key}] SHADOW: score {total}/{max_total} ({pass_fail})")
+            if cost_summary:
+                print(f"  [{ticket_key}] SHADOW cost: {cost_summary}")
             return
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
@@ -298,10 +318,56 @@ class EPHooks:
     # ── Cost formatter ──
 
     @staticmethod
+    def _format_tokens(count):
+        if count >= 1_000_000:
+            return f"{count / 1_000_000:.1f}M"
+        if count >= 1_000:
+            return f"{count / 1_000:.1f}k"
+        return str(int(count))
+
+    @staticmethod
     def format_cost(cost_data):
         if not cost_data:
             return None
         try:
-            return json.dumps(cost_data, indent=2, default=str)
-        except (TypeError, ValueError):
-            return str(cost_data)
+            token_totals = cost_data.get("token_totals", {})
+            cost_totals = cost_data.get("cost_totals", {})
+            api_requests = cost_data.get("api_requests", [])
+            active_time = cost_data.get("active_time", {})
+
+            by_model = {}
+            for key, count in token_totals.items():
+                if isinstance(key, (list, tuple)) and len(key) == 2:
+                    model, token_type = key
+                else:
+                    continue
+                by_model.setdefault(model, {})[token_type] = count
+
+            lines = []
+            for model, tokens in by_model.items():
+                input_t = tokens.get("input", 0)
+                output_t = tokens.get("output", 0)
+                cache_read = tokens.get("cacheRead", 0)
+                cost = cost_totals.get(model, 0)
+
+                lines.append(f"**Model:** {model}")
+                lines.append(f"**Cost:** ${cost:.4f}")
+                lines.append(
+                    f"**Tokens:** {EPHooks._format_tokens(input_t)} in / "
+                    f"{EPHooks._format_tokens(output_t)} out"
+                )
+                if cache_read:
+                    lines.append(
+                        f"**Cache:** {EPHooks._format_tokens(cache_read)} read"
+                    )
+
+            total_secs = sum(active_time.values())
+            if total_secs:
+                mins, secs = divmod(int(total_secs), 60)
+                time_str = f"{mins}m {secs}s" if mins else f"{secs}s"
+                lines.append(f"**Active time:** {time_str}")
+            lines.append(f"**API calls:** {len(api_requests)}")
+
+            return "\n".join(lines) if lines else None
+        except (TypeError, ValueError, AttributeError):
+            return None
