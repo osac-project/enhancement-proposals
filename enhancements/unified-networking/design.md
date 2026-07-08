@@ -14,7 +14,7 @@ see-also:
   - VMaaS Networking: /enhancements/vmaas-networking
   - CaaS Networking: /enhancements/caas-networking
   - BMaaS Networking: /enhancements/bmaas-networking
-  - Simplified Resource Creation: /enhancements/simplified-resource-creation
+  - Default Networking: /enhancements/default-networking
 replaces:
   - /enhancements/networking
 superseded-by:

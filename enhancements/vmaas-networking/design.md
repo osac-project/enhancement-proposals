@@ -9,7 +9,7 @@ tracking-link:
 prd: "prd.md"
 see-also:
   - "Unified Networking: /enhancements/unified-networking"
-  - "Simplified Resource Creation: /enhancements/simplified-resource-creation"
+  - "Default Networking: /enhancements/default-networking"
 replaces:
   - N/A
 superseded-by:
@@ -114,7 +114,7 @@ ComputeInstance already participates in the networking API. Today's flow:
      --external-ip=auto --nat-gateway=auto --name my-vm
    ```
    - fulfillment-service:
-     - If `compute_network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Simplified Resource Creation PRD)
+     - If `compute_network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
      - Validates: subnets exist, are Ready, same VN, primary rules
      - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment
      - If `nat_gateway_mode == AUTO`: creates NATGateway on the VN (reuses existing if one already exists)

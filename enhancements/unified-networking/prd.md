@@ -367,7 +367,7 @@ _No non-functional requirements were specified in the original document._
 ## 6. Dependencies
 
 - **Unified Networking Design**: [/enhancements/unified-networking](/enhancements/unified-networking) — Technical design document fulfilling these requirements
-- **Simplified Resource Creation**: [/enhancements/simplified-resource-creation](/enhancements/simplified-resource-creation) — Related enhancement for resource ordering workflow
+- **Default Networking**: [/enhancements/default-networking](/enhancements/default-networking) — Related enhancement for resource ordering workflow
 - **Original Networking API**: [/enhancements/networking](/enhancements/networking) — VMaaS-only networking API (superseded for multi-service scenarios)
 - **BareMetal Instance API**: [/enhancements/baremetal-instance-api](/enhancements/baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference

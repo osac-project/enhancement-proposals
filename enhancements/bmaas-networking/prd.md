@@ -85,7 +85,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Optional Network Attachments with Defaults
 
-- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted, the system attaches the server to the tenant's default subnet and default security group, using the first "fabric" role interface from the host type (see Simplified Resource Creation PRD). The resolved attachments are stored with the server so the server is self-describing after creation. [User]
+- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted, the system attaches the server to the tenant's default subnet and default security group, using the first "fabric" role interface from the host type (see Default Networking PRD). The resolved attachments are stored with the server so the server is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -142,7 +142,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 ## 6. Assumptions
 
-- The tenant has default networking resources (virtual network, subnet, security group) pre-created at onboarding (see Simplified Resource Creation PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
+- The tenant has default networking resources (virtual network, subnet, security group) pre-created at onboarding (see Default Networking PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
 - The target region's networking infrastructure has fabric manager configured (the system can resolve which network automation to use).
 - The host type for the bare-metal template has a populated physical network interface list. If the list is empty, creating a server with explicit network attachments fails with a clear error.
 - Out-of-band provisioning interfaces (PXE boot, BMC) are reserved for system use and are NOT tenant-attachable (should not appear in network attachments).
@@ -150,7 +150,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 ## 7. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/unified-networking)
-- **Simplified Resource Creation PRD** — default Subnet and SecurityGroup selection behavior defined in [Simplified Resource Creation PRD](/enhancements/simplified-resource-creation)
+- **Default Networking PRD** — default Subnet and SecurityGroup selection behavior defined in [Default Networking PRD](/enhancements/default-networking)
 - **Networking manager dispatch** — the system must be able to route networking operations to the correct fabric manager (in progress)
 - **NAT gateway support** — outbound NAT must be available as a networking resource
 - **External access for BM targets** — the external IP attachment system must support bare-metal servers as targets

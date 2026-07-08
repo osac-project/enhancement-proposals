@@ -136,7 +136,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 ## 7. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways) defined in the [Unified Networking EP](/enhancements/unified-networking)
-- **Simplified Resource Creation PRD** — default subnet and security group selection behavior defined in [Simplified Resource Creation PRD](/enhancements/simplified-resource-creation)
+- **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/default-networking)
 
 ## 8. Risks
 
