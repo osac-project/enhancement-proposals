@@ -6,6 +6,8 @@
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1435 |
 | Date        | 2026-07-08 |
 
+> This PRD is an expansion of the [Unified Networking PRD](/enhancements/unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements; this document defines the service-specific requirements and user stories.
+
 ## 1. Problem Statement
 
 Tenants cannot create VMs with multiple network interfaces or designate which interface provides the default gateway. Creating a VM with external access requires manual IP allocation and NAT configuration, forcing tenants to understand inbound and outbound routing before provisioning their first reachable VM. The default networking experience varies across resource types — some resources have simplified creation flows while VMs require explicit networking details on every create.

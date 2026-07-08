@@ -22,6 +22,8 @@ This enhancement extends the unified networking API to support VMaaS-specific re
 
 ## Summary
 
+This enhancement is an expansion of the [Unified Networking EP](/enhancements/unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
+
 ComputeInstance currently uses a shared `NetworkAttachment` message that lacks a `primary` field, preventing multi-NIC VM provisioning with a designated default gateway. This enhancement introduces `ComputeNetworkAttachment` with a `primary` field, makes the attachments field optional (populating with tenant defaults when omitted), and adds `external_ip_mode` and `nat_gateway_mode` to enable fully connected VMs in a single API call. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
