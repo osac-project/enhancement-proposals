@@ -36,6 +36,15 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 - As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a region that only supports bare-metal servers, so that I understand the limitation and can choose a different region
 
+### Tenant Admin Stories
+
+- As a Tenant Admin, I want to inspect and modify the default networking resources (subnet, security group) used when VMs are created without explicit network configuration
+- As a Tenant Admin, I want to see which subnet and security groups each VM is attached to, so I can audit my organization's network topology
+
+### Cloud Infrastructure Admin Stories
+
+- As a Cloud Infrastructure Admin, I want to configure which regions support VM provisioning (by deploying a K8s manager), so that VM creation is rejected with a clear error in BM-only regions
+
 ### Cloud Provider Admin Stories
 
 - As a Cloud Provider Admin, I want visibility into auto-provisioned networking resources (external IPs, NAT gateways), so I can monitor capacity and troubleshoot connectivity issues
