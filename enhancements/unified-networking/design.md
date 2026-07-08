@@ -6,11 +6,15 @@ creation-date: 2026-06-03
 last-updated: 2026-06-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1029
+prd: "prd.md"
 see-also:
-  - Requirements (PRD): /enhancements/unified-networking-prd
   - Networking API: /enhancements/networking
   - BareMetal Instance API: /enhancements/baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
+  - VMaaS Networking: /enhancements/vmaas-networking
+  - CaaS Networking: /enhancements/caas-networking
+  - BMaaS Networking: /enhancements/bmaas-networking
+  - Simplified Resource Creation: /enhancements/simplified-resource-creation
 replaces:
   - /enhancements/networking
 superseded-by:
@@ -24,7 +28,7 @@ superseded-by:
 This enhancement describes the technical design for the OSAC unified
 networking architecture. For the problem statement, gaps analysis, and
 requirements, see the companion
-[Requirements Document (PRD)](/enhancements/unified-networking-prd).
+[Requirements Document (PRD)](prd.md).
 
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a
 pod. Pod networking is managed by OVN-Kubernetes, meaning VMs live inside an
@@ -53,7 +57,7 @@ the [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api),
 which provides a per-server resource aligned with ComputeInstance.
 
 For user stories, goals, and non-goals, see the
-[Requirements Document (PRD)](/enhancements/unified-networking-prd).
+[Requirements Document (PRD)](prd.md).
 
 ## Proposal
 
@@ -314,6 +318,13 @@ The k8sManager is only involved at subnet creation (to bridge the overlay)
 — after that, VMs are on the fabric and the fabric manager handles them
 like any other resource.
 
+The dispatch table above covers **networking resources only**. Compute
+resources (ComputeInstance, BaremetalInstance, Cluster) handle per-instance
+network attachment through their provisioning operators — see per-service
+designs at [VMaaS](/enhancements/vmaas-networking),
+[CaaS](/enhancements/caas-networking),
+[BMaaS](/enhancements/bmaas-networking).
+
 ### Resource Hierarchy
 
 ```text
@@ -424,9 +435,9 @@ and gets an IP from the subnet CIDR.
 **BaremetalInstance:**
 
 Bare-metal servers have multiple physical interfaces. The tenant discovers
-available interfaces through BMaaS (the exact discovery mechanism — e.g.,
-host type metadata, template, or inventory query — is defined by the BMaaS
-design). Given the interface identifiers, the tenant specifies which
+available interfaces via the HostType API — each BM HostType lists its
+physical interfaces with name, role, and description (see
+[HostType](#hosttype)). Given the interface identifiers, the tenant specifies which
 interface to attach to which subnet. Each
 `network_attachment` maps one physical interface to one subnet. If
 `interface` is omitted, the fabric manager picks a default.
@@ -455,7 +466,8 @@ fabric segment. Each interface gets an IP from its subnet's CIDR.
 Validation rules:
 - All referenced subnets must belong to the same VirtualNetwork
 - The same interface cannot appear in multiple attachments
-- The `interface` must reference a valid interface identifier from BMaaS
+- The `interface` must reference a valid interface name from the HostType's
+  NetworkInterface list
 - Multiple attachments without `interface` is invalid — if more than one
   attachment is specified, each must have an explicit `interface`
 - The number of attachments cannot exceed the number of available interfaces
@@ -468,17 +480,18 @@ osac create cluster --template ocp_4_17_small \
   --node-set workers=large,size=3 --name my-cluster
 ```
 
-The template determines whether nodes are VMs or BM. BM nodes get switch
-ports configured on the fabric segment. VM nodes are placed in the K8s
-overlay. Either way, all nodes end up on the same fabric segment.
+For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
+are architecturally possible but deferred. The fulfillment-service resolves
+the interface from the HostType (`fabric_interface` — first interface with
+role `fabric`). The operator handles agent selection and network attachment
+(switch port configuration) before triggering the provisioning template.
+See [CaaS Networking](/enhancements/caas-networking) for the detailed flow.
 
-For clusters with BM nodes, the nodes also have multiple physical
-interfaces — the same reality as BaremetalInstance. The difference is that
-the **template** handles the interface-to-subnet mapping, not the tenant.
-The cluster template is created by the provider who knows the node hardware
-(e.g., which interface is for data traffic, which is for management). The
-tenant specifies which subnet(s) to use; the template maps them to the
-correct physical interfaces for each node type.
+Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
+(where the tenant specifies interfaces directly), for clusters the
+**system** resolves the interface from the HostType's NetworkInterface list.
+The tenant specifies which subnet(s) to use; the system maps them to the
+correct physical interfaces based on the node set's host type.
 
 Different node sets can be placed on different subnets using the `node-set`
 field (see [ClusterNetworkAttachment](#network-attachment-types)):
@@ -590,6 +603,53 @@ message VirtualNetworkSpec {
 
 No scope or service field — subnets are infrastructure-agnostic.
 
+#### HostType
+
+The `HostType` resource describes a class of hardware. For networking,
+BM host types include a structured interface list:
+
+```protobuf
+message HostType {
+  string id = 1;
+  Metadata metadata = 2;
+  string title = 3;
+  string description = 4;
+  repeated NetworkInterface interfaces = 5;  // BM only, empty for VM host types
+}
+
+message NetworkInterface {
+  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0"
+  string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
+  string description = 3; // e.g., "100GbE fabric interface"
+}
+```
+
+The `interfaces` list is only populated for BM host types. VM host types
+have an empty list — VMs get virtual NICs from the CUDN overlay, not
+physical interfaces. This serves as the BM-vs-VM discriminator: if a
+HostType has interfaces → BM; if empty → VM.
+
+Interfaces are ordered. When multiple interfaces share the same role
+(e.g., two `fabric` interfaces), the first one in the list is the default
+for that role — used by CaaS for automatic interface resolution.
+
+| Role | Meaning |
+|------|---------|
+| `fabric` | Primary fabric traffic (east-west, tenant workloads) |
+| `management` | In-band management/control plane traffic |
+| `storage` | Storage fabric traffic |
+| `lifecycle` | Out-of-band lifecycle management (PXE boot, Redfish/BMC) — not tenant-attachable |
+
+Roles are conventions, not enforced enums. The `lifecycle` interface is
+used by the provisioning system (Ironic, Metal3) and should not appear
+in `network_attachments`.
+
+BMaaS: the tenant specifies interface names directly on
+`BareMetalNetworkAttachment.interface`, validated against the HostType's
+interface list. CaaS: the fulfillment-service resolves the interface
+automatically (first `fabric`-role interface → stored as
+`fabric_interface` on `ClusterNetworkAttachment`).
+
 #### Network Attachment Types
 
 Each resource type has its own network attachment message. The core fields
@@ -618,13 +678,13 @@ primary designation and default gateway semantics.
 message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
-  string interface = 3;                 // optional, immutable: physical interface identifier from BMaaS
+  string interface = 3;                 // optional, immutable: physical interface from HostType
   bool primary = 4;                     // optional, immutable: designates default gateway
 }
 ```
 
 Each entry maps one physical interface to one subnet. The `interface`
-field references an interface identifier provided by BMaaS.
+field references a name from the HostType's NetworkInterface list.
 If omitted, the fabric manager picks a default. Multiple entries create
 a multi-homed BM server. See [Multi-NIC Behavior](#multi-nic-behavior)
 for primary designation and default gateway semantics, and
@@ -638,13 +698,16 @@ message ClusterNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
   string node_set = 3;                  // optional, immutable: node set name from cluster spec
+  string fabric_interface = 4;          // system-populated: first fabric-role
+                                        // interface from HostType, immutable
 }
 ```
 
 Each entry maps one node set to one subnet. If `node_set` is omitted,
-all node sets use this subnet. Multiple entries place different node sets
-on different subnets (e.g., GPU workers on a high-bandwidth subnet,
-compute workers on a standard one).
+all node sets use this subnet. The `fabric_interface` is resolved by the
+fulfillment-service at creation time from the node set's host type
+(first interface with role `fabric` — see [HostType](#hosttype)). The
+tenant does not set this field. For v0.2: one attachment per node set.
 
 #### Resource Specs
 
@@ -791,12 +854,12 @@ attachment determines:
   rejected
 - `primary` is immutable after creation
 
-**IPAM and DHCP:** The responsible manager (k8sManager for VMs, fabric
-manager for BM) configures DHCP per subnet based on the primary
-designation:
+**IPAM and IP assignment:** The responsible manager (k8sManager for VMs,
+fabric manager for BM) configures IP assignment per subnet based on the
+primary designation. IP assignment may use DHCP or static configuration.
 
-| Subnet role | DHCP provides |
-|-------------|--------------|
+| Subnet role | IP assignment provides (via DHCP or static) |
+|-------------|---------------------------------------------|
 | Primary | IP address + default gateway + DNS |
 | Secondary | IP address + connected route only (no gateway) |
 
