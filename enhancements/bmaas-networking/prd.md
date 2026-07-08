@@ -8,20 +8,20 @@
 
 ## 1. Problem Statement
 
-BaremetalInstance has no networking fields. Tenants cannot attach bare-metal servers to subnets, apply security groups, or configure switch ports for tenant workloads. Provisioning bare-metal servers requires manual switch configuration outside the OSAC API. The two-operator architecture (bare-metal-fulfillment-operator for provisioning, osac-operator for feedback) lacks a networking reconciliation phase to integrate with the unified networking API. ExternalIPAttachment does not support `baremetal_instance` as an attachment target, preventing inbound external access to BM servers. The `NetworkClass` field populated from inventory collides with the OSAC NetworkClass CRD (different concepts, same name).
+Provisioning bare-metal servers requires manual switch configuration outside the OSAC API. Tenants cannot attach bare-metal servers to subnets, apply security groups, or configure external access through the API. The system does not expose which physical network interfaces are available on a bare-metal server, forcing tenants to discover interface names through out-of-band documentation. Creating a reachable bare-metal server with both inbound and outbound connectivity requires sequential API calls to create networking resources and manual coordination with infrastructure administrators for switch port configuration.
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
 
-- A tenant can create a BaremetalInstance with explicit network attachments, each specifying a physical interface from the HostType's interface list
-- A tenant can create a BaremetalInstance with `--external-ip=auto` and have the system allocate an ExternalIP and attach it automatically
-- A tenant can create a BaremetalInstance with `--nat-gateway=auto` and have the system provision or reuse a NATGateway on the BM's VirtualNetwork for outbound connectivity
-- Optional `network_attachments` field — when omitted, the system populates with tenant's default Subnet and SecurityGroup
-- HostType resource extended with structured NetworkInterface list (name, role, description) for BM host types to define available physical interfaces
-- bare-metal-fulfillment-operator adds `reconcileNetworking` phase that calls dispatcher to configure switch ports for each attachment
-- ExternalIPAttachment supports `baremetal_instance` target type
-- Rename BaremetalInstance spec field `networkClass` → `networkFabricManager` to avoid CRD name collision
+- A tenant can create a bare-metal server with explicit network attachments, each specifying which physical interface connects to which subnet
+- A tenant can create a bare-metal server with `--external-ip=auto` and have the system allocate an external IP for inbound access automatically
+- A tenant can create a bare-metal server with `--nat-gateway=auto` and have the system provision outbound connectivity automatically
+- Network attachments are optional — when omitted, the system attaches the server to the tenant's default subnet and security group
+- Host types expose available physical network interfaces through the API (name, role, description) for bare-metal servers
+- The system configures switch ports for each network attachment before bare-metal OS provisioning begins
+- External IP attachments support bare-metal servers as a target type
+- The system uses a distinct term for fabric manager configuration to avoid confusion with the networking resource hierarchy
 
 ### 2.2 Success Metrics
 
@@ -32,160 +32,174 @@ BaremetalInstance has no networking fields. Tenants cannot attach bare-metal ser
 
 ### 2.3 Non-Goals
 
-- CaaS or VMaaS networking (this PRD covers BMaaS only; Cluster and ComputeInstance are addressed in separate enhancements)
-- Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
-- Fabric manager implementation (Netris BM role implementation via dispatcher)
+- Cluster or VM networking (this PRD covers bare-metal servers only; clusters and VMs are addressed in separate enhancements)
+- Network provisioning infrastructure implementation (deferred to Unified Networking EP implementation)
+- Fabric manager implementation (network fabric automation via templates)
 - Multi-interface failover or bonding (out of scope for initial implementation)
 
-## 3. Requirements
+## 3. User Stories
 
-### 3.1 Functional Requirements
+### Tenant User Stories
 
-#### BareMetalNetworkAttachment Proto
+- As a Tenant User, I want to create a bare-metal server with explicit network attachments so that I can connect specific physical interfaces to specific subnets
+- As a Tenant User, I want to see which physical network interfaces are available on a host type so that I can select the appropriate interface when creating network attachments
+- As a Tenant User, I want to create a bare-metal server with `--external-ip=auto` and have it externally reachable in a single API call, without manually creating external IP and attachment resources
+- As a Tenant User, I want to create a bare-metal server with `--nat-gateway=auto` so that the server has outbound connectivity without manual NAT gateway setup
+- As a Tenant User, I want to create a multi-homed bare-metal server (multiple network attachments) and designate which interface provides the default gateway
+- As a Tenant User, I want auto-provisioned external IPs to be automatically cleaned up when I delete the server, so that I do not accumulate orphaned resources
+- As a Tenant User, I want network interface validation when creating attachments so that I get clear errors if I specify an interface that doesn't exist or attach the same interface to multiple subnets
 
-- **FR-1:** Create `BareMetalNetworkAttachment` message with fields: `subnet` (Subnet ID, required, immutable), `security_groups` (SecurityGroup IDs, mutable), `interface` (physical interface name from HostType, optional, immutable), and `primary` (boolean, immutable) to designate which attachment provides the default gateway for multi-homed servers. [Source: `.planning/bmaas-networking-design.md` — API Changes]
+### Tenant Admin Stories
 
-#### HostType NetworkInterface List
+- As a Tenant Admin, I want visibility into which physical interfaces are connected to which subnets for a bare-metal server so that I can troubleshoot network connectivity issues
 
-- **FR-2:** Extend HostType proto with `repeated NetworkInterface interfaces` field. NetworkInterface message has `name` (e.g., "data-0"), `role` (e.g., "fabric", "management", "storage", "lifecycle"), and `description` (e.g., "100GbE data interface"). The field is only populated for BM host types (empty for VM host types). Interfaces are ordered; when multiple interfaces share the same role, the first in the list is the default for that role. [Source: `.planning/bmaas-networking-design.md` — HostType and Interface Validation]
+### Cloud Infrastructure Admin Stories
+
+- As a Cloud Infrastructure Admin, I want to define available physical interfaces for each host type (name, role, description) so that tenants can discover and attach to the correct interfaces
+
+### Cloud Provider Admin Stories
+
+- As a Cloud Provider Admin, I want to see which IP addresses were allocated to each network interface on a bare-metal server so that I can troubleshoot connectivity and external access configuration
+
+## 4. Requirements
+
+### 4.1 Functional Requirements
+
+#### Network Attachment Specification
+
+- **FR-1:** Tenants can specify network attachments when creating a bare-metal server. Each attachment identifies a subnet (required, immutable), security groups (modifiable), which physical interface to use (optional, immutable), and whether this attachment provides the default gateway for multi-homed servers (immutable). [User]
+
+#### Host Type Interface Discovery
+
+- **FR-2:** The host type API exposes available physical network interfaces for bare-metal host types. Each interface includes a name (e.g., "data-0"), role (e.g., "fabric", "management", "storage"), and description (e.g., "100GbE data interface"). VM host types do not expose interface lists. Interfaces are ordered; when multiple interfaces share the same role, the first in the list is the default for that role. [User]
 
 #### Interface Validation
 
-- **FR-3:** fulfillment-service validates that each `interface` in `network_attachments` exists in the HostType's NetworkInterface list. The same interface cannot appear in multiple attachments. If >1 attachment, each must have an explicit `interface` (multiple attachments without `interface` is invalid). Number of attachments ≤ number of available interfaces on the template. [Source: `.planning/bmaas-networking-design.md` — Server Validation Rules]
+- **FR-3:** The system validates that each physical interface specified in network attachments exists in the host type's interface list. The same interface cannot appear in multiple attachments. If more than one attachment is specified, each must identify an explicit physical interface (multiple attachments without interface names is invalid). The number of attachments cannot exceed the number of available interfaces on the host type. [User]
 
-#### Primary Field
+#### Primary Gateway Designation
 
-- **FR-4:** When a BaremetalInstance has multiple `network_attachments`, exactly one must have `primary: true`. When only one attachment exists, `primary` is optional and treated as implicit. The operator CRD validates this constraint via CEL. [Source: `.planning/bmaas-networking-design.md` — Operator CRD]
+- **FR-4:** When a bare-metal server has multiple network attachments, exactly one must be designated as the primary attachment (provides default gateway). When only one attachment exists, the primary designation is optional and treated as implicit. [User]
 
 #### Optional Network Attachments with Defaults
 
-- **FR-5:** The `network_attachments` field on BareMetalInstanceSpec is optional. When omitted, the fulfillment-service populates it with the tenant's default Subnet and default SecurityGroup, using the first "fabric" role interface from the HostType (see Simplified Resource Creation PRD). The resolved attachments are stored in the resource spec so the resource is self-describing after creation. [Source: `.planning/bmaas-networking-design.md` — Proposed Flow, step 5]
+- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted, the system attaches the server to the tenant's default subnet and default security group, using the first "fabric" role interface from the host type (see Simplified Resource Creation PRD). The resolved attachments are stored with the server so the server is self-describing after creation. [User]
 
-#### Auto ExternalIP
+#### Auto External IP
 
-- **FR-6:** BareMetalInstanceSpec supports an `external_ip_mode` field with values `NONE` (default) and `AUTO`. When `AUTO`, the system auto-selects the READY ExternalIPPool with the most available capacity, creates an ExternalIP, and creates an ExternalIPAttachment binding it to the BM's primary attachment subnet IP. The ExternalIP and ExternalIPAttachment are labeled `osac.openshift.io/auto-provisioned: "true"`. [Source: `.planning/bmaas-networking-design.md` — Proposed Flow, step 5]
+- **FR-6:** Bare-metal servers support an external IP mode with values `NONE` (default) and `AUTO`. When `AUTO`, the system auto-selects the external IP pool with the most available capacity, allocates an external IP, and creates an external IP attachment binding it to the server's primary attachment subnet IP. The external IP and attachment are labeled as auto-provisioned. [User]
 
-#### Auto NATGateway
+#### Auto NAT Gateway
 
-- **FR-7:** BareMetalInstanceSpec supports a `nat_gateway_mode` field with values `NONE` (default) and `AUTO`. When `AUTO`, the system creates a NATGateway on the BM's VirtualNetwork (reuses existing NATGateway if one already exists, regardless of state or whether it was manually or auto-created). The NATGateway uses an auto-selected ExternalIP as the SNAT source. [Source: `.planning/bmaas-networking-design.md` — Proposed Flow, step 5]
+- **FR-7:** Bare-metal servers support a NAT gateway mode with values `NONE` (default) and `AUTO`. When `AUTO`, the system provisions a NAT gateway on the server's virtual network (reuses existing NAT gateway if one already exists, regardless of state or whether it was manually or auto-created). The NAT gateway uses an auto-selected external IP as the SNAT source. [User]
 
-#### bare-metal-fulfillment-operator reconcileNetworking Phase
+#### Network Connectivity Configuration
 
-- **FR-8:** bare-metal-fulfillment-operator BareMetalInstance controller adds a `reconcileNetworking` phase that runs after `reconcileInventory` (host assignment) and before `reconcileProvisioning` (OS provisioning). For each attachment, the controller calls dispatcher → `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_id` (ExternalHostID), `host_class`, `interface`, `subnet_ref`, `security_group_refs`, `primary`. The fabric manager resolves the host identity to a fabric server, adds the server's interface to the subnet's fabric segment, and allocates an IP (DHCP or static). Network attachments must be Ready before provisioning proceeds. [Source: `.planning/bmaas-networking-design.md` — Proposed Flow, step 6b]
+- **FR-8:** The system configures network connectivity for each interface-to-subnet mapping before bare-metal OS provisioning begins. Switch port configuration must complete successfully before the server is provisioned. For each attachment, the system identifies the physical server in the network fabric, adds the server's interface to the subnet's network segment, and allocates an IP address (DHCP or static). Network attachments must be ready before provisioning proceeds. [User]
 
-#### IP Address Feedback
+#### IP Address Visibility
 
-- **FR-9:** The `create_network_attachment` role writes the allocated IP to the BaremetalInstance CR status (`networkAttachments[].ipAddress`). The feedback controller syncs this to fulfillment-service. The ExternalIPAttachment controller reads the primary IP from the BM's status to create the DNAT rule. [Source: `.planning/bmaas-networking-design.md` — The IP Address Feedback Question, Option A]
+- **FR-9:** The allocated IP address for each network attachment is visible in the bare-metal server status after network connectivity is configured. The external IP attachment reads the primary IP to configure inbound access. [User]
 
-#### ExternalIPAttachment BM Target Support
+#### External IP Attachment for Bare-Metal
 
-- **FR-10:** ExternalIPAttachment CRD and proto support `baremetal_instance` as an attachment target type. The controller reads the BM's primary attachment IP from status and passes it to the fabric manager's `create_external_ip_attachment` role to create the DNAT rule. [Source: `.planning/bmaas-networking-design.md` — Proposed Flow, step 9]
+- **FR-10:** External IP attachments support bare-metal servers as an attachment target type. The system reads the server's primary attachment IP from status and configures the inbound NAT rule. [User]
 
-#### NetworkFabricManager Rename
+#### Fabric Manager Configuration
 
-- **FR-11:** Rename BaremetalInstance spec field `networkClass` → `networkFabricManager`. Update fulfillment-service proto, operator CRD, and bare-metal-fulfillment-operator to use the new field name. The field is a static config string set at operator startup (e.g., "openstack"), not a reference to the OSAC NetworkClass CRD. [Source: `.planning/bmaas-networking-design.md` — Current State, What's Missing]
-
-#### mutateBMI Update
-
-- **FR-12:** The `mutateBMI()` function in fulfillment-service's BM reconciler must copy `network_attachments` from the proto spec to the K8s CR spec when creating or updating the BaremetalInstance CR. [Source: `.planning/bmaas-networking-design.md` — fulfillment-service Controller (mutateBMI)]
+- **FR-11:** The system uses a distinct configuration parameter for identifying which network fabric automation to use when provisioning bare-metal servers. This parameter is a static configuration string set at deployment time (e.g., "openstack"), not a reference to a networking resource. [User]
 
 #### Auto-Cleanup on Deletion
 
-- **FR-13:** When a BaremetalInstance is deleted, if ExternalIP/ExternalIPAttachment were created by the system (`external_ip_mode=AUTO`, labeled `osac.openshift.io/auto-provisioned: "true"`), the parent finalizer deletes ExternalIPAttachment first, then ExternalIP. Manually created resources are NOT cleaned up. Default networking resources (VN, Subnet, SG) are NOT cleaned up. [Source: `.planning/bmaas-networking-design.md` — Deletion, step 11]
+- **FR-12:** When a bare-metal server is deleted, if external IP and external IP attachment were created by the system (external IP mode `AUTO`, labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. Manually created resources are NOT cleaned up. Default networking resources (virtual network, subnet, security group) are NOT cleaned up. [User]
 
 #### Network Attachment Deletion
 
-- **FR-14:** During BaremetalInstance deletion, `reconcileNetworking` (delete) calls dispatcher → `osac.templates.{{ fabric_manager }}.delete_network_attachment` per interface, passing `host_id`, `host_class`, `interface`, `subnet_ref`. The fabric manager removes the server's interfaces from the subnets' fabric segments and releases IPs. [Source: `.planning/bmaas-networking-design.md` — Deletion, step 11]
+- **FR-13:** During bare-metal server deletion, the system deconfigures network connectivity for each interface, removing the server's interfaces from the subnets' network segments and releasing IP addresses. [User]
 
-### 3.2 Non-Functional Requirements
+### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Auto ExternalIP allocation completes synchronously within the create API call (no async allocation delay). If no pool has available capacity, the create API call returns an error. [Source: Simplified Resource Creation PRD]
+- **NFR-1:** Auto external IP allocation completes synchronously within the create API call (no async allocation delay). If no pool has available capacity, the create API call returns an error. [User]
 
-- **NFR-2:** Network attachment provisioning (switch port configuration) completes within 2 minutes per interface. [Source: inferred from success metrics]
+- **NFR-2:** Network attachment provisioning (switch port configuration) completes within 2 minutes per interface. [User]
 
-## 4. Acceptance Criteria
+## 5. Acceptance Criteria
 
-- [ ] A Tenant User can create a BaremetalInstance with explicit `--network-attachment` flags, each specifying an `interface` from the HostType
-- [ ] A Tenant User can create a BaremetalInstance with `--external-ip=auto` and no explicit `network_attachments` — the BM is created on the default subnet with an auto-provisioned ExternalIP for inbound access
-- [ ] A Tenant User can create a BaremetalInstance with `--nat-gateway=auto` and no explicit `network_attachments` — the BM is provisioned with a NATGateway for outbound connectivity
-- [ ] A Tenant User can create a BaremetalInstance with both `--external-ip=auto` and `--nat-gateway=auto` — the BM is fully connected (inbound + outbound) in a single API call
-- [ ] A multi-interface BM (multiple `network_attachments`) is provisioned with switch ports configured for each interface, primary attachment providing default gateway
-- [ ] Auto-created ExternalIP and ExternalIPAttachment are labeled `osac.openshift.io/auto-provisioned: "true"` and visible in list views
-- [ ] Deleting a BaremetalInstance with auto-provisioned ExternalIP causes the auto-created ExternalIP and ExternalIPAttachment to be cleaned up via the parent's finalizer
-- [ ] HostType API returns structured NetworkInterface list for BM host types (name, role, description)
-- [ ] Creating a BaremetalInstance with an invalid `interface` (not in HostType's list) returns an error
-- [ ] Creating a BaremetalInstance with duplicate interfaces across attachments returns an error
-- [ ] BM primary attachment IP is written to CR status and synced to fulfillment-service
-- [ ] ExternalIPAttachment with `baremetal_instance` target creates DNAT rule using BM's primary IP from status
+- [ ] A Tenant User can create a bare-metal server with explicit network attachments, each specifying a physical interface from the host type
+- [ ] A Tenant User can create a bare-metal server with `--external-ip=auto` and no explicit network attachments — the server is created on the default subnet with an auto-provisioned external IP for inbound access
+- [ ] A Tenant User can create a bare-metal server with `--nat-gateway=auto` and no explicit network attachments — the server is provisioned with a NAT gateway for outbound connectivity
+- [ ] A Tenant User can create a bare-metal server with both `--external-ip=auto` and `--nat-gateway=auto` — the server is fully connected (inbound + outbound) in a single API call
+- [ ] A multi-interface bare-metal server (multiple network attachments) is provisioned with switch ports configured for each interface, primary attachment providing default gateway
+- [ ] Auto-created external IP and external IP attachment are labeled as auto-provisioned and visible in list views
+- [ ] Deleting a bare-metal server with auto-provisioned external IP causes the auto-created external IP and external IP attachment to be cleaned up automatically
+- [ ] Host type API returns structured physical network interface list for bare-metal host types (name, role, description)
+- [ ] Creating a bare-metal server with an invalid interface (not in host type's list) returns an error
+- [ ] Creating a bare-metal server with duplicate interfaces across attachments returns an error
+- [ ] Bare-metal server primary attachment IP is visible in status after network connectivity is configured
+- [ ] External IP attachment with bare-metal server target creates inbound NAT rule using server's primary IP from status
 
-## 5. Assumptions
+## 6. Assumptions
 
-- The tenant has default networking resources (VirtualNetwork, Subnet, SecurityGroup) pre-created by the Tenant controller (see Simplified Resource Creation PRD). If defaults are not configured, creating a BM without explicit `network_attachments` fails with a clear error.
-- The target region's NetworkClass has `fabric_manager` configured (dispatcher can resolve fabric manager role).
-- The HostType for the BM template has a populated NetworkInterface list. If the list is empty, creating a BM with explicit `network_attachments` fails with a clear error.
-- The `lifecycle` role interface is reserved for out-of-band provisioning (PXE boot, Redfish/BMC) and is NOT tenant-attachable (should not appear in `network_attachments`).
+- The tenant has default networking resources (virtual network, subnet, security group) pre-created at onboarding (see Simplified Resource Creation PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
+- The target region's networking infrastructure has fabric manager configured (the system can resolve which network automation to use).
+- The host type for the bare-metal template has a populated physical network interface list. If the list is empty, creating a server with explicit network attachments fails with a clear error.
+- Out-of-band provisioning interfaces (PXE boot, BMC) are reserved for system use and are NOT tenant-attachable (should not appear in network attachments).
 
-## 6. Dependencies
+## 7. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/unified-networking)
 - **Simplified Resource Creation PRD** — default Subnet and SecurityGroup selection behavior defined in [Simplified Resource Creation PRD](/enhancements/simplified-resource-creation)
-- **Dispatcher core** — Jira OSAC-1457, OSAC-1458, OSAC-1460 (in progress)
-- **NATGateway full stack** — Jira OSAC-1443 (10 tasks, 1/10 in progress)
-- **ExternalIPAttachment BM target in CRD** — Jira OSAC-2041 (new)
-- **BM DNAT flow in controller** — Jira OSAC-1496 (new)
-- **BareMetalNetworkAttachment proto** — Jira OSAC-1508 (new)
-- **Primary field on BareMetalNetworkAttachment** — Jira OSAC-2042 (new)
-- **Immutability + interface + primary validation** — Jira OSAC-1509 (new)
-- **CLI --network-attachment for BareMetalInstance** — Jira OSAC-2075 (new)
-- **BM provisioning flow (operator reconcileNetworking calls create_network_attachment)** — Jira OSAC-2047 (new)
-- **Integration test** — Jira OSAC-1510 (new)
-- **Fabric manager create/delete_network_attachment role (Netris BM)** — Jira OSAC-2081 (new)
+- **Networking manager dispatch** — the system must be able to route networking operations to the correct fabric manager (in progress)
+- **NAT gateway support** — outbound NAT must be available as a networking resource
+- **External access for BM targets** — the external IP attachment system must support bare-metal servers as targets
+- **CLI support** — the CLI must support specifying network attachments when creating bare-metal servers
+- **Fabric manager BM networking role** — at least one fabric manager (e.g., Netris) must implement the switch port configuration role for bare-metal servers
 
-## 7. Risks
+## 8. Risks
 
-### 7.1 Dispatcher implementation blocked or delayed
+### 8.1 Network automation implementation blocked or delayed
 
-- **Owner:** osac-operator team
-- **Mitigation:** OSAC-1457, OSAC-1458, OSAC-1460 are in progress. If dispatcher is not ready, BMaaS networking cannot function. Prioritize completing dispatcher core before BMaaS networking implementation.
+- **Owner:** Platform team
+- **Mitigation:** Network automation core tasks (OSAC-1457, OSAC-1458, OSAC-1460) are in progress. If network automation is not ready, bare-metal networking cannot function. Prioritize completing network automation core before bare-metal networking implementation.
 
-### 7.2 Fabric manager BM role implementation blocked
+### 8.2 Fabric manager bare-metal support blocked
 
-- **Owner:** osac-aap team
-- **Mitigation:** OSAC-2081 (Netris BM networking role) is new. If fabric manager does not implement `create_network_attachment` and `delete_network_attachment` for BM, switch port configuration will fail. Coordinate with fabric manager team to prioritize BM support.
+- **Owner:** Network automation team
+- **Mitigation:** Fabric manager bare-metal networking role (OSAC-2081) is new. If fabric manager does not implement bare-metal network attachment creation and deletion, switch port configuration will fail. Coordinate with fabric manager team to prioritize bare-metal support.
 
-### 7.3 IP address feedback mechanism fails
+### 8.3 IP address feedback mechanism fails
 
-- **Owner:** bare-metal-fulfillment-operator / osac-operator
-- **Mitigation:** If the fabric manager role does not write the allocated IP to CR status, ExternalIPAttachment controller cannot create DNAT rule. Validate IP feedback mechanism during integration testing. Fallback: manual IP lookup from fabric manager API (deferred to future enhancement).
+- **Owner:** Platform team
+- **Mitigation:** If the fabric manager does not write the allocated IP to server status, external IP attachment cannot configure inbound NAT. Validate IP feedback mechanism during integration testing. Fallback: manual IP lookup from fabric manager API (deferred to future enhancement).
 
-### 7.4 ExternalIPPool exhaustion
+### 8.4 External IP pool exhaustion
 
 - **Owner:** Cloud Provider Admin
 - **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool
 
-### 7.5 Auto NATGateway reuses failed or deleting NATGateway
+### 8.5 Auto NAT gateway reuses failed or deleting NAT gateway
 
-- **Owner:** fulfillment-service / osac-operator
-- **Mitigation:** Auto NATGateway reuses existing NATGateway regardless of state. If the existing NATGateway is Failed or Deleting, the BM's outbound connectivity will not work. Document expected behavior: tenants must manually delete failed NATGateway and retry BM creation.
+- **Owner:** Platform team
+- **Mitigation:** Auto NAT gateway reuses existing NAT gateway regardless of state. If the existing NAT gateway is failed or deleting, the server's outbound connectivity will not work. Document expected behavior: tenants must manually delete failed NAT gateway and retry server creation.
 
-## 8. Open Questions
+## 9. Open Questions
 
-### 8.1 Should the `lifecycle` interface be explicitly excluded from validation or just documented?
-
-- **Owner:** API design team
-- **Impact:** Affects FR-3. Current proposal: document that `lifecycle` is reserved for provisioning, do not enforce exclusion in validation. Alternative: explicitly reject attachments with `role: "lifecycle"`.
-
-### 8.2 Should auto NATGateway check existing NATGateway state before reusing?
+### 9.1 Should the out-of-band provisioning interface be explicitly excluded from validation or just documented?
 
 - **Owner:** API design team
-- **Impact:** Affects FR-7. Current proposal reuses any existing NATGateway (simplest, avoids conflict). Alternative: only reuse if READY, otherwise create a new one (more complex, could create duplicate NATGateways during transient failures).
+- **Impact:** Affects FR-3. Current proposal: document that out-of-band interfaces are reserved for provisioning, do not enforce exclusion in validation. Alternative: explicitly reject attachments with out-of-band interfaces.
 
-### 8.3 Should capacity exhaustion return an API error or create a Failed resource?
+### 9.2 Should auto NAT gateway check existing NAT gateway state before reusing?
 
 - **Owner:** API design team
-- **Impact:** Affects FR-6 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a Failed resource provides visibility but adds cleanup burden.
+- **Impact:** Affects FR-7. Current proposal reuses any existing NAT gateway (simplest, avoids conflict). Alternative: only reuse if ready, otherwise create a new one (more complex, could create duplicate NAT gateways during transient failures).
 
-### 8.4 What is the interface selection logic when network_attachments are omitted and the HostType has multiple "fabric" role interfaces?
+### 9.3 Should capacity exhaustion return an API error or create a failed resource?
 
-- **Owner:** fulfillment-service team
-- **Impact:** Affects FR-5. Current proposal: use the first "fabric" role interface in the HostType's ordered list. Alternative: require explicit interface when multiple "fabric" interfaces exist, or use a specific naming convention (e.g., "data-0").
+- **Owner:** API design team
+- **Impact:** Affects FR-6 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a failed resource provides visibility but adds cleanup burden.
+
+### 9.4 What is the interface selection logic when network attachments are omitted and the host type has multiple "fabric" role interfaces?
+
+- **Owner:** Platform team
+- **Impact:** Affects FR-5. Current proposal: use the first "fabric" role interface in the host type's ordered list. Alternative: require explicit interface when multiple "fabric" interfaces exist, or use a specific naming convention (e.g., "data-0").

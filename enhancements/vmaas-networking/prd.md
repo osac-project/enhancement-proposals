@@ -1,4 +1,4 @@
-# VMaaS Networking — Optional Attachments and Auto External Access
+# VMaaS Networking — Multi-Interface VMs and Auto External Access
 
 | Field       | Value   |
 |-------------|---------|
@@ -8,123 +8,128 @@
 
 ## 1. Problem Statement
 
-ComputeInstance currently uses a shared `NetworkAttachment` message that lacks a `primary` field, making it impossible to support multi-NIC VMs with a designated default gateway. The networking API surface is inconsistent across resource types — ComputeInstance uses `network_attachments` while other resources use different mechanisms. Tenants must explicitly specify networking details on every VM, even when they want to use the same default subnet and security group for most resources. Creating a VM with external access requires manual ExternalIP and NATGateway setup, forcing tenants to understand outbound NAT routing before provisioning their first reachable VM.
+Tenants cannot create VMs with multiple network interfaces or designate which interface provides the default gateway. Creating a VM with external access requires manual IP allocation and NAT configuration, forcing tenants to understand inbound and outbound routing before provisioning their first reachable VM. The default networking experience varies across resource types — some resources have simplified creation flows while VMs require explicit networking details on every create.
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
 
-- A tenant can create a ComputeInstance with multiple network attachments, one designated as `primary` for the default gateway
-- ComputeInstance supports resource-specific attachment message (`ComputeNetworkAttachment`) to enable multi-NIC KubeVirt provisioning
-- A tenant can create a ComputeInstance with `--external-ip=auto` and have the system allocate an ExternalIP and attach it automatically
-- A tenant can create a ComputeInstance with `--nat-gateway=auto` and have the system provision or reuse a NATGateway on the VM's VirtualNetwork for outbound connectivity
-- Optional `network_attachments` field — when omitted, the system populates with tenant's default Subnet and SecurityGroup
-- BM-only region validation rejects ComputeInstance creation when the target region has no `k8s_manager` configured
+- A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary
+- A tenant can create a VM with `--external-ip=auto` and have the system allocate an external IP and attach it automatically for inbound access
+- A tenant can create a VM with `--nat-gateway=auto` and have the system provision outbound connectivity automatically
+- A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and security group
+- The platform prevents VM creation in regions that do not support virtualization
 
 ### 2.2 Non-Goals
 
-- CaaS or BMaaS networking (this PRD covers VMaaS only; Cluster and BaremetalInstance are addressed in separate enhancements)
-- Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
-- Kubernetes manager implementation (CUDN or EVPN fabric integration via k8s_manager roles)
-- Multi-NIC provisioning for bare-metal resources (BM multi-NIC support is out of scope)
+- Cluster or bare-metal server networking (this PRD covers VMs only; clusters and bare-metal servers are addressed in separate enhancements)
+- Multiple network interfaces for bare-metal servers (bare-metal multi-interface support is out of scope)
 
-## 3. Requirements
+## 3. User Stories
 
-### 3.1 Functional Requirements
+### Tenant User Stories
 
-#### ComputeNetworkAttachment Proto
+- As a Tenant User, I want to create a VM with multiple network interfaces, so that the VM can communicate on multiple subnets
+- As a Tenant User, I want to designate one network interface as primary, so that it provides the VM's default gateway and DNS configuration
+- As a Tenant User, I want to create a VM with `--external-ip=auto`, so that the VM is externally reachable without manually allocating an IP
+- As a Tenant User, I want to create a VM with `--nat-gateway=auto`, so that the VM can reach the internet without manually configuring outbound NAT
+- As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
+- As a Tenant User, I want clear error messages when I try to create a VM in a region that only supports bare-metal servers, so that I understand the limitation and can choose a different region
 
-- **FR-1:** Replace the shared `NetworkAttachment` message (used across multiple resource types) with `ComputeNetworkAttachment` specific to ComputeInstance. The message includes a `primary` field (boolean, immutable) to designate which attachment provides the default gateway for multi-NIC VMs. [Source: `.planning/vmaas-networking-design.md` — API Changes]
+### Cloud Provider Admin Stories
 
-#### Primary Field
+- As a Cloud Provider Admin, I want visibility into auto-provisioned networking resources (external IPs, NAT gateways), so I can monitor capacity and troubleshoot connectivity issues
 
-- **FR-2:** When a ComputeInstance has multiple `compute_network_attachments`, exactly one must have `primary: true`. When only one attachment exists, `primary` is optional and treated as implicit. The operator CRD validates this constraint via CEL. [Source: `.planning/vmaas-networking-design.md` — Operator CRD]
+## 4. Requirements
 
-#### Optional Network Attachments with Defaults
+### 4.1 Functional Requirements
 
-- **FR-3:** The `compute_network_attachments` field on ComputeInstanceSpec is optional. When omitted, the fulfillment-service populates it with the tenant's default Subnet and default SecurityGroup (see Simplified Resource Creation PRD). The resolved attachments are stored in the resource spec so the resource is self-describing after creation. [Source: `.planning/vmaas-networking-design.md` — Proposed Flow, step 4]
+#### Multi-Interface VMs
 
-#### Auto ExternalIP
+- **FR-1:** A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary. The primary interface provides the default gateway, DNS, and is the target for inbound external access (DNAT) and outbound NAT (SNAT). Non-primary interfaces receive IP addresses but do not provide a default gateway. [User]
+- **FR-2:** When a VM has multiple network interfaces, exactly one must be designated as primary. When a VM has only one network interface, it is implicitly primary. [User]
 
-- **FR-4:** ComputeInstanceSpec supports an `external_ip_mode` field with values `NONE` (default) and `AUTO`. When `AUTO`, the system auto-selects the READY ExternalIPPool with the most available capacity (identical algorithm to OSAC-1712), creates an ExternalIP, and creates an ExternalIPAttachment binding it to the VM's primary attachment subnet IP. The ExternalIP and ExternalIPAttachment are labeled `osac.openshift.io/auto-provisioned: "true"`. [Source: `.planning/vmaas-networking-design.md` — Proposed Flow, step 4]
+#### Optional Network Configuration with Defaults
 
-#### Auto NATGateway
+- **FR-3:** Network configuration is optional when creating a VM. When omitted, the system uses the tenant's default subnet and default security group (see Simplified Resource Creation PRD). The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
 
-- **FR-5:** ComputeInstanceSpec supports a `nat_gateway_mode` field with values `NONE` (default) and `AUTO`. When `AUTO`, the system creates a NATGateway on the VM's VirtualNetwork (reuses existing NATGateway if one already exists, regardless of state or whether it was manually or auto-created). The NATGateway uses an auto-selected ExternalIP as the SNAT source. [Source: `.planning/vmaas-networking-design.md` — Proposed Flow, step 4]
+#### Auto External IP
 
-#### BM-only Region Validation
+- **FR-4:** VMs support an `--external-ip=auto` option. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. [User]
 
-- **FR-6:** When a ComputeInstance is created, the fulfillment-service validates that the target region's NetworkClass has a `k8s_manager` configured. If the region is bare-metal-only (no k8s_manager), the create API call returns an error and the resource is not persisted. [Source: `.planning/vmaas-networking-design.md` — Server Validation]
+#### Auto NAT Gateway
 
-#### Multi-NIC Template Support
+- **FR-5:** VMs support a `--nat-gateway=auto` option. When specified, the system provisions or reuses a NAT gateway on the VM's virtual network for outbound connectivity. The NAT gateway uses an automatically allocated external IP as the source address. If a NAT gateway already exists on the virtual network, it is reused regardless of its current state or how it was created. [User]
 
-- **FR-7:** The AAP template `osac.templates.ocp_virt_vm` reads `compute_network_attachments` and creates KubeVirt VirtualMachine definitions with multiple network interfaces when multiple attachments are present. The primary attachment configures the default gateway, DNS, and IP (via DHCP or static). Non-primary attachments configure IP and connected route only. Each attachment maps to a KubeVirt interface with `l2bridge` binding referencing the attachment's subnet's CUDN NAD. [Source: `.planning/vmaas-networking-design.md` — Template Changes]
+#### Region Validation
+
+- **FR-6:** When a VM is created, the platform validates that the target region supports virtualization. If the region only supports bare-metal servers, the create request fails with a clear error message explaining the limitation. [User]
 
 #### Backward Compatibility
 
-- **FR-8:** During migration, the fulfillment-service accepts both the old `network_attachments` field (field 14) and the new `compute_network_attachments` field (field 15). If both are set, the create API call returns an error. If the old field is set, the server converts it internally to the new format. [Source: `.planning/vmaas-networking-design.md` — Server Validation]
+- **FR-7:** Existing VMs continue to work without changes. The platform accepts both old and new network configuration formats during a transition period. If both formats are provided, the create request fails with an error. If the old format is provided alone, it is converted to the new format automatically. [User]
 
-### 3.2 Non-Functional Requirements
+### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Auto ExternalIP allocation completes synchronously within the create API call (no async allocation delay). If no pool has available capacity, the create API call returns an error. [Source: Simplified Resource Creation PRD]
+- **NFR-1:** Auto external IP allocation completes synchronously within the create request. If no pool has available capacity, the create request fails with a clear error. [User]
 
-## 4. Acceptance Criteria
+## 5. Acceptance Criteria
 
-- [ ] A Tenant User can create a ComputeInstance with multiple `--network-attachment` flags and designate one as `--primary`
-- [ ] A Tenant User can create a ComputeInstance with `--external-ip=auto` and no explicit `network_attachments` — the VM is created on the default subnet with an auto-provisioned ExternalIP for inbound access
-- [ ] A Tenant User can create a ComputeInstance with `--nat-gateway=auto` and no explicit `network_attachments` — the VM is provisioned with a NATGateway for outbound connectivity
-- [ ] A Tenant User can create a ComputeInstance with both `--external-ip=auto` and `--nat-gateway=auto` — the VM is fully connected (inbound + outbound) in a single API call
-- [ ] Creating a ComputeInstance in a BM-only region (no k8s_manager in NetworkClass) returns an error with a clear message
-- [ ] A multi-NIC VM (multiple `compute_network_attachments`) is provisioned by the template with multiple KubeVirt interfaces, primary attachment providing default gateway
-- [ ] Auto-created ExternalIP and ExternalIPAttachment are labeled `osac.openshift.io/auto-provisioned: "true"` and visible in list views
-- [ ] Deleting a ComputeInstance with auto-provisioned ExternalIP causes the auto-created ExternalIP and ExternalIPAttachment to be cleaned up via the parent's finalizer
-- [ ] Creating a ComputeInstance with the old `network_attachments` field (field 14) succeeds and is internally converted to the new format
-- [ ] Creating a ComputeInstance with both old and new attachment fields returns an error
+- [ ] A Tenant User can create a VM with multiple `--network-attachment` flags and designate one as `--primary`
+- [ ] A Tenant User can create a VM with `--external-ip=auto` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
+- [ ] A Tenant User can create a VM with `--nat-gateway=auto` and no explicit network configuration — the VM is provisioned with outbound connectivity
+- [ ] A Tenant User can create a VM with both `--external-ip=auto` and `--nat-gateway=auto` — the VM is fully connected (inbound + outbound) in a single API call
+- [ ] Creating a VM in a bare-metal-only region returns an error with a clear message
+- [ ] A multi-interface VM is provisioned with all interfaces operational, with the primary interface providing the default gateway
+- [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
+- [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
+- [ ] Creating a VM using the old network configuration format succeeds and is internally converted to the new format
+- [ ] Creating a VM with both old and new configuration formats returns an error
 
-## 5. Assumptions
+## 6. Assumptions
 
-- The tenant has default networking resources (VirtualNetwork, Subnet, SecurityGroup) pre-created by the Tenant controller (see Simplified Resource Creation PRD). If defaults are not configured, creating a VM without explicit `network_attachments` fails with a clear error.
-- The target region's NetworkClass has `k8s_manager` configured (either CUDN or EVPN fabric integration). BM-only regions do not support VMaaS.
+- The tenant has default networking resources (virtual network, subnet, security group) pre-created by the platform (see Simplified Resource Creation PRD). If defaults are not configured, creating a VM without explicit network configuration fails with a clear error.
+- The target region supports virtualization. Bare-metal-only regions do not support VMs.
 
-## 6. Dependencies
+## 7. Dependencies
 
-- **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/unified-networking)
-- **Simplified Resource Creation PRD** — default Subnet and SecurityGroup selection behavior defined in [Simplified Resource Creation PRD](/enhancements/simplified-resource-creation)
-- **OSAC-1712 (automatic pool selection)** — the auto ExternalIP pool selection reuses the identical algorithm: pick the READY pool with the most available capacity matching the IP family
-- **OSAC-1511 or OSAC-1717** — a k8s_manager implementation (CUDN or EVPN) must exist for the operator's Subnet controller to provision overlay networks on hosting clusters
-- **Dispatcher core** — Jira OSAC-1457, OSAC-1458, OSAC-1460 (in progress)
-- **Multi-job tracking** — Jira OSAC-1459 (new, required for Subnet controller to trigger both fabric_manager and k8s_manager AAP jobs)
+- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/unified-networking)
+- **Simplified Resource Creation PRD** — default subnet and security group selection behavior defined in [Simplified Resource Creation PRD](/enhancements/simplified-resource-creation)
+- **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the pool with the most available capacity matching the IP family
+- **OSAC-1511 or OSAC-1717** — a virtualization platform integration must exist for the platform to provision overlay networks on hosting clusters
+- **OSAC-1457, OSAC-1458, OSAC-1460** — core provisioning infrastructure (in progress)
+- **OSAC-1459** — multi-job tracking (new, required for subnet provisioning to trigger multiple backend jobs)
 
-## 7. Risks
+## 8. Risks
 
-### 7.1 k8s_manager implementation blocked or delayed
+### 8.1 Virtualization platform integration blocked or delayed
 
 - **Owner:** Engineering / Product
-- **Mitigation:** OSAC-1511 (CUDN) and OSAC-1717 (EVPN) are both in spike/blocked state. If neither lands, VMaaS networking cannot function. Prioritize unblocking one of these dependencies or accept that VMaaS remains unavailable until a k8s_manager exists.
+- **Mitigation:** OSAC-1511 and OSAC-1717 are both in spike/blocked state. If neither lands, VM networking cannot function. Prioritize unblocking one of these dependencies or accept that VMs remain unavailable until a virtualization platform integration exists.
 
-### 7.2 Multi-job tracking not implemented
+### 8.2 Multi-job tracking not implemented
 
-- **Owner:** osac-operator team
-- **Mitigation:** OSAC-1459 is a prerequisite for Subnet controller to call both fabric_manager and k8s_manager. If not implemented, Subnet controller can only call one manager — defer multi-manager support or accept single-manager-only subnet provisioning.
+- **Owner:** Platform team
+- **Mitigation:** OSAC-1459 is a prerequisite for subnet provisioning to trigger multiple backend jobs. If not implemented, subnet provisioning can only call one backend system — defer multi-backend support or accept single-backend-only subnet provisioning.
 
-### 7.3 ExternalIPPool exhaustion
+### 8.3 External IP pool exhaustion
 
 - **Owner:** Cloud Provider Admin
 - **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool
 
-### 7.4 Auto NATGateway reuses failed or deleting NATGateway
+### 8.4 Auto NAT gateway reuses failed or deleting gateway
 
-- **Owner:** fulfillment-service / osac-operator
-- **Mitigation:** Auto NATGateway reuses existing NATGateway regardless of state. If the existing NATGateway is Failed or Deleting, the VM's outbound connectivity will not work. Document expected behavior: tenants must manually delete failed NATGateway and retry VM creation.
+- **Owner:** Platform
+- **Mitigation:** Auto NAT gateway reuses existing gateway regardless of state. If the existing gateway is failed or being deleted, the VM's outbound connectivity will not work. Document expected behavior: tenants must manually delete failed gateway and retry VM creation.
 
-## 8. Open Questions
+## 9. Open Questions
 
-### 8.1 Should auto NATGateway check existing NATGateway state before reusing?
-
-- **Owner:** API design team
-- **Impact:** Affects FR-5. Current proposal reuses any existing NATGateway (simplest, avoids conflict). Alternative: only reuse if READY, otherwise create a new one (more complex, could create duplicate NATGateways during transient failures).
-
-### 8.2 Should capacity exhaustion return an API error or create a Failed resource?
+### 9.1 Should auto NAT gateway check existing gateway state before reusing?
 
 - **Owner:** API design team
-- **Impact:** Affects FR-4 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a Failed resource provides visibility but adds cleanup burden.
+- **Impact:** Affects FR-5. Current proposal reuses any existing gateway (simplest, avoids conflict). Alternative: only reuse if ready, otherwise create a new one (more complex, could create duplicate gateways during transient failures).
+
+### 9.2 Should capacity exhaustion return an API error or create a failed resource?
+
+- **Owner:** API design team
+- **Impact:** Affects FR-4 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a failed resource provides visibility but adds cleanup burden.
