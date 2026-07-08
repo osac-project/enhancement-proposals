@@ -22,6 +22,8 @@ This enhancement extends the unified networking API to support CaaS-specific req
 
 ## Summary
 
+This enhancement is an expansion of the [Unified Networking EP](/enhancements/unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
+
 Cluster provisioning currently uses inline networking logic in the CaaS template — all VLAN creation, SNAT, DNAT, IP allocation, DNS, and MetalLB configuration happens in step collections with zero tenant control. This enhancement moves networking lifecycle to the OSAC Networking API, enables tenants to place clusters on shared or isolated VirtualNetworks, and introduces a VIP feedback loop for cluster API/ingress endpoints to enable auto-provisioned external access. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
@@ -218,7 +220,7 @@ message HostType {
   Metadata metadata = 2;
   string title = 3;
   string description = 4;
-  repeated NetworkInterface interfaces = 5;  // NEW — BM only
+  repeated NetworkInterface interfaces = 5;  // BM only, empty for VM host types
 }
 
 message NetworkInterface {

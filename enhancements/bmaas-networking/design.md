@@ -23,6 +23,8 @@ This enhancement extends the unified networking API to support BMaaS-specific re
 
 ## Summary
 
+This enhancement is an expansion of the [Unified Networking EP](/enhancements/unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
+
 BaremetalInstance currently has NO networking fields. The bare-metal-fulfillment-operator allocates hosts from inventory (Ironic or Metal3) but does not configure switch ports or integrate with the OSAC Networking API. This enhancement introduces `BareMetalNetworkAttachment` with explicit `interface` and `primary` fields, adds `reconcileNetworking` phase to the operator, and enables IP address feedback via CR status for DNAT rule creation. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
@@ -105,7 +107,7 @@ message HostType {
   Metadata metadata = 2;
   string title = 3;
   string description = 4;
-  repeated NetworkInterface interfaces = 5;  // NEW — BM only
+  repeated NetworkInterface interfaces = 5;  // BM only, empty for VM host types
 }
 
 message NetworkInterface {
