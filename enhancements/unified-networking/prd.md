@@ -76,7 +76,7 @@ This section defines key terms used throughout this document.
 
 The OSAC Networking API must serve as a foundational service across all three
 OSAC service types — VMaaS, CaaS, and BMaaS — with a single, consistent
-resource model. The technical design that fulfills these requirements is 
+resource model. The technical design that fulfills these requirements is
 described in a companion enhancement:
 [Unified Networking Design](/enhancements/unified-networking).
 
