@@ -9,7 +9,7 @@ tracking-link:
 prd: "prd.md"
 see-also:
   - "Unified Networking: /enhancements/unified-networking"
-  - "Simplified Resource Creation: /enhancements/simplified-resource-creation"
+  - "Default Networking: /enhancements/default-networking"
 replaces:
   - N/A
 superseded-by:
@@ -115,7 +115,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     ```
 
 5. **fulfillment-service:**
-    - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Simplified Resource Creation PRD)
+    - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
     - Validates network_attachments:
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN

@@ -62,7 +62,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 #### Optional Network Configuration with Defaults
 
-- **FR-3:** Network configuration is optional when creating a VM. When omitted, the system uses the tenant's default subnet and default security group (see Simplified Resource Creation PRD). The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
+- **FR-3:** Network configuration is optional when creating a VM. When omitted, the system uses the tenant's default subnet and default security group (see Default Networking PRD). The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -99,13 +99,13 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 ## 6. Assumptions
 
-- The tenant has default networking resources (virtual network, subnet, security group) pre-created by the platform (see Simplified Resource Creation PRD). If defaults are not configured, creating a VM without explicit network configuration fails with a clear error.
+- The tenant has default networking resources (virtual network, subnet, security group) pre-created by the platform (see Default Networking PRD). If defaults are not configured, creating a VM without explicit network configuration fails with a clear error.
 - The target region supports virtualization. Bare-metal-only regions do not support VMs.
 
 ## 7. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/unified-networking)
-- **Simplified Resource Creation PRD** — default subnet and security group selection behavior defined in [Simplified Resource Creation PRD](/enhancements/simplified-resource-creation)
+- **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/default-networking)
 - **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the pool with the most available capacity matching the IP family
 - **OSAC-1511 or OSAC-1717** — a virtualization platform integration must exist for the platform to provision overlay networks on hosting clusters
 - **OSAC-1457, OSAC-1458, OSAC-1460** — core provisioning infrastructure (in progress)

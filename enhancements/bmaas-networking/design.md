@@ -9,7 +9,7 @@ tracking-link:
 prd: "prd.md"
 see-also:
   - "Unified Networking: /enhancements/unified-networking"
-  - "Simplified Resource Creation: /enhancements/simplified-resource-creation"
+  - "Default Networking: /enhancements/default-networking"
   - "baremetal-instance-api: https://github.com/osac-project/baremetal-instance-api"
 replaces:
   - N/A
@@ -191,7 +191,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```
 
 5. **fulfillment-service:**
-   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Simplified Resource Creation PRD](/enhancements/simplified-resource-creation))
+   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/default-networking))
    - Validates:
      - Each subnet exists, is Ready
      - All subnets belong to the same VirtualNetwork
