@@ -264,13 +264,13 @@ Same as VMaaS/CaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 11. **Delete BaremetalInstance:**
-    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`external_ip_mode=AUTO`, labeled `osac.openshift.io/auto-provisioned: "true"`, ExternalIP also labeled `osac.openshift.io/auto-provisioned-for: <baremetal-instance-id>`): parent finalizer deletes ExternalIPAttachment first (by target reference), then ExternalIP (by `auto-provisioned-for` label). See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the phased requeue pattern.
-    - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this resource auto-created it, deleting the resource does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
-    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
-    - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources.
+    - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `external_ip_mode=AUTO`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-provisioned-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
+    - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork.
+    - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
+    - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator:
       - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown
-      - `reconcileNetworking` (delete): dispatcher calls `osac.templates.{{ fabric_manager }}.delete_network_attachment` per attachment (passing host_name, logical_interface_name, subnet_ref) — releases IP reservation and removes the server's port from the subnet's V-Net
+      - `reconcileNetworking` (delete): (1) operator releases allocated IPs back to IPAM (removes from Subnet tracking), (2) dispatcher calls `osac.templates.{{ fabric_manager }}.delete_network_attachment` per attachment (passing host_name, logical_interface_name, subnet_ref) to remove the server's port from the subnet's V-Net. IP release and switch port cleanup are separate steps — the fabric manager handles switch-side only.
       - Removes management finalizer
     - `reconcileInventory` deletion: UnassignHost from Ironic/Metal3, removes inventory finalizer
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
@@ -409,6 +409,7 @@ The fabric manager role (`create_network_attachment`) handles switch-side only �
 | bare-metal-fulfillment-operator | Inventory assignment, **IP allocation from subnet CIDR** (operator IPAM), switch-side networking (dispatcher), OS provisioning (AAP), power management |
 | AAP BM provisioning template | OS provisioning (PXE boot, user-data) + **host-side network configuration** (static IP, gateway, routes using allocated IP from CR status — via cloud-init, kickstart, ignition, NMState, or OS-appropriate method) |
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
+| osac-operator BMI cleanup controller | Clean up auto-provisioned ExternalIPAttachment → ExternalIP on BaremetalInstance deletion (phased requeue, `baremetalinstance-cleanup` finalizer) |
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from CR status, create DNAT via fabric_manager |
 | fabric_manager role (create_network_attachment) | Switch-side only: resolve host → fabric server, add server port to subnet's V-Net |
 | fabric_manager role (delete_network_attachment) | Switch-side only: remove server port from V-Net |
