@@ -264,7 +264,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 11. **Delete BaremetalInstance:**
-    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`external_ip_mode=AUTO`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
+    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`external_ip_mode=AUTO`, labeled `osac.openshift.io/auto-provisioned: "true"`, ExternalIP also labeled `osac.openshift.io/auto-provisioned-for: <baremetal-instance-id>`): parent finalizer deletes ExternalIPAttachment first (by target reference), then ExternalIP (by `auto-provisioned-for` label). See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the phased requeue pattern.
     - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this resource auto-created it, deleting the resource does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
     - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
     - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources.
@@ -411,8 +411,9 @@ bare-metal-fulfillment-operator BareMetalInstance controller phases:
 2. reconcileNetworking → configure switch ports (dispatcher), allocate IPs, write to status
    Requires: InventoryAssigned=True
    Post-job validation: checks that all status.networkAttachments[].ipAddress fields
-   are populated. If any IP is missing (AAP role succeeded but failed to write IP to
-   CR status), reconcileNetworking fails with condition NetworkingFailed and retries.
+   are populated and all switch port AAP jobs completed. If any IP is missing
+   (operator IPAM allocation failed) or any switch port config failed,
+   reconcileNetworking fails with condition NetworkingFailed and retries.
    Sets condition: NetworkingConfigured=True
 3. reconcileProvisioning → OS provisioning (AAP), user-data
    Requires: NetworkingConfigured=True
@@ -746,6 +747,7 @@ Consequences:
 | Fabric manager create/delete_network_attachment role | OSAC-2081 (Netris BM) | New |
 | BareMetalInstance CRD: add NetworkAttachments | Not tracked | **GAP** |
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |
-| IP address feedback (status field + sync) | Not tracked | **GAP** |
+| Operator IPAM: allocate IPs from subnet CIDR in reconcileNetworking | Not tracked | **GAP** |
+| bare-metal-fulfillment-operator dispatcher capability + RBAC for Subnet/NetworkClass CRs | Not tracked | **GAP** |
 | Rename BareMetalInstance spec.networkClass → networkFabricManager | Not tracked | **GAP** |
 | HostType: add structured NetworkInterface list (name, description) | Not tracked | **GAP** |
