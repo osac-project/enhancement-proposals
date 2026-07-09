@@ -259,8 +259,7 @@ same structure but omits `backend` and `hub_coordinates` from
 Kubernetes Secret `Data`. It is provided on Create/Update, returned on
 Get, and omitted from List. The CLI controls display: the default table
 view shows metadata only, while structured output formats (`-o yaml/json`)
-include base64-encoded data values — following the same convention as
-`kubectl get secret`.
+include data values.
 
 The `type` field is set at creation and immutable. The server validates
 data keys and value format based on type.
@@ -377,15 +376,14 @@ New commands follow existing patterns:
 | `osac get secret <name>` | Get secret (table: metadata only; `-o yaml/json`: includes data) |
 | `osac describe secret <name>` | Detailed secret metadata view |
 | `osac delete secret <name>` | Delete a secret |
-| `osac edit secret <name>` | Edit secret data/metadata in `$EDITOR` (base64-encoded, per kubectl convention) |
+| `osac edit secret <name>` | Edit secret data/metadata in `$EDITOR` |
 
 The `--from-file`, `--from-literal`, and `--type` flags are new to the
 OSAC CLI. They follow `kubectl create secret` conventions because secrets
 hold arbitrary key-value data — unlike other OSAC resources which have
 typed fields with dedicated flags (e.g., `--pull-secret-file`). `--type`
 defaults to `opaque`. Data values are included in structured output
-formats (`-o yaml/json`) as base64-encoded strings, following kubectl
-conventions. The default table view shows metadata only.
+formats (`-o yaml/json`). The default table view shows metadata only.
 
 #### Secret References
 
