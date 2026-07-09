@@ -141,7 +141,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 
 - **Self-managed metering and costing stack** — an on-premises solution that provides event ingestion, meter aggregation, and usage query capabilities.
 - **Durable event pipeline** — a reliable message delivery layer between OSAC and the metering stack.
-- **OSAC provisioning controllers** — must integrate event emission for VMaaS and CaaS lifecycle transitions.
+- **OSAC VMaaS and CaaS provisioning** — must emit lifecycle events on resource state transitions.
 
 ## 8. Risks
 
