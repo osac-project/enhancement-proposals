@@ -158,7 +158,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 8. **fulfillment-service creates or reuses NATGateway:**
    - If NATGateway already exists on the VN: reuse (regardless of state or whether it was manually or auto-created). No new resources created.
-   - If no NATGateway exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in the same DB transaction, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
+   - If no NATGateway exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in a **separate DB transaction** after the parent resource is persisted, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
    - osac-operator NATGateway controller triggers dispatcher → `osac.templates.{{ fabric_manager }}.create_nat_gateway`
    - Fabric manager creates SNAT rule for the VN's CIDR
 
@@ -395,13 +395,13 @@ Instead of returning an error when ExternalIPPool has no capacity, create a Fail
 
 ## Open Questions
 
-### 1. Should auto NATGateway check existing NATGateway state before reusing?
+### 1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?
 
-Current proposal (FR-5): reuse any existing NATGateway regardless of state. Alternative: only reuse if READY, otherwise create a new one.
+Design decision: reuse existing NATGateway in Ready or Failed state (avoids duplicate SNAT conflicts). Open question: should a NATGateway in **Deleting** state be treated as "does not exist" (create a new one), since the SNAT rule is being removed and the NATGateway will soon be fully deleted? Current behavior would silently attach to a disappearing resource.
 
 **Owner:** API design team
 
-**Impact:** Affects FR-5, risk mitigation strategy, and user experience when NATGateway is Failed.
+**Impact:** Affects NATGateway reuse logic and user experience when NATGateway is being deleted concurrently.
 
 ### 2. Should capacity exhaustion return an API error or create a Failed resource?
 

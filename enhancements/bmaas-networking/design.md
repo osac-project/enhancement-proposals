@@ -202,7 +202,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - Number of attachments ≤ number of available interfaces on template
      - If multiple attachments, exactly one is `primary`; if single attachment, `primary` is implicit
    - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
-   - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists: reuse (regardless of state). If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway, both labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the BaremetalInstance creation still succeeds (outbound NAT is best-effort).
+   - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists: reuse (regardless of state). If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway in a **separate DB transaction** after the parent resource is persisted, both labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the BaremetalInstance creation still succeeds (outbound NAT is best-effort).
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
 6. **bare-metal-fulfillment-operator BareMetalInstance controller:**
@@ -363,6 +363,7 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 - All referenced subnets must belong to the same VirtualNetwork
 - The same interface cannot appear in multiple attachments
 - The `interface` must reference a valid identifier from the HostType (its NetworkInterface list defines available interfaces)
+- Interfaces with role `lifecycle` are rejected in `network_attachments` — lifecycle interfaces (PXE boot, BMC) are reserved for the provisioning system and are not tenant-attachable
 - If >1 attachment specified, each must have an explicit `interface` (multiple attachments without `interface` is invalid)
 - Number of attachments ≤ number of available interfaces on the template
 - If multiple attachments: exactly one must be `primary: true`
@@ -419,8 +420,15 @@ The ExternalIPAttachment controller doesn't read the BM's IP from the CR. Instea
 ```
 bare-metal-fulfillment-operator BareMetalInstance controller phases:
 1. reconcileInventory → allocate host, populate HostClass, NetworkFabricManager
+   Sets condition: InventoryAssigned=True
 2. reconcileNetworking → configure switch ports (dispatcher), allocate IPs, write to status
+   Requires: InventoryAssigned=True
+   Post-job validation: checks that all status.networkAttachments[].ipAddress fields
+   are populated. If any IP is missing (AAP role succeeded but failed to write IP to
+   CR status), reconcileNetworking fails with condition NetworkingFailed and retries.
+   Sets condition: NetworkingConfigured=True
 3. reconcileProvisioning → OS provisioning (AAP), user-data
+   Requires: NetworkingConfigured=True
 4. reconcilePower → power state management
 ```
 
@@ -555,13 +563,13 @@ Instead of reusing existing NATGateway, always create a new one when `nat_gatewa
 
 ## Open Questions
 
-### 1. Should auto NATGateway check existing NATGateway state before reusing?
+### 1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?
 
-Current proposal (FR-5): reuse any existing NATGateway regardless of state. Alternative: only reuse if READY, otherwise create a new one.
+Design decision: reuse existing NATGateway in Ready or Failed state (avoids duplicate SNAT conflicts). Open question: should a NATGateway in **Deleting** state be treated as "does not exist" (create a new one), since the SNAT rule is being removed and the NATGateway will soon be fully deleted? Current behavior would silently attach to a disappearing resource.
 
 **Owner:** API design team
 
-**Impact:** Affects FR-5, risk mitigation strategy, and user experience when NATGateway is Failed.
+**Impact:** Affects NATGateway reuse logic and user experience when NATGateway is being deleted concurrently.
 
 ### 2. Should capacity exhaustion return an API error or create a Failed resource?
 

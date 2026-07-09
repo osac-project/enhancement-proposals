@@ -604,23 +604,28 @@ guaranteed to exist and will be reconciled by the operator).
 
 *Phase 2 — asynchronous (controller reconciliation):*
 
-1. fulfillment-service reconciler pushes ExternalIP CR to the hub
-   cluster
-2. osac-operator ExternalIP controller dispatches to AAP → fabric
-   manager allocates an IP address → ExternalIP transitions to
-   **Allocated**
-3. fulfillment-service reconciler pushes ExternalIPAttachment CR to the
-   hub cluster
-4. osac-operator ExternalIPAttachment controller checks two
-   preconditions before dispatching:
-   - **ExternalIP must be Allocated** (have an allocated address). If
-     not, the controller requeues.
-   - **Target resource must have a known IP.** The required IP depends
-     on the target type (see below). If not yet available, the
-     controller requeues.
-5. Once both preconditions are met, the controller dispatches to AAP →
-   fabric manager creates the DNAT rule → ExternalIPAttachment
-   transitions to **Ready**
+Each resource type has an independent fulfillment-service reconciler.
+The ExternalIP and ExternalIPAttachment CRs are pushed to the hub
+cluster independently — there is no cross-resource ordering in the
+reconcilers. The operator-side controllers handle ordering via
+precondition checks and requeue:
+
+- fulfillment-service reconcilers push ExternalIP and
+  ExternalIPAttachment CRs to the hub cluster (independently, around
+  the same time)
+- osac-operator ExternalIP controller dispatches to AAP → fabric
+  manager allocates an IP address → ExternalIP transitions to
+  **Allocated**
+- osac-operator ExternalIPAttachment controller checks two
+  preconditions before dispatching:
+  - **ExternalIP must be Allocated** (have an allocated address). If
+    not, the controller requeues.
+  - **Target resource must have a known IP.** The required IP depends
+    on the target type (see below). If not yet available, the
+    controller requeues.
+- Once both preconditions are met, the controller dispatches to AAP →
+  fabric manager creates the DNAT rule → ExternalIPAttachment
+  transitions to **Ready**
 
 *ExternalIPAttachment controller preconditions per target type:*
 
@@ -635,6 +640,53 @@ is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
 retries until the target IP appears. This is the same pattern used
 today for the `VirtualMachineReference` check on ComputeInstance
 targets.
+
+*NATGateway controller preconditions:*
+
+The NATGateway controller has one precondition before dispatching the
+SNAT rule creation:
+
+| Precondition | Source |
+|-------------|--------|
+| Referenced ExternalIP must be Allocated (have an allocated address) | ExternalIP CR status |
+
+If the ExternalIP is not yet Allocated, the NATGateway controller
+requeues. This prevents dispatching to AAP without a valid SNAT source
+address.
+
+*Auto-provisioned resource labeling:*
+
+All auto-provisioned resources receive the label
+`osac.openshift.io/auto-provisioned: "true"`. Auto-provisioned
+ExternalIPs also receive a parent-resource label
+`osac.openshift.io/auto-provisioned-for: <resource-id>` so that the
+cleanup logic can find orphaned ExternalIPs directly, even if the
+intermediate ExternalIPAttachment has already been deleted.
+
+*Auto-provisioned resource cleanup on parent deletion:*
+
+The parent resource's finalizer uses a phased requeue approach to
+ensure correct ordering:
+
+1. Query ExternalIPAttachments labeled `auto-provisioned` targeting
+   this resource. Issue delete for each. Requeue.
+2. On next reconcile: check if all ExternalIPAttachments are fully
+   deleted (including their own finalizers completing the DNAT rule
+   removal). If not, requeue.
+3. Once all ExternalIPAttachments are gone: query ExternalIPs labeled
+   `auto-provisioned-for: <this-resource>`. Issue delete for each.
+   Requeue.
+4. On next reconcile: check if all ExternalIPs are fully deleted. If
+   not, requeue.
+5. Once all ExternalIPs are gone: proceed with parent resource
+   deletion.
+
+NATGateway is NOT cleaned up — it is a shared per-VN resource that
+may serve other resources on the same VirtualNetwork.
+
+If cleanup fails permanently (after N retries): finalizer is removed,
+parent resource deleted, orphaned resources left in cluster. Orphaned
+resources are identifiable by the `auto-provisioned-for` label.
 
 **Enable outbound NAT (SNAT):**
 
