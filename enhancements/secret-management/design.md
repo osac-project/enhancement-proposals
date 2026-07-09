@@ -96,7 +96,7 @@ Starting state: The cloud provider has deployed a Vault-compatible secret
 store (e.g., OpenBao or HashiCorp Vault) and made it reachable from the
 OSAC hub cluster.
 
-1. The Cloud Infrastructure Admin sets the appropriate `--vault-*` flags 
+1. The Cloud Infrastructure Admin sets the appropriate `--vault-*` flags
    on the fulfillment-service deployment (see Vault Configuration)
 2. On startup, the fulfillment-service validates the connection by
    performing a health check against the configured endpoint. If the
@@ -346,15 +346,15 @@ Documentation will cover setup for common implementations.
 
 Private server behavioral specifics:
 
-- **Create:** 
+- **Create:**
   - Sets `backend = VAULT` if not specified
   - Validates data against the secret type (see Secret Types)
   - Dispatches to vault to store the data
-- **Get:** 
+- **Get:**
   - Reads from Postgres, if include_data is true dispatches to backend to fetch data
 - **Update:**
   - If `spec.data` is non-empty on the update, validate against the secret type and write to backend
-- **Delete:** 
+- **Delete:**
   - Dispatches to backend to delete stored data.
   - After data is removed from backend, deletes postgres data.
   - Note: Hub data is never removed from the backend as part of this action (underlying K8s secret not deleted)
@@ -443,7 +443,7 @@ authenticates via the Kubernetes auth method [Assumption: Vault-compatible
 stores support K8s auth]. The ServiceAccount token is exchanged for a
 short-lived token scoped to the KV mount. No long-lived tokens are stored.
 
-**Input validation:** Total secret data size is capped at 1 MiB (Vault API default 
+**Input validation:** Total secret data size is capped at 1 MiB (Vault API default
 max entry size). For typed secrets, the server validates both the
 required keys and the value format (see Secret Types). Secret names
 follow the existing OSAC naming validation (alphanumeric, hyphens, max
@@ -578,14 +578,17 @@ overhead / ongoing maintainance burden.
 - Secret proto validation (required fields, name format, data size limits)
 - Backend interface: mock Vault and Hub backends to test Store/Fetch/Delete dispatch
 - Server logic: Create with backend write, Get with/without include_data, Update with data replacement, Delete with backend cleanup
+- State transitions: Ensure failure states (e.g. write to backend results in record stuck `PENDING` or update `ERROR`) written
 - Public↔private type mapping: verify `backend` and `hub_coordinates` are stripped in public responses
 - RedactFunc: verify data is stripped from event payloads
 - OPA policy: verify role-based access for Secret methods
+- Migration: Test idempotency logic + expected generated payloads
 
 **Integration tests (Kind cluster):**
 - Secret CRUD through gRPC with a Vault-compatible store in the Kind cluster
 - Tenant isolation: verify tenant A cannot read tenant B's secrets
 - Hub-backend secrets: create via private API with coordinates, retrieve via public API
+- Migration: Moving data from a cluster with inline pull_secret to the Vault backend
 
 **E2E tests (pytest, osac-test-infra):**
 - Automatic secret creation during cluster provisioning
