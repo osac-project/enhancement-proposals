@@ -74,8 +74,8 @@ Hub coordinates) for admin visibility and system-created secrets.
 
 Secret data bytes never pass through PostgreSQL. On Create, the server
 writes metadata to PostgreSQL and data bytes to the backend. On Get, the
-server fetches data from the backend only when `include_data=true` (see
-Proto Schema). List responses return metadata only.
+server fetches metadata from PostgreSQL and data from the backend. List
+responses return metadata only.
 
 Two secret backends exist for 0.2:
 
@@ -113,9 +113,9 @@ OSAC hub cluster.
    tenant's KV path.
 3. The CLI confirms creation and displays the secret metadata (no data).
 4. To retrieve the data:
-   `osac get secret my-ssh-key --include-data`
-5. The fulfillment-service reads metadata from PostgreSQL, fetches data
-   from the secret store, and writes the key-value pairs to stdout.
+   `osac get secret my-ssh-key -o yaml`
+5. The fulfillment-service reads metadata from PostgreSQL and fetches
+   data from the secret store.
 
 #### Tenant User: Create a Cluster with a Secret Reference
 
@@ -144,7 +144,7 @@ available on the hub.
 3. The secret is associated with the cluster's tenant and annotated with
    the cluster's owner reference.
 4. When a tenant user retrieves the secret
-   (`osac get secret cluster-kubeconfig --include-data`), the
+   (`osac get secret cluster-kubeconfig -o yaml`), the
    fulfillment-service follows the Hub coordinates to retrieve the
    kubeconfig from the hub cluster — the same retrieval path currently
    implemented in `getHostedClusterSecret()` [Codebase: internal/servers/clusters_server.go].
@@ -163,7 +163,7 @@ sequenceDiagram
     API->>VS: PUT /v1/secret/data/{tenant}/{id} {key: b64}
     API-->>User: Secret (metadata only)
 
-    User->>API: GET /secrets/{id}?include_data=true
+    User->>API: GET /secrets/{id}
     API->>DB: SELECT metadata
     API->>VS: GET /v1/secret/data/{tenant}/{id}
     API-->>User: Secret (metadata + data map)
@@ -172,7 +172,7 @@ sequenceDiagram
     API->>DB: INSERT metadata (coordinates: hub, ns, secret, key)
     Note over API: ClusterOrder controller triggers creation
 
-    User->>API: GET /secrets/{id}?include_data=true
+    User->>API: GET /secrets/{id}
     API->>DB: SELECT metadata + coordinates
     API->>Hub: GET Secret via kubeconfig
     API-->>User: Secret (metadata + data)
@@ -258,9 +258,11 @@ enum SecretState {
 The public Secret (`public/osac/public/v1/secret_type.proto`) uses the
 same structure but omits `backend` and `hub_coordinates` from
 `SecretSpec`. The `data` field is a `map<string, bytes>` modeled after
-Kubernetes Secret `Data`. It is write-only by default: provided on
-Create/Update, returned on Get only with `include_data=true`, never
-included in List. The server strips `data` unless explicitly requested.
+Kubernetes Secret `Data`. It is provided on Create/Update, returned on
+Get, and omitted from List. The CLI controls display: the default table
+view shows metadata only, while structured output formats (`-o yaml/json`)
+include base64-encoded data values — following the same convention as
+`kubectl get secret`.
 
 The `type` field is set at creation and immutable. The server validates
 data keys and value format based on type.
@@ -298,9 +300,6 @@ service Secrets {
   rpc Delete(SecretsDeleteRequest) returns (SecretsDeleteResponse);
 }
 ```
-
-The public `SecretsGetRequest` adds `bool include_data = 2` alongside
-the standard `string id = 1` (see Proto Schema: Secret for semantics).
 
 #### Database Schema
 
@@ -351,7 +350,7 @@ Private server behavioral specifics:
   - Validates data against the secret type (see Secret Types)
   - Dispatches to vault to store the data
 - **Get:**
-  - Reads from Postgres, if include_data is true dispatches to backend to fetch data
+  - Reads metadata from Postgres, dispatches to backend to fetch data
 - **Update:**
   - If `spec.data` is non-empty on the update, validate against the secret type and write to backend
 - **Update (Hub-backed):**
@@ -361,8 +360,8 @@ Private server behavioral specifics:
   - Vault-backed: dispatches to backend to delete stored data, then deletes PostgreSQL metadata.
   - Hub-backed: returns `FAILED_PRECONDITION` — Hub-backed secrets are system-managed. They are cleaned up when the parent resource (e.g., HostedCluster) is deleted.
 
-Public server wraps the private server and ensures `backend` and `hub_coordinates` are stripped, and
-`include_data` passed as needed.
+Public server wraps the private server and ensures `backend` and
+`hub_coordinates` are stripped from responses.
 
 For more specific state transitions, see Per-operation behavior section below.
 
@@ -377,8 +376,7 @@ New commands follow existing patterns:
 | `osac create secret <name> --from-literal=<key>=<value>` | Create a secret from a literal value |
 | `osac create secret <name> --type=pull-secret --from-file=<path>` | Create a typed secret (auto-maps to required key) |
 | `osac get secrets` | List secrets (metadata only) |
-| `osac get secret <name>` | Get secret metadata |
-| `osac get secret <name> --include-data` | Get secret with data (writes key-value pairs to stdout) |
+| `osac get secret <name>` | Get secret (table: metadata only; `-o yaml/json`: includes data) |
 | `osac describe secret <name>` | Detailed secret metadata view |
 | `osac delete secret <name>` | Delete a secret |
 | `osac edit secret <name>` | Edit secret data/metadata in `$EDITOR` (base64-encoded, per kubectl convention) |
@@ -387,8 +385,9 @@ The `--from-file`, `--from-literal`, and `--type` flags are new to the
 OSAC CLI. They follow `kubectl create secret` conventions because secrets
 hold arbitrary key-value data — unlike other OSAC resources which have
 typed fields with dedicated flags (e.g., `--pull-secret-file`). `--type`
-defaults to `opaque`. `--include-data` is a boolean flag that composes
-with the standard `--output`/`-o` format flag.
+defaults to `opaque`. Data values are included in structured output
+formats (`-o yaml/json`) as base64-encoded strings, following kubectl
+conventions. The default table view shows metadata only.
 
 #### Secret References
 
@@ -456,7 +455,8 @@ follow the existing OSAC naming validation (alphanumeric, hyphens, max
 253 characters).
 
 **Data exposure in transit:** Secret data is transmitted over TLS-encrypted
-gRPC connections. The `include_data=true` parameter is an explicit opt-in.
+gRPC connections. The CLI displays data only in structured output formats
+(`-o yaml/json`); the default table view shows metadata only.
 
 **No secret data in logs or events:** The RedactFunc strips `spec.data`
 from all event payloads. Server-side logging does not include secret data.
@@ -500,7 +500,7 @@ API (metadata updates like labels are still allowed).
 |-----------|-------|------------|
 | **Create (Vault)** | Insert metadata as `PENDING` → write data to store → set `READY` | Attempt rollback (delete metadata). If rollback fails, record stays `PENDING` for manual cleanup. |
 | **Create (Hub)** | Insert metadata with coordinates as `READY` | N/A — no backend write |
-| **Get** (`include_data`) | Read metadata → fetch data from backend | Return `UNAVAILABLE`. State unchanged — reflects last write, not reachability. |
+| **Get** | Read metadata → fetch data from backend | Return `UNAVAILABLE`. State unchanged — reflects last write, not reachability. |
 | **Update (Vault data)** | Write new data to store → set `READY` | Set `ERROR` with message. Previous data in store is intact. |
 | **Update (Vault metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. State unchanged. |
 | **Update (Hub metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. State unchanged. |
@@ -589,7 +589,7 @@ overhead / ongoing maintainance burden.
 **Unit tests (Ginkgo):**
 - Secret proto validation (required fields, name format, data size limits)
 - Backend interface: mock Vault and Hub backends to test Store/Fetch/Delete dispatch
-- Server logic: Create with backend write, Get with/without include_data, Update with data replacement, Delete with backend cleanup
+- Server logic: Create with backend write, Get with backend data fetch, Update with data replacement, Delete with backend cleanup
 - State transitions: Ensure failure states (e.g. write to backend results in record stuck `PENDING` or update `ERROR`) written
 - Public↔private type mapping: verify `backend` and `hub_coordinates` are stripped in public responses
 - RedactFunc: verify data is stripped from event payloads
