@@ -631,15 +631,33 @@ precondition checks and requeue:
 
 | Target type | Required precondition | Source of target IP |
 |-------------|----------------------|---------------------|
-| ComputeInstance | `VirtualMachineReference` set on CI CR | VM's primary subnet IP (resolved from CUDN overlay) |
-| Cluster | `api_endpoint` or `ingress_endpoint` populated on Cluster status | MetalLB VIP (discovered during cluster provisioning, synced via feedback controller) |
-| BaremetalInstance | `status.networkAttachments[].ipAddress` populated for the primary interface | Fabric manager writes IP to BM CR status after switch port configuration |
+| ComputeInstance | `VirtualMachineReference` set on CI CR | VM's primary subnet IP (resolved from CUDN overlay via OVN DHCP) |
+| Cluster | `status.apiVIP` or `status.ingressVIP` populated on ClusterOrder CR | Operator allocates VIP from subnet CIDR during `reconcileNetworking`, writes to ClusterOrder status |
+| BaremetalInstance | `status.networkAttachments[].ipAddress` populated for the primary interface | Operator allocates IP from subnet CIDR during `reconcileNetworking`, writes to BM CR status |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
 retries until the target IP appears. This is the same pattern used
 today for the `VirtualMachineReference` check on ComputeInstance
 targets.
+
+*Subnet IPAM — operator-managed IP allocation:*
+
+For fabric-attached resources (BM servers, CaaS cluster agents, CaaS
+VIPs), the operator allocates IPs from the subnet CIDR during
+`reconcileNetworking`. The operator reads the Subnet CR to obtain the
+CIDR, computes available IPs by listing existing allocations on the
+subnet, picks the next available IP, and writes it to the resource's
+CR status. The fulfillment-service reconciler syncs IPs back to
+PostgreSQL via the existing `syncStatus()` / Signal feedback pattern.
+
+VMs are NOT operator-IPAM-managed — they sit on the CUDN overlay and
+receive IPs via OVN DHCP.
+
+This keeps the existing data flow:
+- fulfillment-service writes **spec** to CRs (what the user asked for)
+- operator writes **status** to CRs (what the system computed)
+- fulfillment-service reconciler reads **status** back from CRs to DB
 
 *NATGateway controller preconditions:*
 
