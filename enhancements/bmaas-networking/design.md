@@ -213,14 +213,14 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
       - Reads `network_attachments` from the CR spec
-      - **Operator allocates IPs:** For each attachment, reads the Subnet CR to obtain the CIDR, computes available IPs by listing existing allocations on the subnet, picks the next available IP, and writes it to `status.networkAttachments[].ipAddress` on the BaremetalInstance CR. This is operator-managed IPAM — no AAP job needed for IP allocation.
+      - **Operator allocates IPs and populates host networking config:** For each attachment, reads the Subnet CR to obtain the CIDR and gateway (`status.gateway`), reads the NetworkClass for DNS servers, computes available IPs, picks the next available, and writes the full host networking config to `status.networkAttachments[]`: `ipAddress`, `gateway`, `prefixLength`, `dnsServers`, `primary`. This is operator-managed IPAM — no AAP job needed for IP allocation. See [Unified Networking — Subnet IPAM](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared pattern.
       - **Operator dispatches switch-side config:** For each attachment, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from HostType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. No IP param — the fabric manager handles switch-side only.
       - Network attachments must be Ready before provisioning proceeds
 
    c. `reconcileProvisioning` (runs after networking):
       - Triggers AAP job via `RunProvisioningLifecycle`
       - Template does OS provisioning (PXE boot, user-data, etc.)
-      - **Template handles host-side network configuration** using the allocated IP from `status.networkAttachments[].ipAddress` and the `primary` flag from the attachment spec. The host-side config (static IP, default gateway on primary, connected route on secondary) is applied via cloud-init, kickstart, ignition, NMState, or whatever the target OS supports.
+      - **Template handles host-side network configuration** using the full config from `status.networkAttachments[]` — `ipAddress`, `gateway`, `prefixLength`, `dnsServers`, `primary`. Primary interface: static IP + default gateway + DNS. Non-primary: static IP + connected route only. Applied via cloud-init, kickstart, ignition, NMState, or whatever the target OS supports. The template reads everything from one place (CR status) with no cross-CR lookups.
 
    d. `reconcilePower` (unchanged)
 
@@ -312,7 +312,10 @@ message BareMetalInstanceStatus {
 message BareMetalNetworkAttachmentStatus {
   string interface = 1;
   string subnet_ref = 2;
-  string ip_address = 3;  // Written by operator IPAM, synced to fulfillment-service via feedback
+  string ip_address = 3;       // Allocated by operator IPAM
+  string gateway = 5;          // From Subnet status (fabric manager SVI/SoftGate IP)
+  int32 prefix_length = 6;     // Derived from Subnet CIDR
+  repeated string dns_servers = 7; // From NetworkClass
   bool primary = 4;
 }
 ```
@@ -338,10 +341,13 @@ type BareMetalInstanceStatus struct {
 }
 
 type BareMetalNetworkAttachmentStatus struct {
-    Interface  string `json:"interface,omitempty"`
-    SubnetRef  string `json:"subnetRef,omitempty"`
-    IPAddress  string `json:"ipAddress,omitempty"`
-    Primary    bool   `json:"primary,omitempty"`
+    Interface    string   `json:"interface,omitempty"`
+    SubnetRef    string   `json:"subnetRef,omitempty"`
+    IPAddress    string   `json:"ipAddress,omitempty"`    // Allocated by operator IPAM
+    Gateway      string   `json:"gateway,omitempty"`      // From Subnet status
+    PrefixLength int32    `json:"prefixLength,omitempty"` // Derived from Subnet CIDR
+    DNSServers   []string `json:"dnsServers,omitempty"`   // From NetworkClass
+    Primary      bool     `json:"primary,omitempty"`
 }
 ```
 

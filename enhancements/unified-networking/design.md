@@ -111,6 +111,9 @@ spec:
   region: moc-region-1
   fabricManager: netris
   k8sManager: cudn_localnet
+  dnsServers:                    # deployment-wide DNS resolvers
+    - 10.0.0.53
+    - 10.0.0.54
 status:
   capabilities:
     addressFamily: dualStack
@@ -652,6 +655,32 @@ CIDR, computes available IPs by listing existing allocations on the
 subnet, picks the next available IP, and writes it to the resource's
 CR status. The fulfillment-service reconciler syncs IPs back to
 PostgreSQL via the existing `syncStatus()` / Signal feedback pattern.
+
+The operator also populates the full host-side networking config on the
+resource's CR status so the provisioning template reads from one place:
+
+```yaml
+status:
+  networkAttachments:
+    - interface: data-0
+      subnetRef: my-subnet
+      ipAddress: 10.0.1.15      # operator IPAM
+      gateway: 10.0.1.1         # from Subnet CR status.gateway
+      prefixLength: 24          # derived from Subnet CIDR
+      dnsServers:               # from NetworkClass spec.dnsServers
+        - 10.0.0.53
+        - 10.0.0.54
+      primary: true
+```
+
+- **ipAddress**: allocated by operator IPAM from subnet CIDR
+- **gateway**: read from `Subnet.status.gateway` — written by the
+  fabric manager's `create_subnet` role when it configures the
+  SVI/SoftGate IP on the V-Net. The operator IPAM excludes the gateway
+  from allocatable IPs.
+- **prefixLength**: derived from `Subnet.spec.ipv4CIDR`
+- **dnsServers**: read from `NetworkClass.spec.dnsServers`
+- **primary**: copied from the attachment spec
 
 VMs are NOT operator-IPAM-managed — they sit on the CUDN overlay and
 receive IPs via OVN DHCP.

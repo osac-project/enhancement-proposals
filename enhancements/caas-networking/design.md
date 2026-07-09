@@ -135,7 +135,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Stores selected agent references on ClusterOrder status
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
-    - **Operator allocates IPs:** For each node_set attachment, for each selected agent, the operator reads the Subnet CR to obtain the CIDR, computes available IPs, picks the next available, and writes it to `status.nodeSets[].agents[].ipAddress`. This is operator-managed IPAM — no AAP job needed for IP allocation.
+    - **Operator allocates IPs and populates host networking config:** For each node_set attachment, for each selected agent, the operator reads the Subnet CR (CIDR + `status.gateway`) and NetworkClass (`dnsServers`), computes available IPs, picks the next available, and writes the full config to `status.nodeSets[].agents[]`: `ipAddress`, `gateway`, `prefixLength`, `dnsServers`. See [Unified Networking — Subnet IPAM](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared pattern.
     - **Operator allocates VIPs:** Allocates 2 additional IPs from the subnet CIDR for API and ingress VIPs. Writes to `status.apiVIP` and `status.ingressVIP`. These are pre-determined before cluster provisioning.
     - **Operator dispatches switch-side config:** For each agent, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from HostType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. No IP param — switch-side only.
     - Network attachments must be Ready before provisioning proceeds
@@ -151,7 +151,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - `osac.service.hosted_cluster` creates HyperShift HostedCluster + NodePool CRs referencing the pre-selected agents from `status.nodeSets[].agents[].agentName`
     - No agent selection logic — already done by operator in step 6a
     - No switch port configuration — already done by operator in step 6b
-    - **Host-side network configuration** (static IP, gateway, routes) is applied by the CaaS template using allocated IPs from `status.nodeSets[].agents[].ipAddress` — via NMState for RHCOS agents
+    - **Host-side network configuration** applied by the CaaS template using the full config from `status.nodeSets[].agents[]` — `ipAddress`, `gateway`, `prefixLength`, `dnsServers`. Applied via NMState for RHCOS agents. The template reads everything from one place (CR status) with no cross-CR lookups.
 
     **b. MetalLB VIP provisioning (REPLACES `external_access` step):**
 
@@ -367,10 +367,13 @@ type NodeSetStatus struct {
 }
 
 type AgentStatus struct {
-    AgentName string `json:"agentName"`           // Agent CR name (for NodePool targeting)
-    HostName  string `json:"hostName"`            // Netris server name (for dispatcher)
-    SubnetRef string `json:"subnetRef,omitempty"`
-    IPAddress string `json:"ipAddress,omitempty"` // Allocated by operator IPAM
+    AgentName    string   `json:"agentName"`              // Agent CR name (for NodePool targeting)
+    HostName     string   `json:"hostName"`               // Netris server name (for dispatcher)
+    SubnetRef    string   `json:"subnetRef,omitempty"`
+    IPAddress    string   `json:"ipAddress,omitempty"`    // Allocated by operator IPAM
+    Gateway      string   `json:"gateway,omitempty"`      // From Subnet status
+    PrefixLength int32    `json:"prefixLength,omitempty"` // Derived from Subnet CIDR
+    DNSServers   []string `json:"dnsServers,omitempty"`   // From NetworkClass
 }
 ```
 
