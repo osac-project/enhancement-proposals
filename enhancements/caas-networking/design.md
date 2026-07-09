@@ -189,24 +189,29 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 12. **Delete Cluster:**
-    - **Auto-provisioned cleanup:** If ExternalIPs/ExternalIPAttachments were created by the system (`external_ip_mode=AUTO_*`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachments first, then ExternalIPs.
-    - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this cluster auto-created it, deleting the cluster does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
-    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the cluster is deleted. The tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
-    - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources.
+    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-provisioned-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types).
+    - **Auto-provisioned NATGateway is NOT cleaned up** — shared per-VN resource.
+    - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
+    - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
     - CaaS delete template:
-      - Deletes MetalLB Services
+      - Removes NMState NNCPs / host-side network config from agents (restores hosts to bare state for reuse)
+      - Deletes MetalLB LoadBalancer Services
       - Deletes HyperShift HostedCluster + NodePools
       - DNS cleanup
       - No switch port cleanup — template doesn't handle networking
-    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `delete_network_attachment` per BM node (passing host_name, logical_interface_name, subnet_ref) — releases IP reservations and removes server ports from subnets' V-Nets
+    - ClusterOrder controller `reconcileNetworking` (delete):
+      1. **Operator releases IPs from IPAM:** releases per-agent IPs AND VIPs (`apiVIP`, `ingressVIP`) back to the subnet tracking. IP release and switch port cleanup are separate steps — the fabric manager handles switch-side only.
+      2. **Dispatcher calls `delete_network_attachment`** per BM node (passing host_name, logical_interface_name, subnet_ref) to remove server ports from subnets' V-Nets.
+    - ClusterOrder controller `reconcileAgentCleanup` (delete): removes operator-set reservation labels from agents, making them available for future clusters.
+    - Removes ClusterOrder finalizer
 
 13. **Tenant deletes networking resources** (independently, if desired):
     - Delete ExternalIPAttachments → fabric manager removes DNAT rules
     - Delete NATGateway → fabric manager removes SNAT rule
     - Delete ExternalIPs → fabric manager releases IPs
     - Delete SecurityGroup → fabric manager removes ACL rules
-    - Delete Subnet → dispatcher calls both managers (fabric + k8s)
+    - Delete Subnet → dispatcher calls both managers: fabric manager removes V-Net segment, k8s_manager removes CUDN overlay + MetalLB IPAddressPool from hosting clusters
     - Delete VirtualNetwork → fabric manager removes tenant segment
 
 ### HostType and Interface Resolution
