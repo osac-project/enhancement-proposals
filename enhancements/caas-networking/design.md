@@ -69,7 +69,7 @@ Cluster provisioning today follows this flow:
 - VMaaS or BMaaS networking (this EP covers CaaS only)
 - VM-based cluster node sets (v0.2 supports BM node sets only; VM worker nodes require HyperShift ↔ CUDN integration not in scope)
 - DNS API (DNS record creation stays inline in the template until DNS API is implemented)
-- Multi-NIC cluster nodes (v0.2: one attachment per node set → one subnet → one interface)
+- Multi-NIC cluster nodes (v0.2: one attachment per cluster → one subnet; each node set resolves its own fabric interface from its HostType)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
 
 ## Proposal
@@ -116,11 +116,10 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
 5. **fulfillment-service:**
     - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
-    - Validates network_attachments:
+    - Validates network_attachment:
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
-      - node_set refs match cluster spec (if provided)
-    - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the attachment
+    - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
     - If `external_ip_mode == AUTO_ALL`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-provisioned: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
     - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists: reuse (regardless of state or whether it was manually or auto-created). No new resources created. If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway in a **separate DB transaction** after the parent resource is persisted, both labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the Cluster creation still succeeds (outbound NAT is best-effort).
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
@@ -135,9 +134,9 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Stores selected agent references on ClusterOrder status
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
-    - **Operator allocates IPs and populates host networking config:** For each node_set attachment, for each selected agent, the operator reads the Subnet CR (CIDR + `status.gateway`) and NetworkClass (`dnsServers`), computes available IPs, picks the next available, and writes the full config to `status.nodeSets[].agents[]`: `ipAddress`, `gateway`, `prefixLength`, `dnsServers`. See [Unified Networking — Subnet IPAM](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared pattern.
+    - **Operator allocates IPs and populates host networking config:** For each agent across all node sets, the operator reads the Subnet CR (CIDR + `status.gateway`) and NetworkClass (`dnsServers`), computes available IPs, picks the next available, and writes the full config to `status.nodeSets[].agents[]`: `ipAddress`, `gateway`, `prefixLength`, `dnsServers`. See [Unified Networking — Subnet IPAM](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared pattern.
     - **Operator allocates VIPs:** Allocates 2 additional IPs from the subnet CIDR for API and ingress VIPs. Writes to `status.apiVIP` and `status.ingressVIP`. These are pre-determined before cluster provisioning.
-    - **Operator dispatches switch-side config:** For each agent, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from HostType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. No IP param — switch-side only.
+    - **Operator dispatches switch-side config:** For each agent, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. No IP param — switch-side only.
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
@@ -202,7 +201,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - No switch port cleanup — template doesn't handle networking
     - ClusterOrder controller `reconcileNetworking` (delete):
       1. **Operator releases IPs from IPAM:** releases per-agent IPs AND VIPs (`apiVIP`, `ingressVIP`) back to the subnet tracking. IP release and switch port cleanup are separate steps — the fabric manager handles switch-side only.
-      2. **Dispatcher calls `delete_network_attachment`** per BM node (passing host_name, logical_interface_name, subnet_ref) to remove server ports from subnets' V-Nets.
+      2. **Dispatcher calls `delete_network_attachment`** per BM node (passing host_name, logical_interface_name (fabric_interface from the agent's node set definition), subnet_ref) to remove server ports from subnet's V-Net.
     - ClusterOrder controller `reconcileAgentCleanup` (delete): removes operator-set reservation labels from agents, making them available for future clusters.
     - Removes ClusterOrder finalizer
 
@@ -242,22 +241,21 @@ Interfaces are ordered. When multiple interfaces share the same role (e.g., two 
 
 #### How CaaS Uses HostType
 
-The tenant provides `ClusterNetworkAttachment` with `node_set` and `subnet` — no interface field. The fulfillment-service resolves the interface from the HostType:
+The tenant provides a single `ClusterNetworkAttachment` with `subnet` only — no node_set or interface field. The fulfillment-service resolves the interface from the HostType for each node set:
 
-1. `ClusterNetworkAttachment.node_set` = "gpu"
-2. `ClusterSpec.node_sets["gpu"].host_type` = "acme_1tb_h100"
-3. HostType "acme_1tb_h100" has interfaces:
+1. For each node set in the cluster spec (e.g., "gpu"), read `ClusterSpec.node_sets["gpu"].host_type` = "acme_1tb_h100"
+2. HostType "acme_1tb_h100" has interfaces:
    ```
    [{name: "data-0", role: "fabric"},
     {name: "data-1", role: "fabric"},
     {name: "mgmt-0", role: "management"}]
    ```
-4. fulfillment-service picks the first interface with role `fabric` → `data-0`, stores as `fabric_interface` on the attachment
-5. Operator calls `create_network_attachment` with `interface=data-0` per node
+3. fulfillment-service picks the first interface with role `fabric` → `data-0`, stores as `fabric_interface` on the node set definition
+4. Operator calls `create_network_attachment` with `interface=data-0` per node
 
 For v0.2: **CaaS supports BM node sets only.** VM-based cluster node sets are architecturally possible (the HostType BM-vs-VM discriminator and CUDN overlay support it) but are deferred — the HyperShift ↔ CUDN integration for VM worker nodes is not in scope.
 
-For v0.2: **one attachment per node set → one subnet → one interface.**
+For v0.2: **one attachment per cluster → one subnet; each node set uses its own fabric interface from its HostType.**
 
 #### Interface Role Convention
 
@@ -306,17 +304,16 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 message ClusterNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, mutable
-  string node_set = 3;                  // optional, immutable: node set name
-  string fabric_interface = 4;          // system-populated: first fabric-role
-                                        // interface from HostType, immutable
 }
+// Note: fabric_interface is system-populated on each node set definition
+// by the fulfillment-service (resolved from the node set's HostType).
 
 message ClusterSpec {
   string template = 1;
   map<string, google.protobuf.Any> template_parameters = 2;
   map<string, ClusterNodeSet> node_sets = 3;
   // ... existing fields ...
-  repeated ClusterNetworkAttachment network_attachments = N;  // NEW, optional
+  ClusterNetworkAttachment network_attachment = N;  // NEW, optional, singular
   ClusterExternalIPMode external_ip_mode = M;   // NONE, AUTO_API, AUTO_INGRESS, AUTO_ALL
   NATGatewayMode nat_gateway_mode = P;          // NONE or AUTO
 }
@@ -347,14 +344,12 @@ enum NATGatewayMode {
 ```go
 type ClusterOrderSpec struct {
     // ... existing fields ...
-    NetworkAttachments []ClusterNetworkAttachment `json:"networkAttachments,omitempty"`
+    NetworkAttachment *ClusterNetworkAttachment `json:"networkAttachment,omitempty"`
 }
 
 type ClusterNetworkAttachment struct {
     SubnetRef         string   `json:"subnetRef"`
     SecurityGroupRefs []string `json:"securityGroupRefs,omitempty"`
-    NodeSet           string   `json:"nodeSet,omitempty"`
-    FabricInterface   string   `json:"fabricInterface,omitempty"`
 }
 
 type ClusterOrderStatus struct {
@@ -367,8 +362,9 @@ type ClusterOrderStatus struct {
 }
 
 type NodeSetStatus struct {
-    Name   string        `json:"name"`
-    Agents []AgentStatus `json:"agents"`
+    Name            string        `json:"name"`
+    FabricInterface string        `json:"fabricInterface,omitempty"` // System-populated from HostType
+    Agents          []AgentStatus `json:"agents"`
 }
 
 type AgentStatus struct {
@@ -385,15 +381,15 @@ type AgentStatus struct {
 #### Database
 
 Migration adds to clusters table:
-- `network_attachments JSONB` — stores the ClusterNetworkAttachment array
+- `network_attachment JSONB` — stores the singular ClusterNetworkAttachment
 - `api_endpoint TEXT` — discovered API server VIP
 - `ingress_endpoint TEXT` — discovered ingress VIP
 
 #### Server Validation
 
-- network_attachments: subnets exist, are Ready, belong to same VN
-- node_set references: if provided, must match a node_set in the cluster spec. If omitted, attachment applies to all node sets.
-- Immutability: network_attachments are immutable after creation
+- network_attachment: subnet exists, is Ready
+- Each node set's host_type must have at least one interface with role `fabric` for fabric_interface resolution
+- Immutability: network_attachment is immutable after creation
 - target_endpoint validation on ExternalIPAttachment: required when target is cluster, must be `API` or `INGRESS`
 
 #### Template Changes
@@ -416,7 +412,7 @@ Migration adds to clusters table:
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate network_attachments, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP/NATGateway |
+| fulfillment-service | Validate network_attachment (singular), resolve fabric_interface per node set, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP/NATGateway |
 | osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, select agents, **allocate IPs + VIPs from subnet CIDR** (operator IPAM), configure network attachments (dispatcher), trigger AAP workflow |
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs/IPs appear |
 | osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiVIP`/`ingressVIP` from status, create DNAT via fabric_manager |
