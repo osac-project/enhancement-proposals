@@ -493,19 +493,8 @@ See [CaaS Networking](/enhancements/caas-networking) for the detailed flow.
 Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
 (where the tenant specifies interfaces directly), for clusters the
 **system** resolves the interface from the HostType's NetworkInterface list.
-The tenant specifies which subnet(s) to use; the system maps them to the
-correct physical interfaces based on the node set's host type.
-
-Different node sets can be placed on different subnets using the `node-set`
-field (see [ClusterNetworkAttachment](#network-attachment-types)):
-
-```bash
-osac create cluster --template ocp_4_17_small \
-  --network-attachment node-set=compute,subnet=standard-subnet,security-groups=my-sg \
-  --network-attachment node-set=gpu,subnet=gpu-subnet \
-  --node-set compute=large,size=3 --node-set gpu=h100,size=2 \
-  --name my-cluster
-```
+The tenant specifies which subnet to use (one per cluster); the system maps it to the
+correct physical interfaces based on each node set's host type.
 
 In all cases, the resource ends up on the fabric. The fabric manager sees
 all resources equally — there is no VM-vs-BM distinction.
@@ -817,7 +806,7 @@ BMaaS: the tenant specifies interface names directly on
 `BareMetalNetworkAttachment.interface`, validated against the HostType's
 interface list. CaaS: the fulfillment-service resolves the interface
 automatically (first `fabric`-role interface → stored as
-`fabric_interface` on `ClusterNetworkAttachment`).
+`fabric_interface` on the node set definition).
 
 #### Network Attachment Types
 
@@ -866,17 +855,13 @@ discovery and multi-interface examples.
 message ClusterNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
-  string node_set = 3;                  // optional, immutable: node set name from cluster spec
-  string fabric_interface = 4;          // system-populated: first fabric-role
-                                        // interface from HostType, immutable
 }
 ```
 
-Each entry maps one node set to one subnet. If `node_set` is omitted,
-all node sets use this subnet. The `fabric_interface` is resolved by the
-fulfillment-service at creation time from the node set's host type
-(first interface with role `fabric` — see [HostType](#hosttype)). The
-tenant does not set this field. For v0.2: one attachment per node set.
+A single attachment applies to the whole cluster — all node sets share the same subnet.
+The `fabric_interface` is resolved by the fulfillment-service at creation time for each
+node set from its host type (first interface with role `fabric` — see [HostType](#hosttype))
+and stored on the node set definition. The tenant does not set this field.
 
 #### Resource Specs
 
@@ -914,7 +899,7 @@ message ClusterSpec {
   map<string, ClusterNodeSet> node_sets = 3;
 
   // NEW: networking
-  repeated ClusterNetworkAttachment network_attachments = 4;
+  ClusterNetworkAttachment network_attachment = 4;  // singular, one per cluster
 }
 ```
 
@@ -1002,8 +987,8 @@ Per-subnet NAT association is a future enhancement.
 ComputeInstance supports multiple `network_attachments` (virtual NICs). All
 subnets must belong to the same VN. BaremetalInstance supports multiple
 `network_attachments` with the `interface` field to map physical NICs to
-subnets. Cluster supports multiple `network_attachments` with the
-`node_set` field to place different node sets on different subnets. All
+subnets. Cluster supports a single `network_attachment` — one subnet for all
+node sets. Per-node-set subnet placement is not supported in v0.2. All
 subnets must belong to the same VN across all resource types.
 
 #### Multi-NIC Behavior
@@ -1044,10 +1029,10 @@ manager creates a DNAT rule to the resource's primary subnet IP. The tenant
 does not need to specify which interface — the primary designation
 determines the target.
 
-**Cluster multi-NIC:** `ClusterNetworkAttachment` uses `node_set` rather
-than per-NIC attachment. Multi-NIC for individual cluster nodes is handled
-by the CaaS template (provider-configured). The `primary` field does not
-apply to `ClusterNetworkAttachment`.
+**Cluster networking:** `ClusterNetworkAttachment` is a single attachment
+(one subnet for the whole cluster). Multi-NIC for individual cluster nodes
+is handled by the CaaS template (provider-configured). The `primary` field
+does not apply to `ClusterNetworkAttachment`.
 
 #### Multiple Hosting Clusters Per Region
 
