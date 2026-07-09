@@ -135,8 +135,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Stores selected agent references on ClusterOrder status
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
-    - For each node_set attachment, for each selected agent in that node set, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from HostType), `mac_address` (NIC MAC), `subnet_ref`, `primary`
-    - The fabric manager adds the server's port to the subnet's V-Net, allocates an IP from IPAM, resolves the OS interface from MAC via SSH, and applies NMState config
+    - For each node_set attachment, for each selected agent in that node set, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from HostType), `subnet_ref`
+    - The fabric manager adds the server's port to the subnet's V-Net and allocates an IP from IPAM
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
@@ -150,6 +150,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - `osac.service.hosted_cluster` creates HyperShift HostedCluster + NodePool CRs referencing the pre-selected agents
     - No agent selection logic — already done by operator in step 6a
     - No switch port configuration — already done by operator in step 6b
+    - **Host-side network configuration** (static IP, gateway, routes) is applied by the CaaS template using allocated IPs from `status.networkAttachments[].ipAddress` — via NMState for RHCOS agents
 
     **b. MetalLB VIP provisioning (REPLACES `external_access` step):**
 
@@ -396,8 +397,8 @@ Migration adds to clusters table:
 | osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, select agents, configure network attachments (dispatcher), trigger AAP workflow |
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs appear |
 | osac-operator ExternalIPAttachment controller | Read Cluster api_endpoint/ingress_endpoint, create DNAT via fabric_manager |
-| AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents), provision MetalLB VIPs, write VIPs to ClusterOrder status — no agent selection or networking logic |
-| fabric_manager (Ansible role) | create/delete_network_attachment (switch ports), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
+| AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents), provision MetalLB VIPs, write VIPs to ClusterOrder status, **host-side network config** (NMState for RHCOS agents using allocated IPs from CR status) — no agent selection logic |
+| fabric_manager (Ansible role) | Switch-side only: create/delete_network_attachment (V-Net port attachment + IPAM), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
 
 #### Auto-Provisioned Resource Lifecycle

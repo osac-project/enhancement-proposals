@@ -213,17 +213,15 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
       - Reads `network_attachments` from the CR spec
-      - For each attachment: dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from HostType), `mac_address` (NIC MAC for OS interface resolution), `subnet_ref`, `security_group_refs`, `primary`
-      - The fabric manager (e.g., Netris) resolves the host to a fabric server, adds the server's port to the subnet's V-Net, allocates an IP from IPAM, resolves the OS interface name from MAC via SSH, and applies NMState config (static IP, gateway on primary, connected route on secondary)
-      - Primary interface: static IP + default gateway + DNS (via NMState)
-      - Non-primary interfaces: static IP + connected route only (via NMState)
+      - For each attachment: dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from HostType), `subnet_ref`
+      - The fabric manager (e.g., Netris) resolves the host to a fabric server, adds the server's port to the subnet's V-Net, and allocates an IP from IPAM
       - **Fabric manager writes allocated IPs to CR status:** `status.networkAttachments[].ipAddress`
       - Network attachments must be Ready before provisioning proceeds
 
-   c. `reconcileProvisioning` (unchanged — runs after networking):
+   c. `reconcileProvisioning` (runs after networking):
       - Triggers AAP job via `RunProvisioningLifecycle`
       - Template does OS provisioning (PXE boot, user-data, etc.)
-      - Template does NOT handle networking — switch ports already configured in step (b)
+      - **Template handles host-side network configuration** using the allocated IP from `status.networkAttachments[].ipAddress` and the `primary` flag from the attachment spec. The host-side config (static IP, default gateway on primary, connected route on secondary) is applied via cloud-init, kickstart, ignition, NMState, or whatever the target OS supports. The fabric manager only handles switch-side config and IPAM — it cannot assume which OS is running on the host.
 
    d. `reconcilePower` (unchanged)
 
@@ -400,11 +398,11 @@ The ExternalIPAttachment controller doesn't read the BM's IP from the CR. Instea
 |-----------|---------------|
 | fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP/NATGateway |
 | bare-metal-fulfillment-operator | Inventory assignment, networking (dispatcher calls create/delete_network_attachment), OS provisioning (AAP), power management |
-| AAP BM provisioning template | OS provisioning only (PXE boot, user-data) — no networking logic |
+| AAP BM provisioning template | OS provisioning (PXE boot, user-data) + **host-side network configuration** (static IP, gateway, routes using allocated IP from CR status — via cloud-init, kickstart, ignition, NMState, or OS-appropriate method) |
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status |
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from status, create DNAT via fabric_manager |
-| fabric_manager role (create_network_attachment) | Resolve host identity → fabric server, add server interface to subnet's fabric segment, allocate IP, write IP to CR status |
-| fabric_manager role (delete_network_attachment) | Remove server interface from subnet's fabric segment, release IP |
+| fabric_manager role (create_network_attachment) | Switch-side only: resolve host → fabric server, add server port to subnet's V-Net, allocate IP from IPAM, write IP to CR status |
+| fabric_manager role (delete_network_attachment) | Switch-side only: release IP reservation, remove server port from V-Net |
 
 #### Reconciliation Phase Ordering
 
