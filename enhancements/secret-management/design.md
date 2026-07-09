@@ -354,10 +354,12 @@ Private server behavioral specifics:
   - Reads from Postgres, if include_data is true dispatches to backend to fetch data
 - **Update:**
   - If `spec.data` is non-empty on the update, validate against the secret type and write to backend
+- **Update (Hub-backed):**
+  - Metadata-only updates (labels, annotations) are allowed.
+  - If `spec.data` is non-empty, returns `FAILED_PRECONDITION` — Hub-backed secret data is system-managed.
 - **Delete:**
-  - Dispatches to backend to delete stored data.
-  - After data is removed from backend, deletes postgres data.
-  - Note: Hub data is never removed from the backend as part of this action (underlying K8s secret not deleted)
+  - Vault-backed: dispatches to backend to delete stored data, then deletes PostgreSQL metadata.
+  - Hub-backed: returns `FAILED_PRECONDITION` — Hub-backed secrets are system-managed. They are cleaned up when the parent resource (e.g., HostedCluster) is deleted.
 
 Public server wraps the private server and ensures `backend` and `hub_coordinates` are stripped, and
 `include_data` passed as needed.
@@ -428,10 +430,14 @@ structure based on the target secret type:
    secret's name
 5. Clears the inline credential field
 
-The script is idempotent — safe to re-run if interrupted. It checks
-whether a secret already exists for each credential before creating a
-duplicate. It runs as a one-time job after the Vault store is configured
-and the fulfillment-service is upgraded with the new schema.
+The script is idempotent across all steps — safe to re-run if
+interrupted at any point. For each credential it checks whether the
+Secret already exists (skips creation), whether the `*_ref` field is
+already set (skips the update), and whether the inline field is already
+cleared (skips the clear). This ensures a crash between any two steps
+does not leave partial state on rerun. It runs as a one-time job after
+the Vault store is configured and the fulfillment-service is upgraded
+with the new schema.
 
 ### Security Considerations
 
@@ -484,6 +490,9 @@ stateDiagram-v2
 
 PENDING is normally transient. It becomes observable only if both the
 backend write and the rollback delete fail (stuck incomplete creation).
+Hub-backed secrets skip this state machine entirely — they are created as
+`READY`, their data is immutable, and they cannot be deleted through the
+API (metadata updates like labels are still allowed).
 
 #### Per-operation behavior
 
@@ -492,9 +501,12 @@ backend write and the rollback delete fail (stuck incomplete creation).
 | **Create (Vault)** | Insert metadata as `PENDING` → write data to store → set `READY` | Attempt rollback (delete metadata). If rollback fails, record stays `PENDING` for manual cleanup. |
 | **Create (Hub)** | Insert metadata with coordinates as `READY` | N/A — no backend write |
 | **Get** (`include_data`) | Read metadata → fetch data from backend | Return `UNAVAILABLE`. State unchanged — reflects last write, not reachability. |
-| **Update (data)** | Write new data to store → set `READY` | Set `ERROR` with message. Previous data in store is intact. |
-| **Update (metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. State unchanged. |
-| **Delete** | Delete data from backend → delete metadata | Return `UNAVAILABLE`, secret remains intact (prevents orphaned store data). Hub delete is a no-op. |
+| **Update (Vault data)** | Write new data to store → set `READY` | Set `ERROR` with message. Previous data in store is intact. |
+| **Update (Vault metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. State unchanged. |
+| **Update (Hub metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. State unchanged. |
+| **Update (Hub data)** | N/A — returns `FAILED_PRECONDITION` | Data is system-managed; not modifiable through the API. |
+| **Delete (Vault)** | Delete data from backend → delete metadata | Return `UNAVAILABLE`, secret remains intact (prevents orphaned store data). |
+| **Delete (Hub)** | N/A — returns `FAILED_PRECONDITION` | System-managed; cleaned up with parent resource. |
 
 ### RBAC / Tenancy
 
