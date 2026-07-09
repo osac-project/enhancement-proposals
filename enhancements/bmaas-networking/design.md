@@ -83,7 +83,7 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 - Auto ExternalIP mode (`external_ip_mode: AUTO`) for single-call inbound connectivity
 - Auto NATGateway mode (`nat_gateway_mode: AUTO`) for single-call outbound connectivity
 - bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher calls `create_network_attachment` per interface to configure switch ports
-- IP address feedback via CR status: fabric manager writes allocated IPs, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
+- IP allocation via operator IPAM: operator allocates IPs from subnet CIDR during reconcileNetworking, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
 - HostType resource extended with structured `NetworkInterface` list (name, role, description) for BM host types only
 - Rename `networkClass` → `networkFabricManager` to avoid collision with OSAC NetworkClass CRD
 
@@ -244,13 +244,13 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - ExternalIPAttachment controller resolves the BaremetalInstance target by UUID label
     - Checks two preconditions before dispatching (requeues if either is not met):
       1. **ExternalIP must be Allocated** (have an allocated address from the fabric manager)
-      2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachments[].ipAddress` for the attachment where `primary: true`. This IP is written by the fabric manager during `reconcileNetworking` (step 6b) and synced to the fulfillment-service via the feedback controller (step 7).
+      2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachments[].ipAddress` for the attachment where `primary: true`. This IP is written by the operator during `reconcileNetworking` (step 6b) and synced to the fulfillment-service via the feedback controller (step 7).
     - Once both preconditions are met: writes `osac.openshift.io/target-ip` annotation on the ExternalIPAttachment CR
     - Calls `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
     - Fabric manager creates DNAT rule: external IP → BM's primary subnet IP
     - ExternalIPAttachment transitions from Pending to Ready
 
-    For auto-provisioned ExternalIPAttachments (`external_ip_mode=AUTO`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileNetworking` completion (switch port configuration + IP allocation by the fabric manager).
+    For auto-provisioned ExternalIPAttachments (`external_ip_mode=AUTO`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileNetworking` completion (IP allocation by the operator + switch port configuration by the fabric manager).
 
 #### Phase 4: Outbound NAT (optional)
 
@@ -312,7 +312,7 @@ message BareMetalInstanceStatus {
 message BareMetalNetworkAttachmentStatus {
   string interface = 1;
   string subnet_ref = 2;
-  string ip_address = 3;  // Written by fabric manager, synced to fulfillment-service
+  string ip_address = 3;  // Written by operator IPAM, synced to fulfillment-service via feedback
   bool primary = 4;
 }
 ```
@@ -478,7 +478,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: fabric_manager implementation blocked or delayed
 
-**Impact:** Fabric manager `create_network_attachment` and `delete_network_attachment` roles are prerequisites for BMaaS networking. Without them, switch port configuration and IP allocation cannot function.
+**Impact:** Fabric manager `create_network_attachment` and `delete_network_attachment` roles are prerequisites for BMaaS networking. Without them, switch port configuration cannot function. (IP allocation is operator-managed and does not depend on fabric manager roles.)
 
 **Mitigation:** Prioritize Netris BM roles (OSAC-2081). Accept that BMaaS remains unavailable until a fabric_manager exists. Document as a hard dependency.
 
@@ -584,7 +584,7 @@ Resolved: operator allocates IPs from subnet CIDR during `reconcileNetworking` a
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in HostType, verify error returned
 - E2E: create BaremetalInstance with >1 attachment but no interface fields, verify error returned
-- E2E: verify IP address feedback (fabric manager writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
+- E2E: verify operator IPAM (operator allocates IP from subnet CIDR, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
 
 ### Tricky Test Cases
 
@@ -607,7 +607,7 @@ Tech Preview criteria:
 - [ ] Dispatcher integration for `create_network_attachment` and `delete_network_attachment`
 - [ ] HostType proto extended with `NetworkInterface` list
 - [ ] Auto ExternalIP and auto NATGateway provisioning functional
-- [ ] IP address feedback flow implemented (fabric manager writes to CR status, feedback controller syncs to fulfillment-service)
+- [ ] Operator IPAM implemented (operator allocates IPs from subnet CIDR, writes to CR status, feedback syncs to fulfillment-service)
 - [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP, auto NATGateway, IP feedback)
 - [ ] Documentation: API reference, user guide for simplified BM creation
 
@@ -671,13 +671,13 @@ kubectl describe baremetalinstance <name> -n <namespace>
 # Check status.conditions for NetworkingConfigurationFailed
 ```
 
-**Cause:** Dispatcher call failed, switch port config failed, or IP allocation failed
+**Cause:** Operator IPAM failed (subnet exhausted), dispatcher call failed, or switch port config failed
 
 **Resolution:**
-1. Check bare-metal-fulfillment-operator logs for networking phase errors
-2. Check AAP job logs for `create_network_attachment` role errors
+1. Check bare-metal-fulfillment-operator logs for networking phase errors (IP allocation or dispatcher)
+2. Check AAP job logs for `create_network_attachment` role errors (switch-side)
 3. If fabric manager unreachable, investigate connectivity
-4. If switch port config failed, investigate fabric manager IPAM or switch configuration
+4. If switch port config failed, investigate switch configuration
 
 ### Symptom: Multi-NIC BM has no default gateway
 
@@ -705,12 +705,12 @@ kubectl describe baremetalinstance <name> -n <namespace>
 
 **Detection:** `kubectl describe externalipattachment <name> -n <namespace>` shows condition "WaitingForIPAddress"
 
-**Cause:** IP address feedback latency (fabric manager has not yet written IP to BaremetalInstance CR status)
+**Cause:** Operator IPAM has not yet allocated IP (reconcileNetworking still in progress or failed)
 
 **Resolution:**
 1. Check BaremetalInstance status: `kubectl get baremetalinstance <name> -n <namespace> -o jsonpath='{.status.networkAttachments[?(@.primary==true)].ipAddress}'`
 2. If IP is missing, check bare-metal-fulfillment-operator logs for networking phase completion
-3. If networking phase completed but IP missing, investigate fabric manager role `create_network_attachment` (should write IP to CR status)
+3. If networking phase completed but IP missing, investigate operator IPAM logic in `reconcileNetworking`
 
 ### Disabling the feature
 

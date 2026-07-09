@@ -551,17 +551,19 @@ straightforward. For clusters, the DNAT target is a service-level VIP
 (API server or ingress) that is discovered during cluster provisioning.
 The VIP allocation is decoupled from the networking layer:
 
-1. CaaS template provisions the cluster
-2. Template provisions internal VIPs via MetalLB LoadBalancer Services:
-   - **API VIP**: MetalLB allocates an IP for the kube-apiserver Service
-     on the management cluster
-   - **Ingress VIP**: MetalLB allocates an IP for the ingress controller
-     Service on the hosted cluster (from the tenant's subnet)
-3. Template writes VIPs to the ClusterOrder CR status
+1. Operator `reconcileNetworking` pre-allocates VIPs from the subnet
+   CIDR via operator IPAM and writes them to ClusterOrder status
+   (`apiVIP`, `ingressVIP`)
+2. CaaS template creates MetalLB LoadBalancer Services with **pinned
+   IPs** (`metallb.universe.tf/loadBalancerIPs`) using the
+   pre-allocated VIPs — MetalLB announces them via L2, no dynamic
+   allocation
+3. Template confirms VIPs in ClusterOrder CR status
 4. Feedback controller syncs VIPs to the Cluster object in the
    fulfillment service as `api_endpoint` and `ingress_endpoint` fields
-5. ExternalIPAttachment controller reads the VIP from the Cluster →
-   calls fabric manager to create DNAT: external IP → internal VIP
+5. ExternalIPAttachment controller reads the VIP from ClusterOrder
+   status → calls fabric manager to create DNAT: external IP →
+   internal VIP
 6. ExternalIPAttachment transitions to Ready
 
 The tenant can inspect the allocated VIPs:
@@ -983,9 +985,13 @@ attachment determines:
   rejected
 - `primary` is immutable after creation
 
-**IPAM and IP assignment:** The responsible manager (k8sManager for VMs,
-fabric manager for BM) configures IP assignment per subnet based on the
-primary designation. IP assignment may use DHCP or static configuration.
+**IPAM and IP assignment:** For VMs, the k8sManager provides IPs via OVN
+DHCP on the CUDN overlay. For BM servers and CaaS agents, the operator
+allocates IPs from the subnet CIDR during `reconcileNetworking` (operator
+IPAM) and writes them to CR status. The provisioning template then applies
+host-side network configuration (static IP, gateway, routes) using the
+allocated IPs from CR status, via the appropriate OS mechanism (NMState,
+cloud-init, kickstart, etc.).
 
 | Subnet role | IP assignment provides (via DHCP or static) |
 |-------------|---------------------------------------------|

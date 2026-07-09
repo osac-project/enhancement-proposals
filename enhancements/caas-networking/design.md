@@ -174,16 +174,16 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 10. **ExternalIPAttachment controller** reconciles the API attachment:
     - Checks two preconditions before dispatching (requeues if either is not met):
       1. ExternalIP must be Allocated (have an allocated address from the fabric manager)
-      2. Cluster must have `api_endpoint` populated in status (VIP discovered via feedback loop in steps 8-9)
-    - Once both are met: reads Cluster's `api_endpoint` → 10.0.1.20
+      2. ClusterOrder must have `status.apiVIP` populated (pre-allocated by operator IPAM in step 6b)
+    - Once both are met: reads ClusterOrder's `apiVIP` → 10.0.1.200
     - Calls `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
-    - Fabric manager creates DNAT: api-ip (203.0.113.10) → 10.0.1.20
+    - Fabric manager creates DNAT: api-ip (203.0.113.10) → 10.0.1.200
     - ExternalIPAttachment transitions from **Pending** to **Ready**
 
 11. Same for ingress ExternalIPAttachment:
-    - Requeues until ExternalIP is Allocated AND Cluster's `ingress_endpoint` is populated
-    - Reads Cluster's `ingress_endpoint` → 10.0.1.50
-    - Creates DNAT: ingress-ip (203.0.113.11) → 10.0.1.50
+    - Requeues until ExternalIP is Allocated AND ClusterOrder's `status.ingressVIP` is populated
+    - Reads ClusterOrder's `ingressVIP` → 10.0.1.201
+    - Creates DNAT: ingress-ip (203.0.113.11) → 10.0.1.201
     - Transitions to **Ready**
 
 #### Deletion (reverse order)
@@ -409,9 +409,9 @@ Migration adds to clusters table:
 | Component | Responsibility |
 |-----------|---------------|
 | fulfillment-service | Validate network_attachments, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP/NATGateway |
-| osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, select agents, configure network attachments (dispatcher), trigger AAP workflow |
-| osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs appear |
-| osac-operator ExternalIPAttachment controller | Read Cluster api_endpoint/ingress_endpoint, create DNAT via fabric_manager |
+| osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, select agents, **allocate IPs + VIPs from subnet CIDR** (operator IPAM), configure network attachments (dispatcher), trigger AAP workflow |
+| osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs/IPs appear |
+| osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiVIP`/`ingressVIP` from status, create DNAT via fabric_manager |
 | AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents), provision MetalLB VIPs, write VIPs to ClusterOrder status, **host-side network config** (NMState for RHCOS agents using allocated IPs from CR status) — no agent selection logic |
 | fabric_manager (Ansible role) | Switch-side only: create/delete_network_attachment (V-Net port attachment), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
