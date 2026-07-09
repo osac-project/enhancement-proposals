@@ -136,7 +136,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
     - For each node_set attachment, for each selected agent in that node set, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from HostType), `subnet_ref`
-    - The fabric manager adds the server's port to the subnet's V-Net and allocates an IP from IPAM
+    - The fabric manager adds the server's port to the subnet's V-Net (switch-side only)
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
@@ -398,7 +398,7 @@ Migration adds to clusters table:
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs appear |
 | osac-operator ExternalIPAttachment controller | Read Cluster api_endpoint/ingress_endpoint, create DNAT via fabric_manager |
 | AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents), provision MetalLB VIPs, write VIPs to ClusterOrder status, **host-side network config** (NMState for RHCOS agents using allocated IPs from CR status) — no agent selection logic |
-| fabric_manager (Ansible role) | Switch-side only: create/delete_network_attachment (V-Net port attachment + IPAM), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
+| fabric_manager (Ansible role) | Switch-side only: create/delete_network_attachment (V-Net port attachment), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
 
 #### Auto-Provisioned Resource Lifecycle

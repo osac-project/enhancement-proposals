@@ -201,7 +201,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - If >1 attachment without `interface`, reject (explicit interface required when multi-homed)
      - Number of attachments ≤ number of available interfaces on template
      - If multiple attachments, exactly one is `primary`; if single attachment, `primary` is implicit
-   - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool, creates ExternalIP + ExternalIPAttachment
+   - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - If `nat_gateway_mode == AUTO`: creates NATGateway on the VN (reuses existing if one already exists)
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
@@ -214,8 +214,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
       - Reads `network_attachments` from the CR spec
       - For each attachment: dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from HostType), `subnet_ref`
-      - The fabric manager (e.g., Netris) resolves the host to a fabric server, adds the server's port to the subnet's V-Net, and allocates an IP from IPAM
-      - **Fabric manager writes allocated IPs to CR status:** `status.networkAttachments[].ipAddress`
+      - The fabric manager (e.g., Netris) resolves the host to a fabric server and adds the server's port to the subnet's V-Net (switch-side only)
       - Network attachments must be Ready before provisioning proceeds
 
    c. `reconcileProvisioning` (runs after networking):
@@ -242,9 +241,16 @@ Same as VMaaS/CaaS — the networking API is uniform.
     osac create externalipattachment --externalip my-ip \
       --baremetal-instance my-server --name bm-att
     ```
-    - ExternalIPAttachment controller reads BM instance's primary subnet IP from status (synced via feedback controller)
+    - ExternalIPAttachment controller resolves the BaremetalInstance target by UUID label
+    - Checks two preconditions before dispatching (requeues if either is not met):
+      1. **ExternalIP must be Allocated** (have an allocated address from the fabric manager)
+      2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachments[].ipAddress` for the attachment where `primary: true`. This IP is written by the fabric manager during `reconcileNetworking` (step 6b) and synced to the fulfillment-service via the feedback controller (step 7).
+    - Once both preconditions are met: writes `osac.openshift.io/target-ip` annotation on the ExternalIPAttachment CR
     - Calls `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
     - Fabric manager creates DNAT rule: external IP → BM's primary subnet IP
+    - ExternalIPAttachment transitions from Pending to Ready
+
+    For auto-provisioned ExternalIPAttachments (`external_ip_mode=AUTO`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileNetworking` completion (switch port configuration + IP allocation by the fabric manager).
 
 #### Phase 4: Outbound NAT (optional)
 
@@ -382,6 +388,8 @@ status:
 
 The feedback controller syncs this to fulfillment-service. The ExternalIPAttachment controller reads the primary IP from the BM's status.
 
+This creates an inherently asynchronous flow for ExternalIPAttachment on BM targets: the attachment is created (either manually or via `external_ip_mode=AUTO`) but the DNAT rule cannot be configured until the fabric manager writes the IP. The ExternalIPAttachment controller handles this using the standard requeue pattern — it checks `status.networkAttachments[].ipAddress` for the primary interface and requeues if the IP is not yet populated. This is the same pattern the controller already uses for ComputeInstance targets (requeues until `VirtualMachineReference` is set) and for Cluster targets (requeues until `api_endpoint`/`ingress_endpoint` is populated). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full precondition table.
+
 ##### Option B: Pre-allocate from Subnet CIDR
 
 The fulfillment-service pre-allocates an IP from the subnet's CIDR at creation time (via the fabric manager's IPAM API). The IP is stored in the proto status and written to the CR. The switch port is configured with a reservation for that specific IP (DHCP or static).
@@ -401,8 +409,8 @@ The ExternalIPAttachment controller doesn't read the BM's IP from the CR. Instea
 | AAP BM provisioning template | OS provisioning (PXE boot, user-data) + **host-side network configuration** (static IP, gateway, routes using allocated IP from CR status — via cloud-init, kickstart, ignition, NMState, or OS-appropriate method) |
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status |
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from status, create DNAT via fabric_manager |
-| fabric_manager role (create_network_attachment) | Switch-side only: resolve host → fabric server, add server port to subnet's V-Net, allocate IP from IPAM, write IP to CR status |
-| fabric_manager role (delete_network_attachment) | Switch-side only: release IP reservation, remove server port from V-Net |
+| fabric_manager role (create_network_attachment) | Switch-side only: resolve host → fabric server, add server port to subnet's V-Net |
+| fabric_manager role (delete_network_attachment) | Switch-side only: remove server port from V-Net |
 
 #### Reconciliation Phase Ordering
 
@@ -433,7 +441,7 @@ This feature inherits the existing security model:
 
 #### Auto ExternalIP Allocation Failures
 
-- Pool exhaustion: create API call returns error, resource not persisted (NFR-1)
+- Pool exhaustion: create API call returns error, no resources persisted (pool capacity checked synchronously during the API call — see [auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types))
 - ExternalIP provisioning failure: ExternalIP enters Failed state, BaremetalInstance remains in Pending (external access unavailable, BM may still function without inbound connectivity)
 - ExternalIPAttachment provisioning failure: DNAT rule not created, inbound traffic does not reach BM (BM functional, external access unavailable)
 
@@ -555,11 +563,11 @@ Current proposal (FR-5): reuse any existing NATGateway regardless of state. Alte
 
 ### 2. Should capacity exhaustion return an API error or create a Failed resource?
 
-Current proposal (NFR-1): return error, resource not persisted. Alternative: create Failed resource for audit trail.
+Current proposal: return error, no resources persisted (pool capacity checked synchronously during the API call). Alternative: create Failed resource for audit trail.
 
 **Owner:** API design team
 
-**Impact:** Affects FR-4, NFR-1, and acceptance criteria.
+**Impact:** Affects FR-4 and acceptance criteria.
 
 ### 3. Should IP address feedback use Option A (fabric manager writes to CR status), Option B (pre-allocate from IPAM), or Option C (fabric manager tracks independently)?
 
