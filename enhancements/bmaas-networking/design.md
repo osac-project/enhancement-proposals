@@ -381,7 +381,7 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 #### Subnet IPAM — Resolved
 
-The operator allocates IPs from the subnet CIDR during `reconcileNetworking` (step 6b). The IP is written to `status.networkAttachments[].ipAddress` on the BaremetalInstance CR:
+The operator allocates IPs and populates the full host networking config during `reconcileNetworking` (step 6b), writing to `status.networkAttachments[]` on the BaremetalInstance CR:
 
 ```yaml
 status:
@@ -389,6 +389,11 @@ status:
     - interface: data-0
       subnetRef: my-subnet
       ipAddress: 10.0.1.15
+      gateway: 10.0.1.1
+      prefixLength: 24
+      dnsServers:
+        - 10.0.0.53
+        - 10.0.0.54
       primary: true
 ```
 
