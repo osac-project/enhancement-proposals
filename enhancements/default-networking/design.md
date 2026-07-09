@@ -149,10 +149,11 @@ This enhancement adds three main capabilities: default networking at tenant onbo
      - Populates network_attachments with defaults (if omitted)
      - Reads `external_ip_mode: AUTO`
      - Auto-selects ExternalIPPool (READY, most available capacity, IPv4 family)
-     - Creates ExternalIP from pool, labeled `osac.openshift.io/auto-provisioned: "true"`
-     - Creates ExternalIPAttachment binding ExternalIP to VM's primary subnet IP (resolved after VM provisioning), labeled `osac.openshift.io/auto-provisioned: "true"`
+     - Creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically.
+     - Both labeled `osac.openshift.io/auto-provisioned: "true"`
    - ComputeInstance CR created with `external_ip_mode: AUTO`
-   - osac-operator reconciles VM provisioning, then ExternalIPAttachment activates when VIP is discovered
+   - osac-operator reconciles ExternalIP (fabric manager allocates address → Allocated), then VM provisioning, then ExternalIPAttachment controller activates once ExternalIP is Allocated AND VM's `VirtualMachineReference` is set
+   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
    - Result: VM is reachable via ExternalIP
 
 7. **If ExternalIPPool has no capacity:**
@@ -171,13 +172,12 @@ This enhancement adds three main capabilities: default networking at tenant onbo
      - Populates network_attachments with defaults (if omitted)
      - Reads `external_ip_mode: AUTO_ALL`
      - Auto-selects ExternalIPPool (same algorithm)
-     - Creates two ExternalIPs from pool: one for API, one for ingress (both labeled `osac.openshift.io/auto-provisioned: "true"`)
-     - Creates two ExternalIPAttachments in Pending state (both labeled `osac.openshift.io/auto-provisioned: "true"`)
-     - Stores ExternalIP addresses in ClusterOrder spec (passed as template parameters)
-   - osac-operator ClusterOrder controller:
-     - Reads ExternalIP addresses from spec
-     - Triggers AAP job with `api_vip` and `ingress_vip` template parameters (ExternalIPs allocated BEFORE provisioning)
-     - After cluster VIPs are discovered, ExternalIPAttachments activate and DNAT rules are created
+     - Creates two ExternalIPs + two ExternalIPAttachments in the same DB transaction — all start in **Pending** state. Pool capacity decremented atomically.
+     - All labeled `osac.openshift.io/auto-provisioned: "true"`
+     - Stores ExternalIP references in ClusterOrder spec (passed as template parameters after ExternalIPs reach Allocated)
+   - osac-operator reconciles ExternalIPs (fabric manager allocates addresses → Allocated), then ClusterOrder controller triggers AAP job with `api_vip` and `ingress_vip` template parameters
+   - After cluster VIPs are discovered (MetalLB → ClusterOrder status → feedback → Cluster status), ExternalIPAttachment controllers activate once ExternalIP is Allocated AND `api_endpoint`/`ingress_endpoint` are populated
+   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
    - Result: Cluster is reachable via ExternalIPs for both API and ingress
 
 9. **CLI flag mapping for clusters:**
@@ -196,8 +196,8 @@ This enhancement adds three main capabilities: default networking at tenant onbo
       - Populates network_attachments with defaults (if omitted)
       - Reads `nat_gateway_mode: AUTO`
       - Checks if NATGateway already exists on the VM's VirtualNetwork
-      - If exists: reuse (regardless of state, whether manually or auto-created)
-      - If not exists: auto-select ExternalIPPool, create ExternalIP, create NATGateway on VN using ExternalIP as SNAT source, label `osac.openshift.io/auto-provisioned: "true"`
+      - If exists: reuse (regardless of state, whether manually or auto-created). No new resources created.
+      - If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in the same DB transaction, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
     - osac-operator NATGateway controller reconciles SNAT rule provisioning
     - Result: VM has outbound connectivity via NATGateway
 
@@ -227,6 +227,7 @@ This enhancement adds three main capabilities: default networking at tenant onbo
       - Deletes ExternalIPAttachment first (DNAT rule removed)
       - Deletes ExternalIP second (IP returned to pool)
       - If cleanup fails permanently (after retries): finalizer is removed, parent resource deleted, orphaned resources left in cluster
+    - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this resource auto-created it, deleting the resource does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
     - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-provisioned), they persist after parent deletion
     - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
@@ -399,7 +400,7 @@ type ClusterSpec struct {
 - Pool selection: pick READY ExternalIPPool with most available capacity matching IP family (defaults to IPv4)
 - If multiple pools have equal capacity: selection is deterministic but implementation-defined (e.g., alphabetical by pool name)
 - If no pool has capacity: return error `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
-- Resource is NOT persisted on capacity exhaustion (synchronous allocation)
+- Pool capacity is checked and decremented synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically — actual IP address allocation from the fabric manager and DNAT rule creation happen asynchronously through the operator reconciliation loop. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow.
 
 **Auto NATGateway creation:**
 - Check if NATGateway already exists on the VN (query by VirtualNetwork reference)
@@ -431,19 +432,20 @@ type ClusterSpec struct {
 
 - **Creation:** fulfillment-service creates ExternalIP, ExternalIPAttachment, or NATGateway when external_ip_mode=AUTO or nat_gateway_mode=AUTO
 - **Labeling:** All auto-provisioned resources labeled `osac.openshift.io/auto-provisioned: "true"`
-- **Cleanup:** Parent resource finalizer deletes auto-provisioned resources on parent deletion
+- **Cleanup:** Parent resource finalizer deletes auto-provisioned ExternalIP/ExternalIPAttachment on parent deletion
 - **Cleanup order:** ExternalIPAttachment → ExternalIP → parent resource removal
+- **NATGateway NOT cleaned up:** NATGateway is a shared per-VN resource — it persists after individual resource deletion even if auto-created, because other resources on the same VN may depend on it. Tenant deletes NATGateway manually when no longer needed.
 - **Cleanup failure:** If cleanup fails permanently (after retries), finalizer is removed, parent deleted, orphaned resources left in cluster (manual cleanup required)
 - **Manual resources NOT cleaned up:** If tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-provisioned), they persist after parent deletion
 
 #### Prerequisite Ordering for Clusters
 
 For clusters, ExternalIPs must be allocated BEFORE provisioning is dispatched (CaaS requirement):
-1. fulfillment-service creates ExternalIP resources (READY state)
-2. fulfillment-service stores ExternalIP addresses in ClusterOrder spec
-3. osac-operator ClusterOrder controller reads addresses from spec, passes as template parameters (api_vip, ingress_vip)
+1. fulfillment-service creates ExternalIP resources (Pending state in DB) and stores their references in ClusterOrder spec
+2. osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (addresses assigned)
+3. osac-operator ClusterOrder controller reads allocated addresses from ExternalIP CRs, passes as template parameters (api_vip, ingress_vip)
 4. AAP template provisions cluster with known VIPs
-5. After cluster provisioning, ExternalIPAttachments activate (DNAT rules created)
+5. After cluster provisioning, ExternalIPAttachments activate (DNAT rules created once VIPs are discovered)
 
 #### NATGateway Reuse Logic
 
@@ -606,7 +608,7 @@ Instead of reusing existing NATGateway, always create a new one when nat_gateway
 
 Instead of returning an error when ExternalIPPool has no capacity, create a Failed resource with a status condition.
 
-**Rejected because:** PRD NFR-1 specifies synchronous allocation. Creating a Failed resource adds cleanup burden and audit trail complexity. Clear API error is simpler.
+**Rejected because:** Pool capacity is validated synchronously during the API call — if the pool is exhausted, the call fails atomically and no resources are persisted. Creating a Failed resource adds cleanup burden and audit trail complexity. Clear API error with no persisted state is simpler.
 
 ### Alternative 4: State-aware NATGateway reuse
 
