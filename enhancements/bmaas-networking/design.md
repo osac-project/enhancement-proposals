@@ -202,7 +202,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - Number of attachments ≤ number of available interfaces on template
      - If multiple attachments, exactly one is `primary`; if single attachment, `primary` is implicit
    - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
-   - If `nat_gateway_mode == AUTO`: creates NATGateway on the VN (reuses existing if one already exists)
+   - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists: reuse (regardless of state). If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway, both labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the BaremetalInstance creation still succeeds (outbound NAT is best-effort).
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
 6. **bare-metal-fulfillment-operator BareMetalInstance controller:**
@@ -214,7 +214,8 @@ Same as VMaaS/CaaS — the networking API is uniform.
    b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
       - Reads `network_attachments` from the CR spec
       - For each attachment: dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from HostType), `subnet_ref`
-      - The fabric manager (e.g., Netris) resolves the host to a fabric server and adds the server's port to the subnet's V-Net (switch-side only)
+      - The fabric manager (e.g., Netris) resolves the host to a fabric server, adds the server's port to the subnet's V-Net, and allocates an IP from its IPAM
+      - **IP writeback mechanism:** The AAP role updates the BaremetalInstance CR status via the K8s API (the AAP execution environment has a kubeconfig with access to the hub cluster). The role writes each allocated IP to `status.networkAttachments[].ipAddress` on the CR before the AAP job completes. The operator reads the updated status after the AAP job finishes.
       - Network attachments must be Ready before provisioning proceeds
 
    c. `reconcileProvisioning` (runs after networking):
@@ -265,6 +266,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 11. **Delete BaremetalInstance:**
     - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`external_ip_mode=AUTO`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
+    - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this resource auto-created it, deleting the resource does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
     - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
     - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources.
     - bare-metal-fulfillment-operator:

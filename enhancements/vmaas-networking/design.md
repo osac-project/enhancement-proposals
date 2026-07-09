@@ -116,7 +116,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - fulfillment-service:
      - If `compute_network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
      - Validates: subnets exist, are Ready, same VN, primary rules
-     - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment
+     - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
      - If `nat_gateway_mode == AUTO`: creates NATGateway on the VN (reuses existing if one already exists)
    - Creates ComputeInstance CR with `compute_network_attachments`
 
@@ -147,15 +147,18 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Auto-selects ExternalIPPool (READY, most available capacity, matching IP family)
    - Creates ExternalIP from pool, labeled `osac.openshift.io/auto-provisioned: "true"`
    - Creates ExternalIPAttachment binding ExternalIP to VM's primary subnet IP, labeled `osac.openshift.io/auto-provisioned: "true"`
-   - osac-operator ExternalIPAttachment controller triggers dispatcher → `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
+   - Both start in **Pending** state. The ExternalIPAttachment controller checks two preconditions before dispatching (requeues if either is not met):
+     1. ExternalIP must be Allocated (have an allocated address from the fabric manager)
+     2. ComputeInstance must have `VirtualMachineReference` set (VM object created in KubeVirt)
+   - Once both are met: dispatcher → `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
    - Fabric manager creates DNAT rule: external IP → VM's primary subnet IP
+   - ExternalIPAttachment transitions from Pending to Ready
 
 #### Outbound NAT (optional, auto-provisioned when `nat_gateway_mode=AUTO`)
 
 8. **fulfillment-service creates or reuses NATGateway:**
-   - Auto-selects ExternalIP from pool (READY, most available capacity)
-   - If NATGateway already exists on the VN: reuse (regardless of state or whether it was manually or auto-created)
-   - Otherwise: create NATGateway with ExternalIP as SNAT source
+   - If NATGateway already exists on the VN: reuse (regardless of state or whether it was manually or auto-created). No new resources created.
+   - If no NATGateway exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in the same DB transaction, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
    - osac-operator NATGateway controller triggers dispatcher → `osac.templates.{{ fabric_manager }}.create_nat_gateway`
    - Fabric manager creates SNAT rule for the VN's CIDR
 
@@ -163,6 +166,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 9. **Delete ComputeInstance:**
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`external_ip_mode=AUTO`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
+   - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this resource auto-created it, deleting the resource does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
    - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
@@ -285,7 +289,7 @@ This feature inherits the existing security model:
 
 #### Auto ExternalIP Allocation Failures
 
-- Pool exhaustion: create API call returns error, resource not persisted (NFR-1)
+- Pool exhaustion: create API call returns error, no resources persisted (pool capacity checked synchronously during the API call — see [auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types))
 - ExternalIP provisioning failure: ExternalIP enters Failed state, ComputeInstance remains in Pending (external access unavailable, VM may still function without inbound connectivity)
 - ExternalIPAttachment provisioning failure: DNAT rule not created, inbound traffic does not reach VM (VM functional, external access unavailable)
 
@@ -385,9 +389,9 @@ Instead of reusing existing NATGateway, always create a new one when `nat_gatewa
 
 ### Alternative 3: Capacity exhaustion creates Failed resource instead of returning error
 
-Instead of returning an error when ExternalIPPool has no capacity (NFR-1), create a Failed ComputeInstance with a status condition.
+Instead of returning an error when ExternalIPPool has no capacity, create a Failed ComputeInstance with a status condition.
 
-**Rejected because:** PRD NFR-1 specifies synchronous allocation. Creating a Failed resource adds cleanup burden and audit trail complexity. Clear API error is simpler.
+**Rejected because:** Pool capacity is validated synchronously during the API call — if the pool is exhausted, the call fails atomically and no resources are persisted. Creating a Failed resource adds cleanup burden and audit trail complexity. Clear API error with no persisted state is simpler.
 
 ## Open Questions
 
@@ -401,11 +405,11 @@ Current proposal (FR-5): reuse any existing NATGateway regardless of state. Alte
 
 ### 2. Should capacity exhaustion return an API error or create a Failed resource?
 
-Current proposal (NFR-1): return error, resource not persisted. Alternative: create Failed resource for audit trail.
+Current proposal: return error, no resources persisted. Alternative: create Failed resource for audit trail.
 
 **Owner:** API design team
 
-**Impact:** Affects FR-4, NFR-1, and acceptance criteria.
+**Impact:** Affects FR-4 and acceptance criteria.
 
 ## Test Plan
 

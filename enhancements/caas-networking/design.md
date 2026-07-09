@@ -121,7 +121,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - SecurityGroups exist, are Ready, belong to same VN
       - node_set refs match cluster spec (if provided)
     - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the attachment
-    - If `external_ip_mode == AUTO_ALL`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress) and two ExternalIPAttachments (Pending state — they transition to Ready once VIPs are discovered)
+    - If `external_ip_mode == AUTO_ALL`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress) and two ExternalIPAttachments — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are discovered (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
     - If `nat_gateway_mode == AUTO`: creates NATGateway on the VN (reuses existing if one already exists)
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with enriched `network_attachments` in spec
@@ -136,7 +136,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
     - For each node_set attachment, for each selected agent in that node set, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from HostType), `subnet_ref`
-    - The fabric manager adds the server's port to the subnet's V-Net (switch-side only)
+    - The fabric manager adds the server's port to the subnet's V-Net and allocates an IP from its IPAM
+    - **IP writeback mechanism:** The AAP role updates the ClusterOrder CR status via the K8s API (the AAP execution environment has a kubeconfig with access to the hub cluster). The role writes each allocated IP to `status.networkAttachments[].ipAddress` on the CR before the AAP job completes. The operator reads the updated status after the AAP job finishes.
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
@@ -176,13 +177,17 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 9. **fulfillment-service** re-reads ClusterOrder CR:
     - Syncs `api_endpoint` and `ingress_endpoint` from ClusterOrder status to the Cluster object
 
-10. **ExternalIPAttachment controller** reconciles:
-    - Reads Cluster's `api_endpoint` → 10.0.1.20
+10. **ExternalIPAttachment controller** reconciles the API attachment:
+    - Checks two preconditions before dispatching (requeues if either is not met):
+      1. ExternalIP must be Allocated (have an allocated address from the fabric manager)
+      2. Cluster must have `api_endpoint` populated in status (VIP discovered via feedback loop in steps 8-9)
+    - Once both are met: reads Cluster's `api_endpoint` → 10.0.1.20
     - Calls `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
     - Fabric manager creates DNAT: api-ip (203.0.113.10) → 10.0.1.20
     - ExternalIPAttachment transitions from **Pending** to **Ready**
 
 11. Same for ingress ExternalIPAttachment:
+    - Requeues until ExternalIP is Allocated AND Cluster's `ingress_endpoint` is populated
     - Reads Cluster's `ingress_endpoint` → 10.0.1.50
     - Creates DNAT: ingress-ip (203.0.113.11) → 10.0.1.50
     - Transitions to **Ready**
@@ -190,8 +195,9 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 12. **Delete Cluster:**
-    - **Auto-provisioned cleanup:** If ExternalIPs/ExternalIPAttachments/NATGateway were created by the system (`external_ip_mode=AUTO_*`, `nat_gateway_mode=AUTO`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachments first, then ExternalIPs, then NATGateway (if auto-created).
-    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment/NATGateway explicitly, they persist after the cluster is deleted. The tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
+    - **Auto-provisioned cleanup:** If ExternalIPs/ExternalIPAttachments were created by the system (`external_ip_mode=AUTO_*`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachments first, then ExternalIPs.
+    - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this cluster auto-created it, deleting the cluster does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
+    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the cluster is deleted. The tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
     - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources.
     - ClusterOrder controller triggers AAP delete workflow
     - CaaS delete template:
@@ -354,8 +360,16 @@ type ClusterNetworkAttachment struct {
 
 type ClusterOrderStatus struct {
     // ... existing fields ...
-    APIEndpoint     string `json:"apiEndpoint,omitempty"`
-    IngressEndpoint string `json:"ingressEndpoint,omitempty"`
+    APIEndpoint          string                              `json:"apiEndpoint,omitempty"`
+    IngressEndpoint      string                              `json:"ingressEndpoint,omitempty"`
+    NetworkAttachments   []ClusterNetworkAttachmentStatus     `json:"networkAttachments,omitempty"`
+}
+
+type ClusterNetworkAttachmentStatus struct {
+    NodeSet    string `json:"nodeSet,omitempty"`
+    SubnetRef  string `json:"subnetRef,omitempty"`
+    IPAddress  string `json:"ipAddress,omitempty"`   // Written by fabric manager during reconcileNetworking
+    Primary    bool   `json:"primary,omitempty"`
 }
 ```
 

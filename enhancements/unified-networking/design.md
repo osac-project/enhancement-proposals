@@ -577,6 +577,65 @@ created before (Pending state), the controller activates them once the
 cluster's endpoint VIPs are available. If created after, the DNAT rule
 is configured immediately.
 
+**Auto-provisioning lifecycle (external_ip_mode / nat_gateway_mode):**
+
+Auto ExternalIP and NATGateway provisioning (described in per-service
+EPs and [Default Networking](/enhancements/default-networking)) is a
+two-phase process:
+
+*Phase 1 — synchronous (during the create API call):*
+
+The fulfillment-service validates pool capacity, creates ExternalIP and
+ExternalIPAttachment records in PostgreSQL, and decrements pool capacity
+— all within the same API transaction. If the pool is exhausted, the
+call fails and no resources are persisted (including the parent
+resource). Both the ExternalIP and ExternalIPAttachment start in
+**Pending** state. The ExternalIPAttachment's target reference is set at
+creation time, but the DNAT target IP may not yet be known (the target
+resource may still be provisioning).
+
+The fulfillment-service creates the ExternalIPAttachment with the
+ExternalIP in Pending state (not yet Allocated). This bypasses the
+normal ExternalIPAttachment server validation that requires the
+ExternalIP to be Allocated — the auto-provisioning codepath in the
+fulfillment-service creates both resources atomically within the same
+transaction, so the Allocated check is not needed (the ExternalIP is
+guaranteed to exist and will be reconciled by the operator).
+
+*Phase 2 — asynchronous (controller reconciliation):*
+
+1. fulfillment-service reconciler pushes ExternalIP CR to the hub
+   cluster
+2. osac-operator ExternalIP controller dispatches to AAP → fabric
+   manager allocates an IP address → ExternalIP transitions to
+   **Allocated**
+3. fulfillment-service reconciler pushes ExternalIPAttachment CR to the
+   hub cluster
+4. osac-operator ExternalIPAttachment controller checks two
+   preconditions before dispatching:
+   - **ExternalIP must be Allocated** (have an allocated address). If
+     not, the controller requeues.
+   - **Target resource must have a known IP.** The required IP depends
+     on the target type (see below). If not yet available, the
+     controller requeues.
+5. Once both preconditions are met, the controller dispatches to AAP →
+   fabric manager creates the DNAT rule → ExternalIPAttachment
+   transitions to **Ready**
+
+*ExternalIPAttachment controller preconditions per target type:*
+
+| Target type | Required precondition | Source of target IP |
+|-------------|----------------------|---------------------|
+| ComputeInstance | `VirtualMachineReference` set on CI CR | VM's primary subnet IP (resolved from CUDN overlay) |
+| Cluster | `api_endpoint` or `ingress_endpoint` populated on Cluster status | MetalLB VIP (discovered during cluster provisioning, synced via feedback controller) |
+| BaremetalInstance | `status.networkAttachments[].ipAddress` populated for the primary interface | Fabric manager writes IP to BM CR status after switch port configuration |
+
+The controller uses the existing requeue pattern: if the precondition
+is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
+retries until the target IP appears. This is the same pattern used
+today for the `VirtualMachineReference` check on ComputeInstance
+targets.
+
 **Enable outbound NAT (SNAT):**
 
 ```bash
