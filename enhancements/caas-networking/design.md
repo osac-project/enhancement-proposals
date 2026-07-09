@@ -135,35 +135,29 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Stores selected agent references on ClusterOrder status
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
-    - For each node_set attachment, for each selected agent in that node set, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from HostType), `subnet_ref`
-    - The fabric manager adds the server's port to the subnet's V-Net and allocates an IP from its IPAM
-    - **IP writeback mechanism:** The AAP role updates the ClusterOrder CR status via the K8s API (the AAP execution environment has a kubeconfig with access to the hub cluster). The role writes each allocated IP to `status.networkAttachments[].ipAddress` on the CR before the AAP job completes. The operator reads the updated status after the AAP job finishes.
+    - **Operator allocates IPs:** For each node_set attachment, for each selected agent, the operator reads the Subnet CR to obtain the CIDR, computes available IPs, picks the next available, and writes it to `status.nodeSets[].agents[].ipAddress`. This is operator-managed IPAM — no AAP job needed for IP allocation.
+    - **Operator allocates VIPs:** Allocates 2 additional IPs from the subnet CIDR for API and ingress VIPs. Writes to `status.apiVIP` and `status.ingressVIP`. These are pre-determined before cluster provisioning.
+    - **Operator dispatches switch-side config:** For each agent, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from HostType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. No IP param — switch-side only.
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
     - The ClusterOrder CR is serialized and passed to AAP
 
-7. **CaaS template receives ClusterOrder (agents already selected, switch ports already configured).**
+7. **CaaS template receives ClusterOrder (agents already selected, IPs already allocated, switch ports already configured).**
 
     The template's `install.yaml` changes:
 
     **a. Create HostedCluster + NodePools:**
-    - `osac.service.hosted_cluster` creates HyperShift HostedCluster + NodePool CRs referencing the pre-selected agents
+    - `osac.service.hosted_cluster` creates HyperShift HostedCluster + NodePool CRs referencing the pre-selected agents from `status.nodeSets[].agents[].agentName`
     - No agent selection logic — already done by operator in step 6a
     - No switch port configuration — already done by operator in step 6b
-    - **Host-side network configuration** (static IP, gateway, routes) is applied by the CaaS template using allocated IPs from `status.networkAttachments[].ipAddress` — via NMState for RHCOS agents
+    - **Host-side network configuration** (static IP, gateway, routes) is applied by the CaaS template using allocated IPs from `status.nodeSets[].agents[].ipAddress` — via NMState for RHCOS agents
 
     **b. MetalLB VIP provisioning (REPLACES `external_access` step):**
 
-    The VN and Subnet already exist (tenant created them in steps 1-3). External access (ExternalIP, NATGateway, ExternalIPAttachment) is managed separately by the tenant. The template only needs to:
-    - Create MetalLB LoadBalancer Services for API server + ingress VIPs
-    - Wait for MetalLB to allocate IPs from the subnet
-    - Write the discovered VIPs to ClusterOrder CR status:
-      ```yaml
-      status:
-        apiEndpoint: 10.0.1.20      # MetalLB-allocated API VIP
-        ingressEndpoint: 10.0.1.50  # MetalLB-allocated ingress VIP
-      ```
+    The VN and Subnet already exist (tenant created them in steps 1-3). External access (ExternalIP, NATGateway, ExternalIPAttachment) is managed separately by the tenant. VIPs are pre-allocated by the operator (step 6b). The template:
+    - Creates MetalLB LoadBalancer Services with **pinned IPs** (`metallb.universe.tf/loadBalancerIPs`) using the pre-allocated VIPs from `status.apiVIP` and `status.ingressVIP`. MetalLB just announces these IPs (L2 advertisement) — no dynamic allocation needed.
+    - Writes the confirmed VIPs to ClusterOrder CR status (`status.apiEndpoint`, `status.ingressEndpoint`) for the feedback loop
     - DNS record creation (stays inline — DNS API is a separate EP)
 
     **c. Retrieve kubeconfig, wait for nodes + operators (same as today)**
@@ -360,16 +354,23 @@ type ClusterNetworkAttachment struct {
 
 type ClusterOrderStatus struct {
     // ... existing fields ...
-    APIEndpoint          string                              `json:"apiEndpoint,omitempty"`
-    IngressEndpoint      string                              `json:"ingressEndpoint,omitempty"`
-    NetworkAttachments   []ClusterNetworkAttachmentStatus     `json:"networkAttachments,omitempty"`
+    APIEndpoint     string          `json:"apiEndpoint,omitempty"`     // Confirmed VIP (written by template)
+    IngressEndpoint string          `json:"ingressEndpoint,omitempty"` // Confirmed VIP (written by template)
+    APIVIP          string          `json:"apiVIP,omitempty"`          // Pre-allocated by operator IPAM
+    IngressVIP      string          `json:"ingressVIP,omitempty"`      // Pre-allocated by operator IPAM
+    NodeSets        []NodeSetStatus `json:"nodeSets,omitempty"`        // Per-agent data
 }
 
-type ClusterNetworkAttachmentStatus struct {
-    NodeSet    string `json:"nodeSet,omitempty"`
-    SubnetRef  string `json:"subnetRef,omitempty"`
-    IPAddress  string `json:"ipAddress,omitempty"`   // Written by fabric manager during reconcileNetworking
-    Primary    bool   `json:"primary,omitempty"`
+type NodeSetStatus struct {
+    Name   string        `json:"name"`
+    Agents []AgentStatus `json:"agents"`
+}
+
+type AgentStatus struct {
+    AgentName string `json:"agentName"`           // Agent CR name (for NodePool targeting)
+    HostName  string `json:"hostName"`            // Netris server name (for dispatcher)
+    SubnetRef string `json:"subnetRef,omitempty"`
+    IPAddress string `json:"ipAddress,omitempty"` // Allocated by operator IPAM
 }
 ```
 

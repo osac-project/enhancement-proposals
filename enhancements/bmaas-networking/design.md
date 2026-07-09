@@ -213,21 +213,20 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
       - Reads `network_attachments` from the CR spec
-      - For each attachment: dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from HostType), `subnet_ref`
-      - The fabric manager (e.g., Netris) resolves the host to a fabric server, adds the server's port to the subnet's V-Net, and allocates an IP from its IPAM
-      - **IP writeback mechanism:** The AAP role updates the BaremetalInstance CR status via the K8s API (the AAP execution environment has a kubeconfig with access to the hub cluster). The role writes each allocated IP to `status.networkAttachments[].ipAddress` on the CR before the AAP job completes. The operator reads the updated status after the AAP job finishes.
+      - **Operator allocates IPs:** For each attachment, reads the Subnet CR to obtain the CIDR, computes available IPs by listing existing allocations on the subnet, picks the next available IP, and writes it to `status.networkAttachments[].ipAddress` on the BaremetalInstance CR. This is operator-managed IPAM — no AAP job needed for IP allocation.
+      - **Operator dispatches switch-side config:** For each attachment, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from HostType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. No IP param — the fabric manager handles switch-side only.
       - Network attachments must be Ready before provisioning proceeds
 
    c. `reconcileProvisioning` (runs after networking):
       - Triggers AAP job via `RunProvisioningLifecycle`
       - Template does OS provisioning (PXE boot, user-data, etc.)
-      - **Template handles host-side network configuration** using the allocated IP from `status.networkAttachments[].ipAddress` and the `primary` flag from the attachment spec. The host-side config (static IP, default gateway on primary, connected route on secondary) is applied via cloud-init, kickstart, ignition, NMState, or whatever the target OS supports. The fabric manager only handles switch-side config and IPAM — it cannot assume which OS is running on the host.
+      - **Template handles host-side network configuration** using the allocated IP from `status.networkAttachments[].ipAddress` and the `primary` flag from the attachment spec. The host-side config (static IP, default gateway on primary, connected route on secondary) is applied via cloud-init, kickstart, ignition, NMState, or whatever the target OS supports.
 
    d. `reconcilePower` (unchanged)
 
 7. **osac-operator feedback controller:** (unchanged)
    - Watches CR status changes → fires Signal RPC to fulfillment-service
-   - Syncs `status.networkAttachments[].ipAddress` to fulfillment-service database
+   - fulfillment-service reconciler re-reads CR, `syncStatus()` copies `networkAttachments[].ipAddress` to proto status, saves to DB
 
 #### Phase 3: External Access (optional)
 
@@ -374,11 +373,9 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 #### The IP Address Feedback Question
 
-After switch port configuration and IP assignment (DHCP or static), the BM server gets an IP from the subnet. The ExternalIPAttachment controller needs this IP to create the DNAT rule. How does the IP reach the controller?
+#### Subnet IPAM — Resolved
 
-##### Option A: Fabric Manager Reports IP (Recommended)
-
-The `create_network_attachment` role configures the switch port AND queries the fabric manager's IPAM for the allocated IP. It writes the IP back to the BaremetalInstance CR status:
+The operator allocates IPs from the subnet CIDR during `reconcileNetworking` (step 6b). The IP is written to `status.networkAttachments[].ipAddress` on the BaremetalInstance CR:
 
 ```yaml
 status:
@@ -389,29 +386,19 @@ status:
       primary: true
 ```
 
-The feedback controller syncs this to fulfillment-service. The ExternalIPAttachment controller reads the primary IP from the BM's status.
+The feedback controller syncs this to the fulfillment-service DB via the existing Signal / `syncStatus()` pattern. The ExternalIPAttachment controller reads the primary IP from CR status for DNAT creation. See [Unified Networking — Subnet IPAM](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared IPAM description.
 
-This creates an inherently asynchronous flow for ExternalIPAttachment on BM targets: the attachment is created (either manually or via `external_ip_mode=AUTO`) but the DNAT rule cannot be configured until the fabric manager writes the IP. The ExternalIPAttachment controller handles this using the standard requeue pattern — it checks `status.networkAttachments[].ipAddress` for the primary interface and requeues if the IP is not yet populated. This is the same pattern the controller already uses for ComputeInstance targets (requeues until `VirtualMachineReference` is set) and for Cluster targets (requeues until `api_endpoint`/`ingress_endpoint` is populated). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full precondition table.
-
-##### Option B: Pre-allocate from Subnet CIDR
-
-The fulfillment-service pre-allocates an IP from the subnet's CIDR at creation time (via the fabric manager's IPAM API). The IP is stored in the proto status and written to the CR. The switch port is configured with a reservation for that specific IP (DHCP or static).
-
-##### Option C: Fabric Manager Tracks It Independently
-
-The ExternalIPAttachment controller doesn't read the BM's IP from the CR. Instead, when creating the DNAT rule, it passes the BM instance reference to the fabric manager, which looks up the IP from its own IPAM database.
-
-**Recommendation: Option A is simplest and most consistent** — the IP flows through the standard status/feedback path. The fabric manager role writes it to the CR, the feedback controller syncs it.
+The fabric manager role (`create_network_attachment`) handles switch-side only — adding the server's port to the subnet's V-Net. It does not allocate IPs or write to CR status. IP allocation is a control-plane concern (operator), not a fabric concern.
 
 #### Component Responsibility Summary
 
 | Component | Responsibility |
 |-----------|---------------|
 | fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP/NATGateway |
-| bare-metal-fulfillment-operator | Inventory assignment, networking (dispatcher calls create/delete_network_attachment), OS provisioning (AAP), power management |
+| bare-metal-fulfillment-operator | Inventory assignment, **IP allocation from subnet CIDR** (operator IPAM), switch-side networking (dispatcher), OS provisioning (AAP), power management |
 | AAP BM provisioning template | OS provisioning (PXE boot, user-data) + **host-side network configuration** (static IP, gateway, routes using allocated IP from CR status — via cloud-init, kickstart, ignition, NMState, or OS-appropriate method) |
-| osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status |
-| osac-operator ExternalIPAttachment controller | Read BM's primary IP from status, create DNAT via fabric_manager |
+| osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
+| osac-operator ExternalIPAttachment controller | Read BM's primary IP from CR status, create DNAT via fabric_manager |
 | fabric_manager role (create_network_attachment) | Switch-side only: resolve host → fabric server, add server port to subnet's V-Net |
 | fabric_manager role (delete_network_attachment) | Switch-side only: remove server port from V-Net |
 
@@ -529,12 +516,6 @@ bare-metal-fulfillment-operator handles provisioning and networking, osac-operat
 
 **Trade-off:** Separation of concerns (provisioning vs. feedback) vs. operational simplicity. Chosen approach: maintain two-operator architecture to avoid merging codebases. Document reconciliation phase ordering and finalizer dependencies.
 
-#### IP address feedback latency
-
-IP addresses are written to CR status by the fabric manager role after switch port configuration. The feedback controller syncs to fulfillment-service asynchronously. ExternalIPAttachment controller must wait for IP address to appear in status before creating DNAT rule.
-
-**Trade-off:** Asynchronous status sync vs. synchronous IPAM query. Chosen approach: Option A (status feedback) is simplest and most consistent with existing patterns. Alternative (Option B: pre-allocate) adds complexity to fulfillment-service.
-
 ## Alternatives (Not Implemented)
 
 ### Alternative 1: Single-operator architecture
@@ -543,17 +524,17 @@ Merge bare-metal-fulfillment-operator into osac-operator to simplify reconciliat
 
 **Rejected because:** bare-metal-fulfillment-operator is a separate codebase with its own Ironic/Metal3 integration. Merging would require significant refactoring and change ownership model. Current two-operator architecture is stable and proven.
 
-### Alternative 2: Pre-allocate IPs (Option B)
+### Alternative 2: Fabric manager allocates IPs
 
-fulfillment-service pre-allocates IPs from subnet CIDR at creation time (via fabric manager's IPAM API). IPs stored in proto status and written to CR. Switch port configured with reservation.
+The `create_network_attachment` AAP role allocates IPs from the fabric manager's IPAM (e.g., Netris IPAM) and writes them back to the CR status via K8s API.
 
-**Rejected because:** Adds IPAM API calls to fulfillment-service (new dependency on fabric manager). Option A (fabric manager writes to CR status) is simpler and more consistent with existing status/feedback path.
+**Rejected because:** (a) The fabric manager handles the fabric, not host IPs — IP allocation is a control-plane concern. (b) AAP roles writing to CR status creates resourceVersion conflicts with the operator. (c) Adds a new writeback pattern (AAP → K8s status) not used elsewhere. Operator IPAM is simpler and uses existing patterns.
 
-### Alternative 3: Fabric manager tracks IPs independently (Option C)
+### Alternative 3: fulfillment-service allocates IPs
 
-ExternalIPAttachment controller passes BM instance reference to fabric manager, which looks up IP from its own IPAM database.
+fulfillment-service pre-allocates IPs from subnet CIDR at creation time and writes them to CR spec or status.
 
-**Rejected because:** Adds cross-component coupling (ExternalIPAttachment controller depends on fabric manager's internal IPAM database). Option A (status feedback) is more decoupled and observable.
+**Rejected because:** The fulfillment-service writes spec to CRs, not status. Adding status writes reverses the data flow direction. Operator IPAM keeps the existing pattern: fulfillment-service → spec, operator → status, feedback → DB.
 
 ### Alternative 4: Auto NATGateway always creates new NATGateway
 
@@ -579,13 +560,9 @@ Current proposal: return error, no resources persisted (pool capacity checked sy
 
 **Impact:** Affects FR-4 and acceptance criteria.
 
-### 3. Should IP address feedback use Option A (fabric manager writes to CR status), Option B (pre-allocate from IPAM), or Option C (fabric manager tracks independently)?
+### ~~3. IP address feedback~~ — Resolved
 
-Current proposal: Option A (recommended in design). Needs confirmation during implementation phase.
-
-**Owner:** osac-operator / bare-metal-fulfillment-operator teams
-
-**Impact:** Affects FR-9, component responsibilities, and ExternalIPAttachment controller implementation.
+Resolved: operator allocates IPs from subnet CIDR during `reconcileNetworking` and writes to CR status. The fabric manager handles switch-side only (no IPAM). See "Subnet IPAM" section above.
 
 ## Test Plan
 
