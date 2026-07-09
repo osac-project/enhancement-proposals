@@ -13,15 +13,14 @@
 |------|-----------|
 | **Event** | A discrete, immutable record of a resource lifecycle change. Events are the source of truth for billing-grade metering. |
 | **Meter** | A named aggregation that turns events into a measurable quantity (e.g., total VM uptime grouped by tenant). |
-| **Metric** | The aggregated output of a meter over a time window — the queryable result. |
 | **Usage** | Measured consumption of a resource (e.g., instance-type-seconds consumed while a VM was running). |
 | **Allocation** | Reserved capacity of a resource, regardless of whether it is actively used. |
 | **Resource class** | A provider-defined category for differentiated pricing. Examples: host type for CaaS worker nodes (e.g., `gpu-h100`, `cpu-only`), template for VMaaS, machine class for BMaaS, storage tier for Storage-aaS. To the metering system, it is an opaque label used for grouping. |
-| **Service** | A discrete provider-defined offering that bundles one or more metered resources into a single billable entity (per the [FOCUS](https://focus.finops.org/) specification). In OSAC, a catalog item (per the [catalog-items](/enhancements/catalog-items) EP) maps to a Service — it's what the tenant provisions from. A Service may include compute, storage, networking, and other components, all attributable to the parent resource for unified cost views. |
-| **Cost Model** | A configuration mapping meters to rates, defining how consumption becomes charges. May differ by audience (provider-internal vs. tenant-facing). |
-| **Price List** | A set of rates within a cost model with a defined validity period. |
+| **Service** | An offering that can be purchased from a service provider, and can include many types of usage or other charges (e.g., a cloud database service may include compute, storage, and networking charges). In OSAC, a catalog item (per the [catalog-items](/enhancements/catalog-items) EP) maps to a Service — it's what the tenant provisions from. |
+| **Price List** | A comprehensive list of prices offered by a service provider. |
+| **Billing Period** | The time window that an organization receives an invoice for, inclusive of the start date and exclusive of the end date. |
 | **Budget** | A spending limit on a scope (tenant, project, resource type) for a configurable time period. |
-| **FOCUS** | [FinOps Open Cost and Usage Specification](https://focus.finops.org/) — a standard format for exchanging billing and usage data. |
+| **FOCUS** | [FinOps Open Cost and Usage Specification](https://focus.finops.org/) — an open-source specification that defines requirements for billing data. |
 
 ## 1. Problem Statement
 
