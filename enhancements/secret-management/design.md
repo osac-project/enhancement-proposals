@@ -141,9 +141,7 @@ available on the hub.
 2. The fulfillment-service stores the secret metadata in PostgreSQL with
    backend `HUB` and the coordinates (hub ID, namespace, Kubernetes Secret
    name, key) needed to retrieve the data on demand.
-3. The secret is associated with the cluster's tenant and annotated with
-   the cluster's owner reference.
-4. When a tenant user retrieves the secret
+3. When a tenant user retrieves the secret
    (`osac get secret cluster-kubeconfig -o yaml`), the
    fulfillment-service follows the Hub coordinates to retrieve the
    kubeconfig from the hub cluster — the same retrieval path currently
@@ -354,11 +352,11 @@ Private server behavioral specifics:
 - **Update:**
   - If `spec.data` is non-empty on the update, validate against the secret type and write to backend
 - **Update (Hub-backed):**
-  - Metadata-only updates (labels, annotations) are allowed.
+  - Metadata-only updates (e.g. labels) are allowed.
   - If `spec.data` is non-empty, returns `FAILED_PRECONDITION` — Hub-backed secret data is system-managed.
 - **Delete:**
   - Vault-backed: dispatches to backend to delete stored data, then deletes PostgreSQL metadata.
-  - Hub-backed: returns `FAILED_PRECONDITION` — Hub-backed secrets are system-managed. They are cleaned up when the parent resource (e.g., HostedCluster) is deleted.
+  - Hub-backed: returns `FAILED_PRECONDITION` — Hub-backed secrets are system-managed. The controller that created them (e.g., ClusterOrder) deletes the metadata when the parent resource is deleted.
 
 Public server wraps the private server and ensures `backend` and
 `hub_coordinates` are stripped from responses.
@@ -506,13 +504,12 @@ API (metadata updates like labels are still allowed).
 | **Update (Hub metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. State unchanged. |
 | **Update (Hub data)** | N/A — returns `FAILED_PRECONDITION` | Data is system-managed; not modifiable through the API. |
 | **Delete (Vault)** | Delete data from backend → delete metadata | Return `UNAVAILABLE`, secret remains intact (prevents orphaned store data). |
-| **Delete (Hub)** | N/A — returns `FAILED_PRECONDITION` | System-managed; cleaned up with parent resource. |
+| **Delete (Hub)** | N/A — returns `FAILED_PRECONDITION` | System-managed; creating controller deletes metadata when parent is removed. |
 
 ### RBAC / Tenancy
 
-**Tenant isolation metadata:** Secrets include
-`osac.openshift.io/tenant` and `osac.openshift.io/owner-reference`
-annotations, enforced by the existing GenericServer tenancy logic.
+**Tenant isolation metadata:** Secrets carry tenant and project scope in
+standard `Metadata` fields.
 
 **OPA policy additions:**
 
