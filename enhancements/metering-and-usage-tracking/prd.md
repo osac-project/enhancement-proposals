@@ -67,7 +67,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 
 ### 3.2 Cloud Infrastructure Admin
 
-- **CAP-5:** Deploy, upgrade, and monitor the metering system using standard Kubernetes tooling — including adding or removing meters, updating the metering stack version, and observing pipeline health (ingestion lag, storage usage). Example: a provider starts offering DBaaS and adds a new meter to track database instance uptime; or a provider stops offering a service and removes its meter to stop collecting unused data.
+- **CAP-5:** Deploy, upgrade, and monitor the metering system — including adding or removing meters, updating the metering stack version, and observing pipeline health (ingestion lag, storage usage). Example: a provider starts offering DBaaS and adds a new meter to track database instance uptime; or a provider stops offering a service and removes its meter to stop collecting unused data.
 - **CAP-6:** Emit metering events for custom services not covered by built-in meters, so that providers can track consumption of additional offerings alongside core services.
 - **CAP-7:** Configure retention periods for raw events and aggregated data independently.
 
