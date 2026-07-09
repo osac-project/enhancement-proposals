@@ -122,7 +122,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - node_set refs match cluster spec (if provided)
     - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the attachment
     - If `external_ip_mode == AUTO_ALL`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress) and two ExternalIPAttachments — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are discovered (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
-    - If `nat_gateway_mode == AUTO`: creates NATGateway on the VN (reuses existing if one already exists)
+    - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists: reuse (regardless of state or whether it was manually or auto-created). No new resources created. If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway in a **separate DB transaction** after the parent resource is persisted, both labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the Cluster creation still succeeds (outbound NAT is best-effort).
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with enriched `network_attachments` in spec
 
@@ -580,6 +580,22 @@ With one NetworkClass per deployment, the operator reads it once. But for the di
 **Owner:** osac-operator team
 
 **Impact:** Affects dispatcher implementation in ClusterOrder controller.
+
+### 5. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?
+
+Design decision: reuse existing NATGateway in Ready or Failed state (avoids duplicate SNAT conflicts). Open question: should a NATGateway in **Deleting** state be treated as "does not exist" (create a new one), since the SNAT rule is being removed and the NATGateway will soon be fully deleted? Current behavior would silently attach to a disappearing resource.
+
+**Owner:** API design team
+
+**Impact:** Affects NATGateway reuse logic and user experience when NATGateway is being deleted concurrently.
+
+### 6. Should capacity exhaustion return an API error or create a Failed resource?
+
+Current proposal: return error, no resources persisted. Alternative: create Failed resource for audit trail.
+
+**Owner:** API design team
+
+**Impact:** Affects auto ExternalIP allocation behavior and acceptance criteria.
 
 ## Test Plan
 

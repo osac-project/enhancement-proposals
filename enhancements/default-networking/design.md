@@ -197,7 +197,7 @@ This enhancement adds three main capabilities: default networking at tenant onbo
       - Reads `nat_gateway_mode: AUTO`
       - Checks if NATGateway already exists on the VM's VirtualNetwork
       - If exists: reuse (regardless of state, whether manually or auto-created). No new resources created.
-      - If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in the same DB transaction, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
+      - If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in a **separate DB transaction** after the parent resource is persisted, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
     - osac-operator NATGateway controller reconciles SNAT rule provisioning
     - Result: VM has outbound connectivity via NATGateway
 
@@ -415,7 +415,7 @@ type ClusterSpec struct {
 |-----------|---------------|
 | fulfillment-service | Validate NetworkClass defaults, populate network_attachments defaults, auto-provision ExternalIP/NATGateway, return error on capacity exhaustion |
 | osac-operator Tenant controller | Create default VN/Subnet/SG at tenant onboarding, watch for READY state, set DefaultNetworkingReady condition |
-| osac-operator resource controllers | Clean up auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway) via finalizer |
+| osac-operator resource controllers | Clean up auto-provisioned ExternalIP and ExternalIPAttachment via finalizer (NATGateway is NOT cleaned up — shared per-VN) |
 | osac-operator networking controllers | Reconcile default networking resources (same as manually created resources) |
 | osac-installer | Configure NetworkClass defaults in setup.sh and installation overlays |
 
@@ -440,12 +440,15 @@ type ClusterSpec struct {
 
 #### Prerequisite Ordering for Clusters
 
-For clusters, ExternalIPs must be allocated BEFORE provisioning is dispatched (CaaS requirement):
-1. fulfillment-service creates ExternalIP resources (Pending state in DB) and stores their references in ClusterOrder spec
-2. osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (addresses assigned)
-3. osac-operator ClusterOrder controller reads allocated addresses from ExternalIP CRs, passes as template parameters (api_vip, ingress_vip)
-4. AAP template provisions cluster with known VIPs
-5. After cluster provisioning, ExternalIPAttachments activate (DNAT rules created once VIPs are discovered)
+For clusters, ExternalIPs are allocated independently of the cluster's internal VIPs. The DNAT model maps external IPs to internal VIPs discovered after provisioning:
+
+1. fulfillment-service creates ExternalIP resources (Pending state in DB) and ExternalIPAttachments (Pending, no target VIP yet)
+2. osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (external addresses assigned, e.g., 203.0.113.10)
+3. Cluster provisioning proceeds independently — MetalLB allocates internal VIPs from the subnet CIDR (e.g., 10.0.1.20 for API, 10.0.1.50 for ingress)
+4. VIP feedback loop: template writes VIPs to ClusterOrder status → feedback controller → fulfillment-service syncs to Cluster status (`api_endpoint`, `ingress_endpoint`)
+5. ExternalIPAttachment controller activates once ExternalIP is Allocated AND the relevant endpoint is populated → creates DNAT: external IP → internal VIP
+
+Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB/subnet) are separate address spaces. The ExternalIPAttachment creates the DNAT mapping between them. The template does NOT receive ExternalIP addresses as VIP parameters.
 
 #### NATGateway Reuse Logic
 
@@ -618,13 +621,13 @@ Instead of reusing any existing NATGateway, only reuse if READY. If existing NAT
 
 ## Open Questions
 
-### 1. Should auto NATGateway check existing NATGateway state before reusing?
+### 1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?
 
-Current proposal: reuse any existing NATGateway regardless of state. Alternative: only reuse if READY, otherwise create a new one (or return error).
+Design decision: reuse existing NATGateway in Ready or Failed state (avoids duplicate SNAT conflicts). Open question: should a NATGateway in **Deleting** state be treated as "does not exist" (create a new one), since the SNAT rule is being removed and the NATGateway will soon be fully deleted? Current behavior would silently attach to a disappearing resource.
 
 **Owner:** API design team
 
-**Impact:** Affects auto NATGateway logic, risk mitigation strategy, and user experience when NATGateway is Failed.
+**Impact:** Affects NATGateway reuse logic and user experience when NATGateway is being deleted concurrently.
 
 ### 2. Should capacity exhaustion return an API error or create a Failed resource?
 
