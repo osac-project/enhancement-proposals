@@ -213,11 +213,10 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
       - Reads `network_attachments` from the CR spec
-      - For each attachment: dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_id` (ExternalHostID), `host_class`, `interface`, `subnet_ref`, `security_group_refs`, `primary`
-      - The fabric manager (e.g., Netris) resolves the host identity to a fabric server, then adds the server's interface to the subnet's fabric segment
-      - BM server gets IP from the subnet CIDR (via DHCP or static network configuration)
-      - Primary interface: IP + default gateway + DNS (via DHCP or static)
-      - Non-primary interfaces: IP + connected route only (via DHCP or static)
+      - For each attachment: dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from HostType), `mac_address` (NIC MAC for OS interface resolution), `subnet_ref`, `security_group_refs`, `primary`
+      - The fabric manager (e.g., Netris) resolves the host to a fabric server, adds the server's port to the subnet's V-Net, allocates an IP from IPAM, resolves the OS interface name from MAC via SSH, and applies NMState config (static IP, gateway on primary, connected route on secondary)
+      - Primary interface: static IP + default gateway + DNS (via NMState)
+      - Non-primary interfaces: static IP + connected route only (via NMState)
       - **Fabric manager writes allocated IPs to CR status:** `status.networkAttachments[].ipAddress`
       - Network attachments must be Ready before provisioning proceeds
 
@@ -266,7 +265,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources.
     - bare-metal-fulfillment-operator:
       - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown
-      - `reconcileNetworking` (delete): dispatcher calls `osac.templates.{{ fabric_manager }}.delete_network_attachment` per interface (passing host_id, host_class, interface, subnet_ref) — removes the server's interfaces from the subnets' fabric segments
+      - `reconcileNetworking` (delete): dispatcher calls `osac.templates.{{ fabric_manager }}.delete_network_attachment` per attachment (passing host_name, logical_interface_name, subnet_ref) — releases IP reservation and removes the server's port from the subnet's V-Net
       - Removes management finalizer
     - `reconcileInventory` deletion: UnassignHost from Ironic/Metal3, removes inventory finalizer
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal

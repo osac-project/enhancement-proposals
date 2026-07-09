@@ -121,7 +121,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - SecurityGroups exist, are Ready, belong to same VN
       - node_set refs match cluster spec (if provided)
     - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the attachment
-    - If `external_ip_mode == AUTO_ALL`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress) and two ExternalIPAttachments (Pending state) BEFORE creating the ClusterOrder — resolves the CaaS prerequisite ordering requirement
+    - If `external_ip_mode == AUTO_ALL`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress) and two ExternalIPAttachments (Pending state — they transition to Ready once VIPs are discovered)
     - If `nat_gateway_mode == AUTO`: creates NATGateway on the VN (reuses existing if one already exists)
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with enriched `network_attachments` in spec
@@ -135,8 +135,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Stores selected agent references on ClusterOrder status
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
-    - For each node_set attachment, for each selected agent in that node set, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_id` (agent's host identity), `host_class`, `fabric_interface`, `subnet_ref`
-    - The fabric manager adds each server's interface to the subnet's fabric segment
+    - For each node_set attachment, for each selected agent in that node set, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from HostType), `mac_address` (NIC MAC), `subnet_ref`, `primary`
+    - The fabric manager adds the server's port to the subnet's V-Net, allocates an IP from IPAM, resolves the OS interface from MAC via SSH, and applies NMState config
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
@@ -198,7 +198,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Deletes HyperShift HostedCluster + NodePools
       - DNS cleanup
       - No switch port cleanup — template doesn't handle networking
-    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `delete_network_attachment` per BM node — removes server interfaces from subnets' fabric segments
+    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `delete_network_attachment` per BM node (passing host_name, logical_interface_name, subnet_ref) — releases IP reservations and removes server ports from subnets' V-Nets
 
 13. **Tenant deletes networking resources** (independently, if desired):
     - Delete ExternalIPAttachments → fabric manager removes DNAT rules
