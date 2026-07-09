@@ -518,8 +518,7 @@ No RBAC or tenancy changes. All new resources (default networking, auto-provisio
 ### Observability and Monitoring
 
 New structured log events:
-- Tenant controller: `CreatingDefaultNetworking` (info), `DefaultNetworkingReady` (info), `DefaultNetworkingFailed` (error)
-- fulfillment-service: `PopulatedNetworkAttachmentsDefaults` (info), `AutoProvisionedExternalIP` (info), `AutoProvisionedNATGateway` (info), `ReusingExistingNATGateway` (info), `ExternalIPPoolExhausted` (error)
+- fulfillment-service: `CreatingDefaultNetworking` (info), `DefaultNetworkingReady` (info), `DefaultNetworkingFailed` (error), `PopulatedNetworkAttachmentsDefaults` (info), `AutoProvisionedExternalIP` (info), `AutoProvisionedNATGateway` (info), `ReusingExistingNATGateway` (info), `ExternalIPPoolExhausted` (error)
 
 New Kubernetes events on Tenant:
 - `DefaultNetworkingCreated`: default VN, Subnet, and SG creation started
@@ -649,8 +648,8 @@ Current proposal: return error, resource not persisted. Alternative: create Fail
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - fulfillment-service: auto NATGateway reuse (reuse existing, create new if none exists)
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
-- osac-operator Tenant controller: default resource creation (VN, Subnet, SG with default label)
-- osac-operator Tenant controller: DefaultNetworkingReady condition (true when all READY, false when any failed)
+- fulfillment-service: default resource creation at tenant onboarding (VN, Subnet, SG with default label)
+- fulfillment-service: DefaultNetworkingReady condition tracking (true when all defaults READY via feedback, false when any failed)
 - osac-operator resource controllers: auto-provisioned resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
 
 ### Integration Tests
@@ -683,7 +682,7 @@ Proposed maturity level: **Tech Preview** → **GA**
 
 Tech Preview criteria:
 - [ ] NetworkClass defaults field implemented in fulfillment-service and osac-operator
-- [ ] Tenant controller creates default VN/Subnet/SG at onboarding
+- [ ] fulfillment-service creates default VN/Subnet/SG at tenant onboarding
 - [ ] Tenant DefaultNetworkingReady condition functional
 - [ ] network_attachments field optional on all three resource types (ComputeInstance, Cluster, BaremetalInstance)
 - [ ] Auto ExternalIP mode (external_ip_mode: AUTO) functional for VM and BM
@@ -814,6 +813,5 @@ Consequences:
 ## Infrastructure Needed
 
 - osac-installer: NetworkClass default configuration in setup.sh and installation overlays
-- osac-operator: Tenant controller extended to create default networking resources
-- fulfillment-service: NetworkClass defaults validation, network_attachments population, auto ExternalIP/NATGateway provisioning
+- fulfillment-service: NetworkClass defaults validation, default VN/Subnet/SG creation at tenant onboarding, network_attachments population, auto ExternalIP/NATGateway provisioning, DefaultNetworkingReady condition tracking
 - Integration test environment: kind cluster with Tenant, NetworkClass, ExternalIPPool resources

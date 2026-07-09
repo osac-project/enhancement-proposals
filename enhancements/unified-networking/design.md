@@ -64,8 +64,8 @@ For user stories, goals, and non-goals, see the
 ### NetworkClass
 
 NetworkClass is the provider-level CRD that defines which managers handle
-networking for a region. Tenants never interact with it. One NetworkClass
-per region.
+networking for the deployment. Tenants never interact with it. One
+NetworkClass per deployment.
 
 #### Two Managers
 
@@ -328,14 +328,14 @@ designs at [VMaaS](/enhancements/vmaas-networking),
 ### Resource Hierarchy
 
 ```text
-NetworkClass (per region, provider-only)
+NetworkClass (per deployment, provider-only)
 
 VirtualNetwork (tenant-managed, infrastructure-agnostic)
   ├── Subnet              → fabricManager + k8sManager
   ├── SecurityGroup       → fabricManager
   └── NATGateway          → fabricManager
 
-ExternalIPPool (region-scoped, provider-managed)
+ExternalIPPool (deployment-scoped, provider-managed)
   └── ExternalIP (tenant-managed) → fabricManager
 
 ExternalIPAttachment (tenant-managed)
@@ -351,8 +351,8 @@ environments, the provider creates pools with data-center-routable IPs. In
 internet-connected environments, the pools contain internet-routable IPs.
 The API and flow are identical regardless of the deployment topology.
 
-ExternalIPPools are provider-managed and region-scoped. The fabric manager
-handles IP allocation — one pool serves all resource types.
+ExternalIPPools are provider-managed and deployment-scoped. The fabric
+manager handles ExternalIP allocation — one pool serves all resource types.
 
 ### End-to-End Flows
 
@@ -1106,8 +1106,8 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 4. **One NATGateway per VN.** Multiple gateways are ambiguous. Per-subnet
    NAT is a future enhancement.
 
-5. **ExternalIPPool shared.** The fabric manager handles allocation for all
-   resource types. One pool per region.
+5. **ExternalIPPool shared.** The fabric manager handles ExternalIP allocation
+   for all resource types. One pool per deployment.
 
 6. **Multiple hosting clusters.** Subnet creation provisions K8s overlay
    on each hosting cluster. VMs on different clusters share the subnet
