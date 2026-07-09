@@ -506,13 +506,13 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Reviewed by:** API design team
 
-#### Risk: MetalLB IP pool configuration not automated
+#### Risk: MetalLB IPAddressPool missing on hosting cluster
 
-**Impact:** MetalLB needs an IPAddressPool CR covering the pre-allocated VIPs to announce them via L2. If not created, MetalLB cannot announce the pinned VIPs and the cluster API/ingress endpoints are unreachable.
+**Impact:** MetalLB needs an IPAddressPool CR covering the subnet CIDR to announce pre-allocated pinned VIPs. If the k8s_manager fails to create it at subnet creation, cluster API/ingress endpoints are unreachable.
 
-**Mitigation:** Document whether IPAddressPool is created at subnet creation (by k8s_manager) or at cluster provisioning (by template). Clarify ownership.
+**Mitigation:** k8s_manager creates IPAddressPool alongside the CUDN overlay at subnet creation (resolved in OQ#3). Subnet remains Pending until both CUDN overlay and IPAddressPool are confirmed on all hosting clusters.
 
-**Reviewed by:** osac-operator team, osac-aap team
+**Reviewed by:** osac-operator team
 
 ### Drawbacks
 
@@ -566,13 +566,9 @@ NMState NNCP configuration is currently done by cluster_infra. With agent select
 
 **Impact:** Affects reconcileNetworking implementation and template changes.
 
-### 3. How are MetalLB IP pools configured?
+### ~~3. MetalLB IP pools~~ — Resolved
 
-MetalLB needs an IPAddressPool CR covering the subnet CIDR to announce the operator-pre-allocated pinned VIPs via L2. Who creates this IPAddressPool — the k8s_manager at subnet creation time, or the CaaS template at cluster provisioning time?
-
-**Owner:** osac-operator team, osac-aap team
-
-**Impact:** Affects Subnet controller and CaaS template implementation.
+Resolved: the **k8s_manager creates the MetalLB IPAddressPool CR at subnet creation time**, alongside the CUDN overlay on each hosting cluster. The IPAddressPool covers the subnet CIDR and is a shared prerequisite for all hosted cluster control planes on that hosting cluster — not a per-cluster resource. The CaaS template creates LoadBalancer Services with pinned VIPs; MetalLB announces them because the pool already exists.
 
 ### 4. How does the operator know the fabric_manager name?
 
