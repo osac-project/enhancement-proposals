@@ -26,7 +26,7 @@
 
 OSAC provisions and manages cloud resources (VMs, clusters, networks, storage, public IPs) but has no mechanism to track their consumption over time. Cloud Provider Admins need usage data to generate bills and enforce quotas. Tenant Admins need usage visibility to manage costs across their organization. Without a standard metering mechanism, each provider builds their own, leading to fragmented approaches and inconsistent data models. OSAC meters only what OSAC provisions — it is not a datacenter-wide metering solution.
 
-Beyond raw metering, providers need a costing layer to define pricing models, generate itemized charges per tenant, and maintain price list histories. Providers and tenants have different cost views: a provider tracks actual infrastructure cost while a tenant sees the charges they are billed. OSAC must support both perspectives to serve the sovereign cloud business model.
+Beyond raw metering, providers need a pricing layer to define rate schedules, generate itemized charges per tenant, and maintain price list histories. Providers and tenants have different views of the same usage data: a provider sees consumption across all tenants as input to billing, while a tenant sees only their own consumption and the resulting charges. OSAC does not track the provider's infrastructure cost (hardware, power, cooling) — that remains internal to the provider. OSAC must support both perspectives to serve the sovereign cloud business model.
 
 ## 2. Goals and Non-Goals
 
