@@ -170,7 +170,7 @@ Beyond raw metering, providers need a costing layer to define pricing models, ge
 ### 9.3 What should happen when the metering system is unavailable?
 
 - **Owner:** OSAC platform team
-- **Impact:** CAP-14. Three options: (1) block provisioning when metering is unavailable, to prevent untracked resources; (2) allow provisioning and accept temporary metering gaps; (3) allow provisioning with a reconciliation service that periodically syncs OSAC's provisioned resource state with the metering system, ensuring all resources are eventually metered. The right choice may be configurable per provider. Failure types also matter — failing to record a provisioning event is different from a temporary processing delay.
+- **Impact:** CAP-14. Four options: (1) block provisioning when metering is unavailable, to prevent untracked resources; (2) allow provisioning and accept temporary metering gaps; (3) allow provisioning with a reconciliation service that periodically syncs OSAC's provisioned resource state with the metering system, ensuring all resources are eventually metered; (4) emit events into a durable message bus that guarantees eventual delivery, decoupling OSAC from metering system availability entirely — events are buffered in the bus and processed when the metering system recovers. The right choice may be configurable per provider. Failure types also matter — failing to record a provisioning event is different from a temporary processing delay.
 
 ### 9.4 How does metering handle tenant-defined Services (catalog items)?
 
