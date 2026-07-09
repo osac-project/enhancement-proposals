@@ -661,6 +661,15 @@ This keeps the existing data flow:
 - operator writes **status** to CRs (what the system computed)
 - fulfillment-service reconciler reads **status** back from CRs to DB
 
+*Cross-operator IPAM concurrency:*
+
+Two operators may allocate from the same subnet CIDR: osac-operator
+(CaaS ClusterOrder controller) and bare-metal-fulfillment-operator
+(BMaaS). To prevent double-allocation when both reconcile concurrently,
+the implementation should use optimistic concurrency on a shared
+tracking resource (e.g., Subnet CR status listing allocated IPs, with
+resourceVersion conflict detection and retry).
+
 *NATGateway controller preconditions:*
 
 The NATGateway controller has one precondition before dispatching the

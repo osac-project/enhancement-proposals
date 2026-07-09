@@ -150,7 +150,7 @@ This enhancement adds three main capabilities: default networking at tenant onbo
      - Reads `external_ip_mode: AUTO`
      - Auto-selects ExternalIPPool (READY, most available capacity, IPv4 family)
      - Creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically.
-     - Both labeled `osac.openshift.io/auto-provisioned: "true"`
+     - Both labeled `osac.openshift.io/auto-provisioned: "true"`. ExternalIP also labeled `osac.openshift.io/auto-provisioned-for: <resource-id>` for orphan cleanup.
    - ComputeInstance CR created with `external_ip_mode: AUTO`
    - osac-operator reconciles ExternalIP (fabric manager allocates address → Allocated), then VM provisioning, then ExternalIPAttachment controller activates once ExternalIP is Allocated AND VM's `VirtualMachineReference` is set
    - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
@@ -174,9 +174,9 @@ This enhancement adds three main capabilities: default networking at tenant onbo
      - Auto-selects ExternalIPPool (same algorithm)
      - Creates two ExternalIPs + two ExternalIPAttachments in the same DB transaction — all start in **Pending** state. Pool capacity decremented atomically.
      - All labeled `osac.openshift.io/auto-provisioned: "true"`
-     - Stores ExternalIP references in ClusterOrder spec (passed as template parameters after ExternalIPs reach Allocated)
-   - osac-operator reconciles ExternalIPs (fabric manager allocates addresses → Allocated), then ClusterOrder controller triggers AAP job with `api_vip` and `ingress_vip` template parameters
-   - After cluster VIPs are discovered (MetalLB → ClusterOrder status → feedback → Cluster status), ExternalIPAttachment controllers activate once ExternalIP is Allocated AND `api_endpoint`/`ingress_endpoint` are populated
+   - osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (external addresses assigned)
+   - osac-operator ClusterOrder controller `reconcileNetworking` allocates internal VIPs from subnet CIDR via operator IPAM, writes to ClusterOrder status (`apiVIP`, `ingressVIP`). Template pins MetalLB to these VIPs.
+   - ExternalIPAttachment controllers activate once ExternalIP is Allocated AND ClusterOrder `apiVIP`/`ingressVIP` are populated → creates DNAT: external IP → internal VIP
    - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
    - Result: Cluster is reachable via ExternalIPs for both API and ingress
 

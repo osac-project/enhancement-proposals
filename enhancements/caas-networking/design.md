@@ -508,7 +508,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: MetalLB IP pool configuration not automated
 
-**Impact:** MetalLB needs an IPAddressPool CR for the subnet CIDR. If not created, VIP allocation fails.
+**Impact:** MetalLB needs an IPAddressPool CR covering the pre-allocated VIPs to announce them via L2. If not created, MetalLB cannot announce the pinned VIPs and the cluster API/ingress endpoints are unreachable.
 
 **Mitigation:** Document whether IPAddressPool is created at subnet creation (by k8s_manager) or at cluster provisioning (by template). Clarify ownership.
 
@@ -568,7 +568,7 @@ NMState NNCP configuration is currently done by cluster_infra. With agent select
 
 ### 3. How are MetalLB IP pools configured?
 
-MetalLB needs an IPAddressPool CR for the subnet CIDR so it can allocate VIPs. Is this created at subnet creation time (by the k8s_manager), or by the CaaS template at cluster provisioning time?
+MetalLB needs an IPAddressPool CR covering the subnet CIDR to announce the operator-pre-allocated pinned VIPs via L2. Who creates this IPAddressPool — the k8s_manager at subnet creation time, or the CaaS template at cluster provisioning time?
 
 **Owner:** osac-operator team, osac-aap team
 

@@ -145,7 +145,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 7. **fulfillment-service creates ExternalIP and ExternalIPAttachment:**
    - Auto-selects ExternalIPPool (READY, most available capacity, matching IP family)
-   - Creates ExternalIP from pool, labeled `osac.openshift.io/auto-provisioned: "true"`
+   - Creates ExternalIP from pool, labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <compute-instance-id>`
    - Creates ExternalIPAttachment binding ExternalIP to VM's primary subnet IP, labeled `osac.openshift.io/auto-provisioned: "true"`
    - Both start in **Pending** state. The ExternalIPAttachment controller checks two preconditions before dispatching (requeues if either is not met):
      1. ExternalIP must be Allocated (have an allocated address from the fabric manager)
