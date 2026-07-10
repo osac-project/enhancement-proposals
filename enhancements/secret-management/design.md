@@ -70,7 +70,7 @@ by the secret's source. Secrets appear in both the public and private APIs.
 The public API provides a uniform CRUD interface — tenants
 interact with secrets without knowing which backend stores them. The
 private API exposes the `backend` field and source-specific fields (e.g.,
-Hub coordinates) for admin visibility and system-created secrets.
+backend coordinates) for admin visibility and system-created secrets.
 
 Secret data bytes never pass through PostgreSQL. On Create, the server
 writes metadata to PostgreSQL and data bytes to the backend. On Get, the
@@ -143,7 +143,7 @@ available on the hub.
    name, key) needed to retrieve the data on demand.
 3. When a tenant user retrieves the secret
    (`osac get secret cluster-kubeconfig -o yaml`), the
-   fulfillment-service follows the Hub coordinates to retrieve the
+   fulfillment-service follows the backend coordinates to retrieve the
    kubeconfig from the hub cluster — the same retrieval path currently
    implemented in `getHostedClusterSecret()` [Codebase: internal/servers/clusters_server.go].
 
@@ -217,7 +217,7 @@ message SecretSpec {
   map<string, bytes> data = 1;
   SecretBackend backend = 2;
   SecretType type = 3;
-  HubCoordinates hub_coordinates = 4;
+  map<string, string> coordinates = 4;
 }
 
 enum SecretBackend {
@@ -231,13 +231,6 @@ enum SecretType {
   SECRET_TYPE_OPAQUE = 1;
   SECRET_TYPE_PULL_SECRET = 2;
   SECRET_TYPE_KUBECONFIG = 3;
-}
-
-message HubCoordinates {
-  string hub = 1;
-  string namespace = 2;
-  string secret_name = 3;
-  string key = 4;
 }
 
 message SecretStatus {
@@ -254,7 +247,7 @@ enum SecretState {
 ```
 
 The public Secret (`public/osac/public/v1/secret_type.proto`) uses the
-same structure but omits `backend` and `hub_coordinates` from
+same structure but omits `backend` and `coordinates` from
 `SecretSpec`. The `data` field is a `map<string, bytes>` modeled after
 Kubernetes Secret `Data`. It is provided on Create/Update, returned on
 Get, and omitted from List. The CLI controls display: the default table
@@ -282,7 +275,7 @@ These three types cover the credential migration scope. Additional types
 The `backend` field is set by the server, not the caller:
 - Public API Create: server sets `backend = VAULT` automatically.
 - Private API Create: caller can set `backend = HUB` with
-  `hub_coordinates` for system-created secrets.
+  `coordinates` for system-created secrets.
 
 #### Proto Schema: Service RPCs
 
@@ -306,7 +299,7 @@ Secrets are tenant- and project-scoped, following the `objects` table
 pattern.
 
 The `data` JSONB column stores the SecretSpec proto JSON (`backend`,
-`type`, `hub_coordinates`) — not secret bytes (see Proposal).
+`type`, `coordinates`) — not secret bytes (see Proposal).
 
 #### Vault Configuration
 
@@ -358,7 +351,7 @@ Private server behavioral specifics:
   - Hub-backed: returns `FAILED_PRECONDITION` — Hub-backed secrets are system-managed. The controller that created them (e.g., ClusterOrder) deletes the metadata when the parent resource is deleted.
 
 Public server wraps the private server and ensures `backend` and
-`hub_coordinates` are stripped from responses.
+`coordinates` are stripped from responses.
 
 For more specific state transitions, see Per-operation behavior section below.
 
@@ -586,7 +579,7 @@ overhead / ongoing maintainance burden.
 - Backend interface: mock Vault and Hub backends to test Store/Fetch/Delete dispatch
 - Server logic: Create with backend write, Get with backend data fetch, Update with data replacement, Delete with backend cleanup
 - State transitions: Ensure failure states (e.g. write to backend results in record stuck `PENDING` or update `ERROR`) written
-- Public↔private type mapping: verify `backend` and `hub_coordinates` are stripped in public responses
+- Public↔private type mapping: verify `backend` and `coordinates` are stripped in public responses
 - RedactFunc: verify data is stripped from event payloads
 - OPA policy: verify role-based access for Secret methods
 - Migration: Test idempotency logic + expected generated payloads
