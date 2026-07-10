@@ -308,24 +308,29 @@ startup flags, following the existing pattern for infrastructure
 dependencies like the database connection:
 
 ```
---vault-endpoint        Vault-compatible API endpoint URL
---vault-auth-mount-path Kubernetes auth method mount path (default: auth/kubernetes)
---vault-kv-mount-path   KV v2 secret engine mount path (default: secret)
---vault-role            Role for fulfillment-service authentication
+--vault-endpoint           Vault API endpoint URL (Required)
+--vault-role               Vault role for authentication (Required)
+--vault-auth-method        Auth method: kubernetes (default) or jwt
+--vault-auth-mount-path    Custom mount path (defaults to auth/<method>)
+--vault-jwt-token-file     Custom token file path (overrides defaults)
+--vault-kv-mount-path      KV v2 secret engine mount path (default: secret)
+--vault-ca-cert-file       Path to PEM-encoded CA certificate for Vault TLS
 ```
 
-When these flags are set, the VaultBackend is constructed at startup and
-injected into the PrivateSecretsServer. When unset, the VaultBackend is
-nil and user-created secret operations return `FAILED_PRECONDITION`.
+The `--vault-auth-method` flag selects the authentication strategy:
+
+kubernetes (default) — Exchanges the local pod ServiceAccount token for a Vault token. For cross-cluster setups, Vault must have network access to verify the token against the remote cluster's TokenReview API.
+
+jwt — Authenticates using a projected ServiceAccount token or OIDC JWT. Vault validates the token's cryptographic signature offline using the remote cluster's public JWKS endpoint. This is preferred for decoupled, cross-cluster setups.
 
 The secret store must meet these prerequisites:
 
 - **Reachable endpoint** — the store's API must be reachable from the
   fulfillment-service pods
-- **TLS** — the endpoint must serve TLS; the CA certificate must be
-  trusted by the fulfillment-service
-- **Kubernetes auth method** — enabled and configured to trust the
-  fulfillment-service ServiceAccount for token exchange
+- **TLS** — the endpoint must serve TLS; if the CA is not in the
+  system trust store, provide the CA certificate via `--vault-ca-cert-file`
+- **Auth method** — one of the supported auth methods must be enabled
+  and configured on the store (see `--vault-auth-method` above)
 - **KV v2 secret engine** — mounted at the path specified in
   `--vault-kv-mount-path`
 
@@ -432,10 +437,12 @@ with the new schema.
 **Encryption at rest:** The Vault-compatible secret store provides
 encryption at rest. PostgreSQL stores only metadata (see Proposal).
 
-**Authentication to the secret store:** The fulfillment-service
-authenticates via the Kubernetes auth method [Assumption: Vault-compatible
-stores support K8s auth]. The ServiceAccount token is exchanged for a
-short-lived token scoped to the KV mount. No long-lived tokens are stored.
+**Authentication to the secret store:** The fulfillment-service supports
+two auth methods (see Vault Configuration). Both Kubernetes and JWT/OIDC
+auth exchange a short-lived token for a short-lived Vault token scoped to
+the KV mount — no long-lived tokens are stored. Credentials are read
+from files on disk, allowing injection via Kubernetes Secrets or similar
+mechanisms.
 
 **Input validation:** Total secret data size is capped at 1 MiB (Vault API default
 max entry size). For typed secrets, the server validates both the
