@@ -125,7 +125,7 @@ OSAC hub cluster.
    `osac create cluster my-cluster --pull-secret my-pull-secret`
 3. The fulfillment-service validates that `my-pull-secret` exists and is
    type `PULL_SECRET`. The cluster spec stores
-   `pull_secret_ref = "my-pull-secret"` — no inline credential data.
+   `pull_secret_secret = "my-pull-secret"` — no inline credential data.
 4. The cluster reconciler resolves the reference by reading the secret
    data via the private Secrets API, then provisions the cluster with
    the pull secret.
@@ -389,12 +389,12 @@ Validation rules:
 
 | Resource | Inline Field (deprecated) | Reference Field | Secret Type |
 |----------|--------------------------|-----------------|-------------|
-| Cluster | `pull_secret` | `pull_secret_ref` | `PULL_SECRET` |
-| ClusterTemplate | `pull_secret` | `pull_secret_ref` | `PULL_SECRET` |
-| Hub | `kubeconfig` | `kubeconfig_ref` | `KUBECONFIG` |
-| IdentityProvider | `client_secret` | `client_secret_ref` | `OPAQUE` |
-| IdentityProvider | `bind_credential` | `bind_credential_ref` | `OPAQUE` |
-| StorageBackend | `password` | `password_ref` | `OPAQUE` |
+| Cluster | `pull_secret` | `pull_secret_secret` | `PULL_SECRET` |
+| ClusterTemplate | `pull_secret` | `pull_secret_secret` | `PULL_SECRET` |
+| Hub | `kubeconfig` | `kubeconfig_secret` | `KUBECONFIG` |
+| IdentityProvider | `client_secret` | `client_secret_secret` | `OPAQUE` |
+| IdentityProvider | `bind_credential` | `bind_credential_secret` | `OPAQUE` |
+| StorageBackend | `password` | `password_secret` | `OPAQUE` |
 
 
 #### Credential Migration
@@ -412,13 +412,13 @@ structure based on the target secret type:
    - `client_secret`, `bind_credential`, `password` → type `OPAQUE`,
      data `{"value": <value>}`
 3. Writes metadata to PostgreSQL and data to the Vault store
-4. Sets the corresponding `*_ref` field on the resource to the new
+4. Sets the corresponding `*_secret` field on the resource to the new
    secret's name
 5. Clears the inline credential field
 
 The script is idempotent across all steps — safe to re-run if
 interrupted at any point. For each credential it checks whether the
-Secret already exists (skips creation), whether the `*_ref` field is
+Secret already exists (skips creation), whether the `*_secret` field is
 already set (skips the update), and whether the inline field is already
 cleared (skips the clear). This ensures a crash between any two steps
 does not leave partial state on rerun. It runs as a one-time job after
