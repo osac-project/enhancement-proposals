@@ -147,6 +147,20 @@ available on the hub.
    kubeconfig from the hub cluster — the same retrieval path currently
    implemented in `getHostedClusterSecret()` [Codebase: internal/servers/clusters_server.go].
 
+#### System: Break Glass Credential Creation During Tenant Provisioning
+
+Starting state: A new tenant is being provisioned.
+
+1. The tenant controller generates break glass credentials (username and
+   password) via the IDP manager and creates the IdP user account.
+2. The controller calls the private Secrets API to create a Vault-backed
+   secret with type `OPAQUE` and data
+   `{"username": <value>, "password": <value>}`.
+3. The controller sets `break_glass_credentials_secret` on the
+   tenant status to the new secret's name.
+4. A tenant admin retrieves the break glass password via
+   `osac get secret <name> -o yaml` for initial login.
+
 ```mermaid
 sequenceDiagram
     participant User as Tenant User
@@ -395,6 +409,7 @@ Validation rules:
 | IdentityProvider | `client_secret` | `client_secret_secret` | `OPAQUE` |
 | IdentityProvider | `bind_credential` | `bind_credential_secret` | `OPAQUE` |
 | StorageBackend | `password` | `password_secret` | `OPAQUE` |
+| Tenant | `break_glass_credentials` | `break_glass_credentials_secret` | `OPAQUE` |
 
 
 #### Credential Migration
@@ -411,6 +426,8 @@ structure based on the target secret type:
    - `kubeconfig` → type `KUBECONFIG`, data `{"kubeconfig": <value>}`
    - `client_secret`, `bind_credential`, `password` → type `OPAQUE`,
      data `{"value": <value>}`
+   - `break_glass_credentials` → type `OPAQUE`,
+     data `{"username": <value>, "password": <value>}`
 3. Writes metadata to PostgreSQL and data to the Vault store
 4. Sets the corresponding `*_secret` field on the resource to the new
    secret's name
