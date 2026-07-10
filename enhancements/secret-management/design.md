@@ -383,7 +383,7 @@ a Secret resource. The existing inline field is deprecated / removed after data 
 
 Validation rules:
 - Referenced Secret must exist and match the expected type
-- Referenced secret must be in the same project or an ancestor project
+- Referenced secret must be in the same project
 
 **All credential reference fields:**
 
@@ -508,8 +508,8 @@ The public Secret API does not expose the `backend` field or Hub
 coordinates.
 
 **Secret store data organization:** Per-tenant KV paths
-(`{kv_mount_path}/data/{tenant_name}/*`) organize secret data by tenant
-within the store. Tenant isolation is enforced at
+(`{kv_mount_path}/data/{tenant_name}/{project_name}/{name}*`) organize secret data by tenant,
+prject, and name scope within the store.  Acces sisolation is enforced at
 the application layer — the fulfillment-service only reads or writes
 paths matching the authenticated tenant.
 
