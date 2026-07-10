@@ -342,8 +342,8 @@ Private server behavioral specifics:
   - Metadata-only updates (e.g. labels) are allowed.
   - If `spec.data` is non-empty, returns `FAILED_PRECONDITION` — Hub-backed secret data is system-managed.
 - **Delete:**
-  - Vault-backed: deletes metadata within the transaction, then deletes
-    data from Vault. If Vault delete fails, the transaction rolls back
+  - Vault-backed: deletes metadata within the transaction, then
+    permanently removes all versions from Vault. If Vault delete fails, the transaction rolls back
     and the secret remains intact.
   - Hub-backed (public API): returns `FAILED_PRECONDITION` — tenants
     cannot delete system-managed secrets.
@@ -425,6 +425,10 @@ does not leave partial state on rerun. It runs as a one-time job after
 the Vault store is configured and the fulfillment-service is upgraded
 with the new schema.
 
+The script can be manually invoked as a one-time step for currently running clusters
+via a subcommand.  A cleanup task will be created to fully remove the script at
+a later release once the Vault secret store is fully established.
+
 ### Security Considerations
 
 **Encryption at rest:** The Vault-compatible secret store provides
@@ -476,7 +480,7 @@ returns an error.
 | **Update (Vault data)** | Vault write (overwrite) → update metadata if needed → commit | Vault failure: return error, existing data intact. |
 | **Update (Hub metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. |
 | **Update (Hub data)** | N/A — returns `FAILED_PRECONDITION` | Data is system-managed. |
-| **Delete (Vault)** | Delete metadata → Vault delete → commit | Vault failure: rollback restores metadata, secret intact. Commit failure: retry (Vault delete idempotent). |
+| **Delete (Vault)** | Delete metadata → Vault metadata delete (permanent, all versions) → commit | Vault failure: rollback restores metadata, secret intact. Commit failure: retry (Vault metadata delete is idempotent on non-existent paths). |
 | **Delete (Hub, public)** | Returns `FAILED_PRECONDITION` | Tenants cannot delete system-managed secrets. |
 | **Delete (Hub, private)** | Delete metadata → commit | Standard DB error handling. |
 
