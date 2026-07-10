@@ -111,9 +111,6 @@ spec:
   region: moc-region-1
   fabricManager: netris
   k8sManager: cudn_localnet
-  dnsServers:                    # deployment-wide DNS resolvers
-    - 10.0.0.53
-    - 10.0.0.54
 status:
   capabilities:
     addressFamily: dualStack
@@ -543,20 +540,17 @@ straightforward. For clusters, the DNAT target is a service-level VIP
 (API server or ingress) that is discovered during cluster provisioning.
 The VIP allocation is decoupled from the networking layer:
 
-1. Operator `reconcileNetworking` pre-allocates VIPs from the subnet
-   CIDR via operator IPAM and writes them to ClusterOrder status
-   (`apiVIP`, `ingressVIP`)
-2. CaaS template creates MetalLB LoadBalancer Services with **pinned
-   IPs** (`metallb.universe.tf/loadBalancerIPs`) using the
-   pre-allocated VIPs — MetalLB announces them via L2, no dynamic
-   allocation
-3. Template confirms VIPs in ClusterOrder CR status
-4. Feedback controller syncs VIPs to the Cluster object in the
+1. CaaS template creates MetalLB LoadBalancer Services for API server
+   and ingress. MetalLB allocates VIPs from its IPAddressPool (created
+   by k8s_manager at subnet creation).
+2. Template discovers the allocated VIPs and writes them to ClusterOrder
+   CR status (`apiEndpoint`, `ingressEndpoint`)
+3. Feedback controller syncs VIPs to the Cluster object in the
    fulfillment service as `api_endpoint` and `ingress_endpoint` fields
-5. ExternalIPAttachment controller reads the VIP from ClusterOrder
+4. ExternalIPAttachment controller reads the VIP from ClusterOrder
    status → calls fabric manager to create DNAT: external IP →
    internal VIP
-6. ExternalIPAttachment transitions to Ready
+5. ExternalIPAttachment transitions to Ready
 
 The tenant can inspect the allocated VIPs:
 
@@ -625,9 +619,9 @@ precondition checks and requeue:
 
 | Target type | Required precondition | Source of target IP |
 |-------------|----------------------|---------------------|
-| ComputeInstance | `VirtualMachineReference` set on CI CR | VM's primary subnet IP (resolved from CUDN overlay via OVN DHCP) |
-| Cluster | `status.apiVIP` or `status.ingressVIP` populated on ClusterOrder CR | Operator allocates VIP from subnet CIDR during `reconcileNetworking`, writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachments[].ipAddress` populated for the primary interface | Operator allocates IP from subnet CIDR during `reconcileNetworking`, writes to BM CR status |
+| ComputeInstance | `VirtualMachineReference` set on CI CR | VM's IP from KubeVirt VMI status (OVN DHCP) |
+| Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
+| BaremetalInstance | `status.networkAttachments[].ipAddress` populated for the primary interface | IP discovered from host/inventory system after DHCP assignment |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
@@ -635,58 +629,30 @@ retries until the target IP appears. This is the same pattern used
 today for the `VirtualMachineReference` check on ComputeInstance
 targets.
 
-*Subnet IPAM — operator-managed IP allocation:*
+*IP discovery — DHCP-based host networking:*
 
-For fabric-attached resources (BM servers, CaaS cluster agents, CaaS
-VIPs), the operator allocates IPs from the subnet CIDR during
-`reconcileNetworking`. The operator reads the Subnet CR to obtain the
-CIDR, computes available IPs by listing existing allocations on the
-subnet, picks the next available IP, and writes it to the resource's
-CR status. The fulfillment-service reconciler syncs IPs back to
-PostgreSQL via the existing `syncStatus()` / Signal feedback pattern.
+All host-side IP assignment uses DHCP. The fabric's DHCP server (managed
+by the fabric manager as part of the V-Net infrastructure) assigns IPs
+to hosts when they boot on the subnet. OSAC does not pre-allocate IPs
+or configure host-side networking — DHCP handles IP address, gateway,
+prefix, and DNS automatically.
 
-The operator also populates the full host-side networking config on the
-resource's CR status so the provisioning template reads from one place:
+After the host receives its IP via DHCP, the IP is discovered and
+written to the resource's CR status for two purposes:
+- ExternalIPAttachment controller reads the primary IP for DNAT target
+- Tenant visibility (API response includes the allocated IP)
 
-```yaml
-status:
-  networkAttachments:
-    - interface: data-0
-      subnetRef: my-subnet
-      ipAddress: 10.0.1.15      # operator IPAM
-      gateway: 10.0.1.1         # from Subnet CR status.gateway
-      prefixLength: 24          # derived from Subnet CIDR
-      dnsServers:               # from NetworkClass spec.dnsServers
-        - 10.0.0.53
-        - 10.0.0.54
-      primary: true
-```
+IP discovery mechanism per service type:
 
-- **ipAddress**: allocated by operator IPAM from subnet CIDR
-- **gateway**: read from `Subnet.status.gateway` — written by the
-  fabric manager's `create_subnet` role when it configures the
-  SVI/SoftGate IP on the V-Net. The operator IPAM excludes the gateway
-  from allocatable IPs.
-- **prefixLength**: derived from `Subnet.spec.ipv4CIDR`
-- **dnsServers**: read from `NetworkClass.spec.dnsServers`
-- **primary**: copied from the attachment spec
+| Service | Discovery mechanism | Source |
+|---------|-------------------|--------|
+| VMaaS | KubeVirt VMI status | OVN DHCP on CUDN overlay (existing pattern) |
+| CaaS | Agent CR status | Assisted Installer agent reports network config |
+| BMaaS | Host/inventory system | Ironic/Metal3 reports IP after provisioning |
 
-VMs are NOT operator-IPAM-managed — they sit on the CUDN overlay and
-receive IPs via OVN DHCP.
-
-This keeps the existing data flow:
-- fulfillment-service writes **spec** to CRs (what the user asked for)
-- operator writes **status** to CRs (what the system computed)
-- fulfillment-service reconciler reads **status** back from CRs to DB
-
-*Cross-operator IPAM concurrency:*
-
-Two operators may allocate from the same subnet CIDR: osac-operator
-(CaaS ClusterOrder controller) and bare-metal-fulfillment-operator
-(BMaaS). To prevent double-allocation when both reconcile concurrently,
-the implementation should use optimistic concurrency on a shared
-tracking resource (e.g., Subnet CR status listing allocated IPs, with
-resourceVersion conflict detection and retry).
+The fabric manager's `create_network_attachment` role adds the host's
+port to the V-Net (switch-side only). Once on the V-Net, the host
+receives an IP from the fabric's DHCP server automatically.
 
 *NATGateway controller preconditions:*
 
@@ -1008,13 +974,11 @@ attachment determines:
   rejected
 - `primary` is immutable after creation
 
-**IPAM and IP assignment:** For VMs, the k8sManager provides IPs via OVN
-DHCP on the CUDN overlay. For BM servers and CaaS agents, the operator
-allocates IPs from the subnet CIDR during `reconcileNetworking` (operator
-IPAM) and writes them to CR status. The provisioning template then applies
-host-side network configuration (static IP, gateway, routes) using the
-allocated IPs from CR status, via the appropriate OS mechanism (NMState,
-cloud-init, kickstart, etc.).
+**IP assignment:** All resource types receive IPs via DHCP. For VMs,
+OVN provides DHCP on the CUDN overlay. For BM servers and CaaS agents,
+the fabric's DHCP server assigns IPs on the V-Net. The provisioning
+template does NOT configure host-side networking (no static IP, gateway,
+or DNS configuration) — DHCP handles it automatically.
 
 | Subnet role | IP assignment provides (via DHCP or static) |
 |-------------|---------------------------------------------|
