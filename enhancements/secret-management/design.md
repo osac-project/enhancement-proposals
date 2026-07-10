@@ -157,8 +157,8 @@ sequenceDiagram
 
     Note over User,Hub: User-created secret (Vault backend)
     User->>API: POST /secrets {name, data: {key: bytes}}
-    API->>DB: INSERT metadata (id, name, tenant, type, backend)
-    API->>VS: PUT /v1/secret/data/{tenant}/{id} {key: b64}
+    API->>VS: PUT /v1/secret/data/{tenant}/{id} {data}
+    API->>DB: INSERT metadata (within gRPC transaction)
     API-->>User: Secret (metadata only)
 
     User->>API: GET /secrets/{id}
@@ -182,7 +182,7 @@ backend is transparent.
 #### Error Handling
 
 Errors are returned as gRPC status codes. See **Failure Handling and
-Recovery** for the state machine and per-operation behavior.
+Recovery** for per-operation behavior.
 
 ### API Extensions
 
@@ -210,7 +210,6 @@ message Secret {
   string id = 1;
   Metadata metadata = 2;
   SecretSpec spec = 3;
-  SecretStatus status = 4;
 }
 
 message SecretSpec {
@@ -233,17 +232,6 @@ enum SecretType {
   SECRET_TYPE_KUBECONFIG = 3;
 }
 
-message SecretStatus {
-  SecretState state = 1;
-  optional string message = 2;
-}
-
-enum SecretState {
-  SECRET_STATE_UNSPECIFIED = 0;
-  SECRET_STATE_PENDING = 1;
-  SECRET_STATE_READY = 2;
-  SECRET_STATE_ERROR = 3;
-}
 ```
 
 The public Secret (`public/osac/public/v1/secret_type.proto`) uses the
@@ -343,22 +331,27 @@ Private server behavioral specifics:
 - **Create:**
   - Sets `backend = VAULT` if not specified
   - Validates data against the secret type (see Secret Types)
-  - Dispatches to vault to store the data
+  - Generates the resource ID, writes data to Vault, then inserts
+    metadata into PostgreSQL within the gRPC interceptor transaction
 - **Get:**
-  - Reads metadata from Postgres, dispatches to backend to fetch data
+  - Reads metadata from PostgreSQL, dispatches to backend to fetch data
 - **Update:**
-  - If `spec.data` is non-empty on the update, validate against the secret type and write to backend
+  - If `spec.data` is non-empty, validates against the secret type,
+    writes new data to Vault, then updates metadata if needed
 - **Update (Hub-backed):**
   - Metadata-only updates (e.g. labels) are allowed.
   - If `spec.data` is non-empty, returns `FAILED_PRECONDITION` — Hub-backed secret data is system-managed.
 - **Delete:**
-  - Vault-backed: dispatches to backend to delete stored data, then deletes PostgreSQL metadata.
-  - Hub-backed: returns `FAILED_PRECONDITION` — Hub-backed secrets are system-managed. The controller that created them (e.g., ClusterOrder) deletes the metadata when the parent resource is deleted.
+  - Vault-backed: deletes metadata within the transaction, then deletes
+    data from Vault. If Vault delete fails, the transaction rolls back
+    and the secret remains intact.
+  - Hub-backed (public API): returns `FAILED_PRECONDITION` — tenants
+    cannot delete system-managed secrets.
+  - Hub-backed (private API): deletes the metadata. Used by the
+    controllers to clean up when the parent resource is deleted.
 
 Public server wraps the private server and ensures `backend` and
 `coordinates` are stripped from responses.
-
-For more specific state transitions, see Per-operation behavior section below.
 
 #### CLI Commands
 
@@ -459,50 +452,33 @@ from all event payloads. Server-side logging does not include secret data.
 
 ### Failure Handling and Recovery
 
-Secret state reflects the result of the last write operation, not current
-backend reachability. Three states:
+PostgreSQL and Vault cannot participate in distributed transactions.
+An eventually consistent approach (writing to Vault via an asynchronous
+controller) would require temporarily storing secret data somewhere
+between the user request and the controller write — contradicting the
+goal of keeping secret bytes out of PostgreSQL. Instead, the server
+writes to Vault first, then commits the metadata insert within the
+gRPC interceptor's database transaction
 
-- **PENDING** — metadata exists in PostgreSQL, no data in the backend.
-  Creation did not complete. The user can delete the record.
-- **READY** — metadata and backend data are consistent. Normal operating
-  state.
-- **ERROR** — last data write failed. Previous data in the backend is
-  still intact and retrievable. The user can retry or delete.
-
-```mermaid
-stateDiagram-v2
-    [*] --> PENDING : Create (insert metadata)
-    PENDING --> READY : Vault write succeeds
-    PENDING --> [*] : Vault write fails + rollback succeeds
-    PENDING --> PENDING : Vault write fails + rollback fails (stuck)
-    PENDING --> [*] : User deletes
-    READY --> READY : Update data succeeds
-    READY --> ERROR : Update data fails
-    READY --> [*] : Delete succeeds
-    ERROR --> READY : Retry update succeeds
-    ERROR --> ERROR : Retry update fails
-    ERROR --> [*] : Delete succeeds
-```
-
-PENDING is normally transient. It becomes observable only if both the
-backend write and the rollback delete fail (stuck incomplete creation).
-Hub-backed secrets skip this state machine entirely — they are created as
-`READY`, their data is immutable, and they cannot be deleted through the
-API (metadata updates like labels are still allowed).
+If the Vault write fails, no database record is created — the request
+fails cleanly. If the database commit fails after a successful Vault
+write, an orphaned entry remains in Vault with no metadata pointing to
+it. This does not affect user-visible behavior — the Create simply
+returns an error.
 
 #### Per-operation behavior
 
 | Operation | Steps | On Failure |
 |-----------|-------|------------|
-| **Create (Vault)** | Insert metadata as `PENDING` → write data to store → set `READY` | Attempt rollback (delete metadata). If rollback fails, record stays `PENDING` for manual cleanup. |
-| **Create (Hub)** | Insert metadata with coordinates as `READY` | N/A — no backend write |
-| **Get** | Read metadata → fetch data from backend | Return `UNAVAILABLE`. State unchanged — reflects last write, not reachability. |
-| **Update (Vault data)** | Write new data to store → set `READY` | Set `ERROR` with message. Previous data in store is intact. |
-| **Update (Vault metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. State unchanged. |
-| **Update (Hub metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. State unchanged. |
-| **Update (Hub data)** | N/A — returns `FAILED_PRECONDITION` | Data is system-managed; not modifiable through the API. |
-| **Delete (Vault)** | Delete data from backend → delete metadata | Return `UNAVAILABLE`, secret remains intact (prevents orphaned store data). |
-| **Delete (Hub)** | N/A — returns `FAILED_PRECONDITION` | System-managed; creating controller deletes metadata when parent is removed. |
+| **Create (Vault)** | Vault write → insert metadata → commit | Vault failure: no record created. Commit failure: orphan in Vault (no metadata). |
+| **Create (Hub)** | Insert metadata with coordinates → commit | Standard DB error handling. |
+| **Get** | Read metadata → fetch data from backend | Return `UNAVAILABLE`. |
+| **Update (Vault data)** | Vault write (overwrite) → update metadata if needed → commit | Vault failure: return error, existing data intact. |
+| **Update (Hub metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. |
+| **Update (Hub data)** | N/A — returns `FAILED_PRECONDITION` | Data is system-managed. |
+| **Delete (Vault)** | Delete metadata → Vault delete → commit | Vault failure: rollback restores metadata, secret intact. Commit failure: retry (Vault delete idempotent). |
+| **Delete (Hub, public)** | Returns `FAILED_PRECONDITION` | Tenants cannot delete system-managed secrets. |
+| **Delete (Hub, private)** | Delete metadata → commit | Standard DB error handling. |
 
 ### RBAC / Tenancy
 
@@ -585,7 +561,7 @@ overhead / ongoing maintainance burden.
 - Secret proto validation (required fields, name format, data size limits)
 - Backend interface: mock Vault and Hub backends to test Store/Fetch/Delete dispatch
 - Server logic: Create with backend write, Get with backend data fetch, Update with data replacement, Delete with backend cleanup
-- State transitions: Ensure failure states (e.g. write to backend results in record stuck `PENDING` or update `ERROR`) written
+- Failure handling: Vault write failure returns error with no DB record; Vault delete failure rolls back metadata deletion
 - Public↔private type mapping: verify `backend` and `coordinates` are stripped in public responses
 - RedactFunc: verify data is stripped from event payloads
 - OPA policy: verify role-based access for Secret methods
