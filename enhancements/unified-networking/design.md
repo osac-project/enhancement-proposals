@@ -980,7 +980,7 @@ the fabric's DHCP server assigns IPs on the V-Net. The provisioning
 template does NOT configure host-side networking (no static IP, gateway,
 or DNS configuration) — DHCP handles it automatically.
 
-| Subnet role | IP assignment provides (via DHCP or static) |
+| Subnet role | IP assignment provides (via DHCP) |
 |-------------|---------------------------------------------|
 | Primary | IP address + default gateway + DNS |
 | Secondary | IP address + connected route only (no gateway) |

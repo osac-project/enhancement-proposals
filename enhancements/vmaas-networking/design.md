@@ -137,7 +137,7 @@ ComputeInstance already participates in the networking API. Today's flow:
      - Multiple attachments (NEW — multi-NIC): creates VM with multiple KubeVirt network/interface definitions, each referencing a different CUDN NAD. The `primary: true` attachment gets the default gateway.
    - Reads `securityGroupRefs` → adds as pod labels
    - Creates DataVolume + KubeVirt VirtualMachine
-   - VM gets IP from each CUDN (via DHCP or static network configuration)
+   - VM gets IP from each CUDN (via DHCP)
    - VM is on the fabric (overlay bridged at subnet creation)
    - **No networking logic** — template does OS/VM provisioning only. VMs join the fabric through the overlay, not through switch ports.
 
@@ -234,8 +234,8 @@ CEL validation rule:
 
 - `osac.templates.ocp_virt_vm/tasks/create_build_spec.yaml`: support multiple KubeVirt network/interface definitions from `compute_network_attachments`
 - Each attachment maps to a KubeVirt interface with `l2bridge` binding referencing the attachment's subnet's CUDN NAD
-- Primary attachment: IP + default gateway + DNS (via DHCP or static)
-- Non-primary: IP + connected route only (via DHCP or static)
+- Primary attachment: IP + default gateway + DNS (via DHCP)
+- Non-primary: IP + connected route only (via DHCP)
 
 ### Implementation Details/Notes/Constraints
 
