@@ -97,7 +97,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Connectivity Configuration
 
-- **FR-8:** The system configures network connectivity for each interface-to-subnet mapping before bare-metal OS provisioning begins. Switch port configuration must complete successfully before the server is provisioned. For each attachment, the system identifies the physical server in the network fabric, adds the server's interface to the subnet's network segment, and allocates an IP address (DHCP or static). Network attachments must be ready before provisioning proceeds. [User]
+- **FR-8:** The system configures network connectivity for each interface-to-subnet mapping before bare-metal OS provisioning begins. Switch port configuration must complete successfully before the server is provisioned. For each attachment, the system identifies the physical server in the network fabric and adds the server's interface to the subnet's network segment. The server receives an IP address via DHCP from the fabric's DHCP server after booting on the network segment. Network attachments must be ready before provisioning proceeds. [User]
 
 #### IP Address Visibility
 
