@@ -120,15 +120,16 @@ OSAC hub cluster.
 #### Tenant User: Create a Cluster with a Secret Reference
 
 1. The tenant user creates a secret for container image registry auth:
-   `osac create secret my-pull-secret --type pull-secret --from-file auth.json`
+   `osac create secret my-pull-secret --from-file .dockerconfigjson=auth.json`
 2. The tenant user creates a cluster referencing the secret:
    `osac create cluster my-cluster --pull-secret my-pull-secret`
-3. The fulfillment-service validates that `my-pull-secret` exists and is
-   type `PULL_SECRET`. The cluster spec stores
+3. The fulfillment-service validates that `my-pull-secret` exists. The
+   cluster spec stores
    `pull_secret_secret = "my-pull-secret"` — no inline credential data.
 4. The cluster reconciler resolves the reference by reading the secret
-   data via the private Secrets API, then provisions the cluster with
-   the pull secret.
+   data via the private Secrets API, validates the pull secret format,
+   then provisions the cluster. If the format is invalid, the error is
+   reported in the cluster's status.
 
 #### System: Automatic Secret Creation During Cluster Provisioning
 
@@ -154,8 +155,7 @@ Starting state: A new tenant is being provisioned.
 1. The tenant controller generates break glass credentials (username and
    password) via the IDP manager and creates the IdP user account.
 2. The controller calls the private Secrets API to create a Vault-backed
-   secret with type `OPAQUE` and data
-   `{"username": <value>, "password": <value>}`.
+   secret with data `{"username": <value>, "password": <value>}`.
 3. The controller sets `break_glass_credentials_secret` on the
    tenant status to the new secret's name.
 4. A tenant admin retrieves the break glass password via
@@ -229,21 +229,13 @@ message Secret {
 message SecretSpec {
   map<string, bytes> data = 1;
   SecretBackend backend = 2;
-  SecretType type = 3;
-  map<string, string> coordinates = 4;
+  map<string, string> coordinates = 3;
 }
 
 enum SecretBackend {
   SECRET_BACKEND_UNSPECIFIED = 0;
   SECRET_BACKEND_VAULT = 1;
   SECRET_BACKEND_HUB = 2;
-}
-
-enum SecretType {
-  SECRET_TYPE_UNSPECIFIED = 0;
-  SECRET_TYPE_OPAQUE = 1;
-  SECRET_TYPE_PULL_SECRET = 2;
-  SECRET_TYPE_KUBECONFIG = 3;
 }
 
 ```
@@ -256,23 +248,15 @@ Get, and omitted from List. The CLI controls display: the default table
 view shows metadata only, while structured output formats (`-o yaml/json`)
 include data values.
 
-The `type` field is set at creation and immutable. The server validates
-data keys and value format based on type.
-
-#### Secret Types
-
-| Type | Required Keys | Format Validation | Notes |
-|------|--------------|-------------------|-------|
-| `OPAQUE` (default) | At least one arbitrary key | None | Passwords, tokens, API keys |
-| `PULL_SECRET` | `.dockerconfigjson` | Valid JSON with top-level `auths` object | Key name follows the `kubernetes.io/dockerconfigjson` convention; all major runtimes (podman, CRI-O, containerd) use this format |
-| `KUBECONFIG` | `kubeconfig` | Valid YAML with `apiVersion: v1`, `kind: Config` | Structure validated, not connectivity |
+All secrets are opaque key-value data — the secret store does not
+enforce key names or value formats. Consuming resources validate the
+secret's contents when they read it and report errors in their own
+status (e.g., a cluster controller validates that a pull secret
+contains a valid `.dockerconfigjson` key before provisioning).
 
 For Hub-backed secrets (system-created), the `data` map is populated on
 demand from the Kubernetes Secret — the key matches the Kubernetes
 Secret's `Data` field key (typically `kubeconfig` or `password`).
-
-These three types cover the credential migration scope. Additional types
-(e.g., TLS, SSH key) can be added when needed.
 
 The `backend` field is set by the server, not the caller:
 - Public API Create: server sets `backend = VAULT` automatically.
@@ -301,7 +285,7 @@ Secrets are tenant- and project-scoped, following the `objects` table
 pattern.
 
 The `data` JSONB column stores the SecretSpec proto JSON (`backend`,
-`type`, `coordinates`) — not secret bytes (see Proposal).
+`coordinates`) — not secret bytes (see Proposal).
 
 #### Vault Configuration
 
@@ -344,14 +328,14 @@ Private server behavioral specifics:
 
 - **Create:**
   - Sets `backend = VAULT` if not specified
-  - Validates data against the secret type (see Secret Types)
+  - Validates data is non-empty (at least one key)
   - Generates the resource ID, writes data to Vault, then inserts
     metadata into PostgreSQL within the gRPC interceptor transaction
 - **Get:**
   - Reads metadata from PostgreSQL, dispatches to backend to fetch data
 - **Update:**
-  - If `spec.data` is non-empty, validates against the secret type,
-    writes new data to Vault, then updates metadata if needed
+  - If `spec.data` is non-empty, writes new data to Vault, then
+    updates metadata if needed
 - **Update (Hub-backed):**
   - Metadata-only updates (e.g. labels) are allowed.
   - If `spec.data` is non-empty, returns `FAILED_PRECONDITION` — Hub-backed secret data is system-managed.
@@ -376,19 +360,18 @@ New commands follow existing patterns:
 | `osac create secret <name> --from-file=<key>=<path>` | Create a secret with a key-value pair from a file |
 | `osac create secret <name> --from-file=<path>` | Create with filename as the key |
 | `osac create secret <name> --from-literal=<key>=<value>` | Create a secret from a literal value |
-| `osac create secret <name> --type=pull-secret --from-file=<path>` | Create a typed secret (auto-maps to required key) |
 | `osac get secrets` | List secrets (metadata only) |
 | `osac get secret <name>` | Get secret (table: metadata only; `-o yaml/json`: includes data) |
 | `osac describe secret <name>` | Detailed secret metadata view |
 | `osac delete secret <name>` | Delete a secret |
 | `osac edit secret <name>` | Edit secret data/metadata in `$EDITOR` |
 
-The `--from-file`, `--from-literal`, and `--type` flags are new to the
-OSAC CLI. They follow `kubectl create secret` conventions because secrets
-hold arbitrary key-value data — unlike other OSAC resources which have
-typed fields with dedicated flags (e.g., `--pull-secret-file`). `--type`
-defaults to `opaque`. Data values are included in structured output
-formats (`-o yaml/json`). The default table view shows metadata only.
+The `--from-file` and `--from-literal` flags are new to the OSAC CLI.
+They follow `kubectl create secret` conventions because secrets hold
+arbitrary key-value data — unlike other OSAC resources which have
+typed fields with dedicated flags. Data values are included in
+structured output formats (`-o yaml/json`). The default table view
+shows metadata only.
 
 #### Secret References
 
@@ -396,38 +379,41 @@ Resources that currently embed credentials as inline fields gain a new reference
 a Secret resource. The existing inline field is deprecated / removed after data migration.
 
 Validation rules:
-- Referenced Secret must exist and match the expected type
+- Referenced Secret must exist
 - Referenced secret must be in the same project
+- The consuming resource's controller validates the secret's contents
+  at use time and reports format errors in its own status
 
 **All credential reference fields:**
 
-| Resource | Inline Field (deprecated) | Reference Field | Secret Type |
-|----------|--------------------------|-----------------|-------------|
-| Cluster | `pull_secret` | `pull_secret_secret` | `PULL_SECRET` |
-| ClusterTemplate | `pull_secret` | `pull_secret_secret` | `PULL_SECRET` |
-| Hub | `kubeconfig` | `kubeconfig_secret` | `KUBECONFIG` |
-| IdentityProvider | `client_secret` | `client_secret_secret` | `OPAQUE` |
-| IdentityProvider | `bind_credential` | `bind_credential_secret` | `OPAQUE` |
-| StorageBackend | `password` | `password_secret` | `OPAQUE` |
-| Tenant | `break_glass_credentials` | `break_glass_credentials_secret` | `OPAQUE` |
+| Resource | Inline Field (deprecated) | Reference Field |
+|----------|--------------------------|-----------------|
+| Cluster | `pull_secret` | `pull_secret_secret` |
+| ClusterTemplate | `pull_secret` | `pull_secret_secret` |
+| Hub | `kubeconfig` | `kubeconfig_secret` |
+| IdentityProvider | `client_secret` | `client_secret_secret` |
+| IdentityProvider | `bind_credential` | `bind_credential_secret` |
+| StorageBackend | `password` | `password_secret` |
+| Tenant | `break_glass_credentials` | `break_glass_credentials_secret` |
 
+Note: The exact naming, nature, and type of these reference fields may change as a result
+of upcoming type-safe resource references - https://redhat.atlassian.net/browse/OSAC-1330
 
 #### Credential Migration
 
 A Go migration script moves existing inline credentials into the Secrets
 API. The script maps each inline credential to the appropriate key-value
-structure based on the target secret type:
+structure:
 
 1. Reads all resources with inline credential data from PostgreSQL
 2. For each credential, creates a Secret resource in the same project
-   as the parent resource, with the correct type and data map:
-   - `pull_secret` → type `PULL_SECRET`, data
-     `{".dockerconfigjson": <value>}`
-   - `kubeconfig` → type `KUBECONFIG`, data `{"kubeconfig": <value>}`
-   - `client_secret`, `bind_credential`, `password` → type `OPAQUE`,
-     data `{"value": <value>}`
-   - `break_glass_credentials` → type `OPAQUE`,
-     data `{"username": <value>, "password": <value>}`
+   as the parent resource with the appropriate data map:
+   - `pull_secret` → data `{".dockerconfigjson": <value>}`
+   - `kubeconfig` → data `{"kubeconfig": <value>}`
+   - `client_secret`, `bind_credential`, `password` → data
+     `{"value": <value>}`
+   - `break_glass_credentials` → data
+     `{"username": <value>, "password": <value>}`
 3. Writes metadata to PostgreSQL and data to the Vault store
 4. Sets the corresponding `*_secret` field on the resource to the new
    secret's name
@@ -459,8 +445,8 @@ from files on disk, allowing injection via Kubernetes Secrets or similar
 mechanisms.
 
 **Input validation:** Total secret data size is capped at 1 MiB (Vault API default
-max entry size). For typed secrets, the server validates both the
-required keys and the value format (see Secret Types). Secret names
+max entry size). The server validates that secret data contains at
+least one key but does not enforce key names or value formats. Secret names
 follow the existing OSAC naming validation (alphanumeric, hyphens, max
 253 characters).
 
