@@ -171,20 +171,20 @@ sequenceDiagram
 
     Note over User,Hub: User-created secret (Vault backend)
     User->>API: POST /secrets {name, data: {key: bytes}}
-    API->>VS: PUT /v1/secret/data/{tenant}/{id} {data}
+    API->>VS: PUT {kv_mount}/data/{tenant}/{project}/{name}
     API->>DB: INSERT metadata (within gRPC transaction)
     API-->>User: Secret (metadata only)
 
-    User->>API: GET /secrets/{id}
+    User->>API: GET /secrets/{name}
     API->>DB: SELECT metadata
-    API->>VS: GET /v1/secret/data/{tenant}/{id}
+    API->>VS: GET {kv_mount}/data/{tenant}/{project}/{name}
     API-->>User: Secret (metadata + data map)
 
     Note over User,Hub: System-created secret (Hub backend)
     API->>DB: INSERT metadata (coordinates: hub, ns, secret, key)
     Note over API: ClusterOrder controller triggers creation
 
-    User->>API: GET /secrets/{id}
+    User->>API: GET /secrets/{name}
     API->>DB: SELECT metadata + coordinates
     API->>Hub: GET Secret via kubeconfig
     API-->>User: Secret (metadata + data)
@@ -329,8 +329,8 @@ Private server behavioral specifics:
 - **Create:**
   - Sets `backend = VAULT` if not specified
   - Validates data is non-empty (at least one key)
-  - Generates the resource ID, writes data to Vault, then inserts
-    metadata into PostgreSQL within the gRPC interceptor transaction
+  - Writes data to Vault, then inserts
+    metadata into PostgreSQL upon successful creation.
 - **Get:**
   - Reads metadata from PostgreSQL, dispatches to backend to fetch data
 - **Update:**
@@ -514,11 +514,13 @@ catch-all for private API methods.
 The public Secret API does not expose the `backend` field or Hub
 coordinates.
 
-**Secret store data organization:** Per-tenant KV paths
-(`{kv_mount_path}/data/{tenant_name}/{project_name}/{name}*`) organize secret data by tenant,
-prject, and name scope within the store.  Acces sisolation is enforced at
-the application layer — the fulfillment-service only reads or writes
-paths matching the authenticated tenant.
+**Secret store path derivation:** All Vault operations use the canonical
+path `{kv_mount_path}/data/{tenant}/{project}/{name}`, where
+`kv_mount_path` is set via `--vault-kv-mount-path` (default: `secret`).
+This organizes secret data by tenant, project, and name within the
+store. Access isolation is enforced at the application layer — the
+fulfillment-service only reads or writes paths matching the
+authenticated tenant.
 
 ### Observability and Monitoring
 
