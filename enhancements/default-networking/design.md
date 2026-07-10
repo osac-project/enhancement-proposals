@@ -173,8 +173,8 @@ This enhancement adds three main capabilities: default networking at tenant onbo
      - Creates two ExternalIPs + two ExternalIPAttachments in the same DB transaction — all start in **Pending** state. Pool capacity decremented atomically.
      - All labeled `osac.openshift.io/auto-provisioned: "true"`
    - osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (external addresses assigned)
-   - osac-operator ClusterOrder controller `reconcileNetworking` allocates internal VIPs from subnet CIDR via operator IPAM, writes to ClusterOrder status (`apiVIP`, `ingressVIP`). Template pins MetalLB to these VIPs.
-   - ExternalIPAttachment controllers activate once ExternalIP is Allocated AND ClusterOrder `apiVIP`/`ingressVIP` are populated → creates DNAT: external IP → internal VIP
+   - Cluster provisioning proceeds — MetalLB allocates internal VIPs from its IPAddressPool. Template discovers VIPs and writes to ClusterOrder status (`apiEndpoint`, `ingressEndpoint`).
+   - ExternalIPAttachment controllers activate once ExternalIP is Allocated AND ClusterOrder `apiEndpoint`/`ingressEndpoint` are populated → creates DNAT: external IP → internal VIP
    - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
    - Result: Cluster is reachable via ExternalIPs for both API and ingress
 
@@ -440,18 +440,18 @@ type ClusterSpec struct {
 For clusters, two separate IP allocations happen from different sources:
 
 - **External IPs** (from ExternalIPPool): allocated by ExternalIP controller via fabric manager (for DNAT front-end)
-- **Internal VIPs** (from subnet CIDR): allocated by operator IPAM during `reconcileNetworking` (for MetalLB API/ingress endpoints)
+- **Internal VIPs** (from subnet CIDR): allocated by MetalLB from its IPAddressPool (for API/ingress endpoints)
 
 The DNAT model maps external IPs to internal VIPs:
 
 1. fulfillment-service creates ExternalIP resources (Pending state in DB) and ExternalIPAttachments (Pending, no target VIP yet)
 2. osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (external addresses assigned, e.g., 203.0.113.10)
-3. osac-operator ClusterOrder controller `reconcileNetworking` allocates internal VIPs from subnet CIDR via operator IPAM (e.g., 10.0.1.20 for API, 10.0.1.50 for ingress), writes to ClusterOrder status (`apiVIP`, `ingressVIP`)
-4. Template creates MetalLB Services with pinned IPs using the pre-allocated VIPs — no dynamic MetalLB allocation needed
-5. VIP feedback loop: template confirms VIPs in ClusterOrder status → feedback controller → fulfillment-service syncs to Cluster status
-6. ExternalIPAttachment controller activates once ExternalIP is Allocated AND VIP is confirmed → creates DNAT: external IP → internal VIP
+3. Cluster provisioning proceeds — MetalLB allocates internal VIPs from its IPAddressPool on the hosting cluster (e.g., 10.0.1.200 for API, 10.0.1.201 for ingress)
+4. Template discovers VIPs after MetalLB allocation, writes to ClusterOrder status (`apiEndpoint`, `ingressEndpoint`)
+5. VIP feedback loop: ClusterOrder status → feedback controller → fulfillment-service syncs to Cluster status
+6. ExternalIPAttachment controller activates once ExternalIP is Allocated AND the relevant endpoint is populated → creates DNAT: external IP → internal VIP
 
-Note: the external IPs (from ExternalIPPool) and internal VIPs (from subnet CIDR via operator IPAM) are separate address spaces. The ExternalIPAttachment creates the DNAT mapping between them. Single IPAM (operator) for all subnet allocations eliminates conflicts between fabric manager and MetalLB.
+Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPAddressPool) are separate address spaces managed by separate systems. No IPAM coordination needed between them.
 
 #### NATGateway Reuse Logic
 
