@@ -64,6 +64,23 @@ Cluster provisioning today follows this flow:
 - Auto NATGateway mode (`nat_gateway_mode: AUTO`) for single-call outbound connectivity
 - Remove step collections (`netris.steps`, `agentless_net.steps`) from CaaS networking
 
+### Agent Pool Model
+
+The current assumption is that **pre-booted Assisted Installer agents** are ready in a pool, waiting to be assigned to clusters. These agents sit on a **parking network** — a fabric-manager-managed V-Net that provides basic connectivity (DHCP, PXE, management access) while agents are idle.
+
+When an agent is selected for a cluster:
+1. The agent's port is **moved from the parking network to the tenant's subnet V-Net** (via `create_network_attachment`)
+2. The agent receives a new IP from the tenant subnet's DHCP server
+3. After cluster deletion, the agent's port is **returned to the parking network** (via `delete_network_attachment`)
+
+This differs from BMaaS, where servers start with no network attachment and are placed directly on the tenant V-Net. For CaaS, the `create_network_attachment` role must handle the transition: check if the port is already on a network (parking V-Net), remove it, then add to the target V-Net. The `delete_network_attachment` role reverses this: remove from tenant V-Net, return to parking V-Net.
+
+**Generic role behavior:** The `create_network_attachment` role works identically for both CaaS and BMaaS by always checking if the given port is already part of a V-Net. If yes, remove it first. Then add to the target V-Net. This means:
+- **CaaS:** agent on parking V-Net → remove from parking → add to tenant V-Net
+- **BMaaS:** server not on any V-Net → nothing to remove → add to tenant V-Net
+
+**Future consideration:** The agent pool model may evolve toward on-demand agent booting during cluster provisioning (no pre-booted pool). The design should accommodate this by not assuming agents are pre-existing — the `reconcileAgentSelection` step abstracts agent discovery, and the networking flow works regardless of whether the agent was pre-booted or just provisioned.
+
 ### Non-Goals
 
 - VMaaS or BMaaS networking (this EP covers CaaS only)
@@ -71,6 +88,7 @@ Cluster provisioning today follows this flow:
 - DNS API (DNS record creation stays inline in the template until DNS API is implemented)
 - Multi-NIC cluster nodes (v0.2: one attachment per cluster → one subnet; each node set resolves its own fabric interface from its HostType)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
+- On-demand agent booting (v0.2 assumes pre-booted agent pool; may change in future)
 
 ## Proposal
 
@@ -134,7 +152,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Stores selected agent references on ClusterOrder status
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
-    - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. Agents will receive IPs from the fabric's DHCP server when they boot.
+    - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `subnet_ref`. The role checks if the port is already on a V-Net (parking network) — if so, removes it first — then adds the port to the tenant's subnet V-Net. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
@@ -202,7 +220,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Deletes HyperShift HostedCluster + NodePools
       - DNS cleanup
       - No switch port cleanup — template doesn't handle networking
-    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `delete_network_attachment` per BM node (passing host_name, logical_interface_name from the agent's node set definition, subnet_ref) to remove server ports from the subnet's V-Net.
+    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `delete_network_attachment` per BM node (passing host_name, logical_interface_name from the agent's node set definition, subnet_ref). The role removes the port from the tenant's subnet V-Net and **returns it to the parking network** — the agent is back in the idle pool. See [Agent Pool Model](#agent-pool-model).
     - ClusterOrder controller `reconcileAgentCleanup` (delete): removes operator-set reservation labels from agents, making them available for future clusters.
     - Removes ClusterOrder finalizer
 

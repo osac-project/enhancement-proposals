@@ -651,8 +651,15 @@ IP discovery mechanism per service type:
 | BMaaS | Host/inventory system | Ironic/Metal3 reports IP after provisioning |
 
 The fabric manager's `create_network_attachment` role adds the host's
-port to the V-Net (switch-side only). Once on the V-Net, the host
-receives an IP from the fabric's DHCP server automatically.
+port to the V-Net (switch-side only). The role is generic: it first
+checks if the port is already on a V-Net (e.g., a parking network for
+CaaS pre-booted agents) — if so, removes it — then adds the port to
+the target V-Net. This handles both BMaaS (server not on any V-Net)
+and CaaS (agent moving from parking to tenant V-Net) with the same
+role. Once on the V-Net, the host receives an IP from the fabric's
+DHCP server automatically. On deletion, `delete_network_attachment`
+removes the port from the tenant V-Net and returns it to the parking
+network (CaaS) or leaves it detached (BMaaS).
 
 *NATGateway controller preconditions:*
 
