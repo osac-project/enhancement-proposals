@@ -245,6 +245,23 @@ CEL validation rule:
   message: "When multiple network attachments exist, exactly one must have primary: true"
 ```
 
+Add `ComputeNetworkAttachmentStatus` to `ComputeInstanceStatus`:
+
+```go
+type ComputeInstanceStatus struct {
+    // ... existing fields ...
+    NetworkAttachmentStatuses []ComputeNetworkAttachmentStatus `json:"networkAttachmentStatuses,omitempty"`
+}
+
+type ComputeNetworkAttachmentStatus struct {
+    SubnetRef string `json:"subnetRef"`
+    IPAddress string `json:"ipAddress,omitempty"` // Discovered from KubeVirt VMI after DHCP/overlay assignment
+    Primary   bool   `json:"primary,omitempty"`
+}
+```
+
+The feedback controller populates `NetworkAttachmentStatuses` by watching the KubeVirt VMI `status.interfaces` and mapping each interface IP to the corresponding attachment by CUDN NAD reference.
+
 #### Server Validation (fulfillment-service)
 
 - During migration: accept both old field (14) and new field (15). If both set, reject. If old set, convert internally.
