@@ -275,8 +275,8 @@ message SecurityGroupRule {
 // ComputeInstance and BaremetalInstance
 message ComputeInstanceSpec {
   // ... existing fields ...
-  ExternalIPMode external_ip_mode = 16;   // NONE (default) or AUTO
-  NATGatewayMode nat_gateway_mode = 17;   // NONE (default) or AUTO
+  ExternalIPMode external_ip_mode = 19;   // NONE (default) or AUTO
+  NATGatewayMode nat_gateway_mode = 20;   // NONE (default) or AUTO
 }
 
 enum ExternalIPMode {
@@ -561,7 +561,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: Deployment misconfiguration (NetworkClass defaults not configured)
 
-**Impact:** If NetworkClass defaults are not configured, tenant onboarding still succeeds (Tenant becomes READY) but resource creation without explicit network_attachments fails with error.
+**Impact:** If NetworkClass defaults are not configured, the DefaultNetworkingReady condition is set to True with reason `DefaultsNotConfigured` and message explaining that no defaults were created. Tenant becomes READY. Resource creation without explicit network attachments fails with a clear error explaining that no default networking resources exist.
 
 **Mitigation:** This is a deployment issue, not a runtime failure. Clear error message directs tenant to use explicit networking or contact admin. osac-installer setup.sh includes NetworkClass default configuration in installation overlays.
 

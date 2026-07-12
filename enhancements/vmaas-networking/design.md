@@ -203,9 +203,9 @@ message ComputeNetworkAttachment {
 message ComputeInstanceSpec {
   // ... existing fields ...
   // DEPRECATED: field 14 (old shared NetworkAttachment)
-  repeated ComputeNetworkAttachment compute_network_attachments = 15; // optional
-  ExternalIPMode external_ip_mode = 16;   // NONE (default) or AUTO
-  NATGatewayMode nat_gateway_mode = 17;   // NONE (default) or AUTO
+  repeated ComputeNetworkAttachment compute_network_attachments = 18; // optional
+  ExternalIPMode external_ip_mode = 19;   // NONE (default) or AUTO
+  NATGatewayMode nat_gateway_mode = 20;   // NONE (default) or AUTO
 }
 
 message ComputeNetworkAttachmentStatus {

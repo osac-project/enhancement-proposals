@@ -844,7 +844,7 @@ and stored on the node set definition. The tenant does not set this field.
 message ComputeInstanceSpec {
   // ... existing fields ...
   repeated NetworkAttachment network_attachments = 14;              // DEPRECATED (shared type)
-  repeated ComputeNetworkAttachment compute_network_attachments = 15; // NEW (per-resource type)
+  repeated ComputeNetworkAttachment compute_network_attachments = 18; // NEW (per-resource type)
 }
 ```
 
@@ -857,11 +857,11 @@ for the dual-field migration strategy.
 [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api)):
 
 ```protobuf
-message BaremetalInstanceSpec {
+message BareMetalInstanceSpec {
   string catalog_item = 1;
   optional string ssh_public_key = 2;
   optional string user_data = 3;
-  optional BaremetalInstanceRunStrategy run_strategy = 4;
+  optional BareMetalInstanceRunStrategy run_strategy = 4;
   int64 restart_trigger = 5;
   map<string, google.protobuf.Any> template_parameters = 6;
   optional BareMetalInstanceImage image = 7;
@@ -880,7 +880,7 @@ message ClusterSpec {
   map<string, ClusterNodeSet> node_sets = 3;
 
   // NEW: networking
-  ClusterNetworkAttachment network_attachment = 4;  // singular, one per cluster
+  ClusterNetworkAttachment network_attachment = 9;  // singular, one per cluster
 }
 ```
 

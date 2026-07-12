@@ -191,7 +191,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```
 
 5. **fulfillment-service:**
-   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/default-networking))
+   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/default-networking)). The system selects the first interface with role `fabric` from the HostType as the default interface for the single attachment (matching PRD FR-5).
    - Validates:
      - Each subnet exists, is Ready
      - All subnets belong to the same VirtualNetwork
@@ -201,7 +201,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - If >1 attachment without `interface`, reject (explicit interface required when multi-homed)
      - Number of attachments ≤ number of available interfaces on template
      - If multiple attachments, exactly one is `primary`; if single attachment, `primary` is implicit
-   - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
+   - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-provisioned: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists: reuse (regardless of state). If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway in a **separate DB transaction** after the parent resource is persisted, both labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the BaremetalInstance creation still succeeds (outbound NAT is best-effort).
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
