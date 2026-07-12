@@ -331,7 +331,7 @@ message ClusterSpec {
   map<string, google.protobuf.Any> template_parameters = 2;
   map<string, ClusterNodeSet> node_sets = 3;
   // ... existing fields ...
-  ClusterNetworkAttachment network_attachment = 4;   // NEW, optional, singular
+  ClusterNetworkAttachment network_attachment = 9;   // NEW, optional, singular
   ClusterExternalIPMode external_ip_mode = 20;       // NONE, AUTO_API, AUTO_INGRESS, AUTO_ALL
   NATGatewayMode nat_gateway_mode = 21;              // NONE or AUTO
 }
@@ -606,6 +606,27 @@ Current proposal: return error, no resources persisted. Alternative: create Fail
 **Owner:** API design team
 
 **Impact:** Affects auto ExternalIP allocation behavior and acceptance criteria.
+
+### 7. How is the subnet CIDR partitioned between MetalLB VIP allocation and fabric DHCP assignment?
+
+MetalLB IPAddressPool covers the subnet CIDR, but agents also receive IPs via DHCP from the same range. Without range partitioning, MetalLB could allocate a VIP that was already leased to an agent via DHCP.
+
+Options:
+- **(a)** k8s_manager creates IPAddressPool with a sub-range (e.g., last /28 of the subnet)
+- **(b)** fabric manager's DHCP excludes a range reserved for MetalLB
+- **(c)** MetalLB and DHCP coordinate via a shared IPAM
+
+**Owner:** Platform team
+
+**Impact:** IP collision risk between MetalLB VIPs and DHCP-assigned agent IPs
+
+### 8. What IP addresses do DNS records point to — MetalLB VIPs or ExternalIPs?
+
+The template creates DNS records (step 7b) but never specifies the target IP. If DNS points to ExternalIPs, workers cannot reach the API server during bootstrapping because DNAT rules don't exist yet (ExternalIPAttachment activates after VIPs are discovered). If DNS points to MetalLB VIPs, external clients need ExternalIP DNAT for access.
+
+**Owner:** Platform team
+
+**Impact:** Affects cluster bootstrap sequencing and external access reachability
 
 ## Test Plan
 

@@ -23,7 +23,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 - When network configuration is omitted, the system applies the tenant's default subnet and security group
 - Cluster status exposes API server and ingress endpoint addresses after provisioning completes
 - The system automatically selects suitable bare-metal hosts and configures network connectivity before cluster provisioning begins
-- Auto-provisioned networking resources (external IPs, NAT gateways) are cleaned up when the cluster is deleted
+- Auto-provisioned external IPs and external IP attachments are cleaned up when the cluster is deleted
 - Bare-metal host types provide structured interface information that the system uses to configure network connectivity
 
 ### 2.2 Non-Goals
@@ -108,7 +108,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 #### Auto-Provisioned Resource Cleanup
 
-- **FR-12:** Auto-provisioned networking resources (external IPs, external IP attachments, NAT gateways) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs, then NAT gateways (if auto-created). Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, security groups) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-12:** Auto-provisioned networking resources (external IPs, external IP attachments, NAT gateways) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Auto-provisioned NAT gateways are NOT cleaned up — they are shared per-virtual-network resources that may serve other resources on the same network. Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, security groups) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -125,7 +125,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 - [ ] Auto-created external IP attachments activate after endpoint addresses are available and inbound routing is configured
 - [ ] The system selects hosts and configures network connectivity before cluster provisioning begins
 - [ ] Auto-created external IPs, external IP attachments, and NAT gateways are labeled as auto-provisioned and visible in list views
-- [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs, external IP attachments, and NAT gateways to be cleaned up
+- [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
 - [ ] The system determines which physical network interface to use based on the host type's interface configuration
 
 ## 6. Assumptions
