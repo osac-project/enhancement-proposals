@@ -838,28 +838,36 @@ and stored on the node set definition. The tenant does not set this field.
 
 #### Resource Specs
 
-**ComputeInstance** (existing — field already exists, type changes):
+**ComputeInstance** (existing — new field alongside deprecated shared type):
 
 ```protobuf
 message ComputeInstanceSpec {
   // ... existing fields ...
-  repeated ComputeNetworkAttachment network_attachments = 14;
+  repeated NetworkAttachment network_attachments = 14;              // DEPRECATED (shared type)
+  repeated ComputeNetworkAttachment compute_network_attachments = 15; // NEW (per-resource type)
 }
 ```
+
+Field 14 (`network_attachments`, shared `NetworkAttachment`) is deprecated and will be
+removed after migration. Field 15 (`compute_network_attachments`, `ComputeNetworkAttachment`)
+is the new canonical field. See the [VMaaS Networking EP](/enhancements/vmaas-networking/design.md)
+for the dual-field migration strategy.
 
 **BaremetalInstance** (new — defined in the
 [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api)):
 
 ```protobuf
 message BaremetalInstanceSpec {
-  string template = 1;
+  string catalog_item = 1;
   optional string ssh_public_key = 2;
   optional string user_data = 3;
   optional BaremetalInstanceRunStrategy run_strategy = 4;
-  optional google.protobuf.Timestamp restart_requested_at = 5;
+  int64 restart_trigger = 5;
+  map<string, google.protobuf.Any> template_parameters = 6;
+  optional BareMetalInstanceImage image = 7;
 
   // NEW: OSAC networking
-  repeated BareMetalNetworkAttachment network_attachments = 6;
+  repeated BareMetalNetworkAttachment network_attachments = 8;
 }
 ```
 
