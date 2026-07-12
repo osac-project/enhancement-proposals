@@ -141,22 +141,32 @@ ComputeInstance already participates in the networking API. Today's flow:
    - VM is on the fabric (overlay bridged at subnet creation)
    - **No networking logic** — template does OS/VM provisioning only. VMs join the fabric through the overlay, not through switch ports.
 
+#### IP Discovery (feedback loop)
+
+7. **osac-operator ComputeInstance feedback controller** discovers VM IPs:
+   - Watches KubeVirt VMI (VirtualMachineInstance) network status
+   - For each interface, reads the assigned IP from `vmi.status.interfaces[].ipAddress`
+   - Maps each interface to the corresponding `compute_network_attachment` by CUDN NAD reference
+   - Fires Signal RPC to fulfillment-service with per-attachment IP data
+   - fulfillment-service writes `compute_network_attachment_statuses` on ComputeInstanceStatus (each entry: `subnet_ref`, `ip_address`, `primary`)
+   - Tenant can inspect: `osac get computeinstance my-vm -o yaml` shows assigned IPs per attachment
+
 #### External Access (optional, auto-provisioned when `external_ip_mode=AUTO`)
 
-7. **fulfillment-service creates ExternalIP and ExternalIPAttachment:**
+8. **fulfillment-service creates ExternalIP and ExternalIPAttachment:**
    - Auto-selects ExternalIPPool (READY, most available capacity, matching IP family)
    - Creates ExternalIP from pool, labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <compute-instance-id>`
    - Creates ExternalIPAttachment binding ExternalIP to VM's primary subnet IP, labeled `osac.openshift.io/auto-provisioned: "true"`
    - Both start in **Pending** state. The ExternalIPAttachment controller checks two preconditions before dispatching (requeues if either is not met):
      1. ExternalIP must be Allocated (have an allocated address from the fabric manager)
-     2. ComputeInstance must have `VirtualMachineReference` set (VM object created in KubeVirt)
+     2. ComputeInstance must have `compute_network_attachment_statuses` populated with the primary attachment's `ip_address` (VM IP discovered from KubeVirt VMI)
    - Once both are met: dispatcher → `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
-   - Fabric manager creates DNAT rule: external IP → VM's primary subnet IP
+   - Fabric manager creates DNAT rule: external IP → VM's primary subnet IP (from `compute_network_attachment_statuses`)
    - ExternalIPAttachment transitions from Pending to Ready
 
 #### Outbound NAT (optional, auto-provisioned when `nat_gateway_mode=AUTO`)
 
-8. **fulfillment-service creates or reuses NATGateway:**
+9. **fulfillment-service creates or reuses NATGateway:**
    - If NATGateway already exists on the VN: reuse (regardless of state or whether it was manually or auto-created). No new resources created.
    - If no NATGateway exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in a **separate DB transaction** after the parent resource is persisted, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
    - osac-operator NATGateway controller triggers dispatcher → `osac.templates.{{ fabric_manager }}.create_nat_gateway`
@@ -164,7 +174,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 #### Deletion (reverse order)
 
-9. **Delete ComputeInstance:**
+10. **Delete ComputeInstance:**
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`external_ip_mode=AUTO`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
    - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this resource auto-created it, deleting the resource does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
@@ -173,7 +183,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Template deletes KubeVirt VM + DataVolume
    - No `delete_network_attachment` call (VM was on overlay, not switch port)
 
-10. **Delete networking resources:**
+11. **Delete networking resources:**
     - Each networking resource controller triggers its delete AAP job
     - Dispatcher calls the appropriate manager role for each
 
@@ -196,6 +206,17 @@ message ComputeInstanceSpec {
   repeated ComputeNetworkAttachment compute_network_attachments = 15; // optional
   ExternalIPMode external_ip_mode = 16;   // NONE (default) or AUTO
   NATGatewayMode nat_gateway_mode = 17;   // NONE (default) or AUTO
+}
+
+message ComputeNetworkAttachmentStatus {
+  string subnet_ref = 1;               // Subnet ID (echoed from spec)
+  string ip_address = 2;               // Discovered from KubeVirt VMI network status after DHCP/overlay assignment
+  bool primary = 3;                     // Echoed from spec
+}
+
+message ComputeInstanceStatus {
+  // ... existing fields ...
+  repeated ComputeNetworkAttachmentStatus compute_network_attachment_statuses = N; // NEW
 }
 
 enum ExternalIPMode {
@@ -243,8 +264,9 @@ CEL validation rule:
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate network_attachments, create CR, auto-provision ExternalIP/NATGateway |
+| fulfillment-service | Validate network_attachments, create CR, auto-provision ExternalIP/NATGateway, write `compute_network_attachment_statuses` from feedback |
 | osac-operator ComputeInstance controller | Resolve subnet → namespace, trigger AAP, clean up auto-provisioned resources |
+| osac-operator ComputeInstance feedback controller | Watch KubeVirt VMI network status, discover per-attachment IPs, Signal fulfillment-service |
 | osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SG, ExternalIP) |
 | AAP template (ocp_virt_vm) | Create multi-NIC KubeVirt VM in correct namespace |
 | fabric_manager (Ansible role) | VN/Subnet/SG/ExternalIP provisioning; no per-VM call |

@@ -619,7 +619,7 @@ precondition checks and requeue:
 
 | Target type | Required precondition | Source of target IP |
 |-------------|----------------------|---------------------|
-| ComputeInstance | `VirtualMachineReference` set on CI CR | VM's IP from KubeVirt VMI status (OVN DHCP) |
+| ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
 | BaremetalInstance | `status.networkAttachments[].ipAddress` populated for the primary interface | IP discovered from host/inventory system after DHCP assignment |
 
@@ -644,11 +644,11 @@ written to the resource's CR status for two purposes:
 
 IP discovery mechanism per service type:
 
-| Service | Discovery mechanism | Source |
-|---------|-------------------|--------|
-| VMaaS | KubeVirt VMI status | OVN DHCP on CUDN overlay (existing pattern) |
-| CaaS | Agent CR status | Assisted Installer agent reports network config |
-| BMaaS | Host/inventory system | Ironic/Metal3 reports IP after provisioning |
+| Service | Discovery source | Who writes status | Status field |
+|---------|-----------------|-------------------|-------------|
+| VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
+| CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
+| BMaaS | Ironic/Metal3 host status | bare-metal-fulfillment-operator → CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
 The fabric manager's `create_network_attachment` role adds the host's
 port to the V-Net (switch-side only). The role is generic: it first
@@ -902,6 +902,57 @@ message ClusterStatus {
 These are used by the ExternalIPAttachment controller as the DNAT backend
 IP when the target is a cluster (see
 [Cluster ExternalIPAttachment flow](#cluster-externalipattachment-flow)).
+
+#### Resource Status — Discovered IPs
+
+After provisioning, resources receive IPs via DHCP. Feedback controllers
+discover these IPs and write them to status for two purposes: tenant
+visibility and ExternalIPAttachment DNAT target resolution.
+
+**ComputeInstanceStatus:**
+
+```protobuf
+message ComputeNetworkAttachmentStatus {
+  string subnet_ref = 1;               // Subnet ID (echoed from spec)
+  string ip_address = 2;               // Discovered from KubeVirt VMI network status
+  bool primary = 3;                     // Echoed from spec
+}
+
+message ComputeInstanceStatus {
+  // ... existing fields ...
+  repeated ComputeNetworkAttachmentStatus compute_network_attachment_statuses = N;
+}
+```
+
+Feedback controller watches KubeVirt VMI `status.interfaces[].ipAddress`,
+maps each interface to the corresponding attachment by CUDN NAD reference,
+and fires Signal RPC to fulfillment-service.
+
+**BaremetalInstanceStatus:**
+
+```protobuf
+message BareMetalNetworkAttachmentStatus {
+  string interface = 1;                 // Physical interface name (echoed from spec)
+  string subnet_ref = 2;               // Subnet ID (echoed from spec)
+  string ip_address = 3;               // Discovered from host/inventory system (Ironic/Metal3)
+  bool primary = 4;                     // Echoed from spec
+}
+
+message BareMetalInstanceStatus {
+  // ... existing fields ...
+  repeated BareMetalNetworkAttachmentStatus network_attachment_statuses = N;
+}
+```
+
+IP discovered from Ironic/Metal3 host status after DHCP assignment,
+written to CR status by the operator, synced to fulfillment-service
+via feedback controller.
+
+**ClusterStatus** does not have per-attachment IP status — CaaS uses
+service-level VIPs (`api_endpoint`, `ingress_endpoint`) rather than
+per-node IPs. Per-agent IPs are tracked on the ClusterOrder CR's
+`NodeSetStatus.AgentStatus.IPAddress` (operator-internal, not surfaced
+to tenant).
 
 #### ExternalIPAttachment — Inbound Traffic (DNAT)
 
