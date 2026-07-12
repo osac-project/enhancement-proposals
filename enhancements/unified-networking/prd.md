@@ -201,7 +201,7 @@ for VMs), which does not work for CaaS.
 
 - Provide a unified networking API across VMaaS, CaaS, and BMaaS with a single, consistent resource model
 - Enable tenants to manage networking resources (VirtualNetworks, Subnets, SecurityGroups, ExternalIPs) without choosing implementation backends
-- Support pluggable fabric managers and K8s managers that can be added without API changes
+- Support pluggable networking backends that can be added without API changes
 - Enable VMs, clusters, and bare-metal servers to coexist in the same VirtualNetwork
 - Work in air-gapped environments using data-center-routable IPs
 - Support per-interface network attachment for bare-metal servers with multiple physical interfaces
@@ -261,12 +261,12 @@ for VMs), which does not work for CaaS.
 
 ### Provider Stories
 
-- As a provider, I want to configure a fabric manager and K8s manager
-  without exposing implementation details to tenants
-- As a provider, I want to register new managers without modifying the API
-  or the operator
-- As a provider, I want to add new networking managers by deploying a
-  ConfigMap and an Ansible role
+- As a provider, I want to configure networking backends without exposing
+  implementation details to tenants
+- As a provider, I want to add new networking backends without modifying
+  the API
+- As a provider, I want to add new networking backends through
+  configuration, not code changes
 - As a provider, I want to be able to provision ExternalIP pools for tenants
 
 ## 4. Requirements
@@ -278,14 +278,14 @@ for VMs), which does not work for CaaS.
 VirtualNetworks must provide tenant isolation. Subnets within a VirtualNetwork
 must provide L2 and L3 connectivity. These guarantees must hold regardless of
 the physical location of the resource or the infrastructure it runs on. The
-fabric is the single source of truth for isolation across all resource types.
+system enforces isolation uniformly across all resource types.
 
 #### FR-2: Infrastructure-agnostic subnets (R2)
 
 The same subnet must be able to host VMs, BM servers, and cluster nodes.
 The tenant does not declare the resource type when creating a VirtualNetwork
-or Subnet. Multiple hosting clusters are supported — VMs on
-different hosting clusters share the same subnet via the fabric.
+or Subnet. Multiple deployment locations are supported — VMs on different
+infrastructure share the same subnet.
 
 #### FR-3: Uniform networking across all service types (R3)
 
@@ -303,11 +303,11 @@ The provider defines the pools; the API is the same regardless.
 
 The API must clearly separate inbound and outbound external access.
 
-#### FR-6: Pluggable managers with transparent selection (R6)
+#### FR-6: Pluggable networking backends with transparent selection (R6)
 
-Providers configure which fabric manager and K8s manager handle networking.
-Tenants never choose networking managers — the system selects
-them based on the provider's NetworkClass configuration.
+Providers configure which networking backends handle network operations.
+Tenants never choose networking backends — the system selects them based
+on the provider's configuration.
 
 #### FR-7: Per-interface network attachment for bare metal (R7)
 
@@ -326,15 +326,15 @@ _No non-functional requirements were specified in the original document._
 - [ ] Resources in different VirtualNetworks cannot communicate (full isolation)
 - [ ] Resources in the same Subnet are in the same L2 broadcast domain
 - [ ] Resources in different Subnets within the same VirtualNetwork can communicate via Layer 3 routing
-- [ ] SecurityGroups control which traffic is permitted within these boundaries — enforced by the fabric for all resource types
+- [ ] SecurityGroups control which traffic is permitted within these boundaries — enforced uniformly for all resource types
 - [ ] Bare-metal servers in the same Subnet are in the same broadcast domain regardless of their physical location (rack, switch)
-- [ ] VMs in the same Subnet are in the same broadcast domain regardless of which hypervisor host or hosting cluster they run on
-- [ ] VMs participate in the fabric via the K8s manager — once bridged, VMs are reachable from the fabric at their subnet IP
-- [ ] The dispatcher provisions both K8s overlay and fabric segments for each subnet
+- [ ] VMs in the same Subnet are in the same broadcast domain regardless of which infrastructure they run on
+- [ ] VMs are reachable at their subnet IP alongside bare-metal servers and cluster nodes
+- [ ] The system provisions all necessary networking infrastructure for each subnet automatically
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
-- [ ] The fabric manager handles VMs uniformly alongside BM servers — no intermediary bridge needed per ExternalIP or SecurityGroup operation
-- [ ] SecurityGroup enforcement for VMs is handled by the fabric, not by a separate K8s-level ACL
-- [ ] Each resource type has its own network attachment message and field: ComputeInstance uses `compute_network_attachments` (`ComputeNetworkAttachment`), Cluster uses singular `network_attachment` (`ClusterNetworkAttachment`), BaremetalInstance uses `network_attachments` (`BareMetalNetworkAttachment`)
+- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
+- [ ] SecurityGroup enforcement is uniform across all resource types
+- [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., bare-metal servers support per-interface attachment, clusters use a single shared attachment)
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
 
@@ -343,24 +343,24 @@ _No non-functional requirements were specified in the original document._
 - [ ] ExternalIP semantics do not depend on internet reachability
 - [ ] The API and workflow are identical for all deployment topologies (air-gapped, internet-connected, intranet-only)
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
-- [ ] ExternalIPAttachment handles inbound traffic only (DNAT)
-- [ ] NATGateway handles outbound SNAT only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity
-- [ ] The fabric manager handles both DNAT and SNAT uniformly for all resource types — VMs, BM servers, and cluster nodes are all on the fabric
+- [ ] ExternalIPAttachment handles inbound traffic only
+- [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity
+- [ ] Inbound and outbound external access works uniformly for all resource types — VMs, BM servers, and cluster nodes
 
 ### Provider Architecture
 
-- [ ] NetworkClass is not exposed in the tenant API
-- [ ] The fabric manager handles all physical networking (isolation, ACLs, IP allocation, DNAT, SNAT) as a single product
-- [ ] The K8s manager handles VM-to-fabric bridging as a single product
-- [ ] Managers are self-registering via ConfigMaps deployed with the OSAC installation
-- [ ] The system validates that a manager supports its assigned role
-- [ ] A new manager can be added by deploying a ConfigMap and an Ansible role — no API or operator changes needed
+- [ ] Networking backend configuration is not exposed in the tenant API
+- [ ] A single networking backend handles all physical networking operations (isolation, access control, IP allocation, inbound routing, outbound routing)
+- [ ] VM networking is integrated into the same networking layer as bare-metal servers
+- [ ] Networking backends are registered through configuration deployed with the OSAC installation
+- [ ] The system validates that a networking backend supports its assigned role
+- [ ] A new networking backend can be added through configuration — no API changes needed
 
 ### Resource-Specific (Bare Metal)
 
-- [ ] `HostType` describes available interfaces (name, role, description) for bare-metal host types
-- [ ] `BareMetalNetworkAttachment` includes an optional `interface` field that references a named interface from the HostType
-- [ ] Multiple `network_attachments` are supported — one per physical interface
+- [ ] Host types describe available interfaces (name, role, description) for bare-metal servers
+- [ ] Bare-metal network attachments include an optional interface reference that identifies a named interface from the host type
+- [ ] Multiple network attachments are supported for bare-metal servers — one per physical interface
 - [ ] The same interface cannot appear in multiple attachments
 - [ ] All referenced subnets must belong to the same VirtualNetwork
 

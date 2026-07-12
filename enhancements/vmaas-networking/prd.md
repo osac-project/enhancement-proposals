@@ -45,7 +45,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 ### Cloud Infrastructure Admin Stories
 
-- As a Cloud Infrastructure Admin, I want to configure which regions support VM provisioning (by deploying a K8s manager), so that VM creation is rejected with a clear error in BM-only regions
+- As a Cloud Infrastructure Admin, I want to configure which regions support VM provisioning, so that VM creation is rejected with a clear error in BM-only regions
 
 ### Cloud Provider Admin Stories
 
@@ -57,7 +57,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 #### Multi-Interface VMs
 
-- **FR-1:** A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary. The primary interface provides the default gateway, DNS, and is the target for inbound external access (DNAT) and outbound NAT (SNAT). Non-primary interfaces receive IP addresses but do not provide a default gateway. [User]
+- **FR-1:** A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary. The primary interface provides the default gateway, DNS, and is the target for inbound external access and outbound NAT. Non-primary interfaces receive IP addresses but do not provide a default gateway. [User]
 - **FR-2:** When a VM has multiple network interfaces, exactly one must be designated as primary. When a VM has only one network interface, it is implicitly primary. [User]
 
 #### Optional Network Configuration with Defaults
@@ -74,7 +74,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 #### IP Address Discovery
 
-- **FR-6:** The allocated IP address for each network attachment is visible in the VM status after provisioning completes. The system discovers each interface's IP from the underlying virtualization platform and writes it to the VM's status. The external IP attachment reads the primary attachment's IP to configure inbound access (DNAT). [User]
+- **FR-6:** The allocated IP address for each network attachment is visible in the VM status after provisioning completes. When an external IP is attached to a VM, inbound traffic to the external IP is routed to the VM's primary attachment IP. [User]
 
 #### Region Validation
 
@@ -97,7 +97,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 - [ ] Creating a VM in a bare-metal-only region returns an error with a clear message
 - [ ] A multi-interface VM is provisioned with all interfaces operational, with the primary interface providing the default gateway
 - [ ] VM status shows the allocated IP address for each network attachment after provisioning completes
-- [ ] External IP attachment reads the VM's primary attachment IP from status to configure the inbound NAT rule
+- [ ] External IP attachment with a VM target routes inbound traffic to the VM's primary attachment IP
 - [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
 - [ ] Creating a VM using the old network configuration format succeeds and is internally converted to the new format

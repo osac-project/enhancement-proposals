@@ -17,7 +17,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 ### 2.1 Goals
 
 - A tenant can create a cluster with explicit network configuration, specifying which subnet and security groups to use for cluster nodes
-- A cluster uses a single network attachment — one subnet for all node sets. Each node set resolves its own fabric interface from its host type
+- A cluster uses a single network attachment — one subnet for all node sets. The system automatically determines which physical interface to use for each node set based on the host type configuration
 - Tenants can request automatic external IP allocation for cluster API server and/or ingress endpoints with a single option, without pre-creating external IP resources
 - Tenants can request automatic NAT gateway provisioning for cluster outbound connectivity with a single option
 - When network configuration is omitted, the system applies the tenant's default subnet and security group
@@ -31,14 +31,14 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 - VM-based cluster node sets (deferred — bare-metal only for initial release)
 - DNS API for cluster endpoints (DNS record creation remains template-based until DNS API is implemented)
 - Per-node-set subnet placement (all node sets share the cluster's single network attachment)
-- Multi-NIC cluster nodes (one attachment per cluster; each node set resolves its own fabric interface from its host type)
+- Multi-NIC cluster nodes (one attachment per cluster; the system automatically determines which physical interface to use for each node set based on its host type)
 
 ## 3. User Stories
 
 ### Tenant User Stories
 
 - As a Tenant User, I want to create a cluster with explicit network configuration so that I can place it on a specific subnet with specific security group rules
-- As a Tenant User, I want my cluster's node sets to automatically resolve the correct fabric interface from their host type so that network connectivity is configured without manual interface specification
+- As a Tenant User, I want my cluster's node sets to automatically use the correct physical interface based on their host type so that network connectivity is configured without manual interface specification
 - As a Tenant User, I want to create a cluster with automatic external IP allocation for the API server and ingress so that the cluster is externally reachable in a single API call
 - As a Tenant User, I want to create a cluster with automatic NAT gateway provisioning so that cluster nodes have outbound connectivity without manual setup
 - As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default subnet with my default security groups
@@ -100,7 +100,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 #### Host Type Network Interfaces
 
-- **FR-10:** Bare-metal host types include structured network interface information (name, role, description). The system determines which physical interface to use for each node set based on the host type's interface configuration (first interface with role `fabric`). [User]
+- **FR-10:** Bare-metal host types include structured network interface information (name, role, description). The system automatically determines which physical interface to use for each node set based on the host type's interface configuration. [User]
 
 #### Bare-Metal Only
 
@@ -117,7 +117,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 ## 5. Acceptance Criteria
 
 - [ ] A Tenant User can create a cluster with network configuration specifying a subnet and security groups, and the cluster nodes are provisioned on the specified subnet
-- [ ] A Tenant User can create a cluster with a single network attachment and multiple node sets, and all node sets are provisioned on the same subnet with their host type's fabric interface automatically resolved
+- [ ] A Tenant User can create a cluster with a single network attachment and multiple node sets, and all node sets are provisioned on the same subnet with the appropriate physical interface automatically selected based on each node set's host type
 - [ ] A Tenant User can create a cluster with automatic external IP allocation enabled for both API and ingress and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs
 - [ ] A Tenant User can create a cluster with automatic NAT gateway enabled and the system provisions or reuses a NAT gateway for outbound connectivity
 - [ ] A Tenant User can create a cluster with both automatic external IP allocation and automatic NAT gateway enabled — the cluster is fully connected (API + ingress inbound, nodes outbound) in a single API call

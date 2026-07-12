@@ -92,98 +92,94 @@ where a single create command produces a reachable instance.
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
   parameters (CIDR, SecurityGroup rules) on the NetworkClass. When
   defaults are not configured, creating a resource without explicit
-  `network_attachments` fails with a clear error. [User]
+  network attachments fails with a clear error. [User]
 - **FR-3:** All tenants receive the same default CIDR range as configured
-  on the NetworkClass. Tenants are isolated at the fabric level — the
+  on the NetworkClass. Tenants are isolated at the network level — the
   unified networking API provides VirtualNetworks with any IP subnet, and
-  the fabric manager enforces isolation regardless of overlapping CIDRs
-  between tenants. [User]
-- **FR-4:** Default resources are labeled `osac.openshift.io/default:
-  "true"`, visible in list and detail views, and editable by the Tenant
-  Admin (e.g., adding SecurityGroup rules). Default resources cannot be
-  deleted while any resource depends on them. [User]
+  the system enforces isolation regardless of overlapping CIDRs between
+  tenants. [User]
+- **FR-4:** Default resources are labeled as defaults, visible in list
+  and detail views, and editable by the Tenant Admin (e.g., adding
+  SecurityGroup rules). Default resources cannot be deleted while any
+  resource depends on them. [User]
 - **FR-5:** Creating custom VirtualNetworks does not affect default
   resources — both coexist. [User]
 
 #### Optional Network Attachments
 
-- **FR-6:** The network attachment field on ComputeInstance
-  (`compute_network_attachments`), Cluster (`network_attachment`), and
-  BaremetalInstance (`network_attachments`) is optional. When omitted, the
-  system populates it with the tenant's default Subnet and default
-  SecurityGroup. The resolved attachments are stored in the resource spec
-  so the resource is self-describing after creation. [User]
+- **FR-6:** The network attachment configuration on ComputeInstance,
+  Cluster, and BaremetalInstance is optional. When omitted, the system
+  populates it with the tenant's default Subnet and default SecurityGroup.
+  The resolved attachments are stored with the resource so the resource is
+  self-describing after creation. [User]
 - **FR-7:** When a resource is created with explicit network attachments,
   no defaults are applied. [User]
 
 #### Auto ExternalIP
 
-- **FR-8:** ComputeInstance and BaremetalInstance support an
-  `external_ip_mode` field with values `NONE` (default) and `AUTO`. When
-  `AUTO`, the system auto-selects the READY ExternalIPPool with the most
-  available capacity, creates an ExternalIP, and creates an
-  ExternalIPAttachment binding it to the resource. The auto-selection
-  algorithm is identical to OSAC-1712: pick the READY pool with the most
-  available capacity matching the requested IP family (defaulting to
-  IPv4). When multiple pools have equal capacity, selection is
-  deterministic but implementation-defined. [User]
-- **FR-9:** Cluster supports a `external_ip_mode` field with values
-  `NONE` (default), `AUTO_API` (API server only), `AUTO_INGRESS` (ingress
-  only), and `AUTO_ALL` (both). For `AUTO_ALL`, two ExternalIPs and two
-  ExternalIPAttachments are created. The CLI maps `--external-ip=auto-all`
-  to `AUTO_ALL`, `--external-ip=auto-api` to `AUTO_API`, and
-  `--external-ip=auto-ingress` to `AUTO_INGRESS`. [User]
+- **FR-8:** ComputeInstance and BaremetalInstance support an automatic
+  external IP mode. When enabled, the system selects the available
+  ExternalIPPool with the most capacity, allocates an ExternalIP, and
+  creates an ExternalIPAttachment binding it to the resource. The system
+  selects the pool with the most available capacity matching the requested
+  IP family (defaulting to IPv4). When multiple pools have equal capacity,
+  selection is deterministic but unspecified. [User]
+- **FR-9:** Cluster supports automatic external IP allocation with
+  options for API server only, ingress only, both, or neither. When both
+  are enabled, two ExternalIPs and two ExternalIPAttachments are created.
+  The CLI supports `--external-ip=auto-all` (both),
+  `--external-ip=auto-api` (API server only), and
+  `--external-ip=auto-ingress` (ingress only). [User]
 - **FR-10:** For clusters, ExternalIPs are allocated before provisioning
-  is dispatched and passed as template parameters, resolving the CaaS
-  prerequisite ordering requirement. ExternalIPAttachments are created in
-  Pending state and activate once VIPs are discovered. [User]
+  begins, resolving the ordering requirement that cluster nodes need
+  external access during setup. ExternalIPAttachments are created in an
+  inactive state and activate once the cluster's endpoint addresses are
+  available. [User]
 - **FR-11:** Auto-created ExternalIP and ExternalIPAttachment resources
-  are labeled `osac.openshift.io/auto-provisioned: "true"`. When the
-  parent resource is deleted, the parent's finalizer deletes the
-  auto-created ExternalIPAttachments first, then ExternalIPs, before the
-  parent resource is removed. If cleanup of auto-created resources fails
-  permanently, the finalizer is removed and the parent resource is deleted
-  — orphaned ExternalIPs remain and must be cleaned up manually by the
-  Tenant Admin or Cloud Provider Admin. [User]
+  are labeled as auto-provisioned. When the parent resource is deleted,
+  the system deletes auto-created ExternalIPAttachments first, then
+  ExternalIPs, before the parent resource is removed. If cleanup of
+  auto-created resources fails permanently, the parent resource is still
+  deleted — orphaned ExternalIPs remain and must be cleaned up manually
+  by the Tenant Admin or Cloud Provider Admin. [User]
 
 #### Auto NATGateway
 
 - **FR-12:** All resource types (ComputeInstance, BaremetalInstance,
-  Cluster) support a `nat_gateway_mode` field with values `NONE` (default)
-  and `AUTO`. When `AUTO`, the system auto-selects an ExternalIP from the
-  best available pool and creates a NATGateway on the resource's
-  VirtualNetwork using that ExternalIP as the SNAT source. If a NATGateway
-  already exists on the VN, it is reused regardless of which ExternalIP it
-  uses, its current state, or whether it was manually or auto-created.
-  [User]
+  Cluster) support an automatic NAT gateway mode. When enabled, the
+  system selects an ExternalIP from the best available pool and creates a
+  NATGateway on the resource's VirtualNetwork using that ExternalIP as
+  the outbound source address. If a NATGateway already exists on the
+  VirtualNetwork, it is reused regardless of which ExternalIP it uses,
+  its current state, or whether it was manually or auto-created. [User]
 
 ## 5. Acceptance Criteria
 
 - [ ] A Tenant User can create a ComputeInstance with `--external-ip=auto`
-  and no `network_attachments` — the VM is created on the default subnet
-  with an auto-provisioned ExternalIP for inbound access
+  and no explicit network attachments — the VM is created on the default
+  subnet with an auto-provisioned ExternalIP for inbound access
 - [ ] A Tenant User can create a Cluster with `--external-ip=auto-all
-  --nat-gateway=auto` and no `network_attachments` — the cluster is
-  provisioned with ExternalIPs for API and ingress plus a NATGateway for
-  outbound, all resolved automatically
+  --nat-gateway=auto` and no explicit network attachments — the cluster
+  is provisioned with ExternalIPs for API and ingress plus a NATGateway
+  for outbound, all resolved automatically
 - [ ] A Tenant User can create a BaremetalInstance with
-  `--external-ip=auto` and no `network_attachments` — the server is
-  placed on the default subnet with an auto-provisioned ExternalIP
-- [ ] Default VN, Subnet, and SG exist and are READY before the tenant's
-  first resource creation
-- [ ] Default resources appear in list views with the
-  `osac.openshift.io/default: "true"` label
+  `--external-ip=auto` and no explicit network attachments — the server
+  is placed on the default subnet with an auto-provisioned ExternalIP
+- [ ] Default VirtualNetwork, Subnet, and SecurityGroup exist and are
+  READY before the tenant's first resource creation
+- [ ] Default resources appear in list views with a label identifying
+  them as defaults
 - [ ] A Tenant Admin can modify default SecurityGroup rules (e.g., add
   ingress rules) and the changes take effect
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the
-  auto-created ExternalIP and ExternalIPAttachment to be cleaned up via
-  the parent's finalizer
-- [ ] Creating a resource with explicit `network_attachments` bypasses
+  auto-created ExternalIP and ExternalIPAttachment to be cleaned up
+  automatically
+- [ ] Creating a resource with explicit network attachments bypasses
   defaults entirely — no default resources are referenced
 - [ ] When no ExternalIPPool has available capacity, the create API call
   returns an error and the resource is not persisted
-- [ ] A resource created without `network_attachments` shows the resolved
-  default attachments in its spec when retrieved via Get
+- [ ] A resource created without explicit network attachments shows the
+  resolved default attachments when retrieved via the API
 
 ## 6. Dependencies
 

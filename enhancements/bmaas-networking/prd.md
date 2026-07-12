@@ -21,16 +21,16 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - A tenant can create a bare-metal server with `--nat-gateway=auto` and have the system provision outbound connectivity automatically
 - Network attachments are optional — when omitted, the system attaches the server to the tenant's default subnet and security group
 - Host types expose available physical network interfaces through the API (name, role, description) for bare-metal servers
-- The system configures switch ports for each network attachment before bare-metal OS provisioning begins
+- Network connectivity for each attachment is established before bare-metal OS provisioning begins
 - External IP attachments support bare-metal servers as a target type
-- The system uses a distinct term for fabric manager configuration to avoid confusion with the networking resource hierarchy
+- The system uses a distinct configuration parameter for network automation backend selection, separate from the networking resource hierarchy
 
 ### 2.2 Success Metrics
 
 | Metric | Target | Baseline |
 |--------|--------|----------|
 | BM provisioning time with networking | <5 min | N/A (no baseline) |
-| Switch port configuration success rate | >95% | N/A |
+| Network connectivity configuration success rate | >95% | N/A |
 
 ### 2.3 Non-Goals
 
@@ -73,7 +73,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Host Type Interface Discovery
 
-- **FR-2:** The host type API exposes available physical network interfaces for bare-metal host types. Each interface includes a name (e.g., "data-0"), role (e.g., "fabric", "management", "storage"), and description (e.g., "100GbE data interface"). VM host types do not expose interface lists. Interfaces are ordered; when multiple interfaces share the same role, the first in the list is the default for that role. [User]
+- **FR-2:** The host type API exposes available physical network interfaces for bare-metal host types. Each interface includes a name (e.g., "data-0"), role (e.g., "data", "management", "storage"), and description (e.g., "100GbE data interface"). VM host types do not expose interface lists. Interfaces are ordered; when multiple interfaces share the same role, the first in the list is the default for that role. [User]
 
 #### Interface Validation
 
@@ -85,7 +85,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Optional Network Attachments with Defaults
 
-- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted, the system attaches the server to the tenant's default subnet and default security group, using the first "fabric" role interface from the host type (see Default Networking PRD). The resolved attachments are stored with the server so the server is self-describing after creation. [User]
+- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted, the system attaches the server to the tenant's default subnet and default security group, using the host type's default data interface (see Default Networking PRD). The resolved attachments are stored with the server so the server is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -93,23 +93,23 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto NAT Gateway
 
-- **FR-7:** Bare-metal servers support a NAT gateway mode with values `NONE` (default) and `AUTO`. When `AUTO`, the system provisions a NAT gateway on the server's virtual network (reuses existing NAT gateway if one already exists, regardless of state or whether it was manually or auto-created). The NAT gateway uses an auto-selected external IP as the SNAT source. [User]
+- **FR-7:** Bare-metal servers support a NAT gateway mode with values `NONE` (default) and `AUTO`. When `AUTO`, the system provisions a NAT gateway on the server's virtual network (reuses existing NAT gateway if one already exists, regardless of state or whether it was manually or auto-created). The NAT gateway uses an auto-selected external IP as the outbound source address. [User]
 
 #### Network Connectivity Configuration
 
-- **FR-8:** The system configures network connectivity for each interface-to-subnet mapping before bare-metal OS provisioning begins. Switch port configuration must complete successfully before the server is provisioned. For each attachment, the system identifies the physical server in the network fabric and adds the server's interface to the subnet's network segment. The server receives an IP address via DHCP from the fabric's DHCP server after booting on the network segment. Network attachments must be ready before provisioning proceeds. [User]
+- **FR-8:** Network connectivity for each attachment is established before bare-metal OS provisioning begins. The system configures connectivity for each interface-to-subnet mapping; all attachments must be ready before provisioning proceeds. After the server boots, it receives an IP address on the configured subnet. [User]
 
 #### IP Address Visibility
 
-- **FR-9:** The allocated IP address for each network attachment is visible in the bare-metal server status after network connectivity is configured. The external IP attachment reads the primary IP to configure inbound access. [User]
+- **FR-9:** The allocated IP address for each network attachment is visible in the bare-metal server status after network connectivity is configured. [User]
 
 #### External IP Attachment for Bare-Metal
 
-- **FR-10:** External IP attachments support bare-metal servers as an attachment target type. The system reads the server's primary attachment IP from status and configures the inbound NAT rule. [User]
+- **FR-10:** External IP attachments support bare-metal servers as an attachment target type. When an external IP is attached to a bare-metal server, inbound traffic to the external IP is routed to the server's primary attachment IP. [User]
 
-#### Fabric Manager Configuration
+#### Network Automation Backend Configuration
 
-- **FR-11:** The system uses a distinct configuration parameter for identifying which network fabric automation to use when provisioning bare-metal servers. This parameter is a static configuration string set at deployment time (e.g., "openstack"), not a reference to a networking resource. [User]
+- **FR-11:** The system manages network automation backend selection without tenant involvement. The provider configures which network automation backend handles bare-metal networking; this configuration is separate from the networking resource hierarchy and is not visible to tenants. [User]
 
 #### Auto-Cleanup on Deletion
 
@@ -117,13 +117,13 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Deletion
 
-- **FR-13:** During bare-metal server deletion, the system deconfigures network connectivity for each interface, removing the server's interfaces from the subnets' network segments and releasing IP addresses. [User]
+- **FR-13:** During bare-metal server deletion, the system deconfigures network connectivity for each interface and releases allocated IP addresses. [User]
 
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** Auto external IP allocation completes synchronously within the create API call (no async allocation delay). If no pool has available capacity, the create API call returns an error. [User]
 
-- **NFR-2:** Network attachment provisioning (switch port configuration) completes within 2 minutes per interface. [User]
+- **NFR-2:** Network attachment provisioning (connectivity configuration) completes within 2 minutes per interface. [User]
 
 ## 5. Acceptance Criteria
 
@@ -131,14 +131,14 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - [ ] A Tenant User can create a bare-metal server with `--external-ip=auto` and no explicit network attachments — the server is created on the default subnet with an auto-provisioned external IP for inbound access
 - [ ] A Tenant User can create a bare-metal server with `--nat-gateway=auto` and no explicit network attachments — the server is provisioned with a NAT gateway for outbound connectivity
 - [ ] A Tenant User can create a bare-metal server with both `--external-ip=auto` and `--nat-gateway=auto` — the server is fully connected (inbound + outbound) in a single API call
-- [ ] A multi-interface bare-metal server (multiple network attachments) is provisioned with switch ports configured for each interface, primary attachment providing default gateway
+- [ ] A multi-interface bare-metal server (multiple network attachments) is provisioned with network connectivity configured for each interface, primary attachment providing default gateway
 - [ ] Auto-created external IP and external IP attachment are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a bare-metal server with auto-provisioned external IP causes the auto-created external IP and external IP attachment to be cleaned up automatically
 - [ ] Host type API returns structured physical network interface list for bare-metal host types (name, role, description)
 - [ ] Creating a bare-metal server with an invalid interface (not in host type's list) returns an error
 - [ ] Creating a bare-metal server with duplicate interfaces across attachments returns an error
 - [ ] Bare-metal server primary attachment IP is visible in status after network connectivity is configured
-- [ ] External IP attachment with bare-metal server target creates inbound NAT rule using server's primary IP from status
+- [ ] External IP attachment with bare-metal server target routes inbound traffic to the server's primary attachment IP
 
 ## 6. Assumptions
 
@@ -201,7 +201,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - **Owner:** API design team
 - **Impact:** Affects FR-6 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a failed resource provides visibility but adds cleanup burden.
 
-### 9.4 What is the interface selection logic when network attachments are omitted and the host type has multiple "fabric" role interfaces?
+### 9.4 What is the interface selection logic when network attachments are omitted and the host type has multiple data-role interfaces?
 
 - **Owner:** Platform team
-- **Impact:** Affects FR-5. Current proposal: use the first "fabric" role interface in the host type's ordered list. Alternative: require explicit interface when multiple "fabric" interfaces exist, or use a specific naming convention (e.g., "data-0").
+- **Impact:** Affects FR-5. Current proposal: use the first data-role interface in the host type's ordered list. Alternative: require explicit interface when multiple data-role interfaces exist, or use a specific naming convention (e.g., "data-0").
