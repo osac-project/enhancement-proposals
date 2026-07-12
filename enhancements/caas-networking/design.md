@@ -331,9 +331,9 @@ message ClusterSpec {
   map<string, google.protobuf.Any> template_parameters = 2;
   map<string, ClusterNodeSet> node_sets = 3;
   // ... existing fields ...
-  ClusterNetworkAttachment network_attachment = N;  // NEW, optional, singular
-  ClusterExternalIPMode external_ip_mode = M;   // NONE, AUTO_API, AUTO_INGRESS, AUTO_ALL
-  NATGatewayMode nat_gateway_mode = P;          // NONE or AUTO
+  ClusterNetworkAttachment network_attachment = 4;   // NEW, optional, singular
+  ClusterExternalIPMode external_ip_mode = 20;       // NONE, AUTO_API, AUTO_INGRESS, AUTO_ALL
+  NATGatewayMode nat_gateway_mode = 21;              // NONE or AUTO
 }
 
 message ClusterStatus {

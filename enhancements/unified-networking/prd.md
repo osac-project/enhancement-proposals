@@ -334,7 +334,7 @@ _No non-functional requirements were specified in the original document._
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
 - [ ] The fabric manager handles VMs uniformly alongside BM servers — no intermediary bridge needed per ExternalIP or SecurityGroup operation
 - [ ] SecurityGroup enforcement for VMs is handled by the fabric, not by a separate K8s-level ACL
-- [ ] ComputeInstance, Cluster, and BaremetalInstance all have a `network_attachments` field using the same `NetworkAttachment` message
+- [ ] Each resource type has its own network attachment message and field: ComputeInstance uses `compute_network_attachments` (`ComputeNetworkAttachment`), Cluster uses singular `network_attachment` (`ClusterNetworkAttachment`), BaremetalInstance uses `network_attachments` (`BareMetalNetworkAttachment`)
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
 
@@ -358,8 +358,8 @@ _No non-functional requirements were specified in the original document._
 
 ### Resource-Specific (Bare Metal)
 
-- [ ] `BaremetalInstanceTemplate` describes available interfaces (name, description)
-- [ ] `NetworkAttachment` includes an optional `interface` field that references a named interface from the template
+- [ ] `HostType` describes available interfaces (name, role, description) for bare-metal host types
+- [ ] `BareMetalNetworkAttachment` includes an optional `interface` field that references a named interface from the HostType
 - [ ] Multiple `network_attachments` are supported — one per physical interface
 - [ ] The same interface cannot appear in multiple attachments
 - [ ] All referenced subnets must belong to the same VirtualNetwork
