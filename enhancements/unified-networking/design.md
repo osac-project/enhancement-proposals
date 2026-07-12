@@ -621,7 +621,7 @@ precondition checks and requeue:
 |-------------|----------------------|---------------------|
 | ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachments[].ipAddress` populated for the primary interface | IP discovered after DHCP assignment — discovery mechanism is an [open question](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration) |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | IP discovered after DHCP assignment — discovery mechanism is an [open question](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration) |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and

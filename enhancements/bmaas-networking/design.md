@@ -224,9 +224,9 @@ Same as VMaaS/CaaS — the networking API is uniform.
    d. `reconcilePower` (unchanged)
 
 7. **IP discovery and feedback:**
-   - After the host boots and receives a DHCP-assigned IP on the tenant V-Net, the IP must be discovered and written to `status.networkAttachments[].ipAddress` on the CR
+   - After the host boots and receives a DHCP-assigned IP on the tenant V-Net, the IP must be discovered and written to `status.networkAttachmentStatuses[].ipAddress` on the CR
    - **Discovery mechanism (open question — see OQ#4):** Metal3 `BareMetalHost.status.hardware.nics[].ip` reflects the inspection-time IP, not the runtime IP after network reconfiguration. The runtime IP must be discovered via one of: (a) the `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table and returns the assigned IP, (b) the fabric manager exposes a DHCP lease API that the operator polls, or (c) a phone-home callback from the host reports its IP
-   - Operator writes the discovered IP to `status.networkAttachments[].ipAddress` on the BaremetalInstance CR
+   - Operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern
 
@@ -246,7 +246,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - ExternalIPAttachment controller resolves the BaremetalInstance target by UUID label
     - Checks two preconditions before dispatching (requeues if either is not met):
       1. **ExternalIP must be Allocated** (have an allocated address from the fabric manager)
-      2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachments[].ipAddress` for the attachment where `primary: true`. This IP is written by the operator during `reconcileNetworking` (step 6b) and synced to the fulfillment-service via the feedback controller (step 7).
+      2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachmentStatuses[].ipAddress` for the attachment where `primary: true`. This IP is written by the operator during `reconcileNetworking` (step 6b) and synced to the fulfillment-service via the feedback controller (step 7).
     - Once both preconditions are met: writes `osac.openshift.io/target-ip` annotation on the ExternalIPAttachment CR
     - Calls `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
     - Fabric manager creates DNAT rule: external IP → BM's primary subnet IP
@@ -308,7 +308,7 @@ message BareMetalInstanceSpec {
 
 message BareMetalInstanceStatus {
   // ... existing fields ...
-  repeated BareMetalNetworkAttachmentStatus network_attachments = N; // NEW
+  repeated BareMetalNetworkAttachmentStatus network_attachment_statuses = N; // NEW
 }
 
 message BareMetalNetworkAttachmentStatus {
@@ -336,7 +336,7 @@ type BareMetalNetworkAttachment struct {
 
 type BareMetalInstanceStatus struct {
     // ... existing fields ...
-    NetworkAttachments []BareMetalNetworkAttachmentStatus `json:"networkAttachments,omitempty"`
+    NetworkAttachmentStatuses []BareMetalNetworkAttachmentStatus `json:"networkAttachmentStatuses,omitempty"`
 }
 
 type BareMetalNetworkAttachmentStatus struct {
@@ -377,7 +377,7 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 #### IP Discovery
 
-After `reconcileNetworking` adds the host's port to the V-Net and `reconcileProvisioning` boots the host, the host receives an IP from the fabric's DHCP server. The IP is discovered from the host/inventory system (Ironic/Metal3 reports the allocated IP after provisioning) and written to `status.networkAttachments[].ipAddress` on the BaremetalInstance CR.
+After `reconcileNetworking` adds the host's port to the V-Net and `reconcileProvisioning` boots the host, the host receives an IP from the fabric's DHCP server. The IP is discovered from the host/inventory system (Ironic/Metal3 reports the allocated IP after provisioning) and written to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
 
 The feedback controller syncs this to the fulfillment-service DB via the existing Signal / `syncStatus()` pattern. The ExternalIPAttachment controller reads the primary IP from CR status for DNAT creation.
 
@@ -485,9 +485,9 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: Auto NATGateway reuses failed or deleting NATGateway
 
-**Impact:** If existing NATGateway on VN is Failed or Deleting, system reuses it (FR-5 design choice), BM's outbound connectivity will not work.
+**Impact:** If existing NATGateway on VN is Failed or Deleting, system reuses it (FR-7 design choice), BM's outbound connectivity will not work.
 
-**Mitigation:** Document expected behavior: tenants must manually delete failed NATGateway and retry BM creation. Alternative: change FR-5 to check NATGateway state before reusing (deferred to implementation phase).
+**Mitigation:** Document expected behavior: tenants must manually delete failed NATGateway and retry BM creation. Alternative: change FR-7 to check NATGateway state before reusing (deferred to implementation phase).
 
 **Reviewed by:** API design team
 
@@ -521,7 +521,7 @@ Operator pre-allocates IPs from subnet CIDR during reconcileNetworking and write
 
 **Rejected because:** DHCP is simpler, OS-agnostic, and already provided by the fabric infrastructure. Static config requires per-OS template logic (cloud-init, NMState, kickstart) and adds IPAM complexity (allocation tracking, cross-operator concurrency, gateway/DNS discovery). DHCP handles all of this automatically.
 
-### Alternative 4: Auto NATGateway always creates new NATGateway
+### Alternative 3: Auto NATGateway always creates new NATGateway
 
 Instead of reusing existing NATGateway, always create a new one when `nat_gateway_mode=AUTO`.
 
@@ -543,7 +543,7 @@ Current proposal: return error, no resources persisted (pool capacity checked sy
 
 **Owner:** API design team
 
-**Impact:** Affects FR-4 and acceptance criteria.
+**Impact:** Affects FR-6 and acceptance criteria.
 
 ### ~~3. IP address assignment~~ — Resolved
 
@@ -551,7 +551,7 @@ Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's
 
 ### 4. How is the host's runtime IP discovered after network reconfiguration?
 
-Metal3 `BareMetalHost.status.hardware.nics[].ip` reflects the inspection-time IP (snapshot from initial hardware inspection), NOT the runtime IP after the host's port is moved to the tenant V-Net via `create_network_attachment`. After the host gets a new DHCP lease on the tenant subnet, this IP must be discovered and written to `status.networkAttachments[].ipAddress` on the BaremetalInstance CR.
+Metal3 `BareMetalHost.status.hardware.nics[].ip` reflects the inspection-time IP (snapshot from initial hardware inspection), NOT the runtime IP after the host's port is moved to the tenant V-Net via `create_network_attachment`. After the host gets a new DHCP lease on the tenant subnet, this IP must be discovered and written to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
 
 Options:
 - **(a)** The `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table after moving the port and returns the assigned IP as a role output. The operator reads the role output and writes it to CR status.
@@ -560,7 +560,7 @@ Options:
 
 **Owner:** Platform team / osac-aap team
 
-**Impact:** Blocks ExternalIPAttachment for BMaaS targets — the DNAT controller needs `status.networkAttachments[].ipAddress` to create the inbound NAT rule. Without a working discovery mechanism, auto ExternalIP for bare-metal servers does not function.
+**Impact:** Blocks ExternalIPAttachment for BMaaS targets — the DNAT controller needs `status.networkAttachmentStatuses[].ipAddress` to create the inbound NAT rule. Without a working discovery mechanism, auto ExternalIP for bare-metal servers does not function.
 
 ## Test Plan
 
@@ -706,7 +706,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 **Cause:** Host has not yet received DHCP-assigned IP (provisioning still in progress or failed)
 
 **Resolution:**
-1. Check BaremetalInstance status: `kubectl get baremetalinstance <name> -n <namespace> -o jsonpath='{.status.networkAttachments[?(@.primary==true)].ipAddress}'`
+1. Check BaremetalInstance status: `kubectl get baremetalinstance <name> -n <namespace> -o jsonpath='{.status.networkAttachmentStatuses[?(@.primary==true)].ipAddress}'`
 2. If IP is missing, check bare-metal-fulfillment-operator logs for provisioning phase completion
 3. If provisioning completed but IP missing, investigate IP discovery from host/inventory system (Ironic/Metal3)
 

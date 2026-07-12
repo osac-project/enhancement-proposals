@@ -107,12 +107,13 @@ where a single create command produces a reachable instance.
 
 #### Optional Network Attachments
 
-- **FR-6:** The `network_attachments` field on ComputeInstance, Cluster,
-  and BaremetalInstance is optional. When omitted, the system populates it
-  with the tenant's default Subnet and default SecurityGroup. The resolved
-  attachments are stored in the resource spec so the resource is
-  self-describing after creation. [User]
-- **FR-7:** When a resource is created with explicit `network_attachments`,
+- **FR-6:** The network attachment field on ComputeInstance
+  (`compute_network_attachments`), Cluster (`network_attachment`), and
+  BaremetalInstance (`network_attachments`) is optional. When omitted, the
+  system populates it with the tenant's default Subnet and default
+  SecurityGroup. The resolved attachments are stored in the resource spec
+  so the resource is self-describing after creation. [User]
+- **FR-7:** When a resource is created with explicit network attachments,
   no defaults are applied. [User]
 
 #### Auto ExternalIP
