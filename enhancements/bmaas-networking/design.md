@@ -223,9 +223,11 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    d. `reconcilePower` (unchanged)
 
-7. **osac-operator feedback controller:** (unchanged)
-   - Watches CR status changes → fires Signal RPC to fulfillment-service
-   - After the host boots and receives a DHCP-assigned IP, the IP is discovered from the host/inventory system (Ironic/Metal3) and written to `status.networkAttachments[].ipAddress` on the CR
+7. **IP discovery and feedback:**
+   - After the host boots and receives a DHCP-assigned IP on the tenant V-Net, the IP must be discovered and written to `status.networkAttachments[].ipAddress` on the CR
+   - **Discovery mechanism (open question — see OQ#4):** Metal3 `BareMetalHost.status.hardware.nics[].ip` reflects the inspection-time IP, not the runtime IP after network reconfiguration. The runtime IP must be discovered via one of: (a) the `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table and returns the assigned IP, (b) the fabric manager exposes a DHCP lease API that the operator polls, or (c) a phone-home callback from the host reports its IP
+   - Operator writes the discovered IP to `status.networkAttachments[].ipAddress` on the BaremetalInstance CR
+   - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern
 
 #### Phase 3: External Access (optional)
@@ -543,9 +545,22 @@ Current proposal: return error, no resources persisted (pool capacity checked sy
 
 **Impact:** Affects FR-4 and acceptance criteria.
 
-### ~~3. IP address feedback~~ — Resolved
+### ~~3. IP address assignment~~ — Resolved
 
-Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's DHCP server after booting on the V-Net. The IP is discovered from the host/inventory system (Ironic/Metal3) and written to CR status. No operator IPAM needed.
+Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's DHCP server after booting on the V-Net. No operator IPAM needed.
+
+### 4. How is the host's runtime IP discovered after network reconfiguration?
+
+Metal3 `BareMetalHost.status.hardware.nics[].ip` reflects the inspection-time IP (snapshot from initial hardware inspection), NOT the runtime IP after the host's port is moved to the tenant V-Net via `create_network_attachment`. After the host gets a new DHCP lease on the tenant subnet, this IP must be discovered and written to `status.networkAttachments[].ipAddress` on the BaremetalInstance CR.
+
+Options:
+- **(a)** The `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table after moving the port and returns the assigned IP as a role output. The operator reads the role output and writes it to CR status.
+- **(b)** The fabric manager exposes a DHCP lease API. The operator polls it until the host's lease appears.
+- **(c)** A phone-home / cloud-init callback from the host reports its IP to a webhook or annotation on the CR.
+
+**Owner:** Platform team / osac-aap team
+
+**Impact:** Blocks ExternalIPAttachment for BMaaS targets — the DNAT controller needs `status.networkAttachments[].ipAddress` to create the inbound NAT rule. Without a working discovery mechanism, auto ExternalIP for bare-metal servers does not function.
 
 ## Test Plan
 
