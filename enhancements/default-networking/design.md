@@ -194,7 +194,7 @@ This enhancement adds three main capabilities: default networking at tenant onbo
       - Populates network_attachments with defaults (if omitted)
       - Reads `nat_gateway_mode: AUTO`
       - Checks if NATGateway already exists on the VM's VirtualNetwork
-      - If exists: reuse (regardless of state, whether manually or auto-created). No new resources created.
+      - If exists and Ready: reuse (regardless of whether manually or auto-created). No new resources created. If exists but Failed or Deleting: the create request fails with an error directing the tenant to delete the failed gateway and retry. This prevents silent attachment to a broken shared resource.
       - If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in a **separate DB transaction** after the parent resource is persisted, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
     - osac-operator NATGateway controller reconciles SNAT rule provisioning
     - Result: VM has outbound connectivity via NATGateway
@@ -391,7 +391,7 @@ type ClusterSpec struct {
 
 **Resource creation with optional network_attachments:**
 - If network_attachments omitted: query tenant's default Subnet and SecurityGroup (labeled `osac.openshift.io/default: "true"`)
-- If no defaults exist (NetworkClass has no defaults configured): return error `No default networking resources available. Please create VirtualNetwork, Subnet, and SecurityGroup explicitly or contact your administrator.`
+- If no defaults exist (should not occur — defaults are mandatory on NetworkClass): return error `No default networking resources available. Please contact your administrator.`
 - If network_attachments provided explicitly: no defaults applied
 
 **Auto ExternalIP allocation:**
@@ -402,7 +402,7 @@ type ClusterSpec struct {
 
 **Auto NATGateway creation:**
 - Check if NATGateway already exists on the VN (query by VirtualNetwork reference)
-- If exists: reuse (regardless of state or whether manually or auto-created)
+- If exists and Ready: reuse (regardless of whether manually or auto-created). If exists but Failed or Deleting: return error directing tenant to delete the failed gateway and retry
 - If not exists: auto-select ExternalIPPool, create ExternalIP, create NATGateway
 
 ### Implementation Details/Notes/Constraints
@@ -460,7 +460,7 @@ When `nat_gateway_mode=AUTO`:
 2. If one or more NATGateways exist: reuse the first one found (alphabetically by name, deterministic)
 3. If no NATGateway exists: auto-select ExternalIPPool, create ExternalIP, create NATGateway
 
-**Reuse regardless of state:** If existing NATGateway is Failed or Deleting, system reuses it (no new NATGateway created). Outbound connectivity will not work until tenant manually deletes failed NATGateway and retries.
+**Reuse only if Ready:** If existing NATGateway is Ready, the system reuses it. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry. This prevents silent attachment to a broken shared resource.
 
 #### Tenant Isolation
 
@@ -497,7 +497,7 @@ This feature inherits the existing security model:
 
 #### Resource Creation Failures
 
-- **No default networking resources:** If NetworkClass has no defaults configured, resource creation without explicit network_attachments returns error: `No default networking resources available. Please create VirtualNetwork, Subnet, and SecurityGroup explicitly or contact your administrator.`
+- **No default networking resources:** Since defaults are mandatory on NetworkClass (rejected at creation time without them), this scenario should not occur. If it does due to data inconsistency, resource creation without explicit network_attachments returns error: `No default networking resources available. Please contact your administrator.`
 - **ExternalIPPool capacity exhaustion:** create API call returns error: `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`. Resource is NOT persisted.
 - **Auto NATGateway provisioning fails:** NATGateway enters Failed state, outbound SNAT rule not created, VM has no outbound connectivity (VM functional, inbound access works if external_ip_mode=AUTO)
 
@@ -559,19 +559,15 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Reviewed by:** Platform
 
-#### Risk: Deployment misconfiguration (NetworkClass defaults not configured)
+#### ~~Risk: Deployment misconfiguration (NetworkClass defaults not configured)~~ — Eliminated
 
-**Impact:** If NetworkClass defaults are not configured, the DefaultNetworkingReady condition is set to True with reason `DefaultsNotConfigured` and message explaining that no defaults were created. Tenant becomes READY. Resource creation without explicit network attachments fails with a clear error explaining that no default networking resources exist.
+Since defaults are mandatory (a NetworkClass without defaults is rejected at creation time), this scenario cannot occur. The osac-installer setup.sh includes NetworkClass default configuration in installation overlays, and the API validation ensures defaults are always present.
 
-**Mitigation:** This is a deployment issue, not a runtime failure. Clear error message directs tenant to use explicit networking or contact admin. osac-installer setup.sh includes NetworkClass default configuration in installation overlays.
+#### Risk: Existing NATGateway is Failed or Deleting when auto NATGateway requested
 
-**Reviewed by:** osac-installer team
+**Impact:** If existing NATGateway on VN is Failed or Deleting, the create request fails, blocking resource creation until the tenant resolves the broken gateway.
 
-#### Risk: Auto NATGateway reuses failed or deleting NATGateway
-
-**Impact:** If existing NATGateway on VN is Failed or Deleting, system reuses it (design choice), VM's outbound connectivity will not work.
-
-**Mitigation:** Document expected behavior: tenants must manually delete failed NATGateway and retry resource creation. Alternative: change design to check NATGateway state before reusing (deferred to implementation phase).
+**Mitigation:** Clear error message directs the tenant to delete the failed NATGateway and retry. This is preferable to silent attachment to a broken resource — the tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning.
 
 **Reviewed by:** API design team
 
@@ -583,11 +579,11 @@ All tenants receive the same default CIDR range. While fabric-level isolation pr
 
 **Trade-off:** Simplicity (single default configuration) vs. per-tenant customization. Chosen approach: single default, document fabric-level isolation. Alternative: per-tenant CIDR allocation (more complex, requires IPAM).
 
-#### Auto NATGateway reuse regardless of state
+#### Auto NATGateway rejects Failed or Deleting gateways
 
-Reusing any existing NATGateway (regardless of state) simplifies conflict avoidance but means tenants can end up with resources referencing failed NATGateways.
+Auto NATGateway only reuses existing NATGateways that are Ready. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
 
-**Trade-off:** Simplicity vs. robustness. Chosen approach: reuse any existing NATGateway, document workaround (delete and retry). Alternative: state-aware reuse (more complex, could create duplicate NATGateways during transient failures).
+**Trade-off:** Fail-fast vs. silent degradation. Chosen approach: reject Failed/Deleting NATGateways at create time with a clear error. The tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning. No replacement gateway is created (avoids duplicate SNAT conflicts).
 
 #### Capacity exhaustion returns API error, not Failed resource
 
@@ -615,21 +611,17 @@ Instead of returning an error when ExternalIPPool has no capacity, create a Fail
 
 **Rejected because:** Pool capacity is validated synchronously during the API call — if the pool is exhausted, the call fails atomically and no resources are persisted. Creating a Failed resource adds cleanup burden and audit trail complexity. Clear API error with no persisted state is simpler.
 
-### Alternative 4: State-aware NATGateway reuse
+### Alternative 4: Reuse NATGateway regardless of state
 
-Instead of reusing any existing NATGateway, only reuse if READY. If existing NATGateway is Failed or Deleting, create a new one.
+Instead of rejecting Failed/Deleting NATGateways, reuse any existing NATGateway regardless of state.
 
-**Rejected because:** Multiple NATGateways on the same VN would conflict at the fabric level (SNAT rules overlap). State-aware reuse adds complexity and could create duplicate NATGateways during transient failures. Chosen approach: reuse any existing NATGateway, document workaround (delete failed NATGateway and retry).
+**Rejected because:** Silently attaching to a Failed or Deleting NATGateway gives the tenant no feedback — they discover outbound connectivity failure only after provisioning completes. Chosen approach: only reuse Ready NATGateways; if Failed or Deleting, fail the create request with a clear error directing the tenant to delete the broken gateway and retry. No replacement gateway is created (avoids duplicate SNAT conflicts).
 
 ## Open Questions
 
-### 1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?
+### ~~1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?~~ — Resolved
 
-Design decision: reuse existing NATGateway in Ready or Failed state (avoids duplicate SNAT conflicts). Open question: should a NATGateway in **Deleting** state be treated as "does not exist" (create a new one), since the SNAT rule is being removed and the NATGateway will soon be fully deleted? Current behavior would silently attach to a disappearing resource.
-
-**Owner:** API design team
-
-**Impact:** Affects NATGateway reuse logic and user experience when NATGateway is being deleted concurrently.
+Resolved: auto NATGateway reuses only Ready NATGateways. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry. A Deleting NATGateway is not treated as "does not exist" — creating a replacement while the SNAT rule is still being removed could cause conflicts. The tenant must wait for deletion to complete and retry.
 
 ### 2. Should capacity exhaustion return an API error or create a Failed resource?
 
@@ -646,7 +638,7 @@ Current proposal: return error, resource not persisted. Alternative: create Fail
 - fulfillment-service: NetworkClass defaults validation (valid CIDR, valid SecurityGroupRule fields)
 - fulfillment-service: network_attachments population (populate with defaults when omitted, skip when provided)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- fulfillment-service: auto NATGateway reuse (reuse existing, create new if none exists)
+- fulfillment-service: auto NATGateway reuse (reuse Ready, reject Failed/Deleting, create new if none exists)
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
 - fulfillment-service: default resource creation at tenant onboarding (VN, Subnet, SG with default label)
 - fulfillment-service: DefaultNetworkingReady condition tracking (true when all defaults READY via feedback, false when any failed)
@@ -669,7 +661,7 @@ Current proposal: return error, resource not persisted. Alternative: create Fail
 ### Tricky Test Cases
 
 - Tenant onboarding failure: default Subnet provisioning fails, verify Tenant non-READY, manual retry works
-- Auto NATGateway when existing NATGateway is Failed: verify reuse, document expected behavior
+- Auto NATGateway when existing NATGateway is Failed: verify create request fails with error directing tenant to delete failed gateway
 - ExternalIPPool exhaustion: verify error returned, no resource created
 - Auto-provisioned resource cleanup failure: verify finalizer retry, eventual orphan cleanup
 - Cluster ExternalIP prerequisite ordering: verify ExternalIPs allocated BEFORE provisioning, template receives correct VIPs
@@ -766,14 +758,14 @@ kubectl describe tenant acme-corp -n <namespace>
 
 ### Symptom: Resource creation fails with "No default networking resources available"
 
-**Detection:** API call returns error: `No default networking resources available. Please create VirtualNetwork, Subnet, and SecurityGroup explicitly or contact your administrator.`
+**Detection:** API call returns error: `No default networking resources available. Please contact your administrator.`
 
-**Cause:** NetworkClass has no defaults configured, or tenant has no default networking resources
+**Cause:** Tenant has no default networking resources (data inconsistency — defaults are mandatory on NetworkClass, so this should not occur under normal operation)
 
 **Resolution:**
 1. Check NetworkClass configuration: `osac get networkclass -o yaml`
-2. If NetworkClass.spec.defaults is not set, Cloud Infrastructure Admin must configure defaults (see Workflow Description step 1)
-3. If NetworkClass has defaults but tenant has no default resources, delete and re-create tenant
+2. Verify NetworkClass.spec.defaults is set (required — NetworkClass creation is rejected without defaults)
+3. If tenant has no default resources despite NetworkClass having defaults, delete and re-create tenant
 
 ### Symptom: Auto-provisioned ExternalIP not cleaned up after resource deletion
 

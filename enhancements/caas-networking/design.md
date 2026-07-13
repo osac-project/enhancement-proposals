@@ -139,7 +139,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - SecurityGroups exist, are Ready, belong to same VN
     - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
     - If `external_ip_mode == AUTO_ALL`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-provisioned: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
-    - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists: reuse (regardless of state or whether it was manually or auto-created). No new resources created. If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway in a **separate DB transaction** after the parent resource is persisted, both labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the Cluster creation still succeeds (outbound NAT is best-effort).
+    - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists and Ready: reuse (regardless of whether it was manually or auto-created). No new resources created. If exists but Failed or Deleting: the create request fails with an error directing the tenant to delete the failed gateway and retry. This prevents silent attachment to a broken shared resource. If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway in a **separate DB transaction** after the parent resource is persisted, both labeled `osac.openshift.io/auto-provisioned: "true"`. If NATGateway creation fails, the auto-provisioned ExternalIP persists (labeled `auto-provisioned-for: <cluster-id>`). It is cleaned up when the parent resource is deleted via the cleanup finalizer. The create flow is idempotent: on retry, it checks for existing auto-provisioned resources by label before creating new ones. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the Cluster creation still succeeds (outbound NAT is best-effort).
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with enriched `network_attachment` in spec
 
@@ -465,7 +465,7 @@ This feature inherits the existing security model:
 #### Auto NATGateway Provisioning Failures
 
 - Pool exhaustion: NATGateway creation fails, Cluster proceeds without outbound NAT
-- Reusing failed NATGateway: if existing NATGateway on VN is Failed or Deleting, system reuses it (no new NATGateway created), outbound connectivity unavailable until tenant manually deletes failed NATGateway and retries
+- Failed or Deleting NATGateway: if existing NATGateway on VN is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry
 - NATGateway provisioning failure: NATGateway enters Failed state, outbound SNAT rule not created, cluster has no outbound connectivity
 
 #### Cleanup Failures
@@ -515,11 +515,11 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Reviewed by:** Cloud Provider Admin
 
-#### Risk: Auto NATGateway reuses failed or deleting NATGateway
+#### Risk: Existing NATGateway is Failed or Deleting when auto NATGateway requested
 
-**Impact:** If existing NATGateway on VN is Failed or Deleting, system reuses it, cluster's outbound connectivity will not work.
+**Impact:** If existing NATGateway on VN is Failed or Deleting, the create request fails, blocking cluster creation until the tenant resolves the broken gateway.
 
-**Mitigation:** Document expected behavior: tenants must manually delete failed NATGateway and retry cluster creation. Alternative: change design to check NATGateway state before reusing (deferred to implementation phase).
+**Mitigation:** Clear error message directs the tenant to delete the failed NATGateway and retry. This is preferable to silent attachment to a broken resource — the tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning.
 
 **Reviewed by:** API design team
 
@@ -539,11 +539,11 @@ VIP discovery flow (template → ClusterOrder status → Signal RPC → fulfillm
 
 **Trade-off:** Complexity vs. auto external access. Chosen approach: implement VIP feedback loop to enable auto ExternalIP for clusters. Alternative: manual external access only (simpler, less usable).
 
-#### Auto NATGateway reuse regardless of state
+#### Auto NATGateway rejects Failed or Deleting gateways
 
-Design specifies that auto NATGateway reuses existing NATGateway "regardless of state or whether it was manually or auto-created." This simplifies conflict avoidance but means tenants can end up with clusters referencing failed NATGateways.
+Design specifies that auto NATGateway only reuses existing NATGateways that are Ready. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
 
-**Trade-off:** Simplicity vs. robustness. Chosen approach: reuse any existing NATGateway, document workaround (delete and retry). Alternative: state-aware reuse (more complex, could create duplicate NATGateways during transient failures).
+**Trade-off:** Fail-fast vs. silent degradation. Chosen approach: reject Failed/Deleting NATGateways at create time with a clear error. The tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning. No replacement gateway is created (avoids duplicate SNAT conflicts).
 
 ## Alternatives (Not Implemented)
 
@@ -591,13 +591,9 @@ With one NetworkClass per deployment, the operator reads it once. But for the di
 
 **Impact:** Affects dispatcher implementation in ClusterOrder controller.
 
-### 5. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?
+### ~~5. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?~~ — Resolved
 
-Design decision: reuse existing NATGateway in Ready or Failed state (avoids duplicate SNAT conflicts). Open question: should a NATGateway in **Deleting** state be treated as "does not exist" (create a new one), since the SNAT rule is being removed and the NATGateway will soon be fully deleted? Current behavior would silently attach to a disappearing resource.
-
-**Owner:** API design team
-
-**Impact:** Affects NATGateway reuse logic and user experience when NATGateway is being deleted concurrently.
+Resolved: auto NATGateway reuses only Ready NATGateways. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry. A Deleting NATGateway is not treated as "does not exist" — creating a replacement while the SNAT rule is still being removed could cause conflicts. The tenant must wait for deletion to complete and retry.
 
 ### 6. Should capacity exhaustion return an API error or create a Failed resource?
 
@@ -636,7 +632,7 @@ The template creates DNS records (step 7b) but never specifies the target IP. If
 - fulfillment-service: fabric_interface resolution per node set (host_type must have fabric-role interface)
 - fulfillment-service: interface resolution from HostType (pick first fabric-role interface)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- fulfillment-service: auto NATGateway reuse (reuse existing, create new if none exists)
+- fulfillment-service: auto NATGateway reuse (reuse Ready, reject Failed/Deleting, create new if none exists)
 - osac-operator ClusterOrder controller: agent selection logic
 - osac-operator ClusterOrder controller: network attachment resolution
 - osac-operator feedback controller: VIP sync to fulfillment-service
@@ -654,7 +650,7 @@ The template creates DNS records (step 7b) but never specifies the target IP. If
 ### Tricky Test Cases
 
 - Multiple node sets sharing the same subnet (verify correct fabric interface resolution per node set from HostType)
-- Auto NATGateway when existing NATGateway is Failed (verify reuse, document expected behavior)
+- Auto NATGateway when existing NATGateway is Failed (verify create request fails with error directing tenant to delete failed gateway)
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
 - VIP feedback loop failure (Signal RPC fails, fulfillment-service does not sync VIPs)

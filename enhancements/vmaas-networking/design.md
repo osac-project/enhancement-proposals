@@ -167,7 +167,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 #### Outbound NAT (optional, auto-provisioned when `nat_gateway_mode=AUTO`)
 
 9. **fulfillment-service creates or reuses NATGateway:**
-   - If NATGateway already exists on the VN: reuse (regardless of state or whether it was manually or auto-created). No new resources created.
+   - If NATGateway already exists on the VN and is Ready: reuse (regardless of whether it was manually or auto-created). No new resources created. If NATGateway exists but is Failed or Deleting: the create request fails with an error directing the tenant to delete the failed gateway and retry. This prevents silent attachment to a broken shared resource.
    - If no NATGateway exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in a **separate DB transaction** after the parent resource is persisted, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
    - osac-operator NATGateway controller triggers dispatcher → `osac.templates.{{ fabric_manager }}.create_nat_gateway`
    - Fabric manager creates SNAT rule for the VN's CIDR
@@ -335,7 +335,7 @@ This feature inherits the existing security model:
 #### Auto NATGateway Provisioning Failures
 
 - Pool exhaustion: NATGateway creation fails, ComputeInstance proceeds without outbound NAT (VM may be isolated)
-- Reusing failed NATGateway: if existing NATGateway on VN is Failed or Deleting, system reuses it (no new NATGateway created), outbound connectivity unavailable until tenant manually deletes failed NATGateway and retries
+- Failed or Deleting NATGateway: if existing NATGateway on VN is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry
 - NATGateway provisioning failure: NATGateway enters Failed state, outbound SNAT rule not created, VM has no outbound connectivity
 
 #### Cleanup Failures
@@ -390,11 +390,11 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Reviewed by:** Cloud Provider Admin
 
-#### Risk: Auto NATGateway reuses failed or deleting NATGateway
+#### Risk: Existing NATGateway is Failed or Deleting when auto NATGateway requested
 
-**Impact:** If existing NATGateway on VN is Failed or Deleting, system reuses it (FR-5 design choice), VM's outbound connectivity will not work.
+**Impact:** If existing NATGateway on VN is Failed or Deleting, the create request fails, blocking VM creation until the tenant resolves the broken gateway.
 
-**Mitigation:** Document expected behavior: tenants must manually delete failed NATGateway and retry VM creation. Alternative: change FR-5 to check NATGateway state before reusing (deferred to implementation phase).
+**Mitigation:** Clear error message directs the tenant to delete the failed NATGateway and retry. This is preferable to silent attachment to a broken resource — the tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning.
 
 **Reviewed by:** API design team
 
@@ -406,11 +406,11 @@ Supporting both old `network_attachments` (field 14) and new `compute_network_at
 
 **Trade-off:** Backward compatibility vs. clean API surface. Chosen approach: temporary dual-field support with documented migration timeline (OSAC-1471).
 
-#### Auto NATGateway reuse regardless of state
+#### Auto NATGateway rejects Failed or Deleting gateways
 
-FR-5 specifies that auto NATGateway reuses existing NATGateway "regardless of state or whether it was manually or auto-created." This simplifies conflict avoidance but means tenants can end up with VMs referencing failed NATGateways.
+FR-5 specifies that auto NATGateway only reuses existing NATGateways that are Ready. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
 
-**Trade-off:** Simplicity vs. robustness. Chosen approach: reuse any existing NATGateway, document workaround (delete and retry). Alternative: state-aware reuse (more complex, could create duplicate NATGateways during transient failures).
+**Trade-off:** Fail-fast vs. silent degradation. Chosen approach: reject Failed/Deleting NATGateways at create time with a clear error. The tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning. No replacement gateway is created (avoids duplicate SNAT conflicts).
 
 ## Alternatives (Not Implemented)
 
@@ -434,13 +434,9 @@ Instead of returning an error when ExternalIPPool has no capacity, create a Fail
 
 ## Open Questions
 
-### 1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?
+### ~~1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?~~ — Resolved
 
-Design decision: reuse existing NATGateway in Ready or Failed state (avoids duplicate SNAT conflicts). Open question: should a NATGateway in **Deleting** state be treated as "does not exist" (create a new one), since the SNAT rule is being removed and the NATGateway will soon be fully deleted? Current behavior would silently attach to a disappearing resource.
-
-**Owner:** API design team
-
-**Impact:** Affects NATGateway reuse logic and user experience when NATGateway is being deleted concurrently.
+Resolved: auto NATGateway reuses only Ready NATGateways. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry. A Deleting NATGateway is not treated as "does not exist" — creating a replacement while the SNAT rule is still being removed could cause conflicts. The tenant must wait for deletion to complete and retry.
 
 ### 2. Should capacity exhaustion return an API error or create a Failed resource?
 
@@ -458,7 +454,7 @@ Current proposal: return error, no resources persisted. Alternative: create Fail
 - fulfillment-service: dual-field validation (reject both old and new, convert old → new)
 - fulfillment-service: BM-only region validation (reject VM when no k8s_manager)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- fulfillment-service: auto NATGateway reuse (reuse existing, create new if none exists)
+- fulfillment-service: auto NATGateway reuse (reuse Ready, reject Failed/Deleting, create new if none exists)
 - osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (explicit primary, implicit single-attachment)
 
 ### Integration Tests
@@ -474,7 +470,7 @@ Current proposal: return error, no resources persisted. Alternative: create Fail
 ### Tricky Test Cases
 
 - Multi-NIC VM with primary on second attachment (verify default gateway on correct interface)
-- Auto NATGateway when existing NATGateway is Failed (verify reuse, document expected behavior)
+- Auto NATGateway when existing NATGateway is Failed (verify create request fails with error directing tenant to delete failed gateway)
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
 
