@@ -31,8 +31,6 @@ enhancement-proposals/
 └── .pre-commit-config.yaml    # Validation hooks
 ```
 
-There are 28 enhancement directories covering networking, storage, VMs, tenant onboarding, and platform features.
-
 ## Enhancement Structure
 
 ### Directory Layout
@@ -41,7 +39,7 @@ Each enhancement uses a lowercase-with-dashes directory name under `enhancements
 
 ```text
 enhancements/<feature-slug>/
-├── README.md       # Design document (required)
+├── README.md       # Design document (required for new enhancements)
 ├── prd.md          # PRD (optional, used in two-stage PRD→Design workflow)
 └── <assets>/       # Optional subdirectories for diagrams, code examples
 ```
@@ -54,22 +52,15 @@ enhancements/<feature-slug>/
 ### Required Files
 
 **Design Document**
-- Main enhancement proposal file (filename varies by enhancement—see below)
-- YAML front matter + structured Markdown sections
+- Main enhancement proposal file with YAML front matter + structured Markdown sections
 - Follows template at `guidelines/enhancement_template.md`
-- **File naming**: Several conventions exist in the codebase:
-  - `README.md` (21 enhancements) — the dominant standard
-  - `design.md` (3 enhancements: `storage-backend-osac-1111`, `storage-tier-OSAC-1110`, `tenant-storage-onboarding-OSAC-23`)
-  - `Design.md` (1 enhancement: `networking-ui-vmaas-scope`, renamed from README.md in OSAC-1425)
-  - `DESIGN.md` (1 enhancement: `cluster-version-api`, renamed from README.md)
-  - `prd.md` only, no design doc yet (2 enhancements: `caas-cluster-storage`, `cluster-and-vm-provisioning-wizard`) — mid-workflow, PRD stage complete but design stage not started
-- **Recommendation**: Use `README.md` for new enhancements unless project guidance changes
+- Use `README.md` for new enhancements. Existing enhancements may use `design.md`, `Design.md`, or `DESIGN.md` — don't rename them.
 
 **`prd.md`** (Optional)
 - Product requirements document
 - Used in two-stage PRD→Design workflow
 - Same YAML front matter structure as design doc
-- Lives in the same directory as `README.md`
+- Lives in the same directory as the design document
 
 ## File Conventions
 
@@ -122,52 +113,7 @@ Note: this template does not have an "Implementation History" section (unlike so
 
 ## Enhancement Proposals
 
-### What Qualifies as an Enhancement?
-
-A rough heuristic for an enhancement is anything that:
-
-- includes addition or removal of significant capabilities
-- impacts upgrade/downgrade
-- needs significant effort to complete
-- requires consensus/code across multiple domains/repositories
-- proposes adding a new user-facing component
-- has phases of maturity (Dev Preview, Tech Preview, GA)
-- demands formal documentation to utilize
-
-It is unlikely to require an enhancement if it:
-
-- fixes a bug
-- adds more testing
-- internally refactors a code or component only visible to that components domain
-- minimal impact to distribution as a whole
-
-If you are not sure if the proposed work requires an enhancement, file an issue and ask.
-
-### Review and Approval Process
-
-The author of an enhancement is responsible for managing it through the review and approval process, including soliciting feedback on the pull request and in meetings, if necessary.
-
-The set of reviewers for an enhancement proposal can be anyone that has an interest in this work or the expertise to provide a useful input/assessment. At a minimum, the reviewers must include a representative of any team that will need to do work for this proposal, or whose team will own/support the resulting implementation. Be mindful of the workload of reviewers, however, and the challenge of finding consensus as the group of reviewers grows larger. Clearly indicating what aspect of the proposal you expect each reviewer to be concerned with will allow them to focus their reviews.
-
-An enhancement proposal is formally accepted when reviewers have reached consensus on the proposal and it has been merged into the main branch of the repository.
-
-Approval of an enhancement proposal does not guarantee implementation. Developers have existing commitments that may take priority over some (or all) enhancement proposals.
-
-### Helping Speed Up the Review Process
-
-Enhancements should have agreement from all stakeholders prior to being approved and merged. Reviews are not time-boxed. If it is not possible to attract the attention of enough of the right maintainers to act as reviewers, that is a signal that the project's rate of change is maxed out. With that said, there are a few things that authors can do to help keep the conversation moving along:
-
-1. Respond to comments quickly, so that a reviewer can tell you are engaged.
-2. Push update patches, rather than force-pushing a replacement, to make it easier for reviewers to see what you have changed. Use descriptive commit messages on those updates, or plan to squash the commits when the pull request merges.
-3. If the conversation otherwise seems stuck, pinging reviewers on Slack can be used to remind them to look at updates. It's generally appropriate to give people at least a business day or two to respond in the GitHub thread first, before reaching out to them directly on Slack, so that they can manage their work queue and disruptions.
-
-### Enhancement Lifecycle
-
-An enhancement begins life as a pull request against the enhancement-proposals repository. The pull request is reviewed by the core development team and other interested members of the community.
-
-An enhancement proposal is accepted when the pull request has been merged into the main branch of the enhancement proposals repository. Ideally pull requests with enhancement proposals will be merged before significant coding work begins, since this avoids having to rework the implementation if the design changes as well as arguing in favor of accepting a design simply because it is already implemented.
-
-After an enhancement proposal has been accepted and the implementation work is substantially complete, it may be necessary to update the design document in the OSAC docs repository.
+See `README.md` for qualification heuristics, review/approval process, and enhancement lifecycle.
 
 ## Development Workflow
 
@@ -281,8 +227,7 @@ GitHub Actions workflow (`.github/workflows/pre-commit.yaml`) runs on all PRs:
 
 ### Automated EP Review
 
-`.github/workflows/ep-review.yml` runs an AI-assisted review (`.github/scripts/ep_review.py`) on PRs and can be re-triggered by commenting `/review-ep`. It dispatches a `prd-review` skill for changed `prd.md` files and an `ep-review` skill for changed `design.md` files, and posts a verdict comment.
-- The workflow's path filter and the script's file-type detection (`ep_review.py:detect_skills`) both match lowercase `design.md` only—PRs that only touch a capitalized variant (`Design.md`, `DESIGN.md`) will not trigger the `ep-review` skill.
+`.github/workflows/ep-review.yml` runs an AI-assisted review (`.github/scripts/ep_review.py`) on PRs and can be re-triggered by commenting `/review-ep`. It dispatches a `prd-review` skill for changed `prd.md` files and an `ep-review` skill for design documents, and posts a verdict comment. The workflow path filter and `detect_skills()` recognize `design.md`, `Design.md`, `DESIGN.md`, and `enhancements/**/README.md`.
 
 ### Running Locally
 
@@ -313,26 +258,6 @@ pre-commit run --all-files
 - Use external links for large images if needed
 
 ## Common Tasks
-
-### Create New Enhancement from Template
-
-```bash
-# 1. Create directory
-mkdir -p enhancements/my-feature
-
-# 2. Copy template
-cp guidelines/enhancement_template.md enhancements/my-feature/README.md
-
-# 3. Edit YAML front matter and content
-# Update title, authors, creation-date, tracking-link
-
-# 4. Validate
-pre-commit run --files enhancements/my-feature/README.md
-
-# 5. Commit with DCO
-git add enhancements/my-feature/
-git commit -s -m "OSAC-1234: Add my-feature enhancement proposal"
-```
 
 ### Add PRD to Existing Enhancement
 
@@ -410,14 +335,6 @@ When replacing an old enhancement:
 - **Pre-commit**: `.pre-commit-config.yaml` — Hook configuration
 - **Ownership**: `OWNERS` — Reviewers and approvers
 
-## Example Enhancements
+## Examples
 
-Reference these for structure and style:
-- `enhancements/networking-ui-vmaas-scope/` — Complex multi-component feature with `Design.md` (capitalized) and `prd.md`
-- `enhancements/storage-backend-osac-1111/` — Two-stage PRD→Design workflow with both `prd.md` and `design.md` (lowercase)
-- `enhancements/cluster-version-api/` — Two-stage workflow with `prd.md` and `DESIGN.md` (all caps)
-- `enhancements/tenant-onboarding/` — Process-focused enhancement with workflow diagrams using `README.md`
-- `enhancements/networking/` — Standard single-document enhancement using `README.md`
-- `enhancements/caas-cluster-storage/` — PRD stage only (`prd.md`), design stage not yet started
-
-**File naming note**: Most enhancements (21/28) use `README.md` for the design document. When creating new enhancements, use `README.md` unless instructed otherwise.
+Browse `enhancements/` for structure and style examples — most use `README.md` for the design doc.
