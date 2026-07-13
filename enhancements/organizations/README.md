@@ -21,9 +21,9 @@ This enhancement introduces a comprehensive multi-tenant organization model for 
 
 Each Organization must configure an external identity provider (LDAP/AD/OIDC/SAML) for user authentication. The system provides built-in OSAC break-glass accounts with limited privileges (IdP and role management only) for emergency access when the IdP is unavailable. Full admin roles (Cloud Provider Admin, Tenant Admin) are defined in the IdP. Keycloak (managed by the user) handles identity management and native role assignment.
 
-The authorization model uses a two-tier approach: Organization-level roles are managed as Keycloak roles, while Project-level permissions leverage Keycloak Authorization Services. Each Project is modeled as a Keycloak Authorization Resource with fine-grained scoped permissions (e.g., CREATE_COMPUTE_INSTANCE, VIEW_PROJECT, MANAGE_PROJECT), enabling true multi-project tenancy where different users have different access to different Projects within the same Organization. Keycloak Protocol Mappers normalize upstream IdP claims into the standard OSAC Token schema.
+The authorization model uses a two-tier approach: Organization-level roles are managed as Keycloak roles, while Project-level permissions leverage Keycloak Authorization Services. Each Project is modeled as a Keycloak Organization Group with two sub-groups (`viewers` and `managers`) enabling true multi-project tenancy where different users have different access to different Projects within the same Organization. Keycloak Protocol Mappers normalize upstream IdP claims into the standard OSAC Token schema.
 
-The architecture follows the Sovereign Gateway Pattern, integrating Gateway API with Kuadrant (which includes Authorino for authorization and Limitador for rate limiting) for declarative, infrastructure-level API protection. Kuadrant operates at the Gateway layer via AuthPolicy resources, validating Keycloak-issued tokens (using local RPT validation for performance) and enforcing authorization policies (including project-level permissions via Keycloak Authorization Services) before requests reach the Fulfillment Service.
+The architecture follows the Sovereign Gateway Pattern, integrating Gateway API with Kuadrant for declarative, infrastructure-level API protection. Kuadrant operates at the Gateway layer via AuthPolicy resources, validating Keycloak-issued tokens (using local RPT validation for performance) and enforcing authorization policies (including project-level permissions via Keycloak Organization Groups) before requests reach the Fulfillment Service.
 
 A single OSAC instance with a single API entry point and Keycloak installation can manage multiple OpenShift infrastructure clusters, reconciling Project resources across all clusters. The OSAC Console and CLI authenticate directly with Keycloak using standard OIDC Authorization Code flows.
 
@@ -40,7 +40,7 @@ This enhancement is critical for enabling OSAC to provide a true multi-tenant ex
 
 * As a Cloud Provider Admin, I want OSAC to provide one break-glass account per organization (including `System` organization) with limited privileges to manage IdP configuration and assign roles, so that I can recover from IdP failures or misconfigurations and restore normal authentication, including setting up role mappings for other users.
 
-* As a Tenant Admin, I want to configure an IdP (LDAP/AD/OIDC/SAML) for my Organization, so that my users can authenticate using their existing corporate credentials.
+* As a Tenant Admin, I want to configure an IdP (OIDC) for my Organization, so that my users can authenticate using their existing corporate credentials.
 
 * As a Cloud Provider Admin or Tenant Admin, I want to test IdP connectivity and view IdP health status, so that I can ensure reliable authentication for my organization's users.
 
@@ -63,7 +63,7 @@ This enhancement is critical for enabling OSAC to provide a true multi-tenant ex
 
 * Enable Tenant Admins to manage Projects within their Organization, providing hierarchical resource organization.
 
-* Support flexible identity provider integration, allowing each Organization to use LDAP, Active Directory, OIDC, or SAML.
+* Support flexible identity provider integration, allowing each Organization to use OIDC.
 
 * Maintain one break-glass account per organization with limited privileges (IdP management and role assignment) that remains available regardless of IdP configuration.
 
@@ -96,14 +96,6 @@ The OSAC Console and CLI authenticate directly with Keycloak using standard OIDC
 ### Kuadrant
 
 Kuadrant is an open source API security platform that provides comprehensive API protection including authentication, authorization, and rate limiting. Kuadrant integrates Authorino for fine-grained authorization policies and Limitador for rate limiting. This enhancement uses Kuadrant to protect OSAC APIs at the infrastructure layer via Gateway API and AuthPolicy resources:
-
-- **Authorino**: Validates Keycloak-issued OIDC tokens and enforces authorization policies at the Gateway layer before requests reach the Fulfillment Service. Authorino validates token signatures using Keycloak's public keys (retrieved from Keycloak's JWKS endpoint), extracts identity claims and OSAC roles from tokens, and evaluates authorization policies. For Organization-level access, Authorino uses RBAC policies based on OSAC roles from Keycloak tokens. For Project-level access, Authorino integrates with Keycloak Authorization Services to query resource permissions at request time, checking: "Can user X perform action Y on Project Z?" Authorino's extensible architecture also supports:
-  - OPA (Open Policy Agent) for advanced policy evaluation and complex authorization logic
-  - SpiceDB for Relationship-Based Access Control (ReBAC) when hierarchical permissions are needed
-  - External authorization services for integration with cost-management/billing systems to deny access based on quota or billing status
-  - Custom policy extensions as requirements evolve
-
-- **Limitador**: Provides rate limiting capabilities to protect OSAC APIs from abuse and ensure fair resource usage across organizations and projects.
 
 Kuadrant operates at the Gateway layer (Envoy Proxy) via AuthPolicy resources. When a request arrives at the OSAC Gateway, Kuadrant intercepts it before it reaches the Fulfillment Service. Authorino validates the Keycloak token signature and claims, queries Keycloak Authorization Services for project-level permissions (if the request targets a specific Project), then injects verified user context into HTTP headers (e.g., `X-Remote-User`, `X-Organization`, `X-Project`, `X-Roles`) that the Fulfillment Service consumes. This declarative, infrastructure-level enforcement ensures consistent authorization behavior across all OSAC APIs while providing extensibility for future policy requirements.
 
