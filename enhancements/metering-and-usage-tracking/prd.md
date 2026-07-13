@@ -16,7 +16,7 @@
 | **Usage** | Measured consumption of a resource (e.g., instance-type-seconds consumed while a VM was running). |
 | **Allocation** | Reserved capacity of a resource, regardless of whether it is actively used. |
 | **Resource class** | A provider-defined category for differentiated pricing. Examples: host type for CaaS worker nodes (e.g., `gpu-h100`, `cpu-only`), template for VMaaS, machine class for BMaaS, storage tier for Storage-aaS. To the metering system, it is an opaque label used for grouping. |
-| **Service** | An offering that can be purchased from a service provider, and can include many types of usage or other charges (e.g., a cloud database service may include compute, storage, and networking charges). In OSAC, a catalog item (per the [catalog-items](/enhancements/catalog-items) EP) maps to a Service — it's what the tenant provisions from. |
+| **Service** | An offering that can be purchased from a service provider, and can include many types of usage or other charges (e.g., a cloud database service may include compute, storage, and networking charges). In OSAC, a catalog item (per the [catalog-items](/enhancements/catalog-items) EP) maps to a Service — it's what the tenant provisions from. A single Service may bundle multiple independently priceable components (e.g., compute, OS entitlement, boot storage for VMaaS; control plane, workers, cluster version for CaaS). The metering system provides the references needed for a billing system to decompose the Service into its priceable layers using the provider's rate schedule. |
 | **Price List** | A comprehensive list of prices offered by a service provider. |
 | **Billing Period** | The time window that an organization receives an invoice for, inclusive of the start date and exclusive of the end date. |
 | **Budget** | A spending limit on a scope (tenant, project, resource type) for a configurable time period. |
@@ -88,6 +88,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 - **CAP-14:** The metering system can be deployed independently without affecting existing OSAC provisioning. Some providers may prefer to use their own metering solution — independent deployment ensures OSAC emits lifecycle events that any metering system can consume.
 - **CAP-15:** Upgrading the metering system does not cause loss of collected metering data or gaps in measurement of ongoing workloads.
 - **CAP-16:** Duplicate events do not cause double-counting in any meter.
+- **CAP-17:** A billing system can determine the originating catalog offer and its bundled components for any metered resource, so that charges can be decomposed into independently priceable layers (e.g., compute, OS entitlement, boot storage) using the provider's rate schedule.
 
 ## 4. Operational Expectations
 
@@ -103,12 +104,14 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 - [ ] A stopped or paused VM does not generate compute usage data (instance-type-seconds)
 - [ ] Storage, public IP, and DNS resources allocated to a stopped or paused VM continue to generate metering data for the duration of the VM's existence
 - [ ] VM usage can be broken down by tenant, project, template, and instance
+- [ ] A billing system can determine the catalog item, instance type, and OS image for any metered VM from the metering data alone
 
 ### CaaS
 
 - [ ] An active cluster generates separate usage data for the control plane and for each worker node set
 - [ ] Worker node usage can be broken down by resource class, enabling differentiated pricing for GPU vs CPU
 - [ ] All metered resources belonging to a cluster (control plane, worker nodes) can be queried as a unified cluster-level usage view
+- [ ] A billing system can determine the catalog item, cluster version, and per-node-set host type for any metered cluster from the metering data alone
 
 ### MaaS
 
@@ -130,6 +133,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 - [ ] Raw events older than the configured retention period are purged
 - [ ] Aggregated data from 13 months ago is still queryable
 - [ ] A Cloud Infrastructure Admin can add a new meter via configuration update and query it after deployment
+- [ ] A billing system can identify the full set of independently priceable components bundled in a catalog offer for any metered resource
 - [ ] Upgrading the metering system does not cause data loss or measurement gaps
 
 ## 6. Assumptions
