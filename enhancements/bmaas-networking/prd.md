@@ -16,7 +16,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 ### 2.1 Goals
 
-- A tenant can create a bare-metal server with explicit network attachments, each specifying which physical interface connects to which subnet
+- A tenant can provision a bare-metal server with explicit network attachments, each specifying which physical interface connects to which subnet
 - A tenant can create a bare-metal server with `--external-ip=auto` and have the system allocate an external IP for inbound access automatically
 - A tenant can create a bare-metal server with `--nat-gateway=auto` and have the system provision outbound connectivity automatically
 - Network attachments are optional — when omitted, the system attaches the server to the tenant's default subnet and security group
@@ -85,7 +85,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Optional Network Attachments with Defaults
 
-- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted, the system attaches the server to the tenant's default subnet and default security group, using the host type's default data interface (see Default Networking PRD). The resolved attachments are stored with the server so the server is self-describing after creation. [User]
+- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted, the system attaches the server to the tenant's default subnet and default security group, using the host type's default data interface (see Default Networking PRD). If the host type has no data-role interface, creating a server without explicit network attachments fails with a clear error. The resolved attachments are stored with the server so the server is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -93,7 +93,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto NAT Gateway
 
-- **FR-7:** Bare-metal servers support a NAT gateway mode with values `NONE` (default) and `AUTO`. When `AUTO`, the system provisions a NAT gateway on the server's virtual network (reuses existing NAT gateway if one already exists, regardless of state or whether it was manually or auto-created). The NAT gateway uses an auto-selected external IP as the outbound source address. [User]
+- **FR-7:** Bare-metal servers support a NAT gateway mode with values `NONE` (default) and `AUTO`. When `AUTO`, the system provisions a NAT gateway on the server's virtual network (reuses existing NAT gateway only if it is Ready. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first). The NAT gateway uses an auto-selected external IP as the outbound source address. [User]
 
 #### Network Connectivity Configuration
 
@@ -179,10 +179,10 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - **Owner:** Cloud Provider Admin
 - **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool
 
-### 8.5 Auto NAT gateway reuses failed or deleting NAT gateway
+### 8.5 Auto NAT gateway fails when existing gateway is broken
 
 - **Owner:** Platform team
-- **Mitigation:** Auto NAT gateway reuses existing NAT gateway regardless of state. If the existing NAT gateway is failed or deleting, the server's outbound connectivity will not work. Document expected behavior: tenants must manually delete failed NAT gateway and retry server creation.
+- **Mitigation:** Auto NAT gateway only reuses an existing NAT gateway if it is Ready. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
 
 ## 9. Open Questions
 
@@ -191,10 +191,9 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - **Owner:** API design team
 - **Impact:** Affects FR-3. Current proposal: document that out-of-band interfaces are reserved for provisioning, do not enforce exclusion in validation. Alternative: explicitly reject attachments with out-of-band interfaces.
 
-### 9.2 Should auto NAT gateway check existing NAT gateway state before reusing?
+### ~~9.2 Should auto NAT gateway check existing NAT gateway state before reusing?~~ — Resolved
 
-- **Owner:** API design team
-- **Impact:** Affects FR-7. Current proposal reuses any existing NAT gateway (simplest, avoids conflict). Alternative: only reuse if ready, otherwise create a new one (more complex, could create duplicate NAT gateways during transient failures).
+Resolved: auto NAT gateway reuses only Ready NATGateways. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This avoids silent attachment to a broken shared resource while preventing duplicate SNAT conflicts (no replacement gateway is created).
 
 ### 9.3 Should capacity exhaustion return an API error or create a failed resource?
 

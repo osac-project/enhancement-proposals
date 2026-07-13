@@ -90,9 +90,9 @@ where a single create command produces a reachable instance.
   failure. The Cloud Provider Admin can inspect the failure and retry
   by deleting and re-creating the tenant. [User]
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
-  parameters (CIDR, SecurityGroup rules) on the NetworkClass. When
-  defaults are not configured, creating a resource without explicit
-  network attachments fails with a clear error. [User]
+  parameters (CIDR, SecurityGroup rules) on the NetworkClass. Defaults
+  are required — a NetworkClass without defaults is rejected at creation
+  time. [User]
 - **FR-3:** All tenants receive the same default CIDR range as configured
   on the NetworkClass. Tenants are isolated at the network level — the
   unified networking API provides VirtualNetworks with any IP subnet, and
@@ -150,8 +150,9 @@ where a single create command produces a reachable instance.
   system selects an ExternalIP from the best available pool and creates a
   NATGateway on the resource's VirtualNetwork using that ExternalIP as
   the outbound source address. If a NATGateway already exists on the
-  VirtualNetwork, it is reused regardless of which ExternalIP it uses,
-  its current state, or whether it was manually or auto-created. [User]
+  VirtualNetwork, it is reused only if it is Ready. If the existing
+  NATGateway is Failed or Deleting, the create request fails with an
+  error directing the tenant to delete the failed gateway first. [User]
 
 ## 5. Acceptance Criteria
 
@@ -220,11 +221,11 @@ where a single create command produces a reachable instance.
 ### 7.4 Deployment misconfiguration
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** If NetworkClass defaults are not configured, tenant
-  onboarding still succeeds but resource creation without explicit
-  `network_attachments` fails with a clear error directing the tenant to
-  use explicit networking or contact the admin. This is a deployment
-  issue, not a runtime failure
+- **Mitigation:** Defaults are required — a NetworkClass without defaults
+  is rejected at creation time. This eliminates the scenario where tenant
+  onboarding succeeds but resource creation fails due to missing defaults.
+  osac-installer setup.sh includes NetworkClass default configuration in
+  installation overlays
 
 ## 8. Open Questions
 

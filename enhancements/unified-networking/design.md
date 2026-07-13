@@ -656,10 +656,13 @@ checks if the port is already on a V-Net (e.g., a parking network for
 CaaS pre-booted agents) — if so, removes it — then adds the port to
 the target V-Net. This handles both BMaaS (server not on any V-Net)
 and CaaS (agent moving from parking to tenant V-Net) with the same
-role. Once on the V-Net, the host receives an IP from the fabric's
-DHCP server automatically. On deletion, `delete_network_attachment`
-removes the port from the tenant V-Net and returns it to the parking
-network (CaaS) or leaves it detached (BMaaS).
+role. The role is idempotent: if the port is already on the target
+V-Net, the role is a no-op. The role only removes and re-adds the port
+when the current V-Net differs from the target. Once on the V-Net, the
+host receives an IP from the fabric's DHCP server automatically. On
+deletion, `delete_network_attachment` removes the port from the tenant
+V-Net and returns it to the parking network (CaaS) or leaves it
+detached (BMaaS).
 
 *NATGateway controller preconditions:*
 

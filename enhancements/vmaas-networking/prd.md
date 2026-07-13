@@ -70,7 +70,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 #### Auto NAT Gateway
 
-- **FR-5:** VMs support a `--nat-gateway=auto` option. When specified, the system provisions or reuses a NAT gateway on the VM's virtual network for outbound connectivity. The NAT gateway uses an automatically allocated external IP as the source address. If a NAT gateway already exists on the virtual network, it is reused regardless of its current state or how it was created. [User]
+- **FR-5:** VMs support a `--nat-gateway=auto` option. When specified, the system provisions or reuses a NAT gateway on the VM's virtual network for outbound connectivity. The NAT gateway uses an automatically allocated external IP as the source address. If a NAT gateway already exists on the virtual network, it is reused only if it is Ready. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. [User]
 
 #### IP Address Discovery
 
@@ -134,17 +134,16 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 - **Owner:** Cloud Provider Admin
 - **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool
 
-### 8.4 Auto NAT gateway reuses failed or deleting gateway
+### 8.4 Auto NAT gateway fails when existing gateway is broken
 
 - **Owner:** Platform
-- **Mitigation:** Auto NAT gateway reuses existing gateway regardless of state. If the existing gateway is failed or being deleted, the VM's outbound connectivity will not work. Document expected behavior: tenants must manually delete failed gateway and retry VM creation.
+- **Mitigation:** Auto NAT gateway only reuses an existing gateway if it is Ready. If the existing gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
 
 ## 9. Open Questions
 
-### 9.1 Should auto NAT gateway check existing gateway state before reusing?
+### ~~9.1 Should auto NAT gateway check existing gateway state before reusing?~~ — Resolved
 
-- **Owner:** API design team
-- **Impact:** Affects FR-5. Current proposal reuses any existing gateway (simplest, avoids conflict). Alternative: only reuse if ready, otherwise create a new one (more complex, could create duplicate gateways during transient failures).
+Resolved: auto NAT gateway reuses only Ready NATGateways. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This avoids silent attachment to a broken shared resource while preventing duplicate SNAT conflicts (no replacement gateway is created).
 
 ### 9.2 Should capacity exhaustion return an API error or create a failed resource?
 

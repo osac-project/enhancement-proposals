@@ -76,7 +76,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 #### Auto NAT Gateway
 
-- **FR-4:** Cluster creation supports automatic NAT gateway provisioning. When enabled, the system creates a NAT gateway on the cluster's virtual network, or reuses an existing NAT gateway if one already exists, regardless of how it was created. The NAT gateway provides outbound connectivity for cluster nodes. [User]
+- **FR-4:** Cluster creation supports automatic NAT gateway provisioning. When enabled, the system creates a NAT gateway on the cluster's virtual network, or reuses an existing NAT gateway if one already exists and is Ready. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. The NAT gateway provides outbound connectivity for cluster nodes. [User]
 
 #### Endpoint Discovery
 
@@ -151,10 +151,10 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 - **Owner:** Platform team
 - **Mitigation:** If endpoint addresses are not discovered correctly, they will not appear in cluster status, and external IP attachments will not activate. Monitor endpoint discovery reliability and address discovery mechanisms.
 
-### 8.3 Auto NAT gateway reuses failed or deleting NAT gateway
+### 8.3 Auto NAT gateway fails when existing gateway is broken
 
 - **Owner:** Platform team
-- **Mitigation:** Auto NAT gateway reuses existing NAT gateway regardless of state. If the existing NAT gateway is failed or deleting, the cluster's outbound connectivity will not work. Document expected behavior: tenants must manually delete failed NAT gateway and retry cluster creation.
+- **Mitigation:** Auto NAT gateway only reuses an existing NAT gateway if it is Ready. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
 
 ### 8.4 Host type network interface configuration not populated
 
@@ -183,7 +183,6 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 - **Owner:** Cloud Infrastructure Admin / Platform team
 - **Impact:** The cluster provisioning system needs IP address pools for allocating API server and ingress endpoint addresses. Is this created when the subnet is created, or during cluster provisioning?
 
-### 9.4 Should auto NAT gateway check existing NAT gateway state before reusing?
+### ~~9.4 Should auto NAT gateway check existing NAT gateway state before reusing?~~ — Resolved
 
-- **Owner:** API design team
-- **Impact:** Affects FR-4. Current proposal reuses any existing NAT gateway (simplest, avoids conflict). Alternative: only reuse if ready, otherwise create a new one (more complex, could create duplicate NAT gateways during transient failures).
+Resolved: auto NAT gateway reuses only Ready NATGateways. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This avoids silent attachment to a broken shared resource while preventing duplicate SNAT conflicts (no replacement gateway is created).
