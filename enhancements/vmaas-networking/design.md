@@ -18,13 +18,13 @@ superseded-by:
 
 # VMaaS Networking — Optional Attachments and Auto External Access
 
-This enhancement extends the unified networking API to support VMaaS-specific requirements: multi-NIC ComputeInstance provisioning with a designated primary attachment, optional network attachments with tenant defaults, and auto-provisioned external access (ExternalIP + NATGateway).
+This enhancement extends the unified networking API to support VMaaS-specific requirements: multi-NIC ComputeInstance provisioning with a designated primary attachment, optional network attachments with tenant defaults, and auto-provisioned external access (ExternalIP).
 
 ## Summary
 
 This enhancement is an expansion of the [Unified Networking EP](/enhancements/unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
 
-ComputeInstance currently uses a shared `NetworkAttachment` message that lacks a `primary` field, preventing multi-NIC VM provisioning with a designated default gateway. This enhancement introduces `ComputeNetworkAttachment` with a `primary` field, makes the attachments field optional (populating with tenant defaults when omitted), and adds `external_ip_mode` and `nat_gateway_mode` to enable fully connected VMs in a single API call. See [PRD](prd.md) for detailed requirements.
+ComputeInstance currently uses a shared `NetworkAttachment` message that lacks a `primary` field, preventing multi-NIC VM provisioning with a designated default gateway. This enhancement introduces `ComputeNetworkAttachment` with a `primary` field, makes the attachments field optional (populating with tenant defaults when omitted), and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -52,15 +52,13 @@ ComputeInstance already participates in the networking API. Today's flow:
 - No dispatcher — uses `implementation_strategy` annotation
 - BM-only region validation (reject VM when no k8sManager)
 - Auto ExternalIP allocation (tenant must manually create ExternalIP + ExternalIPAttachment)
-- Auto NATGateway provisioning (tenant must manually create NATGateway for outbound)
 
 ### Goals
 
 - Multi-NIC support with designated primary attachment for default gateway
 - Resource-specific attachment message (`ComputeNetworkAttachment`) with `primary` field
 - Optional `network_attachments` field — populate with tenant defaults when omitted
-- Auto ExternalIP mode (`external_ip_mode: AUTO`) for single-call inbound connectivity
-- Auto NATGateway mode (`nat_gateway_mode: AUTO`) for single-call outbound connectivity
+- Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - BM-only region validation to reject VM provisioning when no k8s_manager is available
 
 ### Non-Goals
@@ -111,13 +109,12 @@ ComputeInstance already participates in the networking API. Today's flow:
 
    # Or with defaults + auto external access:
    osac create computeinstance --template ocp_virt_vm \
-     --external-ip=auto --nat-gateway=auto --name my-vm
+     --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
      - If `compute_network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
      - Validates: subnets exist, are Ready, same VN, primary rules
-     - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
-     - If `nat_gateway_mode == AUTO`: creates NATGateway on the VN (reuses existing if one already exists)
+     - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `compute_network_attachments`
 
 5. **osac-operator ComputeInstance controller:**
@@ -151,7 +148,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - fulfillment-service writes `compute_network_attachment_statuses` on ComputeInstanceStatus (each entry: `subnet_ref`, `ip_address`, `primary`)
    - Tenant can inspect: `osac get computeinstance my-vm -o yaml` shows assigned IPs per attachment
 
-#### External Access (optional, auto-provisioned when `external_ip_mode=AUTO`)
+#### External Access (optional, auto-provisioned when `auto_external_ip_attachment=true`)
 
 8. **fulfillment-service creates ExternalIP and ExternalIPAttachment:**
    - Auto-selects ExternalIPPool (READY, most available capacity, matching IP family)
@@ -164,19 +161,10 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Fabric manager creates DNAT rule: external IP → VM's primary subnet IP (from `compute_network_attachment_statuses`)
    - ExternalIPAttachment transitions from Pending to Ready
 
-#### Outbound NAT (optional, auto-provisioned when `nat_gateway_mode=AUTO`)
-
-9. **fulfillment-service creates or reuses NATGateway:**
-   - If NATGateway already exists on the VN and is Ready: reuse (regardless of whether it was manually or auto-created). No new resources created. If NATGateway exists but is Failed or Deleting: the create request fails with an error directing the tenant to delete the failed gateway and retry. This prevents silent attachment to a broken shared resource.
-   - If no NATGateway exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in a **separate DB transaction** after the parent resource is persisted, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
-   - osac-operator NATGateway controller triggers dispatcher → `osac.templates.{{ fabric_manager }}.create_nat_gateway`
-   - Fabric manager creates SNAT rule for the VN's CIDR
-
 #### Deletion (reverse order)
 
 10. **Delete ComputeInstance:**
-   - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`external_ip_mode=AUTO`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
-   - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this resource auto-created it, deleting the resource does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
+   - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
    - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
@@ -204,8 +192,7 @@ message ComputeInstanceSpec {
   // ... existing fields ...
   // DEPRECATED: field 14 (old shared NetworkAttachment)
   repeated ComputeNetworkAttachment compute_network_attachments = 18; // optional
-  ExternalIPMode external_ip_mode = 19;   // NONE (default) or AUTO
-  NATGatewayMode nat_gateway_mode = 20;   // NONE (default) or AUTO
+  bool auto_external_ip_attachment = 19;  // NEW, auto-provision ExternalIP + ExternalIPAttachment
 }
 
 message ComputeNetworkAttachmentStatus {
@@ -217,18 +204,6 @@ message ComputeNetworkAttachmentStatus {
 message ComputeInstanceStatus {
   // ... existing fields ...
   repeated ComputeNetworkAttachmentStatus compute_network_attachment_statuses = N; // NEW
-}
-
-enum ExternalIPMode {
-  EXTERNAL_IP_MODE_UNSPECIFIED = 0;
-  EXTERNAL_IP_MODE_NONE = 1;   // default
-  EXTERNAL_IP_MODE_AUTO = 2;
-}
-
-enum NATGatewayMode {
-  NAT_GATEWAY_MODE_UNSPECIFIED = 0;
-  NAT_GATEWAY_MODE_NONE = 1;   // default
-  NAT_GATEWAY_MODE_AUTO = 2;
 }
 ```
 
@@ -281,7 +256,7 @@ The feedback controller populates `NetworkAttachmentStatuses` by watching the Ku
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate network_attachments, create CR, auto-provision ExternalIP/NATGateway, write `compute_network_attachment_statuses` from feedback |
+| fulfillment-service | Validate network_attachments, create CR, auto-provision ExternalIP, write `compute_network_attachment_statuses` from feedback |
 | osac-operator ComputeInstance controller | Resolve subnet → namespace, trigger AAP, clean up auto-provisioned resources |
 | osac-operator ComputeInstance feedback controller | Watch KubeVirt VMI network status, discover per-attachment IPs, Signal fulfillment-service |
 | osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SG, ExternalIP) |
@@ -313,7 +288,7 @@ Dual-field support during migration:
 
 This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
-- Auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway) inherit tenant annotation from parent ComputeInstance
+- Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
 - SecurityGroup rules control VM inbound traffic (tenant-configurable via explicit SG or default SG)
 - Multi-NIC VMs on different subnets share the same SecurityGroup enforcement (pod labels apply to all interfaces)
@@ -332,12 +307,6 @@ This feature inherits the existing security model:
 - ExternalIP provisioning failure: ExternalIP enters Failed state, ComputeInstance remains in Pending (external access unavailable, VM may still function without inbound connectivity)
 - ExternalIPAttachment provisioning failure: DNAT rule not created, inbound traffic does not reach VM (VM functional, external access unavailable)
 
-#### Auto NATGateway Provisioning Failures
-
-- Pool exhaustion: NATGateway creation fails, ComputeInstance proceeds without outbound NAT (VM may be isolated)
-- Failed or Deleting NATGateway: if existing NATGateway on VN is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry
-- NATGateway provisioning failure: NATGateway enters Failed state, outbound SNAT rule not created, VM has no outbound connectivity
-
 #### Cleanup Failures
 
 - Auto-provisioned resource cleanup transient failure: finalizer retries
@@ -345,7 +314,7 @@ This feature inherits the existing security model:
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes. All new resources (ComputeInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment/NATGateway) inherit tenant isolation from parent:
+No RBAC or tenancy changes. All new resources (ComputeInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
 - OPA policies enforce tenant-scoped list/get/update/delete
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
@@ -354,13 +323,12 @@ No RBAC or tenancy changes. All new resources (ComputeInstance with new fields, 
 
 New structured log events:
 - ComputeInstance controller: `ResolvedPrimarySubnet` (info), `SubnetResolutionFailed` (error), `MultiNICProvisioning` (info)
-- fulfillment-service: `AutoProvisionedExternalIP` (info), `AutoProvisionedNATGateway` (info), `ExternalIPPoolExhausted` (error)
+- fulfillment-service: `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error)
 
 New Kubernetes events on ComputeInstance:
 - `NetworkingResolved`: subnet → namespace resolution succeeded
 - `NetworkingResolutionFailed`: subnet resolution failed (not found, not Ready, BM-only region)
 - `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
-- `AutoNATGatewayCreated`: NATGateway auto-provisioned or reused
 
 No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
 
@@ -384,19 +352,11 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: ExternalIPPool exhaustion
 
-**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create VM with `external_ip_mode=AUTO`.
+**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create VM with `auto_external_ip_attachment=true`.
 
 **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool or contact admin.
 
 **Reviewed by:** Cloud Provider Admin
-
-#### Risk: Existing NATGateway is Failed or Deleting when auto NATGateway requested
-
-**Impact:** If existing NATGateway on VN is Failed or Deleting, the create request fails, blocking VM creation until the tenant resolves the broken gateway.
-
-**Mitigation:** Clear error message directs the tenant to delete the failed NATGateway and retry. This is preferable to silent attachment to a broken resource — the tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning.
-
-**Reviewed by:** API design team
 
 ### Drawbacks
 
@@ -406,12 +366,6 @@ Supporting both old `network_attachments` (field 14) and new `compute_network_at
 
 **Trade-off:** Backward compatibility vs. clean API surface. Chosen approach: temporary dual-field support with documented migration timeline (OSAC-1471).
 
-#### Auto NATGateway rejects Failed or Deleting gateways
-
-FR-5 specifies that auto NATGateway only reuses existing NATGateways that are Ready. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
-
-**Trade-off:** Fail-fast vs. silent degradation. Chosen approach: reject Failed/Deleting NATGateways at create time with a clear error. The tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning. No replacement gateway is created (avoids duplicate SNAT conflicts).
-
 ## Alternatives (Not Implemented)
 
 ### Alternative 1: Single shared NetworkAttachment message with optional primary field
@@ -420,13 +374,7 @@ Instead of creating `ComputeNetworkAttachment`, extend the shared `NetworkAttach
 
 **Rejected because:** Other resource types (Cluster, BaremetalInstance) have different attachment semantics (CaaS needs separate API/ingress attachments, BMaaS has no multi-NIC concept). Resource-specific attachment messages provide cleaner API surface and type-specific validation.
 
-### Alternative 2: Always create auto NATGateway, even if one exists
-
-Instead of reusing existing NATGateway, always create a new one when `nat_gateway_mode=AUTO`.
-
-**Rejected because:** Multiple NATGateways on the same VN would conflict at the fabric level (SNAT rules for the same CIDR would overlap). Reusing existing NATGateway avoids conflict.
-
-### Alternative 3: Capacity exhaustion creates Failed resource instead of returning error
+### Alternative 2: Capacity exhaustion creates Failed resource instead of returning error
 
 Instead of returning an error when ExternalIPPool has no capacity, create a Failed ComputeInstance with a status condition.
 
@@ -434,11 +382,7 @@ Instead of returning an error when ExternalIPPool has no capacity, create a Fail
 
 ## Open Questions
 
-### ~~1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?~~ — Resolved
-
-Resolved: auto NATGateway reuses only Ready NATGateways. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry. A Deleting NATGateway is not treated as "does not exist" — creating a replacement while the SNAT rule is still being removed could cause conflicts. The tenant must wait for deletion to complete and retry.
-
-### 2. Should capacity exhaustion return an API error or create a Failed resource?
+### 1. Should capacity exhaustion return an API error or create a Failed resource?
 
 Current proposal: return error, no resources persisted. Alternative: create Failed resource for audit trail.
 
@@ -454,15 +398,12 @@ Current proposal: return error, no resources persisted. Alternative: create Fail
 - fulfillment-service: dual-field validation (reject both old and new, convert old → new)
 - fulfillment-service: BM-only region validation (reject VM when no k8s_manager)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- fulfillment-service: auto NATGateway reuse (reuse Ready, reject Failed/Deleting, create new if none exists)
 - osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (explicit primary, implicit single-attachment)
 
 ### Integration Tests
 
 - E2E: create ComputeInstance with multiple attachments, verify multi-NIC KubeVirt VM provisioned
-- E2E: create ComputeInstance with `--external-ip=auto`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: create ComputeInstance with `--nat-gateway=auto`, verify auto NATGateway created or reused, SNAT rule functional
-- E2E: create ComputeInstance with `--external-ip=auto --nat-gateway=auto`, verify full connectivity (inbound + outbound)
+- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance in BM-only region, verify error returned
 - E2E: create ComputeInstance with old `network_attachments` field, verify backward compat (internal conversion)
@@ -470,7 +411,6 @@ Current proposal: return error, no resources persisted. Alternative: create Fail
 ### Tricky Test Cases
 
 - Multi-NIC VM with primary on second attachment (verify default gateway on correct interface)
-- Auto NATGateway when existing NATGateway is Failed (verify create request fails with error directing tenant to delete failed gateway)
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
 
@@ -481,11 +421,11 @@ Current proposal: return error, no resources persisted. Alternative: create Fail
 Proposed maturity level: **Tech Preview** → **GA**
 
 Tech Preview criteria:
-- [ ] API fields (`compute_network_attachments`, `external_ip_mode`, `nat_gateway_mode`) implemented in fulfillment-service
+- [ ] API fields (`compute_network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
 - [ ] Operator CRD updated with `Primary` field and CEL validation
 - [ ] Multi-NIC template support (`osac.templates.ocp_virt_vm`) implemented
-- [ ] Auto ExternalIP and auto NATGateway provisioning functional
-- [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP, auto NATGateway)
+- [ ] Auto ExternalIP attachment provisioning functional
+- [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP)
 - [ ] Documentation: API reference, user guide for simplified VM creation
 
 GA criteria:
@@ -500,7 +440,7 @@ GA criteria:
 ### Upgrade
 
 Micro version upgrades (`x.y.N → x.y.N+2`):
-- New fields (`compute_network_attachments`, `external_ip_mode`, `nat_gateway_mode`) are additive — existing ComputeInstance resources continue to work with old `network_attachments` field (field 14)
+- New fields (`compute_network_attachments`, `auto_external_ip_attachment`) are additive — existing ComputeInstance resources continue to work with old `network_attachments` field (field 14)
 - Server supports both old and new fields during migration (dual-field support)
 - No user action required
 
@@ -515,12 +455,12 @@ If `N+1` upgrade fails or cluster is misbehaving:
 - Manual rollback: update fulfillment-service and osac-operator images to `N`
 - Existing ComputeInstance resources with new `compute_network_attachments` field (field 18) will be unrecognized by `N` server
 - Manual cleanup required: delete ComputeInstance resources created with new field, re-create with old field
-- Auto-provisioned ExternalIP/NATGateway resources remain (manual cleanup required if not needed)
+- Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
 
 Acceptable downgrade steps:
 - Delete CRs using new field (field 18)
 - Re-create using old field (field 14)
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway labeled `osac.openshift.io/auto-provisioned: "true"`)
+- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-provisioned: "true"`)
 
 ## Version Skew Strategy
 
@@ -581,13 +521,13 @@ kubectl describe computeinstance <name> -n <namespace>
 
 ### Disabling the feature
 
-To disable auto ExternalIP and auto NATGateway:
+To disable auto ExternalIP attachment:
 - Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
 - No API extension to disable (fields are part of CRD, cannot be removed at runtime)
 
 Consequences:
 - Auto ExternalIP allocation fails with error (resource not created)
-- Manual ExternalIP/NATGateway workflows remain functional
+- Manual ExternalIP workflows remain functional
 - No impact on existing running VMs
 
 ## Infrastructure Needed

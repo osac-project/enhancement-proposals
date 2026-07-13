@@ -80,8 +80,7 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 - Multi-NIC support with explicit physical interface mapping (tenant specifies interface name from HostType)
 - Resource-specific attachment message (`BareMetalNetworkAttachment`) with `interface` and `primary` fields
 - Optional `network_attachments` field — populate with tenant defaults when omitted
-- Auto ExternalIP mode (`external_ip_mode: AUTO`) for single-call inbound connectivity
-- Auto NATGateway mode (`nat_gateway_mode: AUTO`) for single-call outbound connectivity
+- Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher calls `create_network_attachment` per interface to configure switch ports
 - IP discovery after DHCP: host receives IP from fabric's DHCP server, IP discovered from host/inventory system, written to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
 - HostType resource extended with structured `NetworkInterface` list (name, role, description) for BM host types only
@@ -187,7 +186,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    With defaults + auto external access:
    ```bash
    osac create baremetalinstance --template bcm_h100 \
-     --external-ip=auto --name my-server
+     --external-ip-attachment --name my-server
    ```
 
 5. **fulfillment-service:**
@@ -201,8 +200,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - If >1 attachment without `interface`, reject (explicit interface required when multi-homed)
      - Number of attachments ≤ number of available interfaces on template
      - If multiple attachments, exactly one is `primary`; if single attachment, `primary` is implicit
-   - If `external_ip_mode == AUTO`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-provisioned: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
-   - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists and Ready: reuse (regardless of whether it was manually or auto-created). No new resources created. If exists but Failed or Deleting: the create request fails with an error directing the tenant to delete the failed gateway and retry. This prevents silent attachment to a broken shared resource. If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway in a **separate DB transaction** after the parent resource is persisted, both labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the BaremetalInstance creation still succeeds (outbound NAT is best-effort).
+   - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-provisioned: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
 6. **bare-metal-fulfillment-operator BareMetalInstance controller:**
@@ -252,22 +250,12 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - Fabric manager creates DNAT rule: external IP → BM's primary subnet IP
     - ExternalIPAttachment transitions from Pending to Ready
 
-    For auto-provisioned ExternalIPAttachments (`external_ip_mode=AUTO`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileNetworking` completion (IP allocation by the operator + switch port configuration by the fabric manager).
-
-#### Phase 4: Outbound NAT (optional)
-
-10. **Create NATGateway:**
-    ```bash
-    osac create externalip --pool external-pool-1 --name nat-ip
-    osac create natgateway --virtual-network my-net --externalip nat-ip --name my-nat
-    ```
-    Dispatcher → `osac.templates.{{ fabric_manager }}.create_nat_gateway` → SNAT rule for the VN's CIDR
+    For auto-provisioned ExternalIPAttachments (`auto_external_ip_attachment=true`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileNetworking` completion (IP allocation by the operator + switch port configuration by the fabric manager).
 
 #### Deletion (reverse order)
 
 11. **Delete BaremetalInstance:**
-    - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `external_ip_mode=AUTO`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-provisioned-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
-    - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork.
+    - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-provisioned-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
     - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator:
@@ -278,7 +266,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
 
 12. **Tenant deletes networking resources** (independently):
-    - Delete ExternalIPAttachments, ExternalIPs, NATGateway, SecurityGroup, Subnet, VirtualNetwork — each via its own dispatcher-triggered delete job
+    - Delete ExternalIPAttachments, ExternalIPs, SecurityGroup, Subnet, VirtualNetwork — each via its own dispatcher-triggered delete job
 
 ### API Extensions
 
@@ -302,8 +290,7 @@ message BareMetalInstanceSpec {
   map<string, google.protobuf.Any> template_parameters = 6;  // immutable
   optional BareMetalInstanceImage image = 7;                  // immutable
   repeated BareMetalNetworkAttachment network_attachments = 8; // NEW, optional
-  ExternalIPMode external_ip_mode = 9;   // NONE (default) or AUTO
-  NATGatewayMode nat_gateway_mode = 10;  // NONE (default) or AUTO
+  bool auto_external_ip_attachment = 9;  // NEW, auto-provision ExternalIP + ExternalIPAttachment
 }
 
 message BareMetalInstanceStatus {
@@ -387,7 +374,7 @@ The fabric manager role (`create_network_attachment`) handles switch-side only �
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP/NATGateway |
+| fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP |
 | bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), **IP discovery** from host/inventory after DHCP, OS provisioning (AAP), power management |
 | AAP BM provisioning template | OS provisioning only (host-side networking handled by DHCP) |
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
@@ -414,7 +401,7 @@ bare-metal-fulfillment-operator BareMetalInstance controller phases:
 
 This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
-- Auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway) inherit tenant annotation from parent BaremetalInstance
+- Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent BaremetalInstance
 - No new authentication or authorization changes
 - SecurityGroup rules control BM inbound traffic (tenant-configurable via explicit SG or default SG)
 - Multi-NIC BM servers on different subnets share the same SecurityGroup enforcement (fabric-level ACL rules apply to all interfaces)
@@ -433,12 +420,6 @@ This feature inherits the existing security model:
 - ExternalIP provisioning failure: ExternalIP enters Failed state, BaremetalInstance remains in Pending (external access unavailable, BM may still function without inbound connectivity)
 - ExternalIPAttachment provisioning failure: DNAT rule not created, inbound traffic does not reach BM (BM functional, external access unavailable)
 
-#### Auto NATGateway Provisioning Failures
-
-- Pool exhaustion: NATGateway creation fails, BaremetalInstance proceeds without outbound NAT (BM may be isolated)
-- Failed or Deleting NATGateway: if existing NATGateway on VN is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry
-- NATGateway provisioning failure: NATGateway enters Failed state, outbound SNAT rule not created, BM has no outbound connectivity
-
 #### Cleanup Failures
 
 - Auto-provisioned resource cleanup transient failure: finalizer retries
@@ -448,7 +429,7 @@ This feature inherits the existing security model:
 
 The bare-metal-fulfillment-operator needs additional RBAC permissions: get/list/watch on Subnet and NetworkClass CRs, required for the dispatcher to resolve networking configuration during `reconcileNetworking`.
 
-All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment/NATGateway) inherit tenant isolation from parent:
+All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
 - OPA policies enforce tenant-scoped list/get/update/delete
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
@@ -457,13 +438,12 @@ All new resources (BaremetalInstance with new fields, auto-provisioned ExternalI
 
 New structured log events:
 - bare-metal-fulfillment-operator: `NetworkingReconciled` (info), `NetworkingReconciliationFailed` (error), `SwitchPortConfigured` (info), `IPAddressAllocated` (info)
-- fulfillment-service: `AutoProvisionedExternalIP` (info), `AutoProvisionedNATGateway` (info), `ExternalIPPoolExhausted` (error), `InterfaceValidationFailed` (error)
+- fulfillment-service: `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error), `InterfaceValidationFailed` (error)
 
 New Kubernetes events on BaremetalInstance:
 - `NetworkingConfigured`: switch ports configured, IPs allocated
 - `NetworkingConfigurationFailed`: networking reconciliation failed (dispatcher error, switch port config error)
 - `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
-- `AutoNATGatewayCreated`: NATGateway auto-provisioned or reused
 
 No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
 
@@ -479,19 +459,11 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: ExternalIPPool exhaustion
 
-**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create BM with `external_ip_mode=AUTO`.
+**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create BM with `auto_external_ip_attachment=true`.
 
 **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool or contact admin.
 
 **Reviewed by:** Cloud Provider Admin
-
-#### Risk: Existing NATGateway is Failed or Deleting when auto NATGateway requested
-
-**Impact:** If existing NATGateway on VN is Failed or Deleting, the create request fails, blocking BM creation until the tenant resolves the broken gateway.
-
-**Mitigation:** Clear error message directs the tenant to delete the failed NATGateway and retry. This is preferable to silent attachment to a broken resource — the tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning.
-
-**Reviewed by:** API design team
 
 #### Risk: Two-operator architecture synchronization
 
@@ -523,17 +495,7 @@ Operator pre-allocates IPs from subnet CIDR during reconcileNetworking and write
 
 **Rejected because:** DHCP is simpler, OS-agnostic, and already provided by the fabric infrastructure. Static config requires per-OS template logic (cloud-init, NMState, kickstart) and adds IPAM complexity (allocation tracking, cross-operator concurrency, gateway/DNS discovery). DHCP handles all of this automatically.
 
-### Alternative 3: Auto NATGateway always creates new NATGateway
-
-Instead of reusing existing NATGateway, always create a new one when `nat_gateway_mode=AUTO`.
-
-**Rejected because:** Multiple NATGateways on the same VN would conflict at the fabric level (SNAT rules for the same CIDR would overlap). Reusing existing NATGateway avoids conflict.
-
 ## Open Questions
-
-### ~~1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?~~ — Resolved
-
-Resolved: auto NATGateway reuses only Ready NATGateways. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry. A Deleting NATGateway is not treated as "does not exist" — creating a replacement while the SNAT rule is still being removed could cause conflicts. The tenant must wait for deletion to complete and retry.
 
 ### 2. Should capacity exhaustion return an API error or create a Failed resource?
 
@@ -567,16 +529,13 @@ Options:
 - fulfillment-service: primary validation (reject >1 primary, accept single implicit primary, accept explicit primary)
 - fulfillment-service: interface validation (reject interface not in HostType, reject duplicate interfaces, reject >1 attachment without interface)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- fulfillment-service: auto NATGateway reuse (reuse Ready, reject Failed/Deleting, create new if none exists)
 - bare-metal-fulfillment-operator: reconcileNetworking phase ordering (after inventory, before provisioning)
 - bare-metal-fulfillment-operator: dispatcher call per attachment (create_network_attachment with correct params)
 
 ### Integration Tests
 
 - E2E: create BaremetalInstance with multiple attachments, verify switch ports configured for each interface, IPs allocated from each subnet
-- E2E: create BaremetalInstance with `--external-ip=auto`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: create BaremetalInstance with `--nat-gateway=auto`, verify auto NATGateway created or reused, SNAT rule functional
-- E2E: create BaremetalInstance with `--external-ip=auto --nat-gateway=auto`, verify full connectivity (inbound + outbound)
+- E2E: create BaremetalInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in HostType, verify error returned
 - E2E: create BaremetalInstance with >1 attachment but no interface fields, verify error returned
@@ -585,7 +544,6 @@ Options:
 ### Tricky Test Cases
 
 - Multi-NIC BM with primary on second interface (verify default gateway on correct interface)
-- Auto NATGateway when existing NATGateway is Failed (verify create request fails with error directing tenant to delete failed gateway)
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
 - IP address feedback latency (verify ExternalIPAttachment controller waits for IP to appear in status)
@@ -597,14 +555,14 @@ Options:
 Proposed maturity level: **Tech Preview** → **GA**
 
 Tech Preview criteria:
-- [ ] API fields (`network_attachments`, `external_ip_mode`, `nat_gateway_mode`) implemented in fulfillment-service
+- [ ] API fields (`network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
 - [ ] BaremetalInstance CRD updated with `NetworkAttachments` field, CEL validation, and status field for IP addresses
 - [ ] bare-metal-fulfillment-operator `reconcileNetworking` phase implemented
 - [ ] Dispatcher integration for `create_network_attachment` and `delete_network_attachment`
 - [ ] HostType proto extended with `NetworkInterface` list
-- [ ] Auto ExternalIP and auto NATGateway provisioning functional
+- [ ] Auto ExternalIP attachment provisioning functional
 - [ ] IP discovery implemented (host receives IP from DHCP, IP discovered from host/inventory system, written to CR status, feedback syncs to fulfillment-service)
-- [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP, auto NATGateway, IP feedback)
+- [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP, IP feedback)
 - [ ] Documentation: API reference, user guide for simplified BM creation
 
 GA criteria:
@@ -619,7 +577,7 @@ GA criteria:
 ### Upgrade
 
 Micro version upgrades (`x.y.N → x.y.N+2`):
-- New fields (`network_attachments`, `external_ip_mode`, `nat_gateway_mode`) are additive — existing BaremetalInstance resources continue to work without networking fields
+- New fields (`network_attachments`, `auto_external_ip_attachment`) are additive — existing BaremetalInstance resources continue to work without networking fields
 - No user action required
 
 Minor version upgrades (`x.N → x.N+1`):
@@ -632,12 +590,12 @@ If `N+1` upgrade fails or cluster is misbehaving:
 - Manual rollback: update fulfillment-service and bare-metal-fulfillment-operator images to `N`
 - Existing BaremetalInstance resources with new `network_attachments` field will be unrecognized by `N` operator
 - Manual cleanup required: delete BaremetalInstance resources created with new field, re-create without networking fields
-- Auto-provisioned ExternalIP/NATGateway resources remain (manual cleanup required if not needed)
+- Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
 
 Acceptable downgrade steps:
 - Delete CRs using new field (`network_attachments`)
 - Re-create without networking fields
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway labeled `osac.openshift.io/auto-provisioned: "true"`)
+- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-provisioned: "true"`)
 
 ## Version Skew Strategy
 
@@ -710,13 +668,13 @@ kubectl describe baremetalinstance <name> -n <namespace>
 
 ### Disabling the feature
 
-To disable auto ExternalIP and auto NATGateway:
+To disable auto ExternalIP attachment:
 - Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
 - No API extension to disable (fields are part of CRD, cannot be removed at runtime)
 
 Consequences:
 - Auto ExternalIP allocation fails with error (resource not created)
-- Manual ExternalIP/NATGateway workflows remain functional
+- Manual ExternalIP workflows remain functional
 - No impact on existing running BM servers
 
 ## Infrastructure Needed

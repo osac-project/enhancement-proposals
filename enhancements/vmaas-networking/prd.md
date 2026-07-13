@@ -17,8 +17,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 ### 2.1 Goals
 
 - A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary
-- A tenant can create a VM with `--external-ip=auto` and have the system allocate an external IP and attach it automatically for inbound access
-- A tenant can create a VM with `--nat-gateway=auto` and have the system provision outbound connectivity automatically
+- A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically for inbound access
 - A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and security group
 - The platform prevents VM creation in regions that do not support virtualization
 
@@ -33,8 +32,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 - As a Tenant User, I want to create a VM with multiple network interfaces, so that the VM can communicate on multiple subnets
 - As a Tenant User, I want to designate one network interface as primary, so that it provides the VM's default gateway and DNS configuration
-- As a Tenant User, I want to create a VM with `--external-ip=auto`, so that the VM is externally reachable without manually allocating an IP
-- As a Tenant User, I want to create a VM with `--nat-gateway=auto`, so that the VM can reach the internet without manually configuring outbound NAT
+- As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
 - As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a region that only supports bare-metal servers, so that I understand the limitation and can choose a different region
 
@@ -49,7 +47,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 ### Cloud Provider Admin Stories
 
-- As a Cloud Provider Admin, I want visibility into auto-provisioned networking resources (external IPs, NAT gateways), so I can monitor capacity and troubleshoot connectivity issues
+- As a Cloud Provider Admin, I want visibility into auto-provisioned networking resources (external IPs), so I can monitor capacity and troubleshoot connectivity issues
 
 ## 4. Requirements
 
@@ -66,23 +64,19 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 #### Auto External IP
 
-- **FR-4:** VMs support an `--external-ip=auto` option. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Auto-provisioned NAT gateways are NOT cleaned up on VM deletion — they are shared per-virtual-network resources that may serve other resources on the same network. [User]
-
-#### Auto NAT Gateway
-
-- **FR-5:** VMs support a `--nat-gateway=auto` option. When specified, the system provisions or reuses a NAT gateway on the VM's virtual network for outbound connectivity. The NAT gateway uses an automatically allocated external IP as the source address. If a NAT gateway already exists on the virtual network, it is reused only if it is Ready. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. [User]
+- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. [User]
 
 #### IP Address Discovery
 
-- **FR-6:** The allocated IP address for each network attachment is visible in the VM status after provisioning completes. When an external IP is attached to a VM, inbound traffic to the external IP is routed to the VM's primary attachment IP. [User]
+- **FR-5:** The allocated IP address for each network attachment is visible in the VM status after provisioning completes. When an external IP is attached to a VM, inbound traffic to the external IP is routed to the VM's primary attachment IP. [User]
 
 #### Region Validation
 
-- **FR-7:** When a VM is created, the platform validates that the target region supports virtualization. If the region only supports bare-metal servers, the create request fails with a clear error message explaining the limitation. [User]
+- **FR-6:** When a VM is created, the platform validates that the target region supports virtualization. If the region only supports bare-metal servers, the create request fails with a clear error message explaining the limitation. [User]
 
 #### Backward Compatibility
 
-- **FR-8:** Existing VMs continue to work without changes. The platform accepts both old and new network configuration formats during a transition period. If both formats are provided, the create request fails with an error. If the old format is provided alone, it is converted to the new format automatically. [User]
+- **FR-7:** Existing VMs continue to work without changes. The platform accepts both old and new network configuration formats during a transition period. If both formats are provided, the create request fails with an error. If the old format is provided alone, it is converted to the new format automatically. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -91,9 +85,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 ## 5. Acceptance Criteria
 
 - [ ] A Tenant User can create a VM with multiple `--network-attachment` flags and designate one as `--primary`
-- [ ] A Tenant User can create a VM with `--external-ip=auto` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
-- [ ] A Tenant User can create a VM with `--nat-gateway=auto` and no explicit network configuration — the VM is provisioned with outbound connectivity
-- [ ] A Tenant User can create a VM with both `--external-ip=auto` and `--nat-gateway=auto` — the VM is fully connected (inbound + outbound) in a single API call
+- [ ] A Tenant User can create a VM with `--external-ip-attachment` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
 - [ ] Creating a VM in a bare-metal-only region returns an error with a clear message
 - [ ] A multi-interface VM is provisioned with all interfaces operational, with the primary interface providing the default gateway
 - [ ] VM status shows the allocated IP address for each network attachment after provisioning completes
@@ -134,18 +126,9 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 - **Owner:** Cloud Provider Admin
 - **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool
 
-### 8.4 Auto NAT gateway fails when existing gateway is broken
-
-- **Owner:** Platform
-- **Mitigation:** Auto NAT gateway only reuses an existing gateway if it is Ready. If the existing gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
-
 ## 9. Open Questions
 
-### ~~9.1 Should auto NAT gateway check existing gateway state before reusing?~~ — Resolved
-
-Resolved: auto NAT gateway reuses only Ready NATGateways. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This avoids silent attachment to a broken shared resource while preventing duplicate SNAT conflicts (no replacement gateway is created).
-
-### 9.2 Should capacity exhaustion return an API error or create a failed resource?
+### 9.1 Should capacity exhaustion return an API error or create a failed resource?
 
 - **Owner:** API design team
 - **Impact:** Affects FR-4 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a failed resource provides visibility but adds cleanup burden.

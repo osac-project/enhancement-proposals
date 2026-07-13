@@ -568,9 +568,9 @@ created before (Pending state), the controller activates them once the
 cluster's endpoint VIPs are available. If created after, the DNAT rule
 is configured immediately.
 
-**Auto-provisioning lifecycle (external_ip_mode / nat_gateway_mode):**
+**Auto-provisioning lifecycle (auto_external_ip_attachment):**
 
-Auto ExternalIP and NATGateway provisioning (described in per-service
+Auto ExternalIP attachment provisioning (described in per-service
 EPs and [Default Networking](/enhancements/default-networking)) is a
 two-phase process:
 
@@ -706,9 +706,6 @@ ensure correct ordering:
    not, requeue.
 5. Once all ExternalIPs are gone: proceed with parent resource
    deletion.
-
-NATGateway is NOT cleaned up — it is a shared per-VN resource that
-may serve other resources on the same VirtualNetwork.
 
 If cleanup fails permanently (after N retries): finalizer is removed,
 parent resource deleted, orphaned resources left in cluster. Orphaned
