@@ -66,7 +66,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 #### Auto External IP
 
-- **FR-4:** VMs support an `--external-ip=auto` option. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. [User]
+- **FR-4:** VMs support an `--external-ip=auto` option. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Auto-provisioned NAT gateways are NOT cleaned up on VM deletion — they are shared per-virtual-network resources that may serve other resources on the same network. [User]
 
 #### Auto NAT Gateway
 

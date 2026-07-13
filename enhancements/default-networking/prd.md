@@ -141,7 +141,10 @@ where a single create command produces a reachable instance.
   ExternalIPs, before the parent resource is removed. If cleanup of
   auto-created resources fails permanently, the parent resource is still
   deleted — orphaned ExternalIPs remain and must be cleaned up manually
-  by the Tenant Admin or Cloud Provider Admin. [User]
+  by the Tenant Admin or Cloud Provider Admin. Auto-provisioned
+  NATGateways are NOT cleaned up on resource deletion — they are shared
+  per-virtual-network resources that may serve other resources on the
+  same network. [User]
 
 #### Auto NATGateway
 

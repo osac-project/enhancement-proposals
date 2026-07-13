@@ -73,7 +73,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Host Type Interface Discovery
 
-- **FR-2:** The host type API exposes available physical network interfaces for bare-metal host types. Each interface includes a name (e.g., "data-0"), role (e.g., "data", "management", "storage"), and description (e.g., "100GbE data interface"). VM host types do not expose interface lists. Interfaces are ordered; when multiple interfaces share the same role, the first in the list is the default for that role. [User]
+- **FR-2:** The host type API exposes available physical network interfaces for bare-metal host types. Each interface includes a name (e.g., "data-0"), role (e.g., "primary-traffic", "management", "storage"), and description (e.g., "100GbE primary traffic interface"). VM host types do not expose interface lists. Interfaces are ordered; when multiple interfaces share the same role, the first in the list is the default for that role. [User]
 
 #### Interface Validation
 
@@ -85,7 +85,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Optional Network Attachments with Defaults
 
-- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted, the system attaches the server to the tenant's default subnet and default security group, using the host type's default data interface (see Default Networking PRD). If the host type has no data-role interface, creating a server without explicit network attachments fails with a clear error. The resolved attachments are stored with the server so the server is self-describing after creation. [User]
+- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted, the system attaches the server to the tenant's default subnet and default security group, using the host type's default interface (see Default Networking PRD). If the host type has no default interface, creating a server without explicit network attachments fails with a clear error. The resolved attachments are stored with the server so the server is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -113,7 +113,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto-Cleanup on Deletion
 
-- **FR-12:** When a bare-metal server is deleted, if external IP and external IP attachment were created by the system (external IP mode `AUTO`, labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. Manually created resources are NOT cleaned up. Default networking resources (virtual network, subnet, security group) are NOT cleaned up. [User]
+- **FR-12:** When a bare-metal server is deleted, if external IP and external IP attachment were created by the system (external IP mode `AUTO`, labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. Auto-provisioned NAT gateways are NOT cleaned up on server deletion — they are shared per-virtual-network resources that may serve other resources on the same network. Manually created resources are NOT cleaned up. Default networking resources (virtual network, subnet, security group) are NOT cleaned up. [User]
 
 #### Network Attachment Deletion
 
@@ -200,7 +200,7 @@ Resolved: auto NAT gateway reuses only Ready NATGateways. If the existing NAT ga
 - **Owner:** API design team
 - **Impact:** Affects FR-6 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a failed resource provides visibility but adds cleanup burden.
 
-### 9.4 What is the interface selection logic when network attachments are omitted and the host type has multiple data-role interfaces?
+### 9.4 What is the interface selection logic when network attachments are omitted and the host type has multiple primary traffic interfaces?
 
 - **Owner:** Platform team
-- **Impact:** Affects FR-5. Current proposal: use the first data-role interface in the host type's ordered list. Alternative: require explicit interface when multiple data-role interfaces exist, or use a specific naming convention (e.g., "data-0").
+- **Impact:** Affects FR-5. Current proposal: use the first primary traffic interface in the host type's ordered list. Alternative: require explicit interface when multiple primary traffic interfaces exist, or use a specific naming convention (e.g., "data-0").

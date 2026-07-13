@@ -852,7 +852,7 @@ message ComputeInstanceSpec {
 ```
 
 Field 14 (`network_attachments`, shared `NetworkAttachment`) is deprecated and will be
-removed after migration. Field 15 (`compute_network_attachments`, `ComputeNetworkAttachment`)
+removed after migration. Field 18 (`compute_network_attachments`, `ComputeNetworkAttachment`)
 is the new canonical field. See the [VMaaS Networking EP](/enhancements/vmaas-networking/design.md)
 for the dual-field migration strategy.
 

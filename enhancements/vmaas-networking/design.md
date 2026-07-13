@@ -264,7 +264,7 @@ The feedback controller populates `NetworkAttachmentStatuses` by watching the Ku
 
 #### Server Validation (fulfillment-service)
 
-- During migration: accept both old field (14) and new field (15). If both set, reject. If old set, convert internally.
+- During migration: accept both old field (14) and new field (18). If both set, reject. If old set, convert internally.
 - Primary validation: if multiple attachments, exactly one primary
 - BM-only region check: if region's NetworkClass has no k8sManager, reject ComputeInstance creation for that region
 
@@ -304,7 +304,7 @@ The feedback controller populates `NetworkAttachmentStatuses` by watching the Ku
 #### Backward Compatibility Strategy
 
 Dual-field support during migration:
-- Server accepts old `network_attachments` (field 14) or new `compute_network_attachments` (field 15)
+- Server accepts old `network_attachments` (field 14) or new `compute_network_attachments` (field 18)
 - Reject if both set
 - Internal conversion: old → new format (no `primary` on single attachment, implicit primary)
 - Deprecation timeline: TBD (OSAC-1471)
@@ -402,7 +402,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Dual-field migration complexity
 
-Supporting both old `network_attachments` (field 14) and new `compute_network_attachments` (field 15) adds server validation complexity and migration burden. Tenants using the old field must eventually migrate.
+Supporting both old `network_attachments` (field 14) and new `compute_network_attachments` (field 18) adds server validation complexity and migration burden. Tenants using the old field must eventually migrate.
 
 **Trade-off:** Backward compatibility vs. clean API surface. Chosen approach: temporary dual-field support with documented migration timeline (OSAC-1471).
 
@@ -513,12 +513,12 @@ Minor version upgrades (`x.N → x.N+1`):
 
 If `N+1` upgrade fails or cluster is misbehaving:
 - Manual rollback: update fulfillment-service and osac-operator images to `N`
-- Existing ComputeInstance resources with new `compute_network_attachments` field (field 15) will be unrecognized by `N` server
+- Existing ComputeInstance resources with new `compute_network_attachments` field (field 18) will be unrecognized by `N` server
 - Manual cleanup required: delete ComputeInstance resources created with new field, re-create with old field
 - Auto-provisioned ExternalIP/NATGateway resources remain (manual cleanup required if not needed)
 
 Acceptable downgrade steps:
-- Delete CRs using new field (field 15)
+- Delete CRs using new field (field 18)
 - Re-create using old field (field 14)
 - Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway labeled `osac.openshift.io/auto-provisioned: "true"`)
 
