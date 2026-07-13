@@ -302,8 +302,8 @@ Use `see-also` field in YAML front matter:
 ---
 title: Storage Network Enhancement
 see-also:
-  - "../networking-ui-vmaas-scope/README.md"
-  - "../virtual-network/README.md"
+  - "/enhancements/networking-ui-vmaas-scope/README.md"
+  - "/enhancements/virtual-network/README.md"
 ---
 ```
 
@@ -316,7 +316,7 @@ When replacing an old enhancement:
    ---
    title: New Approach to Feature
    replaces:
-     - "../old-approach/README.md"
+     - "/enhancements/old-approach/README.md"
    ---
    ```
 
@@ -324,7 +324,8 @@ When replacing an old enhancement:
    ```yaml
    ---
    title: Old Approach to Feature (Deprecated)
-   superseded-by: ../new-approach/README.md
+   superseded-by:
+     - "/enhancements/new-approach/README.md"
    ---
    ```
 
