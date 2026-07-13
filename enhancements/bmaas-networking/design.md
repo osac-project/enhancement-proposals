@@ -223,7 +223,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    d. `reconcilePower` (unchanged)
 
-4. **IP discovery and feedback:**
+7. **IP discovery and feedback:**
    - After the host boots and receives a DHCP-assigned IP on the tenant V-Net, the IP must be discovered and written to `status.networkAttachmentStatuses[].ipAddress` on the CR
    - **Discovery mechanism (open question — see OQ#4):** Metal3 `BareMetalHost.status.hardware.nics[].ip` reflects the inspection-time IP, not the runtime IP after network reconfiguration. The runtime IP must be discovered via one of: (a) the `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table and returns the assigned IP, (b) the fabric manager exposes a DHCP lease API that the operator polls, or (c) a phone-home callback from the host reports its IP
    - Operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR
