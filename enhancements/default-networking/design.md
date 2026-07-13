@@ -20,11 +20,11 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-This enhancement provides default networking resources at tenant onboarding, optional network_attachments with defaults, auto ExternalIP/NATGateway provisioning, and auto-cleanup on deletion.
+This enhancement provides default networking resources (including NATGateway) at tenant onboarding, optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion.
 
 ## Summary
 
-This enhancement is an expansion of the [Unified Networking EP](/enhancements/unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system automatically provisions a default VirtualNetwork, Subnet, and SecurityGroup based on NetworkClass configuration. Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP and NATGateway modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
+This enhancement is an expansion of the [Unified Networking EP](/enhancements/unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system automatically provisions a default VirtualNetwork, Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration. Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -45,16 +45,15 @@ Creating a reachable resource in OSAC requires 6+ sequential API calls: VirtualN
 - No default CIDR or SecurityGroup rules configuration on NetworkClass
 - network_attachments field is required — no defaults applied when omitted
 - No auto ExternalIP allocation mode
-- No auto NATGateway provisioning mode
 - No auto-cleanup of auto-provisioned resources on parent deletion
 - No tenant READY condition gating on default networking readiness
 
 ### Goals
 
 - Single-call resource creation with sensible networking defaults
-- Default networking resources (VN, Subnet, SG) provisioned at tenant onboarding
+- Default networking resources (VN, Subnet, SG, NATGateway) provisioned at tenant onboarding
 - Optional network_attachments field on all resource types
-- Auto ExternalIP and NATGateway modes for fully connected resources
+- Auto ExternalIP mode for inbound connectivity
 - Auto-cleanup of auto-provisioned resources on deletion
 - Tenant-scoped default resources (visible, editable, lifecycle-managed by tenant)
 
@@ -67,7 +66,7 @@ Creating a reachable resource in OSAC requires 6+ sequential API calls: VirtualN
 
 ## Proposal
 
-This enhancement adds three main capabilities: default networking at tenant onboarding, optional network_attachments with auto-population, and auto ExternalIP/NATGateway provisioning.
+This enhancement adds three main capabilities: default networking (including NATGateway) at tenant onboarding, optional network_attachments with auto-population, and auto ExternalIP provisioning.
 
 ### Workflow Description
 
@@ -98,9 +97,10 @@ This enhancement adds three main capabilities: default networking at tenant onbo
      - Creates default VirtualNetwork with label `osac.openshift.io/default: "true"`, using CIDR from NetworkClass defaults
      - Creates default Subnet with label `osac.openshift.io/default: "true"`, using CIDR from NetworkClass defaults
      - Creates default SecurityGroup with label `osac.openshift.io/default: "true"`, using rules from NetworkClass defaults
+     - Creates default NATGateway with an auto-allocated ExternalIP on the default VirtualNetwork, labeled `osac.openshift.io/default: "true"`
    - Reads NetworkClass defaults configuration (single NetworkClass per deployment)
    - Default resources go through the normal reconciliation path: fulfillment-service reconciler pushes CRs → osac-operator networking controllers dispatch to fabric/k8s managers → resources transition to READY
-   - fulfillment-service tracks default networking readiness on the Tenant: sets `DefaultNetworkingReady` condition once all default resources reach READY state (via feedback)
+   - fulfillment-service tracks default networking readiness on the Tenant: sets `DefaultNetworkingReady` condition once all default resources (VN, Subnet, SG, NATGateway) reach READY state (via feedback)
    - Tenant overall status becomes READY only when DefaultNetworkingReady condition is true
 
 3. **If default networking provisioning fails:**
@@ -141,15 +141,15 @@ This enhancement adds three main capabilities: default networking at tenant onbo
 6. **Tenant User creates VM with auto ExternalIP:**
    ```bash
    osac create computeinstance --template ocp_virt_vm \
-     --external-ip=auto --name my-vm
+     --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
      - Populates network_attachments with defaults (if omitted)
-     - Reads `external_ip_mode: AUTO`
+     - Reads `auto_external_ip_attachment: true`
      - Auto-selects ExternalIPPool (READY, most available capacity, IPv4 family)
      - Creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically.
      - Both labeled `osac.openshift.io/auto-provisioned: "true"`. ExternalIP also labeled `osac.openshift.io/auto-provisioned-for: <resource-id>` for orphan cleanup.
-   - ComputeInstance CR created with `external_ip_mode: AUTO`
+   - ComputeInstance CR created with `auto_external_ip_attachment: true`
    - osac-operator reconciles ExternalIP (fabric manager allocates address → Allocated), then VM provisioning, then ExternalIPAttachment controller activates once ExternalIP is Allocated AND VM's `VirtualMachineReference` is set
    - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
    - Result: VM is reachable via ExternalIP
@@ -164,11 +164,11 @@ This enhancement adds three main capabilities: default networking at tenant onbo
 8. **Tenant User creates Cluster with auto ExternalIP for API and ingress:**
    ```bash
    osac create cluster --template ocp_4_17_small \
-     --external-ip=auto-all --name my-cluster
+     --external-ip-attachment --name my-cluster
    ```
    - fulfillment-service:
      - Populates network_attachments with defaults (if omitted)
-     - Reads `external_ip_mode: AUTO_ALL`
+     - Reads `auto_external_ip_attachment: true`
      - Auto-selects ExternalIPPool (same algorithm)
      - Creates two ExternalIPs + two ExternalIPAttachments in the same DB transaction — all start in **Pending** state. Pool capacity decremented atomically.
      - All labeled `osac.openshift.io/auto-provisioned: "true"`
@@ -179,40 +179,7 @@ This enhancement adds three main capabilities: default networking at tenant onbo
    - Result: Cluster is reachable via ExternalIPs for both API and ingress
 
 9. **CLI flag mapping for clusters:**
-   - `--external-ip=auto-all` → `external_ip_mode: AUTO_ALL` (both API and ingress)
-   - `--external-ip=auto-api` → `external_ip_mode: AUTO_API` (API only)
-   - `--external-ip=auto-ingress` → `external_ip_mode: AUTO_INGRESS` (ingress only)
-
-#### Auto NATGateway for Outbound Connectivity
-
-10. **Tenant User creates VM with auto NATGateway:**
-    ```bash
-    osac create computeinstance --template ocp_virt_vm \
-      --nat-gateway=auto --name my-vm
-    ```
-    - fulfillment-service:
-      - Populates network_attachments with defaults (if omitted)
-      - Reads `nat_gateway_mode: AUTO`
-      - Checks if NATGateway already exists on the VM's VirtualNetwork
-      - If exists and Ready: reuse (regardless of whether manually or auto-created). No new resources created. If exists but Failed or Deleting: the create request fails with an error directing the tenant to delete the failed gateway and retry. This prevents silent attachment to a broken shared resource.
-      - If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each — the inbound ExternalIP from `external_ip_mode=AUTO` cannot also be used as SNAT source). The NATGateway and its ExternalIP are created in a **separate DB transaction** after the parent resource is persisted, labeled `osac.openshift.io/auto-provisioned: "true"`. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the parent resource creation still succeeds (outbound NAT is best-effort, not a hard prerequisite).
-    - osac-operator NATGateway controller reconciles SNAT rule provisioning
-    - Result: VM has outbound connectivity via NATGateway
-
-11. **Reusing existing NATGateway:**
-    - If a NATGateway already exists on the VN (created manually or auto-provisioned by another resource), the system reuses it
-    - No duplicate NATGateway is created
-    - This avoids SNAT rule conflicts at the fabric level
-
-#### Combined Auto External Access
-
-12. **Tenant User creates VM with both inbound and outbound:**
-    ```bash
-    osac create computeinstance --template ocp_virt_vm \
-      --external-ip=auto --nat-gateway=auto --name my-vm
-    ```
-    - fulfillment-service provisions: default network_attachments, auto ExternalIP + ExternalIPAttachment, auto NATGateway (or reuse existing)
-    - Result: fully connected VM (inbound via ExternalIP, outbound via NATGateway) in a single API call
+   - `--external-ip-attachment` → `auto_external_ip_attachment: true` (auto-provision ExternalIP + ExternalIPAttachment for both API and ingress)
 
 #### Auto-Cleanup on Deletion
 
@@ -225,9 +192,8 @@ This enhancement adds three main capabilities: default networking at tenant onbo
       - Deletes ExternalIPAttachment first (DNAT rule removed)
       - Deletes ExternalIP second (IP returned to pool)
       - If cleanup fails permanently (after retries): finalizer is removed, parent resource deleted, orphaned resources left in cluster
-    - **Auto-provisioned NATGateway is NOT cleaned up** — NATGateway is a shared per-VN resource that may serve other resources on the same VirtualNetwork. Even if this resource auto-created it, deleting the resource does not delete the NATGateway. The tenant can delete the NATGateway manually if no longer needed.
     - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-provisioned), they persist after parent deletion
-    - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — they are tenant-scoped and shared across resources
+    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
 14. **Tenant Admin inspects and customizes default resources:**
     ```bash
@@ -235,6 +201,7 @@ This enhancement adds three main capabilities: default networking at tenant onbo
     osac get virtualnetworks --filter 'labels["osac.openshift.io/default"]="true"'
     osac get subnets --filter 'labels["osac.openshift.io/default"]="true"'
     osac get security-groups --filter 'labels["osac.openshift.io/default"]="true"'
+    osac get natgateways --filter 'labels["osac.openshift.io/default"]="true"'
 
     # Modify default SecurityGroup rules
     osac update security-group default-sg \
@@ -275,48 +242,26 @@ message SecurityGroupRule {
 // ComputeInstance and BaremetalInstance
 message ComputeInstanceSpec {
   // ... existing fields ...
-  ExternalIPMode external_ip_mode = 19;   // NONE (default) or AUTO
-  NATGatewayMode nat_gateway_mode = 20;   // NONE (default) or AUTO
-}
-
-enum ExternalIPMode {
-  EXTERNAL_IP_MODE_UNSPECIFIED = 0;
-  EXTERNAL_IP_MODE_NONE = 1;   // default
-  EXTERNAL_IP_MODE_AUTO = 2;
+  bool auto_external_ip_attachment = 19;  // auto-provision ExternalIP + ExternalIPAttachment
 }
 
 // Cluster
 message ClusterSpec {
   // ... existing fields ...
-  ClusterExternalIPMode external_ip_mode = 20;  // NONE, AUTO_API, AUTO_INGRESS, AUTO_ALL
-  NATGatewayMode nat_gateway_mode = 21;         // NONE (default) or AUTO
-}
-
-enum ClusterExternalIPMode {
-  CLUSTER_EXTERNAL_IP_MODE_UNSPECIFIED = 0;
-  CLUSTER_EXTERNAL_IP_MODE_NONE = 1;        // default
-  CLUSTER_EXTERNAL_IP_MODE_AUTO_API = 2;    // API server only
-  CLUSTER_EXTERNAL_IP_MODE_AUTO_INGRESS = 3; // ingress only
-  CLUSTER_EXTERNAL_IP_MODE_AUTO_ALL = 4;     // both API and ingress
-}
-
-enum NATGatewayMode {
-  NAT_GATEWAY_MODE_UNSPECIFIED = 0;
-  NAT_GATEWAY_MODE_NONE = 1;   // default
-  NAT_GATEWAY_MODE_AUTO = 2;
+  bool auto_external_ip_attachment = 10;  // auto-provision ExternalIP + ExternalIPAttachment for API and ingress
 }
 ```
 
 **Default label on auto-created resources:**
 
-All default resources (VirtualNetwork, Subnet, SecurityGroup created at tenant onboarding) receive label:
+All default resources (VirtualNetwork, Subnet, SecurityGroup, NATGateway created at tenant onboarding) receive label:
 ```yaml
 metadata:
   labels:
     osac.openshift.io/default: "true"
 ```
 
-All auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway created by external_ip_mode=AUTO or nat_gateway_mode=AUTO) receive label:
+All auto-provisioned resources (ExternalIP, ExternalIPAttachment created by auto_external_ip_attachment=true) receive label:
 ```yaml
 metadata:
   labels:
@@ -340,7 +285,7 @@ const (
 ```
 
 Condition values:
-- `DefaultNetworkingReady: true` when default VN, Subnet, and SG are all READY
+- `DefaultNetworkingReady: true` when default VN, Subnet, SG, and NATGateway are all READY
 - `DefaultNetworkingReady: false, reason: <FailureReason>` when any default resource failed to provision
 
 **NetworkClass defaults field:**
@@ -370,14 +315,12 @@ type SecurityGroupRule struct {
 ```go
 type ComputeInstanceSpec struct {
     // ... existing fields ...
-    ExternalIPMode   string `json:"externalIPMode,omitempty"`   // NONE or AUTO
-    NATGatewayMode   string `json:"natGatewayMode,omitempty"`   // NONE or AUTO
+    AutoExternalIPAttachment bool `json:"autoExternalIPAttachment,omitempty"`
 }
 
 type ClusterSpec struct {
     // ... existing fields ...
-    ExternalIPMode   string `json:"externalIPMode,omitempty"`   // NONE, AUTO_API, AUTO_INGRESS, AUTO_ALL
-    NATGatewayMode   string `json:"natGatewayMode,omitempty"`   // NONE or AUTO
+    AutoExternalIPAttachment bool `json:"autoExternalIPAttachment,omitempty"`
 }
 ```
 
@@ -394,16 +337,11 @@ type ClusterSpec struct {
 - If no defaults exist (should not occur — defaults are mandatory on NetworkClass): return error `No default networking resources available. Please contact your administrator.`
 - If network_attachments provided explicitly: no defaults applied
 
-**Auto ExternalIP allocation:**
+**Auto ExternalIP allocation (when auto_external_ip_attachment: true):**
 - Pool selection: pick READY ExternalIPPool with most available capacity matching IP family (defaults to IPv4)
 - If multiple pools have equal capacity: selection is deterministic but implementation-defined (e.g., alphabetical by pool name)
 - If no pool has capacity: return error `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
 - Pool capacity is checked and decremented synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically — actual IP address allocation from the fabric manager and DNAT rule creation happen asynchronously through the operator reconciliation loop. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow.
-
-**Auto NATGateway creation:**
-- Check if NATGateway already exists on the VN (query by VirtualNetwork reference)
-- If exists and Ready: reuse (regardless of whether manually or auto-created). If exists but Failed or Deleting: return error directing tenant to delete the failed gateway and retry
-- If not exists: auto-select ExternalIPPool, create ExternalIP, create NATGateway
 
 ### Implementation Details/Notes/Constraints
 
@@ -411,14 +349,14 @@ type ClusterSpec struct {
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate NetworkClass defaults, **create default VN/Subnet/SG at tenant onboarding** (via its own API), populate network_attachments defaults, auto-provision ExternalIP/NATGateway, track DefaultNetworkingReady condition, return error on capacity exhaustion |
-| osac-operator resource controllers | Clean up auto-provisioned ExternalIP and ExternalIPAttachment via finalizer (NATGateway is NOT cleaned up — shared per-VN) |
+| fulfillment-service | Validate NetworkClass defaults, **create default VN/Subnet/SG/NATGateway at tenant onboarding** (via its own API), populate network_attachments defaults, auto-provision ExternalIP, track DefaultNetworkingReady condition, return error on capacity exhaustion |
+| osac-operator resource controllers | Clean up auto-provisioned ExternalIP and ExternalIPAttachment via finalizer |
 | osac-operator networking controllers | Reconcile default networking resources (same as manually created resources) |
 | osac-installer | Configure NetworkClass defaults in setup.sh and installation overlays |
 
 #### Default Resource Lifecycle
 
-- **Creation:** fulfillment-service creates default VN, Subnet, SG at tenant onboarding (via its own API — resources are persisted in PostgreSQL and reconciled to K8s CRs like any other resource)
+- **Creation:** fulfillment-service creates default VN, Subnet, SG, and NATGateway at tenant onboarding (via its own API — resources are persisted in PostgreSQL and reconciled to K8s CRs like any other resource)
 - **Labeling:** All default resources labeled `osac.openshift.io/default: "true"`
 - **Visibility:** Default resources appear in list/detail views like any other resource
 - **Editability:** Tenant Admin can modify default resources (e.g., add SecurityGroup rules)
@@ -427,12 +365,11 @@ type ClusterSpec struct {
 
 #### Auto-Provisioned Resource Lifecycle
 
-- **Creation:** fulfillment-service creates ExternalIP, ExternalIPAttachment, or NATGateway when external_ip_mode=AUTO or nat_gateway_mode=AUTO
+- **Creation:** fulfillment-service creates ExternalIP or ExternalIPAttachment when auto_external_ip_attachment=true
 - **Labeling:** All auto-provisioned resources labeled `osac.openshift.io/auto-provisioned: "true"`
 - **Cleanup:** Parent resource finalizer deletes auto-provisioned ExternalIP/ExternalIPAttachment on parent deletion
 - **Cleanup order:** ExternalIPAttachment → ExternalIP → parent resource removal
-- **NATGateway NOT cleaned up:** NATGateway is a shared per-VN resource — it persists after individual resource deletion even if auto-created, because other resources on the same VN may depend on it. Tenant deletes NATGateway manually when no longer needed.
-- **Cleanup failure:** If cleanup fails permanently (after retries), finalizer is removed, parent deleted, orphaned resources left in cluster (manual cleanup required)
+- **Cleanup failure:** If cleanup fails permanently (after retries), finalizer is removed, parent deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required)
 - **Manual resources NOT cleaned up:** If tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-provisioned), they persist after parent deletion
 
 #### Prerequisite Ordering for Clusters
@@ -453,20 +390,11 @@ The DNAT model maps external IPs to internal VIPs:
 
 Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPAddressPool) are separate address spaces managed by separate systems. No IPAM coordination needed between them.
 
-#### NATGateway Reuse Logic
-
-When `nat_gateway_mode=AUTO`:
-1. Query NATGateway resources with VirtualNetwork reference matching the resource's VN
-2. If one or more NATGateways exist: reuse the first one found (alphabetically by name, deterministic)
-3. If no NATGateway exists: auto-select ExternalIPPool, create ExternalIP, create NATGateway
-
-**Reuse only if Ready:** If existing NATGateway is Ready, the system reuses it. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry. This prevents silent attachment to a broken shared resource.
-
 #### Tenant Isolation
 
 All default and auto-provisioned resources inherit tenant annotation from parent:
-- `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/SG
-- `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-provisioned ExternalIP/ExternalIPAttachment/NATGateway
+- `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/SG/NATGateway
+- `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-provisioned ExternalIP/ExternalIPAttachment
 - OPA policies enforce tenant-scoped list/get/update/delete
 
 #### CIDR Overlap Across Tenants
@@ -477,8 +405,8 @@ All tenants receive the same default CIDR range as configured on the NetworkClas
 
 This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
-- Auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway) inherit tenant annotation from parent resource
-- Default resources (VN, Subnet, SG) inherit tenant annotation from Tenant resource
+- Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent resource
+- Default resources (VN, Subnet, SG, NATGateway) inherit tenant annotation from Tenant resource
 - No new authentication or authorization changes
 - Default SecurityGroup rules configured by Cloud Infrastructure Admin (applies to all tenants)
 - Tenant Admin can modify default SecurityGroup rules after creation (tenant-configurable)
@@ -493,23 +421,23 @@ This feature inherits the existing security model:
 - **Default VirtualNetwork provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: VirtualNetworkProvisioningFailed, message: "..."`
 - **Default Subnet provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: SubnetProvisioningFailed, message: "..."`
 - **Default SecurityGroup provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: SecurityGroupProvisioningFailed, message: "..."`
+- **Default NATGateway provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: NATGatewayProvisioningFailed, message: "..."`
 - **Recovery:** Cloud Provider Admin inspects failure (check networking controller logs, AAP job logs), fixes root cause, deletes tenant, re-creates tenant
 
 #### Resource Creation Failures
 
 - **No default networking resources:** Since defaults are mandatory on NetworkClass (rejected at creation time without them), this scenario should not occur. If it does due to data inconsistency, resource creation without explicit network_attachments returns error: `No default networking resources available. Please contact your administrator.`
 - **ExternalIPPool capacity exhaustion:** create API call returns error: `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`. Resource is NOT persisted.
-- **Auto NATGateway provisioning fails:** NATGateway enters Failed state, outbound SNAT rule not created, VM has no outbound connectivity (VM functional, inbound access works if external_ip_mode=AUTO)
 
 #### Auto-Provisioned Resource Cleanup Failures
 
 - **Transient failure:** Parent finalizer retries cleanup (exponential backoff)
-- **Permanent failure:** After N retries, finalizer is removed, parent resource deleted, orphaned ExternalIP/ExternalIPAttachment/NATGateway left in cluster
+- **Permanent failure:** After N retries, finalizer is removed, parent resource deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster
 - **Manual cleanup required:** Tenant Admin or Cloud Provider Admin manually deletes orphaned resources (identified by label `osac.openshift.io/auto-provisioned: "true"` with no parent reference)
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes. All new resources (default networking, auto-provisioned ExternalIP/NATGateway) inherit tenant isolation:
+No RBAC or tenancy changes. All new resources (default networking, auto-provisioned ExternalIP) inherit tenant isolation:
 - `osac.openshift.io/tenant` annotation propagated from parent to all child resources
 - OPA policies enforce tenant-scoped list/get/update/delete
 - Tenant User can view and manage default and auto-provisioned resources via standard API
@@ -518,18 +446,16 @@ No RBAC or tenancy changes. All new resources (default networking, auto-provisio
 ### Observability and Monitoring
 
 New structured log events:
-- fulfillment-service: `CreatingDefaultNetworking` (info), `DefaultNetworkingReady` (info), `DefaultNetworkingFailed` (error), `PopulatedNetworkAttachmentsDefaults` (info), `AutoProvisionedExternalIP` (info), `AutoProvisionedNATGateway` (info), `ReusingExistingNATGateway` (info), `ExternalIPPoolExhausted` (error)
+- fulfillment-service: `CreatingDefaultNetworking` (info), `DefaultNetworkingReady` (info), `DefaultNetworkingFailed` (error), `PopulatedNetworkAttachmentsDefaults` (info), `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error)
 
 New Kubernetes events on Tenant:
-- `DefaultNetworkingCreated`: default VN, Subnet, and SG creation started
+- `DefaultNetworkingCreated`: default VN, Subnet, SG, and NATGateway creation started
 - `DefaultNetworkingReady`: all default resources are READY
 - `DefaultNetworkingFailed`: default resource provisioning failed (includes reason and failed resource name)
 
 New Kubernetes events on ComputeInstance/Cluster/BaremetalInstance:
 - `NetworkAttachmentsPopulated`: network_attachments field populated with tenant defaults
 - `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
-- `AutoNATGatewayCreated`: NATGateway auto-provisioned
-- `AutoNATGatewayReused`: existing NATGateway reused
 
 No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
 
@@ -537,7 +463,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: ExternalIPPool exhaustion
 
-**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create resource with external_ip_mode=AUTO.
+**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create resource with auto_external_ip_attachment=true.
 
 **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool or contact admin.
 
@@ -563,14 +489,6 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 Since defaults are mandatory (a NetworkClass without defaults is rejected at creation time), this scenario cannot occur. The osac-installer setup.sh includes NetworkClass default configuration in installation overlays, and the API validation ensures defaults are always present.
 
-#### Risk: Existing NATGateway is Failed or Deleting when auto NATGateway requested
-
-**Impact:** If existing NATGateway on VN is Failed or Deleting, the create request fails, blocking resource creation until the tenant resolves the broken gateway.
-
-**Mitigation:** Clear error message directs the tenant to delete the failed NATGateway and retry. This is preferable to silent attachment to a broken resource — the tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning.
-
-**Reviewed by:** API design team
-
 ### Drawbacks
 
 #### CIDR overlap across tenants
@@ -578,12 +496,6 @@ Since defaults are mandatory (a NetworkClass without defaults is rejected at cre
 All tenants receive the same default CIDR range. While fabric-level isolation prevents actual IP conflicts, this may confuse tenants who expect unique CIDR ranges.
 
 **Trade-off:** Simplicity (single default configuration) vs. per-tenant customization. Chosen approach: single default, document fabric-level isolation. Alternative: per-tenant CIDR allocation (more complex, requires IPAM).
-
-#### Auto NATGateway rejects Failed or Deleting gateways
-
-Auto NATGateway only reuses existing NATGateways that are Ready. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
-
-**Trade-off:** Fail-fast vs. silent degradation. Chosen approach: reject Failed/Deleting NATGateways at create time with a clear error. The tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning. No replacement gateway is created (avoids duplicate SNAT conflicts).
 
 #### Capacity exhaustion returns API error, not Failed resource
 
@@ -599,31 +511,16 @@ Instead of all tenants receiving the same default CIDR, allocate unique CIDR ran
 
 **Rejected because:** Adds complexity (requires IPAM, CIDR allocation tracking, exhaustion handling). The unified networking API allows overlapping CIDRs between tenants (fabric-level isolation), so unique CIDRs are not required. Single default CIDR is simpler.
 
-### Alternative 2: Always create auto NATGateway, even if one exists
-
-Instead of reusing existing NATGateway, always create a new one when nat_gateway_mode=AUTO.
-
-**Rejected because:** Multiple NATGateways on the same VN would conflict at the fabric level (SNAT rules for the same CIDR would overlap). Reusing existing NATGateway avoids conflict.
-
-### Alternative 3: Capacity exhaustion creates Failed resource instead of returning error
+### Alternative 2: Capacity exhaustion creates Failed resource instead of returning error
 
 Instead of returning an error when ExternalIPPool has no capacity, create a Failed resource with a status condition.
 
 **Rejected because:** Pool capacity is validated synchronously during the API call — if the pool is exhausted, the call fails atomically and no resources are persisted. Creating a Failed resource adds cleanup burden and audit trail complexity. Clear API error with no persisted state is simpler.
 
-### Alternative 4: Reuse NATGateway regardless of state
-
-Instead of rejecting Failed/Deleting NATGateways, reuse any existing NATGateway regardless of state.
-
-**Rejected because:** Silently attaching to a Failed or Deleting NATGateway gives the tenant no feedback — they discover outbound connectivity failure only after provisioning completes. Chosen approach: only reuse Ready NATGateways; if Failed or Deleting, fail the create request with a clear error directing the tenant to delete the broken gateway and retry. No replacement gateway is created (avoids duplicate SNAT conflicts).
 
 ## Open Questions
 
-### ~~1. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?~~ — Resolved
-
-Resolved: auto NATGateway reuses only Ready NATGateways. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry. A Deleting NATGateway is not treated as "does not exist" — creating a replacement while the SNAT rule is still being removed could cause conflicts. The tenant must wait for deletion to complete and retry.
-
-### 2. Should capacity exhaustion return an API error or create a Failed resource?
+### 1. Should capacity exhaustion return an API error or create a Failed resource?
 
 Current proposal: return error, resource not persisted. Alternative: create Failed resource for audit trail.
 
@@ -638,30 +535,26 @@ Current proposal: return error, resource not persisted. Alternative: create Fail
 - fulfillment-service: NetworkClass defaults validation (valid CIDR, valid SecurityGroupRule fields)
 - fulfillment-service: network_attachments population (populate with defaults when omitted, skip when provided)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- fulfillment-service: auto NATGateway reuse (reuse Ready, reject Failed/Deleting, create new if none exists)
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
-- fulfillment-service: default resource creation at tenant onboarding (VN, Subnet, SG with default label)
-- fulfillment-service: DefaultNetworkingReady condition tracking (true when all defaults READY via feedback, false when any failed)
+- fulfillment-service: default resource creation at tenant onboarding (VN, Subnet, SG, NATGateway with default label)
+- fulfillment-service: DefaultNetworkingReady condition tracking (true when all defaults including NATGateway READY via feedback, false when any failed)
 - osac-operator resource controllers: auto-provisioned resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
 
 ### Integration Tests
 
-- E2E: create Tenant, verify default VN/Subnet/SG created and labeled `osac.openshift.io/default: "true"`
+- E2E: create Tenant, verify default VN/Subnet/SG/NATGateway created and labeled `osac.openshift.io/default: "true"`
 - E2E: create Tenant, default Subnet provisioning fails, verify Tenant remains non-READY with condition
 - E2E: create ComputeInstance without network_attachments, verify defaults populated in spec
-- E2E: create ComputeInstance with `--external-ip=auto`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: create Cluster with `--external-ip=auto-all`, verify two ExternalIPs created BEFORE provisioning, cluster VIPs match
-- E2E: create ComputeInstance with `--nat-gateway=auto`, verify auto NATGateway created or reused, SNAT rule functional
-- E2E: create ComputeInstance with `--external-ip=auto --nat-gateway=auto`, verify full connectivity (inbound + outbound)
+- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
+- E2E: create Cluster with `--external-ip-attachment`, verify two ExternalIPs created BEFORE provisioning, cluster VIPs match
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance with explicit network_attachments, verify defaults NOT applied
-- E2E: create ComputeInstance with `--external-ip=auto` when pool exhausted, verify error returned, resource not persisted
+- E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
 - E2E: Tenant Admin modifies default SecurityGroup rules, verify changes take effect
 
 ### Tricky Test Cases
 
 - Tenant onboarding failure: default Subnet provisioning fails, verify Tenant non-READY, manual retry works
-- Auto NATGateway when existing NATGateway is Failed: verify create request fails with error directing tenant to delete failed gateway
 - ExternalIPPool exhaustion: verify error returned, no resource created
 - Auto-provisioned resource cleanup failure: verify finalizer retry, eventual orphan cleanup
 - Cluster ExternalIP prerequisite ordering: verify ExternalIPs allocated BEFORE provisioning, template receives correct VIPs
@@ -674,14 +567,13 @@ Proposed maturity level: **Tech Preview** → **GA**
 
 Tech Preview criteria:
 - [ ] NetworkClass defaults field implemented in fulfillment-service and osac-operator
-- [ ] fulfillment-service creates default VN/Subnet/SG at tenant onboarding
+- [ ] fulfillment-service creates default VN/Subnet/SG/NATGateway at tenant onboarding
 - [ ] Tenant DefaultNetworkingReady condition functional
 - [ ] network_attachments field optional on all three resource types (ComputeInstance, Cluster, BaremetalInstance)
-- [ ] Auto ExternalIP mode (external_ip_mode: AUTO) functional for VM and BM
-- [ ] Auto ExternalIP mode (external_ip_mode: AUTO_ALL/AUTO_API/AUTO_INGRESS) functional for Cluster
-- [ ] Auto NATGateway mode (nat_gateway_mode: AUTO) functional
+- [ ] Auto ExternalIP attachment (auto_external_ip_attachment) functional for VM and BM
+- [ ] Auto ExternalIP attachment for Cluster functional
 - [ ] Auto-provisioned resource cleanup via parent finalizer functional
-- [ ] Integration tests pass (E2E coverage for default networking, optional attachments, auto ExternalIP, auto NATGateway, cleanup)
+- [ ] Integration tests pass (E2E coverage for default networking, optional attachments, auto ExternalIP, cleanup)
 - [ ] Documentation: API reference, user guide for simplified resource creation
 
 GA criteria:
@@ -696,7 +588,7 @@ GA criteria:
 ### Upgrade
 
 Micro version upgrades (`x.y.N → x.y.N+2`):
-- New fields (NetworkClass.defaults, external_ip_mode, nat_gateway_mode) are additive — existing resources continue to work
+- New fields (NetworkClass.defaults, auto_external_ip_attachment) are additive — existing resources continue to work
 - Existing Tenants do NOT receive default networking resources retroactively (only new Tenants get defaults)
 - No user action required
 
@@ -710,12 +602,12 @@ Minor version upgrades (`x.N → x.N+1`):
 If `N+1` upgrade fails or cluster is misbehaving:
 - Manual rollback: update fulfillment-service and osac-operator images to `N`
 - Existing Tenants with default networking resources: default resources remain (no impact)
-- Existing resources with auto-provisioned ExternalIP/NATGateway: `N` server does not recognize external_ip_mode/nat_gateway_mode fields, auto-provisioned resources remain (manual cleanup required if not needed)
-- New resource creation with external_ip_mode=AUTO will fail (field not recognized)
+- Existing resources with auto-provisioned ExternalIP: `N` server does not recognize auto_external_ip_attachment field, auto-provisioned resources remain (manual cleanup required if not needed)
+- New resource creation with auto_external_ip_attachment=true will fail (field not recognized)
 
 Acceptable downgrade steps:
 - Existing resources continue to function (default networking and auto-provisioned resources persist)
-- New resources must use explicit networking (external_ip_mode=AUTO not supported)
+- New resources must use explicit networking (auto_external_ip_attachment=true not supported)
 - Manually delete orphaned auto-provisioned resources if not needed (identified by label `osac.openshift.io/auto-provisioned: "true"`)
 
 ## Version Skew Strategy
@@ -727,12 +619,12 @@ fulfillment-service and osac-operator are deployed together in the same namespac
 ### Client Skew
 
 osac-cli (n-1) with fulfillment-service (n):
-- Old CLI does not support `--external-ip=auto` or `--nat-gateway=auto` flags
+- Old CLI does not support `--external-ip-attachment` flag
 - Tenant must upgrade CLI to use simplified creation
 - Existing explicit networking workflows remain functional
 
 osac-cli (n) with fulfillment-service (n-1):
-- New CLI uses `--external-ip=auto` flag → old server rejects unknown field
+- New CLI uses `--external-ip-attachment` flag → old server rejects unknown field
 - Workaround: use explicit ExternalIP allocation until server is upgraded
 
 Recommendation: keep osac-cli and fulfillment-service within one minor version.
@@ -747,11 +639,11 @@ kubectl describe tenant acme-corp -n <namespace>
 # Check status.conditions for DefaultNetworkingReady
 ```
 
-**Cause:** Default VirtualNetwork, Subnet, or SecurityGroup provisioning failed
+**Cause:** Default VirtualNetwork, Subnet, SecurityGroup, or NATGateway provisioning failed
 
 **Resolution:**
 1. Check default networking resource status: `kubectl get virtualnetwork -n <namespace> -l osac.openshift.io/default=true`
-2. If VirtualNetwork/Subnet/SecurityGroup is not READY, investigate provisioning failure (check networking controller logs, AAP job logs)
+2. If VirtualNetwork/Subnet/SecurityGroup/NATGateway is not READY, investigate provisioning failure (check networking controller logs, AAP job logs)
 3. Fix root cause (e.g., AAP connectivity issue, fabric manager error)
 4. Delete tenant: `osac delete tenant acme-corp`
 5. Re-create tenant: `osac create tenant --name acme-corp`
@@ -778,32 +670,19 @@ kubectl describe tenant acme-corp -n <namespace>
 2. Manually delete orphaned ExternalIPAttachment: `kubectl delete externalipattachment <name> -n <namespace>`
 3. Manually delete orphaned ExternalIP: `kubectl delete externalip <name> -n <namespace>`
 
-### Symptom: Resource with nat_gateway_mode=AUTO has no outbound connectivity
-
-**Detection:** VM/cluster cannot reach external networks
-
-**Cause:** NATGateway is Failed or Deleting (reused by auto NATGateway logic)
-
-**Resolution:**
-1. Check NATGateway status: `kubectl get natgateway -n <namespace>`
-2. If NATGateway is Failed: check NATGateway controller logs and AAP job logs for provisioning failure
-3. Delete failed NATGateway: `kubectl delete natgateway <name> -n <namespace>`
-4. Delete and re-create resource with `--nat-gateway=auto` (new NATGateway will be created)
-
 ### Disabling the feature
 
-To disable auto ExternalIP and auto NATGateway:
+To disable auto ExternalIP attachment:
 - Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
 - No API extension to disable NetworkClass defaults (fields are part of CRD, cannot be removed at runtime)
 
 Consequences:
 - Auto ExternalIP allocation fails with error (resource not created)
-- Auto NATGateway creation fails (resource creation may succeed but outbound connectivity unavailable)
-- Manual ExternalIP/NATGateway workflows remain functional
+- Manual ExternalIP workflows remain functional
 - Default networking at tenant onboarding remains functional (only auto external access is disabled)
 
 ## Infrastructure Needed
 
 - osac-installer: NetworkClass default configuration in setup.sh and installation overlays
-- fulfillment-service: NetworkClass defaults validation, default VN/Subnet/SG creation at tenant onboarding, network_attachments population, auto ExternalIP/NATGateway provisioning, DefaultNetworkingReady condition tracking
+- fulfillment-service: NetworkClass defaults validation, default VN/Subnet/SG/NATGateway creation at tenant onboarding, network_attachments population, auto ExternalIP provisioning, DefaultNetworkingReady condition tracking
 - Integration test environment: kind cluster with Tenant, NetworkClass, ExternalIPPool resources

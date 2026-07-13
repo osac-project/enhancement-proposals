@@ -18,7 +18,7 @@ superseded-by:
 
 # CaaS Networking — Cluster Networking via OSAC Networking API
 
-This enhancement extends the unified networking API to support CaaS-specific requirements: tenant-controlled cluster node networking via VirtualNetwork + Subnet attachments, BM-based node sets with fabric interface resolution, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + NATGateway) for cluster API and ingress endpoints.
+This enhancement extends the unified networking API to support CaaS-specific requirements: tenant-controlled cluster node networking via VirtualNetwork + Subnet attachments, BM-based node sets with fabric interface resolution, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
 
 ## Summary
 
@@ -60,8 +60,7 @@ Cluster provisioning today follows this flow:
 - Tenant-controlled cluster node subnet placement via `network_attachment` field on ClusterSpec
 - BM-based node sets with fabric interface resolution from HostType
 - VIP feedback loop: template provisions MetalLB VIPs → ClusterOrder status → fulfillment-service → Cluster → ExternalIPAttachment controller
-- Auto ExternalIP mode (`external_ip_mode: AUTO_ALL`) for single-call API/ingress external access
-- Auto NATGateway mode (`nat_gateway_mode: AUTO`) for single-call outbound connectivity
+- Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call API/ingress external access
 - Remove step collections (`netris.steps`, `agentless_net.steps`) from CaaS networking
 
 ### Agent Pool Model
@@ -128,7 +127,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
     # Or with defaults + auto external access:
     osac create cluster --template ocp_4_17_small \
-      --external-ip=auto-all --nat-gateway=auto \
+      --external-ip-attachment \
       --node-set compute=large,size=3 --name my-cluster
     ```
 
@@ -138,8 +137,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
     - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
-    - If `external_ip_mode == AUTO_ALL`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-provisioned: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
-    - If `nat_gateway_mode == AUTO`: checks if NATGateway already exists on the VN. If exists and Ready: reuse (regardless of whether it was manually or auto-created). No new resources created. If exists but Failed or Deleting: the create request fails with an error directing the tenant to delete the failed gateway and retry. This prevents silent attachment to a broken shared resource. If not exists: creates a **separate** ExternalIP for the NATGateway's SNAT source (ExternalIP exclusivity means one consumer each) and creates NATGateway in a **separate DB transaction** after the parent resource is persisted, both labeled `osac.openshift.io/auto-provisioned: "true"`. If NATGateway creation fails, the auto-provisioned ExternalIP persists (labeled `auto-provisioned-for: <cluster-id>`). It is cleaned up when the parent resource is deleted via the cleanup finalizer. The create flow is idempotent: on retry, it checks for existing auto-provisioned resources by label before creating new ones. Pool capacity is decremented for this additional ExternalIP; if the pool is exhausted, the NATGateway is not created but the Cluster creation still succeeds (outbound NAT is best-effort).
+    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-provisioned: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with enriched `network_attachment` in spec
 
@@ -170,7 +168,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
     **b. MetalLB VIP provisioning (REPLACES `external_access` step):**
 
-    The VN and Subnet already exist (tenant created them in steps 1-3). External access (ExternalIP, NATGateway, ExternalIPAttachment) is managed separately by the tenant. The template:
+    The VN and Subnet already exist (tenant created them in steps 1-3). External access (ExternalIP, ExternalIPAttachment) is auto-provisioned or managed separately by the tenant. NATGateway is expected to exist on the VN as a default from tenant onboarding, not auto-created per cluster. The template:
     - Creates MetalLB LoadBalancer Services for API server + ingress VIPs
     - MetalLB allocates VIPs from its IPAddressPool (created by k8s_manager at subnet creation)
     - Discovers the allocated VIPs and writes them to ClusterOrder CR status:
@@ -211,7 +209,6 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
 12. **Delete Cluster:**
     - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-provisioned-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types).
-    - **Auto-provisioned NATGateway is NOT cleaned up** — shared per-VN resource.
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
     - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
@@ -332,28 +329,13 @@ message ClusterSpec {
   map<string, ClusterNodeSet> node_sets = 3;
   // ... existing fields ...
   ClusterNetworkAttachment network_attachment = 9;   // NEW, optional, singular
-  ClusterExternalIPMode external_ip_mode = 20;       // NONE, AUTO_API, AUTO_INGRESS, AUTO_ALL
-  NATGatewayMode nat_gateway_mode = 21;              // NONE or AUTO
+  bool auto_external_ip_attachment = 10;              // NEW, auto-provision ExternalIP + ExternalIPAttachment for API and ingress
 }
 
 message ClusterStatus {
   // ... existing fields ...
   string api_endpoint = X;      // NEW: set by template via feedback
   string ingress_endpoint = Y;  // NEW: set by template via feedback
-}
-
-enum ClusterExternalIPMode {
-  CLUSTER_EXTERNAL_IP_MODE_UNSPECIFIED = 0;
-  CLUSTER_EXTERNAL_IP_MODE_NONE = 1;          // default
-  CLUSTER_EXTERNAL_IP_MODE_AUTO_API = 2;      // auto-provision API endpoint only
-  CLUSTER_EXTERNAL_IP_MODE_AUTO_INGRESS = 3;  // auto-provision ingress endpoint only
-  CLUSTER_EXTERNAL_IP_MODE_AUTO_ALL = 4;      // auto-provision both
-}
-
-enum NATGatewayMode {
-  NAT_GATEWAY_MODE_UNSPECIFIED = 0;
-  NAT_GATEWAY_MODE_NONE = 1;   // default
-  NAT_GATEWAY_MODE_AUTO = 2;
 }
 ```
 
@@ -425,7 +407,7 @@ Migration adds to clusters table:
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate network_attachment (singular), resolve fabric_interface per node set, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP/NATGateway |
+| fulfillment-service | Validate network_attachment (singular), resolve fabric_interface per node set, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP |
 | osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, select agents, configure network attachments (dispatcher), trigger AAP workflow |
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs/IPs appear |
 | osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiEndpoint`/`ingressEndpoint` (MetalLB-allocated, template-discovered) from status, create DNAT via fabric_manager |
@@ -443,7 +425,7 @@ Migration adds to clusters table:
 
 This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
-- Auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway) inherit tenant annotation from parent Cluster
+- Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent Cluster
 - No new authentication or authorization changes
 - SecurityGroup rules control cluster node inbound traffic (tenant-configurable via explicit SG or default SG)
 
@@ -462,12 +444,6 @@ This feature inherits the existing security model:
 - ExternalIP provisioning failure: ExternalIP enters Failed state, Cluster remains in Pending (external access unavailable, cluster may still function without inbound connectivity)
 - ExternalIPAttachment provisioning failure: DNAT rule not created, inbound traffic does not reach cluster (cluster functional, external access unavailable)
 
-#### Auto NATGateway Provisioning Failures
-
-- Pool exhaustion: NATGateway creation fails, Cluster proceeds without outbound NAT
-- Failed or Deleting NATGateway: if existing NATGateway on VN is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry
-- NATGateway provisioning failure: NATGateway enters Failed state, outbound SNAT rule not created, cluster has no outbound connectivity
-
 #### Cleanup Failures
 
 - Auto-provisioned resource cleanup transient failure: finalizer retries
@@ -475,7 +451,7 @@ This feature inherits the existing security model:
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-provisioned ExternalIP/ExternalIPAttachment/NATGateway) inherit tenant isolation from parent:
+No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Cluster to auto-created resources
 - OPA policies enforce tenant-scoped list/get/update/delete
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
@@ -484,7 +460,7 @@ No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-pro
 
 New structured log events:
 - ClusterOrder controller: `AgentSelectionCompleted` (info), `AgentSelectionFailed` (error), `NetworkAttachmentsConfigured` (info), `VIPsDiscovered` (info)
-- fulfillment-service: `AutoProvisionedExternalIP` (info), `AutoProvisionedNATGateway` (info), `ExternalIPPoolExhausted` (error), `VIPFeedbackProcessed` (info)
+- fulfillment-service: `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error), `VIPFeedbackProcessed` (info)
 
 New Kubernetes events on ClusterOrder:
 - `AgentsSelected`: agent selection succeeded
@@ -493,7 +469,6 @@ New Kubernetes events on ClusterOrder:
 - `NetworkingFailed`: network attachment configuration failed
 - `VIPsDiscovered`: API and ingress VIPs written to status
 - `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
-- `AutoNATGatewayCreated`: NATGateway auto-provisioned or reused
 
 No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
 
@@ -509,19 +484,11 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: ExternalIPPool exhaustion
 
-**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create cluster with `external_ip_mode=AUTO_*`.
+**Impact:** Auto ExternalIP allocation fails, create API call returns error, tenant cannot create cluster with `auto_external_ip_attachment=true`.
 
 **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool or contact admin.
 
 **Reviewed by:** Cloud Provider Admin
-
-#### Risk: Existing NATGateway is Failed or Deleting when auto NATGateway requested
-
-**Impact:** If existing NATGateway on VN is Failed or Deleting, the create request fails, blocking cluster creation until the tenant resolves the broken gateway.
-
-**Mitigation:** Clear error message directs the tenant to delete the failed NATGateway and retry. This is preferable to silent attachment to a broken resource — the tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning.
-
-**Reviewed by:** API design team
 
 #### Risk: MetalLB IPAddressPool missing on hosting cluster
 
@@ -539,12 +506,6 @@ VIP discovery flow (template → ClusterOrder status → Signal RPC → fulfillm
 
 **Trade-off:** Complexity vs. auto external access. Chosen approach: implement VIP feedback loop to enable auto ExternalIP for clusters. Alternative: manual external access only (simpler, less usable).
 
-#### Auto NATGateway rejects Failed or Deleting gateways
-
-Design specifies that auto NATGateway only reuses existing NATGateways that are Ready. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
-
-**Trade-off:** Fail-fast vs. silent degradation. Chosen approach: reject Failed/Deleting NATGateways at create time with a clear error. The tenant gets immediate feedback rather than discovering outbound connectivity failure post-provisioning. No replacement gateway is created (avoids duplicate SNAT conflicts).
-
 ## Alternatives (Not Implemented)
 
 ### Alternative 1: Keep networking in step collections
@@ -558,12 +519,6 @@ Instead of moving networking to the OSAC Networking API, keep step collections a
 Instead of implementing VIP feedback loop, require tenants to manually create ExternalIP and ExternalIPAttachment after cluster is Ready.
 
 **Rejected because:** Poor user experience. Tenants must poll cluster status, discover VIPs, then manually create external access. Auto external access (single-call API) is a key usability improvement.
-
-### Alternative 3: Always create auto NATGateway, even if one exists
-
-Instead of reusing existing NATGateway, always create a new one when `nat_gateway_mode=AUTO`.
-
-**Rejected because:** Multiple NATGateways on the same VN would conflict at the fabric level (SNAT rules for the same CIDR would overlap). Reusing existing NATGateway avoids conflict.
 
 ## Open Questions
 
@@ -590,10 +545,6 @@ With one NetworkClass per deployment, the operator reads it once. But for the di
 **Owner:** osac-operator team
 
 **Impact:** Affects dispatcher implementation in ClusterOrder controller.
-
-### ~~5. Should auto NATGateway treat a Deleting NATGateway as "does not exist"?~~ — Resolved
-
-Resolved: auto NATGateway reuses only Ready NATGateways. If the existing NATGateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway and retry. A Deleting NATGateway is not treated as "does not exist" — creating a replacement while the SNAT rule is still being removed could cause conflicts. The tenant must wait for deletion to complete and retry.
 
 ### 6. Should capacity exhaustion return an API error or create a Failed resource?
 
@@ -632,7 +583,6 @@ The template creates DNS records (step 7b) but never specifies the target IP. If
 - fulfillment-service: fabric_interface resolution per node set (host_type must have fabric-role interface)
 - fulfillment-service: interface resolution from HostType (pick first fabric-role interface)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- fulfillment-service: auto NATGateway reuse (reuse Ready, reject Failed/Deleting, create new if none exists)
 - osac-operator ClusterOrder controller: agent selection logic
 - osac-operator ClusterOrder controller: network attachment resolution
 - osac-operator feedback controller: VIP sync to fulfillment-service
@@ -640,9 +590,8 @@ The template creates DNS records (step 7b) but never specifies the target IP. If
 ### Integration Tests
 
 - E2E: create Cluster with explicit network_attachment, verify cluster provisioned on correct subnet
-- E2E: create Cluster with `--external-ip=auto-all`, verify auto ExternalIP + ExternalIPAttachment created for API and ingress, DNAT rules functional
-- E2E: create Cluster with `--nat-gateway=auto`, verify auto NATGateway created or reused, SNAT rule functional
-- E2E: create Cluster with `--external-ip=auto-all --nat-gateway=auto`, verify full connectivity (inbound + outbound)
+- E2E: create Cluster with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created for API and ingress, DNAT rules functional
+- E2E: create Cluster with `--external-ip-attachment`, verify full connectivity (ExternalIP + ExternalIPAttachment for API and ingress)
 - E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
 - E2E: create Cluster with omitted network_attachment, verify default Subnet + SecurityGroup populated
 - E2E: VIP feedback loop — verify template writes VIPs to ClusterOrder status, fulfillment-service syncs to Cluster, ExternalIPAttachment controller creates DNAT
@@ -650,7 +599,6 @@ The template creates DNS records (step 7b) but never specifies the target IP. If
 ### Tricky Test Cases
 
 - Multiple node sets sharing the same subnet (verify correct fabric interface resolution per node set from HostType)
-- Auto NATGateway when existing NATGateway is Failed (verify create request fails with error directing tenant to delete failed gateway)
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
 - VIP feedback loop failure (Signal RPC fails, fulfillment-service does not sync VIPs)
@@ -662,14 +610,14 @@ The template creates DNS records (step 7b) but never specifies the target IP. If
 Proposed maturity level: **Tech Preview** → **GA**
 
 Tech Preview criteria:
-- [ ] API fields (`network_attachment`, `external_ip_mode`, `nat_gateway_mode`, `api_endpoint`, `ingress_endpoint`) implemented in fulfillment-service
+- [ ] API fields (`network_attachment`, `auto_external_ip_attachment`, `api_endpoint`, `ingress_endpoint`) implemented in fulfillment-service
 - [ ] Operator CRD updated with `NetworkAttachment`, `APIEndpoint`, `IngressEndpoint` fields
 - [ ] Agent selection logic (`reconcileAgentSelection`) implemented in osac-operator
 - [ ] Network attachment logic (`reconcileNetworking`) implemented in osac-operator
 - [ ] VIP feedback loop (template → ClusterOrder → fulfillment-service → Cluster) implemented
-- [ ] Auto ExternalIP and auto NATGateway provisioning functional
+- [ ] Auto ExternalIP attachment provisioning functional
 - [ ] Template changes (remove cluster_infra/external_access, add MetalLB VIP provisioning) completed
-- [ ] Integration tests pass (E2E coverage for network_attachment, auto ExternalIP, auto NATGateway, VIP feedback)
+- [ ] Integration tests pass (E2E coverage for network_attachment, auto ExternalIP attachment, VIP feedback)
 - [ ] Documentation: API reference, user guide for simplified cluster creation
 
 GA criteria:
@@ -685,7 +633,7 @@ GA criteria:
 ### Upgrade
 
 Micro version upgrades (`x.y.N → x.y.N+2`):
-- New fields (`network_attachment`, `external_ip_mode`, `nat_gateway_mode`, `api_endpoint`, `ingress_endpoint`) are additive
+- New fields (`network_attachment`, `auto_external_ip_attachment`, `api_endpoint`, `ingress_endpoint`) are additive
 - Existing Cluster resources continue to work (networking managed by step collections)
 - No user action required
 
@@ -701,12 +649,12 @@ If `N+1` upgrade fails or cluster is misbehaving:
 - Manual rollback: update fulfillment-service, osac-operator, and osac-aap images to `N`
 - Existing Cluster resources with new `network_attachment` field will be unrecognized by `N` server
 - Manual cleanup required: delete Cluster resources created with new field, re-create with old flow
-- Auto-provisioned ExternalIP/NATGateway resources remain (manual cleanup required if not needed)
+- Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
 
 Acceptable downgrade steps:
 - Delete Clusters using new field
 - Re-create using old flow (no network_attachment field)
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment, NATGateway labeled `osac.openshift.io/auto-provisioned: "true"`)
+- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-provisioned: "true"`)
 
 ## Version Skew Strategy
 
@@ -767,13 +715,13 @@ kubectl describe cluster <name> -n <namespace>
 
 ### Disabling the feature
 
-To disable auto ExternalIP and auto NATGateway:
+To disable auto ExternalIP attachment:
 - Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
 - No API extension to disable (fields are part of CRD, cannot be removed at runtime)
 
 Consequences:
 - Auto ExternalIP allocation fails with error (resource not created)
-- Manual ExternalIP/NATGateway workflows remain functional
+- Manual ExternalIP workflows remain functional
 - No impact on existing running clusters
 
 ## Infrastructure Needed

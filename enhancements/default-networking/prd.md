@@ -43,20 +43,17 @@ where a single create command produces a reachable instance.
 - As a Tenant User, I want to create a resource (VM, cluster, or
   bare-metal server) without pre-creating networking resources, so that
   the system provides sensible defaults and I can get started quickly
-- As a Tenant User, I want to create a resource with `--external-ip=auto`
-  and have it externally reachable in a single API call, without manually
-  creating ExternalIP and ExternalIPAttachment resources
+- As a Tenant User, I want to create a resource with
+  `--external-ip-attachment` and have it externally reachable in a single
+  API call, without manually creating ExternalIP and ExternalIPAttachment
+  resources
 - As a Tenant User, I want auto-provisioned ExternalIPs to be
   automatically cleaned up when I delete the parent resource, so that I do
   not accumulate orphaned resources
 - As a Tenant User, I want to create a Cluster with
-  `--external-ip=auto-all` and have the system automatically provision
+  `--external-ip-attachment` and have the system automatically provision
   ExternalIPs for both the API server and ingress endpoints before cluster
   provisioning begins
-- As a Tenant User, I want to create a Cluster with `--nat-gateway=auto`
-  and have the system automatically provision a NATGateway on the
-  VirtualNetwork so that cluster nodes have outbound connectivity without
-  manual setup
 
 ### Tenant Admin Stories
 
@@ -117,19 +114,18 @@ where a single create command produces a reachable instance.
 
 #### Auto ExternalIP
 
-- **FR-8:** ComputeInstance and BaremetalInstance support an automatic
-  external IP mode. When enabled, the system selects the available
-  ExternalIPPool with the most capacity, allocates an ExternalIP, and
-  creates an ExternalIPAttachment binding it to the resource. The system
-  selects the pool with the most available capacity matching the requested
-  IP family (defaulting to IPv4). When multiple pools have equal capacity,
-  selection is deterministic but unspecified. [User]
-- **FR-9:** Cluster supports automatic external IP allocation with
-  options for API server only, ingress only, both, or neither. When both
-  are enabled, two ExternalIPs and two ExternalIPAttachments are created.
-  The CLI supports `--external-ip=auto-all` (both),
-  `--external-ip=auto-api` (API server only), and
-  `--external-ip=auto-ingress` (ingress only). [User]
+- **FR-8:** ComputeInstance and BaremetalInstance support
+  `--external-ip-attachment`. When enabled, the system selects the
+  available ExternalIPPool with the most capacity, allocates an
+  ExternalIP, and creates an ExternalIPAttachment binding it to the
+  resource. The system selects the pool with the most available capacity
+  matching the requested IP family (defaulting to IPv4). When multiple
+  pools have equal capacity, selection is deterministic but unspecified.
+  [User]
+- **FR-9:** Cluster supports `--external-ip-attachment`. When enabled,
+  the system allocates two ExternalIPs and creates two
+  ExternalIPAttachments — one for the API server and one for ingress.
+  [User]
 - **FR-10:** For clusters, ExternalIPs are allocated before provisioning
   begins, resolving the ordering requirement that cluster nodes need
   external access during setup. ExternalIPAttachments are created in an
@@ -141,34 +137,28 @@ where a single create command produces a reachable instance.
   ExternalIPs, before the parent resource is removed. If cleanup of
   auto-created resources fails permanently, the parent resource is still
   deleted — orphaned ExternalIPs remain and must be cleaned up manually
-  by the Tenant Admin or Cloud Provider Admin. Auto-provisioned
-  NATGateways are NOT cleaned up on resource deletion — they are shared
-  per-virtual-network resources that may serve other resources on the
-  same network. [User]
+  by the Tenant Admin or Cloud Provider Admin. [User]
 
-#### Auto NATGateway
+#### Default NATGateway
 
-- **FR-12:** All resource types (ComputeInstance, BaremetalInstance,
-  Cluster) support an automatic NAT gateway mode. When enabled, the
-  system selects an ExternalIP from the best available pool and creates a
-  NATGateway on the resource's VirtualNetwork using that ExternalIP as
-  the outbound source address. If a NATGateway already exists on the
-  VirtualNetwork, it is reused only if it is Ready. If the existing
-  NATGateway is Failed or Deleting, the create request fails with an
-  error directing the tenant to delete the failed gateway first. [User]
+- **FR-12:** At tenant onboarding, the system also provisions a
+  NATGateway on the default VirtualNetwork with an automatically
+  allocated ExternalIP. The NATGateway provides outbound connectivity
+  for all resources on the default VirtualNetwork. [User]
 
 ## 5. Acceptance Criteria
 
-- [ ] A Tenant User can create a ComputeInstance with `--external-ip=auto`
-  and no explicit network attachments — the VM is created on the default
-  subnet with an auto-provisioned ExternalIP for inbound access
-- [ ] A Tenant User can create a Cluster with `--external-ip=auto-all
-  --nat-gateway=auto` and no explicit network attachments — the cluster
-  is provisioned with ExternalIPs for API and ingress plus a NATGateway
-  for outbound, all resolved automatically
+- [ ] A Tenant User can create a ComputeInstance with
+  `--external-ip-attachment` and no explicit network attachments — the VM
+  is created on the default subnet with an auto-provisioned ExternalIP
+  for inbound access
+- [ ] A Tenant User can create a Cluster with `--external-ip-attachment`
+  and no explicit network attachments — the cluster is provisioned with
+  ExternalIPs for both API and ingress, all resolved automatically
 - [ ] A Tenant User can create a BaremetalInstance with
-  `--external-ip=auto` and no explicit network attachments — the server
-  is placed on the default subnet with an auto-provisioned ExternalIP
+  `--external-ip-attachment` and no explicit network attachments — the
+  server is placed on the default subnet with an auto-provisioned
+  ExternalIP
 - [ ] Default VirtualNetwork, Subnet, and SecurityGroup exist and are
   READY before the tenant's first resource creation
 - [ ] Default resources appear in list views with a label identifying

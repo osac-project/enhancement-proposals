@@ -17,8 +17,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 ### 2.1 Goals
 
 - A tenant can provision a bare-metal server with explicit network attachments, each specifying which physical interface connects to which subnet
-- A tenant can create a bare-metal server with `--external-ip=auto` and have the system allocate an external IP for inbound access automatically
-- A tenant can create a bare-metal server with `--nat-gateway=auto` and have the system provision outbound connectivity automatically
+- A tenant can create a bare-metal server with `--external-ip-attachment` and have the system allocate an external IP for inbound access automatically
 - Network attachments are optional — when omitted, the system attaches the server to the tenant's default subnet and security group
 - Host types expose available physical network interfaces through the API (name, role, description) for bare-metal servers
 - Network connectivity for each attachment is established before bare-metal OS provisioning begins
@@ -45,8 +44,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 - As a Tenant User, I want to create a bare-metal server with explicit network attachments so that I can connect specific physical interfaces to specific subnets
 - As a Tenant User, I want to see which physical network interfaces are available on a host type so that I can select the appropriate interface when creating network attachments
-- As a Tenant User, I want to create a bare-metal server with `--external-ip=auto` and have it externally reachable in a single API call, without manually creating external IP and attachment resources
-- As a Tenant User, I want to create a bare-metal server with `--nat-gateway=auto` so that the server has outbound connectivity without manual NAT gateway setup
+- As a Tenant User, I want to create a bare-metal server with `--external-ip-attachment` and have it externally reachable in a single API call, without manually creating external IP and attachment resources
 - As a Tenant User, I want to create a multi-homed bare-metal server (multiple network attachments) and designate which interface provides the default gateway
 - As a Tenant User, I want auto-provisioned external IPs to be automatically cleaned up when I delete the server, so that I do not accumulate orphaned resources
 - As a Tenant User, I want network interface validation when creating attachments so that I get clear errors if I specify an interface that doesn't exist or attach the same interface to multiple subnets
@@ -89,35 +87,31 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto External IP
 
-- **FR-6:** Bare-metal servers support an external IP mode with values `NONE` (default) and `AUTO`. When `AUTO`, the system auto-selects the external IP pool with the most available capacity, allocates an external IP, and creates an external IP attachment binding it to the server's primary attachment subnet IP. The external IP and attachment are labeled as auto-provisioned. [User]
-
-#### Auto NAT Gateway
-
-- **FR-7:** Bare-metal servers support a NAT gateway mode with values `NONE` (default) and `AUTO`. When `AUTO`, the system provisions a NAT gateway on the server's virtual network (reuses existing NAT gateway only if it is Ready. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first). The NAT gateway uses an auto-selected external IP as the outbound source address. [User]
+- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system auto-selects the external IP pool with the most available capacity, allocates an external IP, and creates an external IP attachment binding it to the server's primary attachment subnet IP. The external IP and attachment are labeled as auto-provisioned. [User]
 
 #### Network Connectivity Configuration
 
-- **FR-8:** Network connectivity for each attachment is established before bare-metal OS provisioning begins. The system configures connectivity for each interface-to-subnet mapping; all attachments must be ready before provisioning proceeds. After the server boots, it receives an IP address on the configured subnet. [User]
+- **FR-7:** Network connectivity for each attachment is established before bare-metal OS provisioning begins. The system configures connectivity for each interface-to-subnet mapping; all attachments must be ready before provisioning proceeds. After the server boots, it receives an IP address on the configured subnet. [User]
 
 #### IP Address Visibility
 
-- **FR-9:** The allocated IP address for each network attachment is visible in the bare-metal server status after network connectivity is configured. [User]
+- **FR-8:** The allocated IP address for each network attachment is visible in the bare-metal server status after network connectivity is configured. [User]
 
 #### External IP Attachment for Bare-Metal
 
-- **FR-10:** External IP attachments support bare-metal servers as an attachment target type. When an external IP is attached to a bare-metal server, inbound traffic to the external IP is routed to the server's primary attachment IP. [User]
+- **FR-9:** External IP attachments support bare-metal servers as an attachment target type. When an external IP is attached to a bare-metal server, inbound traffic to the external IP is routed to the server's primary attachment IP. [User]
 
 #### Network Automation Backend Configuration
 
-- **FR-11:** The system manages network automation backend selection without tenant involvement. The provider configures which network automation backend handles bare-metal networking; this configuration is separate from the networking resource hierarchy and is not visible to tenants. [User]
+- **FR-10:** The system manages network automation backend selection without tenant involvement. The provider configures which network automation backend handles bare-metal networking; this configuration is separate from the networking resource hierarchy and is not visible to tenants. [User]
 
 #### Auto-Cleanup on Deletion
 
-- **FR-12:** When a bare-metal server is deleted, if external IP and external IP attachment were created by the system (external IP mode `AUTO`, labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. Auto-provisioned NAT gateways are NOT cleaned up on server deletion — they are shared per-virtual-network resources that may serve other resources on the same network. Manually created resources are NOT cleaned up. Default networking resources (virtual network, subnet, security group) are NOT cleaned up. [User]
+- **FR-11:** When a bare-metal server is deleted, if external IP and external IP attachment were auto-provisioned (labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. Manually created resources are NOT cleaned up. Default networking resources (virtual network, subnet, security group, NATGateway) are NOT cleaned up. [User]
 
 #### Network Attachment Deletion
 
-- **FR-13:** During bare-metal server deletion, the system deconfigures network connectivity for each interface and releases allocated IP addresses. [User]
+- **FR-12:** During bare-metal server deletion, the system deconfigures network connectivity for each interface and releases allocated IP addresses. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -128,9 +122,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 ## 5. Acceptance Criteria
 
 - [ ] A Tenant User can create a bare-metal server with explicit network attachments, each specifying a physical interface from the host type
-- [ ] A Tenant User can create a bare-metal server with `--external-ip=auto` and no explicit network attachments — the server is created on the default subnet with an auto-provisioned external IP for inbound access
-- [ ] A Tenant User can create a bare-metal server with `--nat-gateway=auto` and no explicit network attachments — the server is provisioned with a NAT gateway for outbound connectivity
-- [ ] A Tenant User can create a bare-metal server with both `--external-ip=auto` and `--nat-gateway=auto` — the server is fully connected (inbound + outbound) in a single API call
+- [ ] A Tenant User can create a bare-metal server with `--external-ip-attachment` and no explicit network attachments — the server is created on the default subnet with an auto-provisioned external IP for inbound access
 - [ ] A multi-interface bare-metal server (multiple network attachments) is provisioned with network connectivity configured for each interface, primary attachment providing default gateway
 - [ ] Auto-created external IP and external IP attachment are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a bare-metal server with auto-provisioned external IP causes the auto-created external IP and external IP attachment to be cleaned up automatically
@@ -179,11 +171,6 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - **Owner:** Cloud Provider Admin
 - **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool
 
-### 8.5 Auto NAT gateway fails when existing gateway is broken
-
-- **Owner:** Platform team
-- **Mitigation:** Auto NAT gateway only reuses an existing NAT gateway if it is Ready. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This prevents silent attachment to a broken shared resource.
-
 ## 9. Open Questions
 
 ### 9.1 Should the out-of-band provisioning interface be explicitly excluded from validation or just documented?
@@ -191,16 +178,12 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - **Owner:** API design team
 - **Impact:** Affects FR-3. Current proposal: document that out-of-band interfaces are reserved for provisioning, do not enforce exclusion in validation. Alternative: explicitly reject attachments with out-of-band interfaces.
 
-### ~~9.2 Should auto NAT gateway check existing NAT gateway state before reusing?~~ — Resolved
-
-Resolved: auto NAT gateway reuses only Ready NATGateways. If the existing NAT gateway is Failed or Deleting, the create request fails with an error directing the tenant to delete the failed gateway first. This avoids silent attachment to a broken shared resource while preventing duplicate SNAT conflicts (no replacement gateway is created).
-
-### 9.3 Should capacity exhaustion return an API error or create a failed resource?
+### 9.2 Should capacity exhaustion return an API error or create a failed resource?
 
 - **Owner:** API design team
 - **Impact:** Affects FR-6 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a failed resource provides visibility but adds cleanup burden.
 
-### 9.4 What is the interface selection logic when network attachments are omitted and the host type has multiple primary traffic interfaces?
+### 9.3 What is the interface selection logic when network attachments are omitted and the host type has multiple primary traffic interfaces?
 
 - **Owner:** Platform team
 - **Impact:** Affects FR-5. Current proposal: use the first primary traffic interface in the host type's ordered list. Alternative: require explicit interface when multiple primary traffic interfaces exist, or use a specific naming convention (e.g., "data-0").
