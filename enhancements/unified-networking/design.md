@@ -72,8 +72,11 @@ NetworkClass per deployment.
 OSAC networking is handled by two managers:
 
 - **Fabric Manager** — a single product (e.g., Netris, Neutron) that manages
-  all physical networking: tenant isolation, ACLs, IP allocation, DNAT, SNAT.
-  The physical fabric is one infrastructure — one controller manages it all.
+  all physical networking: tenant isolation, ACLs, IP allocation, DNAT, SNAT,
+  and inter-subnet L3 routing within a VirtualNetwork. The physical fabric is
+  one infrastructure — one controller manages it all. When a VN has multiple
+  subnets, the fabric manager provides the L3 gateway for each subnet and
+  routes between them automatically.
 
 - **K8s Manager** (optional) — handles everything needed to make VMs part of
   the fabric: creates the K8s overlay (e.g., CUDN with LocalNet) and bridges
