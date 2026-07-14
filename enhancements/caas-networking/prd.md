@@ -155,18 +155,15 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 ## 9. Open Questions
 
-### 9.1 How does the system select hosts?
+### ~~9.1 How does the system select hosts?~~ — Resolved
 
-- **Owner:** Platform team
-- **Impact:** The system needs host selection logic. Does it interact directly with the host inventory, or delegate to an automation workflow?
+Resolved: The operator queries Agent CRs directly via K8s API, selecting by host type and availability. This is the current approach but may evolve as the agent management model changes.
 
-### 9.2 How is host network state configuration managed?
+### ~~9.2 How is host network state configuration managed?~~ — Resolved
 
-- **Owner:** Platform team
-- **Impact:** With host selection and network interface configuration happening before cluster provisioning, how is host network state configured and managed?
+Resolved: DHCP handles all host-side networking. The host receives IP, gateway, prefix, and DNS from the fabric's DHCP server. No static configuration or NMState needed.
 
-### 9.3 How are IP address pools for cluster endpoints configured?
+### ~~9.3 How are IP address pools for cluster endpoints configured?~~ — Resolved
 
-- **Owner:** Cloud Infrastructure Admin / Platform team
-- **Impact:** The cluster provisioning system needs IP address pools for allocating API server and ingress endpoint addresses. Is this created when the subnet is created, or during cluster provisioning?
+Resolved: The k8s_manager creates MetalLB IPAddressPool at subnet creation time with a reserved sub-range of the subnet CIDR. The DHCP server excludes this range to prevent overlap.
 

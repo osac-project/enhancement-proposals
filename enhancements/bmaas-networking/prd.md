@@ -173,17 +173,14 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 ## 9. Open Questions
 
-### 9.1 Should the out-of-band provisioning interface be explicitly excluded from validation or just documented?
+### ~~9.1 Should the out-of-band provisioning interface be explicitly excluded from validation or just documented?~~ — Resolved
 
-- **Owner:** API design team
-- **Impact:** Affects FR-3. Current proposal: document that out-of-band interfaces are reserved for provisioning, do not enforce exclusion in validation. Alternative: explicitly reject attachments with out-of-band interfaces.
+Resolved: Explicitly excluded in validation. Lifecycle and BMC interfaces are not tenant-attachable and are rejected during server validation. This is not just documented — it is enforced.
 
-### 9.2 Should capacity exhaustion return an API error or create a failed resource?
+### ~~9.2 Should capacity exhaustion return an API error or create a failed resource?~~ — Resolved
 
-- **Owner:** API design team
-- **Impact:** Affects FR-6 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a failed resource provides visibility but adds cleanup burden.
+Resolved: Return error, no resource persisted.
 
-### 9.3 What is the interface selection logic when network attachments are omitted and the host type has multiple primary traffic interfaces?
+### ~~9.3 What is the interface selection logic when network attachments are omitted and the host type has multiple primary traffic interfaces?~~ — Resolved
 
-- **Owner:** Platform team
-- **Impact:** Affects FR-5. Current proposal: use the first primary traffic interface in the host type's ordered list. Alternative: require explicit interface when multiple primary traffic interfaces exist, or use a specific naming convention (e.g., "data-0").
+Resolved: First in the list. Interfaces are ordered in the HostType; when multiple interfaces share the same role, the first one is the default. This is already defined in FR-2.

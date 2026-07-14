@@ -497,30 +497,17 @@ Operator pre-allocates IPs from subnet CIDR during reconcileNetworking and write
 
 ## Open Questions
 
-### 2. Should capacity exhaustion return an API error or create a Failed resource?
+### ~~2. Should capacity exhaustion return an API error or create a Failed resource?~~ — Resolved
 
-Current proposal: return error, no resources persisted (pool capacity checked synchronously during the API call). Alternative: create Failed resource for audit trail.
-
-**Owner:** API design team
-
-**Impact:** Affects FR-6 and acceptance criteria.
+Resolved: Return error, no resource persisted. Pool capacity checked synchronously. No Failed resource.
 
 ### ~~3. IP address assignment~~ — Resolved
 
 Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's DHCP server after booting on the V-Net. No operator IPAM needed.
 
-### 4. How is the host's runtime IP discovered after network reconfiguration?
+### ~~4. How is the host's runtime IP discovered after network reconfiguration?~~ — Resolved
 
-Metal3 `BareMetalHost.status.hardware.nics[].ip` reflects the inspection-time IP (snapshot from initial hardware inspection), NOT the runtime IP after the host's port is moved to the tenant V-Net via `create_network_attachment`. After the host gets a new DHCP lease on the tenant subnet, this IP must be discovered and written to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
-
-Options:
-- **(a)** The `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table after moving the port and returns the assigned IP as a role output. The operator reads the role output and writes it to CR status.
-- **(b)** The fabric manager exposes a DHCP lease API. The operator polls it until the host's lease appears.
-- **(c)** A phone-home / cloud-init callback from the host reports its IP to a webhook or annotation on the CR.
-
-**Owner:** Platform team / osac-aap team
-
-**Impact:** Blocks ExternalIPAttachment for BMaaS targets — the DNAT controller needs `status.networkAttachmentStatuses[].ipAddress` to create the inbound NAT rule. Without a working discovery mechanism, auto ExternalIP for bare-metal servers does not function.
+Resolved: Option (a) — the `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table after moving the port and returns the assigned IP as a role output. The operator reads the AAP job result and writes to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR. The feedback controller then syncs to fulfillment-service via Signal RPC.
 
 ## Test Plan
 
