@@ -40,13 +40,14 @@ inline in their parent resource's spec, redacted on read and stripped on
 update through ad-hoc server-side logic. Each resource type that touches
 credentials implements its own storage, redaction, and retrieval pattern.
 
-This fragmentation creates three problems. First, credential data stored in
-the PostgreSQL `data` JSONB column is not encrypted at rest — anyone with
-database access can read secrets in cleartext. Second, tenants cannot manage
-credentials independently: rotating a pull secret requires updating the
-cluster that uses it, and there is no way to list all credentials a tenant
-owns. Third, each new resource type that needs credentials must reimplement
-redaction and retrieval logic, increasing the surface area for mistakes.
+This fragmentation creates three problems:
+
+1. Credential data stored in the PostgreSQL `data` JSONB column is not encrypted at rest — anyone 
+   with database access can read secrets in cleartext.
+2. Tenants cannot manage credentials independently: rotating a pull secret requires updating the
+   cluster that uses it, and there is no way to list all credentials a tenant owns. 
+3. Third, each new resource type that needs credentials must reimplement redaction and retrieval logic, 
+   increasing the surface area for mistakes.
 
 ### Goals
 
@@ -401,8 +402,8 @@ of upcoming type-safe resource references - https://redhat.atlassian.net/browse/
 
 #### Credential Migration
 
-A Go migration script moves existing inline credentials into the Secrets
-API. The script maps each inline credential to the appropriate key-value
+A Go binary moves existing inline credentials into the Secrets
+API. The binary maps each inline credential to the appropriate key-value
 structure:
 
 1. Reads all resources with inline credential data from PostgreSQL
@@ -419,7 +420,7 @@ structure:
    secret's name
 5. Clears the inline credential field
 
-The script is idempotent across all steps — safe to re-run if
+The binary is idempotent across all steps — safe to re-run if
 interrupted at any point. For each credential it checks whether the
 Secret already exists (skips creation), whether the `*_secret` field is
 already set (skips the update), and whether the inline field is already
@@ -428,8 +429,8 @@ does not leave partial state on rerun. It runs as a one-time job after
 the Vault store is configured and the fulfillment-service is upgraded
 with the new schema.
 
-The script can be manually invoked as a one-time step for currently running clusters
-via a subcommand.  A cleanup task will be created to fully remove the script at
+The binary can be manually invoked as a one-time step for currently running clusters
+via a subcommand.  A cleanup task will be created to fully remove the binary at
 a later release once the Vault secret store is fully established.
 
 ### Security Considerations
@@ -595,7 +596,7 @@ commands.
 **Upgrade** requires deploying a Vault-compatible secret store, then
 setting the `--vault-*` flags on the fulfillment-service. After the
 service is running with the new schema, the credential migration
-script runs (see Credential Migration) to move inline credentials into the
+binary runs (see Credential Migration) to move inline credentials into the
 Secrets API.
 
 **Downgrade** is not supported once secrets are in Vault.
