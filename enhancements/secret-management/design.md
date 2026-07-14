@@ -149,19 +149,6 @@ available on the hub.
    kubeconfig from the hub cluster — the same retrieval path currently
    implemented in `getHostedClusterSecret()` [Codebase: internal/servers/clusters_server.go].
 
-#### System: Break Glass Credential Creation During Tenant Provisioning
-
-Starting state: A new tenant is being provisioned.
-
-1. The tenant controller generates break glass credentials (username and
-   password) via the IDP manager and creates the IdP user account.
-2. The controller calls the private Secrets API to create a Vault-backed
-   secret with data `{"username": <value>, "password": <value>}`.
-3. The controller sets `break_glass_credentials_secret` on the
-   tenant status to the new secret's name.
-4. A tenant admin retrieves the break glass password via
-   `osac get secret <name> -o yaml` for initial login.
-
 ```mermaid
 sequenceDiagram
     participant User as Tenant User
@@ -395,7 +382,6 @@ Validation rules:
 | IdentityProvider | `client_secret` | `client_secret_secret` |
 | IdentityProvider | `bind_credential` | `bind_credential_secret` |
 | StorageBackend | `password` | `password_secret` |
-| Tenant | `break_glass_credentials` | `break_glass_credentials_secret` |
 
 Note: The exact naming, nature, and type of these reference fields may change as a result
 of upcoming type-safe resource references - https://redhat.atlassian.net/browse/OSAC-1330
@@ -432,8 +418,6 @@ structure:
    - `kubeconfig` → data `{"kubeconfig": <value>}`
    - `client_secret`, `bind_credential`, `password` → data
      `{"value": <value>}`
-   - `break_glass_credentials` → data
-     `{"username": <value>, "password": <value>}`
 3. Writes metadata to PostgreSQL and data to the Vault store
 4. Sets the corresponding `*_secret` field on the resource to the new
    secret's name
@@ -543,7 +527,7 @@ This organizes secret data by tenant, project, and name within the
 store. Access isolation is enforced at the application layer — the
 fulfillment-service only reads or writes paths matching the
 authenticated tenant.  The request handler should drop privileges as early
-as possible so that for a given request being executed it shoud only be able
+as possible so that for a given request being executed it should only be able
 to access secrets for that tenant.
 
 ### Observability and Monitoring
