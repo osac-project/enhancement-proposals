@@ -166,4 +166,3 @@ Resolved: DHCP handles all host-side networking. The host receives IP, gateway, 
 ### ~~9.3 How are IP address pools for cluster endpoints configured?~~ — Resolved
 
 Resolved: The k8s_manager creates MetalLB IPAddressPool at subnet creation time with a reserved sub-range of the subnet CIDR. The DHCP server excludes this range to prevent overlap.
-
