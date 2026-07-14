@@ -35,8 +35,7 @@ This enhancement is critical for enabling OSAC to provide a true multi-tenant ex
 
 * As a Cloud Provider Admin, I want to create and manage Organizations through OSAC APIs, so that I can provide isolated multi-tenant services to different customers or business units.
 
-* As a Cloud Provider Admin, I want to configure an IdP (LDAP/AD/OIDC/SAML) for the *`System`* Organization, so that Cloud Provider Admin users can authenticate using their existing corporate credentials.
-
+* As a Cloud Infrastructure Admin, I want to configure the Keycloak instance that will act as an IdP broker, and will be used by Cloud Provider Admin users to authenticate.
 
 * As a Cloud Provider Admin, I want OSAC to provide one break-glass account per organization (including `System` organization) with limited privileges to manage IdP configuration and assign roles, so that I can recover from IdP failures or misconfigurations and restore normal authentication, including setting up role mappings for other users.
 
