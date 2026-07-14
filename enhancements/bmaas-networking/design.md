@@ -19,7 +19,7 @@ superseded-by:
 
 # BMaaS Networking — Switch Port Configuration and Tenant-Defined Interface Mapping
 
-This enhancement extends the unified networking API to support BMaaS-specific requirements: multi-NIC BaremetalInstance provisioning with tenant-specified physical interface mapping, switch port configuration via dispatcher, IP address feedback through CR status, and auto-provisioned external access (ExternalIP + NATGateway).
+This enhancement extends the unified networking API to support BMaaS-specific requirements: multi-NIC BaremetalInstance provisioning with tenant-specified physical interface mapping, switch port configuration via dispatcher, IP address feedback through CR status, and auto-provisioned external access (ExternalIP).
 
 ## Summary
 
@@ -82,7 +82,7 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher calls `create_network_attachment` per interface to configure switch ports
-- IP discovery after DHCP: `create_network_attachment` role queries fabric manager's DHCP lease table and returns the assigned IP as a role output, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
+- IP discovery after provisioning: operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches port MAC to DHCP-assigned IP, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
 - HostType resource extended with structured `NetworkInterface` list (name, role, description) for BM host types only
 - Rename `networkClass` → `networkFabricManager` to avoid collision with OSAC NetworkClass CRD
 
@@ -221,9 +221,8 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    d. `reconcilePower` (unchanged)
 
-7. **IP discovery and feedback:**
-   - After the host boots and receives a DHCP-assigned IP on the tenant V-Net, the IP must be discovered and written to `status.networkAttachmentStatuses[].ipAddress` on the CR
-   - **Discovery mechanism:** The `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table after moving the port and returns the assigned IP as a role output. The operator reads the AAP job result and writes the IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
+7. **IP discovery and feedback (`reconcileIPDiscovery` — runs after provisioning):**
+   - After `reconcileProvisioning` completes and the host has received a DHCP lease, the operator queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the subnet and matches the server's port MAC address to find the corresponding DHCP-assigned IP.
    - Operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern
@@ -244,13 +243,13 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - ExternalIPAttachment controller resolves the BaremetalInstance target by UUID label
     - Checks two preconditions before dispatching (requeues if either is not met):
       1. **ExternalIP must be Allocated** (have an allocated address from the fabric manager)
-      2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachmentStatuses[].ipAddress` for the attachment where `primary: true`. This IP is written by the operator during `reconcileNetworking` (step 6b) and synced to the fulfillment-service via the feedback controller (step 7).
+      2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachmentStatuses[].ipAddress` for the attachment where `primary: true`. This IP is written by the operator during `reconcileIPDiscovery` (step 7) and synced to the fulfillment-service via the feedback controller.
     - Once both preconditions are met: writes `osac.openshift.io/target-ip` annotation on the ExternalIPAttachment CR
     - Calls `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
     - Fabric manager creates DNAT rule: external IP → BM's primary subnet IP
     - ExternalIPAttachment transitions from Pending to Ready
 
-    For auto-provisioned ExternalIPAttachments (`auto_external_ip_attachment=true`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileNetworking` completion (IP allocation by the operator + switch port configuration by the fabric manager).
+    For auto-provisioned ExternalIPAttachments (`auto_external_ip_attachment=true`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileIPDiscovery` completion (IP discovery by the operator after provisioning completes and the host has received a DHCP lease).
 
 #### Deletion (reverse order)
 
@@ -364,23 +363,24 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 #### IP Discovery
 
-After `reconcileNetworking` configures the switch port, the `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table and returns the assigned IP as a role output. The operator reads the AAP job result and writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
+IP discovery is decoupled from switch port configuration. The `create_network_attachment` role is switch-side only — it moves the server's port to the subnet's V-Net during `reconcileNetworking`, before the host boots. It does not query DHCP leases or return an IP address.
+
+After `reconcileProvisioning` completes and the host has received a DHCP lease from the fabric's DHCP server, the operator runs `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing the subnet reference and the server's port MAC address. The role queries the fabric manager's DHCP lease API for the subnet, matches the port MAC to find the corresponding DHCP-assigned IP, and returns it. The operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
 
 The feedback controller syncs this to the fulfillment-service DB via the existing Signal / `syncStatus()` pattern. The ExternalIPAttachment controller reads the primary IP from CR status for DNAT creation.
-
-The fabric manager role (`create_network_attachment`) handles both switch-side configuration (adding the server's port to the subnet's V-Net) and IP discovery (querying the DHCP lease table to return the assigned IP as a role output).
 
 #### Component Responsibility Summary
 
 | Component | Responsibility |
 |-----------|---------------|
 | fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP |
-| bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), **IP discovery** from `create_network_attachment` role output (DHCP lease query), OS provisioning (AAP), power management |
+| bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), OS provisioning (AAP), **IP discovery** via `query_dhcp_lease` dispatcher call after provisioning, power management |
 | AAP BM provisioning template | OS provisioning only (host-side networking handled by DHCP) |
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
 | osac-operator BMI cleanup controller | Clean up auto-provisioned ExternalIPAttachment → ExternalIP on BaremetalInstance deletion (phased requeue, `baremetalinstance-cleanup` finalizer) |
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from CR status, create DNAT via fabric_manager |
-| fabric_manager role (create_network_attachment) | Switch-side config (resolve host → fabric server, add server port to subnet's V-Net) AND IP discovery (query DHCP lease table, return assigned IP as role output) |
+| fabric_manager role (create_network_attachment) | Switch-side only: resolve host → fabric server, add server port to subnet's V-Net (port attachment) |
+| fabric_manager role (query_dhcp_lease) | Query fabric manager's DHCP lease API for a subnet, match port MAC address to find the DHCP-assigned IP, return it |
 | fabric_manager role (delete_network_attachment) | Switch-side only: remove server port from V-Net |
 
 #### Reconciliation Phase Ordering
@@ -389,12 +389,17 @@ The fabric manager role (`create_network_attachment`) handles both switch-side c
 bare-metal-fulfillment-operator BareMetalInstance controller phases:
 1. reconcileInventory → allocate host, populate HostClass, NetworkFabricManager
    Sets condition: InventoryAssigned=True
-2. reconcileNetworking → configure switch ports (dispatcher)
+2. reconcileNetworking → configure switch ports (dispatcher, switch-side only)
    Requires: InventoryAssigned=True
    Sets condition: NetworkingConfigured=True
-3. reconcileProvisioning → OS provisioning (AAP). Host boots and gets IP from DHCP.
+3. reconcileProvisioning → OS provisioning (AAP). Host PXE boots and gets IP from DHCP.
    Requires: NetworkingConfigured=True
-4. reconcilePower → power state management
+   Sets condition: ProvisioningComplete=True
+4. reconcileIPDiscovery → query fabric manager's DHCP lease API via dispatcher
+   (query_dhcp_lease), match port MAC to assigned IP, write to CR status
+   Requires: ProvisioningComplete=True
+   Sets condition: IPDiscoveryComplete=True
+5. reconcilePower → power state management
 ```
 
 ### Security Considerations
@@ -511,7 +516,7 @@ Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's
 
 ### ~~4. How is the host's runtime IP discovered after network reconfiguration?~~ — Resolved
 
-Resolved: Option (a) — the `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table after moving the port and returns the assigned IP as a role output. The operator reads the AAP job result and writes to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR. The feedback controller then syncs to fulfillment-service via Signal RPC.
+Resolved: After `reconcileProvisioning` completes and the host has received a DHCP lease, the operator queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role). The role queries DHCP leases for the subnet and matches the server's port MAC address to find the assigned IP. The operator writes to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR. The feedback controller then syncs to fulfillment-service via Signal RPC. `create_network_attachment` remains switch-side only (port attachment to V-Net).
 
 ## Test Plan
 
@@ -530,7 +535,7 @@ Resolved: Option (a) — the `create_network_attachment` Ansible role queries th
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in HostType, verify error returned
 - E2E: create BaremetalInstance with >1 attachment but no interface fields, verify error returned
-- E2E: verify IP discovery (`create_network_attachment` role queries DHCP lease table, returns IP as role output, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
+- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
 
 ### Tricky Test Cases
 
@@ -552,7 +557,7 @@ Tech Preview criteria:
 - [ ] Dispatcher integration for `create_network_attachment` and `delete_network_attachment`
 - [ ] HostType proto extended with `NetworkInterface` list
 - [ ] Auto ExternalIP attachment provisioning functional
-- [ ] IP discovery implemented (`create_network_attachment` role queries DHCP lease table and returns IP as role output, operator writes to CR status, feedback syncs to fulfillment-service)
+- [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status, feedback syncs to fulfillment-service)
 - [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP, IP feedback)
 - [ ] Documentation: API reference, user guide for simplified BM creation
 
@@ -655,7 +660,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 **Resolution:**
 1. Check BaremetalInstance status: `kubectl get baremetalinstance <name> -n <namespace> -o jsonpath='{.status.networkAttachmentStatuses[?(@.primary==true)].ipAddress}'`
 2. If IP is missing, check bare-metal-fulfillment-operator logs for provisioning phase completion
-3. If provisioning completed but IP missing, investigate `create_network_attachment` role output (DHCP lease query may have failed or returned empty)
+3. If provisioning completed but IP missing, investigate `query_dhcp_lease` dispatcher call (DHCP lease query may have failed, returned empty, or port MAC did not match any lease)
 
 ### Disabling the feature
 
@@ -691,7 +696,7 @@ Consequences:
 | Fabric manager create/delete_network_attachment role | OSAC-2081 (Netris BM) | New |
 | BareMetalInstance CRD: add NetworkAttachments | Not tracked | **GAP** |
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |
-| IP discovery: `create_network_attachment` role queries DHCP lease table and returns IP, operator writes to CR status | Not tracked | **GAP** |
+| IP discovery: `query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status | Not tracked | **GAP** |
 | bare-metal-fulfillment-operator dispatcher capability + RBAC for Subnet/NetworkClass CRs | Not tracked | **GAP** |
 | Rename BareMetalInstance spec.networkClass → networkFabricManager | Not tracked | **GAP** |
 | HostType: add structured NetworkInterface list (name, description) | Not tracked | **GAP** |
