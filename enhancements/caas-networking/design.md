@@ -151,6 +151,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
     - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `subnet_ref`. The role checks if the port is already on a V-Net (parking network) — if so, removes it first — then adds the port to the tenant's subnet V-Net. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
+    - After switch port configuration, the operator's `reconcileNetworking` watches Agent CR network status to discover DHCP-assigned IPs and populates `AgentStatus.IPAddress` on the ClusterOrder status. The feedback controller then syncs these IPs to the fulfillment-service.
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
@@ -369,7 +370,7 @@ type AgentStatus struct {
     AgentName string `json:"agentName"`           // Agent CR name (for NodePool targeting)
     HostName  string `json:"hostName"`            // Netris server name (for dispatcher)
     SubnetRef string `json:"subnetRef,omitempty"`
-    IPAddress string `json:"ipAddress,omitempty"` // Discovered from Agent CR after DHCP assignment
+    IPAddress string `json:"ipAddress,omitempty"` // Discovered by operator's reconcileNetworking: watches Agent CR network status after DHCP assignment, populates here; feedback controller syncs to fulfillment-service
 }
 ```
 
@@ -408,11 +409,11 @@ Migration adds to clusters table:
 | Component | Responsibility |
 |-----------|---------------|
 | fulfillment-service | Validate network_attachment (singular), resolve fabric_interface per node set, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP |
-| osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, select agents, configure network attachments (dispatcher), trigger AAP workflow |
+| osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, select agents, configure network attachments (dispatcher), discover agent IPs (watch Agent CR network status after DHCP, populate `AgentStatus.IPAddress`), trigger AAP workflow |
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs/IPs appear |
 | osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiEndpoint`/`ingressEndpoint` (MetalLB-allocated, template-discovered) from status, create DNAT via fabric_manager |
 | AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents), provision MetalLB VIPs, write VIPs to ClusterOrder status, host-side networking handled by DHCP — no agent selection logic |
-| fabric_manager (Ansible role) | Switch-side only: create/delete_network_attachment (V-Net port attachment), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
+| fabric_manager (Ansible role) | create_network_attachment (V-Net port attachment + DHCP lease query for IP discovery), delete_network_attachment (V-Net port removal), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
 
 #### Auto-Provisioned Resource Lifecycle
@@ -537,6 +538,10 @@ Resolved: the **k8s_manager creates the MetalLB IPAddressPool CR at subnet creat
 ### ~~4. How does the operator know the fabric_manager name?~~ — Resolved
 
 Resolved: The operator reads the fabric_manager name from the NetworkClass CR. One NetworkClass per deployment, read on first reconcile and cached. The NetworkClass is a K8s CR (not just a fulfillment-service DB object).
+
+### ~~5. Should auto NATGateway treat a Deleting NATGateway as 'does not exist'?~~ — Resolved
+
+Resolved: NATGateway reuse limited to Ready only. Failed/Deleting NATGateways cause the create request to fail with an error. NATGateway auto-provisioning per resource was removed — NATGateway is now a VN default created at tenant onboarding.
 
 ### ~~6. Should capacity exhaustion return an API error or create a Failed resource?~~ — Resolved
 

@@ -624,7 +624,7 @@ precondition checks and requeue:
 |-------------|----------------------|---------------------|
 | ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | IP discovered after DHCP assignment — discovery mechanism is an [open question](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration) |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | `create_network_attachment` role queries fabric manager's DHCP lease table and returns the assigned IP as a role output; operator writes to CR status |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
@@ -651,10 +651,11 @@ IP discovery mechanism per service type:
 |---------|-----------------|-------------------|-------------|
 | VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
 | CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | **Open question** — Metal3 BMH inspection IP is stale after network reconfiguration; runtime IP must come from fabric manager DHCP lease, Ansible role output, or host phone-home (see [BMaaS OQ#4](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator → CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| BMaaS | `create_network_attachment` role queries fabric manager's DHCP lease table and returns assigned IP as role output (see [BMaaS OQ#4 — Resolved](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator reads AAP job result → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
 The fabric manager's `create_network_attachment` role adds the host's
-port to the V-Net (switch-side only). The role is generic: it first
+port to the V-Net and queries the DHCP lease table to return the
+assigned IP. The role is generic: it first
 checks if the port is already on a V-Net (e.g., a parking network for
 CaaS pre-booted agents) — if so, removes it — then adds the port to
 the target V-Net. This handles both BMaaS (server not on any V-Net)
@@ -937,7 +938,7 @@ and fires Signal RPC to fulfillment-service.
 message BareMetalNetworkAttachmentStatus {
   string interface = 1;                 // Physical interface name (echoed from spec)
   string subnet_ref = 2;               // Subnet ID (echoed from spec)
-  string ip_address = 3;               // Discovered from host/inventory system (Ironic/Metal3)
+  string ip_address = 3;               // Discovered via create_network_attachment role (DHCP lease query)
   bool primary = 4;                     // Echoed from spec
 }
 
@@ -947,10 +948,11 @@ message BareMetalInstanceStatus {
 }
 ```
 
-IP discovered after DHCP assignment on the tenant V-Net. The discovery
-mechanism is an open question — Metal3 inspection IP is stale after
-network reconfiguration. See [BMaaS OQ#4](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)
-for options. Once discovered, the operator writes to CR status and the
+IP discovered after DHCP assignment on the tenant V-Net. The
+`create_network_attachment` role queries the fabric manager's DHCP lease
+table and returns the assigned IP as a role output (see
+[BMaaS OQ#4 — Resolved](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)).
+The operator reads the AAP job result, writes to CR status, and the
 feedback controller syncs to fulfillment-service.
 
 **ClusterStatus** does not have per-attachment IP status — CaaS uses

@@ -181,19 +181,20 @@ a VirtualNetwork, or how traffic flows between them.
 ExternalIPPool and ExternalIP must work in air-gapped deployments where there
 are no internet-routable IPs. Tenants still need the same API primitives (IP
 allocation, inbound DNAT, outbound SNAT) for data-center-internal external
-access. For example, CaaS cluster worker nodes reach the API server via
-hairpin NAT through an ExternalIP regardless of whether that IP is
-internet-routable. "External" means external to the VirtualNetwork, not
+access. "External" means external to the VirtualNetwork, not
 internet-routable.
 
 #### Gap #9: CaaS has unique prerequisite ordering
 
-Cluster worker nodes reach the hosted control plane API server via hairpin
-NAT — egress traffic SNATs to an ExternalIP, then DNATs back in through
-another ExternalIP to reach the API server. This means ExternalIPs and
-NATGateway must exist before the cluster is provisioned, not after. The
-current design assumes ExternalIPs are attached post-creation (as they are
-for VMs), which does not work for CaaS.
+~~Cluster worker nodes reach the hosted control plane API server via hairpin
+NAT through ExternalIPs, requiring ExternalIPs and NATGateway to exist before
+provisioning.~~ **Resolved:** The CaaS design eliminates hairpin NAT —
+workers access the API server via the MetalLB VIP directly on the same
+subnet. The pre-provisioning ordering constraint is eliminated. ExternalIPs
+are for external (off-subnet) access only, not for intra-cluster
+communication. ExternalIPAttachments start in Pending state and activate once
+the cluster's VIPs are discovered (see
+[CaaS Networking](/enhancements/caas-networking)).
 
 ## 2. Goals and Non-Goals
 

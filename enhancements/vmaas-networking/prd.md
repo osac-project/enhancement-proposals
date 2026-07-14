@@ -64,7 +64,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 #### Auto External IP
 
-- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. [User]
+- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, security groups, NATGateway) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
 #### IP Address Discovery
 

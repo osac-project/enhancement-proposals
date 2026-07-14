@@ -152,7 +152,7 @@ This enhancement adds three main capabilities: default networking (including NAT
      - Creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically.
      - Both labeled `osac.openshift.io/auto-provisioned: "true"`. ExternalIP also labeled `osac.openshift.io/auto-provisioned-for: <resource-id>` for orphan cleanup.
    - ComputeInstance CR created with `auto_external_ip_attachment: true`
-   - osac-operator reconciles ExternalIP (fabric manager allocates address → Allocated), then VM provisioning, then ExternalIPAttachment controller activates once ExternalIP is Allocated AND VM's `VirtualMachineReference` is set
+   - osac-operator reconciles ExternalIP (fabric manager allocates address → Allocated), then VM provisioning, then ExternalIPAttachment controller activates once ExternalIP is Allocated AND `compute_network_attachment_statuses` is populated with the primary attachment's `ip_address`
    - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
    - Result: VM is reachable via ExternalIP
 
@@ -185,7 +185,7 @@ This enhancement adds three main capabilities: default networking (including NAT
 
 #### Auto-Cleanup on Deletion
 
-13. **Tenant User deletes resource with auto-provisioned ExternalIP:**
+10. **Tenant User deletes resource with auto-provisioned ExternalIP:**
     ```bash
     osac delete computeinstance my-vm
     ```
@@ -197,7 +197,7 @@ This enhancement adds three main capabilities: default networking (including NAT
     - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-provisioned), they persist after parent deletion
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
-14. **Tenant Admin inspects and customizes default resources:**
+11. **Tenant Admin inspects and customizes default resources:**
     ```bash
     # List default resources
     osac get virtualnetworks --filter 'labels["osac.openshift.io/default"]="true"'
