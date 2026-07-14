@@ -257,7 +257,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 11. **Delete BaremetalInstance:**
     - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-provisioned-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
-    - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — tenant-scoped and shared.
+    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator:
       - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown
       - `reconcileNetworking` (delete): dispatcher calls `osac.templates.{{ fabric_manager }}.delete_network_attachment` per attachment (passing host_name, logical_interface_name, subnet_ref) to remove the server's port from the subnet's V-Net.
