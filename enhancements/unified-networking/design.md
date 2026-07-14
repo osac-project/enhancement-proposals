@@ -675,15 +675,17 @@ server's port MAC address to find the corresponding DHCP-assigned IP.
 
 *NATGateway controller preconditions:*
 
-The NATGateway controller has one precondition before dispatching the
+The NATGateway controller has two preconditions before dispatching the
 SNAT rule creation:
 
 | Precondition | Source |
 |-------------|--------|
+| Referenced VirtualNetwork must be Ready (fabric segment provisioned) | VirtualNetwork CR status |
 | Referenced ExternalIP must be Allocated (have an allocated address) | ExternalIP CR status |
 
-If the ExternalIP is not yet Allocated, the NATGateway controller
-requeues. This prevents dispatching to AAP without a valid SNAT source
+If either precondition is not met, the NATGateway controller requeues.
+This prevents dispatching to AAP before the VN's fabric segment exists
+(no segment to attach the SNAT rule to) or without a valid SNAT source
 address.
 
 *Auto-provisioned resource labeling:*
