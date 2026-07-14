@@ -242,10 +242,16 @@ message SecurityGroupRule {
 **Resource-level auto external access fields:**
 
 ```protobuf
-// ComputeInstance and BaremetalInstance
+// ComputeInstance
 message ComputeInstanceSpec {
   // ... existing fields ...
   bool auto_external_ip_attachment = 19;  // auto-provision ExternalIP + ExternalIPAttachment
+}
+
+// BaremetalInstance
+message BareMetalInstanceSpec {
+  // ... existing fields ...
+  bool auto_external_ip_attachment = 9;  // auto-provision ExternalIP + ExternalIPAttachment
 }
 
 // Cluster
@@ -318,6 +324,11 @@ type SecurityGroupRule struct {
 
 ```go
 type ComputeInstanceSpec struct {
+    // ... existing fields ...
+    AutoExternalIPAttachment bool `json:"autoExternalIPAttachment,omitempty"`
+}
+
+type BareMetalInstanceSpec struct {
     // ... existing fields ...
     AutoExternalIPAttachment bool `json:"autoExternalIPAttachment,omitempty"`
 }

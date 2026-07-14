@@ -624,7 +624,7 @@ precondition checks and requeue:
 |-------------|----------------------|---------------------|
 | ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | `create_network_attachment` role queries fabric manager's DHCP lease table and returns the assigned IP as a role output; operator writes to CR status |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to assigned IP; operator writes to CR status |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
@@ -651,22 +651,27 @@ IP discovery mechanism per service type:
 |---------|-----------------|-------------------|-------------|
 | VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
 | CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | `create_network_attachment` role queries fabric manager's DHCP lease table and returns assigned IP as role output (see [BMaaS OQ#4 — Resolved](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator reads AAP job result → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to DHCP-assigned IP (see [BMaaS OQ#4 — Resolved](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
-The fabric manager's `create_network_attachment` role adds the host's
-port to the V-Net and queries the DHCP lease table to return the
-assigned IP. The role is generic: it first
-checks if the port is already on a V-Net (e.g., a parking network for
-CaaS pre-booted agents) — if so, removes it — then adds the port to
-the target V-Net. This handles both BMaaS (server not on any V-Net)
-and CaaS (agent moving from parking to tenant V-Net) with the same
-role. The role is idempotent: if the port is already on the target
-V-Net, the role is a no-op. The role only removes and re-adds the port
-when the current V-Net differs from the target. Once on the V-Net, the
-host receives an IP from the fabric's DHCP server automatically. On
-deletion, `delete_network_attachment` removes the port from the tenant
-V-Net and returns it to the parking network (CaaS) or leaves it
-detached (BMaaS).
+The fabric manager's `create_network_attachment` role is switch-side
+only — it adds the host's port to the V-Net. The role is generic: it
+first checks if the port is already on a V-Net (e.g., a parking
+network for CaaS pre-booted agents) — if so, removes it — then adds
+the port to the target V-Net. This handles both BMaaS (server not on
+any V-Net) and CaaS (agent moving from parking to tenant V-Net) with
+the same role. The role is idempotent: if the port is already on the
+target V-Net, the role is a no-op. The role only removes and re-adds
+the port when the current V-Net differs from the target. Once on the
+V-Net, the host receives an IP from the fabric's DHCP server
+automatically. On deletion, `delete_network_attachment` removes the
+port from the tenant V-Net and returns it to the parking network
+(CaaS) or leaves it detached (BMaaS).
+
+IP discovery for BMaaS is a separate dispatcher call. After
+`reconcileProvisioning` completes and the host has received a DHCP
+lease, the operator dispatches `query_dhcp_lease` — this role queries
+the fabric manager's DHCP lease API for the subnet and matches the
+server's port MAC address to find the corresponding DHCP-assigned IP.
 
 *NATGateway controller preconditions:*
 
@@ -938,7 +943,7 @@ and fires Signal RPC to fulfillment-service.
 message BareMetalNetworkAttachmentStatus {
   string interface = 1;                 // Physical interface name (echoed from spec)
   string subnet_ref = 2;               // Subnet ID (echoed from spec)
-  string ip_address = 3;               // Discovered via create_network_attachment role (DHCP lease query)
+  string ip_address = 3;               // Discovered via query_dhcp_lease role after provisioning (matches port MAC to DHCP lease)
   bool primary = 4;                     // Echoed from spec
 }
 
@@ -948,12 +953,13 @@ message BareMetalInstanceStatus {
 }
 ```
 
-IP discovered after DHCP assignment on the tenant V-Net. The
-`create_network_attachment` role queries the fabric manager's DHCP lease
-table and returns the assigned IP as a role output (see
+IP discovered after DHCP assignment on the tenant V-Net. After
+`reconcileProvisioning` completes, the operator dispatches
+`query_dhcp_lease` to the fabric manager's DHCP lease API, matching
+the server's port MAC address to find the assigned IP (see
 [BMaaS OQ#4 — Resolved](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)).
-The operator reads the AAP job result, writes to CR status, and the
-feedback controller syncs to fulfillment-service.
+The operator writes the discovered IP to CR status, and the feedback
+controller syncs to fulfillment-service.
 
 **ClusterStatus** does not have per-attachment IP status — CaaS uses
 service-level VIPs (`api_endpoint`, `ingress_endpoint`) rather than
