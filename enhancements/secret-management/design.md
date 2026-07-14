@@ -42,11 +42,11 @@ credentials implements its own storage, redaction, and retrieval pattern.
 
 This fragmentation creates three problems:
 
-1. Credential data stored in the PostgreSQL `data` JSONB column is not encrypted at rest — anyone 
+1. Credential data stored in the PostgreSQL `data` JSONB column is not encrypted at rest — anyone
    with database access can read secrets in cleartext.
 2. Tenants cannot manage credentials independently: rotating a pull secret requires updating the
-   cluster that uses it, and there is no way to list all credentials a tenant owns. 
-3. Third, each new resource type that needs credentials must reimplement redaction and retrieval logic, 
+   cluster that uses it, and there is no way to list all credentials a tenant owns.
+3. Third, each new resource type that needs credentials must reimplement redaction and retrieval logic,
    increasing the surface area for mistakes.
 
 ### Goals
@@ -360,14 +360,14 @@ New commands follow existing patterns:
 |---------|-------------|
 | `osac create secret <name> --from-file=<key>=<path>` | Create a secret with a key-value pair from a file |
 | `osac create secret <name> --from-file=<path>` | Create with filename as the key |
-| `osac create secret <name> --from-literal=<key>=<value>` | Create a secret from a literal value |
+| `osac create secret <name> --from-file=-` | Create a secret from stdin |
 | `osac get secrets` | List secrets (metadata only) |
 | `osac get secret <name>` | Get secret (table: metadata only; `-o yaml/json`: includes data) |
 | `osac describe secret <name>` | Detailed secret metadata view |
 | `osac delete secret <name>` | Delete a secret |
 | `osac edit secret <name>` | Edit secret data/metadata in `$EDITOR` |
 
-The `--from-file` and `--from-literal` flags are new to the OSAC CLI.
+The `--from-file` flag is new to the OSAC CLI.
 They follow `kubectl create secret` conventions because secrets hold
 arbitrary key-value data — unlike other OSAC resources which have
 typed fields with dedicated flags. Data values are included in
@@ -399,6 +399,25 @@ Validation rules:
 
 Note: The exact naming, nature, and type of these reference fields may change as a result
 of upcoming type-safe resource references - https://redhat.atlassian.net/browse/OSAC-1330
+
+#### Secret Labels
+
+Users are encouraged to apply the label `osac.openshift.io/secret-type`
+to describe what kind of credential data a secret holds. This label is
+not enforced by the server — it is a recommended convention that enables
+filtering and auditing by secret type.
+
+For example:
+
+```bash
+osac create secret my-pull-secret \
+  --from-file .dockerconfigjson=auth.json \
+  --label osac.openshift.io/secret-type=pull-secret
+```
+
+System-created secrets (e.g., cluster kubeconfigs) will have this label set by the creating controller.
+This ensures that secrets created by OSAC itself are discoverable
+by type without requiring manual labeling.
 
 #### Credential Migration
 
@@ -455,8 +474,10 @@ follow the existing OSAC naming validation (alphanumeric, hyphens, max
 gRPC connections. The CLI displays data only in structured output formats
 (`-o yaml/json`); the default table view shows metadata only.
 
-**No secret data in logs or events:** The RedactFunc strips `spec.data`
+**No secret data in logs, events, or CLIs:** The RedactFunc strips `spec.data`
 from all event payloads. Server-side logging does not include secret data.
+Users should be able to create secrets without having to type secrets in CLI inputs
+that might show up in history or the process table.
 
 ### Failure Handling and Recovery
 
@@ -521,7 +542,9 @@ path `{kv_mount_path}/data/{tenant}/{project}/{name}`, where
 This organizes secret data by tenant, project, and name within the
 store. Access isolation is enforced at the application layer — the
 fulfillment-service only reads or writes paths matching the
-authenticated tenant.
+authenticated tenant.  The request handler should drop privileges as early
+as possible so that for a given request being executed it shoud only be able
+to access secrets for that tenant.
 
 ### Observability and Monitoring
 
