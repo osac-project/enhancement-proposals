@@ -210,7 +210,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 12. **Delete Cluster:**
     - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-provisioned-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
-    - **Default networking resources (VN, Subnet, SG) are NOT cleaned up** — tenant-scoped and shared.
+    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
     - CaaS delete template:
       - Deletes MetalLB LoadBalancer Services
