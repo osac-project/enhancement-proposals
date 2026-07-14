@@ -128,7 +128,6 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 ## 9. Open Questions
 
-### 9.1 Should capacity exhaustion return an API error or create a failed resource?
+### ~~9.1 Should capacity exhaustion return an API error or create a failed resource?~~ — Resolved
 
-- **Owner:** API design team
-- **Impact:** Affects FR-4 and NFR-1. Returning an error (resource not persisted) is simpler but gives no audit trail. Creating a failed resource provides visibility but adds cleanup burden.
+Resolved: Return error, no resource persisted.

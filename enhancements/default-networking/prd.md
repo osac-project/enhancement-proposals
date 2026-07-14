@@ -80,21 +80,22 @@ where a single create command produces a reachable instance.
 #### Default Networking
 
 - **FR-1:** At tenant onboarding, the system provisions a default
-  VirtualNetwork, Subnet, and SecurityGroup for the tenant. The tenant
-  transitions to READY only after all default networking resources are
-  also READY. If default networking provisioning fails, the tenant
-  remains in a non-READY state with a status condition describing the
-  failure. The Cloud Provider Admin can inspect the failure and retry
-  by deleting and re-creating the tenant. [User]
+  VirtualNetwork, IPv4 Subnet, IPv6 Subnet, and SecurityGroup for the
+  tenant (dual-stack). The tenant transitions to READY only after all
+  default networking resources are also READY. If default networking
+  provisioning fails, the tenant remains in a non-READY state with a
+  status condition describing the failure. The Cloud Provider Admin can
+  inspect the failure and retry by deleting and re-creating the tenant.
+  [User]
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
-  parameters (CIDR, SecurityGroup rules) on the NetworkClass. Defaults
-  are required — a NetworkClass without defaults is rejected at creation
-  time. [User]
-- **FR-3:** All tenants receive the same default CIDR range as configured
-  on the NetworkClass. Tenants are isolated at the network level — the
-  unified networking API provides VirtualNetworks with any IP subnet, and
-  the system enforces isolation regardless of overlapping CIDRs between
-  tenants. [User]
+  parameters (IPv4 CIDR, IPv6 CIDR, SecurityGroup rules) on the
+  NetworkClass. Defaults are required — a NetworkClass without defaults
+  is rejected at creation time. [User]
+- **FR-3:** All tenants receive the same default CIDR ranges (IPv4 and
+  IPv6) as configured on the NetworkClass. Tenants are isolated at the
+  network level — the unified networking API provides VirtualNetworks
+  with any IP subnet, and the system enforces isolation regardless of
+  overlapping CIDRs between tenants. [User]
 - **FR-4:** Default resources are labeled as defaults, visible in list
   and detail views, and editable by the Tenant Admin (e.g., adding
   SecurityGroup rules). Default resources cannot be deleted while any
@@ -159,8 +160,8 @@ where a single create command produces a reachable instance.
   `--external-ip-attachment` and no explicit network attachments — the
   server is placed on the default subnet with an auto-provisioned
   ExternalIP
-- [ ] Default VirtualNetwork, Subnet, and SecurityGroup exist and are
-  READY before the tenant's first resource creation
+- [ ] Default VirtualNetwork, Subnets (IPv4 + IPv6), and SecurityGroup
+  exist and are READY before the tenant's first resource creation
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
 - [ ] A Tenant Admin can modify default SecurityGroup rules (e.g., add
@@ -222,16 +223,10 @@ where a single create command produces a reachable instance.
 
 ## 8. Open Questions
 
-### 8.1 Should capacity exhaustion return an API error or create a Failed resource?
+### ~~8.1 Should capacity exhaustion return an API error or create a Failed resource?~~ — Resolved
 
-- **Owner:** API design team
-- **Impact:** Affects FR-8 and acceptance criteria. Returning an error
-  (resource not persisted) is simpler but gives no audit trail. Creating
-  a Failed resource provides visibility but adds cleanup burden.
+Resolved: Return error, no resource persisted.
 
-### 8.2 E2E test coverage for simplified creation
+### ~~8.2 E2E test coverage for simplified creation~~ — Resolved
 
-- **Owner:** QE / osac-test-infra
-- **Impact:** Which user journeys (1-call VM, 1-call cluster, explicit
-  bypass) must be covered by E2E tests at milestone boundary? Deferred
-  to design phase.
+Resolved: E2E tests for simplified creation are defined in each per-service design's test plan (VMaaS, CaaS, BMaaS). No separate test plan needed in the default networking EP.

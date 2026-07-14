@@ -522,13 +522,9 @@ Instead of implementing VIP feedback loop, require tenants to manually create Ex
 
 ## Open Questions
 
-### 1. How does the operator select agents?
+### ~~1. How does the operator select agents?~~ — Resolved
 
-The operator needs agent selection logic (currently in the step collection's cluster_infra role). This includes: querying available agents by host_type and labels, reserving them for this cluster, and labeling them. Does the operator call an AAP job for this, or does it interact with the agent inventory directly (K8s API for Agent CRs)?
-
-**Owner:** osac-operator team
-
-**Impact:** Affects implementation of `reconcileAgentSelection`.
+Resolved: The operator queries Agent CRs directly via K8s API — selects by host_type label match and availability, labels selected agents with `osac.openshift.io/cluster-order: <name>` to reserve them. This is the current approach but may evolve as the agent management model changes.
 
 ### ~~2. NMState NNCP configuration~~ — Resolved
 
@@ -538,42 +534,21 @@ Resolved: DHCP handles host-side networking for CaaS agents. NMState NNCP config
 
 Resolved: the **k8s_manager creates the MetalLB IPAddressPool CR at subnet creation time**, alongside the CUDN overlay on each hosting cluster. The IPAddressPool covers the subnet CIDR and is a shared prerequisite for all hosted cluster control planes on that hosting cluster — not a per-cluster resource. The CaaS template creates LoadBalancer Services; MetalLB dynamically allocates VIPs from the pool and announces them. The template discovers the allocated VIPs and writes them to ClusterOrder status.
 
-### 4. How does the operator know the fabric_manager name?
+### ~~4. How does the operator know the fabric_manager name?~~ — Resolved
 
-With one NetworkClass per deployment, the operator reads it once. But for the dispatcher call, the operator needs the name to select the right AAP template. Options: read NetworkClass CR, or env var.
+Resolved: The operator reads the fabric_manager name from the NetworkClass CR. One NetworkClass per deployment, read on first reconcile and cached. The NetworkClass is a K8s CR (not just a fulfillment-service DB object).
 
-**Owner:** osac-operator team
+### ~~6. Should capacity exhaustion return an API error or create a Failed resource?~~ — Resolved
 
-**Impact:** Affects dispatcher implementation in ClusterOrder controller.
+Resolved: Return error, no resource persisted. Pool capacity is checked synchronously during the API call. If exhausted, the call fails atomically. No Failed resource created.
 
-### 6. Should capacity exhaustion return an API error or create a Failed resource?
+### ~~7. How is the subnet CIDR partitioned between MetalLB VIP allocation and fabric DHCP assignment?~~ — Resolved
 
-Current proposal: return error, no resources persisted. Alternative: create Failed resource for audit trail.
+Resolved: The k8s_manager creates the MetalLB IPAddressPool with a reserved sub-range of the subnet CIDR (e.g., last /28). The fabric manager's DHCP server is configured to exclude this range. The sub-range size is configurable on the NetworkClass. This ensures MetalLB VIPs and DHCP-assigned agent IPs never overlap.
 
-**Owner:** API design team
+### ~~8. What IP addresses do DNS records point to — MetalLB VIPs or ExternalIPs?~~ — Resolved
 
-**Impact:** Affects auto ExternalIP allocation behavior and acceptance criteria.
-
-### 7. How is the subnet CIDR partitioned between MetalLB VIP allocation and fabric DHCP assignment?
-
-MetalLB IPAddressPool covers the subnet CIDR, but agents also receive IPs via DHCP from the same range. Without range partitioning, MetalLB could allocate a VIP that was already leased to an agent via DHCP.
-
-Options:
-- **(a)** k8s_manager creates IPAddressPool with a sub-range (e.g., last /28 of the subnet)
-- **(b)** fabric manager's DHCP excludes a range reserved for MetalLB
-- **(c)** MetalLB and DHCP coordinate via a shared IPAM
-
-**Owner:** Platform team
-
-**Impact:** IP collision risk between MetalLB VIPs and DHCP-assigned agent IPs
-
-### 8. What IP addresses do DNS records point to — MetalLB VIPs or ExternalIPs?
-
-The template creates DNS records (step 7b) but never specifies the target IP. If DNS points to ExternalIPs, workers cannot reach the API server during bootstrapping because DNAT rules don't exist yet (ExternalIPAttachment activates after VIPs are discovered). If DNS points to MetalLB VIPs, external clients need ExternalIP DNAT for access.
-
-**Owner:** Platform team
-
-**Impact:** Affects cluster bootstrap sequencing and external access reachability
+Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are on the same subnet and reach it without DNS. External DNS records (api.<cluster>.<domain>, *.apps.<cluster>.<domain>) point to the ExternalIP and are only created when the tenant uses --external-ip-attachment. No bootstrap sequencing issue — workers use VIPs from kubeconfig, not DNS.
 
 ## Test Plan
 

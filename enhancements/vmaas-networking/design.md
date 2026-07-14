@@ -382,13 +382,9 @@ Instead of returning an error when ExternalIPPool has no capacity, create a Fail
 
 ## Open Questions
 
-### 1. Should capacity exhaustion return an API error or create a Failed resource?
+### ~~1. Should capacity exhaustion return an API error or create a Failed resource?~~ — Resolved
 
-Current proposal: return error, no resources persisted. Alternative: create Failed resource for audit trail.
-
-**Owner:** API design team
-
-**Impact:** Affects FR-4 and acceptance criteria.
+Resolved: Return error, no resource persisted. Pool capacity checked synchronously. No Failed resource.
 
 ## Test Plan
 
