@@ -163,7 +163,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 #### Deletion (reverse order)
 
-10. **Delete ComputeInstance:**
+9. **Delete ComputeInstance:**
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
@@ -171,7 +171,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Template deletes KubeVirt VM + DataVolume
    - No `delete_network_attachment` call (VM was on overlay, not switch port)
 
-11. **Delete networking resources:**
+10. **Delete networking resources:**
     - Each networking resource controller triggers its delete AAP job
     - Dispatcher calls the appropriate manager role for each
 

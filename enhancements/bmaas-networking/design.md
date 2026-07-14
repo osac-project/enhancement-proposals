@@ -82,7 +82,7 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher calls `create_network_attachment` per interface to configure switch ports
-- IP discovery after DHCP: host receives IP from fabric's DHCP server, IP discovered from host/inventory system, written to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
+- IP discovery after DHCP: `create_network_attachment` role queries fabric manager's DHCP lease table and returns the assigned IP as a role output, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
 - HostType resource extended with structured `NetworkInterface` list (name, role, description) for BM host types only
 - Rename `networkClass` → `networkFabricManager` to avoid collision with OSAC NetworkClass CRD
 
@@ -223,7 +223,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 7. **IP discovery and feedback:**
    - After the host boots and receives a DHCP-assigned IP on the tenant V-Net, the IP must be discovered and written to `status.networkAttachmentStatuses[].ipAddress` on the CR
-   - **Discovery mechanism (open question — see OQ#4):** Metal3 `BareMetalHost.status.hardware.nics[].ip` reflects the inspection-time IP, not the runtime IP after network reconfiguration. The runtime IP must be discovered via one of: (a) the `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table and returns the assigned IP, (b) the fabric manager exposes a DHCP lease API that the operator polls, or (c) a phone-home callback from the host reports its IP
+   - **Discovery mechanism:** The `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table after moving the port and returns the assigned IP as a role output. The operator reads the AAP job result and writes the IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
    - Operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern
@@ -254,7 +254,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 #### Deletion (reverse order)
 
-11. **Delete BaremetalInstance:**
+10. **Delete BaremetalInstance:**
     - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-provisioned-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
@@ -265,7 +265,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - `reconcileInventory` deletion: UnassignHost from Ironic/Metal3, removes inventory finalizer
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
 
-12. **Tenant deletes networking resources** (independently):
+11. **Tenant deletes networking resources** (independently):
     - Delete ExternalIPAttachments, ExternalIPs, SecurityGroup, Subnet, VirtualNetwork — each via its own dispatcher-triggered delete job
 
 ### API Extensions
@@ -364,23 +364,23 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 #### IP Discovery
 
-After `reconcileNetworking` adds the host's port to the V-Net and `reconcileProvisioning` boots the host, the host receives an IP from the fabric's DHCP server. The IP is discovered from the host/inventory system (Ironic/Metal3 reports the allocated IP after provisioning) and written to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
+After `reconcileNetworking` configures the switch port, the `create_network_attachment` Ansible role queries the fabric manager's DHCP lease table and returns the assigned IP as a role output. The operator reads the AAP job result and writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
 
 The feedback controller syncs this to the fulfillment-service DB via the existing Signal / `syncStatus()` pattern. The ExternalIPAttachment controller reads the primary IP from CR status for DNAT creation.
 
-The fabric manager role (`create_network_attachment`) handles switch-side only — adding the server's port to the subnet's V-Net. It does not allocate IPs. IP assignment is handled by the fabric's DHCP server, and IP discovery is handled by the host/inventory system.
+The fabric manager role (`create_network_attachment`) handles both switch-side configuration (adding the server's port to the subnet's V-Net) and IP discovery (querying the DHCP lease table to return the assigned IP as a role output).
 
 #### Component Responsibility Summary
 
 | Component | Responsibility |
 |-----------|---------------|
 | fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP |
-| bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), **IP discovery** from host/inventory after DHCP, OS provisioning (AAP), power management |
+| bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), **IP discovery** from `create_network_attachment` role output (DHCP lease query), OS provisioning (AAP), power management |
 | AAP BM provisioning template | OS provisioning only (host-side networking handled by DHCP) |
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
 | osac-operator BMI cleanup controller | Clean up auto-provisioned ExternalIPAttachment → ExternalIP on BaremetalInstance deletion (phased requeue, `baremetalinstance-cleanup` finalizer) |
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from CR status, create DNAT via fabric_manager |
-| fabric_manager role (create_network_attachment) | Switch-side only: resolve host → fabric server, add server port to subnet's V-Net |
+| fabric_manager role (create_network_attachment) | Switch-side config (resolve host → fabric server, add server port to subnet's V-Net) AND IP discovery (query DHCP lease table, return assigned IP as role output) |
 | fabric_manager role (delete_network_attachment) | Switch-side only: remove server port from V-Net |
 
 #### Reconciliation Phase Ordering
@@ -497,6 +497,10 @@ Operator pre-allocates IPs from subnet CIDR during reconcileNetworking and write
 
 ## Open Questions
 
+### ~~1. Should auto NATGateway treat a Deleting NATGateway as 'does not exist'?~~ — Resolved
+
+Resolved: NATGateway reuse limited to Ready only. Failed/Deleting NATGateways cause the create request to fail with an error. NATGateway auto-provisioning per resource was removed — NATGateway is now a VN default created at tenant onboarding.
+
 ### ~~2. Should capacity exhaustion return an API error or create a Failed resource?~~ — Resolved
 
 Resolved: Return error, no resource persisted. Pool capacity checked synchronously. No Failed resource.
@@ -526,7 +530,7 @@ Resolved: Option (a) — the `create_network_attachment` Ansible role queries th
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in HostType, verify error returned
 - E2E: create BaremetalInstance with >1 attachment but no interface fields, verify error returned
-- E2E: verify IP discovery (host receives IP from DHCP, IP discovered from host/inventory system, written to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
+- E2E: verify IP discovery (`create_network_attachment` role queries DHCP lease table, returns IP as role output, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
 
 ### Tricky Test Cases
 
@@ -548,7 +552,7 @@ Tech Preview criteria:
 - [ ] Dispatcher integration for `create_network_attachment` and `delete_network_attachment`
 - [ ] HostType proto extended with `NetworkInterface` list
 - [ ] Auto ExternalIP attachment provisioning functional
-- [ ] IP discovery implemented (host receives IP from DHCP, IP discovered from host/inventory system, written to CR status, feedback syncs to fulfillment-service)
+- [ ] IP discovery implemented (`create_network_attachment` role queries DHCP lease table and returns IP as role output, operator writes to CR status, feedback syncs to fulfillment-service)
 - [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP, IP feedback)
 - [ ] Documentation: API reference, user guide for simplified BM creation
 
@@ -651,7 +655,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 **Resolution:**
 1. Check BaremetalInstance status: `kubectl get baremetalinstance <name> -n <namespace> -o jsonpath='{.status.networkAttachmentStatuses[?(@.primary==true)].ipAddress}'`
 2. If IP is missing, check bare-metal-fulfillment-operator logs for provisioning phase completion
-3. If provisioning completed but IP missing, investigate IP discovery from host/inventory system (Ironic/Metal3)
+3. If provisioning completed but IP missing, investigate `create_network_attachment` role output (DHCP lease query may have failed or returned empty)
 
 ### Disabling the feature
 
@@ -687,7 +691,7 @@ Consequences:
 | Fabric manager create/delete_network_attachment role | OSAC-2081 (Netris BM) | New |
 | BareMetalInstance CRD: add NetworkAttachments | Not tracked | **GAP** |
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |
-| IP discovery: discover DHCP-assigned IP from host/inventory, write to CR status | Not tracked | **GAP** |
+| IP discovery: `create_network_attachment` role queries DHCP lease table and returns IP, operator writes to CR status | Not tracked | **GAP** |
 | bare-metal-fulfillment-operator dispatcher capability + RBAC for Subnet/NetworkClass CRs | Not tracked | **GAP** |
 | Rename BareMetalInstance spec.networkClass → networkFabricManager | Not tracked | **GAP** |
 | HostType: add structured NetworkInterface list (name, description) | Not tracked | **GAP** |
