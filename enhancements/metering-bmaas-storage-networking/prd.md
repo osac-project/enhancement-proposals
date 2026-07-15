@@ -26,6 +26,8 @@ Without metering for these resources, Cloud Provider Admins cannot bill tenants 
 
 ## 2. In Scope
 
+These resource families are grouped because they share the allocation-based metering model and will be designed together to ensure consistent treatment of allocation semantics, parent-child attribution, and pricing dimensions.
+
 - BMaaS metering — allocation-based metering for bare metal hosts from provisioning to deletion, with an optional consumption meter for powered-on time
 - Block storage metering — allocation-based metering for standalone volumes by storage tier and capacity
 - File storage metering — allocation-based metering for shared file storage by storage tier and capacity
@@ -50,16 +52,16 @@ Without metering for these resources, Cloud Provider Admins cannot bill tenants 
 
 - As a Cloud Provider Admin, I want to view aggregated bare metal host usage across all tenants for a billing period, broken down by tenant, host type, and catalog item (per Part 1 CAP-17), so that I can generate bills that reflect the physical hardware each tenant holds.
 - As a Cloud Provider Admin, I want to view storage usage across all tenants broken down by storage tier (fast, standard, archival) and capacity, so that I can price storage according to the tier's cost to the provider.
-- As a Cloud Provider Admin, I want to view object storage usage across all tenants broken down by reserved capacity and API request counts (read/write), so that I can bill tenants for both the storage space they hold and the API activity they generate.
+- As a Cloud Provider Admin, I want to view object storage usage across all tenants broken down by reserved capacity and API request counts (read/write), so that I can bill tenants for both the storage space they hold and the API activity they generate. Object storage cost has two independent drivers: stored capacity (backend disk space) and access frequency (I/O and network). A high-traffic bucket costs more to serve than an archival one at the same capacity, so both dimensions must be visible for accurate billing.
 - As a Cloud Provider Admin, I want to view networking resource usage across all tenants broken down by resource type (VirtualNetwork, PublicIP, NATGateway), so that I can bill tenants for the network infrastructure they consume.
 - As a Cloud Provider Admin, I want to view network bandwidth usage across all tenants broken down by direction (ingress/egress) and tenant, so that I can apply data transfer pricing.
 - As a Cloud Provider Admin, I want bare metal hosts to be metered from provisioning start through deletion regardless of power state, so that I can recover the cost of physically reserved hardware even when the tenant has powered it off.
-- As a Cloud Provider Admin, I want to see both allocation and consumption meters for bare metal hosts, so that I can offer discounted pricing for stopped hosts while still recovering the baseline reservation cost.
+- As a Cloud Provider Admin, I want to see both allocation and consumption meters for bare metal hosts, so that I can offer discounted pricing for stopped hosts while still recovering the baseline reservation cost. A bare metal host has a fixed cost to the provider (rack space, power port, network cable) whether powered on or off — the allocation meter covers this. When powered on, it additionally consumes electricity, cooling, and CPU cycles — the consumption meter covers this. For example, a provider could charge $0.005/s for allocation (always) and $0.001/s for consumption (RUNNING only): a stopped host costs $0.005/s, a running host costs $0.006/s. Without the dual model, the provider either charges full price for stopped hosts or absorbs the reservation cost of idle hardware.
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to register storage tiers as metering dimensions, so that each tier (e.g., NVMe SSD, HDD archival) can be priced independently in the provider's rate schedule.
-- As a Cloud Infrastructure Admin, I want to configure network classes as metering dimensions for VirtualNetworks, so that different network backends (e.g., high-performance DPDK, standard OVN) can carry different rates.
+- As a Cloud Infrastructure Admin, I want storage usage to be automatically grouped by the storage tiers I have configured in OSAC, so that each tier (e.g., NVMe SSD, HDD archival) can be priced independently in the provider's rate schedule — without requiring a separate registration step in the metering system.
+- As a Cloud Infrastructure Admin, I want VirtualNetwork usage to be automatically grouped by the network classes I have configured in OSAC, so that different network backends (e.g., high-performance DPDK, standard OVN) can carry different rates — without requiring a separate registration step in the metering system.
 - As a Cloud Infrastructure Admin, I want to enable bandwidth metering by integrating the networking vendor's traffic data source, so that per-tenant ingress/egress usage appears alongside resource-based meters.
 - As a Cloud Infrastructure Admin, I want to add meters for new networking resource types (e.g., LoadBalancer, VPN Gateway) via configuration without redeployment, extending Part 1 CAP-6 to networking resources.
 
@@ -91,7 +93,7 @@ Without metering for these resources, Cloud Provider Admins cannot bill tenants 
 
 - **CAP-21:** Block storage volumes are metered using allocation-based metering from creation to deletion. The metering unit is GiB-seconds per storage tier.
 - **CAP-22:** File storage shares are metered using the same allocation model as block storage — GiB-seconds per storage tier from creation to deletion.
-- **CAP-23:** Object storage buckets are metered using a dual model — allocation (reserved capacity as GiB-seconds) and consumption (API request counts for read and write operations).
+- **CAP-23:** Object storage buckets are metered using a dual model — allocation (reserved capacity as GiB-seconds) and consumption (API request counts for read and write operations). Unlike block or file storage where cost is driven purely by reserved capacity over time, object storage cost is also driven by how actively the data is accessed. A 1 TiB bucket serving millions of read requests per day costs the provider significantly more in I/O and network bandwidth than an identically-sized archival bucket accessed once a month. The dual model lets providers price both dimensions independently: storage capacity at one rate and API activity at another.
 - **CAP-24:** Storage usage is queryable by storage tier, capacity, tenant, and project. Storage tier is a required pricing dimension as specified by [Part 1](/enhancements/metering-and-usage-tracking/prd.md).
 - **CAP-25:** Storage volumes attached to a VM or cluster are attributable to the parent resource, extending Part 1 CAP-11 and CAP-12 so that the full cost of a VM or cluster includes its storage.
 
@@ -99,7 +101,7 @@ Without metering for these resources, Cloud Provider Admins cannot bill tenants 
 
 - **CAP-26:** Tenant-facing networking resources (VirtualNetwork, Subnet, SecurityGroup, PublicIP, ExternalIP, NATGateway, and their attachments) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion.
 - **CAP-27:** Networking usage is queryable by resource type, network class (for VirtualNetworks), IP family (IPv4/IPv6 for IP resources), region, tenant, and project.
-- **CAP-28:** PublicIPs and ExternalIPs are metered regardless of whether they are attached to a resource. An allocated-but-unattached IP still consumes address pool space and is billable.
+- **CAP-28:** PublicIPs and ExternalIPs are metered regardless of whether they are attached to a resource. An allocated-but-unattached IP consumes address pool space that other tenants cannot use — the provider's pool is finite and each allocation reduces availability. Metering unattached IPs incentivizes tenants to release addresses they are not using, similar to how AWS charges for Elastic IPs that are not associated with a running instance. The `attached` status is included as a queryable dimension so providers can apply differential rates if desired (e.g., charge more for unattached IPs to encourage release).
 
 ### 5.4 Bandwidth Metering
 
@@ -214,29 +216,46 @@ Bandwidth is a consumption meter. Unlike the resource meters above, it is driven
 - **OSAC-1201 (BareMetalInstanceType EP):** Must add `host_type` to the BareMetalInstance proto. Without this, BMaaS metering has no primary pricing dimension.
 - **Networking vendor integration:** Bandwidth metering depends on a data source for per-tenant traffic counters. The specific vendor API and integration mechanism will be determined during design.
 
-## 10. Open Questions
+## 10. Risks
 
-### 10.1 Network bandwidth data source
+### 10.1 BMaaS pricing dimension not yet in proto
+
+- **Owner:** OSAC platform team
+- **Mitigation:** OSAC-1201 (BareMetalInstanceType EP) is the expected vehicle to add `host_type` to the BareMetalInstance proto. Until this lands, BMaaS metering has no primary pricing dimension and cannot be implemented. Track OSAC-1201 as a blocking dependency.
+
+### 10.2 Storage APIs do not exist yet
+
+- **Owner:** OSAC platform team
+- **Mitigation:** Block storage (OSAC-984), file storage (OSAC-2387), and object storage (OSAC-2388) APIs must be implemented before their respective meters can be built. Storage metering delivery is gated on these APIs. Coordinate with the storage team to align timelines.
+
+### 10.3 Bandwidth data source unidentified
+
+- **Owner:** OSAC platform team / Networking team
+- **Mitigation:** No networking vendor has been selected to provide per-tenant ingress/egress traffic counters. Without a data source, bandwidth metering (CAP-29, CAP-30) cannot be implemented. Engage Netris and OVN-Kubernetes teams during design to evaluate options. Bandwidth metering may ship after BMaaS/storage/networking if the vendor integration is not ready.
+
+### 10.4 Part 1 metering infrastructure not yet built
+
+- **Owner:** OSAC platform team
+- **Mitigation:** All Part 2 meters depend on the metering infrastructure (event pipeline, provider adapters) established by Part 1 (OSAC-985). Part 2 implementation cannot begin until Part 1 infrastructure is deployed. The Part 1 design is complete; implementation has not started.
+
+## 11. Open Questions
+
+### 11.1 Network bandwidth data source
 
 - **Owner:** OSAC platform team / Networking team
 - **Impact:** CAP-29, CAP-30. Carried forward from Part 1. The networking vendor (Netris, OVN-Kubernetes, or AAP) must provide per-tenant ingress/egress traffic counters. The choice of data source determines how traffic data reaches the metering system. This must be resolved during design.
 
-### 10.2 Object storage API metering granularity
+### 11.2 Object storage API metering granularity
 
 - **Owner:** OSAC platform team
 - **Impact:** CAP-23. Should object storage metering distinguish between different API operation types (PUT/GET/LIST/DELETE) with separate meters, or aggregate all operations into read vs. write categories? This PRD aggregates into read vs. write. Fine-grained per-operation metering would increase dimensionality but give providers more pricing flexibility.
 
-### 10.3 Should unattached PublicIPs be billed at a different rate than attached ones?
+### 11.3 Should BMaaS allocation metering include FAILED state?
 
 - **Owner:** OSAC platform team / Providers
-- **Impact:** CAP-28. This PRD requires that unattached IPs are metered. Whether the provider charges a premium for unattached IPs (to incentivize release, as AWS does with Elastic IPs) is a pricing policy decision. Usage data must include `attached` as a queryable dimension so that providers can apply differentiated rates if desired.
+- **Impact:** CAP-18. A bare metal host in FAILED state may still be physically reserved — the hardware exists in the rack and cannot be assigned to another tenant until the failed instance is deleted. This argues for continuing allocation metering during FAILED state. However, if the failure is caused by provider infrastructure (e.g., IPMI unreachable, firmware issue), charging the tenant for a host they cannot use raises the same SLA concern as Part 1 D-5 (failed-state metering) for VMs. The design must determine whether FAILED state continues or pauses the allocation meter.
 
-### 10.4 Should BMaaS allocation metering include FAILED state?
-
-- **Owner:** OSAC platform team / Providers
-- **Impact:** CAP-18. A bare metal host in FAILED state may still be physically reserved — the hardware exists in the rack and cannot be assigned to another tenant until the failed instance is deleted. This argues for continuing allocation metering during FAILED state. However, if the failure is caused by provider infrastructure (e.g., IPMI unreachable, firmware issue), charging the tenant for a host they cannot use raises the same SLA concern as Part 1 open question 9.6 for VMs. The design must determine whether FAILED state continues or pauses the allocation meter.
-
-### 10.5 Should VirtualNetwork metering start at PENDING or READY?
+### 11.4 Should VirtualNetwork metering start at PENDING or READY?
 
 - **Owner:** OSAC platform team
 - **Impact:** CAP-26. The current model starts metering at READY/ALLOCATED because that is when the resource is usable by the tenant. However, PENDING resources may already consume backend infrastructure (network configuration, VLAN allocation). Starting at PENDING aligns with the BMaaS allocation model (metering from provisioning start). Starting at READY aligns with what the tenant can observe and use. This applies to all networking resources with a PENDING-to-READY transition.
