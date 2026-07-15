@@ -72,7 +72,7 @@ These resource families are grouped because they share the allocation-based mete
 - As a Tenant Admin, I want to view my organization's object storage bucket usage broken down by project, capacity, and API request counts, so that I can attribute object storage costs to the teams that use them.
 - As a Tenant Admin, I want to view my organization's networking resource usage broken down by project, including the count and duration of VirtualNetworks, PublicIPs, and NATGateways, so that I can attribute networking costs to the teams that provisioned them.
 - As a Tenant Admin, I want to view my organization's network bandwidth usage broken down by project and direction (ingress/egress), so that I can identify projects with high data transfer costs.
-- As a Tenant Admin, I want to see the total cost footprint of a bare metal host including its attached storage volumes and public IPs, so that I can understand the full cost of each machine without querying multiple reports.
+- As a Tenant Admin, I want to see the total usage footprint of a bare metal host including its attached storage volumes and public IPs, so that I can understand the full resource consumption of each machine without querying multiple reports.
 
 ### Tenant User
 
@@ -93,9 +93,9 @@ These resource families are grouped because they share the allocation-based mete
 
 - **CAP-21:** Block storage volumes are metered using allocation-based metering from creation to deletion. The metering unit is GiB-seconds per storage tier.
 - **CAP-22:** File storage shares are metered using the same allocation model as block storage — GiB-seconds per storage tier from creation to deletion.
-- **CAP-23:** Object storage buckets are metered using a dual model — allocation (reserved capacity as GiB-seconds) and consumption (API request counts for read and write operations). Unlike block or file storage where cost is driven purely by reserved capacity over time, object storage cost is also driven by how actively the data is accessed. A 1 TiB bucket serving millions of read requests per day costs the provider significantly more in I/O and network bandwidth than an identically-sized archival bucket accessed once a month. The dual model lets providers price both dimensions independently: storage capacity at one rate and API activity at another.
+- **CAP-23:** Object storage buckets are metered using a dual model — allocation (provisioned quota as GiB-seconds, not actual bytes stored) and consumption (API request counts for read and write operations). The allocation meter tracks the bucket's provisioned quota — the capacity reserved by the tenant at creation or resize — because backend storage is reserved at that size regardless of how much data is actually stored. When a bucket's quota is resized, the new capacity takes effect for subsequent metering intervals. Unlike block or file storage where cost is driven purely by reserved capacity over time, object storage cost is also driven by how actively the data is accessed. A 1 TiB bucket serving millions of read requests per day costs the provider significantly more in I/O and network bandwidth than an identically-sized archival bucket accessed once a month. The dual model lets providers price both dimensions independently: storage capacity at one rate and API activity at another.
 - **CAP-24:** Storage usage is queryable by storage tier, capacity, tenant, and project. Storage tier is a required pricing dimension as specified by [Part 1](/enhancements/metering-and-usage-tracking/prd.md).
-- **CAP-25:** Storage volumes attached to a VM or cluster are attributable to the parent resource, extending Part 1 CAP-11 and CAP-12 so that the full cost of a VM or cluster includes its storage.
+- **CAP-25:** Storage volumes, public IPs, and networking resources attached to a VM, cluster, or bare metal host are attributable to the parent resource, extending Part 1 CAP-11 and CAP-12 so that the full usage of a VM, cluster, or bare metal host can be queried as a unified view including all subsidiary resources.
 
 ### 5.3 Networking Metering
 
@@ -106,7 +106,7 @@ These resource families are grouped because they share the allocation-based mete
 ### 5.4 Bandwidth Metering
 
 - **CAP-29:** Network bandwidth is metered per tenant as GiB transferred, broken down by direction (ingress/egress). The data source for traffic counters is provided by the networking vendor integration.
-- **CAP-30:** Bandwidth usage is queryable by tenant, project, direction, and time period.
+- **CAP-30:** Bandwidth usage is queryable by tenant, direction, and time period. Project-level bandwidth breakdown is available only if the networking vendor's data source provides project-level attribution; otherwise bandwidth is queryable at the tenant level only.
 
 ### 5.5 Cross-cutting
 
@@ -147,6 +147,9 @@ Each networking resource type has a flat allocation meter. Resource type and net
 | VirtualNetwork | resource-seconds | duration × rate/s | 2592000 × $0.000005 = $12.96 |
 | Subnet | resource-seconds | duration × rate/s | 2592000 × $0.000001 = $2.59 |
 | PublicIP (IPv4) | resource-seconds | duration × rate/s | 2592000 × $0.000001 = $2.59 |
+| ExternalIP (IPv4) | resource-seconds | duration × rate/s | 2592000 × $0.000001 = $2.59 |
+| PublicIPAttachment | resource-seconds | duration × rate/s | 2592000 × $0.0000005 = $1.30 |
+| ExternalIPAttachment | resource-seconds | duration × rate/s | 2592000 × $0.0000005 = $1.30 |
 | NATGateway | resource-seconds | duration × rate/s | 2592000 × $0.00001 = $25.92 |
 | SecurityGroup | resource-seconds | duration × rate/s | 2592000 × $0.0000001 = $0.26 |
 
@@ -167,7 +170,7 @@ Bandwidth is a consumption meter. Unlike the resource meters above, it is driven
 - [ ] A bare metal host in STOPPED state continues generating allocation usage data
 - [ ] A bare metal host in RUNNING state generates consumption usage data (bare-metal-compute-seconds) when the consumption meter is enabled
 - [ ] BMaaS usage can be broken down by host type, catalog item (per Part 1 CAP-17), tenant, and project
-- [ ] A bare metal host with attached storage volumes and public IPs can be queried as a unified cost view
+- [ ] A bare metal host with attached storage volumes and public IPs can be queried as a unified usage view
 
 ### Storage
 
@@ -175,21 +178,22 @@ Bandwidth is a consumption meter. Unlike the resource meters above, it is driven
 - [ ] A file storage share generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, storage tier, and capacity
 - [ ] An object storage bucket generates capacity usage data (GiB-seconds) from creation to deletion, queryable per tenant and storage tier
 - [ ] An object storage bucket generates API request count usage data, broken down by read and write operations
+- [ ] When a storage volume or object storage bucket is resized, subsequent usage data reflects the new capacity
 - [ ] Storage usage can be broken down by storage tier, tenant, project, and individual volume
 - [ ] A storage volume attached to a stopped VM continues generating usage data (extending Part 1 CAP-11)
-- [ ] A storage volume attached to a VM or cluster can be attributed to the parent resource in a unified cost view
+- [ ] A storage volume attached to a VM or cluster can be attributed to the parent resource in a unified usage view
 
 ### Networking
 
 - [ ] Each tenant-facing networking resource (VirtualNetwork, Subnet, SecurityGroup, PublicIP, ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
 - [ ] An allocated-but-unattached PublicIP generates usage data
 - [ ] Networking usage can be broken down by resource type, network class, IP family, region, tenant, and project
-- [ ] PublicIPs and Subnets attached to a VM can be attributed to the parent resource in a unified cost view
+- [ ] PublicIPs and Subnets attached to a VM can be attributed to the parent resource in a unified usage view
 
 ### Bandwidth
 
 - [ ] Bandwidth usage is recorded per tenant as GiB transferred, broken down by direction (ingress/egress)
-- [ ] Bandwidth usage can be broken down by tenant, project, direction, and time period
+- [ ] Bandwidth usage can be broken down by tenant, direction, and time period; project-level breakdown is available when the vendor data source supports project attribution
 
 ### Cross-cutting
 
