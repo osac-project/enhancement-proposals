@@ -12,16 +12,13 @@ When users create or update OSAC resources that reference other resources — a 
 
 ## In Scope
 
-- Users reference resources by name instead of opaque identifiers, across all services (BMaaS, CaaS, VMaaS, MaaS, Enclave) and all resource types. [Clarify: R1.Q2]
-- When a referenced resource does not exist or the reference is malformed, the system rejects the request immediately with a clear, unambiguous error message identifying which reference failed and why. [Clarify: R1.Q3]
-- Users can reference resources within the same tenant and project using only the resource name (local reference).
-- Users can reference resources in a different tenant or project by specifying tenant, project, and name (full reference) — for example, referencing shared cluster templates managed by the cloud provider.
-- When users provide a resource identifier, the system resolves the corresponding name, and vice versa, ensuring references are never ambiguous.
-- The new reference format replaces the current string-based format with no backward-compatible transition period. [Clarify: R1.Q1]
-- UI, CLI, and API all support the new reference format with corresponding tasks for each. [Clarify: R1.Q4]
-- Delivery is incremental — each delivered chunk leaves the system fully functional. [Clarify: R2.Q3]
-- API documentation and OpenAPI specifications reflect the new reference format.
-- Test coverage is updated to validate reference resolution and error behavior.
+- Name-based, type-safe resource references replacing opaque identifier strings, across all services (BMaaS, CaaS, VMaaS, MaaS, Enclave) and all resource types. [Clarify: R1.Q2]
+- Both local references (same tenant and project, by name only) and full references (cross-tenant/project, by tenant, project, and name).
+- Immediate validation of references at request time with clear error messages. [Clarify: R1.Q3]
+- UI, CLI, and API all updated to support the new reference format. [Clarify: R1.Q4]
+- No backward-compatible transition period — clean replacement of the current format. [Clarify: R1.Q1]
+- Incremental delivery — each chunk leaves the system fully functional. [Clarify: R2.Q3]
+- API documentation and OpenAPI specifications updated to reflect the new format.
 
 ## Out of Scope
 
@@ -45,7 +42,6 @@ When users create or update OSAC resources that reference other resources — a 
 ### Tenant Admin
 
 - As a Tenant Admin, I want to create subnets and security groups that reference their parent virtual network by name so that I can set up networking using readable, meaningful names.
-- As a Tenant Admin, I want the system to reject a subnet creation request immediately with a clear message when the referenced virtual network does not exist so that I discover the error at request time, not during provisioning.
 
 ### Tenant User
 
@@ -62,4 +58,4 @@ When users create or update OSAC resources that reference other resources — a 
 
 ## Dependencies
 
-- **(Tenant, project, name) migration:** The reference format includes a transitional identifier field to support the current identifier-based system. Once the separate (tenant, project, name) migration completes, this transitional field is removed. Reference types must land before that migration begins. [Clarify: R1.Q5]
+- **(Tenant, project, name) migration:** This feature prepares the foundation for the future migration from identifier-based to (tenant, project, name)-based resource identification. Reference types must land before that migration begins. [Clarify: R1.Q5]
