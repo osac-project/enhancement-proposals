@@ -77,7 +77,7 @@ Cloud Infrastructure Admins apply a label (e.g., `"gpu-large"`) to all inventory
 
 1. **Discovery:** Tenant user lists available BareMetalInstanceTypes via UI, CLI, or API [FR-1]
 2. **Selection:** User examines hardware specifications and selects appropriate type based on workload requirements
-3. **Creation:** User creates BareMetalInstance with instance_type field referencing the selected type [FR-2], or creates Cluster with instance_type field for bare metal node sets [FR-3]
+3. **Creation:** User creates BareMetalInstance with `instance_type` field referencing the selected type [FR-2], or creates Cluster whose ClusterTemplate NodeSet specifies the type via the `instance_type` field [FR-3]
 4. **Provisioning:** BMaaS operator reads the BareMetalInstanceType, extracts the host_label, and passes it to the inventory client to claim a matching labeled host [FR-7]
 
 **Provisioning Workflow:**
@@ -92,7 +92,7 @@ sequenceDiagram
     Tenant->>FS: Create BareMetalInstance (instance_type="gpu-large")
     FS-->>Tenant: Accept creation request
     Operator->>FS: Get BareMetalInstanceType "gpu-large" (host_label="gpu-large")
-    Operator->>Inventory: FindFreeHost(matchExpressions={"label":"gpu-large"})
+    Operator->>Inventory: FindFreeHost(matchExpressions={"hostType":"gpu-large"})
     Inventory-->>Operator: Return matching host
     Operator->>Inventory: AssignHost(host, labels)
     Operator->>FS: Update BareMetalInstance status (provisioned)
@@ -124,7 +124,7 @@ This enhancement adds the following API extensions to fulfillment-service:
 - Enhanced BareMetalInstance controller in bare-metal-fulfillment-operator to read the selected BareMetalInstanceType's host_label and pass it as a matchExpression to `inventory.Client.FindFreeHost` during provisioning [FR-7]
 
 **Operational Impact:**
-- fulfillment-service downtime prevents BareMetalInstanceType queries and new instance creation but does not affect in-flight provisioning in the operator
+- fulfillment-service downtime prevents BareMetalInstanceType queries and new instance creation; it also blocks provisioning for any BareMetalInstance that has not yet claimed a host (the operator cannot look up the `host_label` without FS). Instances that have already claimed a host are unaffected — the resolved `host_label` and claimed host ID are persisted to BareMetalInstance status on first claim and reused on subsequent reconciles without re-querying FS.
 - Inventory backend downtime during provisioning causes the operator to retry with backoff; no impact on listing or type management
 
 ### Implementation Details/Notes/Constraints
@@ -136,14 +136,14 @@ This enhancement adds the following API extensions to fulfillment-service:
 message BareMetalInstanceType {
   string id = 1;
   Metadata metadata = 2;
-  BareMetalInstanceTypeSpec spec = 3;
+  BareMetalInstanceTypeSpec spec = 3 [(buf.validate.field).required = true];
   BareMetalInstanceTypeStatus status = 4;
 }
 
 message BareMetalInstanceTypeSpec {
-  BareMetalHardwareSpec hardware = 1;           // Hardware specifications
-  string host_label = 2;                        // Inventory host label set by Cloud Infra Admin
-  string description = 3;                       // Human-readable description
+  BareMetalHardwareSpec hardware = 1 [(buf.validate.field).required = true];
+  string host_label = 2 [(buf.validate.field).string.min_len = 1];   // Required; must match inventory label
+  string description = 3;                                             // Human-readable description
 }
 
 message BareMetalInstanceTypeStatus {
@@ -151,54 +151,55 @@ message BareMetalInstanceTypeStatus {
 }
 
 message BareMetalHardwareSpec {
-  BareMetalCPUSpec cpu = 1;                     // CPU specifications
-  BareMetalMemorySpec memory = 2;               // Memory specifications
-  BareMetalStorageSpec storage = 3;             // Storage specifications
-  repeated BareMetalAcceleratorSpec accelerators = 4;  // GPU, FPGA, TPU, and other accelerators
-  repeated BareMetalNetworkPortSpec network_ports = 5; // Network interfaces
-  map<string, string> capabilities = 6;        // Freeform capability tags
+  BareMetalCPUSpec cpu = 1 [(buf.validate.field).required = true];
+  BareMetalMemorySpec memory = 2 [(buf.validate.field).required = true];
+  BareMetalStorageSpec storage = 3;                                   // Optional — not all types have local storage
+  repeated BareMetalAcceleratorSpec accelerators = 4;
+  repeated BareMetalNetworkPortSpec network_ports = 5;
+  map<string, string> capabilities = 6;                               // Freeform capability tags
 }
 
 message BareMetalCPUSpec {
-  int32 cores = 1;                              // Total CPU cores
-  string architecture = 2;                      // x86_64, aarch64, etc.
-  string model = 3;                             // CPU model name
-  int32 threads_per_core = 4;                   // Hyperthreading factor
+  int32 cores = 1 [(buf.validate.field).int32.gt = 0];
+  string architecture = 2 [(buf.validate.field).string.min_len = 1]; // e.g. x86_64, aarch64
+  string model = 3;                                                   // Optional — may be unknown
+  int32 threads_per_core = 4 [(buf.validate.field).int32.gt = 0];
 }
 
 message BareMetalMemorySpec {
-  int64 total_gb = 1;                           // Total memory in GB
-  string type = 2;                              // DDR4, DDR5, etc.
+  int64 total_gb = 1 [(buf.validate.field).int64.gt = 0];
+  string type = 2;                                                    // Optional — e.g. DDR4, DDR5
 }
 
 message BareMetalStorageSpec {
-  repeated BareMetalDiskSpec disks = 1;         // Individual disks
-  int64 total_capacity_gb = 2;                  // Total capacity
+  repeated BareMetalDiskSpec disks = 1;
+  int64 total_capacity_gb = 2 [(buf.validate.field).int64.gt = 0];
 }
 
 message BareMetalDiskSpec {
-  string type = 1;                              // SSD, NVMe, HDD
-  int64 capacity_gb = 2;                        // Disk capacity
-  string interface = 3;                         // SATA, NVMe, SAS
+  string type = 1 [(buf.validate.field).string.min_len = 1];         // e.g. SSD, NVMe, HDD
+  int64 capacity_gb = 2 [(buf.validate.field).int64.gt = 0];
+  string interface = 3 [(buf.validate.field).string.min_len = 1];    // e.g. SATA, NVMe, SAS
 }
 
 message BareMetalAcceleratorSpec {
-  string type = 1;                              // GPU, FPGA, TPU, etc.
-  string model = 2;                             // Specific model
-  optional string vendor = 3;                   // NVIDIA, AMD, Intel, etc.
-  optional int32 memory_gb = 4;                 // Accelerator memory (if applicable)
+  string type = 1 [(buf.validate.field).string.min_len = 1];         // e.g. GPU, FPGA, TPU
+  string model = 2 [(buf.validate.field).string.min_len = 1];
+  optional string vendor = 3;                                         // e.g. NVIDIA, AMD, Intel
+  optional int32 memory_gb = 4 [(buf.validate.field).int32.gt = 0];  // Validated when present
+  int32 count = 5 [(buf.validate.field).int32.gt = 0];
 }
 
 message BareMetalNetworkPortSpec {
-  string type = 1;                              // Ethernet, InfiniBand
-  string speed = 2;                             // 1Gbps, 10Gbps, etc.
-  int32 count = 3;                              // Number of ports
+  string type = 1 [(buf.validate.field).string.min_len = 1];         // e.g. Ethernet, InfiniBand
+  string speed = 2 [(buf.validate.field).string.min_len = 1];        // e.g. 1Gbps, 10Gbps
+  int32 count = 3 [(buf.validate.field).int32.gt = 0];
 }
 ```
 
 **BareMetalInstance Integration:**
 
-The BareMetalInstanceSpec message adds a required instance_type field, differing from the ComputeInstance pattern where instance_type is optional [Codebase: fulfillment-service/proto/public/osac/public/v1/compute_instance_type.proto]. Unlike VMs which allow flexible CPU/memory specification, bare metal hardware has fixed configurations requiring type selection:
+The BareMetalInstanceSpec message adds an optional `instance_type` field. Proto3 strings cannot enforce requiredness at the wire level, so the compatibility contract is defined by application-level validation and operator behavior:
 
 ```protobuf
 message BareMetalInstanceSpec {
@@ -206,24 +207,42 @@ message BareMetalInstanceSpec {
   string catalog_item = 1;
   // ... other existing fields ...
 
-  // Required field - unlike ComputeInstance, bare metal hardware configurations are fixed
-  // Both catalog_item and instance_type are required: catalog_item defines provisioning template,
-  // instance_type specifies which BareMetalInstanceType (and therefore which inventory label)
-  // the operator should use to claim a host
-  string instance_type = 20;                    // Reference to BareMetalInstanceType name
+  // Optional — when absent, the legacy catalog_item-only provisioning path is used.
+  // When present, the operator performs label-based host selection using the referenced
+  // BareMetalInstanceType. Must be non-empty if set.
+  optional string instance_type = 20 [(buf.validate.field).string.min_len = 1];
 }
 ```
+
+**Compatibility contract:**
+
+| `instance_type` | Operator supports label selection | Behavior |
+|-----------------|----------------------------------|----------|
+| Absent (not set) | Either | Legacy path: catalog_item-only provisioning, no BareMetalInstanceType lookup |
+| Present | Yes | Label-based host selection via BareMetalInstanceType |
+| Present | No (version skew) | Operator sets `UnsupportedOperation` status condition and does not fall back silently to a non-labeled host; provisioning is held until the operator is upgraded |
 
 **Host Label Selection Implementation:** [FR-5, FR-6, FR-7]
 
 The bare-metal-fulfillment-operator extends its BareMetalInstance reconciler to perform label-based host selection:
 
-1. Read the `instance_type` field from the BareMetalInstanceSpec
+1. Check whether `instance_type` is set on the BareMetalInstanceSpec
+   - If absent: use the existing catalog_item-only provisioning path; skip steps 2–4
+   - If present: continue with label-based selection
 2. Query fulfillment-service private API to retrieve the corresponding BareMetalInstanceType and its `host_label`
-3. Call `inventory.Client.FindFreeHost(ctx, map[string]string{"label": host_label})` to claim a matching host
-4. Proceed with provisioning using the claimed host; if no host matches, set a status condition and requeue
+3. Call `inventory.Client.FindFreeHost(ctx, map[string]string{"hostType": host_label})` to claim a matching host
+4. Proceed with provisioning using the claimed host; if no host matches, set a `HostSelectionFailed` status condition and requeue
 
-The existing `inventory.Client` interface [Codebase: bare-metal-fulfillment-operator/internal/inventory/client.go] already supports `matchExpressions map[string]string` in `FindFreeHost`, requiring no interface changes. Each inventory backend implementation (openstack.go, metal3.go) must translate the matchExpression to the backend's native label query mechanism.
+The existing `inventory.Client` interface [Codebase: bare-metal-fulfillment-operator/internal/inventory/client.go] already supports `matchExpressions map[string]string` in `FindFreeHost`, requiring no interface changes. The `"hostType"` key is the canonical selector key recognized by all existing backends:
+
+| Backend | `"hostType"` translation |
+|---------|--------------------------|
+| OpenStack (`openstack.go`) | Ironic node `ResourceClass` field |
+| Metal3 (`metal3.go`) | `BareMetalHost` label `osac.openshift.io/host-type` |
+
+Cloud Infrastructure Admins must set the host type using the backend's native mechanism so that it matches the `host_label` value on the BareMetalInstanceType:
+- **OpenStack:** set the Ironic node's `resource_class` to the label value (e.g., `"gpu-large"`)
+- **Metal3:** set the `BareMetalHost` label `osac.openshift.io/host-type` to the label value
 
 **Cloud Provider Admin Workflow:**
 
@@ -258,15 +277,22 @@ Cloud Infrastructure Admins apply the matching label to inventory hosts via the 
 
 **Integration with ClusterCatalogItems:** [FR-3]
 
-ClusterTemplateNodeSet objects are extended to reference BareMetalInstanceTypes:
+ClusterTemplateNodeSet objects are extended with a new `instance_type` field:
 
 ```protobuf
 message ClusterTemplateNodeSet {
-  string host_type = 1;                         // Deprecated (legacy hostType) - kept for backward compatibility
-  string bare_metal_instance_type = 2;          // Required field referencing BareMetalInstanceType
+  string host_type = 1;                         // Deprecated — use instance_type
+  string instance_type = 2;                     // Canonical field referencing BareMetalInstanceType by name
   int32 size = 3;
 }
 ```
+
+**Precedence rules (evaluated in order):**
+1. If `instance_type` is non-empty — use it; `host_type` is ignored
+2. Else if `host_type` is non-empty — use the legacy host_type path (no BareMetalInstanceType lookup)
+3. If both are empty — the node set is invalid; validation rejects the request
+
+New clients and catalog items must use `instance_type`. Existing templates using `host_type` continue to work unchanged.
 
 **Database Schema Considerations:**
 
@@ -274,14 +300,25 @@ BareMetalInstanceTypes follow the generic DAO pattern with JSON-serialized proto
 
 ### Security Considerations
 
-This enhancement inherits the existing security model without introducing new attack vectors. BareMetalInstanceType resources follow standard tenant isolation patterns:
+BareMetalInstanceType servers follow the same authentication and authorization pattern as the existing `InstanceTypesServer`: both public and private servers are wired with `auth.AttributionLogic` and `auth.TenancyLogic`, and these controls are enforced in the Fulfillment Service layer — not solely through annotations or OPA policies.
 
-- **Tenant Isolation:** All BareMetalInstanceType resources include `osac.openshift.io/tenant` annotations for multi-tenant filtering, though most types are globally visible
-- **Input Validation:** Hardware metadata undergoes protobuf validation; malformed data is rejected at API creation time
-- **Authorization:** BareMetalInstanceType listing and selection uses existing tenant-based RBAC without additional permissions
-- **Inventory Backend Access:** The BMaaS operator uses configured credentials with least-privilege access to inventory APIs for host selection
+**Per-RPC authorization:**
 
-Platform-defined BareMetalInstanceTypes are globally visible across tenants, similar to PublicIPPool resources, enabling hardware type sharing while maintaining provisioning isolation.
+| RPC | Service | Authorization |
+|-----|---------|---------------|
+| List, Get | Public | Any authenticated tenant; results filtered by TenancyLogic to globally-visible types plus caller's tenant-scoped types |
+| Create, Update, Delete | Private | Cloud Provider Admin role enforced via AttributionLogic; tenant service accounts cannot call private RPCs |
+| Signal | Private | Operator service account only; enforced by private API transport |
+
+**Tenant filtering:** Globally-visible BareMetalInstanceTypes (empty tenant annotation) are returned to all authenticated callers. Tenant-scoped types are returned only to the owning tenant. This filtering is applied by the public server's TenancyLogic before returning results — not delegated to the caller or to OPA alone.
+
+**Reference validation:** When a Tenant User creates a BareMetalInstance with `instance_type` set, the Fulfillment Service validates that the referenced BareMetalInstanceType is visible to the caller's tenant before accepting the request. Requests referencing a type the caller cannot see are rejected with `NOT_FOUND`.
+
+**Input Validation:** Hardware metadata and `host_label` are validated by protovalidate at API creation time (see schema constraints above); malformed requests are rejected before reaching the DAO layer.
+
+**Inventory Backend Access:** The BMaaS operator uses configured credentials with least-privilege access to inventory APIs for host selection.
+
+OPA policies and `osac.openshift.io/tenant` annotations provide defense-in-depth; they are not the primary authorization gate for these resources.
 
 ### Failure Handling and Recovery
 
@@ -299,13 +336,17 @@ Platform-defined BareMetalInstanceTypes are globally visible across tenants, sim
 - This is an operational issue; no automated remediation — operator surfaces it via status conditions and events
 
 **Reconciliation Behavior:**
-- Controller restart: operator re-reads BareMetalInstanceType on next reconcile; no state stored across restarts for type lookup
+- Controller restart: if a host has already been claimed, the operator reads the persisted `host_label` and host ID from BareMetalInstance status and resumes without re-querying FS; if no host has been claimed yet, the operator re-reads the BareMetalInstanceType from FS on the next reconcile
 - Database connection loss: standard DAO retry behavior applies
 - Inventory backend unavailability: operator retries with exponential backoff; status condition reflects retry state
 
 **Idempotency Guarantees:**
 - BareMetalInstance creation with instance_type is idempotent; duplicate requests return existing instance
-- Host selection is idempotent for a given BareMetalInstance: once a host is claimed, the operator stores the host ID and does not re-select on subsequent reconciles
+- Host selection uses the following guard on every reconcile to prevent double-claiming:
+  1. Read BareMetalInstance status for a persisted `inventoryHostID`
+  2. If found: skip FindFreeHost and AssignHost entirely; resume provisioning from the persisted host ID and `host_label`
+  3. If not found: call FindFreeHost → AssignHost → **immediately** persist `inventoryHostID` + `host_label` to BareMetalInstance status as the first write, before any further provisioning actions
+- A narrow crash window exists between AssignHost succeeding and the status persist completing. In this case the next reconcile re-enters at step 3 with no persisted host ID. To bound this risk, AssignHost passes the BareMetalInstance ID as an idempotency key to the inventory backend; if the backend already has an assignment for that ID it returns the same host rather than assigning a new one. Inventory backends that do not support idempotent AssignHost must be noted during implementation.
 
 ### RBAC / Tenancy
 
@@ -408,16 +449,19 @@ Existing OPA policies automatically apply to BareMetalInstanceType resources thr
 ## Open Questions
 
 ### 1. Label Format and Namespace
+
 **Question:** Should host labels be free-form strings (e.g., `"gpu-large"`) or namespaced key-value pairs (e.g., `"osac.openshift.io/hardware-profile=gpu-large"`)? A namespaced format avoids collisions with other labels on inventory hosts but adds complexity for Cloud Infrastructure Admins.
 **Owner:** Platform team
 **Impact:** Affects the `host_label` field definition in the proto schema and the `FindFreeHost` matchExpression format passed to inventory clients.
 
 ### 2. Label Validation at Type Creation Time
+
 **Question:** Should the fulfillment-service (or operator) validate that the `host_label` on a new BareMetalInstanceType matches at least one actual inventory host at creation time? This would catch coordination errors early but requires the API server to query the inventory backend at write time.
 **Owner:** Platform team
 **Impact:** Tradeoff between early error detection and write-path inventory backend dependency.
 
 ### 3. Integration Simplification Strategy
+
 **Question:** With host selection deferred to the provisioning layer, how should BMaaS and CaaS handle a BareMetalInstance that remains in `HostSelectionFailed` state? Should there be an automatic retry policy, a maximum retry count, or manual intervention required?
 **Owner:** Platform team
 **Impact:** Affects user experience when labeled hosts are temporarily exhausted or unavailable.
