@@ -258,6 +258,7 @@ spec:
     cpu:
       cores: 64
       architecture: x86_64
+      threads_per_core: 2
     memory:
       total_gb: 512
     accelerators:
@@ -307,6 +308,7 @@ BareMetalInstanceType servers follow the same authentication and authorization p
 | RPC | Service | Authorization |
 |-----|---------|---------------|
 | List, Get | Public | Any authenticated tenant; results filtered by TenancyLogic to globally-visible types plus caller's tenant-scoped types |
+| Get | Private | Operator service account; used during BareMetalInstance provisioning to retrieve the `host_label` |
 | Create, Update, Delete | Private | Cloud Provider Admin role enforced via AttributionLogic; tenant service accounts cannot call private RPCs |
 | Signal | Private | Operator service account only; enforced by private API transport |
 
@@ -345,8 +347,9 @@ OPA policies and `osac.openshift.io/tenant` annotations provide defense-in-depth
 - Host selection uses the following guard on every reconcile to prevent double-claiming:
   1. Read BareMetalInstance status for a persisted `inventoryHostID`
   2. If found: skip FindFreeHost and AssignHost entirely; resume provisioning from the persisted host ID and `host_label`
-  3. If not found: call FindFreeHost → AssignHost → **immediately** persist `inventoryHostID` + `host_label` to BareMetalInstance status as the first write, before any further provisioning actions
-- A narrow crash window exists between AssignHost succeeding and the status persist completing. In this case the next reconcile re-enters at step 3 with no persisted host ID. To bound this risk, AssignHost passes the BareMetalInstance ID as an idempotency key to the inventory backend; if the backend already has an assignment for that ID it returns the same host rather than assigning a new one. Inventory backends that do not support idempotent AssignHost must be noted during implementation.
+  3. If not found: query the inventory backend for any host already assigned to this `bareMetalInstanceID` (OpenStack: filter Ironic nodes by `bareMetalInstanceId` label; Metal3: find BareMetalHost where `Spec.ConsumerRef.Name == bareMetalInstanceID`); if such a host exists, treat it as the claimed host (recover from crash-before-persist) and persist its ID to status
+  4. If still not found: call FindFreeHost → AssignHost → **immediately** persist `inventoryHostID` + `host_label` to BareMetalInstance status as the first write, before any further provisioning actions
+- Both existing backends already store the `bareMetalInstanceID` on assigned hosts (openstack.go: Ironic node label `bareMetalInstanceId`; metal3.go: `BareMetalHost.Spec.ConsumerRef.Name`), so step 3 requires no inventory client interface changes — only backend-native query logic in each implementation.
 
 ### RBAC / Tenancy
 
