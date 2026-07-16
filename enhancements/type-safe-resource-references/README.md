@@ -848,83 +848,9 @@ compile-time safety -- the Go compiler rejects assigning a
 
 ## Alternatives (Not Implemented)
 
-### URI/ARN-style string format
-
-A single string field with a structured format like
-`osac:tenant:project:type/name` (suggested in PR review discussion).
-
-**Pros:**
-- No breaking change to the JSON shape -- references remain strings.
-- Simple wire format, easy to read in logs and debug output.
-- Familiar pattern from AWS ARNs and Kubernetes resource URIs.
-
-**Cons:**
-- No compile-time type safety. A `SubnetSpec.virtual_network` field is still
-  `string`, and the compiler cannot prevent assigning an ARN for a
-  SecurityGroup where a VirtualNetwork ARN is expected.
-- Runtime parsing required. Every consumer must parse the URI format, handle
-  malformed URIs, and extract components. Error-prone and duplicated across
-  Go servers, CLI, UI, and tests.
-- No proto-level documentation of what the string contains. The relationship
-  between fields is invisible to the protobuf schema, OpenAPI spec, and
-  generated client types.
-- Versioning the URI format requires backward-compatible parsing logic across
-  all consumers.
-
-**Rejection reason:** The primary motivation for this enhancement is
-compile-time type safety. The URI format preserves the fundamental problem
-(references are strings) while adding parsing complexity. It addresses
-cross-tenant addressability but not type safety or schema-level documentation.
-
-### Generic reference message
-
-A single `ResourceReference` message with a `type` discriminator field:
-
-```protobuf
-message ResourceReference {
-  string type = 1;     // e.g., "VirtualNetwork", "Subnet"
-  string id = 2;
-  string tenant = 3;
-  string project = 4;
-  string name = 5;
-}
-```
-
-**Pros:**
-- Single message definition, no per-type proliferation.
-- Easy to add new resource types without schema changes.
-
-**Cons:**
-- No compile-time safety. All reference fields have the same Go type
-  (`*ResourceReference`). The compiler cannot prevent assigning a
-  VirtualNetwork reference to a Subnet field.
-- The `type` field must be validated at runtime, adding another error surface.
-- Proto schema and OpenAPI spec do not convey which types are valid for which
-  fields.
-- Generated client code provides no type-narrowing assistance.
-
-**Rejection reason:** Same core limitation as the URI format -- safety is
-pushed to runtime. Per-type messages make the type system do the work.
-
-### Do nothing
-
-Keep the current string-based reference fields.
-
-**Pros:**
-- No migration effort. No breaking changes.
-- Existing consumers continue to work unchanged.
-
-**Cons:**
-- All current problems persist: no type safety, no cross-tenant
-  addressability, scattered validation, inconsistent error codes.
-- The future (tenant, project, name) migration becomes harder without a
-  structured reference format to build on.
-- Every new resource type requires writing custom inline validation logic
-  instead of inheriting it from the interceptor.
-
-**Rejection reason:** The status quo's maintenance cost grows linearly with
-the number of resource types. The interceptor and typed references provide a
-foundation that scales.
+None -- alternatives (URI/ARN format, generic reference message, do nothing)
+were evaluated during design and rejected. See the PRD PR #113 discussion for
+details on the URI/ARN trade-off.
 
 ## Open Questions
 
@@ -1114,4 +1040,4 @@ Committed: commit @ design 0.3.0 - 883316f, workspace main @ c5499e4
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.3.0","ai_workflows":"883316f","source_repo":"c5499e4","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.3.0","ai_workflows":"883316f","source_repo":"c5499e4","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":false} -->
