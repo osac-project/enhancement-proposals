@@ -73,9 +73,11 @@ don't have the ability to add or modify ansible roles.
 
 #### Tenant Admin — Catalog Item Creation
 
-* As a Tenant Admin, I need to create organization-specific catalog items from the available templates, following the same static wizard flow as the Cloud Provider Admin. The catalog item is automatically scoped to my tenant — I do not set the tenant field.
+* As a Tenant Admin, I need to create organization-specific catalog items by selecting from the list of existing published global catalog items — not from templates. I am not aware of templates; I only see catalog items that the Cloud Provider Admin has already published.
 
-* As a Tenant Admin, the field definition flow is the same as for Cloud Provider Admins: I see the static resource spec fields, choose defaults from existing resource pickers for resource-type fields, leave tenant-provided fields (like networking) without defaults, and configure editability and defaults for free-form fields.
+* As a Tenant Admin, after selecting a global catalog item as the base, I need to see the same static wizard of resource spec fields, pre-populated with the field definitions from the base global catalog item. I can further restrict these fields for my organization — for example, narrowing an editable field to a pre-set value, or changing a default — but I cannot make a non-editable field editable (I can only be equal or more restrictive than the base global catalog item).
+
+* As a Tenant Admin, the catalog item I create is automatically scoped to my organization. I do not set the tenant field — the server sets it based on my identity.
 
 #### Tenant Admin — Catalog Item Lifecycle
 
