@@ -195,7 +195,7 @@ class EPHooks:
             expected_keys = PRD_KEYS
         else:
             skill = (ticket or {}).get("_skill_name", "")
-            expected_keys = DESIGN_KEYS if skill == "ep-review" else PRD_KEYS
+            expected_keys = DESIGN_KEYS if skill == "design-review" else PRD_KEYS
         unexpected = actual_keys - expected_keys
         missing = expected_keys - actual_keys
         if unexpected:
