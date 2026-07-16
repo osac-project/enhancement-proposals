@@ -572,49 +572,39 @@ lookups within the existing transaction. This means reference validation
 failures cause a transaction rollback, which is the desired behavior (no
 partial state changes).
 
-#### Database Trigger Updates
+#### Database Trigger Changes
 
-Resources are stored as JSON-serialized protobuf in a `data` column. PL/pgSQL
-triggers extract reference values from JSON paths for referential integrity
-enforcement. These paths change when string fields become nested messages.
+Resources are stored as JSON-serialized protobuf in a `data` column. Existing
+PL/pgSQL triggers serve two purposes:
 
-**Example for the subnets table:**
+1. **Forward reference checks (Z0002):** On insert/update, verify the
+   referenced resource exists. The interceptor now handles this — these
+   triggers are removed.
 
-Before (current trigger):
-```sql
-new.data->'spec'->'virtual_network'
--- yields: "vnet-abc123" (a JSON string)
-```
+2. **Reverse reference checks (Z0003):** On delete, verify no other resource
+   still references the deleted one (e.g., prevent deleting a VirtualNetwork
+   that has Subnets). The interceptor does not cover deletes — these triggers
+   are kept but updated to use the new JSON paths.
 
-After:
-```sql
-new.data->'spec'->'virtual_network'->'name'
--- yields: "prod-net" (a JSON string within the nested object)
-```
+**Reverse triggers to update:**
 
-Each delivery chunk updates the affected trigger functions to use the new JSON
-paths. Since OSAC deployments are fresh installations (no in-place upgrades),
-no data migration or backfill is needed — the triggers are defined with the
-correct paths from the start.
+| Trigger function | Table | What it checks | Path change |
+|---|---|---|---|
+| `check_virtual_network_not_in_use()` | virtual_networks | Subnets, SecurityGroups, NATGateways still reference this VN | `data->'spec'->>'virtual_network'` → `data->'spec'->'virtual_network'->>'name'` |
+| `check_subnet_not_in_use()` | subnets | ComputeInstances still reference this Subnet in network_attachments | Array element `->>'subnet'` → `->'subnet'->>'name'` |
+| `check_instance_type_not_in_use()` | instance_types | ComputeInstances still reference this InstanceType | `data->'spec'->>'instance_type'` → `data->'spec'->'instance_type'->>'name'` |
+| `check_cluster_catalog_item_not_in_use()` | cluster_catalog_items | Clusters still reference this CatalogItem | `data->'spec'->>'catalog_item'` → `data->'spec'->'catalog_item'->>'name'` |
+| `check_ci_catalog_item_not_in_use()` | compute_instance_catalog_items | ComputeInstances still reference this CatalogItem | Same pattern |
 
-```sql
-CREATE OR REPLACE FUNCTION check_subnet_virtual_network_ref() RETURNS trigger AS $$
-BEGIN
-  PERFORM 1 FROM virtual_networks
-    WHERE name = (NEW.data->'spec'->'virtual_network'->>'name')
-      AND tenant = NEW.tenant;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION USING
-      errcode = 'Z0002',
-      message = format(
-        'VirtualNetwork "%s" not found',
-        NEW.data->'spec'->'virtual_network'->>'name'
-      );
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-```
+**Forward triggers to remove** (replaced by interceptor):
+
+`check_subnet_virtual_network_ref()`, `check_security_group_virtual_network_ref()`,
+`check_compute_instance_subnet_refs()`, `check_compute_instance_instance_type_ref()`,
+`check_cluster_catalog_item_ref()`, `check_ci_catalog_item_ref()`,
+`check_nat_gateway_virtual_network_ref()`
+
+Associated indexes on the old JSON paths (e.g., `subnets_by_virtual_network`,
+`compute_instances_instance_type`) are updated to use the new nested paths.
 
 #### CEL Filter Expression Changes
 
@@ -961,22 +951,6 @@ reference fields (references exist in the fulfillment-service proto layer).
   tracks per-request validation latency. If p99 exceeds 100ms, investigate
   DAO query performance (missing indexes, database load).
 
-**Disabling the interceptor:**
-
-The reference validation interceptor can be disabled via a server
-configuration flag (`--disable-reference-validation`). When disabled:
-- The interceptor passes all requests through without validation.
-- Servers fall back to whatever inline validation remains (business logic
-  checks that were not removed).
-- PL/pgSQL triggers still enforce referential integrity at the database level,
-  providing a safety net.
-- **Consequence:** Invalid references may reach the database layer, where
-  triggers reject them with less informative error messages (SQLSTATE codes
-  instead of structured field paths).
-
-Re-enabling the interceptor resumes validation without any state
-inconsistency, since the database triggers enforce the same constraints.
-
 **Debugging reference resolution failures:**
 
 If a reference that should be valid is rejected:
@@ -993,13 +967,3 @@ If a reference that should be valid is rejected:
 
 None. All changes are within existing repositories (fulfillment-service,
 osac-ux) and use existing CI infrastructure.
-
----
-
-## Provenance
-
-Committed: commit @ design 0.3.0 - 883316f, workspace main @ c5499e4
-
-> Authoring phases not recorded this session (commit-time snapshot only).
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.3.0","ai_workflows":"883316f","source_repo":"c5499e4","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":false} -->
