@@ -41,21 +41,21 @@ don't have the ability to add or modify ansible roles.
 
 #### Cloud Provider Admin — Catalog Item Creation
 
-* As a Cloud Provider Admin, I need to create a catalog item by selecting a resource type (VM, Cluster, or Bare Metal) and then choosing one of the existing templates for that type from a list, so the catalog item is backed by a known, working template.
+* As a Cloud Provider Admin, I need to create a catalog item by selecting a resource type (VM, Cluster, or Bare Metal) and then choosing one of the existing templates for that type, so the catalog item is backed by a known, working template.
 
-* As a Cloud Provider Admin, after selecting a template, I need to see a static wizard showing all the resource spec fields for that resource type (e.g., for ComputeInstance: image, instance_type, is_windows, boot_disk, run_strategy, user_data, ssh_key, network_attachments). These are the only fields I can configure — I cannot add fields that do not exist in the resource spec.
+* As a Cloud Provider Admin, after selecting a template, I need to configure the resource spec fields for that resource type. These are a fixed set of fields defined by the resource spec — I cannot add fields that do not exist in it.
 
-* As a Cloud Provider Admin, for each resource spec field that references an existing platform resource (e.g., `instance_type` references an InstanceType, `image.source_ref` references a ComputeImage, `release_image` references an OpenShift release, `node_sets[].host_type` references a HostType), I need to choose a default value from a picker that lists the existing resources of that type. No validation schema is needed for these fields because the referenced resources are already validated when created.
+* As a Cloud Provider Admin, for each resource spec field that references an existing platform resource (e.g., an instance type, an image, a host type), I need to choose a default value from the existing resources of that type. No validation schema is needed for these fields because the referenced resources are already validated when created.
 
-* As a Cloud Provider Admin, for each resource spec field that the tenant user creates or selects at provisioning time (e.g., `network_attachments` — the tenant picks their own virtual network, subnet, and security groups), I need to mark the field as tenant-provided without specifying a default value or validation schema, because the tenant selects from their own existing resources.
+* As a Cloud Provider Admin, for each resource spec field that the tenant user selects from their own resources at provisioning time (e.g., networking — virtual network, subnet, security groups), I need to mark the field as tenant-provided without specifying a default value or validation schema, because the tenant selects from their own existing resources.
 
-* As a Cloud Provider Admin, for each remaining resource spec field (free-form inputs like `ssh_key`, `user_data`, `boot_disk.size_gib`, `run_strategy`, `is_windows`, `network.pod_cidr`, `network.service_cidr`), I need to decide whether the field is:
+* As a Cloud Provider Admin, for each remaining resource spec field (free-form inputs such as SSH keys, user data, disk sizes, run strategies), I need to decide whether the field is:
   - **Pre-set (non-editable):** I provide a fixed default value that tenants cannot override.
   - **Editable with default:** I provide a default value but tenants can change it.
   - **Editable without default:** The tenant must provide a value; I leave it blank.
-  For editable free-form fields, I can optionally define a JSON Schema validation rule to constrain what values the tenant can enter (e.g., minimum boot disk size, allowed run strategies).
+  For editable free-form fields, I can optionally define a validation rule to constrain what values the tenant can enter.
 
-* As a Cloud Provider Admin, I need to provide a title and an optional markdown description for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
+* As a Cloud Provider Admin, I need to provide a title and an optional description for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
 
 * As a Cloud Provider Admin, I need to choose whether the catalog item is global (visible to all tenants) or scoped to a specific tenant, so I can create targeted offerings for specific organizations.
 
@@ -65,35 +65,35 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to edit an existing catalog item to change its title, description, field definitions, or publication status. The backing template cannot be changed after creation.
 
-* As a Cloud Provider Admin, I need to view a catalog item's details including its field definitions and which resources (Clusters, VMs, BareMetalInstances) have been provisioned from it.
+* As a Cloud Provider Admin, I need to view a catalog item's details including its field definitions and which resources have been provisioned from it.
 
 * As a Cloud Provider Admin, I need to delete a catalog item that is no longer needed. If resources have been provisioned from it, deletion must be blocked and I should unpublish it instead, so existing resources retain their catalog item reference.
 
-* As a Cloud Provider Admin, I need to see all catalog items across all tenants (both published and unpublished) in a single management list, filterable by resource type and searchable by title.
+* As a Cloud Provider Admin, I need to see all catalog items across all tenants (both published and unpublished), filterable by resource type and searchable by title.
 
 #### Tenant Admin — Catalog Item Creation
 
-* As a Tenant Admin, I need to create organization-specific catalog items by selecting from the list of existing published global catalog items — not from templates. I am not aware of templates; I only see catalog items that the Cloud Provider Admin has already published.
+* As a Tenant Admin, I need to create organization-specific catalog items by selecting from existing published global catalog items — not from templates. I am not aware of templates; I only see catalog items that the Cloud Provider Admin has already published.
 
-* As a Tenant Admin, after selecting a global catalog item as the base, I need to see the same static wizard of resource spec fields, pre-populated with the field definitions from the base global catalog item. I can further restrict these fields for my organization — for example, narrowing an editable field to a pre-set value, or changing a default — but I cannot make a non-editable field editable (I can only be equal or more restrictive than the base global catalog item).
+* As a Tenant Admin, after selecting a global catalog item as the base, I need to configure the resource spec fields pre-populated with the field definitions from the base global catalog item. I can further restrict these fields for my organization — for example, narrowing an editable field to a pre-set value, or changing a default — but I cannot make a non-editable field editable (I can only be equal or more restrictive than the base global catalog item).
 
-* As a Tenant Admin, the catalog item I create is automatically scoped to my organization. I do not set the tenant field — the server sets it based on my identity.
+* As a Tenant Admin, the catalog item I create is automatically scoped to my organization — the server sets the tenant based on my identity.
 
 #### Tenant Admin — Catalog Item Lifecycle
 
 * As a Tenant Admin, I need to manage catalog items scoped to my organization — edit, publish/unpublish, and delete them. I cannot modify or delete global catalog items created by Cloud Provider Admins; those appear as read-only in my view.
 
-* As a Tenant Admin, I need to see my organization's catalog items alongside global items in a management list, with a clear indicator of which are global (read-only) vs. organization-scoped (editable).
+* As a Tenant Admin, I need to see my organization's catalog items alongside global items, with a clear indicator of which are global (read-only) vs. organization-scoped (editable).
 
 #### Tenant User — Catalog Browsing and Provisioning
 
-* As a Tenant User, I need to browse a catalog of published items showing their title, description, and resource type (VM, Cluster, Bare Metal), so I can find the right offering for my needs.
+* As a Tenant User, I need to browse published catalog items showing their title, description, and resource type (VM, Cluster, Bare Metal), so I can find the right offering for my needs.
 
-* As a Tenant User, when I select a catalog item and start provisioning, the wizard shows all resource spec fields in every step — fields are never hidden based on field definitions. Non-editable fields appear disabled (grayed out) with their pre-set default value visible, so I can see the full configuration. Editable fields are interactive: for resource-type fields where the admin chose a default, I see that default pre-selected. For tenant-provided fields like networking, I select from my own resources (virtual networks, subnets, security groups).
+* As a Tenant User, when I select a catalog item and start provisioning, I see all resource spec fields — fields are never hidden based on field definitions. Non-editable fields appear disabled with their pre-set default value visible, so I can see the full configuration. Editable fields are interactive: for resource-type fields where the admin chose a default, I see that default pre-selected; for tenant-provided fields like networking, I select from my own resources.
 
-* As a Tenant User, I need to provision resources (VMs, Clusters, Bare Metal instances) through catalog items without needing to understand templates, Ansible roles, or the underlying field definitions.
+* As a Tenant User, I need to provision resources through catalog items without needing to understand templates, Ansible roles, or the underlying field definitions.
 
-* As a Tenant User, I do not have access to the catalog management UI — I only see the consumer catalog page and provisioning wizard.
+* As a Tenant User, I do not have access to catalog item management — I only interact with published catalog items to browse and provision.
 
 ### Goals
 
