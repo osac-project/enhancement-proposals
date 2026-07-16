@@ -81,7 +81,7 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 
 ## Related Features
 
-- **[OSAC-979](https://redhat.atlassian.net/browse/OSAC-979): VM Image Management** — broader vision including upload, caching, and performance optimization. This feature is a prerequisite building block.
+- **[OSAC-979](https://redhat.atlassian.net/browse/OSAC-979): VM Image Management** — broader vision including upload, caching, and performance optimization. DiskImage supersedes the ComputeImage resource proposed in the OSAC-979 enhancement proposal — renamed to be service-neutral (VMaaS + BMaaS). The existing image-management EP will be updated to reflect this once the PRD is approved.
 - **[OSAC-1270](https://redhat.atlassian.net/browse/OSAC-1270): Base OS management for bare metal instances** — follow-up: add DiskImage reference to BareMetalInstance. The DiskImage resource is named to be service-neutral for this reason.
 
 ---
@@ -93,4 +93,4 @@ Final: respond @ prd 0.5.0 - 883316f, workspace main @ 777ba84 (2 behind origin/
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"883316f","source_repo":"777ba84","source_repo_branch":"main","commits_behind_main":2,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"883316f","source_repo":"777ba84","source_repo_branch":"main","commits_behind_main":2,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
