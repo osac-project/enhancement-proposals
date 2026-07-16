@@ -47,7 +47,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails.
 
-* As a Cloud Provider Admin, I need to provide a title and optional description for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
+* As a Cloud Provider Admin, I need to provide identifying information for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
 
 * As a Cloud Provider Admin, I need to choose whether the catalog item is global (visible to all tenants) or scoped to a specific tenant, so I can create targeted offerings for specific organizations.
 
@@ -55,23 +55,23 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to publish or unpublish a catalog item to control whether tenant users can see and provision from it. Unpublished items are only visible to admins.
 
-* As a Cloud Provider Admin, I need to edit an existing catalog item to change its title, description, field definitions, or publication status. The backing template cannot be changed after creation.
+* As a Cloud Provider Admin, I need to edit an existing catalog item to update its configuration and publication status. The backing template cannot be changed after creation.
 
-* As a Cloud Provider Admin, I need to view a catalog item's details including its field definitions and which resources have been provisioned from it.
+* As a Cloud Provider Admin, I need to view a catalog item's full configuration and see which resources have been provisioned from it.
 
 * As a Cloud Provider Admin, I need to delete a catalog item that is no longer needed. If resources have been provisioned from it, deletion must be blocked and I should unpublish it instead, so existing resources retain their catalog item reference.
 
-* As a Cloud Provider Admin, I need to see all catalog items across all tenants (both published and unpublished), filterable by resource type and searchable by title.
+* As a Cloud Provider Admin, I need to see all catalog items across all tenants (both published and unpublished), so I can manage the full catalog.
 
 #### Tenant Admin — Catalog Item Creation
 
 * As a Tenant Admin, I need to create organization-specific catalog items by selecting from existing published global catalog items — not from templates. I am not aware of templates; I only see catalog items that the Cloud Provider Admin has already published.
 
-* As a Tenant Admin, I need to configure which fields are pre-set vs. editable, starting from the base global catalog item's field definitions. I can further restrict fields for my organization but cannot make a non-editable field editable — I can only be equal or more restrictive than the base.
+* As a Tenant Admin, I need to configure which fields are pre-set vs. editable, starting from the base global catalog item's configuration. I can further restrict fields for my organization but cannot make a non-editable field editable — I can only be equal or more restrictive than the base.
 
 * As a Tenant Admin, for each field I keep editable, I need to optionally change the default value or tighten validation constraints, so I can tailor the offering to my organization's standards.
 
-* As a Tenant Admin, I need to provide a title and optional description for the catalog item, so my organization's users can distinguish it from other offerings in the catalog.
+* As a Tenant Admin, I need to provide identifying information for the catalog item, so my organization's users can distinguish it from other offerings in the catalog.
 
 * As a Tenant Admin, the catalog item I create is automatically scoped to my organization — I do not control the tenant assignment.
 
@@ -79,19 +79,19 @@ don't have the ability to add or modify ansible roles.
 
 * As a Tenant Admin, I need to publish or unpublish catalog items scoped to my organization to control whether my users can see and provision from them.
 
-* As a Tenant Admin, I need to edit organization-scoped catalog items to change their title, description, field definitions, or publication status. I cannot modify or delete global catalog items created by Cloud Provider Admins.
+* As a Tenant Admin, I need to edit organization-scoped catalog items to update their configuration and publication status. I cannot modify or delete global catalog items created by Cloud Provider Admins.
 
-* As a Tenant Admin, I need to view a catalog item's details including its field definitions and which resources in my organization have been provisioned from it.
+* As a Tenant Admin, I need to view a catalog item's full configuration and see which resources in my organization have been provisioned from it.
 
 * As a Tenant Admin, I need to delete an organization-scoped catalog item that is no longer needed, subject to the same provisioned-resource blocking as global items.
 
-* As a Tenant Admin, I need to see my organization's catalog items alongside global items, with a clear indicator of which are global (read-only) vs. organization-scoped (editable).
+* As a Tenant Admin, I need to see my organization's catalog items alongside global items, with a clear distinction between global (read-only) and organization-scoped (manageable) items.
 
 #### Tenant User — Catalog Browsing and Provisioning
 
-* As a Tenant User, I need to browse published catalog items showing their title, description, and resource type, so I can find the right offering for my needs.
+* As a Tenant User, I need to browse published catalog items so I can find the right offering for my needs.
 
-* As a Tenant User, when I provision from a catalog item, I see all resource fields — non-editable fields appear disabled with their pre-set values visible, so I can see the full configuration. Editable fields are interactive and I provide or adjust values as needed.
+* As a Tenant User, when I provision from a catalog item, I need to see the full resource configuration — both the pre-set values I cannot change and the editable values I need to provide — so I understand what I am getting.
 
 * As a Tenant User, I need to provision resources through catalog items without needing to understand templates, Ansible roles, or the underlying field definitions.
 
