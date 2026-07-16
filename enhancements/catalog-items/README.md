@@ -3,7 +3,7 @@ title: catalog-items
 authors:
   - mhrivnak
 creation-date: 2026-01-12
-last-updated: 2026-04-25
+last-updated: 2026-07-16
 tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
 see-also:
 replaces:
@@ -39,14 +39,59 @@ don't have the ability to add or modify ansible roles.
 
 ### User Stories
 
-* As a Cloud Provider Admin, I need to create global catalog items that reference templates and define which fields are pre-set vs. editable, so I can offer curated options to all tenants.
-* As a Cloud Provider Admin, I need to publish/unpublish catalog items to control visibility to Tenant Users.
+#### Cloud Provider Admin — Catalog Item Creation
 
-* As a Tenant Admin, I need to create organization-specific catalog items from available templates, so I can offer tenant-specific configurations.
-* As a Tenant Admin, I need to control which global catalog items are visible to users in my organization.
+* As a Cloud Provider Admin, I need to create a catalog item by selecting a resource type (VM, Cluster, or Bare Metal) and then choosing one of the existing templates for that type from a list, so the catalog item is backed by a known, working template.
 
-* As a Tenant User, I need to list available catalog items via API and provision resources through them.
-* As a Tenant User, I need to browse catalog items to find infrastructure automation options.
+* As a Cloud Provider Admin, after selecting a template, I need to see a static wizard showing all the resource spec fields for that resource type (e.g., for ComputeInstance: image, instance_type, is_windows, boot_disk, run_strategy, user_data, ssh_key, network_attachments). These are the only fields I can configure — I cannot add fields that do not exist in the resource spec.
+
+* As a Cloud Provider Admin, for each resource spec field that references an existing platform resource (e.g., `instance_type` references an InstanceType, `image.source_ref` references a ComputeImage, `release_image` references an OpenShift release, `node_sets[].host_type` references a HostType), I need to choose a default value from a picker that lists the existing resources of that type. No validation schema is needed for these fields because the referenced resources are already validated when created.
+
+* As a Cloud Provider Admin, for each resource spec field that the tenant user creates or selects at provisioning time (e.g., `network_attachments` — the tenant picks their own virtual network, subnet, and security groups), I need to mark the field as tenant-provided without specifying a default value or validation schema, because the tenant selects from their own existing resources.
+
+* As a Cloud Provider Admin, for each remaining resource spec field (free-form inputs like `ssh_key`, `user_data`, `boot_disk.size_gib`, `run_strategy`, `is_windows`, `network.pod_cidr`, `network.service_cidr`), I need to decide whether the field is:
+  - **Pre-set (non-editable):** I provide a fixed default value that tenants cannot override.
+  - **Editable with default:** I provide a default value but tenants can change it.
+  - **Editable without default:** The tenant must provide a value; I leave it blank.
+  For editable free-form fields, I can optionally define a JSON Schema validation rule to constrain what values the tenant can enter (e.g., minimum boot disk size, allowed run strategies).
+
+* As a Cloud Provider Admin, I need to provide a title and an optional markdown description for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
+
+* As a Cloud Provider Admin, I need to choose whether the catalog item is global (visible to all tenants) or scoped to a specific tenant, so I can create targeted offerings for specific organizations.
+
+#### Cloud Provider Admin — Catalog Item Lifecycle
+
+* As a Cloud Provider Admin, I need to publish or unpublish a catalog item to control whether tenant users can see and provision from it. Unpublished items are only visible to admins.
+
+* As a Cloud Provider Admin, I need to edit an existing catalog item to change its title, description, field definitions, or publication status. The backing template cannot be changed after creation.
+
+* As a Cloud Provider Admin, I need to view a catalog item's details including its field definitions and which resources (Clusters, VMs, BareMetalInstances) have been provisioned from it.
+
+* As a Cloud Provider Admin, I need to delete a catalog item that is no longer needed. If resources have been provisioned from it, deletion must be blocked and I should unpublish it instead, so existing resources retain their catalog item reference.
+
+* As a Cloud Provider Admin, I need to see all catalog items across all tenants (both published and unpublished) in a single management list, filterable by resource type and searchable by title.
+
+#### Tenant Admin — Catalog Item Creation
+
+* As a Tenant Admin, I need to create organization-specific catalog items from the available templates, following the same static wizard flow as the Cloud Provider Admin. The catalog item is automatically scoped to my tenant — I do not set the tenant field.
+
+* As a Tenant Admin, the field definition flow is the same as for Cloud Provider Admins: I see the static resource spec fields, choose defaults from existing resource pickers for resource-type fields, leave tenant-provided fields (like networking) without defaults, and configure editability and defaults for free-form fields.
+
+#### Tenant Admin — Catalog Item Lifecycle
+
+* As a Tenant Admin, I need to manage catalog items scoped to my organization — edit, publish/unpublish, and delete them. I cannot modify or delete global catalog items created by Cloud Provider Admins; those appear as read-only in my view.
+
+* As a Tenant Admin, I need to see my organization's catalog items alongside global items in a management list, with a clear indicator of which are global (read-only) vs. organization-scoped (editable).
+
+#### Tenant User — Catalog Browsing and Provisioning
+
+* As a Tenant User, I need to browse a catalog of published items showing their title, description, and resource type (VM, Cluster, Bare Metal), so I can find the right offering for my needs.
+
+* As a Tenant User, when I select a catalog item and start provisioning, the wizard shows me only the fields that the admin marked as editable. Pre-set fields are applied automatically and are not shown to me (or shown as read-only for transparency). For resource-type fields where the admin chose a default, I see that default pre-selected. For tenant-provided fields like networking, I select from my own resources (virtual networks, subnets, security groups).
+
+* As a Tenant User, I need to provision resources (VMs, Clusters, Bare Metal instances) through catalog items without needing to understand templates, Ansible roles, or the underlying field definitions.
+
+* As a Tenant User, I do not have access to the catalog management UI — I only see the consumer catalog page and provisioning wizard.
 
 ### Goals
 
