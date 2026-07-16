@@ -255,7 +255,7 @@ class EPHooks:
         ]
         for key in scores:
             note = self._sanitize_text(
-                notes.get(key, ""), 200
+                notes.get(key, "")
             ).replace("|", "\\|").replace("\n", " ")
             lines.append(f"| {key.capitalize()} | {scores[key]}/2 | {note} |")
 
