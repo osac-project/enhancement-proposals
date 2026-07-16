@@ -89,7 +89,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Tenant User, I need to browse a catalog of published items showing their title, description, and resource type (VM, Cluster, Bare Metal), so I can find the right offering for my needs.
 
-* As a Tenant User, when I select a catalog item and start provisioning, the wizard shows me only the fields that the admin marked as editable. Pre-set fields are applied automatically and are not shown to me (or shown as read-only for transparency). For resource-type fields where the admin chose a default, I see that default pre-selected. For tenant-provided fields like networking, I select from my own resources (virtual networks, subnets, security groups).
+* As a Tenant User, when I select a catalog item and start provisioning, the wizard shows all resource spec fields in every step — fields are never hidden based on field definitions. Non-editable fields appear disabled (grayed out) with their pre-set default value visible, so I can see the full configuration. Editable fields are interactive: for resource-type fields where the admin chose a default, I see that default pre-selected. For tenant-provided fields like networking, I select from my own resources (virtual networks, subnets, security groups).
 
 * As a Tenant User, I need to provision resources (VMs, Clusters, Bare Metal instances) through catalog items without needing to understand templates, Ansible roles, or the underlying field definitions.
 
