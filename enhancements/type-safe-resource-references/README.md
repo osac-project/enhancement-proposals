@@ -574,12 +574,11 @@ partial state changes).
 
 #### Database Trigger Updates
 
-Resources are stored as JSON-serialized protobuf in a `data` column. Existing
-PL/pgSQL triggers extract reference values from JSON paths for referential
-integrity enforcement. These paths change when string fields become nested
-messages.
+Resources are stored as JSON-serialized protobuf in a `data` column. PL/pgSQL
+triggers extract reference values from JSON paths for referential integrity
+enforcement. These paths change when string fields become nested messages.
 
-**Example migration for the subnets table:**
+**Example for the subnets table:**
 
 Before (current trigger):
 ```sql
@@ -593,15 +592,14 @@ new.data->'spec'->'virtual_network'->'name'
 -- yields: "prod-net" (a JSON string within the nested object)
 ```
 
-Each delivery chunk includes a migration that updates the affected triggers.
-The migration must also run a backfill to re-process existing rows through the
-updated trigger:
+Each delivery chunk updates the affected trigger functions to use the new JSON
+paths. Since OSAC deployments are fresh installations (no in-place upgrades),
+no data migration or backfill is needed — the triggers are defined with the
+correct paths from the start.
 
 ```sql
--- Update trigger function to use new JSON path
 CREATE OR REPLACE FUNCTION check_subnet_virtual_network_ref() RETURNS trigger AS $$
 BEGIN
-  -- Extract name from the reference message instead of the raw string
   PERFORM 1 FROM virtual_networks
     WHERE name = (NEW.data->'spec'->'virtual_network'->>'name')
       AND tenant = NEW.tenant;
@@ -616,9 +614,6 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
-
--- Backfill existing rows through the updated trigger
-UPDATE subnets SET data = data;
 ```
 
 #### CEL Filter Expression Changes
@@ -773,12 +768,6 @@ Z0002, which the DAO layer translates to an `InvalidArgument` error.
 and catches panics from all downstream interceptors, including the reference
 validator.
 
-**Migration rollback.** Each delivery chunk's database migration is a forward
-migration. If a chunk must be rolled back, the corresponding down migration
-reverts trigger changes and the proto/server changes are reverted in code.
-Because there is no backward compatibility requirement [Locked: D1], rollback
-means reverting the entire chunk (code + migration + UI + CLI).
-
 ### RBAC / Tenancy
 
 No RBAC or tenancy changes are required. The reference validation interceptor
@@ -815,7 +804,6 @@ the controller layer. Existing controller events are unaffected.
 | Proto field number reuse causes wire incompatibility during incremental rollout | Medium | High | Each delivery chunk updates all consumers (server, CLI, UI) atomically. No mixed-version deployments within a chunk. CI validates proto compatibility within each chunk. |
 | Interceptor adds latency to every Create/Update request | Low | Medium | The interceptor replaces existing inline DAO lookups, not adding new ones. Net latency change is near zero. The `osac_reference_validation_duration_seconds` metric monitors this. [Locked: R2.Q4] |
 | CEL filter breakage for existing API consumers | Medium | Medium | Breaking change is accepted per D1. Document the path changes in the API changelog. Each chunk's release notes list affected filter paths. |
-| Database trigger migration failure on large tables | Low | High | Migrations run in a transaction. The backfill (`UPDATE table SET data = data`) processes all rows. For tables with millions of rows, the backfill can be batched. Test migration performance in staging before production. |
 | Cross-chunk dependency: Chunk 2 (Compute) depends on Chunk 1 (Networking) for SubnetLocalReference | Low | Medium | Chunk ordering is fixed. Chunk 1 must merge before Chunk 2. CI enforces proto import resolution. |
 
 ### Drawbacks
@@ -929,35 +917,9 @@ deprecation period. [Locked: D1]
 
 ## Upgrade / Downgrade Strategy
 
-OSAC does not currently support in-place upgrades. Deployments are
-fresh installations.
-
-For environments with existing data, each delivery chunk includes a database
-migration that:
-1. Updates PL/pgSQL trigger functions to use new JSON paths.
-2. Runs a backfill (`UPDATE table SET data = data`) to re-process existing
-   rows through updated triggers.
-3. Does not modify the stored data format -- existing JSON with string
-   references is replaced by JSON with nested reference objects when resources
-   are next updated through the API.
-
-A data migration script is included with each chunk to convert existing
-string references to nested objects for resources that may not be updated
-through the API:
-
-```sql
--- Convert string virtual_network references to nested objects
-UPDATE subnets SET data = jsonb_set(
-  data,
-  '{spec,virtual_network}',
-  jsonb_build_object('name', data->'spec'->>'virtual_network')
-)
-WHERE jsonb_typeof(data->'spec'->'virtual_network') = 'string';
-```
-
-Downgrade requires reverting the entire chunk (code + migration). Since there
-is no backward compatibility requirement, downgrade is a clean revert to the
-previous version with a corresponding down migration.
+OSAC does not currently support in-place upgrades. Deployments are fresh
+installations. No data migration or backfill is needed — trigger functions
+are defined with the correct JSON paths from the start.
 
 ## Version Skew Strategy
 
@@ -1040,4 +1002,4 @@ Committed: commit @ design 0.3.0 - 883316f, workspace main @ c5499e4
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.3.0","ai_workflows":"883316f","source_repo":"c5499e4","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.3.0","ai_workflows":"883316f","source_repo":"c5499e4","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":false} -->
