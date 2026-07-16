@@ -85,7 +85,7 @@ Two secret backends exist for 0.2:
   HashiCorp Vault Enterprise). Each tenant's secrets are stored in a
   dedicated child namespace under a parent OSAC namespace, providing
   structural isolation — each namespace has its own KV v2 engine with
-  physically separate storage and its own Keycloak JWT auth method
+  logically separated storage and its own Keycloak JWT auth method
   (see Vault Configuration).
 - **Hub** — system-created secrets whose data lives in Kubernetes Secrets
   on hub clusters (e.g., provisioned cluster kubeconfigs and admin
@@ -145,7 +145,7 @@ Enterprise) and made it reachable from the OSAC hub cluster.
    cluster spec stores
    `pull_secret_secret = "my-pull-secret"` — no inline credential data.
 4. The cluster reconciler resolves the reference by reading the secret
-   data via the private Secrets API, validates the pull secret format, 
+   data via the private Secrets API, validates the pull secret format,
    then writes the resolved credential into the ClusterOrder CR.
 
 #### System: Automatic Secret Creation During Cluster Provisioning
@@ -315,7 +315,7 @@ The Vault-compatible store connection is configured via fulfillment-service
 startup flags, following the existing pattern for infrastructure
 dependencies like the database connection:
 
-```
+```text
 --vault-endpoint              Vault API endpoint URL (Required)
 --vault-namespace             Parent namespace path within Vault (Required, e.g., "osac")
 --vault-ca-cert-file          Path to PEM-encoded CA certificate for Vault TLS
@@ -387,9 +387,9 @@ Keycloak client credentials could request JWTs for any tenant, but
 each resulting Vault token remains scoped to a single tenant
 namespace by Vault's `bound_claims` check.
 
-**Extensibility for future consumers:** Services (e.g., AAP/Ansible jobs) 
-can access tenant secrets by obtaining a tenant-scoped JWT via standard OAuth 2.0 
-client credentials from Keycloak and calling the fulfillment-service Secrets gRPC API. 
+**Extensibility for future consumers:** Services (e.g., AAP/Ansible jobs)
+can access tenant secrets by obtaining a tenant-scoped JWT via standard OAuth 2.0
+client credentials from Keycloak and calling the fulfillment-service Secrets gRPC API.
 The fulfillment-service forwards the JWT through the same user auth path —
 no additional Vault or fulfillment-service configuration required.
 
@@ -588,7 +588,7 @@ Namespace deletion is a cascading operation — all secrets, policies, and
 auth methods within the namespace are permanently removed. This provides
 clean tenant data removal without requiring individual secret deletion.
 
-```
+```text
 Parent Namespace: osac/
 ├── auth/jwt/                     ← lifecycle auth only (namespace mgmt, no KV)
 ├── tenant-acme/                  ← created during onboarding for tenant-acme
@@ -694,13 +694,13 @@ dispatching (see Server Implementation). If the tenant's namespace does
 not yet exist (onboarding controller has not completed), Vault-backed
 operations return `FAILED_PRECONDITION`. If per-tenant auth fails
 (e.g., invalid JWT claims, Keycloak token exchange failure, or secret store
-unreachable), Vault-backed operations fail with `UNAVAILABLE`.
+unreachable), Vault-backed operations fail with appropriate status.
 
 | Operation | Steps | On Failure |
 |-----------|-------|------------|
 | **Create (Vault)** | Authenticate to tenant namespace → Vault write → insert metadata → commit | Namespace missing: `FAILED_PRECONDITION`. Auth or Vault failure: no record created. Commit failure: orphan in Vault (no metadata). |
 | **Create (Hub)** | Insert metadata with coordinates → commit | Standard DB error handling. |
-| **Get** | Read metadata → authenticate to tenant namespace → fetch data from backend | Auth failure: `UNAVAILABLE`. |
+| **Get** | Read metadata → authenticate to tenant namespace → fetch data from backend | Return status code based on issue. |
 | **Update (Vault data)** | Authenticate to tenant namespace → Vault write (overwrite) → update metadata if needed → commit | Auth or Vault failure: return error, existing data intact. |
 | **Update (Hub metadata)** | Update metadata in PostgreSQL only | Standard DB error handling. |
 | **Update (Hub data)** | N/A — returns `FAILED_PRECONDITION` | Data is system-managed. |
