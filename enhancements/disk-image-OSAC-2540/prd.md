@@ -14,7 +14,7 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 ## In Scope
 
 - DiskImage resource with CRUD operations (create, list, get, update, delete) via UI, CLI, and API
-- DiskImage metadata: display name (required), description (optional), guest OS family (required, enum: linux, windows), architecture (required)
+- DiskImage metadata: display name (required), description (optional), guest OS family (required, enum: linux, windows), architecture (required, enum: amd64, arm64)
 - DiskImage wraps an existing OCI artifact reference (source_type + source_ref), both immutable after creation
 - Two-tier visibility: provider-global images (available to all tenants) and tenant-scoped images (visible only within a tenant)
 - Image lifecycle management: deprecation to warn users, obsolescence to block new VM creation, and reactivation
@@ -87,8 +87,8 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 ## Provenance
 
 Authored: draft @ prd 0.5.0 - 883316f, workspace main @ 7ea4384
-Final: revise @ prd 0.5.0 - 883316f, workspace main @ 777ba84
+Final: respond @ prd 0.5.0 - 883316f, workspace main @ 777ba84 (2 behind origin/main)
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"883316f","source_repo":"777ba84","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":99,"main_ref":"main","phases":["draft","draft","revise"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"883316f","source_repo":"777ba84","source_repo_branch":"main","commits_behind_main":2,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true} -->
