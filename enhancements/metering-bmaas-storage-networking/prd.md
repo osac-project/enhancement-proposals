@@ -71,7 +71,7 @@ These resource families are grouped because they share the allocation-based mete
 - As a Tenant Admin, I want to view my organization's storage usage broken down by project, storage tier, and volume, so that I can identify which teams consume the most storage capacity and on which tier.
 - As a Tenant Admin, I want to view my organization's object storage bucket usage broken down by project, capacity, and API request counts, so that I can attribute object storage costs to the teams that use them.
 - As a Tenant Admin, I want to view my organization's networking resource usage broken down by project, including the count and duration of VirtualNetworks, PublicIPs, and NATGateways, so that I can attribute networking costs to the teams that provisioned them.
-- As a Tenant Admin, I want to view my organization's network bandwidth usage broken down by project and direction (ingress/egress), so that I can identify projects with high data transfer costs.
+- As a Tenant Admin, I want to view my organization's network bandwidth usage broken down by direction (ingress/egress) and, when the vendor data source supports it, by project, so that I can identify sources of high data transfer costs.
 - As a Tenant Admin, I want to see the total usage footprint of a bare metal host including its attached storage volumes and public IPs, so that I can understand the full resource consumption of each machine without querying multiple reports.
 
 ### Tenant User
@@ -79,7 +79,7 @@ These resource families are grouped because they share the allocation-based mete
 - As a Tenant User, I want to view storage usage for the projects I belong to, broken down by volume and storage tier, so that I can track how much storage capacity my workloads consume and on which tier.
 - As a Tenant User, I want to view object storage bucket usage for the projects I belong to, broken down by capacity and API request counts, so that I can understand how my applications use object storage.
 - As a Tenant User, I want to view networking resource usage for the projects I belong to, including PublicIP allocation duration and NATGateway uptime, so that I can understand the networking costs of my deployments.
-- As a Tenant User, I want to view bandwidth usage for the projects I belong to, broken down by ingress and egress, so that I can identify applications generating high data transfer volumes.
+- As a Tenant User, I want to view bandwidth usage broken down by ingress and egress and, when the vendor data source supports project attribution, by project, so that I can identify applications generating high data transfer volumes.
 
 ## 5. Capabilities
 
