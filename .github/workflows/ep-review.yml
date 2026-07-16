@@ -97,7 +97,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r .github/scripts/requirements.txt
 
-      - name: Clone skills repo
+      - name: Clone workspace
         run: git clone --depth 1 https://github.com/osac-project/osac-workspace /opt/skills
 
       - name: Set up GCP credentials

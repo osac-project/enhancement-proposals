@@ -9,6 +9,7 @@ structured review comment on the PR.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -58,7 +59,7 @@ def detect_skills(files):
     if has_prd:
         skills.append(("prd-review", "skills/prd-review/SKILL.md"))
     if has_design:
-        skills.append(("ep-review", "skills/ep-review/SKILL.md"))
+        skills.append(("design-review", "skills/design-review/SKILL.md"))
     return skills
 
 
@@ -174,7 +175,10 @@ def main():
     for skill_name, skill_path in skills:
         ticket_key = f"EP-{pr_number}"
         work_dir = Path(f"workdir-{skill_name}")
-        work_dir.mkdir(parents=True, exist_ok=True)
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
+        shutil.copytree(SKILLS_PATH, work_dir,
+                        ignore=shutil.ignore_patterns('.git'))
 
         print(f"\nRunning {skill_name}...")
         try:
