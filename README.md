@@ -27,6 +27,39 @@ It is unlikely to require an enhancement if it:
 
 If you are not sure if the proposed work requires an enhancement, file an issue and ask!
 
+## How do I create a PRD?
+
+A PRD (Product Requirements Document) defines **what** a feature delivers and
+**why**, from the user's perspective. PRDs are merged before design work begins.
+For detailed guidance on writing PRDs, the PRD vs design EP boundary, personas,
+and good/bad examples, see [guidelines/prd_guide.md](guidelines/prd_guide.md).
+
+The recommended way to create a PRD is using the `/prd` skill in an AI-assisted
+development tool (Claude Code, Cursor, or similar):
+
+1. Run `/prd:ingest` with your Jira ticket to gather requirements.
+2. Run `/prd:clarify` to resolve ambiguities through guided Q&A.
+3. Run `/prd:draft` to generate the PRD from the project template.
+4. Run `/prd:publish` to create a PR on this repository.
+
+The skill produces a PRD that follows [guidelines/prd_template.md](guidelines/prd_template.md),
+addresses OSAC feature dimensions, and can be validated with `/prd-review`
+before submission.
+
+If you prefer to write manually, copy the template and follow the instructions
+inside it:
+
+```sh
+mkdir enhancements/storage-backend-osac-1111
+cp guidelines/prd_template.md enhancements/storage-backend-osac-1111/prd.md
+```
+
+Use the naming convention `<area>-<description>-<ticket-id>`, all lowercase
+with hyphens. Create a pull request against `main` when ready.
+
+After the PRD is merged, create the design EP (`design.md`) in the same
+directory. See "How do I create an enhancement proposal?" below.
+
 ## How do I create an enhancement proposal?
 
 To create an enhancement proposal:
@@ -37,15 +70,15 @@ To create an enhancement proposal:
     mkdir enhancements/my-nifty-feature
     ```
 
-2. Copy `guidelines/enhancement_template.md` to `README.md` in your new directory:
+2. Copy `guidelines/enhancement_template.md` to `design.md` in your new directory:
 
     ```sh
-    cp guidelines/enhancement_template.md enhancements/my-nitfy-feature/README.md
+    cp guidelines/enhancement_template.md enhancements/my-nifty-feature/design.md
     ```
 
-3. Edit `enhancements/my-nitfy-feature/README.md`, following the embedded instructions. If a section does not apply to your proposal, mark it `N/A` rather than removing it.
+3. Edit `enhancements/my-nifty-feature/design.md`, following the embedded instructions. If a section does not apply to your proposal, mark it `N/A` rather than removing it.
 
-4. If your proposal requires additional assets -- images, sample configuration files, etc -- include them in the same directory as the `README.md`.
+4. If your proposal requires additional assets -- images, sample configuration files, etc -- include them in the same directory as the `design.md`.
 
 5. Create a pull request with your changes against the main branch of the [enhancement proposals] repository.
 

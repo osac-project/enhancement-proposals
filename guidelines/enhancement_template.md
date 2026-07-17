@@ -17,7 +17,7 @@ superseded-by:
 To get started with this template:
 1. **Create a directory.** Create the directory for your enhancement proposal.
 1. **Make a copy of this template.** Copy this template into the directory for
-   the proposal as `README.md`.
+   the proposal as `design.md`.
 1. **Fill out the metadata at the top.** The embedded YAML document is
    checked by the linter.
 1. **Fill out the "overview" sections.** This includes the Summary and
