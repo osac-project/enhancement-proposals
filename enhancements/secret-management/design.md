@@ -524,6 +524,7 @@ Validation rules:
 | IdentityProvider | `client_secret` | `client_secret_secret` |
 | IdentityProvider | `bind_credential` | `bind_credential_secret` |
 | StorageBackend | `password` | `password_secret` |
+| Tenant | `break_glass_credentials` | `break_glass_credentials_secret` |
 
 Note: The exact naming, nature, and type of these reference fields may change as a result
 of upcoming type-safe resource references - https://redhat.atlassian.net/browse/OSAC-1330
@@ -618,6 +619,8 @@ maps each inline credential to the appropriate key-value structure:
    - `kubeconfig` → data `{"kubeconfig": <value>}`
    - `client_secret`, `bind_credential`, `password` → data
      `{"value": <value>}`
+   - `break_glass_credentials` → data
+     `{"username": <value>, "password": <value>}`
 4. Writes metadata to PostgreSQL and data to the tenant's namespace in
    the Vault store
 5. Sets the corresponding `*_secret` field on the resource to the new
