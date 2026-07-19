@@ -36,7 +36,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 ### Non-Goals
 
-- Drag-and-drop reordering of field definitions. The field list order is determined by the template's parameter definitions.
+- Drag-and-drop reordering of field definitions. The field list and order are fixed per resource type, derived from the resource spec.
 - Full visual JSON Schema editor (e.g., JSONJoy, react-json-schema-form-builder) or raw JSON Schema text editing. All validation constraints are configured through dedicated structured form controls.
 - Changes to the existing CatalogProvisionWizard — that component already handles catalog items. Any alignment changes are tracked separately.
 - Direct private API access from the browser. The Go proxy mediates all API access; CSP Admin requests are routed to private API endpoints (which return the `tenant` field), while Tenant Admin and Tenant User requests are routed to public API endpoints.
@@ -56,13 +56,13 @@ A new `FieldDefinitionsEditor` component built on Formik FieldArray provides the
 3. CSP Admin clicks "Create catalog item" and lands on the create page.
 4. **General section:** Admin enters title, description (Markdown), selects resource type (Cluster, VM, Bare Metal), and selects scope (Global or a specific tenant).
 5. **Template section:** Based on the selected resource type, the admin selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`).
-6. **Field definitions section:** After selecting a template, the `FieldDefinitionsEditor` is automatically populated with all fields from the template's parameter definitions. The admin configures each field:
-   - Path is read-only (set by the template)
-   - Enter an optional display name (defaults to the template's parameter label)
+6. **Field definitions section:** Based on the selected resource type, the `FieldDefinitionsEditor` displays all fields from the resource spec (e.g., all `ComputeInstanceSpec` fields for a VM catalog item). The field list is fixed per resource type and does not change based on template selection. The admin configures each field:
+   - Path is read-only (derived from the resource spec)
+   - Enter an optional display name
    - Toggle editable on/off
    - Set an optional default value (required for non-editable fields)
    - Optionally configure validation constraints using structured form controls (numeric bounds, allowed values, string length, pattern, item count, resource references, nested properties)
-   The admin cannot add or remove fields — the template determines the complete field set.
+   The admin cannot add or remove fields — the resource spec determines the complete field set.
 7. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
 9. From the detail page or list page, the admin can publish the item via the kebab menu "Publish" action.
@@ -180,6 +180,7 @@ interface CatalogItemKindConfig {
   pluralLabel: string;              // e.g., "Clusters"
   protoSchema: GenericSchema;       // @osac/types schema for decode
   templateProtoSchema: GenericSchema;
+  specFields: SpecFieldDefinition[];  // fixed field list from resource spec
 }
 
 const CATALOG_ITEM_KINDS: Record<CatalogItemKind, CatalogItemKindConfig> = {
@@ -190,9 +191,10 @@ const CATALOG_ITEM_KINDS: Record<CatalogItemKind, CatalogItemKindConfig> = {
     pluralLabel: 'Clusters',
     protoSchema: ClusterCatalogItemSchema,
     templateProtoSchema: ClusterTemplateSchema,
+    specFields: CLUSTER_SPEC_FIELDS,  // fixed field definitions from ClusterSpec
   },
-  'compute-instance': { /* ... */ },
-  'baremetal-instance': { /* ... */ },
+  'compute-instance': { /* ... specFields: COMPUTE_INSTANCE_SPEC_FIELDS */ },
+  'baremetal-instance': { /* ... specFields: BAREMETAL_INSTANCE_SPEC_FIELDS */ },
 };
 ```
 
@@ -328,25 +330,25 @@ Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management
 
 **Location:** `libs/ui-components/src/components/catalogManagement/FieldDefinitionsEditor.tsx`
 
-The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. The field list is pre-populated from the template's parameter definitions (CSP Admin) or from the base catalog item's field definitions (Tenant Admin) — the admin configures each field but does not add or remove fields.
+The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. The field list is fixed per resource type — it is derived from the resource spec (e.g., `ComputeInstanceSpec` fields for VM catalog items) and does not vary by template. For Tenant Admin, the field list comes from the base catalog item's field definitions. The admin configures each field but does not add or remove fields.
 
 **Each field definition row renders:**
 
 | Control | Field | Type | Notes |
 |---------|-------|------|-------|
-| Path | `fieldDefinitions.${i}.path` | Read-only text | Set by the template's parameter definitions; not editable by the admin |
-| Display Name | `fieldDefinitions.${i}.displayName` | `InputField` | Optional; defaults to the template parameter's label; derived from path if neither is set |
+| Path | `fieldDefinitions.${i}.path` | Read-only text | Derived from the resource spec; fixed per resource type, not editable by the admin |
+| Display Name | `fieldDefinitions.${i}.displayName` | `InputField` | Optional; derived from the field path if not set |
 | Editable | `fieldDefinitions.${i}.editable` | `Switch` (PatternFly) | Toggle; for Tenant Admin, disabled if base item marks field as non-editable |
 | Default Value | `fieldDefinitions.${i}.default` | `InputField` | Type-aware input (text, number, boolean toggle) based on template parameter type. Required when `editable` is false. |
 | Validation | `fieldDefinitions.${i}.validationSchema` | `ValidationConstraintsEditor` | Expandable sub-form (see below) |
 
-The field list is fixed — there is no "Add field definition" or "Remove" button. All fields from the template are shown and the admin configures each one.
+The field list is fixed per resource type — there is no "Add field definition" or "Remove" button. All fields from the resource spec are shown and the admin configures each one.
 
 **Yup validation schema for each field definition:**
 
 ```typescript
 const fieldDefinitionSchema = Yup.object({
-  path: Yup.string().required('Path is required'),  // read-only, set by template
+  path: Yup.string().required('Path is required'),  // read-only, derived from resource spec
   displayName: Yup.string(),
   editable: Yup.boolean().required(),
   default: Yup.mixed().when('editable', {
@@ -493,7 +495,7 @@ No new observability changes. The UI is a frontend application — observability
 
 Adding a catalog management section increases the UI surface area and introduces the first role-gated navigation in osac-ui. This creates a precedent that future admin features will follow, adding complexity to the navigation and routing system. The alternative — managing catalog items exclusively via CLI — avoids this complexity but provides a poor admin experience for non-technical cloud provider administrators.
 
-The field definitions editor is a complex custom component with no precedent in the existing UI. It combines Formik FieldArray, dynamic type-aware inputs, and nested validation — patterns that are individually well-supported but have not been combined at this scale in osac-ui. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, constraint editor interactions). The field list itself is pre-populated from the template, which eliminates add/remove/reorder edge cases.
+The field definitions editor is a complex custom component with no precedent in the existing UI. It combines Formik FieldArray, dynamic type-aware inputs, and nested validation — patterns that are individually well-supported but have not been combined at this scale in osac-ui. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, constraint editor interactions). The field list is fixed per resource type (derived from the resource spec), which eliminates add/remove/reorder edge cases.
 
 The polymorphic approach (one component set for three catalog item types) adds indirection through the `CatalogItemKindConfig` abstraction. The alternative — three separate implementations — would be more straightforward to read but would triple the maintenance burden and risk divergence.
 
@@ -532,9 +534,9 @@ How does the CSP Admin determine whether a catalog item is global or tenant-scop
 **Owner:** API team
 **Impact:** Without scope visibility, the CSP Admin list page cannot show a "Scope" column. The current design assumes scope is derivable from public API responses and will need revision if it is not.
 
-### 2. Template parameter enumeration ~~for field path picker~~ (Resolved)
+### 2. ~~Template parameter enumeration for field path picker~~ (Resolved)
 
-This design requires that template GET endpoints return structured parameter definitions (names, types, descriptions) so the field definitions editor can pre-populate all fields automatically. The admin does not type paths — they are provided by the template. If the current template API does not return structured parameter definitions, the API must be extended to support this before catalog item creation can work.
+The field definitions editor derives its field list from the resource spec (e.g., `ComputeInstanceSpec`), which is known at build time from the proto definitions. No template API enumeration is required — the field set is fixed per resource type.
 
 ### 3. Querying resources by catalog item reference
 
@@ -560,7 +562,7 @@ Testing strategy for the catalog management UI:
 - Type filter: verify filtering by Cluster/VM/Bare Metal updates the table
 
 **Component-level testing (if adopted):**
-- FieldDefinitionsEditor: verify template-populated field list renders correctly; toggle editable, set defaults, configure constraints; verify Formik state management
+- FieldDefinitionsEditor: verify resource-spec field list renders correctly per type; toggle editable, set defaults, configure constraints; verify Formik state management
 - ValidationConstraintsEditor: set scalar, resource reference, list/map, and nested constraints; verify correct JSON Schema output
 
 ## Graduation Criteria
