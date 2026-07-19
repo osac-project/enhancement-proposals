@@ -37,7 +37,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 ### Non-Goals
 
 - Drag-and-drop reordering of field definitions. Field order is set by the admin during creation and edited via move-up/move-down buttons.
-- Full visual JSON Schema editor (e.g., JSONJoy, react-json-schema-form-builder). The validation schema editor uses structured form fields for common constraints.
+- Full visual JSON Schema editor (e.g., JSONJoy, react-json-schema-form-builder) or raw JSON Schema text editing. All validation constraints are configured through dedicated structured form controls.
 - Changes to the existing CatalogProvisionWizard — that component already handles catalog items. Any alignment changes are tracked separately.
 - Private API access from the UI. All catalog management uses the public fulfillment API via the Go proxy.
 
@@ -61,7 +61,7 @@ A new `FieldDefinitionsEditor` component built on Formik FieldArray provides the
    - Enter an optional display name
    - Toggle editable on/off
    - Set an optional default value (required for non-editable fields)
-   - Optionally configure validation constraints (min, max, enum, pattern, minLength, maxLength)
+   - Optionally configure validation constraints using structured form controls (numeric bounds, allowed values, string length, pattern, item count, resource references, nested properties)
 7. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
 9. From the detail page or list page, the admin can publish the item via the kebab menu "Publish" action.
@@ -254,7 +254,7 @@ A full-page form (not a wizard) using Formik + Yup + `OsacForm`.
 
 **Section 1: General**
 - Title (`InputField`, required, maxLength: 255)
-- Description (`InputField` textarea, optional, Markdown)
+- Description (`InputField` textarea, optional, Markdown). All consumers that render this field must use a sanitizing Markdown renderer that strips unsafe HTML tags, `javascript:` URL schemes, and other XSS vectors.
 - Resource type (`SelectField`: Cluster, Virtual Machine, Bare Metal, required)
 - Scope (providerAdmin only): `RadioButtonField` — Global or Tenant-scoped. If tenant-scoped, a tenant selector dropdown appears. For tenantAdmin, this section shows "Scope: Your organization" as read-only text.
 
@@ -323,7 +323,7 @@ The most complex new component. Built on Formik `FieldArray` with the field name
 | Path | `fieldDefinitions.${i}.path` | `SelectField` or `InputField` | Dropdown populated from template parameters when available; falls back to free-text input for arbitrary dot-notation paths |
 | Display Name | `fieldDefinitions.${i}.displayName` | `InputField` | Optional; derived from path if empty |
 | Editable | `fieldDefinitions.${i}.editable` | `Switch` (PatternFly) | Toggle; for Tenant Admin, disabled if base item marks field as non-editable |
-| Default Value | `fieldDefinitions.${i}.default` | `InputField` | Type-aware input (text, number, boolean toggle) based on template parameter type when available; falls back to text input for `google.protobuf.Value` |
+| Default Value | `fieldDefinitions.${i}.default` | `InputField` | Type-aware input (text, number, boolean toggle) based on template parameter type when available; falls back to text input for `google.protobuf.Value`. Required when `editable` is false. |
 | Validation | `fieldDefinitions.${i}.validationSchema` | `ValidationConstraintsEditor` | Expandable sub-form (see below) |
 | Actions | — | Buttons | Remove (trash icon), Move Up/Down (arrow icons) |
 
@@ -359,7 +359,9 @@ When the create page is in Tenant Admin mode (base catalog item selected):
 
 **Location:** `libs/ui-components/src/components/catalogManagement/ValidationConstraintsEditor.tsx`
 
-An expandable sub-form within each field definition row, shown when the "Validation" column is clicked or expanded. Displays structured inputs for common JSON Schema constraints:
+An expandable sub-form within each field definition row, shown when the "Validation" column is clicked or expanded. All constraints — including nested object validation — are configured through dedicated structured form controls. There is no raw JSON Schema editor toggle.
+
+**Scalar constraints:**
 
 | Constraint | Input Type | JSON Schema Mapping |
 |-----------|-----------|---------------------|
@@ -370,9 +372,37 @@ An expandable sub-form within each field definition row, shown when the "Validat
 | Pattern | Text input | `{ "pattern": "regex" }` |
 | Allowed Values | Tag input (multi-value) | `{ "enum": [...] }` |
 
-The component constructs a JSON Schema string from these structured inputs. A "Show raw JSON" toggle reveals a text area with the generated schema, allowing power users to edit the raw JSON directly. Changes in the raw editor update the structured fields if parseable, and vice versa.
+**Resource reference constraints:**
 
-When no constraints are configured, `validationSchema` is set to an empty string (the API treats empty string as no validation).
+| Constraint | Input Type | JSON Schema Mapping |
+|-----------|-----------|---------------------|
+| Resource Type | Select dropdown | `{ "resourceRef": "InstanceType" }` |
+| Restrict to subset | Checkbox multi-select of available resources | `{ "resourceRef": "InstanceType", "enum": ["cx3.xlarge", ...] }` |
+
+For fields with a `resourceRef` constraint, the UI fetches available resources from the corresponding API endpoint and presents them as selectable options. `resourceRef` is an OSAC-specific custom keyword within the JSON Schema `validation_schema`; standard JSON Schema validators ignore it.
+
+**List and map constraints:**
+
+| Constraint | Input Type | JSON Schema Mapping |
+|-----------|-----------|---------------------|
+| Min Items | Number input | `{ "minItems": N }` |
+| Max Items | Number input | `{ "maxItems": N }` |
+| Min Properties | Number input | `{ "minProperties": N }` |
+| Max Properties | Number input | `{ "maxProperties": N }` |
+
+Setting `minItems` and `maxItems` to the same value locks the list length — users can edit each item but cannot add or remove entries.
+
+**Complex object constraints:**
+
+| Constraint | Input Type | JSON Schema Mapping |
+|-----------|-----------|---------------------|
+| Nested Properties | Nested constraint form per sub-field | `{ "properties": { "field": { ... } } }` |
+| Required Fields | Checkbox list of sub-fields | `{ "required": ["field1", ...] }` |
+| Item Schema | Nested constraint form | `{ "items": { "properties": { ... } } }` |
+
+For nested properties and item schemas, the editor renders a recursive constraint form for each sub-field, allowing admins to set constraints on complex objects without writing JSON by hand.
+
+The component constructs a JSON Schema object from these structured inputs. When no constraints are configured, `validationSchema` is set to an empty string (the API treats empty string as no validation).
 
 #### 10. Component File Structure
 
@@ -409,6 +439,8 @@ This design introduces no new authentication or authorization mechanisms. All ca
 
 Input validation is performed client-side (Yup) for UX responsiveness and server-side (fulfillment-service) for enforcement. The client-side validation is a convenience — it does not replace server-side validation.
 
+The `description` field accepts Markdown authored by admins. All rendering surfaces (detail page, catalog browsing, list tooltips) must use a sanitizing Markdown renderer that strips unsafe HTML tags, `javascript:` URL schemes, and other stored-XSS vectors. The server stores the raw Markdown as provided; sanitization is a rendering-time responsibility.
+
 The validation schema field accepts a JSON string from the admin. This string is stored as-is and used by the server for field validation during resource provisioning. The UI does not execute or eval the JSON Schema — it is treated as data, not code.
 
 ### Failure Handling and Recovery
@@ -427,7 +459,7 @@ The validation schema field accepts a JSON string from the admin. This string is
 This design does not introduce new RBAC roles or tenancy mechanisms. It consumes the existing catalog item tenancy model:
 
 - `providerAdmin`: Full CRUD on all catalog items (global and tenant-scoped). The server does not restrict based on tenant.
-- `tenantAdmin`: Full CRUD on org-scoped items. Read-only on global items. The server enforces tenant scoping — the UI disables write actions on global items as a UX convenience.
+- `tenantAdmin`: Full CRUD over their own organization-scoped catalog items. Read-only on global items. The server enforces tenant scoping — the UI disables write actions on global items as a UX convenience.
 - `tenantUser`: Read-only on published items visible to their tenant. No access to admin pages. The UI hides the admin nav section; the server enforces `PERMISSION_DENIED` on write operations.
 
 No new `osac.openshift.io/tenant` or `osac.openshift.io/owner-reference` annotations are introduced by this design — the API layer handles tenant metadata.
@@ -466,7 +498,10 @@ If field definitions configuration proves too complex for a single form section 
 
 ### Raw JSON editor for validation schemas
 
-Providing only a raw JSON textarea for `validation_schema` was considered. This offers maximum expressiveness since `validation_schema` is a JSON Schema draft 2020-12 string. It was not selected because catalog item admins are infrastructure managers, not JSON Schema experts. The structured constraint form (min, max, enum, pattern) covers the common cases defined in the EP while remaining accessible. [Research: §Recommended Approach] A "Show raw JSON" toggle preserves access to the full schema for advanced use cases.
+Providing a raw JSON textarea for `validation_schema` (either as the sole editor or as a "Show raw JSON" toggle alongside structured inputs) was considered. This offers maximum expressiveness since `validation_schema` is a JSON Schema draft 2020-12 object. It was not selected because:
+- Catalog item admins are infrastructure managers, not JSON Schema experts.
+- From experience with these types of toggles, raw/structured bidirectional sync adds significant complexity (parsing, validation, conflict resolution) with limited benefit.
+- The structured constraint form covers all supported constraint types (scalar, resource reference, list/map, complex object) through dedicated form controls, making raw editing unnecessary for the defined use cases.
 
 ### Separate pages per resource type
 
@@ -517,7 +552,7 @@ Testing strategy for the catalog management UI:
 
 **Component-level testing (if adopted):**
 - FieldDefinitionsEditor: add, remove, reorder field definitions; verify Formik state management
-- ValidationConstraintsEditor: set constraints, toggle raw JSON view, verify bidirectional sync
+- ValidationConstraintsEditor: set scalar, resource reference, list/map, and nested constraints; verify correct JSON Schema output
 
 ## Graduation Criteria
 
