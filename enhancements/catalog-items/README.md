@@ -94,7 +94,7 @@ don't have the ability to add or modify ansible roles.
 
 #### Cloud Provider Admin — Catalog Item Lifecycle
 
-* As a Cloud Provider Admin, I need to publish or unpublish a catalog item to control whether tenant users can see and provision from it. Unpublished items are only visible to admins.
+* As a Cloud Provider Admin, I need to publish or unpublish a catalog item to control whether tenant users can see and provision from it. Unpublished items are excluded from Tenant User listing and browsing; however, a Tenant User can still retrieve an unpublished item via a direct `Get` if it is referenced by one of their existing CNAs.
 
 * As a Cloud Provider Admin, I need to edit an existing catalog item to update its configuration and publication status. The backing template cannot be changed after creation.
 
@@ -227,7 +227,11 @@ Two new message types will be added to the proto definitions in
 - `id` (string) - unique identifier, assigned by the server
 - `metadata` - standard metadata (creation_timestamp, labels, annotations, etc.)
 - `title` (string) - human-friendly short name for display in UIs and CLIs
-- `description` (string) - markdown-formatted long description
+- `description` (string) - markdown-formatted long description. All consumers
+  that render this field (UI detail pages, catalog browsing, CLI output) must
+  use a sanitizing Markdown renderer that strips unsafe HTML tags, `javascript:`
+  URL schemes, and other XSS vectors. The server stores the raw Markdown as
+  provided; sanitization is a rendering-time responsibility.
 - `template` (string) - references a `ClusterTemplate` by ID
 - `fields` (repeated FieldDefinition) - ordered list of field definitions that
   specify which resource spec fields are pre-defined by the admin and which are
@@ -250,9 +254,12 @@ Two new message types will be added to the proto definitions in
 - `editable` (bool) - when true the user may provide a value for this field;
   when false (the default) the field uses the `default` value and the user
   cannot override it
-- `default` (google.protobuf.Value) - optional default value; applied as the
-  fixed value for non-editable fields, or as the fallback for editable fields
-  when the user does not supply a value
+- `default` (google.protobuf.Value) - default value for the field. Required
+  when `editable` is false (the server rejects catalog items where a
+  non-editable field has no default, since omitting both editability and a
+  default would leave a required template field unpopulated). Optional when
+  `editable` is true, where it serves as the fallback when the user does not
+  supply a value
 - `validation_schema` (google.protobuf.Struct) - optional JSON Schema object
   (draft 2020-12) constraining what values are valid for this field; only
   meaningful when `editable` is true
@@ -292,7 +299,7 @@ for early feedback, since users can bypass the UI via the CLI or API directly.
 Following the existing public/private server pattern:
 
 - **Private API** (`osac/private/v1`): full CRUD over catalog items with no filtering based on `published` or `tenant`. Used by Cloud Provider Admins, and by the server internally when validating a user's create request.
-- **Public API** (`osac/public/v1`): used by Tenant Admins and Tenant Users. The `tenant` field is not exposed to either role — it is stripped from all responses and ignored on writes. Tenant Admins have full CRUD access and can see all catalog items scoped to their tenant (published or not); on create the server automatically sets `tenant` to the caller's tenant. Tenant Users have read-only access (`List` and `Get` only) and only see items where `published == true` and `tenant` is empty or matches the caller's tenant. Exception: a Tenant User can always `Get` a catalog item referenced by one of their existing CNAs, even if that item is unpublished.
+- **Public API** (`osac/public/v1`): used by Tenant Admins and Tenant Users. The `tenant` field is not exposed to either role — it is stripped from all responses and ignored on writes. Tenant Admins have full CRUD over their own organization-scoped catalog items and can see all catalog items scoped to their tenant (published or not); on create the server automatically sets `tenant` to the caller's tenant. Tenant Users have read-only access (`List` and `Get` only) and only see items where `published == true` and `tenant` is empty or matches the caller's tenant. Exception: a Tenant User can always `Get` a catalog item referenced by one of their existing CNAs, even if that item is unpublished.
 
 The public `List` endpoint always filters by the caller's tenant; for Tenant
 User callers it additionally filters by `published = true`. The public
@@ -545,6 +552,7 @@ Standard unit and integration tests. Integration tests must cover:
 - Tenant Admin visibility: a Tenant Admin can see all catalog items in their tenant regardless of publication status.
 - Tenant field injection: the `tenant` field is absent from public API responses and auto-set on Tenant Admin creates.
 - Tenant Admin write isolation: a Tenant Admin cannot create, update, or delete catalog items scoped to another tenant.
+- Post-create response: `Create` returns the new catalog item ID so clients can redirect to the detail page or confirm success.
 
 ## Graduation Criteria
 
