@@ -39,7 +39,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 - Drag-and-drop reordering of field definitions. Field order is set by the admin during creation and edited via move-up/move-down buttons.
 - Full visual JSON Schema editor (e.g., JSONJoy, react-json-schema-form-builder) or raw JSON Schema text editing. All validation constraints are configured through dedicated structured form controls.
 - Changes to the existing CatalogProvisionWizard — that component already handles catalog items. Any alignment changes are tracked separately.
-- Private API access from the UI. All catalog management uses the public fulfillment API via the Go proxy.
+- Direct private API access from the browser. The Go proxy mediates all API access; CSP Admin requests are routed to private API endpoints (which return the `tenant` field), while Tenant Admin and Tenant User requests are routed to public API endpoints.
 
 ## Proposal
 
@@ -94,14 +94,25 @@ No changes to the existing flow. Tenant Users continue to use the CatalogPage fo
 
 ### API Extensions
 
-This design introduces no new API extensions. All catalog item CRUD endpoints already exist in fulfillment-service. The UI consumes the existing public API via the Go proxy:
+This design introduces no new API extensions. All catalog item CRUD endpoints already exist in fulfillment-service. The Go proxy routes requests to the appropriate API based on the caller's role:
 
+**Cloud Provider Admin** (private API — returns `tenant` field, no publication/tenant filtering):
+- `GET/POST/PATCH/DELETE /api/fulfillment/private/v1/cluster_catalog_items`
+- `GET/POST/PATCH/DELETE /api/fulfillment/private/v1/compute_instance_catalog_items`
+- `GET/POST/PATCH/DELETE /api/fulfillment/private/v1/baremetal_instance_catalog_items`
+- `GET /api/fulfillment/private/v1/cluster_templates` (read-only, for template selection)
+- `GET /api/fulfillment/private/v1/compute_instance_templates` (read-only)
+- `GET /api/fulfillment/private/v1/baremetal_instance_templates` (read-only)
+
+**Tenant Admin / Tenant User** (public API — `tenant` stripped, scoped by caller's tenant):
 - `GET/POST/PATCH/DELETE /api/fulfillment/v1/cluster_catalog_items`
 - `GET/POST/PATCH/DELETE /api/fulfillment/v1/compute_instance_catalog_items`
 - `GET/POST/PATCH/DELETE /api/fulfillment/v1/baremetal_instance_catalog_items`
-- `GET /api/fulfillment/v1/cluster_templates` (read-only, for template selection)
+- `GET /api/fulfillment/v1/cluster_templates` (read-only)
 - `GET /api/fulfillment/v1/compute_instance_templates` (read-only)
 - `GET /api/fulfillment/v1/baremetal_instance_templates` (read-only)
+
+The Go proxy selects the API tier based on the caller's role from the session token. The browser never accesses private API endpoints directly.
 
 ### Implementation Details/Notes/Constraints
 
@@ -148,7 +159,7 @@ New routes for admin pages:
 
 The `:type` parameter is one of `cluster`, `compute-instance`, or `baremetal-instance`, mapping to the correct API endpoint. This avoids ID collision across types.
 
-A route guard component `AdminRoute` wraps admin pages and redirects `tenantUser` to `/catalog` (the default route).
+A route guard component `AdminRoute` wraps admin pages and requires the caller's role to be `providerAdmin` or `tenantAdmin`. Any other role (including `tenantUser` and any future or unexpected authenticated role) is redirected to `/catalog`. Unauthenticated users are redirected to the login page.
 
 **File: `libs/ui-components/src/icons.tsx`**
 
@@ -202,7 +213,7 @@ function useUpdateCatalogItem(kind: CatalogItemKind): UseMutationResult
 function useDeleteCatalogItem(kind: CatalogItemKind): UseMutationResult
 ```
 
-The `useAllCatalogItems` hook fires three parallel queries (one per kind) and merges results into a unified list with a `kind` discriminator. Each item is tagged with its `CatalogItemKind` so the list page can route to the correct detail/edit URLs and the correct API endpoint for mutations.
+The `useAllCatalogItems` hook fires three parallel queries (one per kind) and merges results into a unified list with a `kind` discriminator. Each query passes server-side pagination parameters (`page_size`, `page_token`) and any active filters (type, publication status) to the API so that the client never fetches unbounded result sets. Each item is tagged with its `CatalogItemKind` so the list page can route to the correct detail/edit URLs and the correct API endpoint for mutations. The list page uses infinite scroll or a "Load more" button to fetch additional pages.
 
 The update hook builds the `update_mask` FieldMask from the diff between original and modified values. The publish/unpublish action is a specialized update that sends only `{ published: true/false }` with `update_mask: "published"`.
 
@@ -214,9 +225,9 @@ Uses `ListPage` + `ListPageBody` layout with a PatternFly `Table`.
 
 **Toolbar:**
 - "Create catalog item" primary action button
-- Type filter: toggle group with All / Cluster / VM / Bare Metal
-- Search: text input filtering by title and description (client-side)
-- Publication status filter: All / Published / Unpublished
+- Type filter: toggle group with All / Cluster / VM / Bare Metal (drives which API endpoints are queried)
+- Search: text input filtering by title (server-side via API filter parameter)
+- Publication status filter: All / Published / Unpublished (server-side via API filter parameter)
 
 **Table columns:**
 
@@ -240,9 +251,9 @@ Uses `ListPage` + `ListPageBody` layout with a PatternFly `Table`.
 
 Tenant Admin sees global items as read-only rows with no kebab menu (or a kebab with only "View details").
 
-**Scope display:** The public API does not include the `tenant` field in responses. To display scope, the UI uses the following heuristic:
-- If the caller is a Tenant Admin, items they can edit are org-scoped; items they cannot edit (no Update/Delete actions available — the server returns permission errors) are global. The list page can attempt a lightweight approach: items in the caller's tenant are fetched via the standard list (which returns both global and tenant-scoped items). The UI marks items as "Organization" if the caller has write permissions (determined by the presence of the item's metadata indicating the caller's tenant created it), and "Global" otherwise.
-- If the caller is a CSP Admin, scope can be derived from annotations or metadata. [Assumption: the API provides enough context in public responses to distinguish global from tenant-scoped items — e.g., via `metadata.annotations["osac.openshift.io/tenant"]` or a `creators`/`tenants` field. If not, a backend change to expose scope through the public API is needed.]
+**Scope display:**
+- **CSP Admin:** The private API returns the `tenant` field in responses. Items with an empty `tenant` are global; items with a non-empty `tenant` are organization-scoped. The UI displays the appropriate scope badge directly from this field.
+- **Tenant Admin:** The public API does not expose the `tenant` field, but scope is deterministic: items the Tenant Admin can update or delete are organization-scoped; items that return `PERMISSION_DENIED` on write operations are global. The UI derives scope from server-authored capability metadata or the item's `creators`/`tenants` fields. Global items show no edit/delete actions in the kebab menu.
 
 #### 5. Create Page (`CatalogItemCreatePage`)
 
@@ -267,17 +278,18 @@ A full-page form (not a wizard) using Formik + Yup + `OsacForm`.
 
 **Form submission:**
 - Validates all fields with Yup
-- Constructs the create payload:
+- Constructs the create payload. For CSP Admin (private API), the `tenant` field is included — empty string for global items, or the selected tenant ID for tenant-scoped items. For Tenant Admin (public API), `tenant` is omitted (auto-set by server):
   ```json
   {
     "title": "...",
     "description": "...",
     "template": "<template-id>",
+    "tenant": "",
     "published": false,
     "field_definitions": [...]
   }
   ```
-- Sends POST to the appropriate endpoint based on the selected resource type
+- Sends POST to the appropriate endpoint based on the selected resource type and caller's role
 - On success, navigates to the detail page
 - On error, displays an inline `Alert` with the server error message
 
@@ -293,6 +305,7 @@ Reuses the same form component as the create page with the following differences
 - Scope is displayed as read-only text
 - The form tracks which fields have changed from their original values
 - On submit, constructs a PATCH payload with only changed fields and the corresponding `update_mask`
+- `field_definitions` is treated as a whole-list replacement in the `update_mask` — if any field definition is added, removed, reordered, or modified, the entire `field_definitions` array is sent. Item-level PATCH semantics for repeated fields are not supported by the API.
 
 #### 7. Detail Page (`CatalogItemDetailPage`)
 
@@ -334,7 +347,7 @@ The most complex new component. Built on Formik `FieldArray` with the field name
 ```typescript
 const fieldDefinitionSchema = Yup.object({
   path: Yup.string().required('Path is required')
-    .matches(/^[a-z_][a-z0-9_.]*$/, 'Path must be dot-notation (e.g., spec.network.pod_cidr)'),
+    .matches(/^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$/, 'Path must be dot-notation with non-empty segments (e.g., node_sets.workers.size)'),
   displayName: Yup.string(),
   editable: Yup.boolean().required(),
   default: Yup.mixed().when('editable', {
@@ -431,11 +444,11 @@ libs/ui-components/src/
 
 ### Security Considerations
 
-This design introduces no new authentication or authorization mechanisms. All catalog management operations use the existing fulfillment public API, which enforces role-based access on the server side:
+This design introduces no new authentication or authorization mechanisms. The Go proxy routes CSP Admin requests to the private API and Tenant Admin/User requests to the public API. The fulfillment-service enforces role-based access on the server side:
 
 - Tenant Users receive `PERMISSION_DENIED` if they attempt to call Create/Update/Delete on catalog items through the API directly. The UI prevents this by hiding the admin navigation and routes, but the server is the enforcement boundary.
 - Tenant Admins cannot modify global catalog items — the server returns `PERMISSION_DENIED` for Update/Delete on items where `tenant` is empty or belongs to another tenant. The UI disables these actions in the kebab menu.
-- The `tenant` field is auto-set by the server for Tenant Admin creates; the UI does not send it.
+- The `tenant` field is auto-set by the server for Tenant Admin creates; the UI does not send it. CSP Admins set `tenant` explicitly via the private API — `tenant = ""` creates a global item.
 
 Input validation is performed client-side (Yup) for UX responsiveness and server-side (fulfillment-service) for enforcement. The client-side validation is a convenience — it does not replace server-side validation.
 
@@ -575,7 +588,7 @@ Since the catalog item API is already implemented, no version skew is expected f
 
 ## Support Procedures
 
-- **Failure detection:** API errors surface as inline alerts on pages and toast notifications for async actions. The Go proxy logs all API call failures with status codes and response bodies.
+- **Failure detection:** API errors surface as inline alerts on pages and toast notifications for async actions. The Go proxy logs API call failures with status code, request ID, and a sanitized error code — response bodies are redacted by default to prevent leaking tenant data, field defaults, or validation schemas.
 - **Disabling:** The admin nav section can be removed by reverting the `navRowsForRole()` change. This hides the admin pages without affecting the tenant-facing catalog browse or provisioning flows.
 - **Recovery:** Re-enabling the nav section restores full functionality. No state is stored in the UI — all catalog item data is in the fulfillment-service database.
 
