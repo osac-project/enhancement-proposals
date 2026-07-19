@@ -45,7 +45,14 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item, so tenants see only the choices I intend to offer.
 
-* As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails.
+* As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails. Validation constraints are specified as a JSON Schema (draft 2020-12) object stored in the field definition's `validation_schema` field. Common constraint types include:
+  - **Numeric bounds:** `minimum` and `maximum` to restrict numeric fields (e.g., vCPU count between 2 and 64, memory between 4 and 512 GiB)
+  - **String length:** `minLength` and `maxLength` to constrain text field lengths
+  - **Pattern:** `pattern` with a regular expression to enforce format (e.g., `^[a-z][a-z0-9-]*$` for naming conventions)
+  - **Allowed values:** `enum` with an explicit list of permitted values (e.g., restricting storage type to `["ssd", "nvme"]` or availability zone to `["us-east-1a", "us-east-1b"]`)
+  - **Combinations:** multiple constraints can be combined in a single schema (e.g., a string field with both `minLength`, `maxLength`, and `pattern`)
+
+  The UI presents these as structured form inputs with a toggle to view or edit the raw JSON Schema directly for advanced use cases not covered by the structured inputs.
 
 * As a Cloud Provider Admin, I need to provide identifying information for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
 
