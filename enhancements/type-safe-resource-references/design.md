@@ -261,7 +261,7 @@ add new gRPC services, CRDs, webhooks, or finalizers.
 
 | File | Change |
 |------|--------|
-| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemLocalReference`, `InstanceTypeLocalReference`, `SubnetLocalReference`, `SecurityGroupLocalReference`. Replace string fields in `ComputeInstanceSpec` and `NetworkAttachment`. |
+| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, `InstanceTypeLocalReference`, `SubnetLocalReference`, `SecurityGroupLocalReference`. Replace string fields in `ComputeInstanceSpec` and `NetworkAttachment`. |
 | `subnet_type.proto` | Add `VirtualNetworkLocalReference`. Replace `SubnetSpec.virtual_network`. |
 | `virtual_network_type.proto` | Add `NetworkClassReference`. Replace `VirtualNetworkSpec.network_class`. |
 | `security_group_type.proto` | Add `VirtualNetworkLocalReference` (reuse from subnet). Replace `SecurityGroupSpec.virtual_network`. |
@@ -301,7 +301,7 @@ structure.
 | UI code location | Current wire format | New wire format | Notes |
 |---|---|---|---|
 | `networking.ts` `CreateVirtualNetworkInput.networkClass` | `spec: { network_class: networkClass }` (string) | `spec: { network_class: { name: networkClass } }` | Local var already holds the name |
-| `networking.ts` `CreateSubnetInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: subnetName } }` | Rename variable from `Id` to name-based |
+| `networking.ts` `CreateSubnetInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName } }` | Rename variable from `Id` to name-based |
 | `networking.ts` `CreateSecurityGroupInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName } }` | Same pattern as Subnet |
 | `networking.ts` `virtualNetworkFilterForSubnetList` | `this.spec.virtual_network == "${id}"` | `this.spec.virtual_network.name == "${name}"` | CEL filter path change |
 | `ip-management.ts` `useCreatePublicIP` body | `spec: { pool: string }` | `spec: { pool: { name: poolName } }` | |
@@ -535,7 +535,11 @@ func (v *ReferenceValidator) Validate(
 checking whether a field's message type ends with `Reference` or
 `LocalReference`. This naming convention is enforced by the proto schema and
 does not require manual registration of individual fields -- only the lookup
-functions per referenced type need to be registered.
+functions per referenced type need to be registered. If the interceptor
+discovers a reference field whose message type has no registered lookup
+function, it returns `Internal` -- this is a programming error (fail closed).
+A startup-time check validates that all known reference message types have
+registered lookups, preventing deployment of misconfigured servers.
 
 **Message walking.** The interceptor uses `protoreflect.Message.Range()` to
 iterate over set fields. For message-typed fields, it checks whether the
@@ -749,10 +753,15 @@ users correcting multiple references.
 
 **Race condition: referenced resource deleted between validation and
 persistence.** The interceptor validates references within the same database
-transaction as the Create/Update operation. PL/pgSQL triggers provide a
-second layer of referential integrity enforcement. If a referenced resource
-is deleted concurrently, the trigger catches the violation and returns SQLSTATE
-Z0002, which the DAO layer translates to an `InvalidArgument` error.
+transaction as the Create/Update operation. Under `READ COMMITTED`, a
+concurrent delete of the referenced resource could commit after the
+interceptor's existence check but before the child insert commits. The
+reverse reference triggers (Z0003) on the parent table's delete path
+protect against this: the delete trigger checks whether any child rows
+still reference the parent within the delete transaction, and blocks the
+delete if so. Together, the interceptor (create path) and reverse triggers
+(delete path) provide two-sided referential integrity without forward
+triggers.
 
 **Interceptor panic.** The panic recovery interceptor is first in the chain
 and catches panics from all downstream interceptors, including the reference
@@ -959,9 +968,10 @@ If a reference that should be valid is rejected:
    For full references with explicit tenant, verify cross-tenant access is
    permitted by OPA policy.
 3. Check the interceptor registry: verify that the lookup function for the
-   reference type is registered. Missing registrations cause references to
-   pass through unvalidated (not rejected), so a rejected reference indicates
-   the lookup function is registered but the resource is not found.
+   reference type is registered. The interceptor fails closed — an
+   unregistered reference type returns `Internal`, not a silent pass-through.
+   If the server started successfully, all reference types have registered
+   lookups (validated at startup).
 
 ## Infrastructure Needed
 
