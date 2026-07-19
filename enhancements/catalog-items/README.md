@@ -79,7 +79,7 @@ don't have the ability to add or modify ansible roles.
   - **Item schema** (`items`): apply a schema to every element of a repeated field.
     Example: `additional_disks` with `{"items": {"properties": {"size_gib": {"minimum": 10, "maximum": 1000}}}}` constrains every additional disk's size.
 
-  The UI presents common constraints (numeric bounds, enum, string length, pattern, item count, resource references) as structured form inputs with a toggle to view or edit the raw JSON Schema directly for advanced use cases such as nested object validation.
+  The UI presents all constraints — including nested object validation — as structured form inputs. There is no raw JSON Schema editor toggle; every supported constraint type (numeric bounds, enum, string length, pattern, item count, resource references, nested properties, item schemas) has a dedicated form control so admins can configure validation without writing JSON by hand.
 
 * As a Cloud Provider Admin, I need the system to provide sensible default validation schemas for common field types when I create a catalog item, so I can configure validation quickly without manually constructing JSON Schema for every field. For example:
   - `ssh_public_key` and `pull_secret` should have default pattern-based validation (the admin can accept the default or customize it)
