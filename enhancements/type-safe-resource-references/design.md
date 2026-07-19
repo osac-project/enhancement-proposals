@@ -582,30 +582,26 @@ Resources are stored as JSON-serialized protobuf in a `data` column. Existing
 PL/pgSQL triggers serve two purposes:
 
 1. **Forward reference checks (Z0002):** On insert/update, verify the
-   referenced resource exists. The interceptor now handles this — these
-   triggers are removed.
+   referenced resource exists using `SELECT ... FOR SHARE` (which also
+   serializes concurrent inserts and deletes). The interceptor now handles
+   the existence check, but whether to keep or remove these triggers depends
+   on the locking strategy — see Open Question 2.
 
 2. **Reverse reference checks (Z0003):** On delete, verify no other resource
    still references the deleted one (e.g., prevent deleting a VirtualNetwork
    that has Subnets). The interceptor does not cover deletes — these triggers
    are kept but updated to use the new JSON paths.
 
-**Reverse triggers to update:**
+**All triggers require JSON path updates** to reflect the new nested
+reference structure. Example path changes:
 
-| Trigger function | Table | What it checks | Path change |
-|---|---|---|---|
-| `check_virtual_network_not_in_use()` | virtual_networks | Subnets, SecurityGroups, NATGateways still reference this VN | `data->'spec'->>'virtual_network'` → `data->'spec'->'virtual_network'->>'name'` |
-| `check_subnet_not_in_use()` | subnets | ComputeInstances still reference this Subnet in network_attachments | Array element `->>'subnet'` → `->'subnet'->>'name'` |
-| `check_instance_type_not_in_use()` | instance_types | ComputeInstances still reference this InstanceType | `data->'spec'->>'instance_type'` → `data->'spec'->'instance_type'->>'name'` |
-| `check_cluster_catalog_item_not_in_use()` | cluster_catalog_items | Clusters still reference this CatalogItem | `data->'spec'->>'catalog_item'` → `data->'spec'->'catalog_item'->>'name'` |
-| `check_ci_catalog_item_not_in_use()` | compute_instance_catalog_items | ComputeInstances still reference this CatalogItem | Same pattern |
-
-**Forward triggers to remove** (replaced by interceptor):
-
-`check_subnet_virtual_network_ref()`, `check_security_group_virtual_network_ref()`,
-`check_compute_instance_subnet_refs()`, `check_compute_instance_instance_type_ref()`,
-`check_cluster_catalog_item_ref()`, `check_ci_catalog_item_ref()`,
-`check_nat_gateway_virtual_network_ref()`
+| Trigger function | Table | Path change |
+|---|---|---|
+| `check_virtual_network_not_in_use()` (Z0003) | virtual_networks | `data->'spec'->>'virtual_network'` → `data->'spec'->'virtual_network'->>'name'` |
+| `check_subnet_not_in_use()` (Z0003) | subnets | Array element `->>'subnet'` → `->'subnet'->>'name'` |
+| `check_instance_type_not_in_use()` (Z0003) | instance_types | `data->'spec'->>'instance_type'` → `data->'spec'->'instance_type'->>'name'` |
+| `check_subnet_virtual_network_ref()` (Z0002) | subnets | Same nested path pattern |
+| `check_compute_instance_subnet_refs()` (Z0002) | compute_instances | Same nested path pattern |
 
 Associated indexes on the old JSON paths (e.g., `subnets_by_virtual_network`,
 `compute_instances_instance_type`) are updated to use the new nested paths.
@@ -756,12 +752,9 @@ persistence.** The interceptor validates references within the same database
 transaction as the Create/Update operation. Under `READ COMMITTED`, a
 concurrent delete of the referenced resource could commit after the
 interceptor's existence check but before the child insert commits. The
-reverse reference triggers (Z0003) on the parent table's delete path
-protect against this: the delete trigger checks whether any child rows
-still reference the parent within the delete transaction, and blocks the
-delete if so. Together, the interceptor (create path) and reverse triggers
-(delete path) provide two-sided referential integrity without forward
-triggers.
+current forward triggers use `SELECT ... FOR SHARE` on the parent row to
+serialize this — see Open Question 2 for whether to retain them or move
+the locking into the interceptor's DAO lookups.
 
 **Interceptor panic.** The panic recovery interceptor is first in the chain
 and catches panics from all downstream interceptors, including the reference
@@ -847,7 +840,18 @@ details on the URI/ARN trade-off.
    controllers but prevents the schema from diverging between spec and status.
    Feedback requested from controller maintainers.
 
-2. **How should CEL filter changes be communicated to API consumers?** The path
+2. **Should forward reference triggers (Z0002) be kept or removed?** The
+   current forward triggers use `SELECT ... FOR SHARE` on the parent row,
+   which serializes concurrent child inserts and parent deletes under
+   `READ COMMITTED`. Without this lock, the interceptor's plain SELECT
+   leaves a race window where both a child insert and parent delete can
+   commit, creating a dangling reference. Options: (a) keep forward triggers
+   and update their JSON paths — redundant with the interceptor but preserves
+   the locking safety net, (b) remove forward triggers and add `FOR SHARE`
+   to the interceptor's DAO lookup queries. Resolve during Epic 1
+   implementation.
+
+3. **How should CEL filter changes be communicated to API consumers?** The path
    change (`this.spec.virtual_network` to `this.spec.virtual_network.name`)
    breaks existing filters. Options: (a) document in release notes only,
    (b) add a deprecation warning in the List response when old-format filters
