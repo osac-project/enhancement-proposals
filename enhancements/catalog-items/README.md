@@ -45,14 +45,35 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item, so tenants see only the choices I intend to offer.
 
-* As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails. Validation constraints are specified as a JSON Schema (draft 2020-12) object stored in the field definition's `validation_schema` field. Common constraint types include:
-  - **Numeric bounds:** `minimum` and `maximum` to restrict numeric fields (e.g., vCPU count between 2 and 64, memory between 4 and 512 GiB)
-  - **String length:** `minLength` and `maxLength` to constrain text field lengths
-  - **Pattern:** `pattern` with a regular expression to enforce format (e.g., `^[a-z][a-z0-9-]*$` for naming conventions)
-  - **Allowed values:** `enum` with an explicit list of permitted values (e.g., restricting storage type to `["ssd", "nvme"]` or availability zone to `["us-east-1a", "us-east-1b"]`)
-  - **Combinations:** multiple constraints can be combined in a single schema (e.g., a string field with both `minLength`, `maxLength`, and `pattern`)
+* As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails. Validation constraints are specified as a JSON Schema (draft 2020-12) object stored in the field definition's `validation_schema` field. Constraint types and examples:
 
-  The UI presents these as structured form inputs with a toggle to view or edit the raw JSON Schema directly for advanced use cases not covered by the structured inputs.
+  **Scalar constraints:**
+  - **Numeric bounds** (`minimum`, `maximum`): restrict numeric fields to a range.
+    Example: `node_sets.workers.size` with `{"minimum": 3, "maximum": 12}` limits worker node count to 3–12.
+  - **Allowed values** (`enum`): restrict a field to a fixed set of choices.
+    Example: `instance_type` with `{"enum": ["cx3.xlarge", "cx3.2xlarge", "cx3.4xlarge"]}` limits the instance type to approved sizes.
+    Example: `image.source_ref` with `{"enum": ["rhel-9.4", "rhel-9.5"]}` restricts available OS images.
+  - **String length** (`minLength`, `maxLength`): constrain text field lengths.
+  - **Pattern** (`pattern`): enforce format with a regular expression.
+    Example: `ssh_public_key` with `{"pattern": "^ssh-(rsa|ed25519) "}` to require a valid SSH public key prefix.
+  - **Combinations**: multiple constraints can be combined in a single schema.
+    Example: `boot_disk.size_gib` with `{"minimum": 50, "maximum": 500}` combined with a default of 100.
+
+  **List and map constraints:**
+  - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
+    Example: `network_attachments` with `{"minItems": 1, "maxItems": 1}` locks a VM to exactly one network attachment — the user can choose which subnet and security groups but cannot add a second NIC.
+    Example: `network_attachments` with `{"minItems": 1, "maxItems": 4}` allows 1–4 network attachments.
+    Example: `additional_disks` with `{"maxItems": 0}` prevents users from adding any additional disks beyond the boot disk.
+  - **Map entry count** (`minProperties`, `maxProperties`): same pattern for map fields.
+    Example: `node_sets` with `{"minProperties": 2, "maxProperties": 2}` locks a cluster to exactly two node sets (e.g., control-plane + workers) — the user can edit each node set's `size` but cannot add or remove node sets.
+
+  **Complex object constraints:**
+  - **Nested properties** (`properties`, `required`): validate sub-fields within complex objects. When a field definition targets a complex field like `network_attachments[*]`, the validation schema can constrain its sub-fields individually.
+    Example: each `network_attachments` item with `{"properties": {"security_groups": {"minItems": 1}}, "required": ["subnet"]}` requires a subnet and at least one security group per attachment.
+  - **Item schema** (`items`): apply a schema to every element of a repeated field.
+    Example: `additional_disks` with `{"items": {"properties": {"size_gib": {"minimum": 10, "maximum": 1000}}}}` constrains every additional disk's size.
+
+  The UI presents common constraints (numeric bounds, enum, string length, pattern, item count) as structured form inputs with a toggle to view or edit the raw JSON Schema directly for advanced use cases such as nested object validation.
 
 * As a Cloud Provider Admin, I need to provide identifying information for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
 
