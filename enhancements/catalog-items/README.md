@@ -51,13 +51,19 @@ don't have the ability to add or modify ansible roles.
   - **Numeric bounds** (`minimum`, `maximum`): restrict numeric fields to a range.
     Example: `node_sets.workers.size` with `{"minimum": 3, "maximum": 12}` limits worker node count to 3–12.
   - **Allowed values** (`enum`): restrict a field to a fixed set of choices.
-    Example: `instance_type` with `{"enum": ["cx3.xlarge", "cx3.2xlarge", "cx3.4xlarge"]}` limits the instance type to approved sizes.
-    Example: `image.source_ref` with `{"enum": ["rhel-9.4", "rhel-9.5"]}` restricts available OS images.
+    Example: `run_strategy` with `{"enum": ["Always", "RerunOnFailure", "Halted"]}` limits the VM run strategy to approved options.
   - **String length** (`minLength`, `maxLength`): constrain text field lengths.
+    Example: `user_data` with `{"maxLength": 65536}` to enforce a size limit on cloud-init user data.
   - **Pattern** (`pattern`): enforce format with a regular expression.
     Example: `ssh_public_key` with `{"pattern": "^ssh-(rsa|ed25519) "}` to require a valid SSH public key prefix.
   - **Combinations**: multiple constraints can be combined in a single schema.
     Example: `boot_disk.size_gib` with `{"minimum": 50, "maximum": 500}` combined with a default of 100.
+
+  **Resource reference constraints:**
+  - Fields that reference backend resources (such as `instance_type` referencing an InstanceType, or `image_type` referencing an ImageType) use a dedicated `"resourceRef"` constraint type rather than a static `enum`. The backend resolves available resources dynamically, and the UI presents them as a selectable list fetched from the corresponding API endpoint. The admin can optionally restrict the set to a subset of available resources.
+    Example: `instance_type` with `{"resourceRef": "InstanceType"}` — the UI fetches available InstanceType resources and presents them as a dropdown. The admin can further restrict by adding `{"resourceRef": "InstanceType", "enum": ["cx3.xlarge", "cx3.2xlarge"]}` to limit to specific instance types.
+    Example: `image_type` with `{"resourceRef": "ImageType"}` — the UI fetches available ImageType resources for selection.
+  - Resource references enable the backend to validate that the selected value is a valid, existing resource at provisioning time — not just a string that matches an enum.
 
   **List and map constraints:**
   - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
@@ -73,7 +79,14 @@ don't have the ability to add or modify ansible roles.
   - **Item schema** (`items`): apply a schema to every element of a repeated field.
     Example: `additional_disks` with `{"items": {"properties": {"size_gib": {"minimum": 10, "maximum": 1000}}}}` constrains every additional disk's size.
 
-  The UI presents common constraints (numeric bounds, enum, string length, pattern, item count) as structured form inputs with a toggle to view or edit the raw JSON Schema directly for advanced use cases such as nested object validation.
+  The UI presents common constraints (numeric bounds, enum, string length, pattern, item count, resource references) as structured form inputs with a toggle to view or edit the raw JSON Schema directly for advanced use cases such as nested object validation.
+
+* As a Cloud Provider Admin, I need the system to provide sensible default validation schemas for common field types when I create a catalog item, so I can configure validation quickly without manually constructing JSON Schema for every field. For example:
+  - `ssh_public_key` and `pull_secret` should have default pattern-based validation (the admin can accept the default or customize it)
+  - `user_data` should have a default maximum length constraint
+  - `node_sets.<name>.size` should default to a minimum/maximum integer constraint
+  - Fields referencing backend resources (`instance_type`, `image_type`) should automatically present available resources as selectable options
+  The backend is responsible for providing these defaults based on the field type; the admin can override or tighten them.
 
 * As a Cloud Provider Admin, I need to provide identifying information for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
 
@@ -107,7 +120,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Tenant Admin, I need to publish or unpublish catalog items scoped to my organization to control whether my users can see and provision from them.
 
-* As a Tenant Admin, I need to edit organization-scoped catalog items to update their configuration and publication status. I cannot modify or delete global catalog items created by Cloud Provider Admins.
+* As a Tenant Admin, I need to edit organization-scoped catalog items to update their title, description, publication status, and field definition defaults or validation constraints (tightening only). I cannot add or remove field definitions, loosen constraints beyond the base item's settings, or modify global catalog items created by Cloud Provider Admins.
 
 * As a Tenant Admin, I need to view a catalog item's full configuration and see which resources in my organization have been provisioned from it.
 
@@ -366,6 +379,13 @@ were previously deployed using the same catalog item.
 Catalog items should not be deleted if there are existing CNAs created from it.
 Such catalog items should be set to unpublished, but preserved so that existing
 CNAs deployed with that catalog item can maintain a reference to it.
+
+Templates referenced by one or more catalog items must also be protected from
+deletion. If a template is referenced by any catalog item (published or
+unpublished), the server must reject the delete request. This prevents orphaned
+catalog items that reference a non-existent template. Admins must delete or
+reassign all catalog items referencing a template before the template itself
+can be deleted.
 
 ### Risks and Mitigations
 
