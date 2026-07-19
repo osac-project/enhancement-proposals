@@ -43,7 +43,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to create a catalog item by selecting a resource type and choosing an existing template for that type, so the catalog item is backed by a known, working template.
 
-* As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item. The system presents all fields from the selected template, and I configure each one — I do not need to manually specify field paths.
+* As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item. The system presents all fields from the resource spec (e.g., ComputeInstanceSpec or ClusterSpec), and I configure each one — I do not need to manually specify field paths.
 
 * As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails. Validation constraints are specified as a JSON Schema (draft 2020-12) object stored in the field definition's `validation_schema` field. Constraint types and examples:
 
@@ -157,7 +157,7 @@ created. Both will have similar properties, so we'll use Cluster as an example:
 
 ClusterCatalogItem
 * references an existing ClusterTemplate by ID
-* includes a list of field definitions pre-populated from the template's parameter definitions. Each field definition specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule
+* includes a list of field definitions covering all fields from the resource spec (e.g., ClusterSpec or ComputeInstanceSpec). Each field definition specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The field set is fixed per resource type — it does not vary by template.
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
 
@@ -271,12 +271,12 @@ Both types will have corresponding `ClusterCatalogItemsService` and
 #### API Behavior
 
 The `fields` list defines the complete contract between the admin and the user
-for a given catalog item. When a catalog item is created, the `fields` list is
-pre-populated with all parameter definitions from the referenced template. The
-admin configures each field (editable toggle, default value, validation
-constraints) but does not add or remove fields — the template determines the
-available field set. The server rejects catalog items that reference fields not
-defined by the template or that omit required template parameters.
+for a given catalog item. The field set is fixed per resource type — it covers
+all fields from the resource spec (e.g., all fields in `ComputeInstanceSpec`
+for a `ComputeInstanceCatalogItem`). The admin configures each field (editable
+toggle, default value, validation constraints) but does not add or remove
+fields. The server rejects catalog items that reference fields not defined in
+the resource spec.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:
