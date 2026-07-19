@@ -46,9 +46,9 @@ OSAC supports catalog items for clusters and virtual machines, but ships no defa
 
 - [ ] YAML example files exist in `examples/catalog-items/` for each defined default catalog item (2 cluster, 4 VM) `[Clarify: R2.Q4]`
 - [ ] A README in `examples/catalog-items/` documents loading instructions, authentication setup, and command examples `[Clarify: R2.Q4]`
-- [ ] Each YAML file can be loaded via `osac create -f` and the resulting catalog item appears in the public API `[Clarify: R2.Q4]`
-- [ ] Tenant Users can browse the loaded catalog items through the public API, CLI, and UI
-- [ ] Each catalog item includes field definitions with display names, defaults where applicable, and validation schemas
+- [ ] Each YAML file can be loaded via `osac create -f` and the resulting catalog item is globally published (no tenant scope) and visible to all tenants via the public List endpoint, CLI, and UI `[Clarify: R2.Q4]`
+- [ ] Tenant Users can discover and select loaded catalog items through the public API, CLI, and UI without admin intervention beyond initial loading
+- [ ] Each catalog item includes field definitions with display names, editable/read-only designation, default values for user-configurable fields, and a validation schema that constrains input to values supported by the provisioning flow
 
 ## Dependencies
 
@@ -63,4 +63,4 @@ OSAC supports catalog items for clusters and virtual machines, but ships no defa
 **Owner:** VMaaS team / Cloud Infrastructure Admin stakeholders
 **Impact:** Dependencies section; may require additional documentation or tooling
 
-How should VM images and OpenShift artifacts be pre-loaded into a fresh deployment? Options include a separate seeding script, documentation-only guidance, or integration with the installer. This feature documents the dependency but does not solve the pre-loading problem.
+How should VM images and OpenShift artifacts be pre-loaded into a fresh deployment? Options include a separate seeding script, documentation-only guidance, or integration with the installer. This feature documents the dependency but does not solve the pre-loading problem. This question does not block the 0.2 milestone — catalog items can be loaded and are visible in the catalog regardless of whether the underlying images and artifacts are available; provisioning will only succeed once the prerequisites are in place.
