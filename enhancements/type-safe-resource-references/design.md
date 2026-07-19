@@ -261,7 +261,7 @@ add new gRPC services, CRDs, webhooks, or finalizers.
 
 | File | Change |
 |------|--------|
-| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, `InstanceTypeLocalReference`, `SubnetLocalReference`, `SecurityGroupLocalReference`. Replace string fields in `ComputeInstanceSpec` and `NetworkAttachment`. |
+| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, `SubnetLocalReference`, `SecurityGroupLocalReference`. Replace string fields in `ComputeInstanceSpec` and `NetworkAttachment`. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
 | `subnet_type.proto` | Add `VirtualNetworkLocalReference`. Replace `SubnetSpec.virtual_network`. |
 | `virtual_network_type.proto` | Add `NetworkClassReference`. Replace `VirtualNetworkSpec.network_class`. |
 | `security_group_type.proto` | Add `VirtualNetworkLocalReference` (reuse from subnet). Replace `SecurityGroupSpec.virtual_network`. |
