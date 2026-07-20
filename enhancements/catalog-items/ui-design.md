@@ -3,7 +3,7 @@ title: catalog-items-ui
 authors:
   - eaharoni
 creation-date: 2026-07-16
-last-updated: 2026-07-16
+last-updated: 2026-07-20
 tracking-link:
   - https://github.com/osac-project/enhancement-proposals/pull/115
 prd:
@@ -27,12 +27,20 @@ The catalog items API is fully implemented in fulfillment-service with CRUD endp
 
 This design addresses both gaps: it establishes the admin navigation pattern that future admin features will follow, and it builds the catalog management pages needed for the catalog items feature to be usable end-to-end through the UI.
 
+### User Stories
+
+- As a Cloud Provider Admin, I want to create and manage catalog items through the web console so that I can define curated offerings without using the CLI.
+- As a Cloud Provider Admin, I want to configure field definitions with structured validation constraints so that I can enforce guardrails on tenant provisioning.
+- As a Tenant Admin, I want to create organization-scoped catalog items from published global items so that I can tailor offerings to my organization's standards.
+- As a Tenant Admin, I want to see which catalog items are global (read-only) vs. organization-scoped (manageable) so that I know what I can and cannot modify.
+- As a Tenant User, I want the admin management screens to be hidden from my view so that I only see the catalog browsing and provisioning experience.
+
 ### Goals
 
-- Reuse existing osac-ui patterns (ListPage, OsacForm, Formik + Yup, TanStack React Query hooks, PatternFly table/kebab actions) wherever possible. [Codebase: libs/ui-components/]
-- Establish a role-gated navigation pattern using the existing `navRowsForRole()` function and `useSession()` hook that future admin features can follow.
-- Use a single polymorphic component set for all three catalog item types (Cluster, ComputeInstance, BareMetalInstance) rather than separate implementations per type.
+- Enable Cloud Provider Admins and Tenant Admins to manage catalog items through the web console with full CRUD operations.
+- Provide role-appropriate views: admins see management screens; tenant users see only the existing catalog browsing experience.
 - Support the Tenant Admin "further restrict" create flow where field definitions are pre-populated from a global catalog item and can only be made more restrictive.
+- Reuse existing osac-ui patterns and share common UI components across all three catalog item types using JSX composition.
 
 ### Non-Goals
 
@@ -45,7 +53,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create page, an edit page, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page shows a PatternFly table with type filter, search, scope badges, and kebab row actions (edit, publish/unpublish, delete). The create page is a full-page form with sections for general information, template or base catalog item selection (role-dependent), and a field definitions editor. The edit page reuses the same form with the template/base selection locked. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
-A new `FieldDefinitionsEditor` component built on Formik FieldArray provides the repeatable list UI for configuring field definitions. Each entry includes path selection (from template parameters or manual input), display name, an editable toggle, a default value input, and a structured validation constraints form.
+Shared components (`CatalogItemForm`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific create/edit/detail pages. Each entry in the field definitions editor includes a read-only path (from the resource spec), display name, an editable toggle, a default value input, and a structured validation constraints form.
 
 ### Workflow Description
 
@@ -166,39 +174,43 @@ A route guard component `AdminRoute` wraps admin pages and requires the caller's
 
 Add an icon mapping for the `catalog-management` nav item ID (e.g., `CogIcon` or `CatalogIcon` from PatternFly icons).
 
-#### 2. Catalog Item Type Abstraction
+#### 2. Catalog Item Type Abstraction — Shared Components via JSX Composition
 
-To avoid tripling the UI code for three nearly identical resource types, a type-keyed configuration map drives all polymorphic behavior:
+Rather than a single monolithic component driven by a configuration map, the design uses shared building blocks that each kind-specific page composes via JSX. This is more React-idiomatic and handles future per-kind divergence naturally:
+
+**Shared components** (used by all three kinds):
+- `CatalogItemGeneralFields` — title, description, scope inputs (reused in create/edit)
+- `TemplateSelector` — template dropdown, parameterized by template API route
+- `FieldDefinitionsEditor` — the field definitions table (§8), parameterized by `specFields`
+- `CatalogItemTable` — PatternFly table with shared columns, actions, and scope badges
+- `CatalogItemActionsMenu` — kebab menu (publish/unpublish/delete)
+- `CatalogItemForm` — shared form layout wrapping general fields + template selector + field definitions
+
+**Kind-specific pages** compose these shared components:
+
+```tsx
+// ClusterCatalogItemCreatePage.tsx
+export const ClusterCatalogItemCreatePage = () => (
+  <CatalogItemForm
+    kind="cluster"
+    apiRoute="v1/cluster_catalog_items"
+    templateSelector={<TemplateSelector apiRoute="v1/cluster_templates" />}
+    specFields={CLUSTER_SPEC_FIELDS}
+  />
+);
+```
+
+A lightweight `CatalogItemKind` type and route mapping remain for URL routing and API endpoint selection, but rendering logic lives in the composed JSX — not in a config-driven switch:
 
 ```typescript
 type CatalogItemKind = 'cluster' | 'compute-instance' | 'baremetal-instance';
 
-interface CatalogItemKindConfig {
-  apiRoute: ApiRoute;
-  templateApiRoute: ApiRoute;
-  label: string;                    // e.g., "Cluster"
-  pluralLabel: string;              // e.g., "Clusters"
-  protoSchema: GenericSchema;       // @osac/types schema for decode
-  templateProtoSchema: GenericSchema;
-  specFields: SpecFieldDefinition[];  // fixed field list from resource spec
-}
-
-const CATALOG_ITEM_KINDS: Record<CatalogItemKind, CatalogItemKindConfig> = {
-  'cluster': {
-    apiRoute: 'v1/cluster_catalog_items',
-    templateApiRoute: 'v1/cluster_templates',
-    label: 'Cluster',
-    pluralLabel: 'Clusters',
-    protoSchema: ClusterCatalogItemSchema,
-    templateProtoSchema: ClusterTemplateSchema,
-    specFields: CLUSTER_SPEC_FIELDS,  // fixed field definitions from ClusterSpec
-  },
-  'compute-instance': { /* ... specFields: COMPUTE_INSTANCE_SPEC_FIELDS */ },
-  'baremetal-instance': { /* ... specFields: BAREMETAL_INSTANCE_SPEC_FIELDS */ },
+const CATALOG_ITEM_ROUTES: Record<CatalogItemKind, { apiRoute: string; templateApiRoute: string }> = {
+  'cluster': { apiRoute: 'v1/cluster_catalog_items', templateApiRoute: 'v1/cluster_templates' },
+  'compute-instance': { apiRoute: 'v1/compute_instance_catalog_items', templateApiRoute: 'v1/compute_instance_templates' },
+  'baremetal-instance': { apiRoute: 'v1/baremetal_instance_catalog_items', templateApiRoute: 'v1/baremetal_instance_templates' },
 };
 ```
-
-All pages and hooks reference this config rather than hardcoding resource-specific logic.
 
 #### 3. API Hooks
 
@@ -207,8 +219,19 @@ New hooks in `libs/ui-components/src/api/v1/`:
 **`catalog-item-admin.ts`** — Admin-specific hooks that aggregate all three types:
 
 ```typescript
-// Fetches all catalog items across all three types, merging results
-function useAllCatalogItems(): UseQueryResult<CatalogItemWithKind[]>
+// Fetches catalog items across all three types with pagination
+interface UseAllCatalogItemsResult {
+  items: CatalogItemWithKind[];
+  isLoading: boolean;
+  hasNextPage: boolean;
+  fetchNextPage: () => void;
+  isFetchingNextPage: boolean;
+  error: Error | null;
+}
+function useAllCatalogItems(filters?: CatalogItemFilters): UseAllCatalogItemsResult
+
+// Single item fetch
+function useCatalogItem(kind: CatalogItemKind, id: string): UseQueryResult<CatalogItem>
 
 // Mutations per kind
 function useCreateCatalogItem(kind: CatalogItemKind): UseMutationResult
@@ -282,6 +305,7 @@ A full-page form (not a wizard) using Formik + Yup + `OsacForm`.
 **Form submission:**
 - Validates all fields with Yup
 - Constructs the create payload. For CSP Admin (private API), the `tenant` field is included — empty string for global items, or the selected tenant ID for tenant-scoped items. For Tenant Admin (public API), `tenant` is omitted (auto-set by server):
+
   ```json
   {
     "title": "...",
@@ -292,6 +316,7 @@ A full-page form (not a wizard) using Formik + Yup + `OsacForm`.
     "field_definitions": [...]
   }
   ```
+
 - Sends POST to the appropriate endpoint based on the selected resource type and caller's role
 - On success, navigates to the detail page
 - On error, displays an inline `Alert` with the server error message
@@ -355,7 +380,7 @@ const fieldDefinitionSchema = Yup.object({
     is: false,
     then: (schema) => schema.required('Default value is required for non-editable fields'),
   }),
-  validationSchema: Yup.string().nullable(),
+  validationSchema: Yup.object().nullable(),  // serialized as google.protobuf.Struct
 });
 ```
 
@@ -367,7 +392,16 @@ When the create page is in Tenant Admin mode (base catalog item selected), the f
 - Add or tighten validation constraints (cannot remove or loosen constraints from the base)
 - Change display names
 
-The admin cannot add or remove fields, change paths, or make non-editable fields editable. The server validates that all Tenant Admin constraints are equal or more restrictive than the base.
+The admin cannot add or remove fields, change paths, or make non-editable fields editable. The server validates that all Tenant Admin constraints are equal or more restrictive than the base using the following comparison rules:
+
+- **Numeric bounds:** `minimum` can only increase; `maximum` can only decrease. The resulting range must be a subset of the base range.
+- **String constraints:** `minLength` can only increase; `maxLength` can only decrease. `pattern` can only be made more restrictive (added, not removed).
+- **Enum:** values can only be removed from the base set, never added.
+- **Item/property counts:** `minItems`/`minProperties` can only increase; `maxItems`/`maxProperties` can only decrease.
+- **resourceRef:** the resource type cannot change; the `enum` subset can only be further restricted.
+- **Editable toggle:** can change from `true` to `false` (lock a field), never `false` to `true`.
+
+Constraints not in this supported subset (e.g., `if/then/else`, `oneOf`) are not allowed in Tenant Admin overrides — the server rejects them. The server returns `INVALID_ARGUMENT` with a field-specific message identifying which constraint was loosened.
 
 #### 9. ValidationConstraintsEditor Component
 
@@ -395,6 +429,8 @@ An expandable sub-form within each field definition row, shown when the "Validat
 
 For fields with a `resourceRef` constraint, the UI fetches available resources from the corresponding API endpoint and presents them as selectable options. `resourceRef` is an OSAC-specific custom keyword within the JSON Schema `validation_schema`; standard JSON Schema validators ignore it.
 
+**Dependency: server-side enforcement.** The `resourceRef` keyword is only enforced by the UI dropdown today. For the feature to be safe to ship, fulfillment-service must register a custom JSON Schema keyword validator (or a dedicated pre-validation step) that resolves `resourceRef` against the actual resource type inventory during provisioning. Without this backend enforcement, resource-type restrictions set through the UI are cosmetic — they constrain the dropdown in the browser but are not enforced when users submit via CLI or API directly. The UI work can proceed in parallel, but the feature must not ship without the backend `resourceRef` validator landing first.
+
 **List and map constraints:**
 
 | Constraint | Input Type | JSON Schema Mapping |
@@ -416,7 +452,7 @@ Setting `minItems` and `maxItems` to the same value locks the list length — us
 
 For nested properties and item schemas, the editor renders a recursive constraint form for each sub-field, allowing admins to set constraints on complex objects without writing JSON by hand.
 
-The component constructs a JSON Schema object from these structured inputs. When no constraints are configured, `validationSchema` is set to an empty string (the API treats empty string as no validation).
+The component constructs a JSON Schema object from these structured inputs and serializes it as a `google.protobuf.Struct` (JSON object) for the API. The serialization boundary is at form submission: the editor works with a typed TypeScript object internally, and the form's `onSubmit` handler serializes each field definition's `validationSchema` to a Struct before sending the request. When no constraints are configured, `validationSchema` is omitted from the payload (the API treats a missing or empty Struct as no validation).
 
 #### 10. Component File Structure
 
@@ -425,20 +461,32 @@ libs/ui-components/src/
   pages/
     admin/
       CatalogManagementListPage.tsx
-      CatalogItemCreatePage.tsx
-      CatalogItemEditPage.tsx
-      CatalogItemDetailPage.tsx
+      cluster/
+        ClusterCatalogItemCreatePage.tsx
+        ClusterCatalogItemEditPage.tsx
+        ClusterCatalogItemDetailPage.tsx
+      compute-instance/
+        ComputeInstanceCatalogItemCreatePage.tsx
+        ComputeInstanceCatalogItemEditPage.tsx
+        ComputeInstanceCatalogItemDetailPage.tsx
+      baremetal-instance/
+        BareMetalInstanceCatalogItemCreatePage.tsx
+        BareMetalInstanceCatalogItemEditPage.tsx
+        BareMetalInstanceCatalogItemDetailPage.tsx
   components/
     catalogManagement/
-      CatalogItemTable.tsx
-      CatalogItemActionsMenu.tsx
-      CatalogItemForm.tsx           # shared form body for create/edit
+      CatalogItemTable.tsx          # shared table (columns, row rendering)
+      CatalogItemActionsMenu.tsx    # shared kebab menu
+      CatalogItemForm.tsx           # shared form layout (general + template + fields)
+      CatalogItemGeneralFields.tsx  # shared title, description, scope inputs
+      TemplateSelector.tsx          # shared template dropdown
       CatalogItemScopeBadge.tsx
       CatalogItemStatusLabel.tsx
-      FieldDefinitionsEditor.tsx
+      FieldDefinitionsEditor.tsx    # shared field definitions table
       FieldDefinitionRow.tsx
       ValidationConstraintsEditor.tsx
-      catalogItemKinds.ts           # CatalogItemKind config map
+      catalogItemRoutes.ts          # CatalogItemKind route mapping
+      specFields.ts                 # per-kind SpecFieldDefinition arrays
   api/v1/
     catalog-item-admin.ts           # admin CRUD hooks
 ```
@@ -487,8 +535,8 @@ No new observability changes. The UI is a frontend application — observability
 | Risk | Impact | Mitigation |
 |------|--------|------------|
 | Scope not visible in public API responses | CSP Admin list page cannot show Global vs Tenant-scoped badges | Check whether `metadata.annotations` or `creators`/`tenants` fields expose scope. If not, request a backend change to include a `scope` field in public responses, or route CSP Admin requests through the private API. |
-| Template parameter enumeration insufficient for path picker | Field definitions editor cannot offer a dropdown of valid paths | Fall back to free-text path input with validation feedback on save. Document available paths in the catalog management docs. |
-| FieldArray stale values after remove | Formik FieldArray has a known issue where `values` is stale immediately after `remove()` | Do not read `values` synchronously after `remove()`. Use the FieldArray render callback which provides the updated array. |
+| Per-kind page divergence | Three sets of kind-specific pages may diverge over time | Shared components enforce consistency for common behavior; code review must verify shared component usage when adding kind-specific features. |
+| Constraint editor complexity | Recursive nested constraint forms may become unwieldy for deeply nested objects | Limit nesting depth to 3 levels; show a warning when approaching the limit. |
 | Three parallel API calls for list page | Loading time increases if one of the three catalog item type endpoints is slow | Show partial results as each query resolves (progressive rendering). Use `useQueries` with per-query loading states so the table populates incrementally. |
 
 ### Drawbacks
@@ -497,7 +545,7 @@ Adding a catalog management section increases the UI surface area and introduces
 
 The field definitions editor is a complex custom component with no precedent in the existing UI. It combines Formik FieldArray, dynamic type-aware inputs, and nested validation — patterns that are individually well-supported but have not been combined at this scale in osac-ui. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, constraint editor interactions). The field list is fixed per resource type (derived from the resource spec), which eliminates add/remove/reorder edge cases.
 
-The polymorphic approach (one component set for three catalog item types) adds indirection through the `CatalogItemKindConfig` abstraction. The alternative — three separate implementations — would be more straightforward to read but would triple the maintenance burden and risk divergence.
+The JSX composition approach shares common components across three sets of kind-specific pages. This avoids the indirection of a single config-driven component but introduces more files (three page sets instead of one). The shared components ensure consistency while allowing per-kind divergence where needed.
 
 ## Alternatives (Not Implemented)
 
@@ -517,9 +565,9 @@ Providing a raw JSON textarea for `validation_schema` (either as the sole editor
 - From experience with these types of toggles, raw/structured bidirectional sync adds significant complexity (parsing, validation, conflict resolution) with limited benefit.
 - The structured constraint form covers all supported constraint types (scalar, resource reference, list/map, complex object) through dedicated form controls, making raw editing unnecessary for the defined use cases.
 
-### Separate pages per resource type
+### Single config-driven component for all resource types
 
-Building separate list/create/edit/detail pages for ClusterCatalogItems, ComputeInstanceCatalogItems, and BareMetalInstanceCatalogItems was considered. This would be straightforward to implement but triples the page count and maintenance surface. Since all three types share the same data structure (`title`, `description`, `template`, `published`, `fieldDefinitions`), a polymorphic approach using a `CatalogItemKindConfig` map was selected. The only variation is the template selection endpoint, which is handled by the config map.
+Using a single `CatalogItemKindConfig` map to drive all polymorphic behavior through one component set was considered. This minimizes file count but creates a monolithic component that handles all three types through configuration switches. It was not selected because JSX composition is more React-idiomatic, easier to read, and handles future per-kind divergence naturally. The shared component approach achieves the same code reuse through composition rather than configuration.
 
 ### Modal for create/edit instead of full page
 
@@ -561,18 +609,37 @@ Testing strategy for the catalog management UI:
 - Tenant Admin visibility: verify global items show as read-only, org-scoped items show full actions
 - Type filter: verify filtering by Cluster/VM/Bare Metal updates the table
 
-**Component-level testing (if adopted):**
+**Unit tests:**
+- Yup validation schemas: verify required fields, path format, default-required-when-non-editable rule
+- FieldMask construction: verify diff-based update_mask includes only changed fields; verify field_definitions triggers whole-list replacement
+- JSON Schema assembly: verify ValidationConstraintsEditor output for each constraint type (scalar, resourceRef, list/map, nested)
+- Route mapping: verify CatalogItemKind → API endpoint resolution for all three types
+- Tighten-only comparison: verify constraint comparison logic rejects loosened constraints
+
+**Component-level tests (required):**
 - FieldDefinitionsEditor: verify resource-spec field list renders correctly per type; toggle editable, set defaults, configure constraints; verify Formik state management
-- ValidationConstraintsEditor: set scalar, resource reference, list/map, and nested constraints; verify correct JSON Schema output
+- ValidationConstraintsEditor: set scalar, resource reference, list/map, and nested constraints; verify correct JSON Schema Struct output; verify empty constraints produce omitted validationSchema
+
+## Documentation
+
+Admin-facing documentation for catalog management screens will be added to the OSAC docs repo:
+- A user guide covering CSP Admin and Tenant Admin workflows (create, edit, publish, delete)
+- Field definitions configuration reference (available fields per resource type, constraint types, tighten-only rules)
+- Troubleshooting section for common errors (delete blocked, validation failures, template not found)
+
+The Cloud Infrastructure Admin persona is not applicable to catalog management — this feature is scoped to Cloud Provider Admins and Tenant Admins only.
 
 ## Graduation Criteria
 
 The UI feature will be considered complete when:
-- All four page types (list, create, edit, detail) are implemented and functional
+- All four page types (list, create, edit, detail) are implemented and functional for all three resource types
 - Role-gated navigation is working for all three roles
 - The field definitions editor supports all FieldDefinition properties
-- CSP Admin and Tenant Admin workflows are tested end-to-end
+- All E2E tests pass (10 Cypress scenarios listed in the Test Plan)
+- Unit tests pass for Yup schemas, FieldMask construction, JSON Schema assembly, and tighten-only comparison
+- Component-level tests pass for FieldDefinitionsEditor and ValidationConstraintsEditor
 - The "Provisioned Resources" tab on the detail page shows related resources (dependent on Open Question 3)
+- Admin user guide is published to the docs repo
 
 ## Upgrade / Downgrade Strategy
 
