@@ -45,7 +45,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 ### Non-Goals
 
 - Drag-and-drop reordering of field definitions. The field list and order are fixed per resource type, derived from the resource spec.
-- Full visual JSON Schema editor (e.g., JSONJoy, react-json-schema-form-builder) or raw JSON Schema text editing. All validation constraints are configured through dedicated structured form controls.
+- Full visual JSON Schema editor (e.g., JSONJoy, react-json-schema-form-builder). The Advanced mode textarea is intentionally minimal — syntax highlighting only, no schema-aware autocomplete or visual builder.
 - Changes to the existing CatalogProvisionWizard — that component already handles catalog items. Any alignment changes are tracked separately.
 - Direct private API access from the browser. The Go proxy mediates all API access; CSP Admin requests are routed to private API endpoints (which return the `tenant` field), while Tenant Admin and Tenant User requests are routed to public API endpoints.
 
@@ -53,7 +53,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create page, an edit page, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page shows a PatternFly table with type filter, search, scope badges, and kebab row actions (edit, publish/unpublish, delete). The create page is a full-page form with sections for general information, template or base catalog item selection (role-dependent), and a field definitions editor. The edit page reuses the same form with the template/base selection locked. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
-Shared components (`CatalogItemForm`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific create/edit/detail pages. Each entry in the field definitions editor includes a read-only path (from the resource spec), display name, an editable toggle, a default value input, and a structured validation constraints form.
+Shared components (`CatalogItemForm`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific create/edit/detail pages. Each entry in the field definitions editor includes a read-only path (from the resource spec), display name, an editable toggle, a default value input, and a validation constraints editor (Basic mode with structured form controls, or Advanced mode with a raw JSON Schema textarea).
 
 ### Workflow Description
 
@@ -69,7 +69,7 @@ Shared components (`CatalogItemForm`, `FieldDefinitionsEditor`, `ValidationConst
    - Enter an optional display name
    - Toggle editable on/off
    - Set an optional default value (required for non-editable fields)
-   - Optionally configure validation constraints using structured form controls (numeric bounds, allowed values, string length, pattern, item count, resource references, nested properties)
+   - Optionally configure validation constraints using structured form controls in Basic mode (numeric bounds, allowed values, string length, pattern, item count, resource references, nested properties), or switch to Advanced mode to write arbitrary JSON Schema directly
    The admin cannot add or remove fields — the resource spec determines the complete field set.
 7. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
@@ -392,22 +392,31 @@ When the create page is in Tenant Admin mode (base catalog item selected), the f
 - Add or tighten validation constraints (cannot remove or loosen constraints from the base)
 - Change display names
 
-The admin cannot add or remove fields, change paths, or make non-editable fields editable. The server validates that all Tenant Admin constraints are equal or more restrictive than the base using the following comparison rules:
+The admin cannot add or remove fields, change paths, or make non-editable fields editable.
 
-- **Numeric bounds:** `minimum` can only increase; `maximum` can only decrease. The resulting range must be a subset of the base range.
+**Tighten-only enforcement (0.2 — UI only):** In Basic mode, the UI prevents loosening constraints by disabling controls that would violate the tighten-only rule (e.g., graying out the minimum input if the value would go below the base's minimum). In Advanced mode, the UI shows the base schema as a read-only reference panel so the admin can manually ensure their schema is more restrictive. The following comparison rules apply in Basic mode:
+
+- **Numeric bounds:** `minimum` can only increase; `maximum` can only decrease.
 - **String constraints:** `minLength` can only increase; `maxLength` can only decrease. `pattern` can only be made more restrictive (added, not removed).
 - **Enum:** values can only be removed from the base set, never added.
 - **Item/property counts:** `minItems`/`minProperties` can only increase; `maxItems`/`maxProperties` can only decrease.
 - **resourceRef:** the resource type cannot change; the `enum` subset can only be further restricted.
 - **Editable toggle:** can change from `true` to `false` (lock a field), never `false` to `true`.
 
-Constraints not in this supported subset (e.g., `if/then/else`, `oneOf`) are not allowed in Tenant Admin overrides — the server rejects them. The server returns `INVALID_ARGUMENT` with a field-specific message identifying which constraint was loosened.
+**Tighten-only enforcement (0.3 — server-side, future):** Server-side enforcement of the tighten-only rule is deferred to 0.3. When implemented, the server will compare the Tenant Admin's schema against the base and return `INVALID_ARGUMENT` for loosened constraints. For 0.2, the server accepts any valid JSON Schema — tighten-only is enforced as a UI convenience only.
 
 #### 9. ValidationConstraintsEditor Component
 
 **Location:** `libs/ui-components/src/components/catalogManagement/ValidationConstraintsEditor.tsx`
 
-An expandable sub-form within each field definition row, shown when the "Validation" column is clicked or expanded. All constraints — including nested object validation — are configured through dedicated structured form controls. There is no raw JSON Schema editor toggle.
+An expandable sub-form within each field definition row, shown when the "Validation" column is clicked or expanded. The editor supports two modes:
+
+- **Basic mode** (default): structured form controls for each supported constraint type. Recommended for most admins.
+- **Advanced mode**: a raw JSON Schema textarea with syntax highlighting. Used when editing schemas that contain keywords beyond the Basic editor's supported set, or when the admin prefers to write JSON directly.
+
+**Mode auto-detection on load:** When editing an existing catalog item, the editor inspects each field's `validationSchema`. If it contains only Basic-supported keywords (`minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `enum`, `resourceRef`, `minItems`, `maxItems`, `minProperties`, `maxProperties`, `properties`, `required`, `items`), the field opens in Basic mode. If it contains any other keywords, it opens in Advanced mode with a label: "This field uses advanced validation."
+
+**Mode switching:** An admin can switch from Basic to Advanced at any time — the structured inputs are serialized to JSON Schema and shown in the textarea. Switching from Advanced to Basic parses the JSON and populates the structured controls, but warns if unsupported keywords will be stripped: "Switching to Basic mode will remove the following constraints: [list]. Continue?"
 
 **Scalar constraints:**
 
@@ -452,7 +461,7 @@ Setting `minItems` and `maxItems` to the same value locks the list length — us
 
 For nested properties and item schemas, the editor renders a recursive constraint form for each sub-field, allowing admins to set constraints on complex objects without writing JSON by hand.
 
-The component constructs a JSON Schema object from these structured inputs and serializes it as a `google.protobuf.Struct` (JSON object) for the API. The serialization boundary is at form submission: the editor works with a typed TypeScript object internally, and the form's `onSubmit` handler serializes each field definition's `validationSchema` to a Struct before sending the request. When no constraints are configured, `validationSchema` is omitted from the payload (the API treats a missing or empty Struct as no validation).
+In Basic mode, the component constructs a JSON Schema object from the structured inputs. In Advanced mode, the textarea content is parsed as JSON. Both paths produce a `google.protobuf.Struct` (JSON object) for the API. The serialization boundary is at form submission: the form's `onSubmit` handler serializes each field definition's `validationSchema` to a Struct before sending the request. The Advanced mode textarea validates that its content is well-formed JSON on blur; malformed JSON prevents form submission with an inline error. When no constraints are configured (Basic mode with no inputs, or Advanced mode with an empty textarea), `validationSchema` is omitted from the payload (the API treats a missing or empty Struct as no validation).
 
 #### 10. Component File Structure
 
@@ -503,7 +512,7 @@ Input validation is performed client-side (Yup) for UX responsiveness and server
 
 The `description` field accepts Markdown authored by admins. All rendering surfaces (detail page, catalog browsing, list tooltips) must use a sanitizing Markdown renderer that strips unsafe HTML tags, `javascript:` URL schemes, and other stored-XSS vectors. The server stores the raw Markdown as provided; sanitization is a rendering-time responsibility.
 
-The validation schema field accepts a JSON string from the admin. This string is stored as-is and used by the server for field validation during resource provisioning. The UI does not execute or eval the JSON Schema — it is treated as data, not code.
+The validation schema field accepts a JSON Schema object from the admin (constructed from Basic mode form controls or entered directly in the Advanced mode textarea). The schema is stored as a `google.protobuf.Struct` and used by the server for field validation during resource provisioning. The UI does not execute or eval the JSON Schema — it is treated as data, not code. The Advanced mode textarea is a plain text input; the JSON is parsed and validated as well-formed before submission.
 
 ### Failure Handling and Recovery
 
@@ -558,12 +567,9 @@ A PatternFly Wizard with three steps (General → Template → Field Definitions
 
 If field definitions configuration proves too complex for a single form section during implementation, the design can be revised to use a wizard.
 
-### Raw JSON editor for validation schemas
+### Raw JSON as the sole validation editor
 
-Providing a raw JSON textarea for `validation_schema` (either as the sole editor or as a "Show raw JSON" toggle alongside structured inputs) was considered. This offers maximum expressiveness since `validation_schema` is a JSON Schema draft 2020-12 object. It was not selected because:
-- Catalog item admins are infrastructure managers, not JSON Schema experts.
-- From experience with these types of toggles, raw/structured bidirectional sync adds significant complexity (parsing, validation, conflict resolution) with limited benefit.
-- The structured constraint form covers all supported constraint types (scalar, resource reference, list/map, complex object) through dedicated form controls, making raw editing unnecessary for the defined use cases.
+Using a raw JSON textarea as the **only** way to configure validation schemas (with no structured form controls) was considered. This offers maximum expressiveness but was not selected because catalog item admins are infrastructure managers, not JSON Schema experts. The Basic/Advanced dual-mode approach adopted in this design provides structured controls for common constraints (Basic mode) while still allowing power users to write arbitrary JSON Schema (Advanced mode). The Advanced mode is opt-in — Basic mode is the default experience.
 
 ### Single config-driven component for all resource types
 
@@ -614,11 +620,15 @@ Testing strategy for the catalog management UI:
 - FieldMask construction: verify diff-based update_mask includes only changed fields; verify field_definitions triggers whole-list replacement
 - JSON Schema assembly: verify ValidationConstraintsEditor output for each constraint type (scalar, resourceRef, list/map, nested)
 - Route mapping: verify CatalogItemKind → API endpoint resolution for all three types
-- Tighten-only comparison: verify constraint comparison logic rejects loosened constraints
+- Tighten-only comparison: verify constraint comparison logic rejects loosened constraints (Basic mode UI enforcement)
+- Mode auto-detection: verify schemas with only Basic-supported keywords are detected as Basic; schemas with unsupported keywords are detected as Advanced
+- Advanced mode JSON parsing: verify well-formed JSON is accepted; malformed JSON shows validation error
 
 **Component-level tests (required):**
 - FieldDefinitionsEditor: verify resource-spec field list renders correctly per type; toggle editable, set defaults, configure constraints; verify Formik state management
 - ValidationConstraintsEditor: set scalar, resource reference, list/map, and nested constraints; verify correct JSON Schema Struct output; verify empty constraints produce omitted validationSchema
+- ValidationConstraintsEditor mode switching: verify Basic→Advanced serializes structured inputs to JSON; verify Advanced→Basic parses JSON and strips unsupported keywords with warning; verify auto-detection opens correct mode based on schema content
+- Advanced mode: verify well-formed JSON is accepted; verify malformed JSON shows validation error and prevents submission; verify existing CLI-created items with advanced schemas open in Advanced mode
 
 ## Documentation
 
