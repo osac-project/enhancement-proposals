@@ -79,7 +79,10 @@ don't have the ability to add or modify ansible roles.
   - **Item schema** (`items`): apply a schema to every element of a repeated field.
     Example: `additional_disks` with `{"items": {"properties": {"size_gib": {"minimum": 10, "maximum": 1000}}}}` constrains every additional disk's size.
 
-  The UI presents all constraints — including nested object validation — as structured form inputs. There is no raw JSON Schema editor toggle; every supported constraint type (numeric bounds, enum, string length, pattern, item count, resource references, nested properties, item schemas) has a dedicated form control so admins can configure validation without writing JSON by hand.
+  The UI presents these constraint types through two editing modes:
+  - **Basic mode** (default): structured form controls for each supported constraint type (numeric bounds, enum, string length, pattern, item count, resource references, nested properties, item schemas) so admins can configure validation without writing JSON by hand.
+  - **Advanced mode**: a raw JSON Schema textarea for schemas that use keywords beyond the Basic editor's supported set (e.g., `if/then/else`, `oneOf`, `$ref`), or for admins who prefer to write JSON Schema directly.
+  The editor auto-detects which mode to open: schemas using only Basic-supported keywords open in Basic mode; schemas with other keywords open in Advanced mode. Admins can switch between modes — switching from Advanced to Basic warns that unsupported keywords will be stripped.
 
 * As a Cloud Provider Admin, I need the system to provide sensible default validation schemas for common field types when I create a catalog item, so I can configure validation quickly without manually constructing JSON Schema for every field. For example:
   - `ssh_public_key` and `pull_secret` should have default pattern-based validation (the admin can accept the default or customize it)
@@ -290,12 +293,13 @@ Map and list values are all-or-nothing. User-provided values for editable map
 or list fields replace the entire field and are not merged with the catalog
 item's `default`.
 
-The `validation_schema` field follows
-[JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/json-schema-validation),
-supporting numeric constraints (`minimum`, `maximum`), string constraints
-(`pattern`, `minLength`, `maxLength`), enumerations (`enum`), and conditional
-logic (`if/then/else`). The server always validates; UIs may also use the schema
-for early feedback, since users can bypass the UI via the CLI or API directly.
+The `validation_schema` field accepts any valid
+[JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/json-schema-validation)
+object. The server validates user-provided field values against the full schema
+at provisioning time using a standard JSON Schema validator — no keywords are
+restricted. The UI provides structured form controls (Basic mode) for common
+constraint types and a raw JSON Schema textarea (Advanced mode) for schemas that
+use the full JSON Schema vocabulary.
 
 #### Public vs. Private API Split
 
