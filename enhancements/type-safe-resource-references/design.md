@@ -348,14 +348,14 @@ message ClusterTemplateReference {
 
   // Human-readable name of the referenced resource.
   // Required for the initial implementation.
-  string name = 4;
+  string name = 4 [(buf.validate.field).string.min_len = 1];
 }
 
 // Local reference — used when the target is always in the same tenant/project.
 // Defined in the target type's _type.proto file.
 message SubnetLocalReference {
   // Human-readable name of the referenced resource.
-  string name = 1;
+  string name = 1 [(buf.validate.field).string.min_len = 1];
 }
 ```
 
@@ -568,11 +568,11 @@ lookup function registered for these types omits tenant filtering.
 **Interceptor registration in the chain:**
 
 ```
-Panic Recovery -> Metrics -> Logging -> Auth -> Transaction -> Reference Validation -> Handler
+Panic Recovery -> Metrics -> Logging -> Protovalidate -> Transaction -> Auth -> Authz -> JIT Provisioning -> Reference Validation -> Handler
 ```
 
-The interceptor runs after the transaction interceptor so it can perform DAO
-lookups within the existing transaction. This means reference validation
+The interceptor runs after Auth (tenant context for scoped lookups) and after
+Transaction (DAO lookups share the request's database transaction). Validation
 failures cause a transaction rollback, which is the desired behavior (no
 partial state changes).
 
@@ -593,7 +593,10 @@ PL/pgSQL triggers serve two purposes:
    are kept but updated to use the new JSON paths.
 
 **All triggers require JSON path updates** to reflect the new nested
-reference structure. Example path changes:
+reference structure. This is a semantic shift: triggers currently match on
+resource IDs (primary keys), but will switch to matching on resource names
+(unique within a tenant). This aligns with the name-based resolution model
+introduced by this EP. Example path changes:
 
 | Trigger function | Table | Path change |
 |---|---|---|
@@ -707,7 +710,8 @@ Within each chunk, the implementation order is:
 5. Update database triggers and run migration.
 6. Update CLI flag handling and output formatting.
 7. Update UI wire format and CEL filters.
-8. Update tests (unit + integration).
+8. Update `docs/API.md` reference conventions to reflect the new patterns.
+9. Update tests (unit + integration).
 
 ### Security Considerations
 
