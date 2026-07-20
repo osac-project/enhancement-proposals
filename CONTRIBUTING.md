@@ -8,7 +8,7 @@ This document covers the directory and file naming convention for
 
 Each enhancement lives in its own directory under `enhancements/`:
 
-```
+```text
 enhancements/OSAC-NNNN-feature-slug/
 ├── prd.md
 └── design.md

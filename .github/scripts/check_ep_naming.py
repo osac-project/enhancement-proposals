@@ -20,12 +20,15 @@ def path_exists_at_ref(ref: str, path: str) -> bool:
     result = subprocess.run(
         ["git", "cat-file", "-e", f"{ref}:{path}"],
         capture_output=True,
+        check=False,
     )
     return result.returncode == 0
 
 
 def ref_exists(ref: str) -> bool:
-    result = subprocess.run(["git", "cat-file", "-e", ref], capture_output=True)
+    result = subprocess.run(
+        ["git", "cat-file", "-e", ref], capture_output=True, check=False
+    )
     return result.returncode == 0
 
 
