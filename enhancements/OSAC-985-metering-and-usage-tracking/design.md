@@ -260,7 +260,7 @@ The Metering Service introduces no CRDs, webhooks, or aggregated API servers. It
 
 **CloudEvents Extension Attributes:**
 
-All OSAC metering events use CloudEvents 1.0 with the following extension attributes:
+All OSAC metering events use CloudEvents 1.0 with the following extension attributes. These mirror select fields from the event `data` payload to enable infrastructure-level routing and filtering (Kafka partition keys, header-based tenant filtering, distributed tracing) without deserializing the event body. The `data` payload remains the authoritative source for application-level processing.
 
 | Extension Attribute | Type | Required | Description |
 |--------------------|------|----------|-------------|
