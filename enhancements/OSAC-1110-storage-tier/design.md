@@ -10,7 +10,7 @@ prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-1111-storage-backend"
-  - "/enhancements/tenant-storage-onboarding-OSAC-23"
+  - "/enhancements/OSAC-23-tenant-storage-onboarding"
 replaces:
   - N/A
 superseded-by:
