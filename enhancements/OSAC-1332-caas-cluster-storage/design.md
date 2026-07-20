@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-06-25
 last-updated: 2026-06-25
 tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-1123
+  - https://redhat.atlassian.net/browse/OSAC-1332
 prd:
   - "prd.md"
 see-also:
