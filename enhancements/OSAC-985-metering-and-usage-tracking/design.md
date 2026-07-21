@@ -268,7 +268,7 @@ All OSAC metering events use CloudEvents 1.0 with the following extension attrib
 | `osacresourcetype` | String | Yes | `compute_instance`, `cluster_order`, `maas_inference` |
 | `osactenant` | String | Yes | Tenant identifier for isolation and billing attribution |
 | `osacproject` | String | No | Project identifier for sub-tenant billing breakdown |
-| `osactrace` | String | No | W3C Trace Context `traceparent` for distributed tracing |
+| `osactrace` | String | No | W3C Trace Context `traceparent` — enables correlating a metering event back to the original fulfillment or inference operation across service boundaries (e.g., billing record → Kafka → Metering Service → Watch event → API call). Optional because upstream trace propagation may not be available initially; the field exists so the pipeline carries it through without a schema change when it is. |
 
 **Provider Adapter Go Interface:**
 
