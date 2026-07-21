@@ -613,9 +613,9 @@ metering:
 
 | Adapter | Provider | Protocol |
 |---------|----------|----------|
+| `cost-management-adapter` | Red Hat Cost Management (default) | To be aligned with the metering pipeline recommendation |
 | `openmeter-adapter` | OpenMeter | CloudEvents HTTP ingest |
-| `cost-management-adapter` | Red Hat Cost Management | Prometheus Remote Write or CSV upload |
-| `m360-adapter` | Monetize360 | REST API (requires translation proxy) |
+| `m360-adapter` | Monetize360 | REST API or Kafka (per resource type); Kafka recommended for on-prem deployments |
 | `custom-adapter` | Custom | Implements `ProviderAdapter` interface |
 
 **Migration replay:** Deploy the new adapter with `startOffset: <timestamp>`. Kafka delivers all events from that position. Replay progress is tracked via `osac_adapter_replay_lag_events` gauge. The Metering Service does not participate in replay.
