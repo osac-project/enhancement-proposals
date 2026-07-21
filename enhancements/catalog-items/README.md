@@ -43,7 +43,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to create a catalog item by selecting a resource type and choosing an existing template for that type, so the catalog item is backed by a known, working template.
 
-* As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item. The system presents all fields from the resource spec (e.g., ComputeInstanceSpec or ClusterSpec), and I configure each one — I do not need to manually specify field paths.
+* As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item. I select which fields from the resource spec to include in the catalog item and configure each one. Fields not included in the field definitions are not exposed to the user and are not constrained by the catalog item.
 
 * As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails. Validation constraints are specified as a JSON Schema (draft 2020-12) object stored in the field definition's `validation_schema` field. Constraint types and examples:
 
@@ -60,10 +60,9 @@ don't have the ability to add or modify ansible roles.
     Example: `boot_disk.size_gib` with `{"minimum": 50, "maximum": 500}` combined with a default of 100.
 
   **Resource reference constraints:**
-  - Fields that reference backend resources (such as `instance_type` referencing an InstanceType, or `image_type` referencing an ImageType) use a dedicated `"resourceRef"` constraint type rather than a static `enum`. The backend resolves available resources dynamically, and the UI presents them as a selectable list fetched from the corresponding API endpoint. The admin can optionally restrict the set to a subset of available resources.
-    Example: `instance_type` with `{"resourceRef": "InstanceType"}` — the UI fetches available InstanceType resources and presents them as a dropdown. The admin can further restrict by adding `{"resourceRef": "InstanceType", "enum": ["cx3.xlarge", "cx3.2xlarge"]}` to limit to specific instance types.
-    Example: `image_type` with `{"resourceRef": "ImageType"}` — the UI fetches available ImageType resources for selection.
-  - Resource references enable the backend to validate that the selected value is a valid, existing resource at provisioning time — not just a string that matches an enum.
+  - Fields that reference backend resources (such as `instance_type` referencing an InstanceType, or `image_type` referencing an ImageType) use `enum` constraints. The UI fetches available resources from the corresponding API endpoint and presents them as a selectable list. The admin can restrict the set to a subset of available resources by specifying an `enum` with only the allowed values.
+    Example: `instance_type` with `{"enum": ["cx3.xlarge", "cx3.2xlarge", "cx3.4xlarge"]}` — the UI fetches available InstanceType resources and presents the allowed subset as a dropdown.
+    Example: `image_type` with `{"enum": ["rhel-10", "rhel-9"]}` — limits image selection to the specified types.
 
   **List and map constraints:**
   - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
@@ -80,7 +79,7 @@ don't have the ability to add or modify ansible roles.
     Example: `additional_disks` with `{"items": {"properties": {"size_gib": {"minimum": 10, "maximum": 1000}}}}` constrains every additional disk's size.
 
   The UI presents these constraint types through two editing modes:
-  - **Basic mode** (default): structured form controls for each supported constraint type (numeric bounds, enum, string length, pattern, item count, resource references, nested properties, item schemas) so admins can configure validation without writing JSON by hand.
+  - **Basic mode** (default): structured form controls for each supported constraint type (numeric bounds, enum, string length, pattern, item count, nested properties, item schemas) so admins can configure validation without writing JSON by hand.
   - **Advanced mode**: a raw JSON Schema textarea for schemas that use keywords beyond the Basic editor's supported set (e.g., `if/then/else`, `oneOf`, `$ref`), or for admins who prefer to write JSON Schema directly.
   The editor auto-detects which mode to open: schemas using only Basic-supported keywords open in Basic mode; schemas with other keywords open in Advanced mode. Admins can switch between modes — switching from Advanced to Basic warns that unsupported keywords will be stripped.
 
@@ -88,7 +87,7 @@ don't have the ability to add or modify ansible roles.
   - `ssh_public_key` and `pull_secret` should have default pattern-based validation (the admin can accept the default or customize it)
   - `user_data` should have a default maximum length constraint
   - `node_sets.<name>.size` should default to a minimum/maximum integer constraint
-  - Fields referencing backend resources (`instance_type`, `image_type`) should automatically present available resources as selectable options
+  - Fields referencing backend resources (`instance_type`, `image_type`) should automatically populate `enum` with available resources as selectable options
   The backend is responsible for providing these defaults based on the field type; the admin can override or tighten them.
 
 * As a Cloud Provider Admin, I need to provide identifying information for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
@@ -160,7 +159,7 @@ created. Both will have similar properties, so we'll use Cluster as an example:
 
 ClusterCatalogItem
 * references an existing ClusterTemplate by ID
-* includes a list of field definitions covering all fields from the resource spec (e.g., ClusterSpec or ComputeInstanceSpec). Each field definition specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The field set is fixed per resource type — it does not vary by template.
+* includes a list of field definitions for the resource spec fields the admin wants to expose or constrain. Each field definition specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. Not all fields need to be included — only those the admin wants to configure.
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
 
@@ -230,11 +229,7 @@ Two new message types will be added to the proto definitions in
 - `id` (string) - unique identifier, assigned by the server
 - `metadata` - standard metadata (creation_timestamp, labels, annotations, etc.)
 - `title` (string) - human-friendly short name for display in UIs and CLIs
-- `description` (string) - markdown-formatted long description. All consumers
-  that render this field (UI detail pages, catalog browsing, CLI output) must
-  use a sanitizing Markdown renderer that strips unsafe HTML tags, `javascript:`
-  URL schemes, and other XSS vectors. The server stores the raw Markdown as
-  provided; sanitization is a rendering-time responsibility.
+- `description` (string) - markdown-formatted long description
 - `template` (string) - references a `ClusterTemplate` by ID
 - `fields` (repeated FieldDefinition) - ordered list of field definitions that
   specify which resource spec fields are pre-defined by the admin and which are
@@ -273,13 +268,13 @@ Both types will have corresponding `ClusterCatalogItemsService` and
 
 #### API Behavior
 
-The `fields` list defines the complete contract between the admin and the user
-for a given catalog item. The field set is fixed per resource type — it covers
-all fields from the resource spec (e.g., all fields in `ComputeInstanceSpec`
-for a `ComputeInstanceCatalogItem`). The admin configures each field (editable
-toggle, default value, validation constraints) but does not add or remove
-fields. The server rejects catalog items that reference fields not defined in
-the resource spec.
+The `fields` list defines the contract between the admin and the user for a
+given catalog item. The admin chooses which resource spec fields to include
+and configures each one (editable toggle, default value, validation
+constraints). Not all fields from the resource spec need to be included —
+only those the admin wants to expose or constrain. Fields not listed in
+`fields` are not managed by the catalog item. The server rejects catalog
+items that reference fields not defined in the resource spec.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:
