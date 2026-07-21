@@ -4,6 +4,7 @@
 |-----------|--------------------------------------------------------------|
 | Author(s) | Adrien Gentil                                                |
 | Jira      | https://redhat.atlassian.net/browse/OSAC-1270                |
+| Milestone | 0.2-M2                                                       |
 | Date      | 2026-07-21                                                   |
 
 ## Problem Statement
@@ -20,6 +21,7 @@ Bare metal instances can reference a custom OS image today, but only as a raw UR
 - Cloud Provider Admins can register, update, deprecate, obsolete, reactivate, and delete global DiskImages available to all tenants for bare-metal provisioning. Deletion of a global DiskImage is blocked when any BaremetalInstance (in any non-deleted state) or any BaremetalInstanceCatalogItem references it.
 - Tenant Admins can register, update, deprecate, obsolete, reactivate, and delete tenant-scoped DiskImages visible only within their organization. Deletion of a tenant DiskImage is blocked when any BaremetalInstance (in any non-deleted state) or any BaremetalInstanceCatalogItem references it.
 - UI support for the full DiskImage lifecycle (image list, image picker in BaremetalInstance creation, image detail, and lifecycle management controls) for all affected personas.
+- E2E test coverage for DiskImage selection at bare-metal instance provision time, added to the existing bare-metal test suite.
 - DiskImages for bare metal use the same resource, metadata schema, image source format, and two-tier visibility model (global + tenant-scoped) as defined in OSAC-2540.
 
 ## Out of Scope
