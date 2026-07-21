@@ -60,10 +60,10 @@ Shared components (`CatalogItemForm`, `FieldDefinitionsEditor`, `ValidationConst
 #### Cloud Provider Admin — Create Catalog Item
 
 1. CSP Admin navigates to **Administration > Catalog Management** in the sidebar.
-2. The list page shows all catalog items across all tenants with a "Create catalog item" button.
-3. CSP Admin clicks "Create catalog item" and lands on the create page.
-4. **General section:** Admin enters title, description (Markdown), selects resource type (Cluster, VM, Bare Metal), and selects scope (Global or a specific tenant).
-5. **Template section:** Based on the selected resource type, the admin selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`).
+2. The list page shows all catalog items across all tenants with a "Create catalog item" dropdown button (Cluster / Virtual Machine / Bare Metal).
+3. CSP Admin selects a resource type from the dropdown and lands on the kind-specific create page (e.g., `/admin/catalog/cluster/create`).
+4. **General section:** Admin enters name, description (Markdown), and selects scope (Global or a specific tenant). Resource type is derived from the route and displayed as read-only text.
+5. **Template section:** The admin selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`).
 6. **Field definitions section:** The `FieldDefinitionsEditor` displays the resource spec fields the admin wants to expose or constrain. Not all fields from the resource spec need to be included — fields not added to the field definitions are not exposed to the user. The admin configures each included field:
    - Select a path from the resource spec (e.g., `ComputeInstanceSpec` fields for a VM catalog item)
    - Enter an optional display name
@@ -85,8 +85,8 @@ Shared components (`CatalogItemForm`, `FieldDefinitionsEditor`, `ValidationConst
 
 1. Tenant Admin navigates to **Administration > Catalog Management**.
 2. The list page shows the tenant's catalog items alongside global items. Global items have a "Global" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and full actions.
-3. Tenant Admin clicks "Create catalog item".
-4. **General section:** Admin enters title, description, and selects resource type. Scope is automatically set to the tenant's organization (not editable).
+3. Tenant Admin selects a resource type from the "Create catalog item" dropdown.
+4. **General section:** Admin enters name and description. Resource type is derived from the route and displayed as read-only. Scope is automatically set to the tenant's organization (not editable).
 5. **Base catalog item section:** Instead of a template selector, the admin selects a published global catalog item of the selected resource type. The UI fetches the base item's field definitions.
 6. **Field definitions section:** The `FieldDefinitionsEditor` is pre-populated with the base item's field definitions. The admin can:
    - Change editable fields to non-editable (but not the reverse — the toggle is disabled for fields already marked non-editable in the base)
@@ -160,13 +160,13 @@ export function navRowsForRole(role: DemoShellRole, t: TFunction): NavRow[] {
 New routes for admin pages:
 
 ```
-/admin/catalog               → CatalogManagementListPage
-/admin/catalog/create         → CatalogItemCreatePage
-/admin/catalog/:type/:id      → CatalogItemDetailPage
-/admin/catalog/:type/:id/edit → CatalogItemEditPage
+/admin/catalog                → CatalogManagementListPage
+/admin/catalog/:type/create   → kind-specific create page (e.g., ClusterCatalogItemCreatePage)
+/admin/catalog/:type/:id      → kind-specific detail page
+/admin/catalog/:type/:id/edit → kind-specific edit page
 ```
 
-The `:type` parameter is one of `cluster`, `compute-instance`, or `baremetal-instance`, mapping to the correct API endpoint. This avoids ID collision across types.
+The `:type` parameter is one of `cluster`, `compute-instance`, or `baremetal-instance`, mapping to the correct kind-specific page and API endpoint. This avoids ID collision across types and eliminates the ambiguity between a single generic create page and three pre-bound pages — each kind has its own route and page component.
 
 A route guard component `AdminRoute` wraps admin pages and requires the caller's role to be `providerAdmin` or `tenantAdmin`. Any other role (including `tenantUser` and any future or unexpected authenticated role) is redirected to `/catalog`. Unauthenticated users are redirected to the login page.
 
@@ -179,37 +179,40 @@ Add an icon mapping for the `catalog-management` nav item ID (e.g., `CogIcon` or
 Rather than a single monolithic component driven by a configuration map, the design uses shared building blocks that each kind-specific page composes via JSX. This is more React-idiomatic and handles future per-kind divergence naturally:
 
 **Shared components** (used by all three kinds):
-- `CatalogItemGeneralFields` — title, description, scope inputs (reused in create/edit)
-- `TemplateSelector` — template dropdown, parameterized by template API route
+- `CatalogItemGeneralFields` — name, description, scope inputs (reused in create/edit)
+- `TemplateSelector` — template dropdown, receives already-fetched templates and loading state as props (presentational only — does not fetch data)
 - `FieldDefinitionsEditor` — the field definitions table (§8), parameterized by `specFields`
 - `CatalogItemTable` — PatternFly table with shared columns, actions, and scope badges
 - `CatalogItemActionsMenu` — kebab menu (publish/unpublish/delete)
-- `CatalogItemForm` — shared form layout wrapping general fields + template selector + field definitions
 
-**Kind-specific pages** compose these shared components:
+**Kind-specific pages** compose these shared components directly — Formik wiring, initial values, validation schema, submission logic, and data fetching are all explicit at the page level, not hidden inside a shared form abstraction:
 
 ```tsx
 // ClusterCatalogItemCreatePage.tsx
-export const ClusterCatalogItemCreatePage = () => (
-  <CatalogItemForm
-    kind="cluster"
-    apiRoute="v1/cluster_catalog_items"
-    templateSelector={<TemplateSelector apiRoute="v1/cluster_templates" />}
-    specFields={CLUSTER_SPEC_FIELDS}
-  />
-);
+const ClusterCatalogItemCreatePage = () => {
+  const { data: templates, isLoading } = useClusterTemplates();
+  const { mutateAsync: createClusterCatalogItem } = useCreateClusterCatalogItem();
+
+  return (
+    <Formik
+      initialValues={clusterCatalogItemInitialValues}
+      validationSchema={clusterCatalogItemSchema}
+      onSubmit={(values) => createClusterCatalogItem(buildClusterPayload(values))}
+    >
+      <CatalogItemGeneralFields />
+      <TemplateSelector templates={templates} isLoading={isLoading} />
+      <FieldDefinitionsEditor fields={CLUSTER_SPEC_FIELDS} />
+    </Formik>
+  );
+};
 ```
 
-A lightweight `CatalogItemKind` type and route mapping remain for URL routing and API endpoint selection, but rendering logic lives in the composed JSX — not in a config-driven switch:
+Each kind-specific page calls its own typed hooks (`useClusterTemplates`, `useComputeInstanceTemplates`, `useBareMetalInstanceTemplates`) and passes data down to shared presentational components. Per-kind differences (extra sections, different validation, different submission) are natural JSX additions, not config flags.
+
+A lightweight `CatalogItemKind` type remains for URL routing:
 
 ```typescript
 type CatalogItemKind = 'cluster' | 'compute-instance' | 'baremetal-instance';
-
-const CATALOG_ITEM_ROUTES: Record<CatalogItemKind, { apiRoute: string; templateApiRoute: string }> = {
-  'cluster': { apiRoute: 'v1/cluster_catalog_items', templateApiRoute: 'v1/cluster_templates' },
-  'compute-instance': { apiRoute: 'v1/compute_instance_catalog_items', templateApiRoute: 'v1/compute_instance_templates' },
-  'baremetal-instance': { apiRoute: 'v1/baremetal_instance_catalog_items', templateApiRoute: 'v1/baremetal_instance_templates' },
-};
 ```
 
 #### 3. API Hooks
@@ -250,16 +253,16 @@ The update hook builds the `update_mask` FieldMask from the diff between origina
 Uses `ListPage` + `ListPageBody` layout with a PatternFly `Table`.
 
 **Toolbar:**
-- "Create catalog item" primary action button
+- "Create catalog item" dropdown button (Cluster / Virtual Machine / Bare Metal) — each option navigates to the kind-specific create route
 - Type filter: toggle group with All / Cluster / VM / Bare Metal (drives which API endpoints are queried)
-- Search: text input filtering by title (server-side via API filter parameter)
+- Search: text input filtering by name (server-side via API filter parameter)
 - Publication status filter: All / Published / Unpublished (server-side via API filter parameter)
 
 **Table columns:**
 
 | Column | Content |
 |--------|---------|
-| Title | Catalog item title as a link to the detail page |
+| Name | Catalog item name as a link to the detail page |
 | Type | Resource type badge (Cluster / VM / Bare Metal) |
 | Template | Name of the backing template |
 | Scope | "Global" badge or organization name badge (see § Scope Display) |
@@ -281,34 +284,34 @@ Tenant Admin sees global items as read-only rows with no kebab menu (or a kebab 
 - **CSP Admin:** The private API returns the `tenant` field in responses. Items with an empty `tenant` are global; items with a non-empty `tenant` are organization-scoped. The UI displays the appropriate scope badge directly from this field.
 - **Tenant Admin:** The public API does not expose the `tenant` field, but scope is deterministic: items the Tenant Admin can update or delete are organization-scoped; items that return `PERMISSION_DENIED` on write operations are global. The UI derives scope from server-authored capability metadata or the item's `creators`/`tenants` fields. Global items show no edit/delete actions in the kebab menu.
 
-#### 5. Create Page (`CatalogItemCreatePage`)
+#### 5. Create Pages (kind-specific)
 
-**Location:** `libs/ui-components/src/pages/admin/CatalogItemCreatePage.tsx`
+**Locations:** `libs/ui-components/src/pages/admin/cluster/ClusterCatalogItemCreatePage.tsx` (and equivalent for compute-instance, baremetal-instance)
 
-A full-page form (not a wizard) using Formik + Yup + `OsacForm`.
+Each kind-specific create page is a full-page form using Formik + Yup that explicitly composes shared section components (see §2). There is no shared `CatalogItemForm` wrapper — Formik wiring, initial values, validation schema, data fetching, and submission logic are all visible at the page level.
 
 **Form sections:**
 
 **Section 1: General**
-- Title (`InputField`, required, maxLength: 255)
+- Name (`NameField`, required) — reuses the existing osac-ui `NameField` component with standard naming validation
 - Description (`InputField` textarea, optional) — markdown-formatted long description
-- Resource type (`SelectField`: Cluster, Virtual Machine, Bare Metal, required)
+- Resource type (read-only text, derived from the route — e.g., "Cluster")
 - Scope (providerAdmin only): `RadioButtonField` — Global or Tenant-scoped. If tenant-scoped, a tenant selector dropdown appears. For tenantAdmin, this section shows "Scope: Your organization" as read-only text.
 
 **Section 2: Template / Base Selection** (role-dependent)
 
-- **providerAdmin:** After selecting resource type, a `SelectField` populates with templates from the corresponding template list endpoint. Selecting a template fetches its details and populates the field definitions section with the template's parameter definitions as a starting point.
-- **tenantAdmin:** After selecting resource type, a `SelectField` populates with published global catalog items of that type. Selecting a base item fetches its details and pre-populates the field definitions section.
+- **providerAdmin:** A `SelectField` populates with templates from the corresponding template list endpoint (fetched by the page's typed hook). Selecting a template fetches its details and populates the field definitions section with the template's parameter definitions as a starting point.
+- **tenantAdmin:** A `SelectField` populates with published global catalog items of the matching resource type. Selecting a base item fetches its details and pre-populates the field definitions section.
 
 **Section 3: Field Definitions** (see § FieldDefinitionsEditor)
 
 **Form submission:**
 - Validates all fields with Yup
-- Constructs the create payload. For CSP Admin (private API), the `tenant` field is included — empty string for global items, or the selected tenant ID for tenant-scoped items. For Tenant Admin (public API), `tenant` is omitted (auto-set by server):
+- Constructs the create payload with `name` (not `title`, consistent with osac-ui conventions). For CSP Admin (private API), the `tenant` field is included — empty string for global items, or the selected tenant ID for tenant-scoped items. For Tenant Admin (public API), `tenant` is omitted (auto-set by server):
 
   ```json
   {
-    "title": "...",
+    "name": "...",
     "description": "...",
     "template": "<template-id>",
     "tenant": "",
@@ -317,17 +320,17 @@ A full-page form (not a wizard) using Formik + Yup + `OsacForm`.
   }
   ```
 
-- Sends POST to the appropriate endpoint based on the selected resource type and caller's role
+- Sends POST to the appropriate endpoint (determined by the kind-specific page and caller's role)
 - On success, navigates to the detail page
 - On error, displays an inline `Alert` with the server error message
 
-#### 6. Edit Page (`CatalogItemEditPage`)
+#### 6. Edit Pages (kind-specific)
 
-**Location:** `libs/ui-components/src/pages/admin/CatalogItemEditPage.tsx`
+**Locations:** `libs/ui-components/src/pages/admin/cluster/ClusterCatalogItemEditPage.tsx` (and equivalent for compute-instance, baremetal-instance)
 
-Reuses the same form component as the create page with the following differences:
+Each kind-specific edit page reuses the same shared section components as the create page with the following differences:
 
-- Title shows "Edit catalog item"
+- Page heading shows "Edit catalog item"
 - Template/base selection is displayed as read-only text (not editable after creation)
 - Resource type is displayed as read-only text
 - Scope is displayed as read-only text
@@ -339,10 +342,10 @@ Reuses the same form component as the create page with the following differences
 
 **Location:** `libs/ui-components/src/pages/admin/CatalogItemDetailPage.tsx`
 
-Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management > {title}) and a publication status badge.
+Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management > {name}) and a publication status badge.
 
 **Tabs:**
-- **Overview:** Read-only display of general information (title, description, resource type, scope, template name, publication status, creation date)
+- **Overview:** Read-only display of general information (name, description, resource type, scope, template name, publication status, creation date)
 - **Field Definitions:** Table showing all field definitions with columns: Path, Display Name, Editable (Yes/No), Default Value, Validation Constraints
 - **Provisioned Resources:** Table of resources (Clusters, ComputeInstances, or BareMetalInstances) provisioned from this catalog item, fetched via the resource list endpoint with a `this.spec.catalog_item == "<id>"` CEL filter
 
@@ -484,9 +487,8 @@ libs/ui-components/src/
     catalogManagement/
       CatalogItemTable.tsx          # shared table (columns, row rendering)
       CatalogItemActionsMenu.tsx    # shared kebab menu
-      CatalogItemForm.tsx           # shared form layout (general + template + fields)
-      CatalogItemGeneralFields.tsx  # shared title, description, scope inputs
-      TemplateSelector.tsx          # shared template dropdown
+      CatalogItemGeneralFields.tsx  # shared name, description, scope inputs
+      TemplateSelector.tsx          # shared template dropdown (presentational)
       CatalogItemScopeBadge.tsx
       CatalogItemStatusLabel.tsx
       FieldDefinitionsEditor.tsx    # shared field definitions table
@@ -573,6 +575,10 @@ Using a raw JSON textarea as the **only** way to configure validation schemas (w
 
 Using a single `CatalogItemKindConfig` map to drive all polymorphic behavior through one component set was considered. This minimizes file count but creates a monolithic component that handles all three types through configuration switches. It was not selected because JSX composition is more React-idiomatic, easier to read, and handles future per-kind divergence naturally. The shared component approach achieves the same code reuse through composition rather than configuration.
 
+### Reuse CatalogPage with per-kind tabs instead of a separate admin list page
+
+Reusing the existing tenant-facing `CatalogPage` as a unified admin+tenant catalog view with per-resource-type tabs (Cluster / VM / Bare Metal) was considered. In this model, the "Create catalog item" button would only render for admin roles, and the active tab would determine the resource type — eliminating both the type selector ambiguity and the three-way `useAllCatalogItems` merge. This also has the advantage of using a card layout (matching the existing tenant browsing experience) rather than a table for the management view. It was not selected for this iteration because it couples admin and tenant views, making it harder to evolve admin-specific features (e.g., bulk operations, advanced filtering) independently. However, it remains a viable simplification if the separate admin list page proves unnecessary during implementation.
+
 ### Modal for create/edit instead of full page
 
 Using a PatternFly Modal (like VirtualNetworkCreateModal) was considered. This works well for simple forms with 3-5 fields but the field definitions editor requires significant vertical space and would be cramped inside a modal. A full-page form provides enough room for the repeatable field definitions list and the expandable validation constraints editor.
@@ -606,7 +612,7 @@ Testing strategy for the catalog management UI:
 - Route guard: verify direct navigation to `/admin/catalog` by tenantUser redirects to `/catalog`
 - CSP Admin create flow: create a catalog item with field definitions, verify it appears in the list as unpublished
 - Publish/unpublish: toggle publication status via kebab menu, verify status label updates
-- Edit flow: modify title and field definitions, verify changes persist
+- Edit flow: modify name and field definitions, verify changes persist
 - Delete flow: delete a catalog item with no provisioned resources, verify removal from list
 - Delete blocked: attempt to delete a catalog item with provisioned resources, verify error message
 - Tenant Admin create flow: create from a global catalog item, verify restrictions (cannot make non-editable field editable)
