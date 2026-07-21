@@ -35,7 +35,7 @@ OSAC tenants cannot create GPU-accelerated virtual machines. The ComputeInstance
 ### Cloud Provider Admin
 
 - As a Cloud Provider Admin, I want to define InstanceTypes that include GPU type and count so that tenants can select pre-validated GPU configurations when creating VMs.
-- As a Cloud Provider Admin, I want to retire or update GPU-enabled InstanceTypes when the underlying GPU hardware changes so that tenants do not select configurations that cannot be fulfilled.
+- As a Cloud Provider Admin, I want to retire GPU-enabled InstanceTypes and define new ones when the underlying GPU hardware changes so that tenants do not select configurations that cannot be fulfilled.
 
 ### Cloud Infrastructure Admin
 
@@ -55,6 +55,7 @@ OSAC tenants cannot create GPU-accelerated virtual machines. The ComputeInstance
 
 - The VMaaS cluster has GPU-equipped worker nodes with the appropriate device plugins installed and configured. Cloud Infrastructure Admin is responsible for this prerequisite.
 - GPU passthrough infrastructure (KubeVirt HyperConverged CR configuration, permitted host devices) is already in place via the work delivered in OSAC-42.
+- The GPU type specified in an InstanceType exists on the cluster. The system does not validate this — Cloud Provider Admin is responsible for correctness (see Out of Scope). `[Clarify: R1.Q4]`
 - A single VMaaS cluster is used — no cross-cluster placement decisions are required. `[Clarify: R1.Q7]`
 
 ## Dependencies
@@ -69,12 +70,15 @@ OSAC tenants cannot create GPU-accelerated virtual machines. The ComputeInstance
 - [ ] A Tenant User can create a ComputeInstance using a GPU-enabled InstanceType and the resulting VM has GPU hardware attached
 - [ ] A GPU-equipped ComputeInstance supports the same lifecycle operations as a non-GPU ComputeInstance (start, stop, restart, delete)
 - [ ] GPU ComputeInstances carry the standard OSAC tenant isolation metadata
-- [ ] A Cloud Provider Admin can update or delete GPU-enabled InstanceTypes
+- [ ] A Cloud Provider Admin can delete GPU-enabled InstanceTypes
 
 ---
 
 ## Provenance
 
 Authored: draft @ prd 0.5.0 - 92734a2, workspace main @ 2181523
+Final: respond @ prd 0.5.0 - 92734a2, workspace main @ aac0f8e
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"2181523","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"aac0f8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true} -->
