@@ -18,13 +18,6 @@ import sys
 NAME_RE = re.compile(r"^OSAC-[1-9][0-9]*-[a-z0-9]+(?:-[a-z0-9]+)*$")
 CHECKED_FILENAMES = frozenset({"prd.md", "design.md"})
 
-# A closed, deliberately tiny allowlist — not a general "any legacy prefix is
-# OK" carve-out. Each entry is a pre-existing EP whose only tracking key
-# predates the OSAC Jira project, so it can never earn an OSAC-<N>- name
-# (see OSAC-2870). New EPs must get a real OSAC Feature key; this list is not
-# meant to grow, and isn't advertised in CONTRIBUTING.md.
-LEGACY_KEY_ALLOWLIST = frozenset({"MGMT-23669-tenant-storage-tiers"})
-
 BASE_SHA_ENV_VAR = "PRE_COMMIT_PR_BASE_SHA"
 
 
@@ -96,11 +89,7 @@ def validate_paths(paths: list[str], base_sha: str | None) -> list[str]:
         dir_path = f"enhancements/{dir_name}"
         dir_is_grandfathered = base_sha is not None and path_exists_at_ref(base_sha, dir_path)
 
-        if (
-            not dir_is_grandfathered
-            and not NAME_RE.match(dir_name)
-            and dir_name not in LEGACY_KEY_ALLOWLIST
-        ):
+        if not dir_is_grandfathered and not NAME_RE.match(dir_name):
             violations.append(
                 f"{path}: directory '{dir_name}' doesn't match the "
                 "required format OSAC-<jira-key>-<slug> (e.g. "

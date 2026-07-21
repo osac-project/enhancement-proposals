@@ -43,7 +43,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 
 - Costing, billing, and quota enforcement — deferred to a separate PRD
 - Workload-level metering inside tenant clusters, VMs, or hosts (OSAC has no visibility into tenant-managed workloads)
-- BMaaS, Storage-aaS, Object Storage metering (deferred to a future PRD). When storage metering comes in scope, storage tier (e.g., fast, standard, archival — per the [tenant-storage-tiers](/enhancements/MGMT-23669-tenant-storage-tiers) EP) must be a pricing dimension.
+- BMaaS, Storage-aaS, Object Storage metering (deferred to a future PRD). When storage metering comes in scope, storage tier (e.g., fast, standard, archival — per the [tenant-storage-tiers](/enhancements/OSAC-172-tenant-storage-tiers) EP) must be a pricing dimension.
 - Networking resource metering — VirtualNetworks, Subnets, PublicIPs, NAT Gateways (deferred to a future PRD). When networking metering comes in scope, it covers multiple resource types with region as a dimension (per the [networking](/enhancements/networking) EP).
 - Network bandwidth metering (ingress/egress traffic per tenant) — unclear which component has access to the primary data; deferred to custom service metering if a networking vendor provides the data source
 
