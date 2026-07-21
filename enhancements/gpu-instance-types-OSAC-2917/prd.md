@@ -34,8 +34,8 @@ OSAC tenants cannot create GPU-accelerated virtual machines. The ComputeInstance
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to define InstanceTypes that include GPU type and count so that tenants can select pre-validated GPU configurations when creating VMs.
-- As a Cloud Provider Admin, I want to retire GPU-enabled InstanceTypes and define new ones when the underlying GPU hardware changes so that tenants do not select configurations that cannot be fulfilled.
+- As a Cloud Provider Admin, I want to define InstanceTypes that include GPU type and count so that tenants can select admin-defined GPU configurations when creating VMs.
+- As a Cloud Provider Admin, I want to delete GPU-enabled InstanceTypes and define new ones when the underlying GPU hardware changes so that tenants do not select configurations that cannot be fulfilled.
 
 ### Cloud Infrastructure Admin
 
@@ -71,6 +71,7 @@ OSAC tenants cannot create GPU-accelerated virtual machines. The ComputeInstance
 - [ ] A GPU-equipped ComputeInstance supports the same lifecycle operations as a non-GPU ComputeInstance (start, stop, restart, delete)
 - [ ] GPU ComputeInstances carry the standard OSAC tenant isolation metadata
 - [ ] A Cloud Provider Admin can delete GPU-enabled InstanceTypes
+- [ ] When requested GPU hardware is unavailable, ComputeInstance creation follows the same failure behavior as non-GPU instances
 
 ---
 
@@ -81,4 +82,4 @@ Final: respond @ prd 0.5.0 - 92734a2, workspace main @ aac0f8e
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"aac0f8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"aac0f8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
