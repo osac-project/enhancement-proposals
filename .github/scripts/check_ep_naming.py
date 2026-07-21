@@ -91,8 +91,10 @@ def validate_paths(paths: list[str], base_sha: str | None) -> list[str]:
 
         if not dir_is_grandfathered and not NAME_RE.match(dir_name):
             violations.append(
-                f"{path}: directory '{dir_name}' does not match the naming "
-                f"convention (expected OSAC-<jira-key>-<feature-slug>)"
+                f"{path}: directory '{dir_name}' doesn't match the "
+                "required format OSAC-<jira-key>-<slug> (e.g. "
+                "OSAC-1110-storage-tier-api) — see CONTRIBUTING.md for "
+                "the full naming convention"
             )
 
         basename = path.rsplit("/", 1)[-1]
