@@ -3,7 +3,7 @@ title: catalog-items
 authors:
   - mhrivnak
 creation-date: 2026-01-12
-last-updated: 2026-04-25
+last-updated: 2026-07-16
 tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
 see-also:
 replaces:
@@ -39,14 +39,106 @@ don't have the ability to add or modify ansible roles.
 
 ### User Stories
 
-* As a Cloud Provider Admin, I need to create global catalog items that reference templates and define which fields are pre-set vs. editable, so I can offer curated options to all tenants.
-* As a Cloud Provider Admin, I need to publish/unpublish catalog items to control visibility to Tenant Users.
+#### Cloud Provider Admin — Catalog Item Creation
 
-* As a Tenant Admin, I need to create organization-specific catalog items from available templates, so I can offer tenant-specific configurations.
-* As a Tenant Admin, I need to control which global catalog items are visible to users in my organization.
+* As a Cloud Provider Admin, I need to create a catalog item by selecting a resource type and choosing an existing template for that type, so the catalog item is backed by a known, working template.
 
-* As a Tenant User, I need to list available catalog items via API and provision resources through them.
-* As a Tenant User, I need to browse catalog items to find infrastructure automation options.
+* As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item. I select which fields from the resource spec to include in the catalog item and configure each one. Fields not included in the field definitions are not exposed to the user and are not constrained by the catalog item.
+
+* As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails. Validation constraints are specified as a JSON Schema (draft 2020-12) object stored in the field definition's `validation_schema` field. Constraint types and examples:
+
+  **Scalar constraints:**
+  - **Numeric bounds** (`minimum`, `maximum`): restrict numeric fields to a range.
+    Example: `node_sets.workers.size` with `{"minimum": 3, "maximum": 12}` limits worker node count to 3–12.
+  - **Allowed values** (`enum`): restrict a field to a fixed set of choices.
+    Example: `run_strategy` with `{"enum": ["Always", "RerunOnFailure", "Halted"]}` limits the VM run strategy to approved options.
+  - **String length** (`minLength`, `maxLength`): constrain text field lengths.
+    Example: `user_data` with `{"maxLength": 65536}` to enforce a size limit on cloud-init user data.
+  - **Pattern** (`pattern`): enforce format with a regular expression.
+    Example: `ssh_public_key` with `{"pattern": "^ssh-(rsa|ed25519) "}` to require a valid SSH public key prefix.
+  - **Combinations**: multiple constraints can be combined in a single schema.
+    Example: `boot_disk.size_gib` with `{"minimum": 50, "maximum": 500}` combined with a default of 100.
+
+  **Resource reference constraints:**
+  - Fields that reference backend resources (such as `instance_type` referencing an InstanceType, or `image_type` referencing an ImageType) use `enum` constraints. The UI fetches available resources from the corresponding API endpoint and presents them as a selectable list. The admin can restrict the set to a subset of available resources by specifying an `enum` with only the allowed values.
+    Example: `instance_type` with `{"enum": ["cx3.xlarge", "cx3.2xlarge", "cx3.4xlarge"]}` — the UI fetches available InstanceType resources and presents the allowed subset as a dropdown.
+    Example: `image_type` with `{"enum": ["rhel-10", "rhel-9"]}` — limits image selection to the specified types.
+
+  **List and map constraints:**
+  - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
+    Example: `network_attachments` with `{"minItems": 1, "maxItems": 1}` locks a VM to exactly one network attachment — the user can choose which subnet and security groups but cannot add a second NIC.
+    Example: `network_attachments` with `{"minItems": 1, "maxItems": 4}` allows 1–4 network attachments.
+    Example: `additional_disks` with `{"maxItems": 0}` prevents users from adding any additional disks beyond the boot disk.
+  - **Map entry count** (`minProperties`, `maxProperties`): same pattern for map fields.
+    Example: `node_sets` with `{"minProperties": 2, "maxProperties": 2}` locks a cluster to exactly two node sets (e.g., control-plane + workers) — the user can edit each node set's `size` but cannot add or remove node sets.
+
+  **Complex object constraints:**
+  - **Nested properties** (`properties`, `required`): validate sub-fields within complex objects. When a field definition targets a complex field like `network_attachments[*]`, the validation schema can constrain its sub-fields individually.
+    Example: each `network_attachments` item with `{"properties": {"security_groups": {"minItems": 1}}, "required": ["subnet"]}` requires a subnet and at least one security group per attachment.
+  - **Item schema** (`items`): apply a schema to every element of a repeated field.
+    Example: `additional_disks` with `{"items": {"properties": {"size_gib": {"minimum": 10, "maximum": 1000}}}}` constrains every additional disk's size.
+
+  The UI presents these constraint types through two editing modes:
+  - **Basic mode** (default): structured form controls for each supported constraint type (numeric bounds, enum, string length, pattern, item count, nested properties, item schemas) so admins can configure validation without writing JSON by hand.
+  - **Advanced mode**: a raw JSON Schema textarea for schemas that use keywords beyond the Basic editor's supported set (e.g., `if/then/else`, `oneOf`, `$ref`), or for admins who prefer to write JSON Schema directly.
+  The editor auto-detects which mode to open: schemas using only Basic-supported keywords open in Basic mode; schemas with other keywords open in Advanced mode. Admins can switch between modes — switching from Advanced to Basic warns that unsupported keywords will be stripped.
+
+* As a Cloud Provider Admin, I need the system to provide sensible default validation schemas for common field types when I create a catalog item, so I can configure validation quickly without manually constructing JSON Schema for every field. For example:
+  - `ssh_public_key` and `pull_secret` should have default pattern-based validation (the admin can accept the default or customize it)
+  - `user_data` should have a default maximum length constraint
+  - `node_sets.<name>.size` should default to a minimum/maximum integer constraint
+  - Fields referencing backend resources (`instance_type`, `image_type`) should automatically populate `enum` with available resources as selectable options
+  The backend is responsible for providing these defaults based on the field type; the admin can override or tighten them.
+
+* As a Cloud Provider Admin, I need to provide identifying information for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
+
+* As a Cloud Provider Admin, I need to choose whether the catalog item is global (visible to all tenants) or scoped to a specific tenant, so I can create targeted offerings for specific organizations.
+
+#### Cloud Provider Admin — Catalog Item Lifecycle
+
+* As a Cloud Provider Admin, I need to publish or unpublish a catalog item to control whether tenant users can see and provision from it. Unpublished items are excluded from Tenant User listing and browsing; however, a Tenant User can still retrieve an unpublished item via a direct `Get` if it is referenced by one of their existing CNAs.
+
+* As a Cloud Provider Admin, I need to edit an existing catalog item to update its configuration and publication status. The backing template cannot be changed after creation.
+
+* As a Cloud Provider Admin, I need to view a catalog item's full configuration and see which resources have been provisioned from it.
+
+* As a Cloud Provider Admin, I need to delete a catalog item that is no longer needed. If resources have been provisioned from it, deletion must be blocked and I should unpublish it instead, so existing resources retain their catalog item reference.
+
+* As a Cloud Provider Admin, I need to see all catalog items across all tenants (both published and unpublished), so I can manage the full catalog.
+
+#### Tenant Admin — Catalog Item Creation
+
+* As a Tenant Admin, I need to create organization-specific catalog items by selecting from existing published global catalog items — not from templates. I am not aware of templates; I only see catalog items that the Cloud Provider Admin has already published.
+
+* As a Tenant Admin, I need to configure which fields are pre-set vs. editable, starting from the base global catalog item's configuration. I can further restrict fields for my organization but cannot make a non-editable field editable — I can only be equal or more restrictive than the base.
+
+* As a Tenant Admin, for each field I keep editable, I need to optionally change the default value or tighten validation constraints, so I can tailor the offering to my organization's standards.
+
+* As a Tenant Admin, I need to provide identifying information for the catalog item, so my organization's users can distinguish it from other offerings in the catalog.
+
+* As a Tenant Admin, the catalog item I create is automatically scoped to my organization — I do not control the tenant assignment.
+
+#### Tenant Admin — Catalog Item Lifecycle
+
+* As a Tenant Admin, I need to publish or unpublish catalog items scoped to my organization to control whether my users can see and provision from them.
+
+* As a Tenant Admin, I need to edit organization-scoped catalog items to update their title, description, publication status, and field definition defaults or validation constraints (tightening only). I cannot add or remove field definitions, loosen constraints beyond the base item's settings, or modify global catalog items created by Cloud Provider Admins.
+
+* As a Tenant Admin, I need to view a catalog item's full configuration and see which resources in my organization have been provisioned from it.
+
+* As a Tenant Admin, I need to delete an organization-scoped catalog item that is no longer needed, subject to the same provisioned-resource blocking as global items.
+
+* As a Tenant Admin, I need to see my organization's catalog items alongside global items, with a clear distinction between global (read-only) and organization-scoped (manageable) items.
+
+#### Tenant User — Catalog Browsing and Provisioning
+
+* As a Tenant User, I need to browse published catalog items so I can find the right offering for my needs.
+
+* As a Tenant User, when I provision from a catalog item, I need to see the full resource configuration — both the pre-set values I cannot change and the editable values I need to provide — so I understand what I am getting.
+
+* As a Tenant User, I need to provision resources through catalog items without needing to understand templates, Ansible roles, or the underlying field definitions.
+
+* As a Tenant User, I do not have access to catalog item management — I only interact with published catalog items to browse and provision.
 
 ### Goals
 
@@ -67,7 +159,7 @@ created. Both will have similar properties, so we'll use Cluster as an example:
 
 ClusterCatalogItem
 * references an existing ClusterTemplate by ID
-* includes a list of field definitions, each of which specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule
+* includes a list of field definitions for the resource spec fields the admin wants to expose or constrain. Each field definition specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. Not all fields need to be included — only those the admin wants to configure.
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
 
@@ -160,9 +252,12 @@ Two new message types will be added to the proto definitions in
 - `editable` (bool) - when true the user may provide a value for this field;
   when false (the default) the field uses the `default` value and the user
   cannot override it
-- `default` (google.protobuf.Value) - optional default value; applied as the
-  fixed value for non-editable fields, or as the fallback for editable fields
-  when the user does not supply a value
+- `default` (google.protobuf.Value) - default value for the field. Required
+  when `editable` is false (the server rejects catalog items where a
+  non-editable field has no default, since omitting both editability and a
+  default would leave a required template field unpopulated). Optional when
+  `editable` is true, where it serves as the fallback when the user does not
+  supply a value
 - `validation_schema` (google.protobuf.Struct) - optional JSON Schema object
   (draft 2020-12) constraining what values are valid for this field; only
   meaningful when `editable` is true
@@ -173,10 +268,13 @@ Both types will have corresponding `ClusterCatalogItemsService` and
 
 #### API Behavior
 
-The `fields` list defines the complete contract between the admin and the user
-for a given catalog item. Fields not listed in `fields` are neither editable
-nor pre-defined; the admin is responsible for ensuring that every field required
-by the underlying template is covered by a field definition.
+The `fields` list defines the contract between the admin and the user for a
+given catalog item. The admin chooses which resource spec fields to include
+and configures each one (editable toggle, default value, validation
+constraints). Not all fields from the resource spec need to be included —
+only those the admin wants to expose or constrain. Fields not listed in
+`fields` are not managed by the catalog item. The server rejects catalog
+items that reference fields not defined in the resource spec.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:
@@ -190,19 +288,20 @@ Map and list values are all-or-nothing. User-provided values for editable map
 or list fields replace the entire field and are not merged with the catalog
 item's `default`.
 
-The `validation_schema` field follows
-[JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/json-schema-validation),
-supporting numeric constraints (`minimum`, `maximum`), string constraints
-(`pattern`, `minLength`, `maxLength`), enumerations (`enum`), and conditional
-logic (`if/then/else`). The server always validates; UIs may also use the schema
-for early feedback, since users can bypass the UI via the CLI or API directly.
+The `validation_schema` field accepts any valid
+[JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/json-schema-validation)
+object. The server validates user-provided field values against the full schema
+at provisioning time using a standard JSON Schema validator — no keywords are
+restricted. The UI provides structured form controls (Basic mode) for common
+constraint types and a raw JSON Schema textarea (Advanced mode) for schemas that
+use the full JSON Schema vocabulary.
 
 #### Public vs. Private API Split
 
 Following the existing public/private server pattern:
 
 - **Private API** (`osac/private/v1`): full CRUD over catalog items with no filtering based on `published` or `tenant`. Used by Cloud Provider Admins, and by the server internally when validating a user's create request.
-- **Public API** (`osac/public/v1`): used by Tenant Admins and Tenant Users. The `tenant` field is not exposed to either role — it is stripped from all responses and ignored on writes. Tenant Admins have full CRUD access and can see all catalog items scoped to their tenant (published or not); on create the server automatically sets `tenant` to the caller's tenant. Tenant Users have read-only access (`List` and `Get` only) and only see items where `published == true` and `tenant` is empty or matches the caller's tenant. Exception: a Tenant User can always `Get` a catalog item referenced by one of their existing CNAs, even if that item is unpublished.
+- **Public API** (`osac/public/v1`): used by Tenant Admins and Tenant Users. The `tenant` field is not exposed to either role — it is stripped from all responses and ignored on writes. Tenant Admins have full CRUD over their own organization-scoped catalog items and can see all catalog items scoped to their tenant (published or not); on create the server automatically sets `tenant` to the caller's tenant. Tenant Users have read-only access (`List` and `Get` only) and only see items where `published == true` and `tenant` is empty or matches the caller's tenant. Exception: a Tenant User can always `Get` a catalog item referenced by one of their existing CNAs, even if that item is unpublished.
 
 The public `List` endpoint always filters by the caller's tenant; for Tenant
 User callers it additionally filters by `published = true`. The public
@@ -289,6 +388,13 @@ were previously deployed using the same catalog item.
 Catalog items should not be deleted if there are existing CNAs created from it.
 Such catalog items should be set to unpublished, but preserved so that existing
 CNAs deployed with that catalog item can maintain a reference to it.
+
+Templates referenced by one or more catalog items must also be protected from
+deletion. If a template is referenced by any catalog item (published or
+unpublished), the server must reject the delete request. This prevents orphaned
+catalog items that reference a non-existent template. Admins must delete or
+reassign all catalog items referencing a template before the template itself
+can be deleted.
 
 ### Risks and Mitigations
 
@@ -448,6 +554,7 @@ Standard unit and integration tests. Integration tests must cover:
 - Tenant Admin visibility: a Tenant Admin can see all catalog items in their tenant regardless of publication status.
 - Tenant field injection: the `tenant` field is absent from public API responses and auto-set on Tenant Admin creates.
 - Tenant Admin write isolation: a Tenant Admin cannot create, update, or delete catalog items scoped to another tenant.
+- Post-create response: `Create` returns the new catalog item ID so clients can redirect to the detail page or confirm success.
 
 ## Graduation Criteria
 
