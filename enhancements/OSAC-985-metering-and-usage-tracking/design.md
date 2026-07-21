@@ -243,7 +243,7 @@ sequenceDiagram
     end
 ```
 
-On every Metering Service startup — not just cold start — a full reconciliation runs synchronously before the Watch Consumer begins processing. At 10K resources with 500/page, this is approximately 20 API calls (under 10 seconds).
+On every Metering Service startup — not just cold start — a full reconciliation runs synchronously before the Watch Consumer begins processing. At 10K resources with 500/page, this is approximately 20 API calls (under 10 seconds). Events occurring between reconciliation completion and Watch Consumer start may be missed until the next hourly reconciliation — the fulfillment Watch stream does not currently support resuming from a resource version, so a gap-free handoff is not possible without upstream changes.
 
 ### API Extensions
 
@@ -310,7 +310,7 @@ All lifecycle events share a base schema. The base event carries **common fields
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `resource_id` | string (UUID) | Fulfillment resource identifier |
+| `resource_id` | string (UUID) | Resource identifier — fulfillment resource UUID for VMaaS/CaaS; request-scoped UUID (CloudEvent `id`) for MaaS inference |
 | `resource_type` | string | `compute_instance`, `cluster_order`, `maas_inference` |
 | `tenant_id` | string | Tenant identifier (billing attribution) |
 | `project_id` | string (optional) | Project identifier (sub-tenant grouping; null until P2 prerequisite) |
@@ -519,8 +519,8 @@ Each adapter uses a single consumer group across all consumed topics. Consumer g
 
 #### State Projection Schema
 
-```
-TABLE metering_resource_state (
+```sql
+CREATE TABLE metering_resource_state (
     resource_id           TEXT        NOT NULL,
     resource_type         TEXT        NOT NULL,
     tenant_id             TEXT        NOT NULL,
@@ -538,11 +538,13 @@ TABLE metering_resource_state (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    PRIMARY KEY (resource_id),
-    INDEX idx_billable (is_billable, last_heartbeat_at) WHERE is_billable = TRUE,
-    INDEX idx_tenant (tenant_id),
-    INDEX idx_type_state (resource_type, current_state)
-)
+    PRIMARY KEY (resource_id)
+);
+
+CREATE INDEX idx_billable ON metering_resource_state (is_billable, last_heartbeat_at)
+    WHERE is_billable = TRUE;
+CREATE INDEX idx_tenant ON metering_resource_state (tenant_id);
+CREATE INDEX idx_type_state ON metering_resource_state (resource_type, current_state);
 ```
 
 The State Projection is an eventually consistent projection of fulfillment-service state. The Watch Consumer provides near-real-time updates; the Reconciliation Loop provides hourly consistency guarantees. The projection is authoritative for Metering Service operations (heartbeat generation, reconciliation) but never used as a source of truth for external consumers — Kafka topics serve that role.
@@ -559,7 +561,7 @@ CaaS clusters store multiple billing components in `billing_dimensions` JSONB:
 }
 ```
 
-The Watch Consumer and Reconciliation Loop both write to the State Projection. Concurrency is managed via PostgreSQL row-level locking (`SELECT FOR UPDATE`). The reconciler never overwrites a state newer than the fulfillment snapshot — it uses the resource's `updated_at` timestamp for freshness detection.
+The Watch Consumer and Reconciliation Loop both write to the State Projection. Concurrency is managed via PostgreSQL row-level locking (`SELECT FOR UPDATE`). The `fulfillment_version` column stores the resource version from the fulfillment-service response (monotonically increasing per resource). The reconciler compares `fulfillment_version` to reject stale snapshots — it never overwrites a projection row whose `fulfillment_version` is higher than the incoming fulfillment response's version.
 
 **State Projection recovery:** If the database is lost, clear the table, run startup reconciliation (rebuilds from fulfillment List APIs), and optionally replay `osac.metering.lifecycle` from Kafka for historical context. Kafka is the system of record for historical metering data; the State Projection is a mutable operational cache.
 
@@ -573,7 +575,7 @@ The Watch Consumer and Reconciliation Loop both write to the State Projection. C
    - **Stale heartbeat (> 120s while billable):** emit synthetic heartbeat
 4. For each resource in projection not in fulfillment: emit `correction.v1` with `reason=missed_deletion`; mark deleted
 
-The reconciler uses the resource's `updated_at` from fulfillment to avoid overwriting fresher Watch Consumer updates. Corrections are published to `osac.metering.corrections`, not `osac.metering.lifecycle`, so adapters can distinguish primary events from adjustments.
+The reconciler compares `fulfillment_version` to reject stale updates. Corrections are published to `osac.metering.corrections`, not `osac.metering.lifecycle`, so adapters can distinguish primary events from adjustments. The initial implementation reconciles lifecycle state only; billing_dimensions changes (e.g., VM resize or cluster scale) that occur without a state change are caught by the Watch Consumer in real time but not by hourly reconciliation. Adding billing_dimensions comparison to the reconciler is a future improvement.
 
 #### Reliability
 
@@ -584,8 +586,8 @@ At-least-once delivery is enforced at every hop:
 | Watch stream → Watch Consumer | gRPC reconnect with exponential backoff; startup reconciliation fills gaps |
 | Watch Consumer → Kafka | `acks=all`, `enable.idempotence=true` |
 | MaaS HTTP Ingest → Kafka | Synchronous Kafka publish before HTTP 202; AI Gateway retries on non-2xx |
-| Kafka → Adapter | Consumer offset committed only after successful `Submit()` |
-| Adapter → Billing Provider | Exponential backoff (max 10 attempts, ~85 min); DLQ after exhaustion |
+| Kafka → Adapter | Consumer offset committed only after successful `Flush()` |
+| Adapter → Billing Provider | Exponential backoff (max 10 attempts, ~13.5 min); DLQ after exhaustion |
 
 Each CloudEvent has a globally unique `id` (UUID v4). Adapters maintain a dedup cache (in-memory, TTL 10 min) keyed on CloudEvent `id`. For providers with native idempotency (e.g., OpenMeter), the `id` is passed as the idempotency key.
 
@@ -606,7 +608,7 @@ metering:
     kafka:
       consumerGroup: osac-metering-cost-management
       startOffset: latest
-    provider:
+    providerConfig:
       endpoint: https://cost-management.example.com
       apiKeySecretRef: metering-provider-credentials
 ```
@@ -668,7 +670,7 @@ This satisfies NFR-1 ("no single point of failure") because the Metering Service
 
 | Failure Mode | Detection | Recovery | Data Loss Risk |
 |-------------|-----------|----------|----------------|
-| Kafka unavailable | Producer errors; `osac_metering_kafka_publish_errors_total` alert | In-memory buffer (bounded, 10K events); publish on recovery; post-recovery reconciliation | Low: short outages covered by buffer; extended outage may lose events, reconciliation catches gaps |
+| Kafka unavailable | Producer errors; `osac_metering_kafka_publish_errors_total` alert | In-memory buffer (bounded, 10K events); publish on recovery; post-recovery reconciliation | Low for VMaaS/CaaS: short outages covered by buffer; extended outage or buffer overflow drops events, but reconciliation recovers state for resources still in fulfillment. MaaS inference events are not reconcilable — buffer overflow loses them permanently. |
 | Fulfillment Service restarts | Watch stream EOF; auto-reconnect with backoff | Watch Consumer reconnects; startup reconciliation fills gap | None |
 | Billing provider unavailable | Adapter `Submit()` errors; retry policy triggers | Exponential backoff (max 10 attempts); events stay in Kafka; resume from last committed offset | None: Kafka durability; billing delivery delayed, not lost |
 | Duplicate lifecycle events | CloudEvent `id` in adapter dedup cache | Dedup cache suppresses duplicate; `osac_adapter_duplicates_suppressed_total` increments | None |
@@ -796,7 +798,7 @@ Using Ginkgo/Gomega:
 - **Watch Consumer state machine:** verify snapshot → lifecycle transition for every VMaaS state path (STARTING→RUNNING, RUNNING→STOPPED, RUNNING→PAUSED, STOPPED→RUNNING, etc.) and CaaS state path (PROGRESSING→READY, READY→FAILED, FAILED→PROGRESSING)
 - **Watch Consumer enrichment:** verify `previous_state`, `current_state`, `duration_seconds`, and `billing_dimensions` are computed correctly from State Projection lookup
 - **Heartbeat Generator:** verify billable resource query returns only `is_billable=true` resources; verify heartbeat event emission at 60s interval; verify heartbeat stops when resource becomes non-billable
-- **Reconciliation Loop:** verify detection of missing resources (missed_creation), state drift (state_mismatch), stale heartbeats (> 120s), and orphaned resources (missed_deletion); verify correction event generation with correct reason codes
+- **Reconciliation Loop:** verify detection of missing resources (missed_creation), state drift (state_drift), stale heartbeats (> 120s), and orphaned resources (missed_deletion); verify correction event generation with correct reason codes
 - **MaaS HTTP Ingest:** verify tenant_id resolution from `organization_id` field; verify rejection when `organization_id` is missing; verify CloudEvent schema validation rejects malformed events; verify synchronous Kafka publish before HTTP 202
 - **Provider Adapter framework:** verify retry with exponential backoff (1s, 2s, 4s, ...); verify DLQ routing after max attempts; verify dedup cache suppresses duplicate CloudEvent IDs; verify out-of-order events (`transition_time` earlier than last recorded for same `resource_id`) are routed to correction handling
 
