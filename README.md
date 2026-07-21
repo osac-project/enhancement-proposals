@@ -35,8 +35,8 @@ OSAC uses a two-document flow: a **PRD** (Product Requirements Document) describ
 
 The [osac-workspace](https://github.com/osac-project/osac-workspace) provides AI-assisted workflows that guide you through the process:
 
-1. **PRD**: Run `/prd:ingest` to start a PRD, then `/prd:draft` and `/prd:publish` to create it in this repo as `enhancements/<feature-slug>/prd.md`.
-2. **Design**: Run `/design:ingest` to start the design, then `/design:draft` and `/design:publish` to create it as `enhancements/<feature-slug>/design.md`.
+1. **PRD**: Run `/prd:ingest` to start a PRD, then `/prd:draft` and `/prd:publish` to create it in this repo as `enhancements/OSAC-NNNN-feature-slug/prd.md`.
+2. **Design**: Run `/design:ingest` to start the design, then `/design:draft` and `/design:publish` to create it as `enhancements/OSAC-NNNN-feature-slug/design.md`.
 
 See the osac-workspace [AGENTS.md](https://github.com/osac-project/osac-workspace/blob/main/AGENTS.md) for full workflow details.
 
@@ -45,7 +45,7 @@ See the osac-workspace [AGENTS.md](https://github.com/osac-project/osac-workspac
 1. Create a new directory inside the `enhancements` directory:
 
     ```sh
-    mkdir enhancements/my-nifty-feature
+    mkdir enhancements/OSAC-1234-my-nifty-feature
     ```
 
 2. Create your PRD (`prd.md`) and design document (`design.md`) in that directory. Use `guidelines/enhancement_template.md` as a starting point for the design if needed (note: this template predates the two-document split and includes sections like User Stories that now belong in the PRD).
