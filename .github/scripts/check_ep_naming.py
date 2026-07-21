@@ -15,7 +15,12 @@ import re
 import subprocess
 import sys
 
-NAME_RE = re.compile(r"^OSAC-[1-9][0-9]*-[a-z0-9]+(?:-[a-z0-9]+)*$")
+# OSAC- is the documented, recommended prefix (see CONTRIBUTING.md). MGMT- is
+# a narrow, intentionally-undocumented allowance for the small number of
+# pre-existing EPs whose only tracking key predates the OSAC Jira project
+# (e.g. MGMT-23669) — see OSAC-2870. Not advertised as a general pattern:
+# new EPs should get an OSAC Feature key, not a legacy one.
+NAME_RE = re.compile(r"^(?:OSAC|MGMT)-[1-9][0-9]*-[a-z0-9]+(?:-[a-z0-9]+)*$")
 CHECKED_FILENAMES = frozenset({"prd.md", "design.md"})
 
 BASE_SHA_ENV_VAR = "PRE_COMMIT_PR_BASE_SHA"

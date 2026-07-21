@@ -79,6 +79,26 @@ class ValidatePathsTests(unittest.TestCase):
         )
         self.assertEqual(violations, [])
 
+    def test_new_directory_with_legacy_mgmt_key_is_not_flagged(self):
+        # MGMT- is a narrow, intentionally-undocumented allowance for EPs
+        # whose only tracking key predates the OSAC Jira project — see
+        # OSAC-2870 and the comment on NAME_RE.
+        violations = self._validate(
+            paths=["enhancements/MGMT-23669-tenant-storage-tiers/README.md"],
+            base_sha="abc123",
+            existing_at_base=set(),
+        )
+        self.assertEqual(violations, [])
+
+    def test_new_directory_with_unrecognized_prefix_is_still_flagged(self):
+        violations = self._validate(
+            paths=["enhancements/JIRA-123-example-feature/prd.md"],
+            base_sha="abc123",
+            existing_at_base=set(),
+        )
+        self.assertEqual(len(violations), 1)
+        self.assertIn("JIRA-123-example-feature", violations[0])
+
     def test_new_file_with_wrong_case_is_flagged(self):
         for bad_name in ("PRD.md", "Design.md", "DESIGN.md"):
             with self.subTest(bad_name=bad_name):
