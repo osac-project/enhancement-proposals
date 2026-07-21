@@ -8,15 +8,15 @@
 
 ## Problem Statement
 
-OSAC CaaS tenants need block storage on their clusters, but there is no vendor-agnostic storage layer today. Without one, tenants would see vendor-specific StorageClasses and backend addresses, vendor credentials would be stored on tenant clusters, there would be no enforcement point for per-tenant storage policy, and the platform would have no inventory of what volumes exist or which tenant owns them.
+OSAC CaaS tenants need block storage on their clusters, but there is no vendor-agnostic storage layer today. Without one, tenants would see vendor-specific StorageClasses and backend addresses, vendor credentials would be visible to tenants, there would be no enforcement point for per-tenant storage policy, and the platform would have no inventory of what volumes exist or which tenant owns them.
 
-The Storage Control Plane introduces a single storage driver that presents opaque storage tiers to tenants, enforces authorization and tier-access policies, provides vendor credentials per-request without persisting them on tenant clusters, and tracks every volume in a central inventory.
+The Storage Control Plane introduces a single storage driver that presents opaque storage tiers to tenants, enforces authorization and tier-access policies, keeps vendor credentials out of the tenant's view, and tracks every volume in a central inventory.
 
 ## In Scope
 
 1. **Storage driver for tenant clusters**: Handles PVC create, delete, and read (get/list) on tenant clusters through a standard Kubernetes PVC interface. StorageClasses are named after the tenant's configured storage tiers. v0.2 supports VAST as the only vendor backend for block storage.
 
-2. **Storage control plane services**: Tier resolution (maps a tenant's StorageClass to the correct vendor backend), policy enforcement (authorization and tier-access checks), and credential management (vendor credentials provided per-request, never stored on tenant clusters).
+2. **Storage control plane services**: Tier resolution (maps a tenant's StorageClass to the correct vendor backend), policy enforcement (authorization and tier-access checks), and credential management (vendor credentials managed by the platform, not visible to tenants).
 
 3. **Volume inventory**: Every volume tracked centrally with tenant, tier, state, and size. State lifecycle for v0.2: creating, available, deleting, deleted.
 
@@ -66,7 +66,7 @@ Tenant Admin and Tenant User have the same storage capabilities in v0.2.
 
 - As a Cloud Provider Admin, I want cross-cluster authentication established automatically during cluster provisioning, so that tenant clusters communicate securely with the storage control plane without manual credential distribution.
 
-- As a Cloud Provider Admin, I want vendor credentials never stored on tenant clusters and provided only per-request, so that a compromised tenant cluster cannot access storage backends directly.
+- As a Cloud Provider Admin, I want vendor credentials managed by the platform and not visible to tenants, so that a compromised tenant cluster cannot access storage backends directly.
 
 - As a Cloud Provider Admin, I want to see all volumes created by a tenant, so that I can account for storage resources across tenants.
 
@@ -82,9 +82,3 @@ Tenant Admin and Tenant User have the same storage capabilities in v0.2.
 - **ClusterOrder provisioning**: Must be functional for automated storage driver deployment during cluster provisioning.
 - **OSAC-1001 (Cluster Storage Setup)** and **OSAC-1332 (Tenant Onboarding)**: Existing automation that this feature extends to deploy the OSAC storage driver.
 
-## References
-
-- [Architecture doc: OSAC CSI Meta-Driver](https://docs.google.com/document/d/1GCWco97kWNwFwfbC4TAoyXIxPSMO4CNyqFKv_lQczZU/edit?usp=sharing)
-- [Storage User Flows Roadmap](https://docs.google.com/spreadsheets/d/1kwpUdOUeCI8qVtDN1iL1iu-M1a7N_ZSCso-Rt_KpVKE/edit?usp=sharing)
-- [OSAC Storage and CSI Components Diagram](https://docs.google.com/drawings/d/1-e2wep_RKmJRLFtqMu1RzKPvV_7mz2ZpLHaVLHZayd8/edit?usp=sharing)
-- [OSAC CSI Driver Flow - CaaS Diagram](https://docs.google.com/drawings/d/1QVn4y_NSfyWoHd50w8buiXV1LaQZOFYCwLwczTTvbEQ/edit?usp=sharing)
