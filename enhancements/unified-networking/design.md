@@ -6,11 +6,15 @@ creation-date: 2026-06-03
 last-updated: 2026-06-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1029
+prd: "prd.md"
 see-also:
-  - Requirements (PRD): /enhancements/unified-networking-prd
   - Networking API: /enhancements/networking
   - BareMetal Instance API: /enhancements/baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
+  - VMaaS Networking: /enhancements/vmaas-networking
+  - CaaS Networking: /enhancements/caas-networking
+  - BMaaS Networking: /enhancements/bmaas-networking
+  - Default Networking: /enhancements/default-networking
 replaces:
   - /enhancements/networking
 superseded-by:
@@ -24,7 +28,7 @@ superseded-by:
 This enhancement describes the technical design for the OSAC unified
 networking architecture. For the problem statement, gaps analysis, and
 requirements, see the companion
-[Requirements Document (PRD)](/enhancements/unified-networking-prd).
+[Requirements Document (PRD)](prd.md).
 
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a
 pod. Pod networking is managed by OVN-Kubernetes, meaning VMs live inside an
@@ -53,23 +57,26 @@ the [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api),
 which provides a per-server resource aligned with ComputeInstance.
 
 For user stories, goals, and non-goals, see the
-[Requirements Document (PRD)](/enhancements/unified-networking-prd).
+[Requirements Document (PRD)](prd.md).
 
 ## Proposal
 
 ### NetworkClass
 
 NetworkClass is the provider-level CRD that defines which managers handle
-networking for a region. Tenants never interact with it. One NetworkClass
-per region.
+networking for the deployment. Tenants never interact with it. One
+NetworkClass per deployment.
 
 #### Two Managers
 
 OSAC networking is handled by two managers:
 
 - **Fabric Manager** — a single product (e.g., Netris, Neutron) that manages
-  all physical networking: tenant isolation, ACLs, IP allocation, DNAT, SNAT.
-  The physical fabric is one infrastructure — one controller manages it all.
+  all physical networking: tenant isolation, ACLs, IP allocation, DNAT, SNAT,
+  and inter-subnet L3 routing within a VirtualNetwork. The physical fabric is
+  one infrastructure — one controller manages it all. When a VN has multiple
+  subnets, the fabric manager provides the L3 gateway for each subnet and
+  routes between them automatically.
 
 - **K8s Manager** (optional) — handles everything needed to make VMs part of
   the fabric: creates the K8s overlay (e.g., CUDN with LocalNet) and bridges
@@ -314,17 +321,24 @@ The k8sManager is only involved at subnet creation (to bridge the overlay)
 — after that, VMs are on the fabric and the fabric manager handles them
 like any other resource.
 
+The dispatch table above covers **networking resources only**. Compute
+resources (ComputeInstance, BaremetalInstance, Cluster) handle per-instance
+network attachment through their provisioning operators — see per-service
+designs at [VMaaS](/enhancements/vmaas-networking),
+[CaaS](/enhancements/caas-networking),
+[BMaaS](/enhancements/bmaas-networking).
+
 ### Resource Hierarchy
 
 ```text
-NetworkClass (per region, provider-only)
+NetworkClass (per deployment, provider-only)
 
 VirtualNetwork (tenant-managed, infrastructure-agnostic)
   ├── Subnet              → fabricManager + k8sManager
   ├── SecurityGroup       → fabricManager
   └── NATGateway          → fabricManager
 
-ExternalIPPool (region-scoped, provider-managed)
+ExternalIPPool (deployment-scoped, provider-managed)
   └── ExternalIP (tenant-managed) → fabricManager
 
 ExternalIPAttachment (tenant-managed)
@@ -340,8 +354,8 @@ environments, the provider creates pools with data-center-routable IPs. In
 internet-connected environments, the pools contain internet-routable IPs.
 The API and flow are identical regardless of the deployment topology.
 
-ExternalIPPools are provider-managed and region-scoped. The fabric manager
-handles IP allocation — one pool serves all resource types.
+ExternalIPPools are provider-managed and deployment-scoped. The fabric
+manager handles ExternalIP allocation — one pool serves all resource types.
 
 ### End-to-End Flows
 
@@ -424,9 +438,9 @@ and gets an IP from the subnet CIDR.
 **BaremetalInstance:**
 
 Bare-metal servers have multiple physical interfaces. The tenant discovers
-available interfaces through BMaaS (the exact discovery mechanism — e.g.,
-host type metadata, template, or inventory query — is defined by the BMaaS
-design). Given the interface identifiers, the tenant specifies which
+available interfaces via the HostType API — each BM HostType lists its
+physical interfaces with name, role, and description (see
+[HostType](#hosttype)). Given the interface identifiers, the tenant specifies which
 interface to attach to which subnet. Each
 `network_attachment` maps one physical interface to one subnet. If
 `interface` is omitted, the fabric manager picks a default.
@@ -455,7 +469,8 @@ fabric segment. Each interface gets an IP from its subnet's CIDR.
 Validation rules:
 - All referenced subnets must belong to the same VirtualNetwork
 - The same interface cannot appear in multiple attachments
-- The `interface` must reference a valid interface identifier from BMaaS
+- The `interface` must reference a valid interface name from the HostType's
+  NetworkInterface list
 - Multiple attachments without `interface` is invalid — if more than one
   attachment is specified, each must have an explicit `interface`
 - The number of attachments cannot exceed the number of available interfaces
@@ -468,28 +483,18 @@ osac create cluster --template ocp_4_17_small \
   --node-set workers=large,size=3 --name my-cluster
 ```
 
-The template determines whether nodes are VMs or BM. BM nodes get switch
-ports configured on the fabric segment. VM nodes are placed in the K8s
-overlay. Either way, all nodes end up on the same fabric segment.
+For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
+are architecturally possible but deferred. The fulfillment-service resolves
+the interface from the HostType (`fabric_interface` — first interface with
+role `fabric`). The operator handles agent selection and network attachment
+(switch port configuration) before triggering the provisioning template.
+See [CaaS Networking](/enhancements/caas-networking) for the detailed flow.
 
-For clusters with BM nodes, the nodes also have multiple physical
-interfaces — the same reality as BaremetalInstance. The difference is that
-the **template** handles the interface-to-subnet mapping, not the tenant.
-The cluster template is created by the provider who knows the node hardware
-(e.g., which interface is for data traffic, which is for management). The
-tenant specifies which subnet(s) to use; the template maps them to the
-correct physical interfaces for each node type.
-
-Different node sets can be placed on different subnets using the `node-set`
-field (see [ClusterNetworkAttachment](#network-attachment-types)):
-
-```bash
-osac create cluster --template ocp_4_17_small \
-  --network-attachment node-set=compute,subnet=standard-subnet,security-groups=my-sg \
-  --network-attachment node-set=gpu,subnet=gpu-subnet \
-  --node-set compute=large,size=3 --node-set gpu=h100,size=2 \
-  --name my-cluster
-```
+Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
+(where the tenant specifies interfaces directly), for clusters the
+**system** resolves the interface from the HostType's NetworkInterface list.
+The tenant specifies which subnet to use (one per cluster); the system maps it to the
+correct physical interfaces based on each node set's host type.
 
 In all cases, the resource ends up on the fabric. The fabric manager sees
 all resources equally — there is no VM-vs-BM distinction.
@@ -538,18 +543,17 @@ straightforward. For clusters, the DNAT target is a service-level VIP
 (API server or ingress) that is discovered during cluster provisioning.
 The VIP allocation is decoupled from the networking layer:
 
-1. CaaS template provisions the cluster
-2. Template provisions internal VIPs via MetalLB LoadBalancer Services:
-   - **API VIP**: MetalLB allocates an IP for the kube-apiserver Service
-     on the management cluster
-   - **Ingress VIP**: MetalLB allocates an IP for the ingress controller
-     Service on the hosted cluster (from the tenant's subnet)
-3. Template writes VIPs to the ClusterOrder CR status
-4. Feedback controller syncs VIPs to the Cluster object in the
+1. CaaS template creates MetalLB LoadBalancer Services for API server
+   and ingress. MetalLB allocates VIPs from its IPAddressPool (created
+   by k8s_manager at subnet creation).
+2. Template discovers the allocated VIPs and writes them to ClusterOrder
+   CR status (`apiEndpoint`, `ingressEndpoint`)
+3. Feedback controller syncs VIPs to the Cluster object in the
    fulfillment service as `api_endpoint` and `ingress_endpoint` fields
-5. ExternalIPAttachment controller reads the VIP from the Cluster →
-   calls fabric manager to create DNAT: external IP → internal VIP
-6. ExternalIPAttachment transitions to Ready
+4. ExternalIPAttachment controller reads the VIP from ClusterOrder
+   status → calls fabric manager to create DNAT: external IP →
+   internal VIP
+5. ExternalIPAttachment transitions to Ready
 
 The tenant can inspect the allocated VIPs:
 
@@ -563,6 +567,157 @@ ExternalIPAttachments can be created before or after the cluster. If
 created before (Pending state), the controller activates them once the
 cluster's endpoint VIPs are available. If created after, the DNAT rule
 is configured immediately.
+
+**Auto-provisioning lifecycle (auto_external_ip_attachment):**
+
+Auto ExternalIP attachment provisioning (described in per-service
+EPs and [Default Networking](/enhancements/default-networking)) is a
+two-phase process:
+
+*Phase 1 — synchronous (during the create API call):*
+
+The fulfillment-service validates pool capacity, creates ExternalIP and
+ExternalIPAttachment records in PostgreSQL, and decrements pool capacity
+— all within the same API transaction. If the pool is exhausted, the
+call fails and no resources are persisted (including the parent
+resource). Both the ExternalIP and ExternalIPAttachment start in
+**Pending** state. The ExternalIPAttachment's target reference is set at
+creation time, but the DNAT target IP may not yet be known (the target
+resource may still be provisioning).
+
+The fulfillment-service creates the ExternalIPAttachment with the
+ExternalIP in Pending state (not yet Allocated). This bypasses the
+normal ExternalIPAttachment server validation that requires the
+ExternalIP to be Allocated — the auto-provisioning codepath in the
+fulfillment-service creates both resources atomically within the same
+transaction, so the Allocated check is not needed (the ExternalIP is
+guaranteed to exist and will be reconciled by the operator).
+
+*Phase 2 — asynchronous (controller reconciliation):*
+
+Each resource type has an independent fulfillment-service reconciler.
+The ExternalIP and ExternalIPAttachment CRs are pushed to the hub
+cluster independently — there is no cross-resource ordering in the
+reconcilers. The operator-side controllers handle ordering via
+precondition checks and requeue:
+
+- fulfillment-service reconcilers push ExternalIP and
+  ExternalIPAttachment CRs to the hub cluster (independently, around
+  the same time)
+- osac-operator ExternalIP controller dispatches to AAP → fabric
+  manager allocates an IP address → ExternalIP transitions to
+  **Allocated**
+- osac-operator ExternalIPAttachment controller checks two
+  preconditions before dispatching:
+  - **ExternalIP must be Allocated** (have an allocated address). If
+    not, the controller requeues.
+  - **Target resource must have a known IP.** The required IP depends
+    on the target type (see below). If not yet available, the
+    controller requeues.
+- Once both preconditions are met, the controller dispatches to AAP →
+  fabric manager creates the DNAT rule → ExternalIPAttachment
+  transitions to **Ready**
+
+*ExternalIPAttachment controller preconditions per target type:*
+
+| Target type | Required precondition | Source of target IP |
+|-------------|----------------------|---------------------|
+| ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
+| Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to assigned IP; operator writes to CR status |
+
+The controller uses the existing requeue pattern: if the precondition
+is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
+retries until the target IP appears. This is the same pattern used
+today for the `VirtualMachineReference` check on ComputeInstance
+targets.
+
+*IP discovery — DHCP-based host networking:*
+
+All host-side IP assignment uses DHCP. The fabric's DHCP server (managed
+by the fabric manager as part of the V-Net infrastructure) assigns IPs
+to hosts when they boot on the subnet. OSAC does not pre-allocate IPs
+or configure host-side networking — DHCP handles IP address, gateway,
+prefix, and DNS automatically.
+
+After the host receives its IP via DHCP, the IP is discovered and
+written to the resource's CR status for two purposes:
+- ExternalIPAttachment controller reads the primary IP for DNAT target
+- Tenant visibility (API response includes the allocated IP)
+
+IP discovery mechanism per service type:
+
+| Service | Discovery source | Who writes status | Status field |
+|---------|-----------------|-------------------|-------------|
+| VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
+| CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
+| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to DHCP-assigned IP (see [BMaaS OQ#4 — Resolved](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+
+The fabric manager's `create_network_attachment` role is switch-side
+only — it adds the host's port to the V-Net. The role is generic: it
+first checks if the port is already on a V-Net (e.g., a parking
+network for CaaS pre-booted agents) — if so, removes it — then adds
+the port to the target V-Net. This handles both BMaaS (server not on
+any V-Net) and CaaS (agent moving from parking to tenant V-Net) with
+the same role. The role is idempotent: if the port is already on the
+target V-Net, the role is a no-op. The role only removes and re-adds
+the port when the current V-Net differs from the target. Once on the
+V-Net, the host receives an IP from the fabric's DHCP server
+automatically. On deletion, `delete_network_attachment` removes the
+port from the tenant V-Net and returns it to the parking network
+(CaaS) or leaves it detached (BMaaS).
+
+IP discovery for BMaaS is a separate dispatcher call. After
+`reconcileProvisioning` completes and the host has received a DHCP
+lease, the operator dispatches `query_dhcp_lease` — this role queries
+the fabric manager's DHCP lease API for the subnet and matches the
+server's port MAC address to find the corresponding DHCP-assigned IP.
+
+*NATGateway controller preconditions:*
+
+The NATGateway controller has two preconditions before dispatching the
+SNAT rule creation:
+
+| Precondition | Source |
+|-------------|--------|
+| Referenced VirtualNetwork must be Ready (fabric segment provisioned) | VirtualNetwork CR status |
+| Referenced ExternalIP must be Allocated (have an allocated address) | ExternalIP CR status |
+
+If either precondition is not met, the NATGateway controller requeues.
+This prevents dispatching to AAP before the VN's fabric segment exists
+(no segment to attach the SNAT rule to) or without a valid SNAT source
+address.
+
+*Auto-provisioned resource labeling:*
+
+All auto-provisioned resources receive the label
+`osac.openshift.io/auto-provisioned: "true"`. Auto-provisioned
+ExternalIPs also receive a parent-resource label
+`osac.openshift.io/auto-provisioned-for: <resource-id>` so that the
+cleanup logic can find orphaned ExternalIPs directly, even if the
+intermediate ExternalIPAttachment has already been deleted.
+
+*Auto-provisioned resource cleanup on parent deletion:*
+
+The parent resource's finalizer uses a phased requeue approach to
+ensure correct ordering:
+
+1. Query ExternalIPAttachments labeled `auto-provisioned` targeting
+   this resource. Issue delete for each. Requeue.
+2. On next reconcile: check if all ExternalIPAttachments are fully
+   deleted (including their own finalizers completing the DNAT rule
+   removal). If not, requeue.
+3. Once all ExternalIPAttachments are gone: query ExternalIPs labeled
+   `auto-provisioned-for: <this-resource>`. Issue delete for each.
+   Requeue.
+4. On next reconcile: check if all ExternalIPs are fully deleted. If
+   not, requeue.
+5. Once all ExternalIPs are gone: proceed with parent resource
+   deletion.
+
+If cleanup fails permanently (after N retries): finalizer is removed,
+parent resource deleted, orphaned resources left in cluster. Orphaned
+resources are identifiable by the `auto-provisioned-for` label.
 
 **Enable outbound NAT (SNAT):**
 
@@ -589,6 +744,53 @@ message VirtualNetworkSpec {
 ```
 
 No scope or service field — subnets are infrastructure-agnostic.
+
+#### HostType
+
+The `HostType` resource describes a class of hardware. For networking,
+BM host types include a structured interface list:
+
+```protobuf
+message HostType {
+  string id = 1;
+  Metadata metadata = 2;
+  string title = 3;
+  string description = 4;
+  repeated NetworkInterface interfaces = 5;  // BM only, empty for VM host types
+}
+
+message NetworkInterface {
+  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0"
+  string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
+  string description = 3; // e.g., "100GbE fabric interface"
+}
+```
+
+The `interfaces` list is only populated for BM host types. VM host types
+have an empty list — VMs get virtual NICs from the CUDN overlay, not
+physical interfaces. This serves as the BM-vs-VM discriminator: if a
+HostType has interfaces → BM; if empty → VM.
+
+Interfaces are ordered. When multiple interfaces share the same role
+(e.g., two `fabric` interfaces), the first one in the list is the default
+for that role — used by CaaS for automatic interface resolution.
+
+| Role | Meaning |
+|------|---------|
+| `fabric` | Primary fabric traffic (east-west, tenant workloads) |
+| `management` | In-band management/control plane traffic |
+| `storage` | Storage fabric traffic |
+| `lifecycle` | Out-of-band lifecycle management (PXE boot, Redfish/BMC) — not tenant-attachable |
+
+Roles are conventions, not enforced enums. The `lifecycle` interface is
+used by the provisioning system (Ironic, Metal3) and should not appear
+in `network_attachments`.
+
+BMaaS: the tenant specifies interface names directly on
+`BareMetalNetworkAttachment.interface`, validated against the HostType's
+interface list. CaaS: the fulfillment-service resolves the interface
+automatically (first `fabric`-role interface → stored as
+`fabric_interface` on the node set definition).
 
 #### Network Attachment Types
 
@@ -618,13 +820,13 @@ primary designation and default gateway semantics.
 message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
-  string interface = 3;                 // optional, immutable: physical interface identifier from BMaaS
+  string interface = 3;                 // optional, immutable: physical interface from HostType
   bool primary = 4;                     // optional, immutable: designates default gateway
 }
 ```
 
 Each entry maps one physical interface to one subnet. The `interface`
-field references an interface identifier provided by BMaaS.
+field references a name from the HostType's NetworkInterface list.
 If omitted, the fabric manager picks a default. Multiple entries create
 a multi-homed BM server. See [Multi-NIC Behavior](#multi-nic-behavior)
 for primary designation and default gateway semantics, and
@@ -637,39 +839,46 @@ discovery and multi-interface examples.
 message ClusterNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
-  string node_set = 3;                  // optional, immutable: node set name from cluster spec
 }
 ```
 
-Each entry maps one node set to one subnet. If `node_set` is omitted,
-all node sets use this subnet. Multiple entries place different node sets
-on different subnets (e.g., GPU workers on a high-bandwidth subnet,
-compute workers on a standard one).
+A single attachment applies to the whole cluster — all node sets share the same subnet.
+The `fabric_interface` is resolved by the fulfillment-service at creation time for each
+node set from its host type (first interface with role `fabric` — see [HostType](#hosttype))
+and stored on the node set definition. The tenant does not set this field.
 
 #### Resource Specs
 
-**ComputeInstance** (existing — field already exists, type changes):
+**ComputeInstance** (existing — new field alongside deprecated shared type):
 
 ```protobuf
 message ComputeInstanceSpec {
   // ... existing fields ...
-  repeated ComputeNetworkAttachment network_attachments = 14;
+  repeated NetworkAttachment network_attachments = 14;              // DEPRECATED (shared type)
+  repeated ComputeNetworkAttachment compute_network_attachments = 18; // NEW (per-resource type)
 }
 ```
+
+Field 14 (`network_attachments`, shared `NetworkAttachment`) is deprecated and will be
+removed after migration. Field 18 (`compute_network_attachments`, `ComputeNetworkAttachment`)
+is the new canonical field. See the [VMaaS Networking EP](/enhancements/vmaas-networking/design.md)
+for the dual-field migration strategy.
 
 **BaremetalInstance** (new — defined in the
 [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api)):
 
 ```protobuf
-message BaremetalInstanceSpec {
-  string template = 1;
+message BareMetalInstanceSpec {
+  string catalog_item = 1;
   optional string ssh_public_key = 2;
   optional string user_data = 3;
-  optional BaremetalInstanceRunStrategy run_strategy = 4;
-  optional google.protobuf.Timestamp restart_requested_at = 5;
+  optional BareMetalInstanceRunStrategy run_strategy = 4;
+  int64 restart_trigger = 5;
+  map<string, google.protobuf.Any> template_parameters = 6;
+  optional BareMetalInstanceImage image = 7;
 
   // NEW: OSAC networking
-  repeated BareMetalNetworkAttachment network_attachments = 6;
+  repeated BareMetalNetworkAttachment network_attachments = 8;
 }
 ```
 
@@ -682,7 +891,7 @@ message ClusterSpec {
   map<string, ClusterNodeSet> node_sets = 3;
 
   // NEW: networking
-  repeated ClusterNetworkAttachment network_attachments = 4;
+  ClusterNetworkAttachment network_attachment = 9;  // singular, one per cluster
 }
 ```
 
@@ -704,6 +913,61 @@ message ClusterStatus {
 These are used by the ExternalIPAttachment controller as the DNAT backend
 IP when the target is a cluster (see
 [Cluster ExternalIPAttachment flow](#cluster-externalipattachment-flow)).
+
+#### Resource Status — Discovered IPs
+
+After provisioning, resources receive IPs via DHCP. Feedback controllers
+discover these IPs and write them to status for two purposes: tenant
+visibility and ExternalIPAttachment DNAT target resolution.
+
+**ComputeInstanceStatus:**
+
+```protobuf
+message ComputeNetworkAttachmentStatus {
+  string subnet_ref = 1;               // Subnet ID (echoed from spec)
+  string ip_address = 2;               // Discovered from KubeVirt VMI network status
+  bool primary = 3;                     // Echoed from spec
+}
+
+message ComputeInstanceStatus {
+  // ... existing fields ...
+  repeated ComputeNetworkAttachmentStatus compute_network_attachment_statuses = N;
+}
+```
+
+Feedback controller watches KubeVirt VMI `status.interfaces[].ipAddress`,
+maps each interface to the corresponding attachment by CUDN NAD reference,
+and fires Signal RPC to fulfillment-service.
+
+**BaremetalInstanceStatus:**
+
+```protobuf
+message BareMetalNetworkAttachmentStatus {
+  string interface = 1;                 // Physical interface name (echoed from spec)
+  string subnet_ref = 2;               // Subnet ID (echoed from spec)
+  string ip_address = 3;               // Discovered via query_dhcp_lease role after provisioning (matches port MAC to DHCP lease)
+  bool primary = 4;                     // Echoed from spec
+}
+
+message BareMetalInstanceStatus {
+  // ... existing fields ...
+  repeated BareMetalNetworkAttachmentStatus network_attachment_statuses = N;
+}
+```
+
+IP discovered after DHCP assignment on the tenant V-Net. After
+`reconcileProvisioning` completes, the operator dispatches
+`query_dhcp_lease` to the fabric manager's DHCP lease API, matching
+the server's port MAC address to find the assigned IP (see
+[BMaaS OQ#4 — Resolved](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)).
+The operator writes the discovered IP to CR status, and the feedback
+controller syncs to fulfillment-service.
+
+**ClusterStatus** does not have per-attachment IP status — CaaS uses
+service-level VIPs (`api_endpoint`, `ingress_endpoint`) rather than
+per-node IPs. Per-agent IPs are tracked on the ClusterOrder CR's
+`NodeSetStatus.AgentStatus.IPAddress` (operator-internal, not surfaced
+to tenant).
 
 #### ExternalIPAttachment — Inbound Traffic (DNAT)
 
@@ -770,8 +1034,8 @@ Per-subnet NAT association is a future enhancement.
 ComputeInstance supports multiple `network_attachments` (virtual NICs). All
 subnets must belong to the same VN. BaremetalInstance supports multiple
 `network_attachments` with the `interface` field to map physical NICs to
-subnets. Cluster supports multiple `network_attachments` with the
-`node_set` field to place different node sets on different subnets. All
+subnets. Cluster supports a single `network_attachment` — one subnet for all
+node sets. Per-node-set subnet placement is not supported in v0.2. All
 subnets must belong to the same VN across all resource types.
 
 #### Multi-NIC Behavior
@@ -791,12 +1055,14 @@ attachment determines:
   rejected
 - `primary` is immutable after creation
 
-**IPAM and DHCP:** The responsible manager (k8sManager for VMs, fabric
-manager for BM) configures DHCP per subnet based on the primary
-designation:
+**IP assignment:** All resource types receive IPs via DHCP. For VMs,
+OVN provides DHCP on the CUDN overlay. For BM servers and CaaS agents,
+the fabric's DHCP server assigns IPs on the V-Net. The provisioning
+template does NOT configure host-side networking (no static IP, gateway,
+or DNS configuration) — DHCP handles it automatically.
 
-| Subnet role | DHCP provides |
-|-------------|--------------|
+| Subnet role | IP assignment provides (via DHCP) |
+|-------------|---------------------------------------------|
 | Primary | IP address + default gateway + DNS |
 | Secondary | IP address + connected route only (no gateway) |
 
@@ -808,10 +1074,10 @@ manager creates a DNAT rule to the resource's primary subnet IP. The tenant
 does not need to specify which interface — the primary designation
 determines the target.
 
-**Cluster multi-NIC:** `ClusterNetworkAttachment` uses `node_set` rather
-than per-NIC attachment. Multi-NIC for individual cluster nodes is handled
-by the CaaS template (provider-configured). The `primary` field does not
-apply to `ClusterNetworkAttachment`.
+**Cluster networking:** `ClusterNetworkAttachment` is a single attachment
+(one subnet for the whole cluster). Multi-NIC for individual cluster nodes
+is handled by the CaaS template (provider-configured). The `primary` field
+does not apply to `ClusterNetworkAttachment`.
 
 #### Multiple Hosting Clusters Per Region
 
@@ -899,8 +1165,8 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 4. **One NATGateway per VN.** Multiple gateways are ambiguous. Per-subnet
    NAT is a future enhancement.
 
-5. **ExternalIPPool shared.** The fabric manager handles allocation for all
-   resource types. One pool per region.
+5. **ExternalIPPool shared.** The fabric manager handles ExternalIP allocation
+   for all resource types. One pool per deployment.
 
 6. **Multiple hosting clusters.** Subnet creation provisions K8s overlay
    on each hosting cluster. VMs on different clusters share the subnet
