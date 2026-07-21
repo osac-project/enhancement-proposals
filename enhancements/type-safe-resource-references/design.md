@@ -914,6 +914,17 @@ details on the URI/ARN trade-off.
   Verify the trigger prevents deletion (SQLSTATE Z0003).
 - CEL filter with new path: List Subnets filtered by
   `this.spec.virtual_network.name == "prod-net"`. Verify correct results.
+- Oneof reference target (Chunk 3): Create a PublicIPAttachment referencing a
+  ComputeInstance by name via the oneof target field. Verify the interceptor
+  resolves the correct oneof variant and persists the reference.
+- Oneof invalid target (Chunk 3): Create an ExternalIPAttachment with a
+  nonexistent target name. Verify `InvalidArgument` with the correct oneof
+  field path.
+- IAM reference (Chunk 5): Create a RoleBinding referencing a Role by name.
+  Verify the reference is validated and persisted correctly.
+- Cross-tenant catalog item (Chunk 3/4): Create a ComputeInstance referencing
+  a CatalogItem in the shared tenant. Verify the full reference resolves
+  across tenants.
 
 **E2E tests (osac-test-infra, pytest):**
 
@@ -1016,4 +1027,4 @@ Final: respond @ design 0.3.0 - 92734a2, workspace main @ c5499e4
 
 > Context changed between commit and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"c5499e4","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"c5499e4","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
