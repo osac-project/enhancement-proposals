@@ -18,7 +18,7 @@ The Storage Control Plane introduces a single storage driver that presents opaqu
 
 2. **Storage control plane services**: Tier resolution (maps a tenant's StorageClass to the correct vendor backend), policy enforcement (authorization and tier-access checks), and credential management (vendor credentials provided per-request, never stored on tenant clusters).
 
-3. **Volume inventory**: Every volume tracked centrally with tenant, tier, state, size, and attachment information. Full state lifecycle: creating, available, attached, detached, deleting, deleted.
+3. **Volume inventory**: Every volume tracked centrally with tenant, tier, state, and size. State lifecycle for v0.2: creating, available, deleting, deleted.
 
 4. **Private Volume API**: Internal CRUD operations for volume records, consumed by platform services. Not exposed to tenants.
 
