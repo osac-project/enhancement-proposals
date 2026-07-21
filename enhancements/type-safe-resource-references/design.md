@@ -922,7 +922,7 @@ details on the URI/ARN trade-off.
   field path.
 - IAM reference (Chunk 5): Create a RoleBinding referencing a Role by name.
   Verify the reference is validated and persisted correctly.
-- Cross-tenant catalog item (Chunk 3/4): Create a ComputeInstance referencing
+- Cross-tenant catalog item (Chunk 2): Create a ComputeInstance referencing
   a CatalogItem in the shared tenant. Verify the full reference resolves
   across tenants.
 
@@ -1017,14 +1017,3 @@ If a reference that should be valid is rejected:
 
 None. All changes are within existing repositories (fulfillment-service,
 osac-ux) and use existing CI infrastructure.
-
----
-
-## Provenance
-
-Authored: commit @ design 0.3.0 - 883316f, workspace main @ c5499e4
-Final: respond @ design 0.3.0 - 92734a2, workspace main @ c5499e4
-
-> Context changed between commit and respond.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"c5499e4","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
