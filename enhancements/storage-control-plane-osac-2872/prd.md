@@ -56,7 +56,9 @@ Tenant Admin and Tenant User have the same storage capabilities in v0.2.
 
 - As a Tenant Admin/User, I want storage to be ready on my cluster immediately after provisioning, so that I can start creating PVCs without requesting manual setup.
 
-- As a Tenant Admin/User, I want every volume I create tracked centrally by the platform, so that my cloud provider can account for storage resources on my behalf.
+- As a Tenant User, I want every volume I create tracked centrally by the platform, so that my storage usage is attributable to me.
+
+- As a Tenant Admin, I want to see all volumes across clusters owned by my organization, so that I can manage storage usage within my organization.
 
 ### Cloud Provider Admin
 
@@ -66,7 +68,7 @@ Tenant Admin and Tenant User have the same storage capabilities in v0.2.
 
 - As a Cloud Provider Admin, I want vendor credentials never stored on tenant clusters and provided only per-request, so that a compromised tenant cluster cannot access storage backends directly.
 
-- As a Cloud Provider Admin, I want a central volume inventory across all tenants and clusters, so that I can audit storage usage and attribute resources to the correct tenant.
+- As a Cloud Provider Admin, I want to see all volumes created by a tenant, so that I can account for storage resources across tenants.
 
 ## Assumptions
 
