@@ -47,6 +47,9 @@ existing non-compliant directories are a separate, tracked cleanup
 blocker for new work.
 
 If you have `pre-commit install`ed locally, this check is advisory-only
-outside CI (it can't tell new paths from pre-existing ones without a PR
-base branch to compare against) — it will never block a local commit.
-CI is the authoritative gate.
+whenever `PRE_COMMIT_PR_BASE_SHA` isn't set (the normal case for a
+local commit) — it can't tell new paths from pre-existing ones without
+a PR base branch to compare against, so it skips enforcement rather
+than guessing. If that variable happens to be set in your local shell,
+enforcement behaves the same as CI. Either way, CI is the
+authoritative gate.
