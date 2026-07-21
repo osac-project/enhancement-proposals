@@ -1,4 +1,4 @@
-# Base OS Management for Bare Metal Instances
+# Base OS Management for Bare-Metal Instances
 
 | Field     | Value                                                        |
 |-----------|--------------------------------------------------------------|
@@ -15,10 +15,10 @@ Bare metal instances can reference a custom OS image today, but only as a raw UR
 ## In Scope
 
 - Tenants can browse the list of available OS images with metadata (title, description, guest OS family, architecture) via the UI and API.
-- A DiskImage reference is mandatory when creating a BaremetalInstance; the instance is provisioned with the OS from that image.
+- A BaremetalInstance must have an effective DiskImage reference at creation time — either explicitly selected by the user or defaulted from the BaremetalInstanceCatalogItem. Creation is rejected when neither the user input nor the catalog item provides a DiskImage reference. The instance is provisioned with the OS from that image.
 - Deprecated DiskImages display a warning when selected; obsolete DiskImages are hidden from the default image list (accessible via explicit filter) and cannot be used for new bare metal instances.
-- Cloud Provider Admins can register, update, deprecate, obsolete, reactivate, and delete global DiskImages available to all tenants for bare metal provisioning.
-- Tenant Admins can register, update, deprecate, obsolete, reactivate, and delete tenant-scoped DiskImages visible only within their organization. Deletion is blocked when active BaremetalInstances or BaremetalInstanceCatalogItems reference the image.
+- Cloud Provider Admins can register, update, deprecate, obsolete, reactivate, and delete global DiskImages available to all tenants for bare-metal provisioning. Deletion of a global DiskImage is blocked when any BaremetalInstance (in any non-deleted state) or any BaremetalInstanceCatalogItem references it.
+- Tenant Admins can register, update, deprecate, obsolete, reactivate, and delete tenant-scoped DiskImages visible only within their organization. Deletion of a tenant DiskImage is blocked when any BaremetalInstance (in any non-deleted state) or any BaremetalInstanceCatalogItem references it.
 - UI support for the full DiskImage lifecycle (image list, image picker in BaremetalInstance creation, image detail, and lifecycle management controls) for all affected personas.
 - DiskImages for bare metal use the same resource, metadata schema, image source format, and two-tier visibility model (global + tenant-scoped) as defined in OSAC-2540.
 
@@ -34,13 +34,13 @@ Bare metal instances can reference a custom OS image today, but only as a raw UR
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to create a BaremetalInstanceCatalogItem that references a default DiskImage so that bare metal instances created from it are provisioned with an approved OS image by default.
-- As a Cloud Provider Admin, I want DiskImage deletion to be blocked when active BaremetalInstances or BaremetalInstanceCatalogItems reference it, so that I do not inadvertently break running workloads or catalog offerings.
+- As a Cloud Provider Admin, I want to create a BaremetalInstanceCatalogItem that references a global DiskImage as default so that all tenants provisioning bare-metal instances from it receive a platform-approved OS image without having to select one.
+- As a Cloud Provider Admin, I want DiskImage deletion to be blocked when any BaremetalInstance or BaremetalInstanceCatalogItem references it, so that I do not inadvertently break running workloads or catalog offerings.
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create a BaremetalInstanceCatalogItem that references a default DiskImage so that bare metal instances created from it are provisioned with an approved OS image by default.
-- As a Tenant Admin, I want DiskImage deletion to be blocked when active BaremetalInstances or BaremetalInstanceCatalogItems reference it, so that I do not inadvertently break running workloads or catalog offerings.
+- As a Tenant Admin, I want to create a BaremetalInstanceCatalogItem that references one of my organization's DiskImages as default so that my users' bare-metal instances are provisioned with our approved OS image without requiring manual selection.
+- As a Tenant Admin, I want DiskImage deletion to be blocked when any BaremetalInstance or BaremetalInstanceCatalogItem references it, so that I do not inadvertently break running workloads or catalog offerings.
 
 ### Tenant User
 
