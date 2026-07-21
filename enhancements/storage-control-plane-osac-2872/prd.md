@@ -28,8 +28,6 @@ The Storage Control Plane introduces a single storage driver that presents opaqu
 
 ## Out of Scope
 
-- **Volume attach/detach**: not targeted for v0.2
-- **PV update operations**: dropped from v0.2 scope
 - **Volume resize**
 - **Volume snapshots and clones**
 - **Public Volume API** for tenant-facing volume management (OSAC-984)
@@ -58,7 +56,7 @@ Tenant Admin and Tenant User have the same storage capabilities in v0.2.
 
 - As a Tenant Admin/User, I want storage to be ready on my cluster immediately after provisioning, so that I can start creating PVCs without requesting manual setup.
 
-- As a Tenant Admin/User, I want every volume I create tracked in a central inventory, so that I can have full accountability for storage resources across all my clusters.
+- As a Tenant Admin/User, I want every volume I create tracked centrally by the platform, so that my cloud provider can account for storage resources on my behalf.
 
 ### Cloud Provider Admin
 
