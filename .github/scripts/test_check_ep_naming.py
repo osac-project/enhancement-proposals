@@ -48,6 +48,20 @@ class ValidatePathsTests(unittest.TestCase):
         self.assertEqual(len(violations), 1)
         self.assertIn("storage-network", violations[0])
 
+    def test_bad_name_violation_includes_example_and_doc_pointer(self):
+        # The message must give a concrete example (not just the abstract
+        # OSAC-<jira-key>-<slug> placeholder) and point to CONTRIBUTING.md,
+        # since this same generic template previously fired identically for
+        # unrelated failure reasons (missing prefix, missing slug,
+        # zero-padding, bad dashes) with no way to tell them apart.
+        violations = self._validate(
+            paths=["enhancements/storage-network/prd.md"],
+            base_sha="abc123",
+            existing_at_base=set(),
+        )
+        self.assertIn("OSAC-1110-storage-tier-api", violations[0])
+        self.assertIn("CONTRIBUTING.md", violations[0])
+
     def test_new_directory_with_zero_padded_key_is_flagged(self):
         violations = self._validate(
             paths=["enhancements/OSAC-000001-test-feature/prd.md"],
