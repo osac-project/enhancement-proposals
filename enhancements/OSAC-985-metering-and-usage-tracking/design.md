@@ -142,7 +142,7 @@ VMaaS bills RUNNING only [PRD: CAP-11]. Stopped and paused VMs do not accrue com
 
 #### CaaS Cluster Lifecycle
 
-CaaS clusters are billable in both PROGRESSING and READY states [PRD: CAP-12]. Each cluster generates N+1 Kafka records per heartbeat or transition: one for the control plane and one per worker node set, enabling per-resource-class billing [PRD: CAP-2].
+CaaS clusters are billable in both PROGRESSING and READY states [PRD: CAP-12]. Each cluster generates N+1 Kafka records per heartbeat or transition, where N is the number of distinct worker node sets: one record for the control plane plus one per worker node set (e.g., a cluster with `gpu-h100` and `cpu-only` worker sets produces 3 records). This enables per-resource-class billing [PRD: CAP-2] — each component carries its own `host_type` and `node_count` in `billing_dimensions`, so different hardware classes can be priced independently.
 
 ```mermaid
 sequenceDiagram
