@@ -81,4 +81,3 @@ Tenant Admin and Tenant User have the same storage capabilities in v0.2.
 - **OSAC-917 (Storage Framework)**: Delivers StorageBackend and StorageTier entities. Must land before tier resolution and StorageClass generation can function.
 - **ClusterOrder provisioning**: Must be functional for automated storage driver deployment during cluster provisioning.
 - **OSAC-1001 (Cluster Storage Setup)** and **OSAC-1332 (Tenant Onboarding)**: Existing automation that this feature extends to deploy the OSAC storage driver.
-
