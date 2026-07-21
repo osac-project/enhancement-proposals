@@ -596,18 +596,39 @@ PL/pgSQL triggers serve two purposes:
 reference structure. This is a semantic shift: triggers currently match on
 resource IDs (primary keys), but will switch to matching on resource names
 (unique within a tenant). This aligns with the name-based resolution model
-introduced by this EP. Example path changes:
+introduced by this EP.
 
-| Trigger function | Table | Path change |
-|---|---|---|
-| `check_virtual_network_not_in_use()` (Z0003) | virtual_networks | `data->'spec'->>'virtual_network'` → `data->'spec'->'virtual_network'->>'name'` |
-| `check_subnet_not_in_use()` (Z0003) | subnets | Array element `->>'subnet'` → `->'subnet'->>'name'` |
-| `check_instance_type_not_in_use()` (Z0003) | instance_types | `data->'spec'->>'instance_type'` → `data->'spec'->'instance_type'->>'name'` |
-| `check_subnet_virtual_network_ref()` (Z0002) | subnets | Same nested path pattern |
-| `check_compute_instance_subnet_refs()` (Z0002) | compute_instances | Same nested path pattern |
+**Tenant scoping.** Because names are unique per tenant (not globally like
+IDs), trigger queries must add tenant predicates when switching from ID-based
+to name-based matching. The scoping rule depends on the reference type:
 
-Associated indexes on the old JSON paths (e.g., `subnets_by_virtual_network`,
-`compute_instances_instance_type`) are updated to use the new nested paths.
+- **Same-tenant local references** (Subnet→VN, CI→Subnet, SG→VN,
+  CI→InstanceType): Currently match on `id` with no tenant filter. After
+  migration, add `tenant = new.tenant` (forward triggers) or
+  `tenant = old.tenant` (reverse triggers) to scope lookups within the
+  correct tenant.
+- **Cross-tenant/shared references** (Cluster→CatalogItem,
+  CI→CatalogItem): Already have tenant scoping via
+  `(tenant = new.tenant OR tenant = 'shared')`. After migration, drop the
+  ID match alternative and update JSON paths to nested `->>'name'`.
+- **Platform-scoped references** (VN→NetworkClass): No triggers exist
+  today. If added, no tenant filter is needed — platform-scoped names are
+  globally unique.
+
+Associated indexes must include `tenant` as a leading column for
+same-tenant triggers to keep queries efficient.
+
+Example path changes:
+
+| Trigger function | Table | Path change | Tenant scoping |
+|---|---|---|---|
+| `check_virtual_network_not_in_use()` (Z0003) | virtual_networks | `= old.id` → `data->'spec'->'virtual_network'->>'name'` | Add `tenant = old.tenant` |
+| `check_subnet_not_in_use()` (Z0003) | subnets | `->>'subnet'` → `->'subnet'->>'name'` | Add `tenant = old.tenant` |
+| `check_instance_type_not_in_use()` (Z0003) | instance_types | `->>'instance_type'` → `->'instance_type'->>'name'` | Add `tenant = old.tenant` |
+| `check_subnet_virtual_network_ref()` (Z0002) | subnets | `id = vn_id` → `name = vn_name` | Add `tenant = new.tenant` |
+| `check_compute_instance_subnet_refs()` (Z0002) | compute_instances | `id = subnet_id` → `name = subnet_name` | Add `tenant = new.tenant` |
+| `check_cluster_catalog_item_ref()` (Z0002) | clusters | Drop `id =` alternative | Already scoped |
+| `check_ci_catalog_item_ref()` (Z0002) | compute_instances | Drop `id =` alternative | Already scoped |
 
 #### CEL Filter Expression Changes
 
@@ -985,3 +1006,14 @@ If a reference that should be valid is rejected:
 
 None. All changes are within existing repositories (fulfillment-service,
 osac-ux) and use existing CI infrastructure.
+
+---
+
+## Provenance
+
+Authored: commit @ design 0.3.0 - 883316f, workspace main @ c5499e4
+Final: respond @ design 0.3.0 - 92734a2, workspace main @ c5499e4
+
+> Context changed between commit and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"c5499e4","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","respond"],"authoring_modes":["skill"],"context_changed":true} -->
