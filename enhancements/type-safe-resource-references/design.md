@@ -306,8 +306,10 @@ add new gRPC services, CRDs, webhooks, or finalizers.
 | `instance_type_type.proto` | Add `InstanceTypeLocalReference` for deprecation replacement. |
 
 **Private API:** Each private API `_type.proto` file mirrors the corresponding
-public API changes. Private-only status-level references (hub, pool mirrors)
-are addressed in the Implementation Details section.
+public API changes, but full references use explicit `string tenant` /
+`string project` fields instead of `bool shared`. Private-only status-level
+references (hub, pool mirrors) are addressed in the Implementation Details
+section.
 
 **Shared reference messages:** When multiple resources reference the same
 target type (e.g., both `NetworkAttachment` and `PublicIPAttachmentSpec`
@@ -357,9 +359,27 @@ objects at each call site, plus updating CEL filter expressions to use the
 
 Two message patterns are defined per referenceable type:
 
+Three reference message patterns are defined per referenceable type. Public
+and private APIs use different full reference shapes:
+
 ```protobuf
-// Full reference — used when the target may be in a different tenant/project.
-// Defined in the target type's _type.proto file.
+// Public full reference — tenant users use `shared` to target the shared
+// tenant. Defined in the target's public _type.proto file.
+message ClusterTemplateReference {
+  option (buf.validate.message).cel = {
+    id: "id_or_name_required",
+    message: "at least one of id or name must be provided",
+    expression: "this.id != '' || this.name != ''"
+  };
+
+  string id = 1;
+  reserved 2, 3; // future: tenant, project
+  string name = 4;
+  bool shared = 5;
+}
+
+// Private full reference — Cloud Provider Admins use explicit tenant/project.
+// Defined in the target's private _type.proto file.
 message ClusterTemplateReference {
   option (buf.validate.message).cel = {
     id: "id_or_name_required",
@@ -374,29 +394,37 @@ message ClusterTemplateReference {
 }
 
 // Local reference — used when the target is always in the same tenant/project.
-// Defined in the target type's _type.proto file.
+// Shared between public and private APIs.
 message SubnetLocalReference {
   string name = 1 [(buf.validate.field).string.min_len = 1];
 }
 ```
 
+**Public vs. private full references.** Tenant users should not see or provide
+arbitrary tenant names. The public API exposes `bool shared` instead of
+`string tenant` / `string project`: when `shared = true`, the interceptor
+resolves the reference against the `shared` tenant; when `false` (default), it
+resolves against the caller's own tenant. The private API retains explicit
+`tenant` and `project` fields for Cloud Provider Admins who manage cross-tenant
+resources. Field numbers 2 and 3 are reserved in the public message so they
+can be added in a future migration without wire conflicts.
+
 Full references support three resolution modes:
 
 1. **Name only** (most common): The interceptor resolves the resource by name
-   within the specified tenant/project scope (or the caller's scope if empty).
-   The `id` field in the stored reference is auto-populated with the resolved
-   resource's identifier.
-2. **ID only**: The interceptor resolves the resource by identifier. The `name`,
-   `tenant`, and `project` fields are auto-populated from the resolved resource.
-   This preserves backward compatibility for clients that already use
-   identifiers.
+   within the caller's tenant (or the `shared` tenant if `shared = true` in
+   public API, or the explicit `tenant` in private API). The `id` field in the
+   stored reference is auto-populated with the resolved resource's identifier.
+2. **ID only**: The interceptor resolves the resource by identifier. The `name`
+   field is auto-populated from the resolved resource. This preserves backward
+   compatibility for clients that already use identifiers.
 3. **Both provided**: The interceptor resolves both and validates they refer to
    the same resource. If they disagree, it returns `InvalidArgument`.
 
 In all modes, the interceptor mutates the request via protoreflect to fill in
 missing fields before the handler runs. The stored JSON always contains the
-fully-qualified reference (all four fields populated). This ensures consistent
-downstream behavior regardless of how the caller specified the reference.
+fully-qualified reference. This ensures consistent downstream behavior
+regardless of how the caller specified the reference.
 
 Local references support name-only resolution. They omit `id`, `tenant`, and
 `project` because the target is always in the same scope as the referencing
@@ -570,13 +598,20 @@ func (v *ReferenceValidator) Validate(
 ) error
 ```
 
+**Tenant scope resolution.** For public API full references, the interceptor
+translates `shared = true` to `tenant = "shared"` and `shared = false` (or
+unset) to the caller's tenant from auth context. For private API full
+references, it uses the explicit `tenant` field, falling back to the caller's
+tenant when empty. The lookup function always receives a resolved `tenant`
+string.
+
 **Resolution modes.** The interceptor supports three resolution modes for full
 references, determined by which fields the caller provides:
 
 | Mode | Input | Behavior |
 |------|-------|----------|
-| Name only | `name` set, `id` empty | Look up by name within tenant/project scope. Auto-populate `id` in the request. |
-| ID only | `id` set, `name` empty | Look up by id. Auto-populate `name`, `tenant`, `project` in the request. |
+| Name only | `name` set, `id` empty | Look up by name within tenant scope. Auto-populate `id` in the request. |
+| ID only | `id` set, `name` empty | Look up by id. Auto-populate `name` in the request. |
 | Both | `id` and `name` both set | Look up, verify both resolve to the same resource. Return `InvalidArgument` if they disagree. |
 
 For local references (`LocalReference` messages with only a `name` field),
@@ -611,11 +646,12 @@ iterates each element. For oneof fields, it inspects the populated variant.
 For nested messages (like `NetworkAttachment` inside `ComputeInstanceSpec`),
 it recurses.
 
-**Tenant context for local references.** For `LocalReference` messages (which
-have only a `name` field), the interceptor extracts tenant and project from
-the request's authentication context. For full `Reference` messages, it uses
-the explicitly provided `tenant` and `project` fields, falling back to the
-caller's context when empty.
+**Tenant context.** For `LocalReference` messages (which have only a `name`
+field), the interceptor extracts tenant and project from the request's
+authentication context. For public full `Reference` messages, `shared = true`
+maps to the `shared` tenant; otherwise the caller's tenant is used. For
+private full `Reference` messages, the explicit `tenant` field is used,
+falling back to the caller's context when empty.
 
 **Error aggregation.** The interceptor collects all invalid references before
 returning, so the user sees every problem in a single error response. It
