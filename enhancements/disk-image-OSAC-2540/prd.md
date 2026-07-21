@@ -5,7 +5,7 @@
 | Author(s)   | Marc Sluiter |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-2540 |
 | Service     | VMaaS |
-| Date        | 2026-07-15 |
+| Date        | 2026-07-21 |
 
 ## Problem Statement
 
@@ -14,7 +14,7 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 ## In Scope
 
 - DiskImage resource with CRUD operations (create, list, get, update, delete) via UI, CLI, and API
-- DiskImage metadata: title (required), description (optional), icon (optional), guest OS family (required, enum: linux, windows), architecture (required, one or more from: amd64, arm64)
+- DiskImage-specific metadata: icon (optional), guest OS family (required, enum: linux, windows), architecture (required, one or more from: amd64, arm64). Display name and description are inherited from shared Metadata
 - DiskImage wraps an existing OCI artifact reference (source_type + source_ref), both immutable after creation
 - Two-tier visibility: provider-global images (available to all tenants) and tenant-scoped images (visible only within a tenant)
 - Image lifecycle management: deprecation to warn users, obsolescence to block new VM creation, and reactivation
@@ -46,9 +46,9 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to register an existing OCI image as a globally available DiskImage with title, guest OS family, and architecture so that all tenants can discover and select it.
+- As a Cloud Provider Admin, I want to register an existing OCI image as a globally available DiskImage with display name, guest OS family, and architecture so that all tenants can discover and select it.
 - As a Cloud Provider Admin, I want to list all registered images — both global and tenant-scoped — so that I can audit what is available across the platform.
-- As a Cloud Provider Admin, I want to update mutable metadata (title, description) of a global image so that I can keep the catalog accurate.
+- As a Cloud Provider Admin, I want to update mutable metadata (display name, description) of a global image so that I can keep the catalog accurate.
 - As a Cloud Provider Admin, I want to deprecate a global image so that tenants are warned to migrate before the image becomes unavailable.
 - As a Cloud Provider Admin, I want to mark a global image as obsolete so that new VM creation with that image is blocked while existing VMs remain unaffected.
 - As a Cloud Provider Admin, I want to reactivate a previously deprecated or obsolete image so that tenants can resume using it if circumstances change.
@@ -71,7 +71,7 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 ### Tenant User
 
 - As a Tenant User, I want to see only images available to my tenant (global and my tenant's own) so that I cannot access other tenants' images.
-- As a Tenant User, I want to browse available images with metadata (title, description, guest OS family, architecture) so that I can choose the right image for my VM.
+- As a Tenant User, I want to browse available images with metadata (display name, description, guest OS family, architecture) so that I can choose the right image for my VM.
 - As a Tenant User, I want to search and filter images by guest OS family, architecture, or name so that I can quickly find what I need.
 - As a Tenant User, I want to reference a DiskImage when creating a ComputeInstance so that image source and OS type are resolved automatically.
 - As a Tenant User, I want to see a deprecation warning when selecting a deprecated image so that I know to choose a different image.
@@ -84,6 +84,10 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 - OSAC does not validate the accessibility of the OCI artifact referenced by a DiskImage. If the image becomes unavailable in the registry, the error surfaces at VM provisioning time, not at DiskImage registration.
 - Using image digests rather than mutable tags is recommended for consistency, but not enforced by OSAC.
 
+## Dependencies
+
+- **[OSAC-2921](https://redhat.atlassian.net/browse/OSAC-2921): Standardized display_name and description in Metadata** — DiskImage uses the shared Metadata fields for display name and description rather than resource-specific fields.
+
 ## Related Features
 
 - **[OSAC-979](https://redhat.atlassian.net/browse/OSAC-979): VM Image Management** — broader vision including upload, caching, and performance optimization. DiskImage supersedes the ComputeImage resource proposed in the OSAC-979 enhancement proposal — renamed to be service-neutral (VMaaS + BMaaS). The existing image-management EP will be updated to reflect this once the PRD is approved.
@@ -94,8 +98,8 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 ## Provenance
 
 Authored: draft @ prd 0.5.0 - 883316f, workspace main @ 7ea4384
-Final: respond @ prd 0.5.0 - 883316f, workspace main @ 777ba84 (27 behind origin/main)
+Final: revise @ prd 0.5.0 - 92734a2, workspace main @ aac0f8e
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"883316f","source_repo":"777ba84","source_repo_branch":"main","commits_behind_main":27,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"aac0f8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","respond","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true} -->
