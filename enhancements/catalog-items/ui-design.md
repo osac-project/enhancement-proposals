@@ -44,7 +44,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 ### Non-Goals
 
-- Drag-and-drop reordering of field definitions. The field list and order are fixed per resource type, derived from the resource spec.
+- Drag-and-drop reordering of field definitions.
 - Full visual JSON Schema editor (e.g., JSONJoy, react-json-schema-form-builder). The Advanced mode textarea is intentionally minimal — syntax highlighting only, no schema-aware autocomplete or visual builder.
 - Changes to the existing CatalogProvisionWizard — that component already handles catalog items. Any alignment changes are tracked separately.
 - Direct private API access from the browser. The Go proxy mediates all API access; CSP Admin requests are routed to private API endpoints (which return the `tenant` field), while Tenant Admin and Tenant User requests are routed to public API endpoints.
@@ -53,7 +53,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create page, an edit page, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page shows a PatternFly table with type filter, search, scope badges, and kebab row actions (edit, publish/unpublish, delete). The create page is a full-page form with sections for general information, template or base catalog item selection (role-dependent), and a field definitions editor. The edit page reuses the same form with the template/base selection locked. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
-Shared components (`CatalogItemForm`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific create/edit/detail pages. Each entry in the field definitions editor includes a read-only path (from the resource spec), display name, an editable toggle, a default value input, and a validation constraints editor (Basic mode with structured form controls, or Advanced mode with a raw JSON Schema textarea).
+Shared components (`CatalogItemForm`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific create/edit/detail pages. Each entry in the field definitions editor includes a path (selected from the resource spec), display name, an editable toggle, a default value input, and a validation constraints editor (Basic mode with structured form controls, or Advanced mode with a raw JSON Schema textarea).
 
 ### Workflow Description
 
@@ -64,13 +64,13 @@ Shared components (`CatalogItemForm`, `FieldDefinitionsEditor`, `ValidationConst
 3. CSP Admin clicks "Create catalog item" and lands on the create page.
 4. **General section:** Admin enters title, description (Markdown), selects resource type (Cluster, VM, Bare Metal), and selects scope (Global or a specific tenant).
 5. **Template section:** Based on the selected resource type, the admin selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`).
-6. **Field definitions section:** Based on the selected resource type, the `FieldDefinitionsEditor` displays all fields from the resource spec (e.g., all `ComputeInstanceSpec` fields for a VM catalog item). The field list is fixed per resource type and does not change based on template selection. The admin configures each field:
-   - Path is read-only (derived from the resource spec)
+6. **Field definitions section:** The `FieldDefinitionsEditor` displays the resource spec fields the admin wants to expose or constrain. Not all fields from the resource spec need to be included — fields not added to the field definitions are not exposed to the user. The admin configures each included field:
+   - Select a path from the resource spec (e.g., `ComputeInstanceSpec` fields for a VM catalog item)
    - Enter an optional display name
    - Toggle editable on/off
    - Set an optional default value (required for non-editable fields)
-   - Optionally configure validation constraints using structured form controls in Basic mode (numeric bounds, allowed values, string length, pattern, item count, resource references, nested properties), or switch to Advanced mode to write arbitrary JSON Schema directly
-   The admin cannot add or remove fields — the resource spec determines the complete field set.
+   - Optionally configure validation constraints using structured form controls in Basic mode (numeric bounds, allowed values, string length, pattern, item count, nested properties), or switch to Advanced mode to write arbitrary JSON Schema directly
+   The admin can add fields from the resource spec or remove fields they no longer want to expose.
 7. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
 9. From the detail page or list page, the admin can publish the item via the kebab menu "Publish" action.
@@ -291,7 +291,7 @@ A full-page form (not a wizard) using Formik + Yup + `OsacForm`.
 
 **Section 1: General**
 - Title (`InputField`, required, maxLength: 255)
-- Description (`InputField` textarea, optional, Markdown). All consumers that render this field must use a sanitizing Markdown renderer that strips unsafe HTML tags, `javascript:` URL schemes, and other XSS vectors.
+- Description (`InputField` textarea, optional) — markdown-formatted long description
 - Resource type (`SelectField`: Cluster, Virtual Machine, Bare Metal, required)
 - Scope (providerAdmin only): `RadioButtonField` — Global or Tenant-scoped. If tenant-scoped, a tenant selector dropdown appears. For tenantAdmin, this section shows "Scope: Your organization" as read-only text.
 
@@ -355,25 +355,25 @@ Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management
 
 **Location:** `libs/ui-components/src/components/catalogManagement/FieldDefinitionsEditor.tsx`
 
-The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. The field list is fixed per resource type — it is derived from the resource spec (e.g., `ComputeInstanceSpec` fields for VM catalog items) and does not vary by template. For Tenant Admin, the field list comes from the base catalog item's field definitions. The admin configures each field but does not add or remove fields.
+The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. The admin selects which fields from the resource spec to include in the catalog item's field definitions. Not all fields need to be included — fields not in the list are not exposed to the user. For Tenant Admin, the field list comes from the base catalog item's field definitions.
 
 **Each field definition row renders:**
 
 | Control | Field | Type | Notes |
 |---------|-------|------|-------|
-| Path | `fieldDefinitions.${i}.path` | Read-only text | Derived from the resource spec; fixed per resource type, not editable by the admin |
+| Path | `fieldDefinitions.${i}.path` | Read-only text | Selected from the resource spec; not editable once added |
 | Display Name | `fieldDefinitions.${i}.displayName` | `InputField` | Optional; derived from the field path if not set |
 | Editable | `fieldDefinitions.${i}.editable` | `Switch` (PatternFly) | Toggle; for Tenant Admin, disabled if base item marks field as non-editable |
 | Default Value | `fieldDefinitions.${i}.default` | `InputField` | Type-aware input (text, number, boolean toggle) based on template parameter type. Required when `editable` is false. |
 | Validation | `fieldDefinitions.${i}.validationSchema` | `ValidationConstraintsEditor` | Expandable sub-form (see below) |
 
-The field list is fixed per resource type — there is no "Add field definition" or "Remove" button. All fields from the resource spec are shown and the admin configures each one.
+The admin adds fields from the resource spec using an "Add field" button that shows a dropdown of available (not yet added) spec fields. Fields can be removed with a "Remove" button on each row.
 
 **Yup validation schema for each field definition:**
 
 ```typescript
 const fieldDefinitionSchema = Yup.object({
-  path: Yup.string().required('Path is required'),  // read-only, derived from resource spec
+  path: Yup.string().required('Path is required'),  // selected from resource spec, read-only once added
   displayName: Yup.string(),
   editable: Yup.boolean().required(),
   default: Yup.mixed().when('editable', {
@@ -400,7 +400,6 @@ The admin cannot add or remove fields, change paths, or make non-editable fields
 - **String constraints:** `minLength` can only increase; `maxLength` can only decrease. `pattern` can only be made more restrictive (added, not removed).
 - **Enum:** values can only be removed from the base set, never added.
 - **Item/property counts:** `minItems`/`minProperties` can only increase; `maxItems`/`maxProperties` can only decrease.
-- **resourceRef:** the resource type cannot change; the `enum` subset can only be further restricted.
 - **Editable toggle:** can change from `true` to `false` (lock a field), never `false` to `true`.
 
 **Tighten-only enforcement (0.3 — server-side, future):** Server-side enforcement of the tighten-only rule is deferred to 0.3. When implemented, the server will compare the Tenant Admin's schema against the base and return `INVALID_ARGUMENT` for loosened constraints. For 0.2, the server accepts any valid JSON Schema — tighten-only is enforced as a UI convenience only.
@@ -414,7 +413,7 @@ An expandable sub-form within each field definition row, shown when the "Validat
 - **Basic mode** (default): structured form controls for each supported constraint type. Recommended for most admins.
 - **Advanced mode**: a raw JSON Schema textarea with syntax highlighting. Used when editing schemas that contain keywords beyond the Basic editor's supported set, or when the admin prefers to write JSON directly.
 
-**Mode auto-detection on load:** When editing an existing catalog item, the editor inspects each field's `validationSchema`. If it contains only Basic-supported keywords (`minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `enum`, `resourceRef`, `minItems`, `maxItems`, `minProperties`, `maxProperties`, `properties`, `required`, `items`), the field opens in Basic mode. If it contains any other keywords, it opens in Advanced mode with a label: "This field uses advanced validation."
+**Mode auto-detection on load:** When editing an existing catalog item, the editor inspects each field's `validationSchema`. If it contains only Basic-supported keywords (`minimum`, `maximum`, `minLength`, `maxLength`, `pattern`, `enum`, `minItems`, `maxItems`, `minProperties`, `maxProperties`, `properties`, `required`, `items`), the field opens in Basic mode. If it contains any other keywords, it opens in Advanced mode with a label: "This field uses advanced validation."
 
 **Mode switching:** An admin can switch from Basic to Advanced at any time — the structured inputs are serialized to JSON Schema and shown in the textarea. Switching from Advanced to Basic parses the JSON and populates the structured controls, but warns if unsupported keywords will be stripped: "Switching to Basic mode will remove the following constraints: [list]. Continue?"
 
@@ -429,16 +428,15 @@ An expandable sub-form within each field definition row, shown when the "Validat
 | Pattern | Text input | `{ "pattern": "regex" }` |
 | Allowed Values | Tag input (multi-value) | `{ "enum": [...] }` |
 
-**Resource reference constraints:**
+**Resource field enum population:**
 
-| Constraint | Input Type | JSON Schema Mapping |
-|-----------|-----------|---------------------|
-| Resource Type | Select dropdown | `{ "resourceRef": "InstanceType" }` |
-| Restrict to subset | Checkbox multi-select of available resources | `{ "resourceRef": "InstanceType", "enum": ["cx3.xlarge", ...] }` |
+For fields that reference platform resources (e.g., instance types, availability zones), the admin uses `enum` constraints. The UI fetches available values from the corresponding API endpoint and populates the `enum` list as a selectable set in Basic mode. The resulting JSON Schema uses standard `enum`:
 
-For fields with a `resourceRef` constraint, the UI fetches available resources from the corresponding API endpoint and presents them as selectable options. `resourceRef` is an OSAC-specific custom keyword within the JSON Schema `validation_schema`; standard JSON Schema validators ignore it.
+```json
+{ "enum": ["cx3.xlarge", "cx3.2xlarge", "cx3.4xlarge"] }
+```
 
-**Dependency: server-side enforcement.** The `resourceRef` keyword is only enforced by the UI dropdown today. For the feature to be safe to ship, fulfillment-service must register a custom JSON Schema keyword validator (or a dedicated pre-validation step) that resolves `resourceRef` against the actual resource type inventory during provisioning. Without this backend enforcement, resource-type restrictions set through the UI are cosmetic — they constrain the dropdown in the browser but are not enforced when users submit via CLI or API directly. The UI work can proceed in parallel, but the feature must not ship without the backend `resourceRef` validator landing first.
+This approach uses standard JSON Schema keywords only — no custom keywords are needed.
 
 **List and map constraints:**
 
@@ -510,7 +508,7 @@ This design introduces no new authentication or authorization mechanisms. The Go
 
 Input validation is performed client-side (Yup) for UX responsiveness and server-side (fulfillment-service) for enforcement. The client-side validation is a convenience — it does not replace server-side validation.
 
-The `description` field accepts Markdown authored by admins. All rendering surfaces (detail page, catalog browsing, list tooltips) must use a sanitizing Markdown renderer that strips unsafe HTML tags, `javascript:` URL schemes, and other stored-XSS vectors. The server stores the raw Markdown as provided; sanitization is a rendering-time responsibility.
+The `description` field accepts Markdown authored by admins and is rendered using the existing sanitizing Markdown renderer.
 
 The validation schema field accepts a JSON Schema object from the admin (constructed from Basic mode form controls or entered directly in the Advanced mode textarea). The schema is stored as a `google.protobuf.Struct` and used by the server for field validation during resource provisioning. The UI does not execute or eval the JSON Schema — it is treated as data, not code. The Advanced mode textarea is a plain text input; the JSON is parsed and validated as well-formed before submission.
 
@@ -552,7 +550,7 @@ No new observability changes. The UI is a frontend application — observability
 
 Adding a catalog management section increases the UI surface area and introduces the first role-gated navigation in osac-ui. This creates a precedent that future admin features will follow, adding complexity to the navigation and routing system. The alternative — managing catalog items exclusively via CLI — avoids this complexity but provides a poor admin experience for non-technical cloud provider administrators.
 
-The field definitions editor is a complex custom component with no precedent in the existing UI. It combines Formik FieldArray, dynamic type-aware inputs, and nested validation — patterns that are individually well-supported but have not been combined at this scale in osac-ui. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, constraint editor interactions). The field list is fixed per resource type (derived from the resource spec), which eliminates add/remove/reorder edge cases.
+The field definitions editor is a complex custom component with no precedent in the existing UI. It combines Formik FieldArray, dynamic type-aware inputs, and nested validation — patterns that are individually well-supported but have not been combined at this scale in osac-ui. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, constraint editor interactions). The admin selects which fields to include from the resource spec, which requires an add/remove mechanism but avoids forcing all fields to be configured.
 
 The JSX composition approach shares common components across three sets of kind-specific pages. This avoids the indirection of a single config-driven component but introduces more files (three page sets instead of one). The shared components ensure consistency while allowing per-kind divergence where needed.
 
@@ -590,7 +588,7 @@ How does the CSP Admin determine whether a catalog item is global or tenant-scop
 
 ### 2. ~~Template parameter enumeration for field path picker~~ (Resolved)
 
-The field definitions editor derives its field list from the resource spec (e.g., `ComputeInstanceSpec`), which is known at build time from the proto definitions. No template API enumeration is required — the field set is fixed per resource type.
+The field definitions editor derives available fields from the resource spec (e.g., `ComputeInstanceSpec`), which is known at build time from the proto definitions. No template API enumeration is required — the admin selects which fields to include from the full resource spec.
 
 ### 3. Querying resources by catalog item reference
 
@@ -618,15 +616,15 @@ Testing strategy for the catalog management UI:
 **Unit tests:**
 - Yup validation schemas: verify required fields, path format, default-required-when-non-editable rule
 - FieldMask construction: verify diff-based update_mask includes only changed fields; verify field_definitions triggers whole-list replacement
-- JSON Schema assembly: verify ValidationConstraintsEditor output for each constraint type (scalar, resourceRef, list/map, nested)
+- JSON Schema assembly: verify ValidationConstraintsEditor output for each constraint type (scalar, enum, list/map, nested)
 - Route mapping: verify CatalogItemKind → API endpoint resolution for all three types
 - Tighten-only comparison: verify constraint comparison logic rejects loosened constraints (Basic mode UI enforcement)
 - Mode auto-detection: verify schemas with only Basic-supported keywords are detected as Basic; schemas with unsupported keywords are detected as Advanced
 - Advanced mode JSON parsing: verify well-formed JSON is accepted; malformed JSON shows validation error
 
 **Component-level tests (required):**
-- FieldDefinitionsEditor: verify resource-spec field list renders correctly per type; toggle editable, set defaults, configure constraints; verify Formik state management
-- ValidationConstraintsEditor: set scalar, resource reference, list/map, and nested constraints; verify correct JSON Schema Struct output; verify empty constraints produce omitted validationSchema
+- FieldDefinitionsEditor: verify admin-selected field list renders correctly; toggle editable, set defaults, configure constraints; verify Formik state management
+- ValidationConstraintsEditor: set scalar, enum, list/map, and nested constraints; verify correct JSON Schema Struct output; verify empty constraints produce omitted validationSchema
 - ValidationConstraintsEditor mode switching: verify Basic→Advanced serializes structured inputs to JSON; verify Advanced→Basic parses JSON and strips unsupported keywords with warning; verify auto-detection opens correct mode based on schema content
 - Advanced mode: verify well-formed JSON is accepted; verify malformed JSON shows validation error and prevents submission; verify existing CLI-created items with advanced schemas open in Advanced mode
 
