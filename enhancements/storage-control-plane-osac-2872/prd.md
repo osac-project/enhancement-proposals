@@ -14,7 +14,7 @@ The Storage Control Plane introduces a single storage driver that presents opaqu
 
 ## In Scope
 
-1. **Storage driver for tenant clusters**: Handles PVC create and delete on tenant clusters through a standard Kubernetes PVC interface. StorageClasses are named after the tenant's configured storage tiers. v0.2 supports VAST as the only vendor backend for block storage.
+1. **Storage driver for tenant clusters**: Handles PVC create, delete, and read (get/list) on tenant clusters through a standard Kubernetes PVC interface. StorageClasses are named after the tenant's configured storage tiers. v0.2 supports VAST as the only vendor backend for block storage.
 
 2. **Storage control plane services**: Tier resolution (maps a tenant's StorageClass to the correct vendor backend), policy enforcement (authorization and tier-access checks), and credential management (vendor credentials provided per-request, never stored on tenant clusters).
 
