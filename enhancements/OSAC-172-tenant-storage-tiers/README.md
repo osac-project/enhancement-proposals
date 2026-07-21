@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-03-26
 last-updated: 2026-04-22
 tracking-link:
-  - https://redhat.atlassian.net/browse/MGMT-23669
+  - https://redhat.atlassian.net/browse/OSAC-172
 see-also:
   - "/enhancements/tenant-specific-storageclasses"
 replaces:
