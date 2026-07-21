@@ -11,6 +11,14 @@ repos:
     - id: check-symlinks
     - id: detect-private-key
 
+- repo: local
+  hooks:
+    - id: check-ep-naming
+      name: Validate enhancement-proposals naming convention
+      entry: .github/scripts/check_ep_naming.py
+      language: script
+      files: ^enhancements/
+
 - repo: https://github.com/adrienverge/yamllint.git
   rev: v1.35.1
   hooks:
