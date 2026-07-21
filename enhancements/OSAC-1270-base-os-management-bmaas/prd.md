@@ -15,14 +15,11 @@ Bare metal instances can reference a custom OS image today, but only as a raw UR
 
 ## In Scope
 
-- Tenants can browse the list of available OS images with metadata (title, description, guest OS family, architecture) via the UI and API.
-- A BaremetalInstance must have an effective DiskImage reference at creation time — either explicitly selected by the user or defaulted from the BaremetalInstanceCatalogItem. Creation is rejected when neither the user input nor the catalog item provides a DiskImage reference. The instance is provisioned with the OS from that image.
-- Deprecated DiskImages display a warning when selected; obsolete DiskImages are hidden from the default image list (accessible via explicit filter) and cannot be used for new bare metal instances.
-- Cloud Provider Admins can register, update, deprecate, obsolete, reactivate, and delete global DiskImages available to all tenants for bare-metal provisioning. Deletion of a global DiskImage is blocked when any BaremetalInstance (in any non-deleted state) or any BaremetalInstanceCatalogItem references it.
-- Tenant Admins can register, update, deprecate, obsolete, reactivate, and delete tenant-scoped DiskImages visible only within their organization. Deletion of a tenant DiskImage is blocked when any BaremetalInstance (in any non-deleted state) or any BaremetalInstanceCatalogItem references it.
-- UI support for the full DiskImage lifecycle (image list, image picker in BaremetalInstance creation, image detail, and lifecycle management controls) for all affected personas.
+- A BaremetalInstance must have an effective DiskImage reference at creation time — either explicitly selected by the user or defaulted from the BaremetalInstanceCatalogItem. Creation is rejected when neither provides a reference. The instance is provisioned with the OS from that image.
+- DiskImage deletion is blocked when any BaremetalInstance (in any non-deleted state) or any BaremetalInstanceCatalogItem references it — applied to both global and tenant-scoped DiskImages.
+- UI/API support for selecting and resolving eligible DiskImages during bare-metal instance creation; DiskImage browsing, lifecycle management, and lifecycle UI are defined by OSAC-2540.
 - E2E test coverage for DiskImage selection at bare-metal instance provision time, added to the existing bare-metal test suite.
-- DiskImages for bare metal use the same resource, metadata schema, image source format, and two-tier visibility model (global + tenant-scoped) as defined in OSAC-2540.
+- DiskImages for bare-metal instances reuse the same resource, metadata schema, image source format, and two-tier visibility model (global + tenant-scoped) as defined in OSAC-2540.
 
 ## Out of Scope
 
