@@ -361,48 +361,47 @@ Two message patterns are defined per referenceable type:
 // Full reference — used when the target may be in a different tenant/project.
 // Defined in the target type's _type.proto file.
 message ClusterTemplateReference {
-  // Resource identifier. Resolution by id is deferred to the (tenant, project, name)
-  // migration. When both id and name are provided, the server validates consistency.
-  // Initially, the server ignores this field.
+  option (buf.validate.message).cel = {
+    id: "id_or_name_required",
+    message: "at least one of id or name must be provided",
+    expression: "this.id != '' || this.name != ''"
+  };
+
   string id = 1;
-
-  // Tenant that owns the referenced resource.
-  // Empty means the caller's current tenant.
   string tenant = 2;
-
-  // Project that owns the referenced resource.
-  // Empty means the caller's current project.
   string project = 3;
-
-  // Human-readable name of the referenced resource.
-  // Required for the initial implementation.
-  string name = 4 [(buf.validate.field).string.min_len = 1];
+  string name = 4;
 }
 
 // Local reference — used when the target is always in the same tenant/project.
 // Defined in the target type's _type.proto file.
 message SubnetLocalReference {
-  // Human-readable name of the referenced resource.
   string name = 1 [(buf.validate.field).string.min_len = 1];
 }
 ```
 
-The `id` field is included in full references for forward compatibility with
-the (tenant, project, name) migration. In the initial implementation, the
-server ignores the `id` field entirely -- resolution uses `name` only.
-[Locked: D5]
+Full references support three resolution modes:
 
-When the (tenant, project, name) migration completes, the server will support
-bidirectional resolution:
-- If only `id` is provided, resolve to (tenant, project, name).
-- If only `name` is provided (with optional tenant/project), resolve to id.
-- If both are provided, validate consistency and return an error if they
-  disagree.
+1. **Name only** (most common): The interceptor resolves the resource by name
+   within the specified tenant/project scope (or the caller's scope if empty).
+   The `id` field in the stored reference is auto-populated with the resolved
+   resource's identifier.
+2. **ID only**: The interceptor resolves the resource by identifier. The `name`,
+   `tenant`, and `project` fields are auto-populated from the resolved resource.
+   This preserves backward compatibility for clients that already use
+   identifiers.
+3. **Both provided**: The interceptor resolves both and validates they refer to
+   the same resource. If they disagree, it returns `InvalidArgument`.
 
-Local references omit `id`, `tenant`, and `project` because the target is
-always in the same scope as the referencing resource. If a future need arises
-for id-based local references, a new field can be added without breaking
-existing clients.
+In all modes, the interceptor mutates the request via protoreflect to fill in
+missing fields before the handler runs. The stored JSON always contains the
+fully-qualified reference (all four fields populated). This ensures consistent
+downstream behavior regardless of how the caller specified the reference.
+
+Local references support name-only resolution. They omit `id`, `tenant`, and
+`project` because the target is always in the same scope as the referencing
+resource. If a future need arises for id-based local references, a new field
+can be added without breaking existing clients.
 
 #### Which fields use local vs. full references
 
@@ -537,27 +536,63 @@ interceptor chain after authentication and transaction management (so that
 tenant context and a database transaction are available).
 
 ```go
-// ReferenceValidator validates resource references in incoming gRPC requests.
+// ReferenceValidator validates and resolves resource references in incoming
+// gRPC requests. It validates that referenced resources exist and
+// auto-populates missing fields (id, name, tenant, project) via protoreflect
+// mutation before the handler runs.
 type ReferenceValidator struct {
-    // registry maps proto message full names to their DAO lookup functions.
     registry map[protoreflect.FullName]ReferenceLookupFunc
 }
 
-// ReferenceLookupFunc looks up a resource by name within a tenant/project scope.
-// Returns nil error if the resource exists, dao.ErrNotFound if it does not.
+// ResolvedRef is the result of resolving a reference.
+type ResolvedRef struct {
+    ID      string
+    Tenant  string
+    Project string
+    Name    string
+}
+
+// ReferenceLookupFunc resolves a resource by id, name, or both within a
+// tenant/project scope. At least one of id or name is non-empty (enforced by
+// buf.validate CEL). Returns the fully-resolved reference or dao.ErrNotFound.
 type ReferenceLookupFunc func(
     ctx context.Context,
-    tenant, project, name string,
-) error
+    tenant, project, id, name string,
+) (*ResolvedRef, error)
 
-// Validate walks a proto message and validates all reference-typed fields.
-// Returns a google.rpc.BadRequest with FieldViolation entries for each
-// invalid reference, or nil if all references are valid.
+// Validate walks a proto message, resolves all reference-typed fields, and
+// mutates the request to fill in missing fields. Returns a
+// google.rpc.BadRequest with FieldViolation entries for each invalid
+// reference, or nil if all references are valid and resolved.
 func (v *ReferenceValidator) Validate(
     ctx context.Context,
     msg proto.Message,
 ) error
 ```
+
+**Resolution modes.** The interceptor supports three resolution modes for full
+references, determined by which fields the caller provides:
+
+| Mode | Input | Behavior |
+|------|-------|----------|
+| Name only | `name` set, `id` empty | Look up by name within tenant/project scope. Auto-populate `id` in the request. |
+| ID only | `id` set, `name` empty | Look up by id. Auto-populate `name`, `tenant`, `project` in the request. |
+| Both | `id` and `name` both set | Look up, verify both resolve to the same resource. Return `InvalidArgument` if they disagree. |
+
+For local references (`LocalReference` messages with only a `name` field),
+only name-based resolution applies — unchanged from the original design.
+
+The lookup function uses the existing `List` + CEL filter pattern already
+established in the codebase (e.g., `lookupCatalogItem`, `lookupTemplate`):
+`"this.id == X || this.metadata.name == X"`. This avoids adding a new DAO
+method.
+
+**Request mutation.** After resolution, the interceptor writes the resolved
+values back into the request message via `protoreflect.Message.Set()`. This
+ensures the handler and stored JSON always contain fully-qualified references
+regardless of how the caller specified them. For example, a client that sends
+`{ "id": "abc-123" }` gets the stored reference expanded to
+`{ "id": "abc-123", "tenant": "my-tenant", "project": "", "name": "my-template" }`.
 
 **Reference detection.** The interceptor identifies reference fields by
 checking whether a field's message type ends with `Reference` or
@@ -924,6 +959,13 @@ details on the URI/ARN trade-off.
 - Interceptor validation logic: verify that the interceptor returns
   `InvalidArgument` with correct field paths for missing references, returns
   success for valid references, and aggregates multiple errors.
+- Interceptor resolution modes: verify name-only resolution (id
+  auto-populated in request), id-only resolution (name/tenant/project
+  auto-populated), both-match (succeeds, no mutation needed), and
+  both-mismatch (returns `InvalidArgument` explaining the inconsistency).
+- Request mutation: verify that after interceptor runs, the request message
+  contains fully-qualified references (all four fields populated) regardless
+  of which fields the caller originally provided.
 - Per-server validation removal: verify that servers no longer perform inline
   existence checks for fields handled by the interceptor, but continue to
   perform business logic validation.
@@ -953,6 +995,14 @@ details on the URI/ARN trade-off.
 - Cross-tenant catalog item (Chunk 2): Create a ComputeInstance referencing
   a CatalogItem in the shared tenant. Verify the full reference resolves
   across tenants.
+- ID-only resolution (Chunk 1): Create a VirtualNetwork, then create a
+  Subnet referencing it by `id` only (no `name`). Verify the Subnet is
+  created and the stored reference contains both `id` and `name`.
+- Both-match resolution (Chunk 1): Create a Subnet providing both `id` and
+  `name` for the VirtualNetwork reference. Verify success when they match.
+- Both-mismatch resolution (Chunk 1): Create a Subnet providing `id` of one
+  VirtualNetwork and `name` of another. Verify `InvalidArgument` with a
+  message explaining the inconsistency.
 
 **E2E tests (osac-test-infra, pytest):**
 
