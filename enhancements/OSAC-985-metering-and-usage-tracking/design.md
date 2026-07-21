@@ -325,17 +325,19 @@ All lifecycle events share a base schema. The base event carries **common fields
 
 #### Event Types by Resource
 
-| Event Type | VMaaS | CaaS | MaaS | Billing Effect |
-|-----------|-------|------|------|----------------|
-| `osac.resource.created.v1` | Yes | Yes | No | Records existence; no billing |
-| `osac.resource.started.v1` | Yes | Yes | No | Billing interval opens |
-| `osac.resource.updated.v1` | Yes (resize) | Yes (scale) | No | Closes interval, opens new with updated dimensions |
-| `osac.resource.suspended.v1` | Yes (stop/pause/fail) | Yes (fail/delete) | No | Billing interval closes |
-| `osac.resource.resumed.v1` | Yes | Yes (recovery) | No | New billing interval opens |
-| `osac.resource.deleted.v1` | Yes | Yes | No | Final interval closes |
-| `osac.resource.heartbeat.v1` | Yes (60s, RUNNING) | Yes (60s, PROGRESSING/READY) | No | Periodic usage confirmation |
-| `osac.resource.correction.v1` | Yes | Yes | Yes | Adjusts prior interval |
-| `osac.inference.usage.v1` | No | No | Yes | Per-request token usage |
+Events fall into two categories: **billing-essential** events that define interval boundaries for billing accuracy, and **audit** events that record resource existence for completeness. The billing-essential events are the minimum set — without `suspended.v1`, the adapter would need timeout-based detection of heartbeat absence to infer billing stopped, losing per-second accuracy (CAP-4) and making network partitions indistinguishable from resource stops. Without `updated.v1`, dimension changes (VM resize, cluster scale) would not produce a precise interval boundary. The audit events (`created.v1`, `deleted.v1`) carry no billing information but are retained on Kafka for resource lifecycle traceability and provider migration replay.
+
+| Event Type | VMaaS | CaaS | MaaS | Category | Billing Effect |
+|-----------|-------|------|------|----------|----------------|
+| `osac.resource.created.v1` | Yes | Yes | No | Audit | Records existence; no billing |
+| `osac.resource.started.v1` | Yes | Yes | No | Billing | Billing interval opens |
+| `osac.resource.updated.v1` | Yes (resize) | Yes (scale) | No | Billing | Closes interval, opens new with updated dimensions |
+| `osac.resource.suspended.v1` | Yes (stop/pause/fail) | Yes (fail/delete) | No | Billing | Billing interval closes with exact `duration_seconds` |
+| `osac.resource.resumed.v1` | Yes | Yes (recovery) | No | Billing | New billing interval opens |
+| `osac.resource.deleted.v1` | Yes | Yes | No | Audit | Resource removed; billing already closed by `suspended.v1` |
+| `osac.resource.heartbeat.v1` | Yes (60s, RUNNING) | Yes (60s, PROGRESSING/READY) | No | Billing | Periodic usage confirmation |
+| `osac.resource.correction.v1` | Yes | Yes | Yes | Billing | Adjusts prior interval |
+| `osac.inference.usage.v1` | No | No | Yes | Billing | Per-request token usage |
 
 #### Correction Event Schema
 
