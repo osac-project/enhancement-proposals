@@ -3,6 +3,11 @@
 
 Directories and files that already existed at the PR base branch are
 grandfathered — this only enforces the naming convention on new work.
+
+Enforcement requires a PR base SHA (set via PRE_COMMIT_PR_BASE_SHA, always
+present in the CI pre-commit job). Local runs without it are advisory-only
+(a note is printed, nothing is flagged) so the git hook never blocks a
+commit that CI would pass.
 """
 
 import os
@@ -10,7 +15,7 @@ import re
 import subprocess
 import sys
 
-NAME_RE = re.compile(r"^OSAC-[1-9][0-9]*-[a-z0-9-]+$")
+NAME_RE = re.compile(r"^OSAC-[1-9][0-9]*-[a-z0-9]+(?:-[a-z0-9]+)*$")
 CHECKED_FILENAMES = frozenset({"prd.md", "design.md"})
 
 BASE_SHA_ENV_VAR = "PRE_COMMIT_PR_BASE_SHA"
@@ -43,7 +48,29 @@ def top_level_enhancement_dir(path: str) -> str | None:
 
 
 def validate_paths(paths: list[str], base_sha: str | None) -> list[str]:
-    if base_sha is not None and not ref_exists(base_sha):
+    # No base SHA at all means this is a local, non-CI run (CI always sets
+    # PRE_COMMIT_PR_BASE_SHA). Enforcing here would block commits that CI
+    # would pass — e.g. anyone with the git hook installed editing a file in
+    # an existing legacy directory — and push contributors toward
+    # `--no-verify`, which skips every other hook too. So local runs are
+    # advisory-only; CI remains the sole enforcement gate.
+    if base_sha is None:
+        print(
+            "note: no PR base SHA available — normal for local, non-CI "
+            "runs (pre-commit has no way to know your PR's base branch "
+            "outside CI). Skipping enhancements/ naming/casing checks "
+            "here; the CI pre-commit job (which sets "
+            "PRE_COMMIT_PR_BASE_SHA) is the authoritative gate and will "
+            "still catch violations before merge.",
+            file=sys.stderr,
+        )
+        return []
+
+    # A base SHA *was* provided (i.e. we're in CI) but doesn't resolve —
+    # unlike the "no base SHA" case above, this indicates a CI
+    # misconfiguration (e.g. a shallow checkout) and should stay fail-closed
+    # rather than silently disabling enforcement.
+    if not ref_exists(base_sha):
         print(
             f"warning: PR base SHA '{base_sha}' is not available in this "
             "checkout (the checkout step needs fetch-depth: 0) — "
@@ -52,15 +79,6 @@ def validate_paths(paths: list[str], base_sha: str | None) -> list[str]:
             file=sys.stderr,
         )
         base_sha = None
-    elif base_sha is None:
-        print(
-            "warning: no PR base SHA available — expected for local, "
-            "non-CI runs; grandfathering disabled here, but the CI "
-            "pre-commit job (which sets PRE_COMMIT_PR_BASE_SHA) is the "
-            "authoritative gate — every enhancements/ path will be "
-            "validated as new",
-            file=sys.stderr,
-        )
 
     violations = []
     for path in paths:

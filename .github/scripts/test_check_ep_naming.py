@@ -104,14 +104,24 @@ class ValidatePathsTests(unittest.TestCase):
         self.assertEqual(len(violations), 1)
         self.assertIn("PRD.md", violations[0])
 
-    def test_no_base_sha_validates_everything_as_new(self):
+    def test_no_base_sha_is_advisory_only_and_flags_nothing(self):
         with redirect_stderr(io.StringIO()) as captured:
             violations = cen.validate_paths(
                 ["enhancements/networking/design.md"], None,
             )
-        self.assertEqual(len(violations), 1)
-        self.assertIn("networking", violations[0])
-        self.assertIn("grandfathering disabled", captured.getvalue().lower())
+        self.assertEqual(violations, [])
+        self.assertIn("no pr base sha available", captured.getvalue().lower())
+
+    def test_no_base_sha_does_not_catch_new_bad_name_either(self):
+        # Documents the accepted tradeoff: without a base SHA, local runs
+        # can't distinguish new from pre-existing, so enforcement is
+        # skipped entirely — even for a genuinely new, badly-named
+        # directory. CI (which always sets the base SHA) is the real gate.
+        with redirect_stderr(io.StringIO()):
+            violations = cen.validate_paths(
+                ["enhancements/storage-network/prd.md"], None,
+            )
+        self.assertEqual(violations, [])
 
     def test_unresolvable_base_sha_falls_back_to_no_grandfathering(self):
         # path_exists_at_ref returns True here (i.e. the directory would be
@@ -129,6 +139,24 @@ class ValidatePathsTests(unittest.TestCase):
         message = captured.getvalue().lower()
         self.assertIn("deadbeef", message)
         self.assertIn("fetch-depth", message)
+
+    def test_new_directory_with_consecutive_dashes_is_flagged(self):
+        violations = self._validate(
+            paths=["enhancements/OSAC-1--foo/prd.md"],
+            base_sha="abc123",
+            existing_at_base=set(),
+        )
+        self.assertEqual(len(violations), 1)
+        self.assertIn("OSAC-1--foo", violations[0])
+
+    def test_new_directory_with_trailing_dash_is_flagged(self):
+        violations = self._validate(
+            paths=["enhancements/OSAC-1-foo-/prd.md"],
+            base_sha="abc123",
+            existing_at_base=set(),
+        )
+        self.assertEqual(len(violations), 1)
+        self.assertIn("OSAC-1-foo-", violations[0])
 
     def test_path_outside_enhancements_is_ignored(self):
         violations = self._validate(
@@ -159,12 +187,12 @@ class MainTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("storage-network", captured.getvalue())
 
-    def test_missing_base_sha_env_var_falls_back_to_none(self):
+    def test_missing_base_sha_env_var_is_advisory_only(self):
         with patch.dict(os.environ, {}, clear=True), \
                 redirect_stderr(io.StringIO()) as captured:
-            exit_code = cen.main(["enhancements/networking/design.md"])
-        self.assertEqual(exit_code, 1)
-        self.assertIn("grandfathering disabled", captured.getvalue().lower())
+            exit_code = cen.main(["enhancements/storage-network/PRD.md"])
+        self.assertEqual(exit_code, 0)
+        self.assertIn("no pr base sha available", captured.getvalue().lower())
 
 
 if __name__ == "__main__":

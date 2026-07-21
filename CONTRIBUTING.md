@@ -45,3 +45,8 @@ and files that already existed before the PR are not re-validated —
 existing non-compliant directories are a separate, tracked cleanup
 (see [OSAC-2870](https://redhat.atlassian.net/browse/OSAC-2870)), not a
 blocker for new work.
+
+If you have `pre-commit install`ed locally, this check is advisory-only
+outside CI (it can't tell new paths from pre-existing ones without a PR
+base branch to compare against) — it will never block a local commit.
+CI is the authoritative gate.
