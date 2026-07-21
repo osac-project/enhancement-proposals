@@ -193,6 +193,34 @@ Starting state: A Cloud Infrastructure Admin has created a NetworkClass named
 3. The interceptor validates that `high-perf` exists. The server handler
    validates CIDR format and NetworkClass capabilities (IPv4 support).
 
+#### Creating a catalog item referencing a template in another tenant (Cloud Provider Admin)
+
+Starting state: A Cloud Provider Admin has created a ClusterTemplate named
+`ocp-4.18` in tenant `infra-templates`.
+
+1. The admin creates a ClusterCatalogItem in the `shared` tenant, referencing
+   the template by tenant and name:
+   ```json
+   {
+     "metadata": { "name": "ocp-standard" },
+     "spec": {
+       "template": {
+         "tenant": "infra-templates",
+         "name": "ocp-4.18"
+       }
+     }
+   }
+   ```
+
+2. The `template` field is a `ClusterTemplateReference` (full reference). The
+   interceptor reads the explicit `tenant` value from the reference message
+   and looks up the ClusterTemplate in tenant `infra-templates`, not the
+   caller's current tenant.
+
+3. If the template exists, the request proceeds to the server handler. If
+   not, the interceptor returns `InvalidArgument` with
+   `spec.template.name: ClusterTemplate "ocp-4.18" not found in tenant "infra-templates"`.
+
 #### Error handling: invalid reference
 
 When a user references a nonexistent resource:
