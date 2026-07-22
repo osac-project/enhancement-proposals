@@ -336,7 +336,7 @@ All resource spec fields are shown except networking fields (`network_attachment
 Each kind-specific edit page reuses the same wizard steps as the create page with the following differences:
 
 - Page heading shows "Edit catalog item"
-- Template/base selection is displayed as read-only text (not editable after creation)
+- Template selection is displayed as read-only text (not editable after creation)
 - Resource type is displayed as read-only text
 - Scope is displayed as read-only text
 - The form tracks which fields have changed from their original values
