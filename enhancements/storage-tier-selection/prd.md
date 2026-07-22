@@ -13,7 +13,7 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 ## In Scope
 
 - Per-disk storage tier selection for ComputeInstance boot disk and additional disks
-- Storage tier as a mandatory field — provisioning fails if no tier is provided `[Clarify: R1.Q3, R2.Q1]`
+- Storage tier as a mandatory field — provisioning fails if no tier is resolved after applying the precedence chain (user input, CatalogItem defaults, Template defaults) `[Clarify: R1.Q3, R2.Q1]`
 - Independent tier selection per disk (boot disk and each additional disk can use different tiers)
 - Validation that the requested tier exists at request time; clear error on failure
 - Tier resolution precedence: user input, then CatalogItem defaults, then ComputeInstanceTemplate defaults `[Clarify: R2.Q1]`
@@ -61,6 +61,7 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 ## Risks
 
 ### 1. No storage tiers defined at tenant provisioning time
+
 If no StorageTier resources have been created (OSAC-1110 dependency), no ComputeInstance can be provisioned because tier selection is mandatory. Early deployments or environments where the storage team has not yet configured tiers will fail all VM creation requests.
 - **Owner:** Storage WG
 - **Mitigation:** OSAC-1110 must be completed and at least one tier configured before ComputeInstance provisioning is usable. Installation documentation must include tier setup as a prerequisite.
