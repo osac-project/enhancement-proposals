@@ -51,16 +51,16 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 ## Proposal
 
-The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly table with search, scope badges, and kebab row actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (clusters only — pod_cidr, service_cidr) → Access (ssh_key, pull_secret). VM catalog items auto-include `network_attachments` in the API payload without showing it in the wizard; Bare Metal has no networking fields. The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
+The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly `Gallery` of `CatalogItemCard` cards (the same card-based layout as the tenant user `CatalogPage`) with search, scope badges, publication status, and kebab actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (clusters only — pod_cidr, service_cidr) → Access (ssh_key, pull_secret). VM catalog items auto-include `network_attachments` in the API payload without showing it in the wizard; Bare Metal has no networking fields. The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
-Each wizard step is a separate per-kind component with static, hardcoded fields — the same pattern as the tenant user provisioning wizard. Individual fields reuse shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that each render an editable toggle, a type-appropriate default value input, and type-specific validation options. Complex fields like `node_sets` (a map of objects) use a dedicated `NodeSetsFieldEditor`. Shared page-level components (`CatalogItemGeneralFields`, `CatalogItemTable`, `CatalogItemActionsMenu`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic.
+Each wizard step is a separate per-kind component with static, hardcoded fields — the same pattern as the tenant user provisioning wizard. Individual fields reuse shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that each render an editable toggle, a type-appropriate default value input, and type-specific validation options. Complex fields like `node_sets` (a map of objects) use a dedicated `NodeSetsFieldEditor` that reuses the existing `ClusterNodeSetsArrayField` from the tenant user wizard. Shared page-level components (`CatalogItemGeneralFields`, `CatalogItemCard`, `CatalogItemActionsMenu`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic.
 
 ### Workflow Description
 
 #### Cloud Provider Admin — Create Catalog Item
 
 1. CSP Admin navigates to **Administration > Catalog Management** in the sidebar.
-2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab lists catalog items of that resource type across all tenants.
+2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows a gallery of catalog item cards for that resource type across all tenants.
 3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope (Global or a specific tenant), and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template.
 5. **Step 2 — Configuration:** A per-kind step component with static fields for the resource spec (excluding access and networking fields). Each field uses a shared field definition primitive (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that renders an editable toggle, a type-appropriate default value input, and type-specific validation options. Default values are pre-populated from the selected template. By default, fields are non-editable; non-editable fields require a default value. For Cluster, includes `NodeSetsFieldEditor` for configuring default node set entries (name, host type dropdown, size) and size constraints. For resource reference fields (`ResourceSelectorFieldDefinition`), the admin selects a default from a dropdown of existing resources — no validation constraints are configured.
@@ -82,7 +82,7 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
 The Tenant Admin uses the same wizard flow as the CSP Admin with one difference: scope is automatically set to the tenant's organization.
 
 1. Tenant Admin navigates to **Administration > Catalog Management**.
-2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows the tenant's catalog items alongside global items. Global items have a "Global" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and full actions.
+2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows a gallery of the tenant's catalog item cards alongside global items. Global items have a "Global" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and full actions.
 3. Tenant Admin clicks the "Create" button on the active tab. The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description, and selects a template. Scope is automatically set to the tenant's organization (displayed as read-only text, not editable).
 5. **Step 2 — Configuration:** Same as CSP Admin — resource spec field definitions (excluding access and networking fields).
@@ -181,7 +181,7 @@ Rather than a single monolithic component driven by a configuration map, the des
 
 **Shared page-level components** (used by all three kinds):
 - `CatalogItemGeneralFields` — name, description, scope, and template selector inputs (reused in create/edit)
-- `CatalogItemTable` — PatternFly table with shared columns, actions, and scope badges
+- `CatalogItemCard` — reuses the existing tenant `CatalogItemCard` component, extended with scope badge, publication status, and admin kebab menu
 - `CatalogItemActionsMenu` — kebab menu (publish/unpublish/delete)
 
 **Per-kind step components** — each wizard step is a separate component with static, hardcoded fields (same pattern as the tenant user provisioning wizard). Individual fields use the shared field definition primitives above:
@@ -271,28 +271,25 @@ The update hook builds the `update_mask` FieldMask from the diff between origina
 
 **Location:** `libs/ui-components/src/pages/admin/CatalogManagementListPage.tsx`
 
-Uses `ListPage` + `ListPageBody` layout with a PatternFly `Table`.
+Uses `ListPage` layout with a PatternFly `Gallery` — the same card-based layout as the tenant user `CatalogPage`. Each catalog item is rendered as a `CatalogItemCard` within a `Gallery` with `hasGutter`.
 
 **Tabs:**
 
-The list page uses three PatternFly `Tabs` — **Clusters**, **Virtual Machines**, **Bare Metal** — one per resource type. Each tab renders its own table querying the corresponding API endpoint. The active tab determines the resource type context, eliminating the need for a type filter or a resource type dropdown.
+The list page uses three PatternFly `Tabs` — **Clusters**, **Virtual Machines**, **Bare Metal** — one per resource type. Each tab renders its own gallery querying the corresponding API endpoint. The active tab determines the resource type context, eliminating the need for a type filter or a resource type dropdown.
 
 **Toolbar (per tab):**
 - "Create" button — navigates to the kind-specific create route for the active tab's resource type (e.g., `/admin/catalog/cluster/create`)
-- Search: text input filtering by name (server-side via API filter parameter)
-- Publication status filter: All / Published / Unpublished (server-side via API filter parameter)
+- Search: `SearchInput` filtering by name (client-side via `filterCatalogItemsBySearch()`, same as tenant `CatalogPage`)
+- Publication status filter: `ToggleGroup` — All / Published / Unpublished
 
-**Table columns:**
+**Card content (reuses `CatalogItemCard`):**
 
-| Column | Content |
-|--------|---------|
-| Name | Catalog item name as a link to the detail page |
-| Template | Name of the backing template |
-| Scope | "Global" badge or organization name badge (see § Scope Display) |
-| Status | "Published" (green) or "Unpublished" (gray) label |
-| Actions | Kebab menu |
+Each card shows:
+- **Header:** Resource type icon (`CatalogItemIcon`) + catalog item title
+- **Body:** Description (truncated), resource spec labels (e.g., "4 vCPU", "8 Memory"), scope badge ("Global" or "Organization"), publication status label ("Published" green / "Unpublished" gray)
+- **Kebab menu:** Edit, Publish/Unpublish, Delete actions (see below)
 
-The "Type" column is not needed because each tab shows only one resource type.
+Clicking a card opens the detail page (unlike tenant `CatalogPage` which uses a drawer).
 
 **Kebab menu actions (per role):**
 
@@ -303,7 +300,7 @@ The "Type" column is not needed because each tab shows only one resource type.
 | Unpublish | Yes (if published) | Yes (if published) | No |
 | Delete | Yes | Yes | No |
 
-Tenant Admin sees global items as read-only rows with no kebab menu (or a kebab with only "View details").
+Tenant Admin sees global items as read-only cards with no kebab menu (or a kebab with only "View details").
 
 **Scope display:**
 - **CSP Admin:** The private API returns the `tenant` field in responses. Items with an empty `tenant` are global; items with a non-empty `tenant` are organization-scoped. The UI displays the appropriate scope badge directly from this field.
@@ -339,9 +336,20 @@ Each resource type has its own configuration step component with static, hardcod
 
 **Step 4: Access** (per-kind step component)
 
-- **Cluster (`ClusterAccessStep`):** `ssh_public_key` and `pull_secret` as `StringFieldDefinition` fields. Both default to editable.
+- **Cluster (`ClusterAccessStep`):** `ssh_public_key` and `pull_secret` as `StringFieldDefinition` fields. Both default to editable. If the template does not provide defaults, the UI uses hardcoded defaults (empty string for both — the field definition is created with editable: true and no default value, allowing the tenant to provide their own).
 - **VM (`VMAccessStep`):** `ssh_key` as `StringFieldDefinition`. Defaults to editable.
 - **Bare Metal (`BMAccessStep`):** `ssh_public_key` as `StringFieldDefinition`. Defaults to editable.
+
+**Hardcoded UI defaults:** When the selected template does not provide defaults for `pod_cidr`, `service_cidr`, `ssh_public_key`, or `pull_secret`, the UI pre-populates the default value input with hardcoded values so the admin always has a reasonable starting point:
+
+| Field | Hardcoded Default | Notes |
+|-------|------------------|-------|
+| `pod_cidr` | `10.128.0.0/14` | Standard OpenShift pod CIDR |
+| `service_cidr` | `172.30.0.0/16` | Standard OpenShift service CIDR |
+| `ssh_public_key` | *(empty, editable)* | Tenant provides their own |
+| `pull_secret` | *(empty, editable)* | Tenant provides their own |
+
+Template-provided defaults take precedence over these hardcoded values. The hardcoded defaults are defined as constants in the per-kind step components.
 
 **Wizard submission:**
 - Validates all fields with Yup on each step transition and on final submit
@@ -384,7 +392,7 @@ Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management
 
 **Tabs:**
 - **Overview:** Read-only display of general information (name, description, resource type, scope, template name, publication status, creation date)
-- **Field Definitions:** Read-only list showing all field definitions with: Path, Editable (Yes/No), Default Value, Validation Constraints. For `node_sets` (Cluster), shows the default node set entries (name, host type, size) and any size constraints.
+- **Field Definitions:** Read-only list showing all field definitions with: Path, Editable (Yes/No), Default Value, Validation Constraints. For `node_sets` (Cluster), shows the default node set entries (host type, size), the allow add/remove setting, and any size constraints.
 - **Provisioned Resources:** Table of resources (Clusters, ComputeInstances, or BareMetalInstances) provisioned from this catalog item, fetched via the resource list endpoint with a `this.spec.catalog_item == "<id>"` CEL filter
 
 **Header actions:**
@@ -465,42 +473,40 @@ const ClusterConfigurationStep = () => (
 
 **Location:** `libs/ui-components/src/components/catalogManagement/fieldDefinitions/NodeSetsFieldEditor.tsx`
 
-The `node_sets` field is a `map<string, ClusterNodeSet>` where each entry has a string key (node set name, e.g. `"compute"`, `"gpu"`), a `host_type` (string reference to a HostType resource), and a `size` (int32, number of nodes). Because this is a structured map of objects, it gets a dedicated editor within `ClusterConfigurationStep`.
+The `node_sets` field is a `map<string, ClusterNodeSet>` where each entry has a `host_type` (string reference to a HostType resource) and a `size` (int32, number of nodes). The map key is auto-derived from the host type. Because this is a structured map of objects, it gets a dedicated editor within `ClusterConfigurationStep`.
 
-**NodeSetsFieldEditor** renders:
+**Default value — reuses `ClusterNodeSetsArrayField`:** The default node set entries are configured using the existing `ClusterNodeSetsArrayField` component from the tenant user cluster creation wizard. This component renders each node set as a `FormFieldGroup` with two fields: **Host Type** (`SelectField` dropdown from `useHostTypes()`) and **Nodes** (pool size, `ClusterPoolSizeField`). It supports adding entries via an "Add node set" link button and removing entries via a minus icon per row (except the first). Already-selected host types are disabled in other rows to prevent duplicates. The entries are pre-populated from the selected template's `node_sets` map.
 
-- A heading "Node Sets" with the field path `node_sets`
-- An **Editable** toggle (controls whether tenant users can modify node sets during provisioning). When non-editable, the default configuration is locked.
-- A **default node sets** section showing the node set entries pre-populated from the selected template. Each entry renders:
-  - **Name** (text input) — the map key (e.g., `"compute"`). Required, must be unique within the map.
-  - **Host Type** (`SelectField`) — dropdown populated from the `GET /v1/host_types` endpoint.
-  - **Size** (number input) — default number of nodes. Required.
-  - A **remove** button per entry (disabled if only one entry remains — at least one node set is required).
-- An **"Add node set"** button to add additional default entries.
-- **Validation constraints** for the `size` field within each node set: minimum and maximum number inputs.
+**Admin-specific controls** (rendered above or alongside the `ClusterNodeSetsArrayField`):
+
+- **Editable** toggle — controls whether tenant users can modify the size of existing node sets during provisioning. When non-editable, the default sizes are locked.
+- **Allow add/remove** toggle — controls whether tenant users can add new node sets or remove existing ones. This is independent of the editable toggle: an admin can allow users to change sizes (editable: true) while preventing them from adding/removing node sets (allowAddRemove: false), or vice versa.
+- **Size validation constraints** — minimum and maximum number inputs for the `size` field across all node sets.
 
 **Formik state for node_sets:**
 
 ```typescript
 interface NodeSetEntry {
-  name: string;       // map key
-  hostType: string;   // host type identifier
-  size: number;       // default number of nodes
-  sizeMin?: number;   // validation: minimum size
-  sizeMax?: number;   // validation: maximum size
+  rowId: string;                // random UUID for React key (same as ClusterNodeSetRow)
+  hostType: LabeledResourceRef; // { value: string, label: string }
+  size: string;                 // number of nodes as string (same as ClusterNodeSetRow)
+  sizeMin?: number;             // validation: minimum size
+  sizeMax?: number;             // validation: maximum size
 }
 
 // Stored in Formik as:
 // fieldDefinitions.node_sets.entries: NodeSetEntry[]
 // fieldDefinitions.node_sets.editable: boolean
+// fieldDefinitions.node_sets.allowAddRemove: boolean
 ```
 
-On submission, the `node_sets` entries are serialized into the field definition with the default value containing the map structure and the validation schema containing the size constraints:
+On submission, the `node_sets` entries are serialized into the field definition:
 
 ```json
 {
   "path": "node_sets",
   "editable": true,
+  "allowAddRemove": false,
   "default": {
     "compute": { "host_type": "acme_1tb", "size": 3 },
     "gpu": { "host_type": "acme_1tb_h100", "size": 1 }
@@ -521,15 +527,19 @@ On submission, the `node_sets` entries are serialized into the field definition 
 
 ```typescript
 const nodeSetEntrySchema = Yup.object({
-  name: Yup.string().required('Node set name is required'),
-  hostType: Yup.string().required('Host type is required'),
-  size: Yup.number().integer().min(1).required('Size is required'),
+  rowId: Yup.string().required(),
+  hostType: Yup.object({
+    value: Yup.string().required('Host type is required'),
+    label: Yup.string(),
+  }).required(),
+  size: Yup.string().required('Size is required'),
   sizeMin: Yup.number().integer().min(0).nullable(),
-  sizeMax: Yup.number().integer().min(Yup.ref('sizeMin')).nullable(),
+  sizeMax: Yup.number().integer().nullable(),
 });
 
 const nodeSetsSchema = Yup.object({
   editable: Yup.boolean().required(),
+  allowAddRemove: Yup.boolean().required(),
   entries: Yup.array().of(nodeSetEntrySchema).min(1, 'At least one node set is required'),
 });
 ```
@@ -573,8 +583,7 @@ libs/ui-components/src/
         BareMetalInstanceCatalogItemDetailPage.tsx
   components/
     catalogManagement/
-      CatalogItemTable.tsx          # shared table (columns, row rendering)
-      CatalogItemActionsMenu.tsx    # shared kebab menu
+      CatalogItemActionsMenu.tsx    # shared kebab menu (extends existing CatalogItemCard)
       CatalogItemGeneralFields.tsx  # shared name, description, scope inputs
       # TemplateSelector is integrated into CatalogItemGeneralFields
       CatalogItemScopeBadge.tsx
@@ -647,7 +656,7 @@ No new observability changes. The UI is a frontend application — observability
 | Scope not visible in public API responses | CSP Admin list page cannot show Global vs Tenant-scoped badges | Check whether `metadata.annotations` or `creators`/`tenants` fields expose scope. If not, request a backend change to include a `scope` field in public responses, or route CSP Admin requests through the private API. |
 | Per-kind page divergence | Three sets of kind-specific pages may diverge over time | Shared components enforce consistency for common behavior; code review must verify shared component usage when adding kind-specific features. |
 | Constraint editor complexity | Recursive nested constraint forms may become unwieldy for deeply nested objects | Limit nesting depth to 3 levels; show a warning when approaching the limit. |
-| Three parallel API calls for list page | Loading time increases if one of the three catalog item type endpoints is slow | Show partial results as each query resolves (progressive rendering). Use `useQueries` with per-query loading states so the table populates incrementally. |
+| Three parallel API calls for list page | Loading time increases if one of the three catalog item type endpoints is slow | Only the active tab's query is enabled; switching tabs triggers a new query. Use per-query loading states so the gallery populates when data arrives. |
 
 ### Drawbacks
 
@@ -676,7 +685,7 @@ Using a single `CatalogItemKindConfig` map to drive all polymorphic behavior thr
 
 ### Reuse CatalogPage instead of a separate admin list page
 
-Reusing the existing tenant-facing `CatalogPage` as a unified admin+tenant catalog view was considered. This would use a card layout (matching the existing tenant browsing experience) rather than a table for the management view. It was not selected because it couples admin and tenant views, making it harder to evolve admin-specific features (e.g., bulk operations, advanced filtering) independently. The admin list page uses its own per-resource-type tabs, with each tab's "Create" button determining the resource type — a simpler model than a type selector dropdown.
+Reusing the existing tenant-facing `CatalogPage` as a unified admin+tenant catalog view was considered. This would share the exact same page component for both admin and tenant users. It was not selected because it couples admin and tenant views, making it harder to evolve admin-specific features (e.g., publication status filter, scope badges, kebab actions) independently. Instead, the admin list page reuses the `CatalogItemCard` component and `Gallery` layout from the tenant `CatalogPage` but wraps them in an admin-specific page with additional toolbar controls (publication status filter, create button) and per-card admin actions.
 
 ### Modal for create/edit instead of full page
 
