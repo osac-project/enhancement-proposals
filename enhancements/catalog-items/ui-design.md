@@ -39,7 +39,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 - Enable Cloud Provider Admins and Tenant Admins to manage catalog items through the web console with full CRUD operations.
 - Provide role-appropriate views: admins see management screens; tenant users see only the existing catalog browsing experience.
-- Support the Tenant Admin "further restrict" create flow where field definitions are pre-populated from a global catalog item and can only be made more restrictive.
+- Support a unified admin creation flow where both Cloud Provider Admins and Tenant Admins use the same wizard to create catalog items from templates.
 - Reuse existing osac-ui patterns and share common UI components across all three catalog item types using JSX composition.
 
 ### Non-Goals
@@ -82,16 +82,14 @@ Shared components (`CatalogItemGeneralFields`, `TemplateSelector`, `FieldDefinit
 
 #### Tenant Admin — Create Catalog Item
 
+The Tenant Admin uses the same wizard flow as the CSP Admin with one difference: scope is automatically set to the tenant's organization.
+
 1. Tenant Admin navigates to **Administration > Catalog Management**.
 2. The list page shows the tenant's catalog items alongside global items. Global items have a "Global" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and full actions.
 3. Tenant Admin selects a resource type from the "Create catalog item" dropdown.
-4. **Step 1 — General:** Admin enters name and description. Resource type is derived from the route and displayed as read-only. Scope is automatically set to the tenant's organization (not editable).
-5. **Step 2 — Base catalog item:** Instead of a template selector, the admin selects a published global catalog item of the selected resource type. The UI fetches the base item's field definitions.
-6. **Step 3 — Field definitions:** The `FieldDefinitionsEditor` is pre-populated with the base item's field definitions. The admin can:
-   - Change editable fields to non-editable (but not the reverse — the toggle is disabled for fields already marked non-editable in the base)
-   - Change or tighten default values for editable fields
-   - Add or tighten validation constraints (cannot remove or loosen constraints from the base)
-   - Change display names
+4. **Step 1 — General:** Admin enters name and description. Resource type is derived from the route and displayed as read-only. Scope is automatically set to the tenant's organization (displayed as read-only text, not editable).
+5. **Step 2 — Template:** The admin selects a template from a dropdown (same as CSP Admin flow).
+6. **Step 3 — Field definitions:** Same field definitions editor as CSP Admin — all resource spec fields shown, configured with editable toggle, default values, and validation constraints.
 7. Admin clicks "Create". The UI sends a POST. The server auto-sets the `tenant` field.
 8. The admin is redirected to the detail page.
 
@@ -304,14 +302,13 @@ Each kind-specific create page uses a PatternFly Wizard with Formik + Yup that e
 - Resource type (read-only text, derived from the route — e.g., "Cluster")
 - Scope (providerAdmin only): `RadioButtonField` — Global or Tenant-scoped. If tenant-scoped, a tenant selector dropdown appears. For tenantAdmin, this step shows "Scope: Your organization" as read-only text.
 
-**Step 2: Template / Base Selection** (role-dependent)
+**Step 2: Template Selection**
 
-- **providerAdmin:** A `SelectField` populates with templates from the corresponding template list endpoint (fetched by the page's typed hook). Selecting a template pre-populates the field definitions step with default values from the template's parameter definitions.
-- **tenantAdmin:** A `SelectField` populates with published global catalog items of the matching resource type. Selecting a base item fetches its details and pre-populates the field definitions step.
+A `SelectField` populates with templates from the corresponding template list endpoint (fetched by the page's typed hook). Selecting a template pre-populates the field definitions step with default values from the template's parameter definitions. Both CSP Admin and Tenant Admin use the same template selector.
 
 **Step 3: Field Definitions** (see § FieldDefinitionsEditor)
 
-All resource spec fields are shown. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Non-editable fields require a default value.
+All resource spec fields are shown except networking fields (`network_attachments`), which are excluded from the wizard. The UI automatically includes `network_attachments` in the API payload as an editable field with no default value and no validation schema, so the tenant user can configure network attachments during provisioning. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Non-editable fields require a default value.
 
 **Wizard submission:**
 - Validates all fields with Yup on each step transition and on final submit
@@ -366,7 +363,7 @@ Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management
 
 **Location:** `libs/ui-components/src/components/catalogManagement/FieldDefinitionsEditor.tsx`
 
-The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. All fields from the resource spec are shown — the field set is fixed per resource type and the admin does not add or remove fields. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. For Tenant Admin, the field list comes from the base catalog item's field definitions.
+The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. All fields from the resource spec are shown except networking fields (`network_attachments`), which are excluded from the wizard and automatically included in the API payload as editable with no default or validation. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Both CSP Admin and Tenant Admin use the same editor.
 
 **Each field definition row renders:**
 
@@ -374,7 +371,7 @@ The most complex new component. Built on Formik `FieldArray` with the field name
 |---------|-------|------|-------|
 | Path | `fieldDefinitions.${i}.path` | Read-only text | Selected from the resource spec; not editable once added |
 | Display Name | `fieldDefinitions.${i}.displayName` | `InputField` | Optional; derived from the field path if not set |
-| Editable | `fieldDefinitions.${i}.editable` | `Switch` (PatternFly) | Toggle; for Tenant Admin, disabled if base item marks field as non-editable |
+| Editable | `fieldDefinitions.${i}.editable` | `Switch` (PatternFly) | Toggle; default non-editable except `ssh_public_key` and `pull_secret` |
 | Default Value | `fieldDefinitions.${i}.default` | `InputField` | Type-aware input (text, number, boolean toggle) based on template parameter type. Required when `editable` is false. |
 | Validation | `fieldDefinitions.${i}.validationSchema` | `ValidationConstraintsEditor` | Expandable sub-form (see below) |
 
@@ -393,25 +390,7 @@ const fieldDefinitionSchema = Yup.object({
 });
 ```
 
-**Tenant Admin restriction behavior:**
-
-When the create page is in Tenant Admin mode (base catalog item selected), the field list is pre-populated from the base catalog item's field definitions. The admin can:
-- Toggle editable fields to non-editable (but not the reverse — the toggle is disabled for fields already marked non-editable in the base)
-- Change or tighten default values for editable fields
-- Add or tighten validation constraints (cannot remove or loosen constraints from the base)
-- Change display names
-
-The admin cannot change paths or make non-editable fields editable.
-
-**Tighten-only enforcement (0.2 — UI only):** In Basic mode, the UI prevents loosening constraints by disabling controls that would violate the tighten-only rule (e.g., graying out the minimum input if the value would go below the base's minimum). In Advanced mode, the UI shows the base schema as a read-only reference panel so the admin can manually ensure their schema is more restrictive. The following comparison rules apply in Basic mode:
-
-- **Numeric bounds:** `minimum` can only increase; `maximum` can only decrease.
-- **String constraints:** `minLength` can only increase; `maxLength` can only decrease. `pattern` can only be made more restrictive (added, not removed).
-- **Enum:** values can only be removed from the base set, never added.
-- **Item/property counts:** `minItems`/`minProperties` can only increase; `maxItems`/`maxProperties` can only decrease.
-- **Editable toggle:** can change from `true` to `false` (lock a field), never `false` to `true`.
-
-**Tighten-only enforcement (0.3 — server-side, future):** Server-side enforcement of the tighten-only rule is deferred to 0.3. When implemented, the server will compare the Tenant Admin's schema against the base and return `INVALID_ARGUMENT` for loosened constraints. For 0.2, the server accepts any valid JSON Schema — tighten-only is enforced as a UI convenience only.
+**Network attachments handling:** The `network_attachments` field is excluded from the FieldDefinitionsEditor. The UI automatically includes it in the API payload as an editable field with no default value and no validation schema. This allows tenant users to configure network attachments during provisioning without requiring the admin to explicitly manage them in the catalog item wizard.
 
 #### 9. ValidationConstraintsEditor Component
 
@@ -595,7 +574,7 @@ Testing strategy for the catalog management UI:
 - Edit flow: modify name and field definitions, verify changes persist
 - Delete flow: delete a catalog item with no provisioned resources, verify removal from list
 - Delete blocked: attempt to delete a catalog item with provisioned resources, verify error message
-- Tenant Admin create wizard: create from a global catalog item, verify restrictions (cannot make non-editable field editable)
+- Tenant Admin create wizard: create a catalog item through the same wizard as CSP Admin, verify template selection and field definitions work identically
 - Tenant Admin visibility: verify global items show as read-only, org-scoped items show full actions
 - Type filter: verify filtering by Cluster/VM/Bare Metal updates the table
 
@@ -604,8 +583,8 @@ Testing strategy for the catalog management UI:
 - FieldMask construction: verify diff-based update_mask includes only changed fields; verify field_definitions triggers whole-list replacement
 - JSON Schema assembly: verify ValidationConstraintsEditor output for each supported constraint type (scalar, enum, list/map)
 - Route mapping: verify CatalogItemKind → API endpoint resolution for all three types
-- Tighten-only comparison: verify constraint comparison logic rejects loosened constraints
 - Unsupported schema detection: verify schemas with unsupported keywords show read-only "use CLI" message; schemas with only supported keywords show structured controls
+- Network attachments auto-inclusion: verify `network_attachments` is excluded from wizard but included in API payload as editable with no default or validation
 
 **Component-level tests (required):**
 - FieldDefinitionsEditor: verify all resource spec fields are shown; toggle editable, set defaults, configure constraints; verify Formik state management; verify default non-editable state with ssh_key/pull_secret exceptions
@@ -616,7 +595,7 @@ Testing strategy for the catalog management UI:
 
 Admin-facing documentation for catalog management screens will be added to the OSAC docs repo:
 - A user guide covering CSP Admin and Tenant Admin workflows (create, edit, publish, delete)
-- Field definitions configuration reference (available fields per resource type, constraint types, tighten-only rules)
+- Field definitions configuration reference (available fields per resource type, constraint types)
 - Troubleshooting section for common errors (delete blocked, validation failures, template not found)
 
 The Cloud Infrastructure Admin persona is not applicable to catalog management — this feature is scoped to Cloud Provider Admins and Tenant Admins only.
@@ -628,7 +607,7 @@ The UI feature will be considered complete when:
 - Role-gated navigation is working for all three roles
 - The field definitions editor supports all FieldDefinition properties
 - All E2E tests pass (10 Cypress scenarios listed in the Test Plan)
-- Unit tests pass for Yup schemas, FieldMask construction, JSON Schema assembly, and tighten-only comparison
+- Unit tests pass for Yup schemas, FieldMask construction, JSON Schema assembly, and network attachments auto-inclusion
 - Component-level tests pass for FieldDefinitionsEditor and ValidationConstraintsEditor
 - The "Provisioned Resources" tab on the detail page shows related resources (dependent on Open Question 3)
 - Admin user guide is published to the docs repo
