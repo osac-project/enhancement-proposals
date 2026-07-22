@@ -52,8 +52,8 @@ OSAC automatically publishes infrastructure templates during installation via th
 ### Acceptance Criteria
 
 - [ ] A `meta/catalog.yaml` schema is defined and documented, supporting catalog item fields: `name`, `title`, `description`, `published`, and `field_definitions` (with `name`, `title`, `description`, `type`, `default`, `editable`, and `validation`)
-- [ ] At least one cluster template role and one compute instance template role include a `meta/catalog.yaml` file defining default catalog items
-- [ ] An `enumerate_catalog_items` role discovers `meta/catalog.yaml` files from template role directories and produces typed catalog item objects (cluster, compute instance, bare metal instance)
+- [ ] All four default catalog items (SNO cluster, compact OpenShift cluster, general-purpose Linux VM, GPU-enabled Linux VM) are defined via `meta/catalog.yaml` in their respective template roles
+- [ ] An `enumerate_catalog_items` role discovers `meta/catalog.yaml` files from template role directories and produces typed catalog item objects (cluster, compute instance)
 - [ ] A `publish_catalog_items` role upserts catalog items to the fulfillment-service private API with the same idempotent pattern as `publish_templates`
 - [ ] A `publish_catalog_items.yaml` playbook chains enumeration and publishing
 - [ ] An AAP job template (`osac-publish-catalog-items`) is registered via config-as-code
@@ -109,6 +109,8 @@ A single template role (e.g., `ocp_virt_vm`) may back multiple catalog items (e.
 
 ## Provenance
 
-Authored: revise @ prd 0.5.0 - 92734a2, workspace main @ aac0f8e
+Committed: commit @ prd 0.5.0 - 92734a2, workspace prd/OSAC-1531 @ a92eb0a (dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"aac0f8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":190,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false} -->
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"a92eb0a (dirty)","source_repo_branch":"prd/OSAC-1531","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false} -->
