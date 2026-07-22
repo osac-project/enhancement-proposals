@@ -358,8 +358,6 @@ objects at each call site, plus updating CEL filter expressions to use the
 
 #### Reference Message Schema
 
-Two message patterns are defined per referenceable type:
-
 Three reference message patterns are defined per referenceable type. Public
 and private APIs use different full reference shapes:
 
@@ -396,19 +394,26 @@ message ClusterTemplateReference {
 // Local reference — used when the target is always in the same tenant/project.
 // Shared between public and private APIs.
 message SubnetLocalReference {
-  string name = 1 [(buf.validate.field).string.min_len = 1];
+  option (buf.validate.message).cel = {
+    id: "id_or_name_required",
+    message: "at least one of id or name must be provided",
+    expression: "this.id != '' || this.name != ''"
+  };
+
+  string id = 1;
+  string name = 2;
 }
 ```
 
 **Public vs. private full references.** Tenant users and tenant admins should
-not see or provide arbitrary tenant names. The public API exposes `bool shared` instead of
-`string tenant` / `string project`: when `shared = true`, the interceptor
-resolves the reference against the `shared` tenant; when `false` (default), it
-resolves against the caller's own tenant. The private API retains explicit
-`tenant` and `project` fields for Cloud Provider Admins who manage cross-tenant
-resources.
+not see or provide arbitrary tenant names. The public API exposes `bool shared`
+instead of `string tenant` / `string project`: when `shared = true`, the
+interceptor resolves the reference against the `shared` tenant; when `false`
+(default), it resolves against the caller's own tenant. The private API retains
+explicit `tenant` and `project` fields for Cloud Provider Admins who manage
+cross-tenant resources.
 
-Full references support three resolution modes:
+All reference types (full and local) support three resolution modes:
 
 1. **Name only** (most common): The interceptor resolves the resource by name
    within the caller's tenant (or the `shared` tenant if `shared = true` in
@@ -425,10 +430,10 @@ missing fields before the handler runs. The stored JSON always contains the
 fully-qualified reference. This ensures consistent downstream behavior
 regardless of how the caller specified the reference.
 
-Local references support name-only resolution. They omit `id`, `tenant`, and
-`project` because the target is always in the same scope as the referencing
-resource. If a future need arises for id-based local references, a new field
-can be added without breaking existing clients.
+Local references omit `tenant` and `project` because the target is always in
+the same scope as the referencing resource. The `id` field is included for
+backward compatibility — clients that currently use resource identifiers can
+continue to do so during the transition to name-based references.
 
 #### Which fields use local vs. full references
 
@@ -489,10 +494,11 @@ message SubnetSpec {
 **After:** `subnet_type.proto`
 
 ```protobuf
-// Local reference to a VirtualNetwork by name.
+// Local reference to a VirtualNetwork.
 // Used when the VirtualNetwork is always in the same tenant/project.
 message VirtualNetworkLocalReference {
-  string name = 1;
+  string id = 1;
+  string name = 2;
 }
 
 message SubnetSpec {
@@ -613,8 +619,8 @@ references, determined by which fields the caller provides:
 | ID only | `id` set, `name` empty | Look up by id. Auto-populate `name` in the request. |
 | Both | `id` and `name` both set | Look up, verify both resolve to the same resource. Return `InvalidArgument` if they disagree. |
 
-For local references (`LocalReference` messages with only a `name` field),
-only name-based resolution applies — unchanged from the original design.
+For local references (`LocalReference` messages), the same three resolution
+modes apply. The tenant is always the caller's tenant.
 
 The lookup function uses the existing `List` + CEL filter pattern already
 established in the codebase (e.g., `lookupCatalogItem`, `lookupTemplate`):
@@ -647,12 +653,12 @@ iterates each element. For oneof fields, it inspects the populated variant.
 For nested messages (like `NetworkAttachment` inside `ComputeInstanceSpec`),
 it recurses.
 
-**Tenant context.** For `LocalReference` messages (which have only a `name`
-field), the interceptor extracts tenant and project from the request's
-authentication context. For public full `Reference` messages, `shared = true`
-maps to the `shared` tenant; otherwise the caller's tenant is used. For
-private full `Reference` messages, the explicit `tenant` field is used,
-falling back to the caller's context when empty.
+**Tenant context.** For `LocalReference` messages, the interceptor extracts
+tenant and project from the request's authentication context. For public full
+`Reference` messages, `shared = true` maps to the `shared` tenant; otherwise
+the caller's tenant is used. For private full `Reference` messages, the
+explicit `tenant` field is used, falling back to the caller's context when
+empty.
 
 **Error aggregation.** The interceptor collects all invalid references before
 returning, so the user sees every problem in a single error response. It
@@ -756,30 +762,33 @@ The CLI currently accepts reference values as string flags (e.g.,
 `--template my-template`, `--subnet my-subnet`). After the change, the CLI
 constructs reference messages from flag values:
 
-**For local references:**
+**For local references (by name or id):**
 ```bash
-# Before (unchanged user experience):
+# By name (common case):
 osac compute-instance create --name my-vm --catalog-item standard-vm \
   --subnet app-subnet --security-group app-sg
 
+# By id (backward compatibility):
+osac compute-instance create --name my-vm --catalog-item standard-vm \
+  --subnet-id abc-123 --security-group-id def-456
+
 # The CLI internally constructs:
-# catalog_item: { name: "standard-vm" }  (full reference, tenant/project from context)
-# network_attachments[0].subnet: { name: "app-subnet" }  (local reference)
-# network_attachments[0].security_groups[0]: { name: "app-sg" }  (local reference)
+# network_attachments[0].subnet: { name: "app-subnet" }  or  { id: "abc-123" }
+# network_attachments[0].security_groups[0]: { name: "app-sg" }  or  { id: "def-456" }
 ```
 
-**For full references with explicit tenant/project:**
+**For full references with shared scope:**
 ```bash
 osac cluster create --name my-cluster \
-  --template shared-template --template-tenant global --template-project templates
+  --template shared-template --template-shared
 
 # The CLI internally constructs:
-# template: { name: "shared-template", tenant: "global", project: "templates" }
+# template: { name: "shared-template", shared: true }
 ```
 
-For each reference field that supports full references, the CLI adds
-`--<field>-tenant` and `--<field>-project` optional flags. When omitted,
-the caller's current tenant and project are used (same as today).
+For each reference field, the CLI accepts `--<field>` (name) and
+`--<field>-id` (identifier). For full reference fields, `--<field>-shared`
+targets the shared tenant.
 
 The CLI's `describe` output displays references with their resolved names:
 
@@ -996,12 +1005,12 @@ details on the URI/ARN trade-off.
 - Interceptor validation logic: verify that the interceptor returns
   `InvalidArgument` with correct field paths for missing references, returns
   success for valid references, and aggregates multiple errors.
-- Interceptor resolution modes: verify name-only resolution (id
-  auto-populated in request), id-only resolution (name/tenant/project
-  auto-populated), both-match (succeeds, no mutation needed), and
-  both-mismatch (returns `InvalidArgument` explaining the inconsistency).
+- Interceptor resolution modes (full and local references): verify name-only
+  resolution (id auto-populated), id-only resolution (name auto-populated),
+  both-match (succeeds, no mutation needed), and both-mismatch (returns
+  `InvalidArgument` explaining the inconsistency).
 - Request mutation: verify that after interceptor runs, the request message
-  contains fully-qualified references (all four fields populated) regardless
+  contains fully-qualified references (all fields populated) regardless
   of which fields the caller originally provided.
 - Per-server validation removal: verify that servers no longer perform inline
   existence checks for fields handled by the interceptor, but continue to
@@ -1009,9 +1018,12 @@ details on the URI/ARN trade-off.
 
 **Integration tests (kind cluster):**
 
-- End-to-end Create with valid references: Create a VirtualNetwork, then a
-  Subnet referencing it by name. Verify the Subnet is created and the
-  reference is persisted correctly.
+- End-to-end Create with valid local reference by name: Create a
+  VirtualNetwork, then a Subnet referencing it by name. Verify the Subnet
+  is created and the stored reference contains both `id` and `name`.
+- End-to-end Create with valid local reference by id: Create a
+  VirtualNetwork, then a Subnet referencing it by `id` only. Verify the
+  stored reference contains both `id` and `name` (auto-populated).
 - End-to-end Create with invalid reference: Attempt to create a Subnet
   referencing a nonexistent VirtualNetwork. Verify `InvalidArgument` with
   the correct field path.
