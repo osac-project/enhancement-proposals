@@ -225,6 +225,42 @@ class ValidatePathsTests(unittest.TestCase):
         )
         self.assertEqual(violations, [])
 
+    def test_pre_existing_on_live_main_but_absent_at_stale_base_sha_file_casing_is_not_reflagged(self):
+        # Same false-positive class as the directory-grandfathering case
+        # above, but for the filename-casing check specifically — it's a
+        # separate code path (file_is_grandfathered) using the same
+        # is_grandfathered() helper, so it needs its own coverage.
+        path = "enhancements/OSAC-42-example-feature/DESIGN.md"
+        violations = self._validate(
+            paths=[path],
+            base_sha="stale123",
+            existing_at_base=set(),
+            live_base_ref="origin/main",
+            existing_at_live_base={
+                "enhancements/OSAC-42-example-feature",
+                path,
+            },
+        )
+        self.assertEqual(violations, [])
+
+    def test_unresolvable_base_sha_disables_live_ref_grandfathering_too(self):
+        # The fail-closed guarantee ("grandfathering disabled, every path
+        # validated as new") must hold in full: an unresolvable base SHA
+        # can't partially fail closed by still trusting the live ref. Here
+        # the live ref alone would grandfather the path if it were
+        # consulted — it must not be.
+        violations = self._validate(
+            paths=["enhancements/networking/design.md"],
+            base_sha="deadbeef",
+            base_ref_exists=False,
+            existing_at_base=set(),
+            live_base_ref="origin/main",
+            live_base_ref_exists=True,
+            existing_at_live_base={"enhancements/networking"},
+        )
+        self.assertEqual(len(violations), 1)
+        self.assertIn("networking", violations[0])
+
     def test_new_directory_with_consecutive_dashes_is_flagged(self):
         violations = self._validate(
             paths=["enhancements/OSAC-1--foo/prd.md"],

@@ -114,7 +114,11 @@ def validate_paths(
     # A base SHA *was* provided (i.e. we're in CI) but doesn't resolve —
     # unlike the "no base SHA" case above, this indicates a CI
     # misconfiguration (e.g. a shallow checkout) and should stay fail-closed
-    # rather than silently disabling enforcement.
+    # rather than silently disabling enforcement. That fail-closed guarantee
+    # covers the live ref too: a checkout broken enough that the base SHA
+    # doesn't resolve can't be trusted to have fetched the live ref
+    # correctly either, so grandfathering is disabled entirely here, not
+    # just narrowed to one reference.
     if not ref_exists(base_sha):
         print(
             f"warning: PR base SHA '{base_sha}' is not available in this "
@@ -124,8 +128,9 @@ def validate_paths(
             file=sys.stderr,
         )
         base_sha = None
-
-    live_base_ref = resolve_live_base_ref(live_base_ref)
+        live_base_ref = None
+    else:
+        live_base_ref = resolve_live_base_ref(live_base_ref)
 
     violations = []
     for path in paths:
