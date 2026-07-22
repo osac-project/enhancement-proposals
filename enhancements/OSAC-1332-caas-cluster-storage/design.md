@@ -5,11 +5,11 @@ authors:
 creation-date: 2026-06-25
 last-updated: 2026-06-25
 tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-1123
+  - https://redhat.atlassian.net/browse/OSAC-1332
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/tenant-storage-onboarding-OSAC-23"
+  - "/enhancements/OSAC-23-tenant-storage-onboarding"
 replaces:
   - N/A
 superseded-by:

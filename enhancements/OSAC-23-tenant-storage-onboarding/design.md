@@ -10,7 +10,7 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/tenant-storage-onboarding-OSAC-23/prd.md"
+  - "/enhancements/OSAC-23-tenant-storage-onboarding/prd.md"
 replaces:
   - N/A
 superseded-by:

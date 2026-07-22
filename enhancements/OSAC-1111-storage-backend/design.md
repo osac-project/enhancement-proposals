@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/storage-tier (OSAC-1110, future)"
+  - "/enhancements/OSAC-1110-storage-tier"
 replaces:
   - N/A
 superseded-by:
