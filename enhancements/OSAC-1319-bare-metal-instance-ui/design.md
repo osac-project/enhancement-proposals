@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - /enhancements/baremetal-instance-api
+  - /enhancements/OSAC-1118-baremetal-instance-api
 replaces:
   - N/A
 superseded-by:
@@ -24,7 +24,7 @@ This enhancement adds a tenant-facing Bare Metal section to the osac-ui web cons
 
 ## Motivation
 
-The osac-ui console already supports Virtual Machine and Cluster provisioning. The BareMetalInstance API (see `/enhancements/baremetal-instance-api`) adds a third self-service resource type, but the UI has no tenant-facing screens for it. Without a console, tenants must use the gRPC/REST API directly to browse available bare metal offerings, provision instances, monitor lifecycle state, and control power — a workflow that is not viable for the typical Tenant User persona.
+The osac-ui console already supports Virtual Machine and Cluster provisioning. The BareMetalInstance API (see `/enhancements/OSAC-1118-baremetal-instance-api`) adds a third self-service resource type, but the UI has no tenant-facing screens for it. Without a console, tenants must use the gRPC/REST API directly to browse available bare metal offerings, provision instances, monitor lifecycle state, and control power — a workflow that is not viable for the typical Tenant User persona.
 
 The existing `CatalogPage`, `CatalogItemCard`, `CatalogProvisionWizard`, and VM detail patterns are generic enough to extend with minimal duplication. The primary design constraint is reusing this infrastructure rather than introducing parallel implementations.
 
