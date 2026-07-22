@@ -630,9 +630,12 @@ write to an InstanceType that still carries GPU data in its JSON `data` column w
 silently drop the field. This follows the same pattern as other OSAC features
 (StorageTier, StorageBackend) that require resource cleanup before downgrade.
 
-1. Delete all GPU-enabled InstanceTypes.
-2. Revert the osac-operator CRD (removes GPU fields from the schema).
-3. Revert the fulfillment-service.
+1. Delete all ComputeInstances referencing GPU-enabled InstanceTypes (the existing
+   referential integrity trigger blocks InstanceType deletion while active
+   ComputeInstances reference it).
+2. Delete all GPU-enabled InstanceTypes.
+3. Revert the osac-operator CRD (removes GPU fields from the schema).
+4. Revert the fulfillment-service.
 
 ## Version Skew Strategy
 
