@@ -200,6 +200,7 @@ Starting state: A Cloud Provider Admin has created a ClusterTemplate named
 
 1. The admin creates a ClusterCatalogItem in the `shared` tenant, referencing
    the template by tenant and name:
+
    ```json
    {
      "metadata": { "name": "ocp-standard" },
@@ -623,9 +624,11 @@ method.
 **Request mutation.** After resolution, the interceptor writes the resolved
 values back into the request message via `protoreflect.Message.Set()`. This
 ensures the handler and stored JSON always contain fully-qualified references
-regardless of how the caller specified them. For example, a client that sends
-`{ "id": "abc-123" }` gets the stored reference expanded to
-`{ "id": "abc-123", "tenant": "my-tenant", "project": "", "name": "my-template" }`.
+regardless of how the caller specified them. For example, a public API client
+that sends `{ "id": "abc-123", "shared": true }` gets the stored reference
+expanded to `{ "id": "abc-123", "name": "my-template", "shared": true }`.
+A private API client that sends `{ "id": "abc-123" }` gets
+`{ "id": "abc-123", "tenant": "infra-templates", "name": "my-template" }`.
 
 **Reference detection.** The interceptor identifies reference fields by
 checking whether a field's message type ends with `Reference` or
@@ -1029,14 +1032,19 @@ details on the URI/ARN trade-off.
 - Cross-tenant catalog item (Chunk 2): Create a ComputeInstance referencing
   a CatalogItem in the shared tenant. Verify the full reference resolves
   across tenants.
-- ID-only resolution (Chunk 1): Create a VirtualNetwork, then create a
-  Subnet referencing it by `id` only (no `name`). Verify the Subnet is
-  created and the stored reference contains both `id` and `name`.
-- Both-match resolution (Chunk 1): Create a Subnet providing both `id` and
-  `name` for the VirtualNetwork reference. Verify success when they match.
-- Both-mismatch resolution (Chunk 1): Create a Subnet providing `id` of one
-  VirtualNetwork and `name` of another. Verify `InvalidArgument` with a
-  message explaining the inconsistency.
+- ID-only resolution (Chunk 2): Create a ComputeInstance referencing a
+  CatalogItem by `id` only (no `name`). Verify the stored full reference
+  contains both `id` and `name` (auto-populated by the interceptor).
+- Both-match resolution (Chunk 2): Create a ComputeInstance providing both
+  `id` and `name` for a CatalogItem reference. Verify success when they
+  refer to the same resource.
+- Both-mismatch resolution (Chunk 2): Create a ComputeInstance providing
+  `id` of one CatalogItem and `name` of another. Verify `InvalidArgument`
+  with a message explaining the inconsistency.
+- Concurrent create/delete (Chunk 1): In parallel, create a Subnet
+  referencing a VirtualNetwork and delete that VirtualNetwork. Verify the
+  `FOR SHARE` serialization prevents both from committing — no dangling
+  reference remains.
 
 **E2E tests (osac-test-infra, pytest):**
 
