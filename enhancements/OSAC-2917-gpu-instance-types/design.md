@@ -68,6 +68,7 @@ introduced.
 - MIG partitioning, vGPU, or GPU cluster (InfiniBand) support. [Locked: D7]
 - Multi-cluster GPU placement decisions. [Locked: D6]
 - UI changes -- API and CLI only for this milestone.
+- User-facing documentation (API reference, AAP template mapping guide).
 
 ## Proposal
 
