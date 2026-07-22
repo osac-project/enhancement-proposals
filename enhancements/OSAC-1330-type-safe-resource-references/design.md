@@ -307,10 +307,10 @@ add new gRPC services, CRDs, webhooks, or finalizers.
 | `instance_type_type.proto` | Add `InstanceTypeLocalReference` for deprecation replacement. |
 
 **Private API:** Each private API `_type.proto` file mirrors the corresponding
-public API changes, but full references use explicit `string tenant` /
-`string project` fields instead of `bool shared`. Private-only status-level
-references (hub, pool mirrors) are addressed in the Implementation Details
-section.
+public API changes. Private full references are a superset of public full
+references: they include all public fields (`id`, `name`, `project`, `shared`)
+plus an additional `string tenant` field. Private-only status-level references
+(hub, pool mirrors) are addressed in the Implementation Details section.
 
 **Shared reference messages:** When multiple resources reference the same
 target type (e.g., both `NetworkAttachment` and `PublicIPAttachmentSpec`
@@ -362,8 +362,9 @@ Three reference message patterns are defined per referenceable type. Public
 and private APIs use different full reference shapes:
 
 ```protobuf
-// Public full reference — tenant users use `shared` to target the shared
-// tenant. Defined in the target's public _type.proto file.
+// Public full reference — tenant users use `project` to scope within their
+// tenant, and `shared` to target the shared tenant. Defined in the target's
+// public _type.proto file.
 message ClusterTemplateReference {
   option (buf.validate.message).cel = {
     id: "id_or_name_required",
@@ -373,11 +374,13 @@ message ClusterTemplateReference {
 
   string id = 1;
   string name = 2;
-  bool shared = 3;
+  string project = 3;
+  bool shared = 4;
 }
 
 // Private full reference — Cloud Provider Admins use explicit tenant/project.
-// Defined in the target's private _type.proto file.
+// Contains all public fields plus `tenant`. Defined in the target's private
+// _type.proto file.
 message ClusterTemplateReference {
   option (buf.validate.message).cel = {
     id: "id_or_name_required",
@@ -389,6 +392,7 @@ message ClusterTemplateReference {
   string tenant = 2;
   string project = 3;
   string name = 4;
+  bool shared = 5;
 }
 
 // Local reference — used when the target is always in the same tenant/project.
@@ -406,12 +410,17 @@ message SubnetLocalReference {
 ```
 
 **Public vs. private full references.** Tenant users and tenant admins should
-not see or provide arbitrary tenant names. The public API exposes `bool shared`
-instead of `string tenant` / `string project`: when `shared = true`, the
-interceptor resolves the reference against the `shared` tenant; when `false`
-(default), it resolves against the caller's own tenant. The private API retains
-explicit `tenant` and `project` fields for Cloud Provider Admins who manage
-cross-tenant resources.
+not see or provide arbitrary tenant names. The public API exposes `string
+project` and `bool shared` instead of `string tenant`: when `shared = true`,
+the interceptor resolves the reference against the `shared` tenant; when
+`false` (default), it resolves against the caller's own tenant. The `project`
+field scopes the lookup within the tenant — when empty, the resource is
+resolved as global to the tenant (i.e., the default project). The private API
+is a superset of the public API per the
+[API Guidelines](https://github.com/osac-project/fulfillment-service/blob/main/docs/API.md#public-and-private-apis):
+it includes all public fields (`id`, `name`, `project`, `shared`) plus an
+additional `tenant` field for Cloud Provider Admins who manage cross-tenant
+resources.
 
 All reference types (full and local) support three resolution modes:
 
@@ -603,12 +612,15 @@ func (v *ReferenceValidator) Validate(
 ) error
 ```
 
-**Tenant scope resolution.** For public API full references, the interceptor
-translates `shared = true` to `tenant = "shared"` and `shared = false` (or
-unset) to the caller's tenant from auth context. For private API full
-references, it uses the explicit `tenant` field, falling back to the caller's
-tenant when empty. The lookup function always receives a resolved `tenant`
-string.
+**Tenant and project scope resolution.** For public API full references, the
+interceptor translates `shared = true` to `tenant = "shared"` and
+`shared = false` (or unset) to the caller's tenant from auth context. The
+`project` field is passed through directly — when empty, it resolves as
+global to the tenant (default project). For private API full references, the
+interceptor uses the explicit `tenant` field, falling back to the caller's
+tenant when empty. If `shared = true` is set in the private API, it takes
+precedence over the `tenant` field (maps to `tenant = "shared"`). The lookup
+function always receives a resolved `tenant` and `project` string.
 
 **Resolution modes.** The interceptor supports three resolution modes for full
 references, determined by which fields the caller provides:
@@ -632,9 +644,10 @@ values back into the request message via `protoreflect.Message.Set()`. This
 ensures the handler and stored JSON always contain fully-qualified references
 regardless of how the caller specified them. For example, a public API client
 that sends `{ "id": "abc-123", "shared": true }` gets the stored reference
-expanded to `{ "id": "abc-123", "name": "my-template", "shared": true }`.
+expanded to
+`{ "id": "abc-123", "name": "my-template", "project": "", "shared": true }`.
 A private API client that sends `{ "id": "abc-123" }` gets
-`{ "id": "abc-123", "tenant": "infra-templates", "project": "", "name": "my-template" }`.
+`{ "id": "abc-123", "tenant": "infra-templates", "project": "", "name": "my-template", "shared": false }`.
 
 **Reference detection.** The interceptor identifies reference fields by
 checking whether a field's message type ends with `Reference` or
@@ -653,12 +666,15 @@ iterates each element. For oneof fields, it inspects the populated variant.
 For nested messages (like `NetworkAttachment` inside `ComputeInstanceSpec`),
 it recurses.
 
-**Tenant context.** For `LocalReference` messages, the interceptor extracts
-tenant and project from the request's authentication context. For public full
-`Reference` messages, `shared = true` maps to the `shared` tenant; otherwise
-the caller's tenant is used. For private full `Reference` messages, the
-explicit `tenant` field is used, falling back to the caller's context when
-empty.
+**Tenant and project context.** For `LocalReference` messages, the interceptor
+extracts tenant and project from the request's authentication context. For
+public full `Reference` messages, `shared = true` maps to the `shared` tenant;
+otherwise the caller's tenant is used. The `project` field is used directly;
+when empty, the lookup targets the default project (tenant-global scope). For
+private full `Reference` messages, the explicit `tenant` field is used, falling
+back to the caller's context when empty. If `shared = true`, it overrides
+`tenant` to `"shared"`. The `project` field behaves the same as in public
+references.
 
 **Error aggregation.** The interceptor collects all invalid references before
 returning, so the user sees every problem in a single error response. It
@@ -778,9 +794,17 @@ osac compute-instance create --name my-vm --catalog-item standard-vm \
 # network_attachments[0].security_groups[0]: { name: "app-sg" }  or  { id: "def-456" }
 ```
 
-**For full references with shared scope:**
+**For full references with project or shared scope:**
 
 ```bash
+# Reference in a specific project:
+osac cluster create --name my-cluster \
+  --template team-template --template-project team-a.staging
+
+# The CLI internally constructs:
+# template: { name: "team-template", project: "team-a.staging" }
+
+# Reference in the shared tenant:
 osac cluster create --name my-cluster \
   --template shared-template --template-shared
 
@@ -789,8 +813,8 @@ osac cluster create --name my-cluster \
 ```
 
 For each reference field, the CLI accepts `--<field>` (name) and
-`--<field>-id` (identifier). For full reference fields, `--<field>-shared`
-targets the shared tenant.
+`--<field>-id` (identifier). For full reference fields, `--<field>-project`
+scopes within a project and `--<field>-shared` targets the shared tenant.
 
 The CLI's `describe` output displays references with their resolved names:
 
@@ -803,7 +827,8 @@ Spec:
 #### Private API and Status-Level References
 
 Private API `_type.proto` files mirror the public API changes for all
-spec-level reference fields. Both APIs share the same field numbers and must
+spec-level reference fields. Private full reference messages are a superset
+of public ones: they contain all public fields plus `tenant`. Both APIs must
 be updated in lockstep.
 
 Status-level references in the private API fall into two categories:
@@ -870,6 +895,13 @@ with an explicit tenant, the interceptor's error message reveals whether the
 referenced resource exists in that tenant. This is the same behavior as the
 current system (servers return "not found" for nonexistent references). The
 existing OPA policies already gate cross-tenant visibility.
+
+**Project-level access:** When a user provides a `project` field in a public
+full reference, the interceptor resolves the resource within that project. If
+the user does not have access to the specified project within their tenant, the
+interceptor returns `NotFound` (not `PermissionDenied`) to avoid disclosing
+whether the project or resource exists. This follows the same pattern as
+cross-tenant references.
 
 ### Failure Handling and Recovery
 
@@ -1061,6 +1093,13 @@ details on the URI/ARN trade-off.
   referencing a VirtualNetwork and delete that VirtualNetwork. Verify the
   `FOR SHARE` serialization prevents both from committing — no dangling
   reference remains.
+- Project-scoped full reference (Chunk 2): Create a CatalogItem in project
+  `team-a`, then create a ComputeInstance referencing it with
+  `project = "team-a"`. Verify the stored reference includes the resolved
+  project.
+- Project-scoped not found (Chunk 2): Create a CatalogItem in project
+  `team-a`, then attempt to reference it with `project = "team-b"`. Verify
+  `NotFound` (not `PermissionDenied`) is returned.
 
 **E2E tests (osac-test-infra, pytest):**
 
