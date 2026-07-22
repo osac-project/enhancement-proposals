@@ -89,10 +89,6 @@ class EPHooks:
         diff = self._gh(["pr", "diff", pr_number, "--repo", self.repo])
         (context_dir / "pr-diff.txt").write_text(diff)
 
-        template_file = Path("guidelines/enhancement_template.md")
-        if template_file.exists():
-            (context_dir / "template.md").write_text(template_file.read_text())
-
         skill_path = ticket.get("_skill_path", "")
         skill_file = Path(self.skills_path) / skill_path
         if skill_file.exists():
@@ -113,8 +109,7 @@ class EPHooks:
         return (
             PROMPT_INJECTION_BOUNDARY +
             "Review the document in .context/pr-diff.txt using the review criteria "
-            "in .context/skill-prompt.md. Use .context/template.md as the template reference "
-            "if available.\n\n"
+            "in .context/skill-prompt.md.\n\n"
             "Apply the review dimensions from skill-prompt.md, then map your assessment "
             "to these 5 standard scoring criteria:\n\n"
             "- what (0-2): Does the document clearly describe the desired outcome?\n"
@@ -142,8 +137,7 @@ class EPHooks:
         return (
             PROMPT_INJECTION_BOUNDARY +
             "Review the design document in .context/pr-diff.txt using the review criteria "
-            "in .context/skill-prompt.md. Use .context/template.md as the template reference "
-            "if available.\n\n"
+            "in .context/skill-prompt.md.\n\n"
             "Apply the review dimensions from skill-prompt.md, then map your assessment "
             "to these 4 scoring criteria:\n\n"
             "- feasibility (0-2): Is the design technically feasible and implementable?\n"
