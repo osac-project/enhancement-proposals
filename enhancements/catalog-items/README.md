@@ -99,11 +99,9 @@ don't have the ability to add or modify ansible roles.
 
 #### Tenant Admin — Catalog Item Creation
 
-* As a Tenant Admin, I need to create organization-specific catalog items by selecting from existing published global catalog items — not from templates. I am not aware of templates; I only see catalog items that the Cloud Provider Admin has already published.
+* As a Tenant Admin, I need to create organization-specific catalog items by selecting a resource type and choosing an existing template, using the same creation flow as a Cloud Provider Admin.
 
-* As a Tenant Admin, I need to configure which fields are pre-set vs. editable, starting from the base global catalog item's configuration. I can further restrict fields for my organization but cannot make a non-editable field editable — I can only be equal or more restrictive than the base.
-
-* As a Tenant Admin, for each field I keep editable, I need to optionally change the default value or tighten validation constraints, so I can tailor the offering to my organization's standards.
+* As a Tenant Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item, using the same field definitions editor as a Cloud Provider Admin.
 
 * As a Tenant Admin, I need to provide identifying information for the catalog item, so my organization's users can distinguish it from other offerings in the catalog.
 
@@ -113,7 +111,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Tenant Admin, I need to publish or unpublish catalog items scoped to my organization to control whether my users can see and provision from them.
 
-* As a Tenant Admin, I need to edit organization-scoped catalog items to update their title, description, publication status, and field definition defaults or validation constraints (tightening only). I cannot add or remove field definitions, loosen constraints beyond the base item's settings, or modify global catalog items created by Cloud Provider Admins.
+* As a Tenant Admin, I need to edit organization-scoped catalog items to update their name, description, publication status, and field definitions. I cannot modify global catalog items created by Cloud Provider Admins.
 
 * As a Tenant Admin, I need to view a catalog item's full configuration and see which resources in my organization have been provisioned from it.
 
@@ -266,6 +264,12 @@ all fields in `ComputeInstanceSpec` for a `ComputeInstanceCatalogItem`), but
 the API accepts partial field lists — not all fields need to be included.
 Fields not listed in `fields` are not managed by the catalog item. The server
 rejects catalog items that reference fields not defined in the resource spec.
+
+Networking fields (`network_attachments`) are not shown in the catalog item
+creation wizard. Instead, the UI automatically includes `network_attachments`
+in the API payload as an editable field with no default value and no validation
+schema. This allows the tenant user to configure network attachments during
+provisioning without requiring the admin to explicitly manage them.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:
