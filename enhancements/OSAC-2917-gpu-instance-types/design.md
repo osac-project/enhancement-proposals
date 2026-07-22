@@ -113,8 +113,8 @@ is configured with a GPU type-to-PCI device selector mapping.
      }
    }
    ```
-2. The server validates `cores > 0`, `memory_gib > 0`, and `gpu.count >= 1` (when gpu is
-   present). GPU type is free text with no system-side validation. [Locked: D3]
+2. The server validates `cores > 0`, `memory_gib > 0`, and `gpu.count` between 1 and 16
+   (when gpu is present). GPU type is free text with no system-side validation. [Locked: D3]
 3. The InstanceType is persisted with state `ACTIVE`.
 
 #### Provisioning a GPU ComputeInstance
@@ -253,7 +253,7 @@ message GpuSpec {
   string type = 1 [(buf.validate.field).string.min_len = 1];
 
   // Number of GPU devices of this type.
-  int32 count = 2 [(buf.validate.field).int32.gte = 1];
+  int32 count = 2 [(buf.validate.field).int32 = {gte: 1, lte: 16}];
 }
 ```
 
@@ -369,20 +369,20 @@ Add GPU fields to `ComputeInstanceSpec` in
 // GpuType is the user-friendly GPU type identifier resolved from the
 // InstanceType (e.g., "A100", "H100"). Empty for non-GPU instances.
 // +optional
-// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="gpuType is immutable"
 GpuType string `json:"gpuType,omitempty"`
 
 // GpuCount is the number of GPU devices resolved from the InstanceType.
 // Zero for non-GPU instances.
 // +optional
-// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="gpuCount is immutable"
 // +kubebuilder:validation:Minimum=0
 // +kubebuilder:validation:Maximum=16
 GpuCount int32 `json:"gpuCount,omitempty"`
 ```
 
-These fields are immutable (enforced by CEL validation rules on the CRD), matching the
-pattern used by `Cores` and `MemoryGiB`.
+These fields are populated by the fulfillment reconciler (not set by users directly),
+matching the pattern used by `Cores` and `MemoryGiB`. No CRD-level immutability rules
+are needed — the reconciler always stamps the same values because GPU fields on the
+source InstanceType are immutable (enforced at the API server level).
 
 **No controller changes required.** The existing `extractExtraVars` method in
 `pkg/provisioning/aap_provider.go` serializes the entire ComputeInstance CR into the AAP
@@ -681,11 +681,3 @@ GPU-equipped ComputeInstances continue to run unaffected.
 None. All changes are to existing repositories (fulfillment-service, osac-operator,
 osac-aap). No new test infrastructure is required beyond existing kind clusters for
 integration tests.
-
----
-
-## Provenance
-
-Authored: draft @ design 0.3.0 - 92734a2, workspace main @ 46c1381
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"46c1381","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false} -->
