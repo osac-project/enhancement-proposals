@@ -88,7 +88,7 @@ The Tenant Admin uses the same wizard flow as the CSP Admin with a different sco
 5. **Step 2 — Configuration:** Same as CSP Admin — resource spec field definitions (excluding access and networking fields).
 6. **Step 3 — Networking** (clusters only): Same as CSP Admin — pod_cidr and service_cidr.
 7. **Step 4 — Access:** Same as CSP Admin — ssh_public_key and pull_secret field definitions.
-7. Admin clicks "Create". The UI sends a POST. The server auto-sets the `tenant` field; the UI sends the `project` field if project-scoped.
+7. Admin clicks "Create". The UI sends a POST. The server auto-sets the `tenant` field; the UI sends `metadata.project` if project-scoped.
 8. The admin is redirected to the detail page.
 
 #### Tenant User — Browse and Provision
@@ -97,11 +97,9 @@ No changes to the existing flow. Tenant Users continue to use the CatalogPage fo
 
 ### API Extensions
 
-**Required API change — `project` field on catalog items:**
+This design introduces no new API extensions. All catalog item CRUD endpoints already exist in fulfillment-service. Project-level scoping uses the existing `project` field on `Metadata` (field 10) — every resource including catalog items already has this field. When `metadata.project` is empty and `tenant` is set, the item is organization-scoped (visible to all projects within the tenant). When both `tenant` and `metadata.project` are set, the item is project-scoped (visible only within that project). When both are empty, the item is general/global.
 
-The current catalog item proto has a `tenant` field (field 7) for scoping to an organization, but no `project` field. This design requires adding a `string project` field to `ClusterCatalogItem`, `ComputeInstanceCatalogItem`, and `BareMetalInstanceCatalogItem` to support project-level scoping. When `project` is empty and `tenant` is set, the item is organization-scoped (visible to all projects within the tenant). When both `tenant` and `project` are set, the item is project-scoped (visible only within that project). When both are empty, the item is general/global. The server must enforce that `project` can only be set when `tenant` is also set.
-
-All catalog item CRUD endpoints already exist in fulfillment-service. The Go proxy routes requests to the appropriate API based on the caller's role:
+The Go proxy routes requests to the appropriate API based on the caller's role:
 
 **Cloud Provider Admin** (private API — returns `tenant` field, no publication/tenant filtering):
 - `GET/POST/PATCH/DELETE /api/fulfillment/private/v1/cluster_catalog_items`
@@ -307,10 +305,10 @@ Clicking a card opens the detail page (unlike tenant `CatalogPage` which uses a 
 Tenant Admin sees general (global) items as read-only cards with no kebab menu (or a kebab with only "View details"). Publish/unpublish applies only within the catalog item's configured scope.
 
 **Scope display:**
-- **CSP Admin:** The private API returns the `tenant` and `project` fields in responses. Items with both empty are general (global); items with `tenant` set but `project` empty are organization-scoped; items with both `tenant` and `project` set are project-scoped. The UI displays the appropriate scope badge:
+- **CSP Admin:** The private API returns the `tenant` field and `metadata.project` in responses. Items with both empty are general (global); items with `tenant` set but `metadata.project` empty are organization-scoped; items with both `tenant` and `metadata.project` set are project-scoped. The UI displays the appropriate scope badge:
   - `"General"` — visible to all tenants
   - `"Organization: {tenant name}"` — scoped to a specific tenant
-- **Tenant Admin:** The public API does not expose the `tenant` field, but the `project` field (if added to public responses) indicates project-level scoping. Scope is derived as:
+- **Tenant Admin:** The public API does not expose the `tenant` field, but `metadata.project` is available in responses. Scope is derived as:
   - `"General"` — global items created by CSP Admin (read-only, no write actions)
   - `"Organization"` — tenant-wide items (manageable)
   - `"Project: {project name}"` — project-scoped items (manageable if the Tenant Admin owns the project)
@@ -353,22 +351,22 @@ Each resource type has its own configuration step component with static, hardcod
 - **VM (`VMAccessStep`):** `ssh_key` as `StringFieldDefinition`. Defaults to editable.
 - **Bare Metal (`BMAccessStep`):** `ssh_public_key` as `StringFieldDefinition`. Defaults to editable.
 
-**Hardcoded UI defaults:** When the selected template does not provide defaults for `pod_cidr`, `service_cidr`, `ssh_public_key`, or `pull_secret`, the UI pre-populates the default value input with hardcoded values so the admin always has a reasonable starting point:
+**Hardcoded UI defaults:** When the selected template does not provide defaults or validation for `pod_cidr`, `service_cidr`, `ssh_public_key`, or `pull_secret`, the UI pre-populates both the default value and the validation schema so the admin always has a reasonable starting point:
 
-| Field | Hardcoded Default | Notes |
-|-------|------------------|-------|
-| `pod_cidr` | `10.128.0.0/14` | Standard OpenShift pod CIDR |
-| `service_cidr` | `172.30.0.0/16` | Standard OpenShift service CIDR |
-| `ssh_public_key` | *(empty, editable)* | Tenant provides their own |
-| `pull_secret` | *(empty, editable)* | Tenant provides their own |
+| Field | Hardcoded Default Value | Hardcoded Default Validation Schema | Notes |
+|-------|------------------------|-------------------------------------|-------|
+| `pod_cidr` | `10.128.0.0/14` | `{ "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" }` | IPv4 CIDR format. The UI also enforces CIDR correctness via `isValidCidr()` at the Yup layer (same as the tenant provisioning wizard). |
+| `service_cidr` | `172.30.0.0/16` | `{ "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" }` | IPv4 CIDR format. The UI also validates no overlap with `pod_cidr` via `cidrsOverlap()`. |
+| `ssh_public_key` | *(empty, editable)* | `{ "pattern": "^(ssh-rsa\|ecdsa-sha2-nistp(256\|384\|521)\|ssh-ed25519) AAAA[0-9A-Za-z+/]+[=]{0,3}( .*)?$" }` | Validates SSH public key format: `[TYPE] key [[EMAIL]]`. Supported types: ssh-rsa, ssh-ed25519, ecdsa-sha2-nistp256/384/521. Reuses the same regex as `credentialValidation.ts`. |
+| `pull_secret` | *(empty, editable)* | *(no JSON Schema pattern — validated via custom Yup test)* | Pull secret must be valid JSON with an `auths` key. This cannot be expressed as a JSON Schema `pattern` — the UI enforces it via `isValidPullSecret()` at the Yup layer (same as the tenant provisioning wizard). The admin sees a note: "Must be valid JSON with an `auths` key." |
 
-Template-provided defaults take precedence over these hardcoded values. The hardcoded defaults are defined as constants in the per-kind step components.
+Template-provided defaults and validation schemas take precedence over these hardcoded values. The hardcoded defaults are defined as constants in the per-kind step components. The validation schemas are stored as `validationSchema` in the field definition and sent to the server — the server uses them to validate tenant input at provisioning time.
 
 **Wizard submission:**
 - Validates all fields with Yup on each step transition and on final submit
 - Constructs the create payload with `name` (not `title`, consistent with osac-ui conventions):
-  - **CSP Admin (private API):** `tenant` is empty string for general items, or the selected tenant ID for organization-scoped items. `project` is always empty (CSP Admin does not create project-scoped items).
-  - **Tenant Admin (public API):** `tenant` is omitted (auto-set by server). `project` is empty for organization-scoped items, or the selected project ID for project-scoped items.
+  - **CSP Admin (private API):** `tenant` is empty string for general items, or the selected tenant ID for organization-scoped items. `metadata.project` is always empty (CSP Admin does not create project-scoped items).
+  - **Tenant Admin (public API):** `tenant` is omitted (auto-set by server). `metadata.project` is empty for organization-scoped items, or the selected project name for project-scoped items.
 
   ```json
   {
@@ -376,7 +374,7 @@ Template-provided defaults take precedence over these hardcoded values. The hard
     "description": "...",
     "template": "<template-id>",
     "tenant": "",
-    "project": "",
+    "metadata": { "project": "" },
     "published": false,
     "field_definitions": [...]
   }
@@ -632,7 +630,7 @@ This design introduces no new authentication or authorization mechanisms. The Go
 
 - Tenant Users receive `PERMISSION_DENIED` if they attempt to call Create/Update/Delete on catalog items through the API directly. The UI prevents this by hiding the admin navigation and routes, but the server is the enforcement boundary.
 - Tenant Admins cannot modify general (global) catalog items — the server returns `PERMISSION_DENIED` for Update/Delete on items where `tenant` is empty or belongs to another tenant. The UI disables these actions in the kebab menu.
-- The `tenant` field is auto-set by the server for Tenant Admin creates; the UI does not send it. CSP Admins set `tenant` explicitly via the private API — `tenant = ""` creates a general (global) item. For project-scoped items, the Tenant Admin sets `project` explicitly; the server validates that the project belongs to the tenant.
+- The `tenant` field is auto-set by the server for Tenant Admin creates; the UI does not send it. CSP Admins set `tenant` explicitly via the private API — `tenant = ""` creates a general (global) item. For project-scoped items, the Tenant Admin sets `metadata.project` explicitly; the server validates that the project belongs to the tenant.
 
 Input validation is performed client-side (Yup) for UX responsiveness and server-side (fulfillment-service) for enforcement. The client-side validation is a convenience — it does not replace server-side validation.
 
@@ -669,8 +667,7 @@ No new observability changes. The UI is a frontend application — observability
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Scope not visible in public API responses | List page cannot show General/Organization/Project scope badges | Check whether `metadata.annotations` or `creators`/`tenants` fields expose scope. If not, request a backend change to include scope fields (`tenant`, `project`) in public responses, or route CSP Admin requests through the private API. |
-| `project` field not yet in catalog item proto | Project-scoped catalog items cannot be created until the API is extended | Flag as API extension requirement; coordinate with API team to add `string project` field to all catalog item types before UI implementation. |
+| Scope not visible in public API responses | List page cannot show General/Organization/Project scope badges | The `metadata.project` field is available in public responses. For tenant vs. general distinction, check whether `metadata.annotations` or write-permission metadata expose scope. If not, request a backend change to include a computed scope indicator in public responses. CSP Admin uses the private API which exposes `tenant` directly. |
 | Per-kind page divergence | Three sets of kind-specific pages may diverge over time | Shared components enforce consistency for common behavior; code review must verify shared component usage when adding kind-specific features. |
 | Constraint editor complexity | Recursive nested constraint forms may become unwieldy for deeply nested objects | Limit nesting depth to 3 levels; show a warning when approaching the limit. |
 | Three parallel API calls for list page | Loading time increases if one of the three catalog item type endpoints is slow | Only the active tab's query is enabled; switching tabs triggers a new query. Use per-query loading states so the gallery populates when data arrives. |
@@ -712,7 +709,7 @@ Using a PatternFly Modal (like VirtualNetworkCreateModal) was considered. This w
 
 ### 1. Scope visibility in public API responses
 
-How does the Tenant Admin determine whether a catalog item is general (global), organization-scoped, or project-scoped when the public API may strip the `tenant` and `project` fields? Is scope derivable from `metadata.annotations`, `creators`, or `tenants` fields in the public response? If not, does the Go proxy need to include scope fields in public responses, or should the API add a computed `scope` field?
+How does the Tenant Admin determine whether a catalog item is general (global), organization-scoped, or project-scoped when the public API strips the `tenant` field? The `metadata.project` field is available in public responses, but `tenant` is not. Is the combination of `metadata.project` presence/absence and write-permission sufficient to derive scope? If not, does the Go proxy need to include a computed scope indicator in public responses?
 
 **Owner:** API team
 **Impact:** Without scope visibility, the list page cannot show scope badges. The current design assumes scope is derivable from public API responses and will need revision if it is not. The CSP Admin uses the private API which exposes `tenant` and `project` directly.
