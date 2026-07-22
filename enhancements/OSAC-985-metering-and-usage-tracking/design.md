@@ -197,7 +197,7 @@ sequenceDiagram
 
 MaaS usage data must be queryable within 60 seconds of inference completion [PRD: CAP-13]. The Metering Service publishes to Kafka synchronously before returning HTTP 202.
 
-**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The Metering Service maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` route to the DLQ with `reason=tenant_resolution_failed`.
+**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The Metering Service maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` are rejected with HTTP 422 and not published to Kafka (the DLQ is reserved for adapter-side delivery failures). Rejected events increment `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}` (alert: > 0 for 5m) and are logged at ERROR level with the full event payload for investigation.
 
 **MaaS delivery resilience:** MaaS inference events have no fulfillment resource to reconcile against — unlike VMaaS/CaaS, lost events are unrecoverable. The current AI Gateway IPP plugin (`external-metering`) has no retry logic — if the HTTP POST to `/ingest/inference` fails, the error is logged and the event is lost. Additionally, the metering report blocks the ext-proc response pipeline, so Metering Service latency directly adds to inference response time. Any Metering Service downtime (restart, network partition) causes permanent MaaS event loss at the current plugin implementation. This will be resolved by raising a requirement for the IPP plugin to support publishing directly to Kafka, eliminating the HTTP hop, the data loss window, and the response-path latency coupling.
 
@@ -660,7 +660,7 @@ This satisfies NFR-1 ("no single point of failure") because the Metering Service
 | DLQ ACL | Adapters: WRITE to `osac.metering.dlq` |
 | Admin ACL | No adapter has topic management ACL |
 
-**MaaS HTTP Ingest:** Not publicly exposed. Accepts requests only from the AI Gateway, authenticated via Kubernetes SA JWT or mTLS client certificate.
+**MaaS HTTP Ingest:** Accepts requests only from the AI Gateway. When co-located on the same cluster, authenticated via Kubernetes SA JWT with `sub` claim validated against the configured AI Gateway ServiceAccount. When the AI Gateway is on a separate cluster, the endpoint is exposed via Route/Ingress and authenticated via mTLS client certificate matching the AI Gateway's identity. Requests from unrecognized callers are rejected with HTTP 403.
 
 **Audit Log:** All `osac.resource.correction.v1` events are written to a dedicated append-only audit log in addition to Kafka, recording: original event ID, correction reason, before/after state, timestamp, and triggering system. Retained for the data residency period (minimum 1 year).
 
@@ -687,7 +687,7 @@ This satisfies NFR-1 ("no single point of failure") because the Metering Service
 **Tenant Isolation:** Every metering event carries `tenant_id` via `osactenant` CloudEvent extension and `data.tenant_id`. The Metering Service enforces:
 - Watch Consumer derives `tenant_id` from the fulfillment resource's `osac.openshift.io/tenant` annotation
 - MaaS HTTP Ingest derives `tenant_id` from the inference event's `organization_id` field
-- No event is published to Kafka without a resolved `tenant_id`; unresolvable events route to DLQ with `reason=tenant_resolution_failed`
+- No event is published to Kafka without a resolved `tenant_id`; unresolvable events are rejected at the ingest boundary (HTTP 422) and flagged via `osac_metering_inference_ingest_errors_total`
 
 **Data Isolation:** The State Projection indexes by `tenant_id`; all queries are tenant-scoped. No event routing or aggregation crosses tenant boundaries within the Metering Service.
 
@@ -738,7 +738,7 @@ This satisfies NFR-1 ("no single point of failure") because the Metering Service
 |------|-----------|--------|------------|
 | ClusterOrderPhaseDeleting gap (P0) | Confirmed | CaaS over-billing; financial liability | Block CaaS production metering on P0 fix. Reconciler emits corrections. Alert on cluster billing > 24h without heartbeat. |
 | Heartbeat volume at scale | Medium | Kafka throughput, State Projection load | 10K VMs: ~167 events/s. CaaS clusters multiply by N+1 per cluster (1K clusters × 6 components = 100 events/s additional). Combined 10K VMs + 1K clusters: ~267 events/s (comfortable for Kafka). At 100K VMs: ~1,767/s (still within Kafka throughput). Heartbeat generator batches DB queries — one query returns all billable resources, not one query per resource. |
-| MaaS tenant attribution depends on auth-side wiring | Medium | `organization_id` is client-assertable until Authorino injects it from MaaSSubscription TokenMetadata | The external-metering plugin reads `organization_id` from `x-maas-organization-id` headers. Until the auth-side wiring is complete (Authorino overwriting client-supplied headers), a malicious client could assert a false `organization_id`. Alert on `tenant_resolution_failed` DLQ events; block production MaaS billing on auth-side completion. |
+| MaaS tenant attribution depends on auth-side wiring | Medium | `organization_id` is client-assertable until Authorino injects it from MaaSSubscription TokenMetadata | The external-metering plugin reads `organization_id` from `x-maas-organization-id` headers. Until the auth-side wiring is complete (Authorino overwriting client-supplied headers), a malicious client could assert a false `organization_id`. Alert on `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}`; block production MaaS billing on auth-side completion. |
 | M360 translation proxy complexity | Confirmed | Extra operational component; format drift risk | M360 adapter encapsulates translation. Pin API version in config; alert on version mismatch. |
 | Kafka operational overhead | Medium | Additional platform component | Use AMQ Streams (supported, OCP-native). Leverage Strimzi operators. Add Kafka to existing monitoring stack. |
 | State Projection unbounded growth | Low | Storage cost; slow reconciliation | TTL cleanup for deleted resources (30 days post-deletion). Index `is_billable` and `updated_at`. Partition by `resource_type` if exceeding 10M rows. |
