@@ -17,7 +17,7 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 - Boot disk and each additional disk can use different tiers independently
 - Validation that the requested tier exists at request time; clear error on failure
 - Tier resolution precedence: user input, then CatalogItem defaults, then ComputeInstanceTemplate defaults `[Clarify: R2.Q1]`
-- Tier immutability after ComputeInstance creation `[Clarify: R2.Q4]`
+- Tier assignment immutability after ComputeInstance creation `[Clarify: R2.Q4]`
 - VMaaS service only `[Clarify: R1.Q1]`
 - UI support for tier selection in the ComputeInstance creation flow
 - Documentation updates for the storage tier selection capability
