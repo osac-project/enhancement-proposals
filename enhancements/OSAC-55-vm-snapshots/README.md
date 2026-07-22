@@ -9,7 +9,7 @@ tracking-link:
 see-also:
   - "/enhancements/vmaas"
   - "/enhancements/computeinstance-phase-condition-expansion"
-  - "/enhancements/networking"
+  - "/enhancements/OSAC-356-networking"
 replaces:
   - N/A
 superseded-by:
