@@ -10,7 +10,7 @@ prd:
   - prd.md
 see-also:
   - /enhancements/catalog-items
-  - /enhancements/vm-instance-types
+  - /enhancements/OSAC-46-vm-instance-types
 replaces:
   - N/A
 superseded-by:

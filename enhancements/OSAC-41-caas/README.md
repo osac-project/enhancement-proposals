@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-03-31
 last-updated: 2026-04-16
 tracking-link:
-  - https://redhat.atlassian.net/browse/MGMT-23417
+  - https://redhat.atlassian.net/browse/OSAC-41
 see-also:
   - "/enhancements/vmaas"
   - "/enhancements/bare-metal-fulfillment"

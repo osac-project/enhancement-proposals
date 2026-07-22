@@ -8,8 +8,8 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1029
 see-also:
   - Unified Networking Design: /enhancements/unified-networking
-  - Original Networking API: /enhancements/networking
-  - BareMetal Instance API: /enhancements/baremetal-instance-api
+  - Original Networking API: /enhancements/OSAC-356-networking
+  - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
 replaces:
   - N/A
@@ -48,7 +48,7 @@ This section defines key terms used throughout this document.
     resource is `Cluster`.
   - **BMaaS** (Bare Metal as a Service): Provisions physical bare-metal
     servers. The API resource is `BaremetalInstance` (defined in the
-    [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api)).
+    [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api)).
 
 - **VirtualNetwork**: A tenant's isolated network environment with its own
   address space (CIDR). Analogous to a cloud VPC or VNet.
@@ -96,7 +96,7 @@ This section defines key terms used throughout this document.
 
 ## Problem Statement
 
-The original [Networking API enhancement](/enhancements/networking) was designed
+The original [Networking API enhancement](/enhancements/OSAC-356-networking) was designed
 with VMaaS (ComputeInstance) as the only consumer, explicitly listing CaaS and
 BMaaS as non-goals. As OSAC grows and new teams onboard, this limitation forces
 each service type to implement networking independently:
@@ -107,7 +107,7 @@ each service type to implement networking independently:
 - **BMaaS** calls inventory backends directly for network configuration,
   bypassing the OSAC API. Tenants ordering a BaremetalInstance have no
   networking integration at all (deferred in
-  the [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api)).
+  the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api)).
 - **Tenants** have no unified way to manage networking across service types.
   A tenant running VMs, clusters, and bare-metal servers must use three
   different networking models.
@@ -130,7 +130,7 @@ address space, or isolate clusters in separate VirtualNetworks — the networkin
 is entirely opaque and managed ad-hoc by the CaaS template role.
 
 The same applies to BMaaS. BaremetalInstance (defined in
-the [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api))
+the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api))
 explicitly defers networking integration. A tenant cannot specify
 which Subnet a bare-metal server should be placed on, cannot apply
 SecurityGroups, and cannot share a VirtualNetwork between bare-metal servers

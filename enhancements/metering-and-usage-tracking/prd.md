@@ -44,7 +44,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 - Costing, billing, and quota enforcement — deferred to a separate PRD
 - Workload-level metering inside tenant clusters, VMs, or hosts (OSAC has no visibility into tenant-managed workloads)
 - BMaaS, Storage-aaS, Object Storage metering (deferred to a future PRD). When storage metering comes in scope, storage tier (e.g., fast, standard, archival — per the [tenant-storage-tiers](/enhancements/OSAC-172-tenant-storage-tiers) EP) must be a pricing dimension.
-- Networking resource metering — VirtualNetworks, Subnets, PublicIPs, NAT Gateways (deferred to a future PRD). When networking metering comes in scope, it covers multiple resource types with region as a dimension (per the [networking](/enhancements/networking) EP).
+- Networking resource metering — VirtualNetworks, Subnets, PublicIPs, NAT Gateways (deferred to a future PRD). When networking metering comes in scope, it covers multiple resource types with region as a dimension (per the [networking](/enhancements/OSAC-356-networking) EP).
 - Network bandwidth metering (ingress/egress traffic per tenant) — unclear which component has access to the primary data; deferred to custom service metering if a networking vendor provides the data source
 
 ### 2.3 Services in Scope
@@ -188,7 +188,7 @@ OSAC provides usage data. The provider applies their own price schedule to gener
 
 ### Metering Units and Relationship to Existing OSAC Instance Types
 
-OSAC already defines instance types for VMaaS (per the [vm-instance-types](/enhancements/vm-instance-types) EP) and host classes for CaaS worker nodes (e.g., `gpu-h100`, `cpu-only`). The metering system does not define, replace, or constrain these — it treats the instance type name and host class name as opaque string labels used for grouping. No changes to the existing instance type or host class model are required.
+OSAC already defines instance types for VMaaS (per the [vm-instance-types](/enhancements/OSAC-46-vm-instance-types) EP) and host classes for CaaS worker nodes (e.g., `gpu-h100`, `cpu-only`). The metering system does not define, replace, or constrain these — it treats the instance type name and host class name as opaque string labels used for grouping. No changes to the existing instance type or host class model are required.
 
 VMaaS metering uses `instance-type-seconds` as its single meter. This aligns with how commercial clouds operate — CSPs define instance types that bundle CPU, RAM, and fixed boot disk into a named unit, and billing is expressed as uptime × rate per instance type. The instance type name from the OSAC catalog is used directly as a grouping dimension; the metering system is agnostic to the hardware composition behind the name. Storage is implicitly bundled when the CSP defines instance types that include a fixed boot disk.
 

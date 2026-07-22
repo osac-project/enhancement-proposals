@@ -5,7 +5,7 @@ authors:
 creation-date: 2025-11-29
 last-updated: 2026-02-11
 tracking-link:
-  - https://issues.redhat.com/browse/MGMT-22637
+  - https://redhat.atlassian.net/browse/OSAC-356
 see-also:
   - Region and Availability Zone API: https://github.com/osac-project/enhancement-proposals/pull/20
 replaces:
