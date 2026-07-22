@@ -31,8 +31,8 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 - As a Cloud Provider Admin, I want to create and manage catalog items through the web console so that I can define curated offerings without using the CLI.
 - As a Cloud Provider Admin, I want to configure field definitions with structured validation constraints so that I can enforce guardrails on tenant provisioning.
-- As a Tenant Admin, I want to create organization-scoped catalog items from published global items so that I can tailor offerings to my organization's standards.
-- As a Tenant Admin, I want to see which catalog items are global (read-only) vs. organization-scoped (manageable) so that I know what I can and cannot modify.
+- As a Tenant Admin, I want to create catalog items scoped to my organization or to a specific project so that I can tailor offerings at the right level.
+- As a Tenant Admin, I want to see which catalog items are general (read-only), organization-scoped, or project-scoped so that I know what I can and cannot modify.
 - As a Tenant User, I want the admin management screens to be hidden from my view so that I only see the catalog browsing and provisioning experience.
 
 ### Goals
@@ -62,7 +62,7 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
 1. CSP Admin navigates to **Administration > Catalog Management** in the sidebar.
 2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows a gallery of catalog item cards for that resource type across all tenants.
 3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
-4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope (Global or a specific tenant), and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template.
+4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope, and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template. **Scope:** CSP Admin selects between **General** (visible to all tenants) or **Organization** (scoped to a specific tenant, selected from a tenant dropdown).
 5. **Step 2 — Configuration:** A per-kind step component with static fields for the resource spec (excluding access and networking fields). Each field uses a shared field definition primitive (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that renders an editable toggle, a type-appropriate default value input, and type-specific validation options. Default values are pre-populated from the selected template. By default, fields are non-editable; non-editable fields require a default value. For Cluster, includes `NodeSetsFieldEditor` for configuring default node set entries (name, host type dropdown, size) and size constraints. For resource reference fields (`ResourceSelectorFieldDefinition`), the admin selects a default from a dropdown of existing resources — no validation constraints are configured.
 6. **Step 3 — Networking** (clusters only): `ClusterNetworkingStep` with `pod_cidr` and `service_cidr` as `StringFieldDefinition` fields. This step is not shown for VM or Bare Metal catalog items.
 7. **Step 4 — Access:** Per-kind access step component with `ssh_public_key`/`ssh_key` and `pull_secret` (clusters) as `StringFieldDefinition` fields. Both default to editable.
@@ -74,21 +74,21 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
 #### Cloud Provider Admin — Edit, Publish/Unpublish, Delete
 
 - **Edit:** From the list page kebab menu or detail page, click "Edit". The edit page loads the existing catalog item data. Template selection is locked (displayed as read-only text). All other fields are editable. Save sends a PATCH with a FieldMask containing only changed fields.
-- **Publish/Unpublish:** From the list page kebab menu, click "Publish" (if unpublished) or "Unpublish" (if published). This sends a PATCH with `published: true/false` and `update_mask: "published"`.
+- **Publish/Unpublish:** From the list page kebab menu, click "Publish" (if unpublished) or "Unpublish" (if published). This sends a PATCH with `published: true/false` and `update_mask: "published"`. Publication applies to the catalog item's configured scope — a general item is published/unpublished globally, an organization-scoped item within that tenant, and a project-scoped item within that project.
 - **Delete:** From the list page kebab menu, click "Delete". A confirmation modal appears. If the catalog item has provisioned resources, the API returns an error and the UI displays an alert: "This catalog item cannot be deleted because resources have been provisioned from it. Unpublish it instead to hide it from users."
 
 #### Tenant Admin — Create Catalog Item
 
-The Tenant Admin uses the same wizard flow as the CSP Admin with one difference: scope is automatically set to the tenant's organization.
+The Tenant Admin uses the same wizard flow as the CSP Admin with a different scope model: Tenant Admin selects between **Organization** (visible to all projects within the tenant) or **Project** (scoped to a specific project).
 
 1. Tenant Admin navigates to **Administration > Catalog Management**.
-2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows a gallery of the tenant's catalog item cards alongside global items. Global items have a "Global" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and full actions.
+2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows a gallery of the tenant's catalog item cards alongside global items. Global items have a "General" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and project-scoped items have a "Project: {name}" scope badge — both with full actions.
 3. Tenant Admin clicks the "Create" button on the active tab. The resource type is determined by the tab.
-4. **Step 1 — General:** Admin enters name, description, and selects a template. Scope is automatically set to the tenant's organization (displayed as read-only text, not editable).
+4. **Step 1 — General:** Admin enters name, description, selects scope, and selects a template. **Scope:** Tenant Admin selects between **Organization** (visible to all projects within the tenant) or **Project** (scoped to a specific project, selected from a project dropdown). The `tenant` field is auto-set by the server.
 5. **Step 2 — Configuration:** Same as CSP Admin — resource spec field definitions (excluding access and networking fields).
 6. **Step 3 — Networking** (clusters only): Same as CSP Admin — pod_cidr and service_cidr.
 7. **Step 4 — Access:** Same as CSP Admin — ssh_public_key and pull_secret field definitions.
-7. Admin clicks "Create". The UI sends a POST. The server auto-sets the `tenant` field.
+7. Admin clicks "Create". The UI sends a POST. The server auto-sets the `tenant` field; the UI sends the `project` field if project-scoped.
 8. The admin is redirected to the detail page.
 
 #### Tenant User — Browse and Provision
@@ -97,7 +97,11 @@ No changes to the existing flow. Tenant Users continue to use the CatalogPage fo
 
 ### API Extensions
 
-This design introduces no new API extensions. All catalog item CRUD endpoints already exist in fulfillment-service. The Go proxy routes requests to the appropriate API based on the caller's role:
+**Required API change — `project` field on catalog items:**
+
+The current catalog item proto has a `tenant` field (field 7) for scoping to an organization, but no `project` field. This design requires adding a `string project` field to `ClusterCatalogItem`, `ComputeInstanceCatalogItem`, and `BareMetalInstanceCatalogItem` to support project-level scoping. When `project` is empty and `tenant` is set, the item is organization-scoped (visible to all projects within the tenant). When both `tenant` and `project` are set, the item is project-scoped (visible only within that project). When both are empty, the item is general/global. The server must enforce that `project` can only be set when `tenant` is also set.
+
+All catalog item CRUD endpoints already exist in fulfillment-service. The Go proxy routes requests to the appropriate API based on the caller's role:
 
 **Cloud Provider Admin** (private API — returns `tenant` field, no publication/tenant filtering):
 - `GET/POST/PATCH/DELETE /api/fulfillment/private/v1/cluster_catalog_items`
@@ -180,8 +184,8 @@ Rather than a single monolithic component driven by a configuration map, the des
 - `NodeSetsFieldEditor` — dedicated editor for `node_sets` (Cluster only, see §8)
 
 **Shared page-level components** (used by all three kinds):
-- `CatalogItemGeneralFields` — name, description, scope, and template selector inputs (reused in create/edit)
-- `CatalogItemCard` — reuses the existing tenant `CatalogItemCard` component, extended with scope badge, publication status, and admin kebab menu
+- `CatalogItemGeneralFields` — name, description, scope (role-dependent: CSP Admin sees General/Organization; Tenant Admin sees Organization/Project), and template selector inputs (reused in create/edit)
+- `CatalogItemCard` — reuses the existing tenant `CatalogItemCard` component, extended with scope badge (General/Organization/Project), publication status, and admin kebab menu
 - `CatalogItemActionsMenu` — kebab menu (publish/unpublish/delete)
 
 **Per-kind step components** — each wizard step is a separate component with static, hardcoded fields (same pattern as the tenant user provisioning wizard). Individual fields use the shared field definition primitives above:
@@ -286,25 +290,32 @@ The list page uses three PatternFly `Tabs` — **Clusters**, **Virtual Machines*
 
 Each card shows:
 - **Header:** Resource type icon (`CatalogItemIcon`) + catalog item title
-- **Body:** Description (truncated), resource spec labels (e.g., "4 vCPU", "8 Memory"), scope badge ("Global" or "Organization"), publication status label ("Published" green / "Unpublished" gray)
+- **Body:** Description (truncated), resource spec labels (e.g., "4 vCPU", "8 Memory"), scope badge ("General", "Organization", or "Project: {name}"), publication status label ("Published" green / "Unpublished" gray)
 - **Kebab menu:** Edit, Publish/Unpublish, Delete actions (see below)
 
 Clicking a card opens the detail page (unlike tenant `CatalogPage` which uses a drawer).
 
 **Kebab menu actions (per role):**
 
-| Action | providerAdmin | tenantAdmin (org-scoped) | tenantAdmin (global) |
-|--------|---------------|--------------------------|----------------------|
-| Edit | Yes | Yes | No |
-| Publish | Yes (if unpublished) | Yes (if unpublished) | No |
-| Unpublish | Yes (if published) | Yes (if published) | No |
-| Delete | Yes | Yes | No |
+| Action | providerAdmin | tenantAdmin (org-scoped) | tenantAdmin (project-scoped) | tenantAdmin (general) |
+|--------|---------------|--------------------------|------------------------------|----------------------|
+| Edit | Yes | Yes | Yes | No |
+| Publish | Yes (if unpublished) | Yes (if unpublished) | Yes (if unpublished) | No |
+| Unpublish | Yes (if published) | Yes (if published) | Yes (if published) | No |
+| Delete | Yes | Yes | Yes | No |
 
-Tenant Admin sees global items as read-only cards with no kebab menu (or a kebab with only "View details").
+Tenant Admin sees general (global) items as read-only cards with no kebab menu (or a kebab with only "View details"). Publish/unpublish applies only within the catalog item's configured scope.
 
 **Scope display:**
-- **CSP Admin:** The private API returns the `tenant` field in responses. Items with an empty `tenant` are global; items with a non-empty `tenant` are organization-scoped. The UI displays the appropriate scope badge directly from this field.
-- **Tenant Admin:** The public API does not expose the `tenant` field, but scope is deterministic: items the Tenant Admin can update or delete are organization-scoped; items that return `PERMISSION_DENIED` on write operations are global. The UI derives scope from server-authored capability metadata or the item's `creators`/`tenants` fields. Global items show no edit/delete actions in the kebab menu.
+- **CSP Admin:** The private API returns the `tenant` and `project` fields in responses. Items with both empty are general (global); items with `tenant` set but `project` empty are organization-scoped; items with both `tenant` and `project` set are project-scoped. The UI displays the appropriate scope badge:
+  - `"General"` — visible to all tenants
+  - `"Organization: {tenant name}"` — scoped to a specific tenant
+- **Tenant Admin:** The public API does not expose the `tenant` field, but the `project` field (if added to public responses) indicates project-level scoping. Scope is derived as:
+  - `"General"` — global items created by CSP Admin (read-only, no write actions)
+  - `"Organization"` — tenant-wide items (manageable)
+  - `"Project: {project name}"` — project-scoped items (manageable if the Tenant Admin owns the project)
+
+**Scope badges:** The `CatalogItemScopeBadge` component renders a PatternFly `Label` with the scope level and name. Badge colors: General (blue), Organization (purple), Project (cyan).
 
 #### 5. Create Pages (kind-specific wizard)
 
@@ -320,7 +331,9 @@ The wizard steps are kind-specific: VM and Bare Metal have three steps (General,
 - Name (`NameField`, required) — reuses the existing osac-ui `NameField` component with standard naming validation
 - Description (`InputField` textarea, optional) — markdown-formatted long description
 - Template (`SelectField`) — populated with templates from the corresponding template list endpoint (fetched by the page's typed hook). Selecting a template pre-populates field definitions with default values from the template's parameter definitions.
-- Scope (providerAdmin only): `RadioButtonField` — Global or Tenant-scoped. If tenant-scoped, a tenant selector dropdown appears. For tenantAdmin, this step shows "Scope: Your organization" as read-only text.
+- Scope: `RadioButtonField` with role-dependent options:
+  - **CSP Admin:** "General" (global, visible to all tenants) or "Organization" (scoped to a specific tenant). If "Organization" is selected, a tenant selector dropdown appears.
+  - **Tenant Admin:** "Organization" (visible to all projects within the tenant) or "Project" (scoped to a specific project). If "Project" is selected, a project selector dropdown appears (populated from the tenant's projects).
 
 **Step 2: Configuration** (per-kind step component, see §8)
 
@@ -353,7 +366,9 @@ Template-provided defaults take precedence over these hardcoded values. The hard
 
 **Wizard submission:**
 - Validates all fields with Yup on each step transition and on final submit
-- Constructs the create payload with `name` (not `title`, consistent with osac-ui conventions). For CSP Admin (private API), the `tenant` field is included — empty string for global items, or the selected tenant ID for tenant-scoped items. For Tenant Admin (public API), `tenant` is omitted (auto-set by server):
+- Constructs the create payload with `name` (not `title`, consistent with osac-ui conventions):
+  - **CSP Admin (private API):** `tenant` is empty string for general items, or the selected tenant ID for organization-scoped items. `project` is always empty (CSP Admin does not create project-scoped items).
+  - **Tenant Admin (public API):** `tenant` is omitted (auto-set by server). `project` is empty for organization-scoped items, or the selected project ID for project-scoped items.
 
   ```json
   {
@@ -361,6 +376,7 @@ Template-provided defaults take precedence over these hardcoded values. The hard
     "description": "...",
     "template": "<template-id>",
     "tenant": "",
+    "project": "",
     "published": false,
     "field_definitions": [...]
   }
@@ -391,20 +407,20 @@ Each kind-specific edit page reuses the same wizard steps as the create page wit
 Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management > {name}) and a publication status badge.
 
 **Tabs:**
-- **Overview:** Read-only display of general information (name, description, resource type, scope, template name, publication status, creation date)
+- **Overview:** Read-only display of general information (name, description, resource type, scope with level and target name — General/Organization/Project, template name, publication status, creation date)
 - **Field Definitions:** Read-only list showing all field definitions with: Path, Editable (Yes/No), Default Value, Validation Constraints. For `node_sets` (Cluster), shows the default node set entries (host type, size), the allow add/remove setting, and any size constraints.
 - **Provisioned Resources:** Table of resources (Clusters, ComputeInstances, or BareMetalInstances) provisioned from this catalog item, fetched via the resource list endpoint with a `this.spec.catalog_item == "<id>"` CEL filter
 
 **Header actions:**
 - Edit button (navigates to edit page)
 - Kebab menu with Publish/Unpublish and Delete actions
-- Actions are hidden for Tenant Admins viewing global items
+- Actions are hidden for Tenant Admins viewing general (global) items
 
 #### 8. Shared Field Definition Primitives and Per-Kind Step Components
 
 **Location:** `libs/ui-components/src/components/catalogManagement/fieldDefinitions/`
 
-Each wizard step is a separate per-kind component with static, hardcoded fields — the same pattern as the tenant user provisioning wizard. Individual fields reuse shared field definition primitives that each render an editable toggle, a type-appropriate default value input, and type-specific validation options. By default, fields are non-editable except `ssh_public_key`/`ssh_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Both CSP Admin and Tenant Admin use the same step components.
+Each wizard step is a separate per-kind component with static, hardcoded fields — the same pattern as the tenant user provisioning wizard. Individual fields reuse shared field definition primitives that each render an editable toggle, a type-appropriate default value input, and type-specific validation options. By default, fields are non-editable except `ssh_public_key`/`ssh_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Both CSP Admin and Tenant Admin use the same step components — only the General step's scope selector differs by role (see §5).
 
 **Shared field definition primitives:**
 
@@ -615,8 +631,8 @@ libs/ui-components/src/
 This design introduces no new authentication or authorization mechanisms. The Go proxy routes CSP Admin requests to the private API and Tenant Admin/User requests to the public API. The fulfillment-service enforces role-based access on the server side:
 
 - Tenant Users receive `PERMISSION_DENIED` if they attempt to call Create/Update/Delete on catalog items through the API directly. The UI prevents this by hiding the admin navigation and routes, but the server is the enforcement boundary.
-- Tenant Admins cannot modify global catalog items — the server returns `PERMISSION_DENIED` for Update/Delete on items where `tenant` is empty or belongs to another tenant. The UI disables these actions in the kebab menu.
-- The `tenant` field is auto-set by the server for Tenant Admin creates; the UI does not send it. CSP Admins set `tenant` explicitly via the private API — `tenant = ""` creates a global item.
+- Tenant Admins cannot modify general (global) catalog items — the server returns `PERMISSION_DENIED` for Update/Delete on items where `tenant` is empty or belongs to another tenant. The UI disables these actions in the kebab menu.
+- The `tenant` field is auto-set by the server for Tenant Admin creates; the UI does not send it. CSP Admins set `tenant` explicitly via the private API — `tenant = ""` creates a general (global) item. For project-scoped items, the Tenant Admin sets `project` explicitly; the server validates that the project belongs to the tenant.
 
 Input validation is performed client-side (Yup) for UX responsiveness and server-side (fulfillment-service) for enforcement. The client-side validation is a convenience — it does not replace server-side validation.
 
@@ -639,9 +655,9 @@ The validation schema field accepts a JSON Schema object from the admin (constru
 
 This design does not introduce new RBAC roles or tenancy mechanisms. It consumes the existing catalog item tenancy model:
 
-- `providerAdmin`: Full CRUD on all catalog items (global and tenant-scoped). The server does not restrict based on tenant.
-- `tenantAdmin`: Full CRUD over their own organization-scoped catalog items. Read-only on global items. The server enforces tenant scoping — the UI disables write actions on global items as a UX convenience.
-- `tenantUser`: Read-only on published items visible to their tenant. No access to admin pages. The UI hides the admin nav section; the server enforces `PERMISSION_DENIED` on write operations.
+- `providerAdmin`: Full CRUD on all catalog items (general and organization-scoped). Scope selection: General (global) or Organization (specific tenant). The server does not restrict based on tenant.
+- `tenantAdmin`: Full CRUD over their own organization-scoped and project-scoped catalog items. Read-only on general (global) items created by CSP Admins. Scope selection: Organization (all projects within tenant) or Project (specific project). The server enforces tenant scoping — the UI disables write actions on general items as a UX convenience.
+- `tenantUser`: Read-only on published items visible to their tenant and project. No access to admin pages. The UI hides the admin nav section; the server enforces `PERMISSION_DENIED` on write operations.
 
 No new `osac.openshift.io/tenant` or `osac.openshift.io/owner-reference` annotations are introduced by this design — the API layer handles tenant metadata.
 
@@ -653,7 +669,8 @@ No new observability changes. The UI is a frontend application — observability
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
-| Scope not visible in public API responses | CSP Admin list page cannot show Global vs Tenant-scoped badges | Check whether `metadata.annotations` or `creators`/`tenants` fields expose scope. If not, request a backend change to include a `scope` field in public responses, or route CSP Admin requests through the private API. |
+| Scope not visible in public API responses | List page cannot show General/Organization/Project scope badges | Check whether `metadata.annotations` or `creators`/`tenants` fields expose scope. If not, request a backend change to include scope fields (`tenant`, `project`) in public responses, or route CSP Admin requests through the private API. |
+| `project` field not yet in catalog item proto | Project-scoped catalog items cannot be created until the API is extended | Flag as API extension requirement; coordinate with API team to add `string project` field to all catalog item types before UI implementation. |
 | Per-kind page divergence | Three sets of kind-specific pages may diverge over time | Shared components enforce consistency for common behavior; code review must verify shared component usage when adding kind-specific features. |
 | Constraint editor complexity | Recursive nested constraint forms may become unwieldy for deeply nested objects | Limit nesting depth to 3 levels; show a warning when approaching the limit. |
 | Three parallel API calls for list page | Loading time increases if one of the three catalog item type endpoints is slow | Only the active tab's query is enabled; switching tabs triggers a new query. Use per-query loading states so the gallery populates when data arrives. |
@@ -695,10 +712,10 @@ Using a PatternFly Modal (like VirtualNetworkCreateModal) was considered. This w
 
 ### 1. Scope visibility in public API responses
 
-How does the CSP Admin determine whether a catalog item is global or tenant-scoped when the public API strips the `tenant` field? Is scope derivable from `metadata.annotations`, `creators`, or `tenants` fields in the public response? If not, does the Go proxy need to forward private API endpoints for CSP Admin users, or should the API add a `scope` field to public responses?
+How does the Tenant Admin determine whether a catalog item is general (global), organization-scoped, or project-scoped when the public API may strip the `tenant` and `project` fields? Is scope derivable from `metadata.annotations`, `creators`, or `tenants` fields in the public response? If not, does the Go proxy need to include scope fields in public responses, or should the API add a computed `scope` field?
 
 **Owner:** API team
-**Impact:** Without scope visibility, the CSP Admin list page cannot show a "Scope" column. The current design assumes scope is derivable from public API responses and will need revision if it is not.
+**Impact:** Without scope visibility, the list page cannot show scope badges. The current design assumes scope is derivable from public API responses and will need revision if it is not. The CSP Admin uses the private API which exposes `tenant` and `project` directly.
 
 ### 2. ~~Template parameter enumeration for field path picker~~ (Resolved)
 
@@ -723,8 +740,10 @@ Testing strategy for the catalog management UI:
 - Edit flow: modify name and field definitions, verify changes persist
 - Delete flow: delete a catalog item with no provisioned resources, verify removal from list
 - Delete blocked: attempt to delete a catalog item with provisioned resources, verify error message
-- Tenant Admin create wizard: create a catalog item through the same wizard as CSP Admin, verify template selection and field definitions work identically
-- Tenant Admin visibility: verify global items show as read-only, org-scoped items show full actions
+- Tenant Admin create wizard (org scope): create an organization-scoped catalog item, verify scope selector shows Organization/Project options, verify template selection and field definitions work identically to CSP Admin
+- Tenant Admin create wizard (project scope): create a project-scoped catalog item, verify project dropdown appears when "Project" scope is selected, verify scope badge shows "Project: {name}" in the list
+- CSP Admin scope: verify scope selector shows General/Organization options, verify tenant dropdown appears when "Organization" is selected
+- Tenant Admin visibility: verify general items show as read-only, org-scoped and project-scoped items show full actions
 - Tabs: verify switching between Clusters/VM/Bare Metal tabs shows the correct catalog items per type
 
 **Unit tests:**
@@ -732,6 +751,8 @@ Testing strategy for the catalog management UI:
 - FieldMask construction: verify diff-based update_mask includes only changed fields; verify field_definitions triggers whole-list replacement
 - Validation constraints: verify each field definition primitive produces correct JSON Schema output (pattern for strings, min/max for numbers)
 - Route mapping: verify CatalogItemKind → API endpoint resolution for all three types
+- Scope selector: verify CSP Admin sees General/Organization options; verify Tenant Admin sees Organization/Project options; verify tenant dropdown appears for Organization scope; verify project dropdown appears for Project scope
+- Scope badge: verify badge renders correctly for all three scope levels (General, Organization, Project)
 - Unsupported schema detection: verify schemas with unsupported keywords show read-only "use CLI" message; schemas with only supported keywords show structured controls
 - Network attachments auto-inclusion (VM only): verify `network_attachments` is excluded from VM wizard but included in API payload as editable with no default or validation; verify Bare Metal has no networking fields; verify Cluster uses pod_cidr/service_cidr in Networking step
 - NodeSetsFieldEditor: verify node set entries pre-populate from template; verify add/remove; verify host type dropdown; verify size constraints serialization; verify at least one entry required
