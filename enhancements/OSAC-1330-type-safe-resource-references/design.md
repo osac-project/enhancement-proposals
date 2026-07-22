@@ -206,8 +206,8 @@ Starting state: A Cloud Provider Admin has created a ClusterTemplate named
      "metadata": { "name": "ocp-standard" },
      "spec": {
        "template": {
-         "tenant": "infra-templates",
-         "name": "ocp-4.18"
+         "name": "ocp-4.18",
+         "tenant": "infra-templates"
        }
      }
    }
@@ -389,10 +389,10 @@ message ClusterTemplateReference {
   };
 
   string id = 1;
-  string tenant = 2;
+  string name = 2;
   string project = 3;
-  string name = 4;
-  bool shared = 5;
+  bool shared = 4;
+  string tenant = 5;
 }
 
 // Local reference — used when the target is always in the same tenant/project.
@@ -647,7 +647,7 @@ that sends `{ "id": "abc-123", "shared": true }` gets the stored reference
 expanded to
 `{ "id": "abc-123", "name": "my-template", "project": "", "shared": true }`.
 A private API client that sends `{ "id": "abc-123" }` gets
-`{ "id": "abc-123", "tenant": "infra-templates", "project": "", "name": "my-template", "shared": false }`.
+`{ "id": "abc-123", "name": "my-template", "project": "", "shared": false, "tenant": "infra-templates" }`.
 
 **Reference detection.** The interceptor identifies reference fields by
 checking whether a field's message type ends with `Reference` or
@@ -889,12 +889,6 @@ fields for id, tenant, project, name). The protobuf deserialization layer
 rejects malformed input. The interceptor validates that names are non-empty
 and match existing resources. No SQL injection risk exists because lookups
 use parameterized DAO queries, not string concatenation.
-
-**Cross-tenant information disclosure:** When a user provides a full reference
-with an explicit tenant, the interceptor's error message reveals whether the
-referenced resource exists in that tenant. This is the same behavior as the
-current system (servers return "not found" for nonexistent references). The
-existing OPA policies already gate cross-tenant visibility.
 
 **Project-level access:** When a user provides a `project` field in a public
 full reference, the interceptor resolves the resource within that project. If
