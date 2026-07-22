@@ -20,7 +20,7 @@ superseded-by:
 
 ## Summary
 
-This design introduces a DiskImage resource to the fulfillment-service that wraps OCI artifact references with curated metadata (guest OS family, architecture, lifecycle state), replaces inline image fields on ComputeInstance and ComputeInstanceTemplate with a mandatory DiskImage reference, and enforces deletion protection when DiskImages are referenced by active resources. See [PRD](prd.md) for detailed requirements.
+This design introduces a DiskImage resource to the fulfillment-service. DiskImage wraps OCI artifact references with curated metadata — guest OS family, architecture, and lifecycle state — providing a discoverable image catalog for VM provisioning. ComputeInstance and ComputeInstanceTemplate replace their inline image fields with a mandatory DiskImage reference. Deletion protection prevents removing images that are still referenced by active resources. API reference documentation and user guide for DiskImage operations are in scope for this milestone. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -603,7 +603,9 @@ Once deprecated, a DiskImage cannot return to AVAILABLE.
 
 ## Graduation Criteria
 
-Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview -> Tech Preview -> GA based on production deployment feedback.
+- **Dev Preview:** DiskImage CRUD operations pass all unit and integration tests. ComputeInstance creation with DiskImage reference works end-to-end. Deletion protection verified for ComputeInstances, ComputeInstanceTemplates, and ComputeInstanceCatalogItems. No regressions in existing ComputeInstance tests.
+- **Tech Preview:** Multi-tenant visibility enforced. Lifecycle management (deprecation/obsolescence/reactivation) validated in production-like environment.
+- **GA:** Production-hardened. Performance validated at scale. Documentation complete.
 
 ## Upgrade / Downgrade Strategy
 
@@ -639,13 +641,13 @@ Delete or update the referencing resources, then retry deletion.
 
 ## Infrastructure Needed
 
-None.
+No Helm chart, kustomize overlay, or osac-installer changes needed. Database migration runs automatically on fulfillment-service startup.
 
 ---
 
 ## Provenance
 
 Authored: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
-Phases: draft, draft, respond
+Phases: draft, draft, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
