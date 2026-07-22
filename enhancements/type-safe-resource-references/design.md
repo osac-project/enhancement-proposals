@@ -373,9 +373,8 @@ message ClusterTemplateReference {
   };
 
   string id = 1;
-  reserved 2, 3; // future: tenant, project
-  string name = 4;
-  bool shared = 5;
+  string name = 2;
+  bool shared = 3;
 }
 
 // Private full reference — Cloud Provider Admins use explicit tenant/project.
@@ -400,14 +399,13 @@ message SubnetLocalReference {
 }
 ```
 
-**Public vs. private full references.** Tenant users should not see or provide
-arbitrary tenant names. The public API exposes `bool shared` instead of
+**Public vs. private full references.** Tenant users and tenant admins should
+not see or provide arbitrary tenant names. The public API exposes `bool shared` instead of
 `string tenant` / `string project`: when `shared = true`, the interceptor
 resolves the reference against the `shared` tenant; when `false` (default), it
 resolves against the caller's own tenant. The private API retains explicit
 `tenant` and `project` fields for Cloud Provider Admins who manage cross-tenant
-resources. Field numbers 2 and 3 are reserved in the public message so they
-can be added in a future migration without wire conflicts.
+resources.
 
 Full references support three resolution modes:
 
