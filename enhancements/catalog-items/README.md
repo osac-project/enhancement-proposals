@@ -83,7 +83,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to provide identifying information for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
 
-* As a Cloud Provider Admin, I need to choose whether the catalog item is global (visible to all tenants) or scoped to a specific tenant, so I can create targeted offerings for specific organizations.
+* As a Cloud Provider Admin, I need to choose the scope of the catalog item — either General (visible to all tenants) or Organization (scoped to a specific tenant) — so I can create targeted offerings for specific organizations. When publishing or unpublishing, the action applies only within the selected scope.
 
 #### Cloud Provider Admin — Catalog Item Lifecycle
 
@@ -99,25 +99,25 @@ don't have the ability to add or modify ansible roles.
 
 #### Tenant Admin — Catalog Item Creation
 
-* As a Tenant Admin, I need to create organization-specific catalog items by selecting a resource type and choosing an existing template, using the same creation flow as a Cloud Provider Admin.
+* As a Tenant Admin, I need to create organization-scoped or project-scoped catalog items by selecting a resource type and choosing an existing template, using the same creation flow as a Cloud Provider Admin.
 
 * As a Tenant Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item, using the same field definitions editor as a Cloud Provider Admin.
 
 * As a Tenant Admin, I need to provide identifying information for the catalog item, so my organization's users can distinguish it from other offerings in the catalog.
 
-* As a Tenant Admin, the catalog item I create is automatically scoped to my organization — I do not control the tenant assignment.
+* As a Tenant Admin, I need to choose the scope of the catalog item — either Organization (visible to all projects within my tenant) or Project (scoped to a specific project) — so I can create targeted offerings at the right level. The tenant assignment is automatic; I control whether the item is organization-wide or project-specific.
 
 #### Tenant Admin — Catalog Item Lifecycle
 
-* As a Tenant Admin, I need to publish or unpublish catalog items scoped to my organization to control whether my users can see and provision from them.
+* As a Tenant Admin, I need to publish or unpublish catalog items scoped to my organization or project to control whether my users can see and provision from them. Publication applies only within the configured scope.
 
-* As a Tenant Admin, I need to edit organization-scoped catalog items to update their name, description, publication status, and field definitions. I cannot modify global catalog items created by Cloud Provider Admins.
+* As a Tenant Admin, I need to edit organization-scoped and project-scoped catalog items to update their name, description, publication status, and field definitions. I cannot modify general (global) catalog items created by Cloud Provider Admins.
 
 * As a Tenant Admin, I need to view a catalog item's full configuration and see which resources in my organization have been provisioned from it.
 
-* As a Tenant Admin, I need to delete an organization-scoped catalog item that is no longer needed, subject to the same provisioned-resource blocking as global items.
+* As a Tenant Admin, I need to delete an organization-scoped or project-scoped catalog item that is no longer needed, subject to the same provisioned-resource blocking as general items.
 
-* As a Tenant Admin, I need to see my organization's catalog items alongside global items, with a clear distinction between global (read-only) and organization-scoped (manageable) items.
+* As a Tenant Admin, I need to see my organization's catalog items alongside general (global) items, with a clear distinction between general (read-only), organization-scoped (manageable), and project-scoped (manageable) items.
 
 #### Tenant User — Catalog Browsing and Provisioning
 
@@ -151,6 +151,7 @@ ClusterCatalogItem
 * includes a list of field definitions, each of which specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The UI always includes all fields from the resource spec, but the API accepts partial field lists (e.g., CLI-created items may include only a subset).
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
+* includes an optional project identifier that further scopes visibility to a specific project within the tenant. When empty, the item is visible to all projects within the tenant.
 
 The field definitions use dot-notation paths to reference fields in the
 underlying resource spec.
@@ -229,6 +230,11 @@ Two new message types will be added to the proto definitions in
 - `tenant` (string) - internal field, not exposed through the public API. Scopes
   visibility to a single tenant organization; when empty the item is visible to
   all tenants. Set automatically by the server for Tenant Admin creates.
+- `project` (string) - optional field for project-level scoping. When set
+  alongside `tenant`, the item is visible only within that project. When empty
+  (with `tenant` set), the item is visible to all projects within the tenant.
+  Set by the Tenant Admin during creation; CSP Admins do not create
+  project-scoped items.
 
 `ComputeInstanceCatalogItem`:
 - Same top-level structure as `ClusterCatalogItem` but references a
@@ -334,10 +340,10 @@ additional steps before writing the object:
 
 #### Tenancy and Authorization
 
-The `tenant` field on `CatalogItem` is enforced at two layers:
+The `tenant` and `project` fields on `CatalogItem` are enforced at two layers:
 
-1. **Read**: The public `CatalogItems_List` and `CatalogItems_Get` operations always filter by `tenant = "" OR tenant = <caller_tenant>`. When the caller is a Tenant User, the public server additionally injects `published = true`, with one exception: a Tenant User may `Get` a catalog item referenced by one of their existing CNAs even if that item is unpublished. Tenant Admins see all items in their tenant regardless of publication status. This is implemented in the public server before delegating to the private server, using the same filter-injection mechanism the other public servers use for tenancy.
-2. **Write**: Cloud Provider Admins set `tenant` explicitly; `tenant = ""` creates a global item. For Tenant Admins, the public server injects `tenant` from the caller's identity — the field is not accepted from the caller. Tenant Admins can only Update or Delete catalog items scoped to their own tenant (i.e., where `tenant` equals the caller's tenant); they cannot modify global items (`tenant = ""`) or items belonging to another tenant.
+1. **Read**: The public `CatalogItems_List` and `CatalogItems_Get` operations always filter by `tenant = "" OR tenant = <caller_tenant>`. When `project` is set on a catalog item, visibility is further restricted to users within that project. When the caller is a Tenant User, the public server additionally injects `published = true`, with one exception: a Tenant User may `Get` a catalog item referenced by one of their existing CNAs even if that item is unpublished. Tenant Admins see all items in their tenant regardless of publication status. This is implemented in the public server before delegating to the private server, using the same filter-injection mechanism the other public servers use for tenancy.
+2. **Write**: Cloud Provider Admins set `tenant` explicitly; `tenant = ""` creates a general (global) item. CSP Admins choose between General (global) or Organization (tenant-scoped). For Tenant Admins, the public server injects `tenant` from the caller's identity — the field is not accepted from the caller. Tenant Admins set `project` explicitly to create project-scoped items, or leave it empty for organization-scoped items. Tenant Admins can only Update or Delete catalog items scoped to their own tenant; they cannot modify general items (`tenant = ""`) or items belonging to another tenant. The server validates that a specified `project` belongs to the caller's tenant.
 
 A tenant with a CNA that was published from a Catalog Item that has since been
 unpublished should still be able to read that Catalog Item through a direct GET
