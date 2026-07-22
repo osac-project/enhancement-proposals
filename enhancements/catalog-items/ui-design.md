@@ -69,13 +69,13 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
    For VM catalog items, the UI automatically includes `network_attachments` in the API payload as an editable field with no default or validation — it is not shown in any wizard step. Bare Metal catalog items have no networking fields.
 8. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
-9. From the detail page or list page, the admin can publish the item via the kebab menu "Publish" action.
+9. From the detail page or list page, the admin can publish the item by toggling the publish `Switch`.
 
 #### Cloud Provider Admin — Edit, Publish/Unpublish, Delete
 
-- **Edit:** From the list page kebab menu or detail page, click "Edit". The edit page loads the existing catalog item data. Template selection is locked (displayed as read-only text). All other fields are editable. Save sends a PATCH with a FieldMask containing only changed fields.
-- **Publish/Unpublish:** From the list page kebab menu, click "Publish" (if unpublished) or "Unpublish" (if published). This sends a PATCH with `published: true/false` and `update_mask: "published"`. Publication applies to the catalog item's configured scope — a general item is published/unpublished globally, an organization-scoped item within that tenant, and a project-scoped item within that project.
-- **Delete:** From the list page kebab menu, click "Delete". A confirmation modal appears. If the catalog item has provisioned resources, the API returns an error and the UI displays an alert: "This catalog item cannot be deleted because resources have been provisioned from it. Unpublish it instead to hide it from users."
+- **Edit:** From the detail page, click the "Edit" button in the action buttons row. The edit page loads the existing catalog item data. Template selection is locked (displayed as read-only text). All other fields are editable. Save sends a PATCH with a FieldMask containing only changed fields.
+- **Publish/Unpublish:** Toggle the publish `Switch` on the list page card or the detail page action buttons. This sends a PATCH with `published: true/false` and `update_mask: "published"`. Publication applies to the catalog item's configured scope — a general item is published/unpublished globally, an organization-scoped item within that tenant, and a project-scoped item within that project.
+- **Delete:** From the detail page, click the "Delete" button. A confirmation modal appears. If the catalog item has provisioned resources, the API returns an error and the UI displays an alert: "This catalog item cannot be deleted because resources have been provisioned from it. Unpublish it instead to hide it from users."
 
 #### Tenant Admin — Create Catalog Item
 
@@ -183,8 +183,9 @@ Rather than a single monolithic component driven by a configuration map, the des
 
 **Shared page-level components** (used by all three kinds):
 - `CatalogItemGeneralFields` — name, description, scope (role-dependent: CSP Admin sees General/Organization; Tenant Admin sees Organization/Project), and template selector inputs (reused in create/edit)
-- `CatalogItemCard` — reuses the existing tenant `CatalogItemCard` component, extended with scope badge (General/Organization/Project), publication status, and admin kebab menu
-- `CatalogItemActionsMenu` — kebab menu (publish/unpublish/delete)
+- `CatalogItemCard` — reuses the existing tenant `CatalogItemCard` component, extended with scope badge (General/Organization/Project) and a publish/unpublish `Switch` toggle in the card header
+- `CatalogItemPublishToggle` — PatternFly `Switch` for toggling publication status inline (used on both list page cards and detail page)
+- `CatalogItemDetailActionButtons` — action button row for the detail page header (Edit, Delete, publish toggle)
 
 **Per-kind step components** — each wizard step is a separate component with static, hardcoded fields (same pattern as the tenant user provisioning wizard). Individual fields use the shared field definition primitives above:
 - `ClusterConfigurationStep`, `ClusterNetworkingStep`, `ClusterAccessStep`
@@ -287,22 +288,23 @@ The list page uses three PatternFly `Tabs` — **Clusters**, **Virtual Machines*
 **Card content (reuses `CatalogItemCard`):**
 
 Each card shows:
-- **Header:** Resource type icon (`CatalogItemIcon`) + catalog item title
-- **Body:** Description (truncated), resource spec labels (e.g., "4 vCPU", "8 Memory"), scope badge ("General", "Organization", or "Project: {name}"), publication status label ("Published" green / "Unpublished" gray)
-- **Kebab menu:** Edit, Publish/Unpublish, Delete actions (see below)
+- **Header:** Resource type icon (`CatalogItemIcon`) + catalog item title + publish/unpublish `Switch` toggle (top-right of card header, via `CardHeader actions`)
+- **Body:** Description (truncated), resource spec labels (e.g., "4 vCPU", "8 Memory"), scope badge ("General", "Organization", or "Project: {name}")
 
-Clicking a card opens the detail page (unlike tenant `CatalogPage` which uses a drawer).
+**Card click behavior:** Clicking a card navigates to the detail page (unlike the tenant `CatalogPage` which opens a drawer). Admin cards use `onOpenDetails` with `navigate()` instead of a drawer callback. The card remains clickable (`isClickable`) — the `Switch` toggle in the header uses `stopPropagation()` to prevent navigation when toggling publish state.
 
-**Kebab menu actions (per role):**
+**Publish/unpublish toggle on cards:**
 
-| Action | providerAdmin | tenantAdmin (org-scoped) | tenantAdmin (project-scoped) | tenantAdmin (general) |
-|--------|---------------|--------------------------|------------------------------|----------------------|
-| Edit | Yes | Yes | Yes | No |
-| Publish | Yes (if unpublished) | Yes (if unpublished) | Yes (if unpublished) | No |
-| Unpublish | Yes (if published) | Yes (if published) | Yes (if published) | No |
-| Delete | Yes | Yes | Yes | No |
+The `CatalogItemPublishToggle` component renders a PatternFly `Switch` with `label="Published"` and `labelOff="Unpublished"`. Toggling sends a PATCH with `{ published: true/false }` and `update_mask: "published"`. The toggle is disabled for Tenant Admins viewing general (global) items. Publication applies within the catalog item's configured scope.
 
-Tenant Admin sees general (global) items as read-only cards with no kebab menu (or a kebab with only "View details"). Publish/unpublish applies only within the catalog item's configured scope.
+**Card actions per role:**
+
+| Element | providerAdmin | tenantAdmin (org/project-scoped) | tenantAdmin (general) |
+|---------|---------------|----------------------------------|----------------------|
+| Publish toggle | Active | Active | Disabled (read-only) |
+| Card click → detail page | Yes | Yes | Yes (read-only detail) |
+
+Tenant Admin sees general (global) items with a disabled publish toggle. All other actions (Edit, Delete) are on the detail page only — the card is kept clean with just the publish toggle.
 
 **Scope display:**
 - **CSP Admin:** The private API returns the `tenant` field and `metadata.project` in responses. Items with both empty are general (global); items with `tenant` set but `metadata.project` empty are organization-scoped; items with both `tenant` and `metadata.project` set are project-scoped. The UI displays the appropriate scope badge:
@@ -402,17 +404,39 @@ Each kind-specific edit page reuses the same wizard steps as the create page wit
 
 **Location:** `libs/ui-components/src/pages/admin/CatalogItemDetailPage.tsx`
 
-Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management > {name}) and a publication status badge.
+Uses the same `Flex justifyContentSpaceBetween` layout as VmDetails, ClusterDetails, and BareMetalDetails:
+
+```tsx
+<Flex justifyContent={{ default: 'justifyContentSpaceBetween' }}
+      alignItems={{ default: 'alignItemsFlexStart' }}>
+  <FlexItem>
+    <ResourceDetailHeader
+      parentTo="/admin/catalog"
+      parentLabel="Catalog Management"
+      resourceName={catalogItem.title}
+      titleAddon={<CatalogItemScopeBadge item={catalogItem} />}
+    />
+  </FlexItem>
+  <FlexItem>
+    <CatalogItemDetailActionButtons catalogItem={catalogItem} />
+  </FlexItem>
+</Flex>
+```
+
+**Action buttons (`CatalogItemDetailActionButtons`):**
+
+Renders a `Flex` row with `justifyContentFlexEnd` and `spaceItemsSm` — the same layout as `VmDetailsActionButtons`, `ClusterDetailsActionButtons`, and `BareMetalActionButtons`:
+
+- **Publish toggle** — `CatalogItemPublishToggle` (`Switch` with `label="Published"` / `labelOff="Unpublished"`). Toggling sends a PATCH with `{ published: true/false }` and `update_mask: "published"`.
+- **Edit** — `Button variant="secondary"` with `PencilAltIcon`. Navigates to `/admin/catalog/:type/:id/edit`.
+- **Delete** — `Button variant="danger"` with `TrashIcon`. Opens a confirmation modal. If the catalog item has provisioned resources, the API returns an error and the modal displays: "This catalog item cannot be deleted because resources have been provisioned from it. Unpublish it instead to hide it from users."
+
+All actions are hidden for Tenant Admins viewing general (global) items. The publish toggle is always visible but disabled for read-only items.
 
 **Tabs:**
-- **Overview:** Read-only display of general information (name, description, resource type, scope with level and target name — General/Organization/Project, template name, publication status, creation date)
+- **Overview:** Read-only display of general information (name, description, resource type, scope with level and target name — General/Organization/Project, template name, creation date)
 - **Field Definitions:** Read-only list showing all field definitions with: Path, Editable (Yes/No), Default Value, Validation Constraints. For `node_sets` (Cluster), shows the default node set entries (host type, size), the allow add/remove setting, and any size constraints.
 - **Provisioned Resources:** Table of resources (Clusters, ComputeInstances, or BareMetalInstances) provisioned from this catalog item, fetched via the resource list endpoint with a `this.spec.catalog_item == "<id>"` CEL filter
-
-**Header actions:**
-- Edit button (navigates to edit page)
-- Kebab menu with Publish/Unpublish and Delete actions
-- Actions are hidden for Tenant Admins viewing general (global) items
 
 #### 8. Shared Field Definition Primitives and Per-Kind Step Components
 
@@ -597,7 +621,8 @@ libs/ui-components/src/
         BareMetalInstanceCatalogItemDetailPage.tsx
   components/
     catalogManagement/
-      CatalogItemActionsMenu.tsx    # shared kebab menu (extends existing CatalogItemCard)
+      CatalogItemPublishToggle.tsx   # shared Switch toggle for publish/unpublish
+      CatalogItemDetailActionButtons.tsx  # action button row for detail page header
       CatalogItemGeneralFields.tsx  # shared name, description, scope inputs
       # TemplateSelector is integrated into CatalogItemGeneralFields
       CatalogItemScopeBadge.tsx
@@ -733,14 +758,16 @@ Testing strategy for the catalog management UI:
 - Role gating: verify "Administration" nav section is visible to providerAdmin and tenantAdmin, hidden for tenantUser
 - Route guard: verify direct navigation to `/admin/catalog` by tenantUser redirects to `/catalog`
 - CSP Admin create wizard: create a catalog item through wizard steps with field definitions, verify it appears in the list as unpublished
-- Publish/unpublish: toggle publication status via kebab menu, verify status label updates
+- Publish/unpublish (card): toggle publication status via Switch toggle on card, verify status label updates
+- Card click: verify clicking an admin card navigates to the detail page (not a drawer)
+- Detail page actions: verify Edit button, Delete button, and publish Switch toggle are visible in the detail page header
 - Edit flow: modify name and field definitions, verify changes persist
 - Delete flow: delete a catalog item with no provisioned resources, verify removal from list
 - Delete blocked: attempt to delete a catalog item with provisioned resources, verify error message
 - Tenant Admin create wizard (org scope): create an organization-scoped catalog item, verify scope selector shows Organization/Project options, verify template selection and field definitions work identically to CSP Admin
 - Tenant Admin create wizard (project scope): create a project-scoped catalog item, verify project dropdown appears when "Project" scope is selected, verify scope badge shows "Project: {name}" in the list
 - CSP Admin scope: verify scope selector shows General/Organization options, verify tenant dropdown appears when "Organization" is selected
-- Tenant Admin visibility: verify general items show as read-only, org-scoped and project-scoped items show full actions
+- Tenant Admin visibility: verify general items show disabled Switch toggle on cards and no action buttons on detail page; org-scoped and project-scoped items show active toggle and full detail page actions
 - Tabs: verify switching between Clusters/VM/Bare Metal tabs shows the correct catalog items per type
 
 **Unit tests:**
