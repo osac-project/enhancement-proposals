@@ -19,17 +19,20 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 - Tier resolution precedence: user input, then CatalogItem defaults, then ComputeInstanceTemplate defaults `[Clarify: R2.Q1]`
 - Tier immutability after ComputeInstance creation `[Clarify: R2.Q4]`
 - VMaaS service only `[Clarify: R1.Q1]`
+- UI support for tier selection in the ComputeInstance creation flow
+- Documentation updates for the storage tier selection capability
 
 ## Out of Scope
 
 - CaaS cluster template tier selection `[Clarify: R1.Q1]`
-- DiskSpec `source` field for pre-populated DataVolumes `[Clarify: R1.Q2]`
+- Pre-populated disk images as a source for new disks `[Clarify: R1.Q2]`
 - OSAC-shipped template portability across CSP deployments `[Clarify: R2.Q5]`
 - Developer environment storage backend and tier setup `[Clarify: R2.Q6]`
 - StorageTier model definition (covered by OSAC-1110)
 - StorageBackend registration (covered by OSAC-1111)
 - Tenant-level StorageClass resolution (handled by WG-Storage)
 - Storage quota or capacity management per tier
+- E2E test coverage (implementation detail for design phase)
 
 ## User Stories
 
@@ -51,14 +54,22 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 
 ## Dependencies
 
-- **OSAC-1110 (StorageTier Definition & Private API):** Defines what storage tiers exist in the system. The StorageTier API must be available for the fulfillment service to validate that a requested tier exists. In Progress (Roy Golan).
-- **OSAC-1111 (StorageBackend Definition & Private API):** Storage tiers are associated with a storage backend. The backend must be registered before tiers referencing it can be created. In Progress (Roy Golan).
-- **OSAC-1992 (StorageTier API Integration into AAP):** Integrates the StorageTier API into AAP provisioning flows, replacing the legacy `STORAGE_TIERS` environment variable. Related but not blocking — AAP's `tenant_storage_class` role already resolves tier names to StorageClasses. In Progress (Will Gordon).
+- **OSAC-1110 (StorageTier Definition & Private API):** Defines what storage tiers exist in the system. The StorageTier API must be available for tier validation at request time. In Progress (Roy Golan).
+- **OSAC-1111 (StorageBackend Definition & Private API):** Storage tiers reference a storage backend. A backend must be registered before tiers referencing it can be created. In Progress (Roy Golan).
+- **OSAC-1992 (StorageTier API Integration into Provisioning):** Integrates the StorageTier API into provisioning flows. Related but not blocking — the provisioning system already resolves tier names to storage classes. In Progress (Will Gordon).
+
+## Risks
+
+### 1. No storage tiers defined at tenant provisioning time
+If no StorageTier resources have been created (OSAC-1110 dependency), no ComputeInstance can be provisioned because tier selection is mandatory. Early deployments or environments where the storage team has not yet configured tiers will fail all VM creation requests.
+- **Owner:** Storage WG
+- **Mitigation:** OSAC-1110 must be completed and at least one tier configured before ComputeInstance provisioning is usable. Installation documentation must include tier setup as a prerequisite.
 
 ---
 
 ## Provenance
 
-Authored: draft @ prd 0.5.0 - 92734a2, workspace main @ 0921467 (dirty)
+Authored: respond @ prd 0.5.0 - 92734a2, workspace main @ 0921467 (dirty)
+Phases: draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"0921467 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"0921467 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false} -->
