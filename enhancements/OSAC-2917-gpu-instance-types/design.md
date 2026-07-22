@@ -624,13 +624,13 @@ For Dev Preview exit:
 without GPU fields continue to work unchanged. The `optional GpuSpec gpu` field defaults
 to absent. No data migration is needed.
 
-**Downgrade:** Reverting the fulfillment-service removes the `gpu` field from the proto.
-Existing GPU-enabled InstanceTypes retain their GPU data in the JSON `data` column, but
-the field is ignored by the older proto deserializer (proto3 unknown field handling).
-ComputeInstance CRs with GPU fields remain valid on the K8s side until the CRD is reverted.
-To cleanly downgrade:
+**Downgrade:** GPU-enabled InstanceTypes must be deleted before reverting the
+fulfillment-service. The older service does not know about the `gpu` field, so any
+write to an InstanceType that still carries GPU data in its JSON `data` column will
+silently drop the field. This follows the same pattern as other OSAC features
+(StorageTier, StorageBackend) that require resource cleanup before downgrade.
 
-1. Delete or deprecate all GPU-enabled InstanceTypes.
+1. Delete all GPU-enabled InstanceTypes.
 2. Revert the osac-operator CRD (removes GPU fields from the schema).
 3. Revert the fulfillment-service.
 
