@@ -51,9 +51,9 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 ## Proposal
 
-The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly table with search, scope badges, and kebab row actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard: enter name and description → select template → configure field definitions (all resource spec fields shown, default non-editable except ssh key and pull secret, with default values pre-populated from the template). The edit wizard reuses the same steps with template selection locked. The detail page shows read-only configuration, field definitions, and related provisioned resources.
+The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly table with search, scope badges, and kebab row actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (clusters only) → Access (ssh_key, pull_secret). The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
-Shared components (`CatalogItemGeneralFields`, `TemplateSelector`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic. Each entry in the field definitions editor includes a path (from the resource spec), display name, an editable toggle, a default value input, and a validation constraints editor with structured form controls for simple constraints. For validation schemas that use keywords beyond what the UI supports, the editor displays a read-only message directing the admin to use the OSAC CLI.
+Shared components (`CatalogItemGeneralFields` with integrated `TemplateSelector`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic. Each entry in the field definitions editor includes a path (from the resource spec), display name, an editable toggle, a default value input, and a validation constraints editor with structured form controls for simple constraints. For validation schemas that use keywords beyond what the UI supports, the editor displays a read-only message directing the admin to use the OSAC CLI.
 
 ### Workflow Description
 
@@ -62,15 +62,16 @@ Shared components (`CatalogItemGeneralFields`, `TemplateSelector`, `FieldDefinit
 1. CSP Admin navigates to **Administration > Catalog Management** in the sidebar.
 2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab lists catalog items of that resource type across all tenants.
 3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
-4. **Step 1 — General:** Admin enters name, description (Markdown), and selects scope (Global or a specific tenant).
-5. **Step 2 — Template:** The admin selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`).
-6. **Step 3 — Field definitions:** The `FieldDefinitionsEditor` displays all fields from the resource spec (e.g., all `ComputeInstanceSpec` fields for a VM catalog item). Default values are pre-populated from the selected template when they exist. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. The admin configures each field:
+4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope (Global or a specific tenant), and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template.
+5. **Step 2 — Configuration:** The `FieldDefinitionsEditor` displays the resource spec fields (excluding `ssh_public_key`, `pull_secret`, and `network_attachments`). Default values are pre-populated from the selected template when they exist. By default, fields are non-editable. The admin configures each field:
    - Display name (optional)
    - Toggle editable on/off (non-editable fields require a default value)
    - Set an optional default value
    - Optionally configure validation constraints using structured form controls for simple constraint types (numeric bounds, allowed values, string length, pattern, item count). For resource reference fields, the admin selects a default value from a dropdown of existing resources — no validation constraints are configured.
    If a field has an existing validation schema that uses keywords beyond what the UI supports, the UI displays a read-only message: "This validation cannot be edited through the UI. Use the OSAC CLI to manage it."
-7. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
+6. **Step 3 — Networking** (clusters only): Shows network-related field definitions (`network_attachments`). For VM and Bare Metal catalog items, this step is not shown and `network_attachments` is auto-included in the API payload as an editable field with no default or validation.
+7. **Step 4 — Access:** Shows the `ssh_public_key` and `pull_secret` field definitions. Both default to editable.
+8. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
 9. From the detail page or list page, the admin can publish the item via the kebab menu "Publish" action.
 
@@ -87,9 +88,10 @@ The Tenant Admin uses the same wizard flow as the CSP Admin with one difference:
 1. Tenant Admin navigates to **Administration > Catalog Management**.
 2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows the tenant's catalog items alongside global items. Global items have a "Global" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and full actions.
 3. Tenant Admin clicks the "Create" button on the active tab. The resource type is determined by the tab.
-4. **Step 1 — General:** Admin enters name and description. Scope is automatically set to the tenant's organization (displayed as read-only text, not editable).
-5. **Step 2 — Template:** The admin selects a template from a dropdown (same as CSP Admin flow).
-6. **Step 3 — Field definitions:** Same field definitions editor as CSP Admin — all resource spec fields shown, configured with editable toggle, default values, and validation constraints.
+4. **Step 1 — General:** Admin enters name, description, and selects a template. Scope is automatically set to the tenant's organization (displayed as read-only text, not editable).
+5. **Step 2 — Configuration:** Same as CSP Admin — resource spec field definitions (excluding ssh_public_key, pull_secret, and network_attachments).
+6. **Step 3 — Networking** (clusters only): Same as CSP Admin.
+7. **Step 4 — Access:** Same as CSP Admin — ssh_public_key and pull_secret field definitions.
 7. Admin clicks "Create". The UI sends a POST. The server auto-sets the `tenant` field.
 8. The admin is redirected to the detail page.
 
@@ -175,16 +177,15 @@ Add an icon mapping for the `catalog-management` nav item ID (e.g., `CogIcon` or
 Rather than a single monolithic component driven by a configuration map, the design uses shared building blocks that each kind-specific page composes via JSX. This is more React-idiomatic and handles future per-kind divergence naturally:
 
 **Shared components** (used by all three kinds):
-- `CatalogItemGeneralFields` — name, description, scope inputs (reused in create/edit)
-- `TemplateSelector` — template dropdown, receives already-fetched templates and loading state as props (presentational only — does not fetch data)
-- `FieldDefinitionsEditor` — the field definitions table (§8), parameterized by `specFields`
+- `CatalogItemGeneralFields` — name, description, scope, and template selector inputs (reused in create/edit)
+- `FieldDefinitionsEditor` — the field definitions table (§8), parameterized by `specFields` subset per step
 - `CatalogItemTable` — PatternFly table with shared columns, actions, and scope badges
 - `CatalogItemActionsMenu` — kebab menu (publish/unpublish/delete)
 
 **Kind-specific pages** compose these shared components directly — Formik wiring, initial values, validation schema, submission logic, and data fetching are all explicit at the page level, not hidden inside a shared form abstraction:
 
 ```tsx
-// ClusterCatalogItemCreatePage.tsx
+// ClusterCatalogItemCreatePage.tsx — 4 steps (includes Networking)
 const ClusterCatalogItemCreatePage = () => {
   const { data: templates, isLoading } = useClusterTemplates();
   const { mutateAsync: createClusterCatalogItem } = useCreateClusterCatalogItem();
@@ -197,18 +198,25 @@ const ClusterCatalogItemCreatePage = () => {
     >
       <Wizard>
         <WizardStep name="General">
-          <CatalogItemGeneralFields />
+          <CatalogItemGeneralFields templates={templates} isLoading={isLoading} />
         </WizardStep>
-        <WizardStep name="Template">
-          <TemplateSelector templates={templates} isLoading={isLoading} />
+        <WizardStep name="Configuration">
+          <FieldDefinitionsEditor fields={CLUSTER_CONFIG_FIELDS} />
         </WizardStep>
-        <WizardStep name="Field Definitions">
-          <FieldDefinitionsEditor fields={CLUSTER_SPEC_FIELDS} />
+        <WizardStep name="Networking">
+          <FieldDefinitionsEditor fields={CLUSTER_NETWORKING_FIELDS} />
+        </WizardStep>
+        <WizardStep name="Access">
+          <FieldDefinitionsEditor fields={CLUSTER_ACCESS_FIELDS} />
         </WizardStep>
       </Wizard>
     </Formik>
   );
 };
+
+// ComputeInstanceCatalogItemCreatePage.tsx — 3 steps (no Networking)
+// Same structure but without the Networking step.
+// network_attachments is auto-included in the API payload.
 ```
 
 Each kind-specific page calls its own typed hooks (`useClusterTemplates`, `useComputeInstanceTemplates`, `useBareMetalInstanceTemplates`) and passes data down to shared presentational components. Per-kind differences (extra steps, different validation, different submission) are natural JSX additions, not config flags.
@@ -298,22 +306,27 @@ Tenant Admin sees global items as read-only rows with no kebab menu (or a kebab 
 
 Each kind-specific create page uses a PatternFly Wizard with Formik + Yup that explicitly composes shared step components (see §2). There is no shared `CatalogItemForm` wrapper — Formik wiring, initial values, validation schema, data fetching, and submission logic are all visible at the page level.
 
-**Wizard steps:**
+**Wizard steps — mirror the provisioning wizard structure:**
+
+The wizard steps are kind-specific: VM and Bare Metal have three steps (General, Configuration, Access). Cluster has four steps (General, Configuration, Networking, Access). Resource type is not shown as a field — it is determined by the tab the admin clicked "Create" from and encoded in the route.
 
 **Step 1: General**
 - Name (`NameField`, required) — reuses the existing osac-ui `NameField` component with standard naming validation
 - Description (`InputField` textarea, optional) — markdown-formatted long description
+- Template (`SelectField`) — populated with templates from the corresponding template list endpoint (fetched by the page's typed hook). Selecting a template pre-populates field definitions with default values from the template's parameter definitions.
 - Scope (providerAdmin only): `RadioButtonField` — Global or Tenant-scoped. If tenant-scoped, a tenant selector dropdown appears. For tenantAdmin, this step shows "Scope: Your organization" as read-only text.
 
-Resource type is not shown as a field — it is determined by the tab the admin clicked "Create" from and encoded in the route.
+**Step 2: Configuration** (see § FieldDefinitionsEditor)
 
-**Step 2: Template Selection**
+Shows field definitions for the resource spec fields, excluding `ssh_public_key`, `pull_secret`, and `network_attachments`. By default, fields are non-editable. Default values are pre-populated from the selected template when they exist. Non-editable fields require a default value.
 
-A `SelectField` populates with templates from the corresponding template list endpoint (fetched by the page's typed hook). Selecting a template pre-populates the field definitions step with default values from the template's parameter definitions. Both CSP Admin and Tenant Admin use the same template selector.
+**Step 3: Networking** (clusters only)
 
-**Step 3: Field Definitions** (see § FieldDefinitionsEditor)
+Shows the `network_attachments` field definition. For VM and Bare Metal catalog items, this step is not shown — `network_attachments` is automatically included in the API payload as an editable field with no default value and no validation schema.
 
-All resource spec fields are shown except networking fields (`network_attachments`), which are excluded from the wizard. The UI automatically includes `network_attachments` in the API payload as an editable field with no default value and no validation schema, so the tenant user can configure network attachments during provisioning. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Non-editable fields require a default value.
+**Step 4: Access**
+
+Shows the `ssh_public_key` and `pull_secret` field definitions. Both default to editable.
 
 **Wizard submission:**
 - Validates all fields with Yup on each step transition and on final submit
@@ -368,7 +381,7 @@ Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management
 
 **Location:** `libs/ui-components/src/components/catalogManagement/FieldDefinitionsEditor.tsx`
 
-The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. All fields from the resource spec are shown except networking fields (`network_attachments`), which are excluded from the wizard and automatically included in the API payload as editable with no default or validation. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Both CSP Admin and Tenant Admin use the same editor.
+The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. The editor is used across three wizard steps: Configuration (main spec fields), Networking (clusters only — `network_attachments`), and Access (`ssh_public_key`, `pull_secret`). Each step passes its subset of fields. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Both CSP Admin and Tenant Admin use the same editor. For VM and Bare Metal, `network_attachments` is not shown in any step — it is auto-included in the API payload as editable with no default or validation.
 
 **Each field definition row renders:**
 
@@ -454,7 +467,7 @@ libs/ui-components/src/
       CatalogItemTable.tsx          # shared table (columns, row rendering)
       CatalogItemActionsMenu.tsx    # shared kebab menu
       CatalogItemGeneralFields.tsx  # shared name, description, scope inputs
-      TemplateSelector.tsx          # shared template dropdown (presentational)
+      # TemplateSelector is integrated into CatalogItemGeneralFields
       CatalogItemScopeBadge.tsx
       CatalogItemStatusLabel.tsx
       FieldDefinitionsEditor.tsx    # shared field definitions table
@@ -571,7 +584,7 @@ Can the resource list endpoints (Clusters, ComputeInstances, BareMetalInstances)
 
 Testing strategy for the catalog management UI:
 
-**E2E tests (Cypress):**
+**E2E tests:**
 - Role gating: verify "Administration" nav section is visible to providerAdmin and tenantAdmin, hidden for tenantUser
 - Route guard: verify direct navigation to `/admin/catalog` by tenantUser redirects to `/catalog`
 - CSP Admin create wizard: create a catalog item through wizard steps with field definitions, verify it appears in the list as unpublished
@@ -592,7 +605,7 @@ Testing strategy for the catalog management UI:
 - Network attachments auto-inclusion: verify `network_attachments` is excluded from wizard but included in API payload as editable with no default or validation
 
 **Component-level tests (required):**
-- FieldDefinitionsEditor: verify all resource spec fields are shown; toggle editable, set defaults, configure constraints; verify Formik state management; verify default non-editable state with ssh_key/pull_secret exceptions
+- FieldDefinitionsEditor: verify correct field subsets per step (Configuration, Networking, Access); toggle editable, set defaults, configure constraints; verify Formik state management; verify ssh_key/pull_secret default to editable in Access step
 - ValidationConstraintsEditor: set scalar, enum, and list/map constraints; verify correct JSON Schema Struct output; verify empty constraints produce omitted validationSchema
 - Unsupported schema handling: verify existing CLI-created items with complex schemas show read-only "use CLI" message; verify supported schemas show editable structured controls
 
@@ -611,7 +624,7 @@ The UI feature will be considered complete when:
 - All four page types (list, create wizard, edit wizard, detail) are implemented and functional for all three resource types
 - Role-gated navigation is working for all three roles
 - The field definitions editor supports all FieldDefinition properties
-- All E2E tests pass (10 Cypress scenarios listed in the Test Plan)
+- All E2E tests pass (scenarios listed in the Test Plan)
 - Unit tests pass for Yup schemas, FieldMask construction, JSON Schema assembly, and network attachments auto-inclusion
 - Component-level tests pass for FieldDefinitionsEditor and ValidationConstraintsEditor
 - The "Provisioned Resources" tab on the detail page shows related resources (dependent on Open Question 3)
@@ -635,4 +648,4 @@ Since the catalog item API is already implemented, no version skew is expected f
 
 ## Infrastructure Needed
 
-None. The UI runs in the existing osac-ui build and deployment pipeline. No new test infrastructure is required beyond what Cypress E2E tests already use.
+None. The UI runs in the existing osac-ui build and deployment pipeline.
