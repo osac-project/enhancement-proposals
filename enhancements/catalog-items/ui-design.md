@@ -53,7 +53,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly table with search, scope badges, and kebab row actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (clusters only — pod_cidr, service_cidr) → Access (ssh_key, pull_secret). VM catalog items auto-include `network_attachments` in the API payload without showing it in the wizard; Bare Metal has no networking fields. The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
-Shared components (`CatalogItemGeneralFields` with integrated `TemplateSelector`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic. Each entry in the field definitions editor includes a path (from the resource spec), display name, an editable toggle, a default value input, and a validation constraints editor with structured form controls for simple constraints. For validation schemas that use keywords beyond what the UI supports, the editor displays a read-only message directing the admin to use the OSAC CLI.
+Shared components (`CatalogItemGeneralFields` with integrated `TemplateSelector`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `NodeSetsFieldEditor`, `CatalogItemTable`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic. The field definitions editor is a static form — each field from the resource spec is rendered as a dedicated form section with a path label, display name, an editable toggle, a default value input, and a validation constraints editor with structured form controls for simple constraints. Complex fields like `node_sets` (a map of objects) use a dedicated sub-editor. For validation schemas that use keywords beyond what the UI supports, the editor displays a read-only message directing the admin to use the OSAC CLI.
 
 ### Workflow Description
 
@@ -63,11 +63,12 @@ Shared components (`CatalogItemGeneralFields` with integrated `TemplateSelector`
 2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab lists catalog items of that resource type across all tenants.
 3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope (Global or a specific tenant), and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template.
-5. **Step 2 — Configuration:** The `FieldDefinitionsEditor` displays the resource spec fields (excluding access fields and networking fields). Default values are pre-populated from the selected template when they exist. By default, fields are non-editable. The admin configures each field:
+5. **Step 2 — Configuration:** The `FieldDefinitionsEditor` renders a static form with one section per resource spec field (excluding access fields and networking fields). Default values are pre-populated from the selected template when they exist. By default, fields are non-editable. The admin configures each field:
    - Display name (optional)
    - Toggle editable on/off (non-editable fields require a default value)
    - Set an optional default value
    - Optionally configure validation constraints using structured form controls for simple constraint types (numeric bounds, allowed values, string length, pattern, item count). For resource reference fields, the admin selects a default value from a dropdown of existing resources — no validation constraints are configured.
+   For Cluster catalog items, the `node_sets` field uses a dedicated `NodeSetsFieldEditor` where the admin configures default node set entries (name, host type from dropdown, size) and optional size constraints.
    If a field has an existing validation schema that uses keywords beyond what the UI supports, the UI displays a read-only message: "This validation cannot be edited through the UI. Use the OSAC CLI to manage it."
 6. **Step 3 — Networking** (clusters only): Shows `pod_cidr` and `service_cidr` field definitions. This step is not shown for VM or Bare Metal catalog items.
 7. **Step 4 — Access:** Shows the `ssh_public_key` and `pull_secret` field definitions. Both default to editable.
@@ -179,7 +180,7 @@ Rather than a single monolithic component driven by a configuration map, the des
 
 **Shared components** (used by all three kinds):
 - `CatalogItemGeneralFields` — name, description, scope, and template selector inputs (reused in create/edit)
-- `FieldDefinitionsEditor` — the field definitions table (§8), parameterized by `specFields` subset per step
+- `FieldDefinitionsEditor` — the static field definitions form (§8), parameterized by `specFields` subset per step
 - `CatalogItemTable` — PatternFly table with shared columns, actions, and scope badges
 - `CatalogItemActionsMenu` — kebab menu (publish/unpublish/delete)
 
@@ -320,7 +321,9 @@ The wizard steps are kind-specific: VM and Bare Metal have three steps (General,
 
 **Step 2: Configuration** (see § FieldDefinitionsEditor)
 
-Shows field definitions for the resource spec fields, excluding access fields (`ssh_public_key`, `pull_secret`) and networking fields (`pod_cidr`, `service_cidr`, `network_attachments`). By default, fields are non-editable. Default values are pre-populated from the selected template when they exist. Non-editable fields require a default value.
+Shows field definitions for the resource spec fields, excluding access fields (`ssh_public_key`, `pull_secret`) and networking fields (`pod_cidr`, `service_cidr`, `network_attachments`). Each field renders as a static form section with editable toggle, default value, display name, and validation constraints. By default, fields are non-editable. Default values are pre-populated from the selected template when they exist. Non-editable fields require a default value.
+
+For Cluster catalog items, this step includes the `node_sets` field which uses the dedicated `NodeSetsFieldEditor` (see §8). The admin configures default node set entries (name, host type, size) and optional size constraints. The node set entries are pre-populated from the selected template.
 
 **Step 3: Networking** (clusters only)
 
@@ -371,7 +374,7 @@ Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management
 
 **Tabs:**
 - **Overview:** Read-only display of general information (name, description, resource type, scope, template name, publication status, creation date)
-- **Field Definitions:** Table showing all field definitions with columns: Path, Display Name, Editable (Yes/No), Default Value, Validation Constraints
+- **Field Definitions:** Read-only list showing all field definitions with: Path, Display Name, Editable (Yes/No), Default Value, Validation Constraints. For `node_sets` (Cluster), shows the default node set entries (name, host type, size) and any size constraints.
 - **Provisioned Resources:** Table of resources (Clusters, ComputeInstances, or BareMetalInstances) provisioned from this catalog item, fetched via the resource list endpoint with a `this.spec.catalog_item == "<id>"` CEL filter
 
 **Header actions:**
@@ -383,23 +386,29 @@ Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management
 
 **Location:** `libs/ui-components/src/components/catalogManagement/FieldDefinitionsEditor.tsx`
 
-The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. The editor is used across multiple wizard steps: Configuration (main spec fields), Networking (clusters only — `pod_cidr`, `service_cidr`), and Access (`ssh_public_key`, `pull_secret`). Each step passes its subset of fields. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Both CSP Admin and Tenant Admin use the same editor. For VM catalog items, `network_attachments` is not shown in any step — it is auto-included in the API payload as editable with no default or validation. Bare Metal catalog items have no networking fields.
+The most complex new component. Built on Formik with the field name `fieldDefinitions`. The editor is a **static form** — not a dynamic table. Because the resource spec fields are known at build time from the proto definitions, each field renders as a dedicated form section with its own controls. The admin does not add or remove fields; they configure each field's editability, default value, display name, and validation constraints.
 
-**Each field definition row renders:**
+The editor is used across multiple wizard steps: Configuration (main spec fields), Networking (clusters only — `pod_cidr`, `service_cidr`), and Access (`ssh_public_key`, `pull_secret`). Each step passes its subset of fields. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Both CSP Admin and Tenant Admin use the same editor. For VM catalog items, `network_attachments` is not shown in any step — it is auto-included in the API payload as editable with no default or validation. Bare Metal catalog items have no networking fields.
+
+**Each field definition section renders:**
+
+Each field from the resource spec is rendered as a labeled form section (e.g., a PatternFly `FormGroup` or `ExpandableSection`) with the field path as the heading:
 
 | Control | Field | Type | Notes |
 |---------|-------|------|-------|
-| Path | `fieldDefinitions.${i}.path` | Read-only text | Selected from the resource spec; not editable once added |
-| Display Name | `fieldDefinitions.${i}.displayName` | `InputField` | Optional; derived from the field path if not set |
-| Editable | `fieldDefinitions.${i}.editable` | `Switch` (PatternFly) | Toggle; default non-editable except `ssh_public_key` and `pull_secret` |
-| Default Value | `fieldDefinitions.${i}.default` | `InputField` | Type-aware input (text, number, boolean toggle) based on template parameter type. Required when `editable` is false. |
-| Validation | `fieldDefinitions.${i}.validationSchema` | `ValidationConstraintsEditor` | Expandable sub-form (see below) |
+| Path | `fieldDefinitions.${fieldKey}.path` | Read-only heading | The field path from the resource spec (e.g., `cpu`, `memory`, `pod_cidr`); serves as the section label |
+| Display Name | `fieldDefinitions.${fieldKey}.displayName` | `InputField` | Optional; derived from the field path if not set |
+| Editable | `fieldDefinitions.${fieldKey}.editable` | `Switch` (PatternFly) | Toggle; default non-editable except `ssh_public_key` and `pull_secret` |
+| Default Value | `fieldDefinitions.${fieldKey}.default` | Type-aware input | Text, number, boolean toggle, or resource dropdown based on field type. Required when `editable` is false. |
+| Validation | `fieldDefinitions.${fieldKey}.validationSchema` | `ValidationConstraintsEditor` | Expandable sub-form (see §9) |
+
+Since the fields are static and known, the form renders all fields for the current step in a fixed order. There is no add/remove mechanism — the admin configures each field individually within its form section.
 
 **Yup validation schema for each field definition:**
 
 ```typescript
 const fieldDefinitionSchema = Yup.object({
-  path: Yup.string().required('Path is required'),  // selected from resource spec, read-only once added
+  path: Yup.string().required('Path is required'),
   displayName: Yup.string(),
   editable: Yup.boolean().required(),
   default: Yup.mixed().when('editable', {
@@ -411,6 +420,79 @@ const fieldDefinitionSchema = Yup.object({
 ```
 
 **Network attachments handling (VM only):** For VM catalog items, the `network_attachments` field is excluded from the FieldDefinitionsEditor. The UI automatically includes it in the API payload as an editable field with no default value and no validation schema. This allows tenant users to configure network attachments during VM provisioning without requiring the admin to explicitly manage them in the catalog item wizard. Bare Metal catalog items have no networking fields. Cluster catalog items use `pod_cidr` and `service_cidr` in the Networking step instead.
+
+**node_sets handling (Cluster only):**
+
+The `node_sets` field is a `map<string, ClusterNodeSet>` where each entry has a string key (node set name, e.g. `"compute"`, `"gpu"`), a `host_type` (string reference to a HostType resource), and a `size` (int32, number of nodes). Because this is a structured map of objects — not a scalar or a simple list — it cannot use the standard field definition form controls (editable toggle, default value input, validation constraints). Instead, `node_sets` gets a dedicated `NodeSetsFieldEditor` sub-component within the Configuration step.
+
+**NodeSetsFieldEditor** renders:
+
+- A heading "Node Sets" with the field path `node_sets`
+- An **Editable** toggle (same as other fields — controls whether tenant users can modify node sets during provisioning). When non-editable, the default configuration is locked.
+- A **default node sets** section showing the node set entries pre-populated from the selected template. Each entry renders:
+  - **Name** (text input) — the map key (e.g., `"compute"`). Required, must be unique within the map.
+  - **Host Type** (`SelectField`) — dropdown populated from the `GET /v1/host_types` endpoint. Displays the host type name; stores the host type identifier.
+  - **Size** (number input) — default number of nodes. Required.
+  - A **remove** button per entry (disabled if only one entry remains — at least one node set is required).
+- An **"Add node set"** button to add additional default entries.
+- **Validation constraints** for the `size` field within each node set: minimum and maximum number inputs (maps to per-entry size bounds enforced at provisioning time).
+
+When the admin selects a template, the node sets section is pre-populated with the template's `node_sets` map. The admin can modify the defaults (change host types, sizes, add/remove entries) before creating the catalog item.
+
+**Formik state for node_sets:**
+
+```typescript
+interface NodeSetEntry {
+  name: string;       // map key
+  hostType: string;   // host type identifier
+  size: number;       // default number of nodes
+  sizeMin?: number;   // validation: minimum size
+  sizeMax?: number;   // validation: maximum size
+}
+
+// Stored in Formik as:
+// fieldDefinitions.node_sets.entries: NodeSetEntry[]
+// fieldDefinitions.node_sets.editable: boolean
+```
+
+On submission, the `node_sets` entries are serialized into the field definition with the default value containing the map structure and the validation schema containing the size constraints:
+
+```json
+{
+  "path": "node_sets",
+  "editable": true,
+  "default": {
+    "compute": { "host_type": "acme_1tb", "size": 3 },
+    "gpu": { "host_type": "acme_1tb_h100", "size": 1 }
+  },
+  "validationSchema": {
+    "type": "object",
+    "additionalProperties": {
+      "type": "object",
+      "properties": {
+        "size": { "minimum": 1, "maximum": 10 }
+      }
+    }
+  }
+}
+```
+
+**Yup validation for node_sets:**
+
+```typescript
+const nodeSetEntrySchema = Yup.object({
+  name: Yup.string().required('Node set name is required'),
+  hostType: Yup.string().required('Host type is required'),
+  size: Yup.number().integer().min(1).required('Size is required'),
+  sizeMin: Yup.number().integer().min(0).nullable(),
+  sizeMax: Yup.number().integer().min(Yup.ref('sizeMin')).nullable(),
+});
+
+const nodeSetsSchema = Yup.object({
+  editable: Yup.boolean().required(),
+  entries: Yup.array().of(nodeSetEntrySchema).min(1, 'At least one node set is required'),
+});
+```
 
 #### 9. ValidationConstraintsEditor Component
 
@@ -472,7 +554,8 @@ libs/ui-components/src/
       # TemplateSelector is integrated into CatalogItemGeneralFields
       CatalogItemScopeBadge.tsx
       CatalogItemStatusLabel.tsx
-      FieldDefinitionsEditor.tsx    # shared field definitions table
+      FieldDefinitionsEditor.tsx    # shared static field definitions form
+      NodeSetsFieldEditor.tsx       # node_sets specialized editor (Cluster only)
       FieldDefinitionRow.tsx
       ValidationConstraintsEditor.tsx
       catalogItemRoutes.ts          # CatalogItemKind route mapping
@@ -533,7 +616,7 @@ No new observability changes. The UI is a frontend application — observability
 
 Adding a catalog management section increases the UI surface area and introduces the first role-gated navigation in osac-ui. This creates a precedent that future admin features will follow, adding complexity to the navigation and routing system. The alternative — managing catalog items exclusively via CLI — avoids this complexity but provides a poor admin experience for non-technical cloud provider administrators.
 
-The field definitions editor is a complex custom component with no precedent in the existing UI. It combines Formik FieldArray, dynamic type-aware inputs, and nested validation — patterns that are individually well-supported but have not been combined at this scale in osac-ui. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, constraint editor interactions). All fields from the resource spec are shown, which simplifies the UX (no add/remove mechanism) but means the admin must configure every field.
+The field definitions editor is a complex custom component with no precedent in the existing UI. It renders a static form with type-aware inputs and nested validation — patterns that are individually well-supported but have not been combined at this scale in osac-ui. The `node_sets` field adds further complexity with its dedicated sub-editor for map-of-objects structure. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, constraint editor interactions, node set add/remove). All fields from the resource spec are shown as static form sections, which simplifies the UX (no add/remove mechanism for fields) but means the admin must configure every field.
 
 The JSX composition approach shares common components across three sets of kind-specific pages. This avoids the indirection of a single config-driven component but introduces more files (three page sets instead of one). The shared components ensure consistency while allowing per-kind divergence where needed.
 
@@ -605,9 +688,11 @@ Testing strategy for the catalog management UI:
 - Route mapping: verify CatalogItemKind → API endpoint resolution for all three types
 - Unsupported schema detection: verify schemas with unsupported keywords show read-only "use CLI" message; schemas with only supported keywords show structured controls
 - Network attachments auto-inclusion (VM only): verify `network_attachments` is excluded from VM wizard but included in API payload as editable with no default or validation; verify Bare Metal has no networking fields; verify Cluster uses pod_cidr/service_cidr in Networking step
+- NodeSetsFieldEditor: verify node set entries pre-populate from template; verify add/remove; verify host type dropdown; verify size constraints serialization; verify at least one entry required
 
 **Component-level tests (required):**
-- FieldDefinitionsEditor: verify correct field subsets per step (Configuration, Networking, Access); toggle editable, set defaults, configure constraints; verify Formik state management; verify ssh_key/pull_secret default to editable in Access step
+- FieldDefinitionsEditor: verify static form renders correct field sections per step (Configuration, Networking, Access); toggle editable, set defaults, configure constraints; verify Formik state management; verify ssh_key/pull_secret default to editable in Access step
+- NodeSetsFieldEditor (Cluster only): verify node set entries pre-populate from template; verify add/remove entries; verify host type dropdown fetches from HostTypes API; verify size validation (min/max); verify at least one node set required; verify serialization to field definition payload
 - ValidationConstraintsEditor: set scalar, enum, and list/map constraints; verify correct JSON Schema Struct output; verify empty constraints produce omitted validationSchema
 - Unsupported schema handling: verify existing CLI-created items with complex schemas show read-only "use CLI" message; verify supported schemas show editable structured controls
 
