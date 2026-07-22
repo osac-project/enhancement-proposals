@@ -51,7 +51,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 ## Proposal
 
-The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly table with search, scope badges, and kebab row actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (clusters only) → Access (ssh_key, pull_secret). The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
+The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly table with search, scope badges, and kebab row actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (clusters only — pod_cidr, service_cidr) → Access (ssh_key, pull_secret). VM catalog items auto-include `network_attachments` in the API payload without showing it in the wizard; Bare Metal has no networking fields. The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
 Shared components (`CatalogItemGeneralFields` with integrated `TemplateSelector`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic. Each entry in the field definitions editor includes a path (from the resource spec), display name, an editable toggle, a default value input, and a validation constraints editor with structured form controls for simple constraints. For validation schemas that use keywords beyond what the UI supports, the editor displays a read-only message directing the admin to use the OSAC CLI.
 
@@ -63,14 +63,15 @@ Shared components (`CatalogItemGeneralFields` with integrated `TemplateSelector`
 2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab lists catalog items of that resource type across all tenants.
 3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope (Global or a specific tenant), and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template.
-5. **Step 2 — Configuration:** The `FieldDefinitionsEditor` displays the resource spec fields (excluding `ssh_public_key`, `pull_secret`, and `network_attachments`). Default values are pre-populated from the selected template when they exist. By default, fields are non-editable. The admin configures each field:
+5. **Step 2 — Configuration:** The `FieldDefinitionsEditor` displays the resource spec fields (excluding access fields and networking fields). Default values are pre-populated from the selected template when they exist. By default, fields are non-editable. The admin configures each field:
    - Display name (optional)
    - Toggle editable on/off (non-editable fields require a default value)
    - Set an optional default value
    - Optionally configure validation constraints using structured form controls for simple constraint types (numeric bounds, allowed values, string length, pattern, item count). For resource reference fields, the admin selects a default value from a dropdown of existing resources — no validation constraints are configured.
    If a field has an existing validation schema that uses keywords beyond what the UI supports, the UI displays a read-only message: "This validation cannot be edited through the UI. Use the OSAC CLI to manage it."
-6. **Step 3 — Networking** (clusters only): Shows network-related field definitions (`network_attachments`). For VM and Bare Metal catalog items, this step is not shown and `network_attachments` is auto-included in the API payload as an editable field with no default or validation.
+6. **Step 3 — Networking** (clusters only): Shows `pod_cidr` and `service_cidr` field definitions. This step is not shown for VM or Bare Metal catalog items.
 7. **Step 4 — Access:** Shows the `ssh_public_key` and `pull_secret` field definitions. Both default to editable.
+   For VM catalog items, the UI automatically includes `network_attachments` in the API payload as an editable field with no default or validation — it is not shown in any wizard step. Bare Metal catalog items have no networking fields.
 8. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
 9. From the detail page or list page, the admin can publish the item via the kebab menu "Publish" action.
@@ -89,8 +90,8 @@ The Tenant Admin uses the same wizard flow as the CSP Admin with one difference:
 2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows the tenant's catalog items alongside global items. Global items have a "Global" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and full actions.
 3. Tenant Admin clicks the "Create" button on the active tab. The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description, and selects a template. Scope is automatically set to the tenant's organization (displayed as read-only text, not editable).
-5. **Step 2 — Configuration:** Same as CSP Admin — resource spec field definitions (excluding ssh_public_key, pull_secret, and network_attachments).
-6. **Step 3 — Networking** (clusters only): Same as CSP Admin.
+5. **Step 2 — Configuration:** Same as CSP Admin — resource spec field definitions (excluding access and networking fields).
+6. **Step 3 — Networking** (clusters only): Same as CSP Admin — pod_cidr and service_cidr.
 7. **Step 4 — Access:** Same as CSP Admin — ssh_public_key and pull_secret field definitions.
 7. Admin clicks "Create". The UI sends a POST. The server auto-sets the `tenant` field.
 8. The admin is redirected to the detail page.
@@ -204,7 +205,7 @@ const ClusterCatalogItemCreatePage = () => {
           <FieldDefinitionsEditor fields={CLUSTER_CONFIG_FIELDS} />
         </WizardStep>
         <WizardStep name="Networking">
-          <FieldDefinitionsEditor fields={CLUSTER_NETWORKING_FIELDS} />
+          <FieldDefinitionsEditor fields={CLUSTER_NETWORKING_FIELDS} /> {/* pod_cidr, service_cidr */}
         </WizardStep>
         <WizardStep name="Access">
           <FieldDefinitionsEditor fields={CLUSTER_ACCESS_FIELDS} />
@@ -216,7 +217,8 @@ const ClusterCatalogItemCreatePage = () => {
 
 // ComputeInstanceCatalogItemCreatePage.tsx — 3 steps (no Networking)
 // Same structure but without the Networking step.
-// network_attachments is auto-included in the API payload.
+// network_attachments is auto-included in the API payload for VM only.
+// BareMetalInstanceCatalogItemCreatePage.tsx — 3 steps (no Networking, no network_attachments)
 ```
 
 Each kind-specific page calls its own typed hooks (`useClusterTemplates`, `useComputeInstanceTemplates`, `useBareMetalInstanceTemplates`) and passes data down to shared presentational components. Per-kind differences (extra steps, different validation, different submission) are natural JSX additions, not config flags.
@@ -318,11 +320,11 @@ The wizard steps are kind-specific: VM and Bare Metal have three steps (General,
 
 **Step 2: Configuration** (see § FieldDefinitionsEditor)
 
-Shows field definitions for the resource spec fields, excluding `ssh_public_key`, `pull_secret`, and `network_attachments`. By default, fields are non-editable. Default values are pre-populated from the selected template when they exist. Non-editable fields require a default value.
+Shows field definitions for the resource spec fields, excluding access fields (`ssh_public_key`, `pull_secret`) and networking fields (`pod_cidr`, `service_cidr`, `network_attachments`). By default, fields are non-editable. Default values are pre-populated from the selected template when they exist. Non-editable fields require a default value.
 
 **Step 3: Networking** (clusters only)
 
-Shows the `network_attachments` field definition. For VM and Bare Metal catalog items, this step is not shown — `network_attachments` is automatically included in the API payload as an editable field with no default value and no validation schema.
+Shows the `pod_cidr` and `service_cidr` field definitions. This step is not shown for VM or Bare Metal catalog items. For VM catalog items, `network_attachments` is automatically included in the API payload as an editable field with no default or validation (not shown in any wizard step). Bare Metal catalog items have no networking fields.
 
 **Step 4: Access**
 
@@ -381,7 +383,7 @@ Uses `ResourceDetailHeader` with breadcrumb (Administration > Catalog Management
 
 **Location:** `libs/ui-components/src/components/catalogManagement/FieldDefinitionsEditor.tsx`
 
-The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. The editor is used across three wizard steps: Configuration (main spec fields), Networking (clusters only — `network_attachments`), and Access (`ssh_public_key`, `pull_secret`). Each step passes its subset of fields. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Both CSP Admin and Tenant Admin use the same editor. For VM and Bare Metal, `network_attachments` is not shown in any step — it is auto-included in the API payload as editable with no default or validation.
+The most complex new component. Built on Formik `FieldArray` with the field name `fieldDefinitions`. The editor is used across multiple wizard steps: Configuration (main spec fields), Networking (clusters only — `pod_cidr`, `service_cidr`), and Access (`ssh_public_key`, `pull_secret`). Each step passes its subset of fields. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist. Both CSP Admin and Tenant Admin use the same editor. For VM catalog items, `network_attachments` is not shown in any step — it is auto-included in the API payload as editable with no default or validation. Bare Metal catalog items have no networking fields.
 
 **Each field definition row renders:**
 
@@ -408,7 +410,7 @@ const fieldDefinitionSchema = Yup.object({
 });
 ```
 
-**Network attachments handling:** The `network_attachments` field is excluded from the FieldDefinitionsEditor. The UI automatically includes it in the API payload as an editable field with no default value and no validation schema. This allows tenant users to configure network attachments during provisioning without requiring the admin to explicitly manage them in the catalog item wizard.
+**Network attachments handling (VM only):** For VM catalog items, the `network_attachments` field is excluded from the FieldDefinitionsEditor. The UI automatically includes it in the API payload as an editable field with no default value and no validation schema. This allows tenant users to configure network attachments during VM provisioning without requiring the admin to explicitly manage them in the catalog item wizard. Bare Metal catalog items have no networking fields. Cluster catalog items use `pod_cidr` and `service_cidr` in the Networking step instead.
 
 #### 9. ValidationConstraintsEditor Component
 
@@ -602,7 +604,7 @@ Testing strategy for the catalog management UI:
 - JSON Schema assembly: verify ValidationConstraintsEditor output for each supported constraint type (scalar, enum, list/map)
 - Route mapping: verify CatalogItemKind → API endpoint resolution for all three types
 - Unsupported schema detection: verify schemas with unsupported keywords show read-only "use CLI" message; schemas with only supported keywords show structured controls
-- Network attachments auto-inclusion: verify `network_attachments` is excluded from wizard but included in API payload as editable with no default or validation
+- Network attachments auto-inclusion (VM only): verify `network_attachments` is excluded from VM wizard but included in API payload as editable with no default or validation; verify Bare Metal has no networking fields; verify Cluster uses pod_cidr/service_cidr in Networking step
 
 **Component-level tests (required):**
 - FieldDefinitionsEditor: verify correct field subsets per step (Configuration, Networking, Access); toggle editable, set defaults, configure constraints; verify Formik state management; verify ssh_key/pull_secret default to editable in Access step
