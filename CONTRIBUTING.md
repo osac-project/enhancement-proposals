@@ -41,8 +41,11 @@ exact substring match on the key, not a sortable one.
 
 A CI check validates any `enhancements/*` directory and
 `prd.md`/`design.md` file that is newly added in a pull request. Directories
-and files that already existed before the PR are not re-validated —
-existing non-compliant directories are a separate, tracked cleanup
+and files that already existed before the PR — either at the PR's base
+commit, or currently on `main` — are not re-validated. This means an
+unrelated, still-non-compliant directory merged by someone else's PR
+never blocks your PR, even if your branch hasn't been rebased since.
+Existing non-compliant directories are a separate, tracked cleanup
 (see [OSAC-2870](https://redhat.atlassian.net/browse/OSAC-2870)), not a
 blocker for new work.
 

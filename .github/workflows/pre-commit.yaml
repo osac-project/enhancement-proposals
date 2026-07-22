@@ -16,3 +16,4 @@ jobs:
     - uses: pre-commit/action@v3.0.1
       env:
         PRE_COMMIT_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PRE_COMMIT_LIVE_BASE_REF: origin/${{ github.event.pull_request.base.ref }}

@@ -23,13 +23,33 @@ class TopLevelEnhancementDirTests(unittest.TestCase):
 
 
 class ValidatePathsTests(unittest.TestCase):
-    def _validate(self, paths, base_sha, existing_at_base, base_ref_exists=True):
-        with patch.object(cen, "ref_exists", return_value=base_ref_exists), \
+    def _validate(
+        self,
+        paths,
+        base_sha,
+        existing_at_base,
+        base_ref_exists=True,
+        live_base_ref=None,
+        live_base_ref_exists=True,
+        existing_at_live_base=frozenset(),
+    ):
+        def fake_ref_exists(ref):
+            if ref == base_sha:
+                return base_ref_exists
+            if ref == live_base_ref:
+                return live_base_ref_exists
+            return False
+
+        def fake_path_exists_at_ref(ref, path):
+            if ref == live_base_ref:
+                return path in existing_at_live_base
+            return path in existing_at_base
+
+        with patch.object(cen, "ref_exists", side_effect=fake_ref_exists), \
                 patch.object(
-                    cen, "path_exists_at_ref",
-                    side_effect=lambda ref, path: path in existing_at_base,
+                    cen, "path_exists_at_ref", side_effect=fake_path_exists_at_ref,
                 ):
-            return cen.validate_paths(paths, base_sha)
+            return cen.validate_paths(paths, base_sha, live_base_ref)
 
     def test_grandfathered_directory_is_not_flagged(self):
         violations = self._validate(
@@ -162,6 +182,48 @@ class ValidatePathsTests(unittest.TestCase):
         message = captured.getvalue().lower()
         self.assertIn("deadbeef", message)
         self.assertIn("fetch-depth", message)
+
+    def test_pre_existing_on_live_main_but_absent_at_stale_base_sha_is_not_flagged(self):
+        # Reproduces the false positive seen on PR #121: a directory merged
+        # by an unrelated PR after this PR's base SHA was last captured is
+        # absent at the stale base_sha but present on the live tip of main
+        # — it must still be recognized as grandfathered, not flagged as
+        # "new" just because this PR's own history predates it.
+        violations = self._validate(
+            paths=["enhancements/storage-control-plane-osac-2872/prd.md"],
+            base_sha="stale123",
+            existing_at_base=set(),
+            live_base_ref="origin/main",
+            existing_at_live_base={"enhancements/storage-control-plane-osac-2872"},
+        )
+        self.assertEqual(violations, [])
+
+    def test_new_directory_absent_from_both_refs_is_still_flagged(self):
+        # The live-ref check is supplementary, not a blanket exemption —
+        # a genuinely new, badly-named directory (absent from the stale
+        # base SHA *and* from the live tip of main) must still be flagged.
+        violations = self._validate(
+            paths=["enhancements/storage-network/prd.md"],
+            base_sha="stale123",
+            existing_at_base=set(),
+            live_base_ref="origin/main",
+            existing_at_live_base=set(),
+        )
+        self.assertEqual(len(violations), 1)
+        self.assertIn("storage-network", violations[0])
+
+    def test_live_base_ref_unresolvable_falls_back_to_base_sha_only(self):
+        # If the live ref was never fetched (e.g. an older CI run before
+        # this env var existed, or a checkout quirk), grandfathering falls
+        # back to base-SHA-only behavior rather than erroring.
+        violations = self._validate(
+            paths=["enhancements/networking/design.md"],
+            base_sha="abc123",
+            existing_at_base={"enhancements/networking"},
+            live_base_ref="origin/main",
+            live_base_ref_exists=False,
+        )
+        self.assertEqual(violations, [])
 
     def test_new_directory_with_consecutive_dashes_is_flagged(self):
         violations = self._validate(
