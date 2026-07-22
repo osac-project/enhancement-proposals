@@ -52,4 +52,4 @@ Tenant Users and Tenant Admins have no web console for discovering, provisioning
 
 ## Dependencies
 
-- **BareMetalInstance public API (fulfillment-service):** Provides the `GET`, `POST`, `PATCH`, and `DELETE` endpoints for `BareMetalInstance` and the `GET` endpoints for `BareMetalInstanceCatalogItem`. The API must be deployed and reachable before the UI screens are functional. Defined in the [BareMetal Instance API EP](/enhancements/baremetal-instance-api).
+- **BareMetalInstance public API (fulfillment-service):** Provides the `GET`, `POST`, `PATCH`, and `DELETE` endpoints for `BareMetalInstance` and the `GET` endpoints for `BareMetalInstanceCatalogItem`. The API must be deployed and reachable before the UI screens are functional. Defined in the [BareMetal Instance API EP](/enhancements/OSAC-1118-baremetal-instance-api).

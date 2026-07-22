@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-04-27
 last-updated: 2026-04-27
 tracking-link:
-  - https://issues.redhat.com/browse/MGMT-24053
+  - https://redhat.atlassian.net/browse/OSAC-22
 see-also:
 replaces:
 superseded-by:

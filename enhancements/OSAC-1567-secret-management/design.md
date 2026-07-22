@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/tenant-onboarding"
+  - "/enhancements/OSAC-24-tenant-onboarding"
   - "/enhancements/organizations"
 replaces:
   - N/A
@@ -553,7 +553,7 @@ by type without requiring manual labeling.
 Each tenant gets a dedicated child namespace in the secret store with
 its own auth methods configured. The tenant onboarding controller
 manages namespace lifecycle as part of Tenant CR reconciliation (see
-the [tenant-onboarding EP](/enhancements/tenant-onboarding)):
+the [tenant-onboarding EP](/enhancements/OSAC-24-tenant-onboarding)):
 
 **Onboarding (namespace creation):**
 

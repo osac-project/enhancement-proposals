@@ -8,11 +8,11 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1029
 see-also:
   - Requirements (PRD): /enhancements/unified-networking-prd
-  - Networking API: /enhancements/networking
-  - BareMetal Instance API: /enhancements/baremetal-instance-api
+  - Networking API: /enhancements/OSAC-356-networking
+  - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
 replaces:
-  - /enhancements/networking
+  - /enhancements/OSAC-356-networking
 superseded-by:
   - N/A
 ---
@@ -49,7 +49,7 @@ The design introduces:
   serve VMaaS, CaaS, and BMaaS identically
 
 The BMaaS integration is based on the `BaremetalInstance` resource defined in
-the [BareMetal Instance API enhancement](/enhancements/baremetal-instance-api),
+the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api),
 which provides a per-server resource aligned with ComputeInstance.
 
 For user stories, goals, and non-goals, see the
@@ -658,7 +658,7 @@ message ComputeInstanceSpec {
 ```
 
 **BaremetalInstance** (new — defined in the
-[BareMetal Instance API enhancement](/enhancements/baremetal-instance-api)):
+[BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api)):
 
 ```protobuf
 message BaremetalInstanceSpec {
