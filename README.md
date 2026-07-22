@@ -29,27 +29,32 @@ If you are not sure if the proposed work requires an enhancement, file an issue 
 
 ## How do I create an enhancement proposal?
 
-To create an enhancement proposal:
+OSAC uses a two-document flow: a **PRD** (Product Requirements Document) describes WHAT and WHY, and a **design document** describes HOW.
+
+### Recommended: AI-assisted workflow (osac-workspace)
+
+The [osac-workspace](https://github.com/osac-project/osac-workspace) provides AI-assisted workflows that guide you through the process:
+
+1. **PRD**: Run `/prd:ingest` to start a PRD, then `/prd:draft` and `/prd:publish` to create it in this repo as `enhancements/OSAC-NNNN-feature-slug/prd.md`.
+2. **Design**: Run `/design:ingest` to start the design, then `/design:draft` and `/design:publish` to create it as `enhancements/OSAC-NNNN-feature-slug/design.md`.
+
+See the osac-workspace [AGENTS.md](https://github.com/osac-project/osac-workspace/blob/main/AGENTS.md) for full workflow details.
+
+### Manual workflow
 
 1. Create a new directory inside the `enhancements` directory:
 
     ```sh
-    mkdir enhancements/my-nifty-feature
+    mkdir enhancements/OSAC-1234-my-nifty-feature
     ```
 
-2. Copy `guidelines/enhancement_template.md` to `README.md` in your new directory:
+2. Create your PRD (`prd.md`) and design document (`design.md`) in that directory. Use `guidelines/enhancement_template.md` as a starting point for the design if needed (note: this template predates the two-document split and includes sections like User Stories that now belong in the PRD).
 
-    ```sh
-    cp guidelines/enhancement_template.md enhancements/my-nitfy-feature/README.md
-    ```
+3. If your proposal requires additional assets -- images, sample configuration files, etc -- include them in the same directory.
 
-3. Edit `enhancements/my-nitfy-feature/README.md`, following the embedded instructions. If a section does not apply to your proposal, mark it `N/A` rather than removing it.
+4. Create a pull request with your changes against the main branch of the [enhancement proposals] repository.
 
-4. If your proposal requires additional assets -- images, sample configuration files, etc -- include them in the same directory as the `README.md`.
-
-5. Create a pull request with your changes against the main branch of the [enhancement proposals] repository.
-
-6. Select at least three reviewers for your pull request.
+5. Select at least three reviewers for your pull request.
 
 ## How are enhancement proposals reviewed and approved?
 

@@ -14,6 +14,12 @@ superseded-by:
   - "/enhancements/our-past-effort"
 ---
 
+> **Note:** OSAC now uses a two-document flow: a PRD (`prd.md`) for WHAT/WHY and
+> a design document (`design.md`) for HOW. New enhancements should use the
+> AI-assisted workflows in [osac-workspace](https://github.com/osac-project/osac-workspace)
+> (`/prd:ingest` → `/design:ingest`). This template is retained for reference by
+> older enhancements. See the [README](../README.md) for details.
+
 To get started with this template:
 1. **Create a directory.** Create the directory for your enhancement proposal.
 1. **Make a copy of this template.** Copy this template into the directory for
