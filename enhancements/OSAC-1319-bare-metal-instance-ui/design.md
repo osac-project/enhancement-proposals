@@ -83,7 +83,7 @@ Wizard steps:
 3. **Review** — summary of all field values.
 4. Submit → `POST /api/fulfillment/v1/baremetal_instances`. On success → navigate to `/bare-metal/:id`.
 
-The BM adapter follows the same catalog overlay pattern as the VM and cluster adapters (see `/enhancements/cluster-and-vm-provisioning-wizard`): static field paths are hardcoded in `BareMetalConfigurationStep`; catalog `field_definitions` overlay matching paths on the Configuration step only, controlling label (`display_name`), editability (`editable: false` → read-only control), default value, and `validation_schema`. The General step (name, SSH public key) ignores `field_definitions`.
+The BM adapter follows the same catalog overlay pattern as the VM and cluster adapters (see `/enhancements/OSAC-1421-cluster-and-vm-provisioning-wizard`): static field paths are hardcoded in `BareMetalConfigurationStep`; catalog `field_definitions` overlay matching paths on the Configuration step only, controlling label (`display_name`), editability (`editable: false` → read-only control), default value, and `validation_schema`. The General step (name, SSH public key) ignores `field_definitions`.
 
 ```mermaid
 sequenceDiagram

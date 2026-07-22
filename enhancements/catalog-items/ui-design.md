@@ -10,7 +10,7 @@ prd:
   - "README.md"
 see-also:
   - "/enhancements/catalog-items"
-  - "/enhancements/cluster-and-vm-provisioning-wizard"
+  - "/enhancements/OSAC-1421-cluster-and-vm-provisioning-wizard"
 replaces:
 superseded-by:
 ---
