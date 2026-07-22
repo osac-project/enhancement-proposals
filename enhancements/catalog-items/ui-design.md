@@ -353,16 +353,16 @@ Each resource type has its own configuration step component with static, hardcod
 - **VM (`VMAccessStep`):** `ssh_key` as `StringFieldDefinition`. Defaults to editable.
 - **Bare Metal (`BMAccessStep`):** `ssh_public_key` as `StringFieldDefinition`. Defaults to editable.
 
-**Hardcoded UI defaults:** When the selected template does not provide defaults or validation for `pod_cidr`, `service_cidr`, `ssh_public_key`, or `pull_secret`, the UI pre-populates both the default value and the validation schema so the admin always has a reasonable starting point:
+**Hardcoded UI validation schemas:** When the selected template does not provide validation for `pod_cidr`, `service_cidr`, `ssh_public_key`, or `pull_secret`, the UI pre-populates the validation schema so the admin always has a reasonable starting point. Default values are never hardcoded — they come only from the selected template or admin input.
 
-| Field | Hardcoded Default Value | Hardcoded Default Validation Schema | Notes |
-|-------|------------------------|-------------------------------------|-------|
-| `pod_cidr` | `10.128.0.0/14` | `{ "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" }` | IPv4 CIDR format. The UI also enforces CIDR correctness via `isValidCidr()` at the Yup layer (same as the tenant provisioning wizard). |
-| `service_cidr` | `172.30.0.0/16` | `{ "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" }` | IPv4 CIDR format. The UI also validates no overlap with `pod_cidr` via `cidrsOverlap()`. |
-| `ssh_public_key` | *(empty, editable)* | `{ "pattern": "^(ssh-rsa\|ecdsa-sha2-nistp(256\|384\|521)\|ssh-ed25519) AAAA[0-9A-Za-z+/]+[=]{0,3}( .*)?$" }` | Validates SSH public key format: `[TYPE] key [[EMAIL]]`. Supported types: ssh-rsa, ssh-ed25519, ecdsa-sha2-nistp256/384/521. Reuses the same regex as `credentialValidation.ts`. |
-| `pull_secret` | *(empty, editable)* | *(no JSON Schema pattern — validated via custom Yup test)* | Pull secret must be valid JSON with an `auths` key. This cannot be expressed as a JSON Schema `pattern` — the UI enforces it via `isValidPullSecret()` at the Yup layer (same as the tenant provisioning wizard). The admin sees a note: "Must be valid JSON with an `auths` key." |
+| Field | Hardcoded Default Validation Schema | Notes |
+|-------|-------------------------------------|-------|
+| `pod_cidr` | `{ "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" }` | IPv4 CIDR format. The UI also enforces CIDR correctness via `isValidCidr()` at the Yup layer (same as the tenant provisioning wizard). |
+| `service_cidr` | `{ "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" }` | IPv4 CIDR format. The UI also validates no overlap with `pod_cidr` via `cidrsOverlap()`. |
+| `ssh_public_key` | `{ "pattern": "^(ssh-rsa\|ecdsa-sha2-nistp(256\|384\|521)\|ssh-ed25519) AAAA[0-9A-Za-z+/]+[=]{0,3}( .*)?$" }` | Validates SSH public key format: `[TYPE] key [[EMAIL]]`. Supported types: ssh-rsa, ssh-ed25519, ecdsa-sha2-nistp256/384/521. Reuses the same regex as `credentialValidation.ts`. |
+| `pull_secret` | *(no JSON Schema pattern — validated via custom Yup test)* | Pull secret must be valid JSON with an `auths` key. This cannot be expressed as a JSON Schema `pattern` — the UI enforces it via `isValidPullSecret()` at the Yup layer (same as the tenant provisioning wizard). The admin sees a note: "Must be valid JSON with an `auths` key." |
 
-Template-provided defaults and validation schemas take precedence over these hardcoded values. The hardcoded defaults are defined as constants in the per-kind step components. The validation schemas are stored as `validationSchema` in the field definition and sent to the server — the server uses them to validate tenant input at provisioning time.
+Template-provided validation schemas take precedence over these hardcoded values. The hardcoded validation schemas are defined as constants in the per-kind step components and stored as `validationSchema` in the field definition — the server uses them to validate tenant input at provisioning time.
 
 **Wizard submission:**
 - Validates all fields with Yup on each step transition and on final submit
