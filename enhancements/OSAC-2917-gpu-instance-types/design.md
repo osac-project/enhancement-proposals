@@ -284,8 +284,8 @@ message InstanceTypeSpec {
 The `optional` keyword ensures that non-GPU instance types serialize without a `gpu`
 field, and `has(this.spec.gpu)` works in CEL filter expressions.
 
-Validation constraints on `GpuSpec` fields (`min_len = 1` on `type`, `gte = 1` on
-`count`) are enforced by protovalidate only when the `gpu` field is present. When `gpu`
+Validation constraints on `GpuSpec` fields (`min_len = 1` on `type`, `gte = 1, lte = 16`
+on `count`) are enforced by protovalidate only when the `gpu` field is present. When `gpu`
 is omitted, the constraints are not evaluated.
 [Codebase: fulfillment-service/docs/API.md]
 
