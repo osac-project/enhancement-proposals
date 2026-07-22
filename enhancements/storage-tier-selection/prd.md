@@ -12,9 +12,9 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 
 ## In Scope
 
-- Per-disk storage tier selection for ComputeInstance boot disk and additional disks
+- Storage tier selection for ComputeInstance disks (boot disk and additional disks)
 - Storage tier as a mandatory field — provisioning fails if no tier is resolved after applying the precedence chain (user input, CatalogItem defaults, Template defaults) `[Clarify: R1.Q3, R2.Q1]`
-- Independent tier selection per disk (boot disk and each additional disk can use different tiers)
+- Boot disk and each additional disk can use different tiers independently
 - Validation that the requested tier exists at request time; clear error on failure
 - Tier resolution precedence: user input, then CatalogItem defaults, then ComputeInstanceTemplate defaults `[Clarify: R2.Q1]`
 - Tier immutability after ComputeInstance creation `[Clarify: R2.Q4]`
