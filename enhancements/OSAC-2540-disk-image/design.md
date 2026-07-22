@@ -226,7 +226,7 @@ Key design points:
 - `DiskImageState` and `DiskImageDeprecation` mirror the InstanceType pattern exactly, providing consistent lifecycle semantics across catalog resources. [Codebase: instance_type_type.proto]
 - `GuestOSFamily` is a shared enum (defined in its own file) replacing the `is_windows` boolean. It uses the standard OSAC enum naming convention with `_UNSPECIFIED = 0`.
 - `source_type` and `source_ref` are required on create and immutable after creation. Immutability is enforced in the server's Update handler by rejecting changes to these fields. [Locked: D2]
-- `architecture` is a repeated string field (not an enum) to accommodate new architectures without proto changes. Values follow GOARCH conventions: `amd64`, `arm64`. At least one value is required. [Locked: D7, D12]
+- `architecture` is a repeated string field (not an enum) to accommodate new architectures without proto changes. Values follow GOARCH conventions: `amd64`, `arm64`. At least one value is required. Each value is validated server-side against an allowlist (`amd64`, `arm64`), following the `validRunStrategies` pattern in `spec_defaults.go`. [Locked: D7, D12]
 - `state` defaults to `DISK_IMAGE_STATE_AVAILABLE` when unspecified on create.
 
 #### Proto Schema: DiskImages Service
@@ -479,13 +479,15 @@ DiskImage uses the standard OSAC tenant isolation model:
 | Cloud Provider Admin (is_admin) | Create, Update, Delete (all images including global) |
 
 The `has_client_permissions` block in `authz.rego` gains:
-```
+
+```rego
 "/osac.public.v1.DiskImages/Get",
 "/osac.public.v1.DiskImages/List",
 ```
 
 The `is_tenant_admin` block gains:
-```
+
+```rego
 "/osac.public.v1.DiskImages/Create",
 "/osac.public.v1.DiskImages/Update",
 "/osac.public.v1.DiskImages/Delete",
@@ -643,7 +645,7 @@ None.
 
 ## Provenance
 
-Authored: draft @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
-Phases: draft, draft
+Authored: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
+Phases: draft, draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond"],"authoring_modes":["skill"],"context_changed":false} -->
