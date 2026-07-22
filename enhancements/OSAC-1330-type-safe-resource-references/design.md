@@ -440,9 +440,11 @@ fully-qualified reference. This ensures consistent downstream behavior
 regardless of how the caller specified the reference.
 
 Local references omit `tenant` and `project` because the target is always in
-the same scope as the referencing resource. The `id` field is included for
-backward compatibility — clients that currently use resource identifiers can
-continue to do so during the transition to name-based references.
+the same scope as the referencing resource. The interceptor derives tenant and
+project from the owning resource's metadata, not from the caller's auth
+context. The `id` field is included for backward compatibility — clients that
+currently use resource identifiers can continue to do so during the transition
+to name-based references.
 
 #### Which fields use local vs. full references
 
@@ -667,14 +669,20 @@ For nested messages (like `NetworkAttachment` inside `ComputeInstanceSpec`),
 it recurses.
 
 **Tenant and project context.** For `LocalReference` messages, the interceptor
-extracts tenant and project from the request's authentication context. For
-public full `Reference` messages, `shared = true` maps to the `shared` tenant;
-otherwise the caller's tenant is used. The `project` field is used directly;
-when empty, the lookup targets the default project (tenant-global scope). For
-private full `Reference` messages, the explicit `tenant` field is used, falling
-back to the caller's context when empty. If `shared = true`, it overrides
-`tenant` to `"shared"`. The `project` field behaves the same as in public
-references.
+derives tenant and project from the **request's resource metadata** (the
+object being created or updated), not from the caller's auth context. This
+ensures local references resolve within the owning resource's scope — e.g., a
+Subnet in project `team-a` resolves its VirtualNetwork local reference within
+`team-a`, even if the caller (a Cloud Provider Admin via the private API) is
+not in that project. The resource metadata fields are always set by the server
+before the interceptor runs (via `determineAssignedTenant` and the request's
+`metadata.project`). For public full `Reference` messages, `shared = true`
+maps to the `shared` tenant; otherwise the caller's tenant is used. The
+`project` field is used directly; when empty, the lookup targets the default
+project (tenant-global scope). For private full `Reference` messages, the
+explicit `tenant` field is used, falling back to the caller's context when
+empty. If `shared = true`, it overrides `tenant` to `"shared"`. The `project`
+field behaves the same as in public references.
 
 **Error aggregation.** The interceptor collects all invalid references before
 returning, so the user sees every problem in a single error response. It
@@ -879,10 +887,11 @@ interceptor, so all DAO lookups execute in an authenticated context with a
 valid tenant identity.
 
 **Authorization:** The interceptor validates that referenced resources exist
-within the caller's authorized scope. For local references, lookups are
-scoped to the caller's tenant and project. For full references with an
-explicit tenant/project, the existing OPA policies enforce whether the caller
-has cross-tenant access. No new authorization rules are introduced.
+within the appropriate scope. For local references, lookups are scoped to the
+owning resource's tenant and project (derived from the request's resource
+metadata). For full references with an explicit tenant/project, the existing
+OPA policies enforce whether the caller has cross-tenant access. No new
+authorization rules are introduced.
 
 **Input validation:** Reference messages have a constrained schema (string
 fields for id, tenant, project, name). The protobuf deserialization layer
