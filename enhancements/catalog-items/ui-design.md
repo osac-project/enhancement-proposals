@@ -51,7 +51,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 ## Proposal
 
-The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page shows a PatternFly table with type filter, search, scope badges, and kebab row actions (edit, publish/unpublish, delete). The create flow uses a multi-step wizard: choose resource type → enter name and description → select template → configure field definitions (all resource spec fields shown, default non-editable except ssh key and pull secret, with default values pre-populated from the template). The edit wizard reuses the same steps with template selection locked. The detail page shows read-only configuration, field definitions, and related provisioned resources.
+The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly table with search, scope badges, and kebab row actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard: enter name and description → select template → configure field definitions (all resource spec fields shown, default non-editable except ssh key and pull secret, with default values pre-populated from the template). The edit wizard reuses the same steps with template selection locked. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
 Shared components (`CatalogItemGeneralFields`, `TemplateSelector`, `FieldDefinitionsEditor`, `ValidationConstraintsEditor`, `CatalogItemTable`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic. Each entry in the field definitions editor includes a path (from the resource spec), display name, an editable toggle, a default value input, and a validation constraints editor with structured form controls for simple constraints. For validation schemas that use keywords beyond what the UI supports, the editor displays a read-only message directing the admin to use the OSAC CLI.
 
@@ -60,9 +60,9 @@ Shared components (`CatalogItemGeneralFields`, `TemplateSelector`, `FieldDefinit
 #### Cloud Provider Admin — Create Catalog Item
 
 1. CSP Admin navigates to **Administration > Catalog Management** in the sidebar.
-2. The list page shows all catalog items across all tenants with a "Create catalog item" dropdown button (Cluster / Virtual Machine / Bare Metal).
-3. CSP Admin selects a resource type from the dropdown and lands on the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`).
-4. **Step 1 — General:** Admin enters name, description (Markdown), and selects scope (Global or a specific tenant). Resource type is derived from the route and displayed as read-only text.
+2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab lists catalog items of that resource type across all tenants.
+3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
+4. **Step 1 — General:** Admin enters name, description (Markdown), and selects scope (Global or a specific tenant).
 5. **Step 2 — Template:** The admin selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`).
 6. **Step 3 — Field definitions:** The `FieldDefinitionsEditor` displays all fields from the resource spec (e.g., all `ComputeInstanceSpec` fields for a VM catalog item). Default values are pre-populated from the selected template when they exist. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. The admin configures each field:
    - Display name (optional)
@@ -85,9 +85,9 @@ Shared components (`CatalogItemGeneralFields`, `TemplateSelector`, `FieldDefinit
 The Tenant Admin uses the same wizard flow as the CSP Admin with one difference: scope is automatically set to the tenant's organization.
 
 1. Tenant Admin navigates to **Administration > Catalog Management**.
-2. The list page shows the tenant's catalog items alongside global items. Global items have a "Global" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and full actions.
-3. Tenant Admin selects a resource type from the "Create catalog item" dropdown.
-4. **Step 1 — General:** Admin enters name and description. Resource type is derived from the route and displayed as read-only. Scope is automatically set to the tenant's organization (displayed as read-only text, not editable).
+2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows the tenant's catalog items alongside global items. Global items have a "Global" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and full actions.
+3. Tenant Admin clicks the "Create" button on the active tab. The resource type is determined by the tab.
+4. **Step 1 — General:** Admin enters name and description. Scope is automatically set to the tenant's organization (displayed as read-only text, not editable).
 5. **Step 2 — Template:** The admin selects a template from a dropdown (same as CSP Admin flow).
 6. **Step 3 — Field definitions:** Same field definitions editor as CSP Admin — all resource spec fields shown, configured with editable toggle, default values, and validation constraints.
 7. Admin clicks "Create". The UI sends a POST. The server auto-sets the `tenant` field.
@@ -256,9 +256,12 @@ The update hook builds the `update_mask` FieldMask from the diff between origina
 
 Uses `ListPage` + `ListPageBody` layout with a PatternFly `Table`.
 
-**Toolbar:**
-- "Create catalog item" dropdown button (Cluster / Virtual Machine / Bare Metal) — each option navigates to the kind-specific create route
-- Type filter: toggle group with All / Cluster / VM / Bare Metal (drives which API endpoints are queried)
+**Tabs:**
+
+The list page uses three PatternFly `Tabs` — **Clusters**, **Virtual Machines**, **Bare Metal** — one per resource type. Each tab renders its own table querying the corresponding API endpoint. The active tab determines the resource type context, eliminating the need for a type filter or a resource type dropdown.
+
+**Toolbar (per tab):**
+- "Create" button — navigates to the kind-specific create route for the active tab's resource type (e.g., `/admin/catalog/cluster/create`)
 - Search: text input filtering by name (server-side via API filter parameter)
 - Publication status filter: All / Published / Unpublished (server-side via API filter parameter)
 
@@ -267,11 +270,12 @@ Uses `ListPage` + `ListPageBody` layout with a PatternFly `Table`.
 | Column | Content |
 |--------|---------|
 | Name | Catalog item name as a link to the detail page |
-| Type | Resource type badge (Cluster / VM / Bare Metal) |
 | Template | Name of the backing template |
 | Scope | "Global" badge or organization name badge (see § Scope Display) |
 | Status | "Published" (green) or "Unpublished" (gray) label |
 | Actions | Kebab menu |
+
+The "Type" column is not needed because each tab shows only one resource type.
 
 **Kebab menu actions (per role):**
 
@@ -299,8 +303,9 @@ Each kind-specific create page uses a PatternFly Wizard with Formik + Yup that e
 **Step 1: General**
 - Name (`NameField`, required) — reuses the existing osac-ui `NameField` component with standard naming validation
 - Description (`InputField` textarea, optional) — markdown-formatted long description
-- Resource type (read-only text, derived from the route — e.g., "Cluster")
 - Scope (providerAdmin only): `RadioButtonField` — Global or Tenant-scoped. If tenant-scoped, a tenant selector dropdown appears. For tenantAdmin, this step shows "Scope: Your organization" as read-only text.
+
+Resource type is not shown as a field — it is determined by the tab the admin clicked "Create" from and encoded in the route.
 
 **Step 2: Template Selection**
 
@@ -534,9 +539,9 @@ Using a raw JSON textarea as the **only** way to configure validation schemas (w
 
 Using a single `CatalogItemKindConfig` map to drive all polymorphic behavior through one component set was considered. This minimizes file count but creates a monolithic component that handles all three types through configuration switches. It was not selected because JSX composition is more React-idiomatic, easier to read, and handles future per-kind divergence naturally. The shared component approach achieves the same code reuse through composition rather than configuration.
 
-### Reuse CatalogPage with per-kind tabs instead of a separate admin list page
+### Reuse CatalogPage instead of a separate admin list page
 
-Reusing the existing tenant-facing `CatalogPage` as a unified admin+tenant catalog view with per-resource-type tabs (Cluster / VM / Bare Metal) was considered. In this model, the "Create catalog item" button would only render for admin roles, and the active tab would determine the resource type — eliminating both the type selector ambiguity and the three-way `useAllCatalogItems` merge. This also has the advantage of using a card layout (matching the existing tenant browsing experience) rather than a table for the management view. It was not selected for this iteration because it couples admin and tenant views, making it harder to evolve admin-specific features (e.g., bulk operations, advanced filtering) independently. However, it remains a viable simplification if the separate admin list page proves unnecessary during implementation.
+Reusing the existing tenant-facing `CatalogPage` as a unified admin+tenant catalog view was considered. This would use a card layout (matching the existing tenant browsing experience) rather than a table for the management view. It was not selected because it couples admin and tenant views, making it harder to evolve admin-specific features (e.g., bulk operations, advanced filtering) independently. The admin list page uses its own per-resource-type tabs, with each tab's "Create" button determining the resource type — a simpler model than a type selector dropdown.
 
 ### Modal for create/edit instead of full page
 
@@ -576,7 +581,7 @@ Testing strategy for the catalog management UI:
 - Delete blocked: attempt to delete a catalog item with provisioned resources, verify error message
 - Tenant Admin create wizard: create a catalog item through the same wizard as CSP Admin, verify template selection and field definitions work identically
 - Tenant Admin visibility: verify global items show as read-only, org-scoped items show full actions
-- Type filter: verify filtering by Cluster/VM/Bare Metal updates the table
+- Tabs: verify switching between Clusters/VM/Bare Metal tabs shows the correct catalog items per type
 
 **Unit tests:**
 - Yup validation schemas: verify required fields, path format, default-required-when-non-editable rule
