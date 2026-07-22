@@ -3,7 +3,7 @@ title: catalog-items
 authors:
   - mhrivnak
 creation-date: 2026-01-12
-last-updated: 2026-07-16
+last-updated: 2026-07-22
 tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
 see-also:
 replaces:
@@ -43,7 +43,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to create a catalog item by selecting a resource type and choosing an existing template for that type, so the catalog item is backed by a known, working template.
 
-* As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item. I select which fields from the resource spec to include in the catalog item and configure each one. Fields not included in the field definitions are not exposed to the user and are not constrained by the catalog item.
+* As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item. The system presents all fields from the resource spec (e.g., ComputeInstanceSpec or ClusterSpec), and I configure each one — I do not need to manually specify field paths. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist.
 
 * As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails. Validation constraints are specified as a JSON Schema (draft 2020-12) object stored in the field definition's `validation_schema` field. Constraint types and examples:
 
@@ -59,10 +59,10 @@ don't have the ability to add or modify ansible roles.
   - **Combinations**: multiple constraints can be combined in a single schema.
     Example: `boot_disk.size_gib` with `{"minimum": 50, "maximum": 500}` combined with a default of 100.
 
-  **Resource reference constraints:**
-  - Fields that reference backend resources (such as `instance_type` referencing an InstanceType, or `image_type` referencing an ImageType) use `enum` constraints. The UI fetches available resources from the corresponding API endpoint and presents them as a selectable list. The admin can restrict the set to a subset of available resources by specifying an `enum` with only the allowed values.
-    Example: `instance_type` with `{"enum": ["cx3.xlarge", "cx3.2xlarge", "cx3.4xlarge"]}` — the UI fetches available InstanceType resources and presents the allowed subset as a dropdown.
-    Example: `image_type` with `{"enum": ["rhel-10", "rhel-9"]}` — limits image selection to the specified types.
+  **Resource reference fields:**
+  - Fields that reference backend resources (such as `instance_type` referencing an InstanceType, or `image_type` referencing an ImageType) do not have validation constraints in the catalog item creation UI. Instead, the admin selects a default value from a dropdown of existing resources fetched from the corresponding API endpoint. The backend validates that the selected value is a valid, existing resource at provisioning time.
+    Example: `instance_type` — the UI fetches available InstanceType resources and presents them as a dropdown for the admin to select a default value.
+    Example: `image_type` — the UI fetches available ImageType resources for default value selection.
 
   **List and map constraints:**
   - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
@@ -72,22 +72,13 @@ don't have the ability to add or modify ansible roles.
   - **Map entry count** (`minProperties`, `maxProperties`): same pattern for map fields.
     Example: `node_sets` with `{"minProperties": 2, "maxProperties": 2}` locks a cluster to exactly two node sets (e.g., control-plane + workers) — the user can edit each node set's `size` but cannot add or remove node sets.
 
-  **Complex object constraints:**
-  - **Nested properties** (`properties`, `required`): validate sub-fields within complex objects. When a field definition targets a complex field like `network_attachments[*]`, the validation schema can constrain its sub-fields individually.
-    Example: each `network_attachments` item with `{"properties": {"security_groups": {"minItems": 1}}, "required": ["subnet"]}` requires a subnet and at least one security group per attachment.
-  - **Item schema** (`items`): apply a schema to every element of a repeated field.
-    Example: `additional_disks` with `{"items": {"properties": {"size_gib": {"minimum": 10, "maximum": 1000}}}}` constrains every additional disk's size.
-
-  The UI presents these constraint types through two editing modes:
-  - **Basic mode** (default): structured form controls for each supported constraint type (numeric bounds, enum, string length, pattern, item count, nested properties, item schemas) so admins can configure validation without writing JSON by hand.
-  - **Advanced mode**: a raw JSON Schema textarea for schemas that use keywords beyond the Basic editor's supported set (e.g., `if/then/else`, `oneOf`, `$ref`), or for admins who prefer to write JSON Schema directly.
-  The editor auto-detects which mode to open: schemas using only Basic-supported keywords open in Basic mode; schemas with other keywords open in Advanced mode. Admins can switch between modes — switching from Advanced to Basic warns that unsupported keywords will be stripped.
+  The UI provides structured form controls for supported simple constraint types (numeric bounds, allowed values, string length, pattern, item count). If a field has an existing validation schema that uses keywords beyond what the UI supports (e.g., `if/then/else`, `oneOf`, nested properties, item schemas), the UI displays a read-only message indicating that this validation cannot be edited through the UI and must be managed via the OSAC CLI. Admins who need full JSON Schema expressiveness use the CLI directly.
 
 * As a Cloud Provider Admin, I need the system to provide sensible default validation schemas for common field types when I create a catalog item, so I can configure validation quickly without manually constructing JSON Schema for every field. For example:
   - `ssh_public_key` and `pull_secret` should have default pattern-based validation (the admin can accept the default or customize it)
   - `user_data` should have a default maximum length constraint
   - `node_sets.<name>.size` should default to a minimum/maximum integer constraint
-  - Fields referencing backend resources (`instance_type`, `image_type`) should automatically populate `enum` with available resources as selectable options
+  - Fields referencing backend resources (`instance_type`, `image_type`) should present available resources as a selectable dropdown for default value selection
   The backend is responsible for providing these defaults based on the field type; the admin can override or tighten them.
 
 * As a Cloud Provider Admin, I need to provide identifying information for the catalog item, so tenants can understand what the offering provides when browsing the catalog.
@@ -159,7 +150,7 @@ created. Both will have similar properties, so we'll use Cluster as an example:
 
 ClusterCatalogItem
 * references an existing ClusterTemplate by ID
-* includes a list of field definitions for the resource spec fields the admin wants to expose or constrain. Each field definition specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. Not all fields need to be included — only those the admin wants to configure.
+* includes a list of field definitions covering all fields from the resource spec (e.g., ClusterSpec or ComputeInstanceSpec). Each field definition specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The field set is fixed per resource type — it does not vary by template.
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
 
@@ -231,9 +222,9 @@ Two new message types will be added to the proto definitions in
 - `title` (string) - human-friendly short name for display in UIs and CLIs
 - `description` (string) - markdown-formatted long description
 - `template` (string) - references a `ClusterTemplate` by ID
-- `fields` (repeated FieldDefinition) - ordered list of field definitions that
-  specify which resource spec fields are pre-defined by the admin and which are
-  editable by the user
+- `fields` (repeated FieldDefinition) - ordered list of field definitions
+  covering all fields from the resource spec, each configured as pre-defined
+  by the admin or editable by the user
 - `published` (bool) - when false (the default), the item is hidden from Tenant
   Users; Cloud Provider Admins and Tenant Admins can see unpublished items
 - `tenant` (string) - internal field, not exposed through the public API. Scopes
@@ -269,12 +260,12 @@ Both types will have corresponding `ClusterCatalogItemsService` and
 #### API Behavior
 
 The `fields` list defines the contract between the admin and the user for a
-given catalog item. The admin chooses which resource spec fields to include
-and configures each one (editable toggle, default value, validation
-constraints). Not all fields from the resource spec need to be included —
-only those the admin wants to expose or constrain. Fields not listed in
-`fields` are not managed by the catalog item. The server rejects catalog
-items that reference fields not defined in the resource spec.
+given catalog item. The field set is fixed per resource type — it covers
+all fields from the resource spec (e.g., all fields in `ComputeInstanceSpec`
+for a `ComputeInstanceCatalogItem`). The admin configures each field (editable
+toggle, default value, validation constraints) but does not add or remove
+fields. The server rejects catalog items that reference fields not defined in
+the resource spec.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:
@@ -292,9 +283,10 @@ The `validation_schema` field accepts any valid
 [JSON Schema (draft 2020-12)](https://json-schema.org/draft/2020-12/json-schema-validation)
 object. The server validates user-provided field values against the full schema
 at provisioning time using a standard JSON Schema validator — no keywords are
-restricted. The UI provides structured form controls (Basic mode) for common
-constraint types and a raw JSON Schema textarea (Advanced mode) for schemas that
-use the full JSON Schema vocabulary.
+restricted. The UI provides structured form controls for simple constraint
+types (numeric bounds, enum, string length, pattern, item count). For schemas
+that use keywords beyond the UI's supported set, the UI displays a read-only
+message directing the admin to use the OSAC CLI.
 
 #### Public vs. Private API Split
 
