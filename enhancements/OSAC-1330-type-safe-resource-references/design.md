@@ -634,7 +634,7 @@ regardless of how the caller specified them. For example, a public API client
 that sends `{ "id": "abc-123", "shared": true }` gets the stored reference
 expanded to `{ "id": "abc-123", "name": "my-template", "shared": true }`.
 A private API client that sends `{ "id": "abc-123" }` gets
-`{ "id": "abc-123", "tenant": "infra-templates", "name": "my-template" }`.
+`{ "id": "abc-123", "tenant": "infra-templates", "project": "", "name": "my-template" }`.
 
 **Reference detection.** The interceptor identifies reference fields by
 checking whether a field's message type ends with `Reference` or
@@ -763,6 +763,7 @@ The CLI currently accepts reference values as string flags (e.g.,
 constructs reference messages from flag values:
 
 **For local references (by name or id):**
+
 ```bash
 # By name (common case):
 osac compute-instance create --name my-vm --catalog-item standard-vm \
@@ -778,6 +779,7 @@ osac compute-instance create --name my-vm --catalog-item standard-vm \
 ```
 
 **For full references with shared scope:**
+
 ```bash
 osac cluster create --name my-cluster \
   --template shared-template --template-shared
@@ -1044,15 +1046,17 @@ details on the URI/ARN trade-off.
 - Cross-tenant catalog item (Chunk 2): Create a ComputeInstance referencing
   a CatalogItem in the shared tenant. Verify the full reference resolves
   across tenants.
-- ID-only resolution (Chunk 2): Create a ComputeInstance referencing a
-  CatalogItem by `id` only (no `name`). Verify the stored full reference
-  contains both `id` and `name` (auto-populated by the interceptor).
-- Both-match resolution (Chunk 2): Create a ComputeInstance providing both
-  `id` and `name` for a CatalogItem reference. Verify success when they
-  refer to the same resource.
-- Both-mismatch resolution (Chunk 2): Create a ComputeInstance providing
-  `id` of one CatalogItem and `name` of another. Verify `InvalidArgument`
-  with a message explaining the inconsistency.
+- ID-only resolution in caller's tenant (Chunk 2): Create a CatalogItem in
+  the caller's tenant, then create a ComputeInstance referencing it by `id`
+  only (no `name`, `shared = false`). Verify the stored reference contains
+  both `id` and `name`, and the resolved tenant matches the caller's tenant.
+- Both-match resolution in shared scope (Chunk 2): Create a CatalogItem in
+  the `shared` tenant, then create a ComputeInstance providing both `id` and
+  `name` with `shared = true`. Verify success and the resolved tenant is
+  `shared`.
+- Both-mismatch resolution (Chunk 2): Create two CatalogItems, then create
+  a ComputeInstance providing `id` of one and `name` of the other. Verify
+  `InvalidArgument` with a message explaining the inconsistency.
 - Concurrent create/delete (Chunk 1): In parallel, create a Subnet
   referencing a VirtualNetwork and delete that VirtualNetwork. Verify the
   `FOR SHARE` serialization prevents both from committing — no dangling
