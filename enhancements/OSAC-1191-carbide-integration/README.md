@@ -4,8 +4,8 @@ authors:
   - Trey West
 creation-date: 2026-03-09
 last-updated: 2026-03-09
-tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
-  - None
+tracking-link:
+  - https://redhat.atlassian.net/browse/OSAC-1191
 see-also:
   - enhancements/bare-metal-fulfillment/README.md
 replaces:

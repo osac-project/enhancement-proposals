@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-01-29
 last-updated: 2026-04-29
 tracking-link:
-  - TBD
+  - https://redhat.atlassian.net/browse/OSAC-1027
 see-also:
 replaces:
   - "[ComputeInstance-VM_PhasesAndConditions_Proposal (Google Doc)](https://docs.google.com/document/d/1wgqAblnT7OHlT5bvaI4bi842kyeR3u4VfC_TAJXbGcI/edit?usp=sharing)"
