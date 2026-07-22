@@ -731,7 +731,7 @@ Testing strategy for the catalog management UI:
 - Per-kind step components: verify each step renders correct static fields for its resource type; verify field definition primitives render editable toggle, default value, and validation; verify ssh_key/pull_secret default to editable in Access steps
 - Field definition primitives: verify StringFieldDefinition renders regex pattern option; verify NumberFieldDefinition renders min/max; verify ResourceSelectorFieldDefinition renders dropdown from API; verify BooleanFieldDefinition renders toggle
 - NodeSetsFieldEditor (Cluster only): verify node set entries pre-populate from template; verify add/remove entries; verify host type dropdown fetches from HostTypes API; verify size validation (min/max); verify at least one node set required; verify serialization to field definition payload
-- ValidationConstraintsEditor: set scalar, enum, and list/map constraints; verify correct JSON Schema Struct output; verify empty constraints produce omitted validationSchema
+- Validation constraints per primitive: verify StringFieldDefinition produces correct pattern schema; verify NumberFieldDefinition produces correct min/max schema; verify empty constraints produce omitted validationSchema
 - Unsupported schema handling: verify existing CLI-created items with complex schemas show read-only "use CLI" message; verify supported schemas show editable structured controls
 
 ## Documentation
