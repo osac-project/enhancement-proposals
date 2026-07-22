@@ -8,7 +8,7 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-55
 see-also:
   - "/enhancements/vmaas"
-  - "/enhancements/computeinstance-phase-condition-expansion"
+  - "/enhancements/OSAC-1027-computeinstance-phase-condition-expansion"
   - "/enhancements/OSAC-356-networking"
 replaces:
   - N/A
