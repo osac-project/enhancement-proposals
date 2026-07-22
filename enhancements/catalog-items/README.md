@@ -151,7 +151,7 @@ ClusterCatalogItem
 * includes a list of field definitions, each of which specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The UI always includes all fields from the resource spec, but the API accepts partial field lists (e.g., CLI-created items may include only a subset).
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
-* includes an optional project identifier that further scopes visibility to a specific project within the tenant. When empty, the item is visible to all projects within the tenant.
+* uses the existing `metadata.project` field (available on all OSAC resources) to optionally scope visibility to a specific project within the tenant. When `metadata.project` is empty, the item is visible to all projects within the tenant.
 
 The field definitions use dot-notation paths to reference fields in the
 underlying resource spec.
@@ -230,7 +230,8 @@ Two new message types will be added to the proto definitions in
 - `tenant` (string) - internal field, not exposed through the public API. Scopes
   visibility to a single tenant organization; when empty the item is visible to
   all tenants. Set automatically by the server for Tenant Admin creates.
-- `project` (string) - optional field for project-level scoping. When set
+Note: Project-level scoping uses the existing `metadata.project` field (field 10
+  on `Metadata`, available on all OSAC resources). When `metadata.project` is set
   alongside `tenant`, the item is visible only within that project. When empty
   (with `tenant` set), the item is visible to all projects within the tenant.
   Set by the Tenant Admin during creation; CSP Admins do not create
@@ -340,10 +341,10 @@ additional steps before writing the object:
 
 #### Tenancy and Authorization
 
-The `tenant` and `project` fields on `CatalogItem` are enforced at two layers:
+The `tenant` field and `metadata.project` on `CatalogItem` are enforced at two layers:
 
-1. **Read**: The public `CatalogItems_List` and `CatalogItems_Get` operations always filter by `tenant = "" OR tenant = <caller_tenant>`. When `project` is set on a catalog item, visibility is further restricted to users within that project. When the caller is a Tenant User, the public server additionally injects `published = true`, with one exception: a Tenant User may `Get` a catalog item referenced by one of their existing CNAs even if that item is unpublished. Tenant Admins see all items in their tenant regardless of publication status. This is implemented in the public server before delegating to the private server, using the same filter-injection mechanism the other public servers use for tenancy.
-2. **Write**: Cloud Provider Admins set `tenant` explicitly; `tenant = ""` creates a general (global) item. CSP Admins choose between General (global) or Organization (tenant-scoped). For Tenant Admins, the public server injects `tenant` from the caller's identity — the field is not accepted from the caller. Tenant Admins set `project` explicitly to create project-scoped items, or leave it empty for organization-scoped items. Tenant Admins can only Update or Delete catalog items scoped to their own tenant; they cannot modify general items (`tenant = ""`) or items belonging to another tenant. The server validates that a specified `project` belongs to the caller's tenant.
+1. **Read**: The public `CatalogItems_List` and `CatalogItems_Get` operations always filter by `tenant = "" OR tenant = <caller_tenant>`. When `metadata.project` is set on a catalog item, visibility is further restricted to users within that project. When the caller is a Tenant User, the public server additionally injects `published = true`, with one exception: a Tenant User may `Get` a catalog item referenced by one of their existing CNAs even if that item is unpublished. Tenant Admins see all items in their tenant regardless of publication status. This is implemented in the public server before delegating to the private server, using the same filter-injection mechanism the other public servers use for tenancy.
+2. **Write**: Cloud Provider Admins set `tenant` explicitly; `tenant = ""` creates a general (global) item. CSP Admins choose between General (global) or Organization (tenant-scoped). For Tenant Admins, the public server injects `tenant` from the caller's identity — the field is not accepted from the caller. Tenant Admins set `metadata.project` explicitly to create project-scoped items, or leave it empty for organization-scoped items. Tenant Admins can only Update or Delete catalog items scoped to their own tenant; they cannot modify general items (`tenant = ""`) or items belonging to another tenant. The server validates that a specified `project` belongs to the caller's tenant.
 
 A tenant with a CNA that was published from a Catalog Item that has since been
 unpublished should still be able to read that Catalog Item through a direct GET
