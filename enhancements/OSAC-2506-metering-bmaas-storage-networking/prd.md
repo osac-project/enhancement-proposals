@@ -20,9 +20,9 @@ Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.
 
 ## 1. Problem Statement
 
-OSAC provisions bare metal hosts, storage volumes, and networking resources (virtual networks, subnets, public IPs, NAT gateways) but has no mechanism to track their consumption over time. The first metering PRD ([Part 1](/enhancements/metering-and-usage-tracking/prd.md)) established metering for VMaaS, CaaS, and MaaS — all consumption-based meters where billing runs only while the resource is actively serving workloads. BMaaS, storage, and networking are fundamentally different: they consume provider capacity from the moment they are provisioned until they are deleted, regardless of whether the tenant is actively using them. A bare metal host is physically reserved and cannot be reassigned. A storage volume occupies backend disk space whether the parent VM is running or not. A public IP consumes address pool space whether it is attached or not.
+OSAC provisions bare metal hosts, storage volumes, and networking resources (virtual networks, subnets, public IPs, NAT gateways) but has no mechanism to track their consumption over time. The first metering PRD ([Part 1](/enhancements/metering-and-usage-tracking/prd.md)) established metering for VMaaS, CaaS, and MaaS — all consumption-based meters where metering runs only while the resource is actively serving workloads. BMaaS, storage, and networking are fundamentally different: they consume provider capacity from the moment they are provisioned until they are deleted, regardless of whether the tenant is actively using them. A bare metal host is physically reserved and cannot be reassigned. A storage volume occupies backend disk space whether the parent VM is running or not. A public IP consumes address pool space whether it is attached or not.
 
-Without metering for these resources, Cloud Provider Admins cannot bill tenants for the infrastructure capacity they hold, and Tenant Admins have no visibility into the cost of their networking and storage footprint. This gap grows as OSAC expands its service offerings — every new storage type or networking resource added without metering is revenue the provider cannot recover.
+Without metering for these resources, Cloud Provider Admins have no usage data to account for the infrastructure capacity tenants hold, and Tenant Admins have no visibility into their networking and storage footprint. This gap grows as OSAC expands its service offerings — every new storage type or networking resource added without metering is usage the provider cannot track.
 
 ## 2. In Scope
 
@@ -50,10 +50,10 @@ These resource families are grouped because they share the allocation-based mete
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to view aggregated bare metal host usage across all tenants for a billing period, broken down by tenant, host type, and catalog item (per Part 1 CAP-17), so that I can generate bills that reflect the physical hardware each tenant holds.
+- As a Cloud Provider Admin, I want to view aggregated bare metal host usage across all tenants for a given time period, broken down by tenant, host type, and catalog item (per Part 1 CAP-17), so that I can account for the physical hardware each tenant holds.
 - As a Cloud Provider Admin, I want to view storage usage across all tenants broken down by storage tier (fast, standard, archival) and capacity, so that I can price storage according to the tier's cost to the provider.
-- As a Cloud Provider Admin, I want to view object storage usage across all tenants broken down by reserved capacity and API request counts (read/write), so that I can bill tenants for both the storage space they hold and the API activity they generate. Object storage cost has two independent drivers: stored capacity (backend disk space) and access frequency (I/O and network). A high-traffic bucket costs more to serve than an archival one at the same capacity, so both dimensions must be visible for accurate billing.
-- As a Cloud Provider Admin, I want to view networking resource usage across all tenants broken down by resource type (VirtualNetwork, PublicIP, NATGateway), so that I can bill tenants for the network infrastructure they consume.
+- As a Cloud Provider Admin, I want to view object storage usage across all tenants broken down by reserved capacity and API request counts (read/write), so that I can track both the storage space tenants hold and the API activity they generate. Object storage usage has two independent drivers: stored capacity (backend disk space) and access frequency (I/O and network). A high-traffic bucket consumes more provider resources than an archival one at the same capacity, so both dimensions must be visible for accurate usage tracking.
+- As a Cloud Provider Admin, I want to view networking resource usage across all tenants broken down by resource type (VirtualNetwork, PublicIP, NATGateway), so that I can track the network infrastructure each tenant consumes.
 - As a Cloud Provider Admin, I want to view network bandwidth usage across all tenants broken down by direction (ingress/egress) and tenant, so that I can apply data transfer pricing.
 - As a Cloud Provider Admin, I want bare metal hosts to be metered from provisioning start through deletion regardless of power state, so that I can recover the cost of physically reserved hardware even when the tenant has powered it off.
 - As a Cloud Provider Admin, I want to see both allocation and consumption meters for bare metal hosts, so that I can offer discounted pricing for stopped hosts while still recovering the baseline reservation cost. A bare metal host has a fixed cost to the provider (rack space, power port, network cable) whether powered on or off — the allocation meter covers this. When powered on, it additionally consumes electricity, cooling, and CPU cycles — the consumption meter covers this. For example, a provider could charge $0.005/s for allocation (always) and $0.001/s for consumption (RUNNING only): a stopped host costs $0.005/s, a running host costs $0.006/s. Without the dual model, the provider either charges full price for stopped hosts or absorbs the reservation cost of idle hardware.
@@ -263,3 +263,11 @@ Bandwidth is a consumption meter. Unlike the resource meters above, it is driven
 
 - **Owner:** OSAC platform team
 - **Impact:** CAP-26. The current model starts metering at READY/ALLOCATED because that is when the resource is usable by the tenant. However, PENDING resources may already consume backend infrastructure (network configuration, VLAN allocation). Starting at PENDING aligns with the BMaaS allocation model (metering from provisioning start). Starting at READY aligns with what the tenant can observe and use. This applies to all networking resources with a PENDING-to-READY transition.
+
+---
+
+## Provenance
+
+Authored: respond @ prd 0.6.0 - 7b6dfe0, workspace main @ 3100993
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"7b6dfe0","source_repo":"3100993","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false} -->
