@@ -199,7 +199,9 @@ MaaS usage data must be queryable within 60 seconds of inference completion [PRD
 
 **Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The Metering Service maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` route to the DLQ with `reason=tenant_resolution_failed`.
 
-**MaaS delivery resilience:** MaaS inference events have no fulfillment resource to reconcile against — unlike VMaaS/CaaS, lost events are unrecoverable. The AI Gateway IPP plugin is expected to retry delivery on connection failure or non-2xx responses. Events lost during a Metering Service restart that exceeds the AI Gateway's retry budget are an accepted trade-off of the single-replica model. This will be resolved by raising a requirement for the IPP plugin to support publishing directly to Kafka, eliminating the HTTP hop and the data loss window.
+**MaaS delivery resilience:** MaaS inference events have no fulfillment resource to reconcile against — unlike VMaaS/CaaS, lost events are unrecoverable. The current AI Gateway IPP plugin (`external-metering`) has no retry logic — if the HTTP POST to `/ingest/inference` fails, the error is logged and the event is lost. Additionally, the metering report blocks the ext-proc response pipeline, so Metering Service latency directly adds to inference response time. Any Metering Service downtime (restart, network partition) causes permanent MaaS event loss at the current plugin implementation. This will be resolved by raising a requirement for the IPP plugin to support publishing directly to Kafka, eliminating the HTTP hop, the data loss window, and the response-path latency coupling.
+
+**MaaS streaming dependency:** Streaming inference mode requires the `stream-usage-enforcer` plugin in the PayloadProcessorConfig chain to inject `stream_options.include_usage=true`. Without it, OpenAI-compatible providers return no usage data in streaming responses, and the `external-metering` plugin silently reports zero tokens. Deployments must include this plugin for accurate MaaS metering.
 
 #### Reconciliation Loop
 
@@ -836,6 +838,7 @@ Using pytest / osac-test-infra against a deployed OSAC installation:
 - Basic reconciliation loop (hourly, detects missed creation/deletion)
 - Cost Management adapter consuming from Kafka (or file/stdout adapter for early validation)
 - Unit and integration test coverage for Watch Consumer and Heartbeat Generator
+- MaaS metering requires [opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386) merged for `organization_id` tenant attribution
 
 ### Tech Preview
 
