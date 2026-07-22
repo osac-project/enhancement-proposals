@@ -644,7 +644,7 @@ This satisfies NFR-1 ("no single point of failure") because the Metering Service
 4. P1 prerequisite (`status.state_transition_time`) is completed before sub-minute billing accuracy is required
 5. MaaS inference event schema is settled: the AI Gateway external-metering plugin emits `inference.tokens.used` CloudEvents with `organization_id`, `cost_center`, token counts, and model metadata
 6. One external billing provider is active per deployment at any time
-7. P2 prerequisite: fulfillment-service populates `project_id` on ComputeInstance and ClusterOrder resources from the Organizations EP's project attribution. Until completed, the `project_id` field in metering events is null and project-level billing breakdown (CAP-8, CAP-9) is not possible
+7. Project attribution is available via `metadata.project` on all fulfillment-service resource types. The Watch Consumer extracts this field and maps it to the `project_id` base event field. Project-level billing breakdown (CAP-8, CAP-9) depends on tenants assigning resources to projects.
 
 ### Security Considerations
 
