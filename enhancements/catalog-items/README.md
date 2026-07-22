@@ -150,7 +150,7 @@ created. Both will have similar properties, so we'll use Cluster as an example:
 
 ClusterCatalogItem
 * references an existing ClusterTemplate by ID
-* includes a list of field definitions covering all fields from the resource spec (e.g., ClusterSpec or ComputeInstanceSpec). Each field definition specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The field set is fixed per resource type — it does not vary by template.
+* includes a list of field definitions, each of which specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The UI always includes all fields from the resource spec, but the API accepts partial field lists (e.g., CLI-created items may include only a subset).
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
 
@@ -222,9 +222,10 @@ Two new message types will be added to the proto definitions in
 - `title` (string) - human-friendly short name for display in UIs and CLIs
 - `description` (string) - markdown-formatted long description
 - `template` (string) - references a `ClusterTemplate` by ID
-- `fields` (repeated FieldDefinition) - ordered list of field definitions
-  covering all fields from the resource spec, each configured as pre-defined
-  by the admin or editable by the user
+- `fields` (repeated FieldDefinition) - ordered list of field definitions that
+  specify which resource spec fields are pre-defined by the admin and which are
+  editable by the user. The UI includes all resource spec fields; the API
+  accepts partial lists for CLI and programmatic use
 - `published` (bool) - when false (the default), the item is hidden from Tenant
   Users; Cloud Provider Admins and Tenant Admins can see unpublished items
 - `tenant` (string) - internal field, not exposed through the public API. Scopes
@@ -260,12 +261,11 @@ Both types will have corresponding `ClusterCatalogItemsService` and
 #### API Behavior
 
 The `fields` list defines the contract between the admin and the user for a
-given catalog item. The field set is fixed per resource type — it covers
-all fields from the resource spec (e.g., all fields in `ComputeInstanceSpec`
-for a `ComputeInstanceCatalogItem`). The admin configures each field (editable
-toggle, default value, validation constraints) but does not add or remove
-fields. The server rejects catalog items that reference fields not defined in
-the resource spec.
+given catalog item. The UI includes all fields from the resource spec (e.g.,
+all fields in `ComputeInstanceSpec` for a `ComputeInstanceCatalogItem`), but
+the API accepts partial field lists — not all fields need to be included.
+Fields not listed in `fields` are not managed by the catalog item. The server
+rejects catalog items that reference fields not defined in the resource spec.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:
