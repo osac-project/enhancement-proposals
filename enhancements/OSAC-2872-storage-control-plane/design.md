@@ -53,12 +53,12 @@ The storage control plane spans three repositories plus the installer:
 
 | Repository | What it owns | Why here |
 |---|---|---|
-| `osac-csi-driver` | CSI meta-driver binary, gRPC proxy to vendor CSI sockets, Helm chart for CSI deployment (controller Deployment, node DaemonSet, CSIDriver, StorageClasses, RBAC) | CSI drivers have a unique deployment model (DaemonSet + Deployment with kubelet integration, vendor sidecars, unix sockets) that does not fit any existing repo |
-| `fulfillment-service` | Storage logic layer: private Volume API (gRPC + REST), tier resolution, policy engine, credential manager, volume inventory | Already owns StorageBackend and StorageTier (OSAC-917). The storage logic shares DB, auth, and OPA infrastructure with the existing fulfillment-service |
+| `osac-csi-driver` | CSI meta-driver binary, gRPC proxy for attach/detach to vendor CSI controllers, Helm chart for CSI deployment (controller Deployment, node DaemonSet, CSIDriver, StorageClasses, RBAC) | CSI drivers have a unique deployment model (DaemonSet + Deployment with kubelet integration, vendor sidecars, unix sockets) that does not fit any existing repo |
+| `fulfillment-service` | Storage logic layer: private Volume API (gRPC + REST), tier resolution, policy engine, credential manager, vendor CSI proxy for create/delete, volume inventory | Already owns StorageBackend and StorageTier (OSAC-917). The storage logic shares DB, auth, and OPA infrastructure with the existing fulfillment-service |
 | `osac-aap` | Ansible roles modified to deploy the OSAC CSI driver and vendor plugins to tenant clusters | Existing pattern: AAP handles cluster-side provisioning |
 | `osac-installer` | Umbrella Helm chart wiring: adds osac-csi-driver as an optional dependency | Existing pattern: each component ships its own chart, osac-installer assembles them |
 
-For each volume operation, the CSI controller calls the fulfillment-service Volume API for orchestration (tier resolution, policy, inventory), then proxies the vendor-specific call to the VAST controller on the hub via TCP gRPC, and finally updates the Volume API with the vendor result. The node plugin routes mount/unmount to vendor node plugins based on `volume_context` metadata embedded at provisioning time, with no control plane calls.
+The Volume API is fully declarative: the CSI controller makes a single CreateVolume call, and the Volume API internally handles tier resolution, policy enforcement, credential retrieval, vendor volume creation (via the VAST CSI controller on the hub), and inventory registration. The call returns when the volume is ready. Vendor credentials never leave the fulfillment-service process. The CSI driver's only responsibilities are the CSI gRPC interface (responding to Kubernetes sidecars), attach/detach proxy to the vendor controller, and node-level mount routing.
 
 ```mermaid
 graph TB
@@ -77,27 +77,29 @@ graph TB
             policy["Policy Engine"]
             creds["Credential Manager"]
             inv["Volume Inventory"]
+            vendorproxy["Vendor CSI Proxy"]
         end
         vast["VAST CSI Controller<br/>Deployment"]
     end
 
     pvc --> ep
     ep -->|"CSI CreateVolume"| ctrl
-    ctrl -->|"single gRPC call"| volapi
+    ctrl -->|"CreateVolume"| volapi
     volapi --> tier
     volapi --> policy
     volapi --> creds
     volapi --> inv
-    ctrl -->|"proxy to vendor"| vast
+    volapi -->|"vendor CreateVolume"| vendorproxy
+    vendorproxy --> vast
     vast --> array["VAST Array"]
 
     ea -->|"CSI ControllerPublish"| ctrl
-    ctrl -->|"proxy"| vast
+    ctrl -->|"proxy attach/detach"| vast
 
     node -->|"route by<br/>volume_context"| vendornode["VAST Node Plugin"]
 ```
 
-Key takeaway: the tenant cluster has no vendor controllers and no vendor credentials. All storage decisions happen on the hub. The node plugin never contacts the control plane.
+Key takeaway: the tenant cluster has no vendor controllers and no vendor credentials. Volume creation and deletion happen entirely on the hub (Volume API calls the vendor internally). The CSI driver only proxies attach/detach directly to the vendor controller. The node plugin never contacts the control plane.
 
 ![OSAC Storage and CSI Components](osac-storage-components.png)
 
@@ -108,6 +110,8 @@ Key takeaway: the tenant cluster has no vendor controllers and no vendor credent
 Starting state: a tenant cluster has been provisioned via ClusterOrder, the OSAC CSI driver and VAST node plugins are deployed, and StorageClasses matching the tenant's configured tiers exist on the cluster.
 
 **Actors:** Tenant User (creates PVC), Kubernetes (external-provisioner, external-attacher, kubelet), OSAC CSI Driver, fulfillment-service (Volume API), VAST CSI Controller, VAST Array.
+
+The tenant user who created the cluster is the authenticated identity for all CSI-initiated Volume API calls on that cluster.
 
 ```mermaid
 sequenceDiagram
@@ -123,20 +127,18 @@ sequenceDiagram
     CSI->>VolAPI: CreateVolume(tenant, tier, size, access_mode)
     VolAPI->>VolAPI: Resolve tier: gold -> VAST backend, endpoint, protocol
     VolAPI->>VolAPI: Check policy: tenant authorized, tier access allowed
-    VolAPI->>VolAPI: Get credentials: VAST creds for this request
-    VolAPI->>VolAPI: Persist volume record (state: creating)
-    VolAPI-->>CSI: Volume details (backend, endpoint, vendor params)
-    CSI->>VAST: CSI CreateVolume (with vendor creds + params)
+    VolAPI->>VolAPI: Get credentials from StorageBackend
+    VolAPI->>VAST: CSI CreateVolume (with vendor creds + params)
     VAST->>Array: Create volume on VAST array
     Array-->>VAST: Volume ID
-    VAST-->>CSI: Vendor volume ID + details
-    CSI->>VolAPI: UpdateVolume(vendor_volume_id, state: available)
-    CSI->>CSI: Enrich volume_context (osac.backend, osac.volume-id, osac.protocol)
-    CSI-->>K8s: CreateVolume response
+    VAST-->>VolAPI: Vendor volume ID + details
+    VolAPI->>VolAPI: Persist volume record (state: available)
+    VolAPI-->>CSI: Volume (with volume_context: osac.backend, osac.volume-id, osac.protocol)
+    CSI-->>K8s: CreateVolume response (volume_context stored as PV volumeAttributes)
     K8s->>K8s: Create PV, bind PVC
 ```
 
-The CSI controller makes two Volume API calls per provision: CreateVolume (persists record, resolves tier, checks policy, returns credentials) and UpdateVolume (records vendor volume ID, transitions to AVAILABLE).
+The CSI controller makes a single CreateVolume call to the Volume API, which handles the full orchestration server-side: tier resolution, policy check, credential retrieval, vendor volume creation, and inventory registration. The call returns when the volume is ready. The `volume_context` returned by the Volume API is stored by Kubernetes on the PersistentVolume as `spec.csi.volumeAttributes`, where the node plugin later reads it for vendor routing.
 
 ![OSAC CSI Driver Flow - CaaS](osac-csi-flow-caas.png)
 
@@ -160,11 +162,10 @@ No control plane calls are made from the node. All routing information is baked 
 2. Unmount (reverse of mount): kubelet -> OSAC Node -> VAST Node (NodeUnpublishVolume, NodeUnstageVolume).
 3. Detach: external-attacher -> OSAC Controller -> VAST Controller (ControllerUnpublishVolume).
 4. Deprovision: external-provisioner calls DeleteVolume on OSAC CSI Controller.
-5. OSAC CSI Controller calls Volume API `DeleteVolume` (updates state to deleting, verifies ownership).
-6. OSAC CSI Controller proxies DeleteVolume to VAST CSI Controller.
-7. VAST deletes volume on array.
-8. OSAC CSI Controller calls Volume API `UpdateVolume` (state: deleted).
-9. Kubernetes deletes PV.
+5. OSAC CSI Controller calls Volume API `DeleteVolume`.
+6. Volume API internally: verifies ownership, calls VAST CSI controller to delete the vendor volume, transitions state to DELETING, and eventually to DELETED via its own reconciler.
+7. OSAC CSI Controller returns success to Kubernetes.
+8. Kubernetes deletes PV.
 
 #### Error Handling
 
@@ -172,7 +173,7 @@ No control plane calls are made from the node. All routing information is baked 
 
 **Policy denial (unauthorized tenant or tier):** The Volume API returns `PERMISSION_DENIED`. The CSI controller returns a CSI error. The PVC stays Pending with an event describing the denial.
 
-**Vendor volume creation failure:** The Volume API has already persisted the volume record in `creating` state. The CSI controller returns the vendor error to Kubernetes. On retry, the Volume API's CreateVolume is idempotent by volume name (derived deterministically from the PVC name): if a volume with the same name exists in `creating` state, it returns the existing record and the CSI controller retries the vendor call. The vendor CSI CreateVolume is also idempotent by name per the CSI spec, so duplicate vendor volumes are not created even if the controller crashes between the vendor call and the UpdateVolume call.
+**Vendor volume creation failure:** The Volume API handles retries internally. The volume name is derived deterministically from the PVC name, so the Volume API's CreateVolume is idempotent: if a volume with the same name exists in `creating` state, it retries the vendor call rather than creating a duplicate. The vendor CSI CreateVolume is also idempotent by name per the CSI spec. If the Volume API returns an error, Kubernetes retries the CSI CreateVolume call with exponential backoff.
 
 **Fulfillment-service unreachable:** The CSI controller returns `UNAVAILABLE`. Kubernetes retries with exponential backoff.
 
@@ -186,7 +187,8 @@ No control plane calls are made from the node. All routing information is baked 
 - `internal/storage/tier.go`: tier resolution logic.
 - `internal/storage/policy.go`: policy engine.
 - `internal/storage/credentials.go`: credential manager.
-- These are Go packages called by the Volume API handler, not separate gRPC services. The tier resolution, policy, and credential logic is implemented as internal packages rather than a separate `StorageInternal` gRPC service, keeping the CSI driver thin and allowing the orchestration sequence to evolve server-side without driver changes.
+- `internal/storage/vendorproxy.go`: gRPC client to vendor CSI controllers (VAST) for CreateVolume/DeleteVolume.
+- These are Go packages called by the Volume API handler, not separate gRPC services. The tier resolution, policy, credential, and vendor proxy logic is implemented as internal packages rather than a separate `StorageInternal` gRPC service, keeping the CSI driver thin and allowing the orchestration sequence to evolve server-side without driver changes.
 
 **CSIDriver resource** (osac-csi-driver Helm chart)
 - Name: `csi.osac.openshift.io`
@@ -287,17 +289,7 @@ service Volumes {
 }
 ```
 
-Request and response messages follow the existing pattern. The `CreateVolumeResponse` includes transient routing fields beyond the persisted Volume object, so the CSI driver knows where to proxy the vendor call:
-
-```protobuf
-message CreateVolumeResponse {
-  Volume object = 1;
-  string backend_endpoint = 2;
-  map<string, string> vendor_params = 3;
-}
-```
-
-`backend_endpoint` and `vendor_params` are derived from tier resolution and returned once; they are not persisted in the Volume record. Credential delivery to the shared VAST controller depends on the resolution of Open Question 2. The Signal RPC supports future controller-driven state transitions.
+Request and response messages follow the existing pattern (`CreateVolumeRequest { Volume object }`, `CreateVolumeResponse { Volume object }`). Since the Volume API handles vendor calls internally, the response contains only the persisted Volume object with `volume_context` routing metadata populated in status fields. No transient routing fields or credentials are returned to the CSI driver. The Signal RPC supports future controller-driven state transitions.
 
 #### Volume API Server
 
@@ -312,21 +304,30 @@ type PrivateVolumesServer struct {
     tierResolver     *storage.TierResolver
     policyEngine     *storage.PolicyEngine
     credentialManager *storage.CredentialManager
+    vendorProxy      *storage.VendorProxy
 }
 ```
 
-The builder requires injected dependencies for tier resolution, policy, and credentials (analogous to how `PrivateStorageTiersServer` requires a `storageBackendsDAO` for cross-resource validation).
+The builder requires injected dependencies for tier resolution, policy, credentials, and vendor proxy (analogous to how `PrivateStorageTiersServer` requires a `storageBackendsDAO` for cross-resource validation).
 
 **CreateVolume handler logic:**
 
 1. Validate required fields (`storage_tier_id`, `size_gib`, `cluster_id`).
 2. Resolve tier: call `tierResolver.Resolve(ctx, tenant, storageTierID)` which reads StorageTier and its associated StorageBackend from the DB, returns backend endpoint, protocol, and volume parameters.
 3. Check policy: call `policyEngine.Check(ctx, tenant, storageTierID, "create")` which evaluates OPA rules for tier-access authorization.
-4. Set `status.state = CREATING`, clear caller-provided ID, force tenant from JWT claims.
-5. Delegate to `generic.Create()` to persist the volume record.
-6. Return the created volume (with backend details in status) to the CSI driver.
+4. Get credentials: call `credentialManager.Get(ctx, backendID)` to retrieve vendor credentials from the StorageBackend record.
+5. Call vendor: call `vendorProxy.CreateVolume(ctx, endpoint, credentials, volumeParams)` to create the volume on the VAST array via the VAST CSI controller on the hub.
+6. Persist: set `status.state = AVAILABLE`, `status.vendor_volume_id`, `status.backend_id`, `status.protocol`, populate `volume_context` routing metadata. Delegate to `generic.Create()` to persist the volume record.
+7. Return the created volume to the CSI driver.
 
-The CSI driver then uses the returned backend details to proxy the vendor CreateVolume call, and follows up with an UpdateVolume to set `vendor_volume_id` and transition to `AVAILABLE`.
+The Volume API is idempotent by volume name (derived deterministically from the PVC name). If a volume with the same name exists in `CREATING` state, the handler retries the vendor call rather than creating a duplicate.
+
+**DeleteVolume handler logic:**
+
+1. Verify ownership (tenant from JWT claims).
+2. Get credentials and vendor volume ID from the existing volume record.
+3. Call vendor: call `vendorProxy.DeleteVolume(ctx, endpoint, credentials, vendorVolumeID)` to delete the volume on the VAST array.
+4. Transition state to `DELETING`. A reconciler eventually transitions to `DELETED`.
 
 **Database migration** (`82_create_volumes_tables.up.sql`):
 
@@ -350,37 +351,44 @@ Evaluates whether a tenant is authorized to perform a storage operation on a giv
 
 **`credentials.go` (CredentialManager):**
 
-Retrieves vendor credentials from the StorageBackend record's inline `credentials` field (username, password). Credentials are provided to the CSI driver in the CreateVolume response so it can authenticate to the vendor CSI controller. Credentials are never stored on the tenant cluster.
+Retrieves vendor credentials from the StorageBackend record's inline `credentials` field (username, password). Credentials are used internally by the vendor proxy and never leave the fulfillment-service process.
+
+**`vendorproxy.go` (VendorProxy):**
+
+gRPC client to vendor CSI controllers on the hub cluster. Manages connections to vendor CSI endpoints (e.g., `vast-ctrl.osac-vendor-controllers:50051`). Calls vendor CSI CreateVolume/DeleteVolume with the resolved credentials and volume parameters. Connection management follows the same lazy-connect, cached-connection pattern as the existing proxy in osac-csi-driver.
 
 #### CSI Driver Changes
 
 **`pkg/fulfillment/client.go`:**
 
-Replace the `LoggingStub` with a real gRPC client. The `Client` interface expands to cover the Volume API:
+Replace the `LoggingStub` with a real gRPC client. The `Client` interface covers the Volume API:
 
 ```go
 type Client interface {
     CreateVolume(ctx context.Context, req *CreateVolumeRequest) (*Volume, error)
-    UpdateVolume(ctx context.Context, req *UpdateVolumeRequest) (*Volume, error)
     DeleteVolume(ctx context.Context, req *DeleteVolumeRequest) error
     Close() error
 }
 ```
 
-The gRPC client connects to the fulfillment-service endpoint (configurable via `--fulfillment-endpoint`). For CaaS (hub + spoke), the endpoint is the fulfillment-service's Kubernetes Service or Route on the hub cluster.
+No `UpdateVolume` is needed on the client: the Volume API handles vendor calls and state transitions internally. The gRPC client connects to the fulfillment-service endpoint (configurable via `--fulfillment-endpoint`). For CaaS (hub + spoke), the endpoint is the fulfillment-service's Kubernetes Service or Route on the hub cluster.
 
 **`pkg/driver/controller.go`:**
 
-The CreateVolume handler changes from the current flow (call `fulfillment.Resolve`, get connection, proxy) to:
+The CreateVolume handler simplifies to:
 
 1. Extract `tier` and `tenant` from StorageClass parameters.
 2. Call `fulfillment.CreateVolume(ctx, {tenant, tier, size, accessMode, clusterID})`.
-3. Volume API returns backend details (endpoint, protocol, vendor params, credentials).
-4. Get gRPC connection to vendor CSI endpoint via `proxyMgr.GetConnection(endpoint)`.
-5. Proxy CSI CreateVolume to vendor controller with credentials and params.
-6. On success: call `fulfillment.UpdateVolume(ctx, {volumeID, vendorVolumeID, state: AVAILABLE})`.
-7. Enrich `volume_context` with `osac.backend`, `osac.volume-id`, `osac.protocol`.
-8. Return response to Kubernetes.
+3. Volume API returns the completed Volume with `volume_context` routing metadata (`osac.backend`, `osac.volume-id`, `osac.protocol`).
+4. Return `volume_context` to Kubernetes. Kubernetes stores it on the PV as `spec.csi.volumeAttributes`.
+
+The DeleteVolume handler:
+
+1. Call `fulfillment.DeleteVolume(ctx, {volumeID})`.
+2. Volume API handles vendor deletion internally and transitions state to DELETING/DELETED.
+3. Return success to Kubernetes.
+
+ControllerPublishVolume/ControllerUnpublishVolume (attach/detach) still proxy directly to the vendor CSI controller via `proxyMgr`, since attach/detach requires node-level information the Volume API does not have.
 
 **`pkg/driver/node.go`:**
 
@@ -451,7 +459,7 @@ StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{tie
 
 ### Security Considerations
 
-**Credential isolation:** Vendor credentials (VAST username/password) are stored on the hub cluster only (in the fulfillment-service's StorageBackend record and per-tenant hub Secrets created by AAP). Whether credentials transit through the tenant cluster depends on the vendor credential delivery mechanism (see Open Question 2). The tenant cluster stores only the credentials needed to authenticate to the fulfillment-service, not vendor credentials.
+**Credential isolation:** Vendor credentials (VAST username/password) never leave the hub cluster. They are stored in the fulfillment-service's StorageBackend record and per-tenant hub Secrets created by AAP. The Volume API retrieves and uses vendor credentials internally when calling the VAST controller; credentials are never returned to the CSI driver or exposed on tenant clusters. The tenant cluster stores only the credentials needed to authenticate to the fulfillment-service.
 
 **Cross-cluster authentication:** The CSI driver on tenant clusters must authenticate to the fulfillment-service on the hub cluster. The recommended approach is service account tokens over TLS: during cluster provisioning, AAP creates a Kubernetes ServiceAccount on the hub cluster with a token scoped to the Volume API's private endpoints, and injects it into the CSI driver's Deployment on the tenant cluster as a Secret. This reuses the existing JWT authentication interceptor in the fulfillment-service. The same TLS transport covers the vendor proxy connection from the CSI controller to the VAST controller on the hub. A spike to evaluate authentication options (token over TLS, mTLS, SPIFFE) is recommended before implementation (see Open Question 1).
 
@@ -466,8 +474,9 @@ StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{tie
 | Fulfillment-service unreachable | CSI controller returns `UNAVAILABLE` | Kubernetes retries CreateVolume with exponential backoff | PVC stays Pending |
 | Tier resolution fails (invalid tier) | Volume API returns `NOT_FOUND` | No retry (tier does not exist) | PVC stays Pending with event |
 | Policy check fails (unauthorized) | Volume API returns `PERMISSION_DENIED` | No retry until policy changes | PVC stays Pending with event |
-| Vendor CreateVolume fails | Volume record stays in `CREATING` state | Kubernetes retries; Volume API is idempotent (returns existing record) | PVC stays Pending |
-| CSI controller pod restarts mid-operation | In-flight CreateVolume is lost | Kubernetes retries; Volume API idempotency handles duplicate requests | PVC stays Pending, then succeeds on retry |
+| Vendor CreateVolume fails | Volume API returns error to CSI driver | Kubernetes retries; Volume API is idempotent by name (retries vendor call for existing CREATING record) | PVC stays Pending |
+| CSI controller pod restarts mid-operation | In-flight Volume API call is lost | Kubernetes retries; Volume API idempotency handles duplicate requests | PVC stays Pending, then succeeds on retry |
+| Volume API crashes between vendor creation and persist | Vendor volume exists but no inventory record | On retry, Volume API calls vendor CreateVolume (idempotent by name), gets existing volume, persists record | PVC stays Pending, then succeeds on retry |
 | CSI node pod restarts | In-memory `volumeBackends` map is lost | kubelet re-issues NodeStageVolume with full `volume_context` | Temporary I/O error, then automatic recovery |
 | VAST array unreachable | Vendor CreateVolume returns error | Kubernetes retries with backoff | PVC stays Pending |
 | Volume stuck in CREATING state | Vendor creation timed out or controller crashed | Admin can manually delete the volume record via the private API. A reconciler to clean up stale records is a future improvement. | Volume visible in inventory as CREATING |
@@ -525,13 +534,13 @@ Instead of embedding the storage logic in the fulfillment-service, deploy a sepa
 **Cons:** Duplicates DB, auth, and OPA infrastructure already in fulfillment-service. Adds a new Helm chart, deployment, and operational burden. StorageBackend and StorageTier already live in fulfillment-service, so the storage logic would need cross-service calls to access them.
 **Rejected because:** The storage logic shares DB, auth, and OPA with existing fulfillment-service resources. A separate service adds operational cost without architectural benefit.
 
-### Alternative 2: CSI driver calls multiple StorageInternal RPCs directly
+### Alternative 2: CSI driver proxies vendor calls (client-side orchestration)
 
-Instead of a single Volume API call, the CSI driver calls ResolveTier, CheckPolicy, GetCredentials, and RegisterVolume as separate RPCs.
+Instead of the Volume API calling the VAST controller, the CSI driver receives routing info and credentials from the Volume API, then proxies the vendor CreateVolume/DeleteVolume call itself.
 
-**Pros:** More granular control from the CSI driver side. Each RPC can be retried independently.
-**Cons:** The CSI driver becomes a thick client that orchestrates storage decisions. Multiple roundtrips per volume operation. The driver must understand the correct ordering of operations.
-**Rejected because:** The design principle is a thin CSI driver. Server-side orchestration via a single Volume API call keeps the driver simple and allows the storage logic to evolve without driver changes.
+**Pros:** The fulfillment-service does not need vendor CSI gRPC connections. Simpler fulfillment-service.
+**Cons:** Vendor credentials transit through the tenant cluster (weakens credential isolation). The CSI driver becomes a thicker client that orchestrates the vendor call, tracks state, and calls UpdateVolume to close the loop. Two Volume API calls per operation instead of one.
+**Rejected because:** Credential isolation is a core requirement. Server-side vendor calls keep credentials on the hub, simplify the CSI driver, and make the Volume API fully declarative.
 
 ### Alternative 3: Do nothing (continue with vendor CSI operators)
 
@@ -550,12 +559,12 @@ The design recommends service account tokens over TLS for the CSI driver to auth
 **Owner:** Storage team
 **Impact:** Blocks the CSI driver's fulfillment client implementation, the vendor proxy TLS configuration, and the AAP provisioning role for credential distribution.
 
-### 2. Vendor credential delivery to shared VAST controller
+### 2. Attach/detach credential handling for shared VAST controller
 
-The VAST CSI controller runs as a shared Deployment on the hub cluster (one per hub, serving all tenants). Per-tenant VAST credentials exist (AAP creates per-tenant VMS Manager credentials stored in hub Secrets). The open question is how per-tenant credentials reach the shared VAST controller per-request: (a) the Volume API returns credentials to the CSI driver, which passes them to the VAST controller via the CSI `secrets` parameter (credentials transit through the tenant cluster briefly), or (b) the Volume API proxies the vendor call directly so credentials never leave the hub. Option (a) is simpler but weakens the credential isolation claim. Option (b) is architecturally cleaner but moves vendor proxy logic into the fulfillment-service.
+The VAST CSI controller runs as a shared Deployment on the hub cluster. Volume create/delete operations are handled server-side by the Volume API (credentials stay on the hub). However, ControllerPublish/Unpublish (attach/detach) is still proxied by the CSI driver directly to the VAST controller. How does the CSI driver authenticate to the shared VAST controller for attach/detach? Options: (a) the VAST controller accepts unauthenticated calls for attach/detach (simplest, acceptable if the hub network is trusted), (b) per-tenant credentials are injected into the CSI driver for attach/detach only, (c) attach/detach is also routed through the Volume API.
 
 **Owner:** Storage team
-**Impact:** Determines whether credentials transit through tenant clusters, affects the Volume API response contract, and may change the repo split for vendor proxy logic.
+**Impact:** Affects the CSI driver's attach/detach proxy implementation and whether the Volume API needs attach/detach RPCs.
 
 ### 3. StorageClass naming convention
 
@@ -569,15 +578,16 @@ The design proposes `osac-{tier}` or `osac-{tenant}-{tier}`. The current convent
 ### Unit Tests
 
 **fulfillment-service:**
-- Volume API server: Create validates required fields, forces tenant from JWT, sets initial state to CREATING. Update validates state transitions (CREATING->AVAILABLE, AVAILABLE->DELETING, DELETING->DELETED). Delete transitions to DELETING. Get/List filters by tenant.
+- Volume API server: Create validates required fields, forces tenant from JWT, orchestrates full flow (tier resolution, policy, vendor call, persist). Delete orchestrates vendor deletion and state transition. Get/List filters by tenant. CreateVolume is idempotent by name.
 - Tier resolution: resolves StorageTier to backend endpoint and protocol. Returns NOT_FOUND for nonexistent tier. Returns error when StorageBackend referenced by tier is missing.
 - Policy engine: allows authorized tenant for permitted tier. Denies unauthorized tenant. Denies access to tier not assigned to tenant.
 - Credential manager: retrieves credentials from StorageBackend inline field. Handles missing credentials.
+- Vendor proxy: calls VAST CSI controller CreateVolume/DeleteVolume. Handles connection errors, retries, idempotency.
 - Migration: volumes table created with correct columns, archived table, immutability triggers.
 
 **osac-csi-driver:**
-- Controller CreateVolume: calls fulfillment CreateVolume, proxies to vendor, calls UpdateVolume on success, enriches volume_context.
-- Controller DeleteVolume: calls fulfillment DeleteVolume, proxies vendor delete, updates state.
+- Controller CreateVolume: calls fulfillment CreateVolume (server-side orchestration), returns volume_context to Kubernetes.
+- Controller DeleteVolume: calls fulfillment DeleteVolume (server-side vendor deletion).
 - Node routing: routes to correct vendor socket based on volume_context. Records backend in volumeBackends map. Looks up backend for unstage/unpublish.
 - Fulfillment client: connects to endpoint, handles unavailable errors, closes cleanly.
 
