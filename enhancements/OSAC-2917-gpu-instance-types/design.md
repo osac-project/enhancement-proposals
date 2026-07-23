@@ -417,10 +417,10 @@ parameter, which accepts a list of `{pci_device_selector, resource_name}` object
 creates KubeVirt `hostDevices` entries.
 [Codebase: osac-aap/collections/ansible_collections/osac/templates/roles/ocp_virt_vm/]
 
-The role must be updated to read GPU devices from `compute_instance.spec.gpuDevices`
-instead of the separate `gpu_devices` parameter. The playbook already passes the full CR
-payload as `compute_instance` (`ansible_eda.event.payload`), so no playbook changes are
-needed. The separate `gpu_devices` role parameter can be deprecated.
+The role is updated to read GPU devices from `compute_instance.spec.gpuDevices`
+instead of the separate `gpu_devices` parameter, which is removed from the role's
+argument spec and task references. The playbook already passes the full CR payload as
+`compute_instance` (`ansible_eda.event.payload`), so no playbook changes are needed.
 
 The Cloud Provider Admin is responsible for entering the correct PCI device selector and
 resource name when creating InstanceTypes — these values must match the GPU hardware and
