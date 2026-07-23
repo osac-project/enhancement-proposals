@@ -22,7 +22,7 @@ superseded-by:
 
 ## Summary
 
-This enhancement adds a `storage_tier` field to `ComputeInstanceDisk` across the full OSAC stack -- proto definitions, fulfillment-service validation/defaults, CRD types, and AAP roles -- enabling per-disk storage tier selection with a mandatory resolution chain (user input > CatalogItem defaults > Template defaults). See [PRD](prd.md) for detailed requirements.
+This enhancement enables per-disk storage tier selection for ComputeInstances. A `storage_tier` field is added to `ComputeInstanceDisk` across the full OSAC stack -- proto definitions, fulfillment-service validation/defaults, CRD types, and AAP roles. Each disk can use a different tier (e.g., "fast" for a boot disk, "archive" for a data disk), with a mandatory resolution chain (user input > CatalogItem defaults > Template defaults) ensuring every disk has a tier before provisioning. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -34,10 +34,10 @@ This design adds `storage_tier` to `ComputeInstanceDisk`, making it a required f
 
 ### Goals
 
-- Reuse the existing FieldDefinition and SpecDefaults mechanisms for tier default resolution rather than introducing new defaulting infrastructure.
-- Validate tier existence at the fulfillment-service level (tier name exists in the StorageTier API). Tenant-level tier availability is resolved by AAP at provisioning time.
-- Preserve immutability semantics already enforced on `bootDisk` and `additionalDisks` via CRD XValidation rules.
-- Remove the `STORAGE_REQUESTED_TIER` environment variable from AAP, shifting the tier source to the CR payload.
+- Enable tenants to select different storage tiers for each disk on a ComputeInstance, so workloads get the appropriate storage QoS.
+- Allow admins to pre-configure tier defaults in CatalogItems and Templates, so tenant users can provision VMs without choosing a tier manually.
+- Prevent provisioning with invalid or nonexistent tiers by validating at request time and returning clear errors.
+- Preserve disk immutability — once a ComputeInstance is created, its disk tiers cannot be changed.
 
 ### Non-Goals
 
