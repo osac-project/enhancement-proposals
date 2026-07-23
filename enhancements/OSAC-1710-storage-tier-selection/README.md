@@ -81,6 +81,14 @@ StorageTier resources exist (OSAC-1110). StorageClasses are labeled with `osac.o
 3. Fulfillment-service validates `"standard"` exists.
 4. Provisioning proceeds.
 
+#### Happy Path: Additional Disks Resolved from CatalogItem Defaults
+
+1. Tenant Admin created a CatalogItem with a FieldDefinition: `path: "additional_disks"`, `default: [{size_gib: 500, storage_tier: "fast"}]`.
+2. Tenant User sends `POST /api/public/v1/compute_instances` with `boot_disk.storage_tier: "standard"` and no `additional_disks`.
+3. Fulfillment-service applies FieldDefinitions: the CatalogItem default provides the entire `additional_disks` array.
+4. Fulfillment-service validates that `"standard"` and `"fast"` exist as StorageTier resources.
+5. Provisioning proceeds with boot disk on `"standard"` and one additional disk on `"fast"`.
+
 #### Happy Path: Boot Disk Tier Resolved from Template Defaults
 
 1. Tenant User sends `POST /api/public/v1/compute_instances` with no `boot_disk` at all and no additional disks.
@@ -88,15 +96,15 @@ StorageTier resources exist (OSAC-1110). StorageClasses are labeled with `osac.o
 3. Fulfillment-service validates the resolved tier.
 4. Provisioning proceeds.
 
-#### Why Additional Disks Require Explicit Tiers
+#### Additional Disk Defaulting Semantics
 
 The boot disk and additional disks follow different defaulting rules:
 
-- **Boot disk** supports tier defaults through CatalogItem FieldDefinitions (`boot_disk.storage_tier` path) and Template SpecDefaults (`boot_disk` field). This works because the boot disk is a known, single, always-present disk -- an admin can meaningfully pre-select a tier for it.
+- **Boot disk** supports per-field defaults through CatalogItem FieldDefinitions (`boot_disk.storage_tier` path) and Template SpecDefaults (`boot_disk` field). This works because the boot disk is a known, single, always-present disk -- an admin can meaningfully pre-select a tier for it.
 
-- **Additional disks** have no default mechanism. Unlike the boot disk, additional disks are optional, variable in count, and serve purposes that the admin cannot predict at template or catalog item authoring time. Additionally, the FieldDefinition path resolver uses dot-notation (e.g., `boot_disk.storage_tier`) and does not support array element addressing (e.g., `additional_disks[0].storage_tier`), nor does `ComputeInstanceTemplateSpecDefaults` carry an `additional_disks` field. The existing defaulting infrastructure is designed around singular, well-known fields -- extending it to repeated collections would require new path resolution logic for an unclear benefit, since the admin would only be able to assign the same tier to every additional disk regardless of its intended use.
+- **Additional disks** can be defaulted as a whole array through a CatalogItem FieldDefinition with `path: "additional_disks"`. This follows the same semantics as `network_attachments`: the FieldDefinition path resolver does not support per-element field addressing (e.g., `additional_disks[0].storage_tier`), so the default covers the entire array -- size and tier for each element. If the user accepts the default, provisioning proceeds with those disks. If the user wants to change anything -- just the size, just the tier, or the number of disks -- they must provide the entire `additional_disks` array, since there is no per-element merging.
 
-Therefore, every additional disk must carry an explicit `storage_tier` from the user. Omitting it is a validation error.
+When no CatalogItem default exists for `additional_disks`, every additional disk must carry an explicit `storage_tier` from the user. Omitting it is a validation error.
 
 #### Error Path: Boot Disk Tier Not Resolved
 
@@ -106,9 +114,8 @@ Therefore, every additional disk must carry an explicit `storage_tier` from the 
 
 #### Error Path: Additional Disk Missing Tier
 
-1. Tenant User sends a request with `boot_disk.storage_tier: "fast"` and `additional_disks[0]: {size_gib: 200}` (no `storage_tier`).
-2. No default mechanism applies to additional disks. The tier must be provided by the user.
-3. Fulfillment-service returns `INVALID_ARGUMENT`: `"additional_disks[0].storage_tier is required"`.
+1. Tenant User sends a request with `boot_disk.storage_tier: "fast"` and `additional_disks[0]: {size_gib: 200}` (no `storage_tier`). The user provided their own `additional_disks`, overriding any CatalogItem default.
+2. Fulfillment-service returns `INVALID_ARGUMENT`: `"additional_disks[0].storage_tier is required"`.
 
 #### Error Path: Tier Not Available
 
@@ -227,7 +234,22 @@ Example FieldDefinition for a CatalogItem that pre-selects a boot disk tier:
 }
 ```
 
-Additional disk tiers cannot be defaulted through FieldDefinitions. The path resolution mechanism uses dot-notation (e.g., `boot_disk.storage_tier`) and does not support array element addressing (e.g., `additional_disks[0].storage_tier`). This is not a limitation: additional disks are optional, user-defined, and variable in count -- an admin cannot predict how many additional disks a user will add or what tier each should use. Boot disk tier defaults are the meaningful use case, and they work through both the FieldDefinition path (`boot_disk.storage_tier`) and the Template SpecDefaults mechanism. [Locked: D2]
+Additional disks can be defaulted as a whole array through a FieldDefinition with `path: "additional_disks"`. This follows the same semantics as `network_attachments`: the path resolver treats array fields as opaque values, so the default covers the entire array. If the user provides their own `additional_disks`, the user-provided value replaces the entire default -- no per-element merging occurs.
+
+Example FieldDefinition for a CatalogItem that pre-configures a data disk:
+
+```json
+{
+  "path": "additional_disks",
+  "display_name": "Additional Disks",
+  "editable": true,
+  "default": [
+    {"size_gib": 500, "storage_tier": "fast"}
+  ]
+}
+```
+
+Per-element field addressing (e.g., `additional_disks[0].storage_tier`) is not supported -- the path resolver uses dot-notation only. [Locked: D2]
 
 #### 4. Fulfillment-Service Validation
 
