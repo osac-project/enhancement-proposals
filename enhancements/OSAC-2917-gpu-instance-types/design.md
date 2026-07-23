@@ -3,7 +3,7 @@ title: gpu-enabled-instance-types
 authors:
   - tmorgenshtern@redhat.com
 creation-date: 2026-07-22
-last-updated: 2026-07-22
+last-updated: 2026-07-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2917
 prd:
@@ -22,10 +22,10 @@ superseded-by:
 ## Summary
 
 This design extends the InstanceType resource with a structured `GpuSpec` sub-message
-containing GPU type and count, and wires that data through the existing
-InstanceType-to-ComputeInstance reconciliation pipeline so that tenant VMs are provisioned
-with GPU hardware attached via KubeVirt host device passthrough. See [PRD](prd.md) for
-detailed requirements.
+containing PCI device selector, resource name, and count, and wires that data through the
+existing InstanceType-to-ComputeInstance reconciliation pipeline so that tenant VMs are
+provisioned with GPU hardware attached via KubeVirt host device passthrough. See
+[PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -55,10 +55,12 @@ introduced.
 - Use a structured sub-message for GPU data to allow future extension (MIG, vGPU,
   framebuffer memory) without breaking the API shape.
 - Enforce the same immutability contract on GPU fields as on `cores` and `memory_gib`.
-- Keep GPU type as free text to avoid coupling the API to specific hardware inventories.
-  [Locked: D3]
+- Use `pci_device_selector` and `resource_name` as the GPU fields in the API, matching
+  what the AAP `ocp_virt_vm` role already consumes. No template-level mapping layer.
 - Require no database schema migrations -- GPU data is stored in the existing JSON `data`
   column.
+- Extend the existing [InstanceType developer guide](https://github.com/osac-project/docs/blob/main/guides/developer/instancetype-guide.md)
+  with GPU-specific sections.
 
 ### Non-Goals
 
@@ -68,7 +70,6 @@ introduced.
 - MIG partitioning, vGPU, or GPU cluster (InfiniBand) support. [Locked: D7]
 - Multi-cluster GPU placement decisions. [Locked: D6]
 - UI changes -- API and CLI only for this milestone.
-- User-facing documentation (API reference, AAP template mapping guide).
 
 ## Proposal
 
@@ -79,15 +80,16 @@ This feature makes three changes across two repositories:
    method to resolve GPU fields from the referenced InstanceType and stamp them onto the
    K8s ComputeInstance CR. Add GPU columns to the InstanceType CLI table rendering.
 
-2. **osac-operator**: Add `GpuType` and `GpuCount` fields to the ComputeInstance CRD spec.
-   These fields are populated by the fulfillment reconciler and serialized as part of the
-   CR payload sent to AAP. No controller logic changes are needed -- the existing
-   `extractExtraVars` method serializes the entire CR spec, so new fields are automatically
-   included.
+2. **osac-operator**: Add a `GpuDevices` list field to the ComputeInstance CRD spec,
+   where each entry has `PciDeviceSelector` and `ResourceName`. These fields are
+   populated by the fulfillment reconciler and serialized as part of the CR payload sent
+   to AAP. No controller logic changes are needed -- the existing `extractExtraVars`
+   method serializes the entire CR spec, so new fields are automatically included.
 
-3. **osac-aap**: Verify that the existing `ocp_virt_vm` role's `gpu_devices` parameter
-   works when driven by the new data path. The AAP template configuration maps the
-   user-friendly GPU type string to PCI device selectors.
+3. **osac-aap**: No changes required. The existing `ocp_virt_vm` role already accepts
+   `gpu_devices` as a list of `{pci_device_selector, resource_name}` objects. The role
+   reads GPU data from the `compute_instance` payload, which already flows through the
+   AAP playbook.
 
 No new gRPC services, database migrations, or CRDs are introduced.
 
@@ -96,8 +98,7 @@ No new gRPC services, database migrations, or CRDs are introduced.
 #### Creating a GPU-Enabled InstanceType
 
 **Actor:** Cloud Provider Admin
-**Starting state:** OSAC is deployed with GPU-equipped worker nodes. The AAP template
-is configured with a GPU type-to-PCI device selector mapping.
+**Starting state:** OSAC is deployed with GPU-equipped worker nodes.
 
 1. Cloud Provider Admin calls `InstanceTypes/Create` with GPU fields:
    ```
@@ -109,13 +110,17 @@ is configured with a GPU type-to-PCI device selector mapping.
          "cores": 8,
          "memory_gib": 64,
          "description": "8 vCPU, 64 GiB, 1x A100 GPU",
-         "gpu": { "type": "A100", "count": 1 }
+         "gpu": {
+           "pci_device_selector": "10DE:20B0",
+           "resource_name": "nvidia.com/A100",
+           "count": 1
+         }
        }
      }
    }
    ```
-2. The server validates `cores > 0`, `memory_gib > 0`, and `gpu.count` between 1 and 16
-   (when gpu is present). GPU type is free text with no system-side validation. [Locked: D3]
+2. The server validates `cores > 0`, `memory_gib > 0`, and when `gpu` is present:
+   `pci_device_selector` and `resource_name` are non-empty, `count` is between 1 and 16.
 3. The InstanceType is persisted with state `ACTIVE`.
 
 #### Provisioning a GPU ComputeInstance
@@ -137,7 +142,7 @@ sequenceDiagram
     participant AAP as AAP (ocp_virt_vm)
     participant KV as KubeVirt
 
-    CPA->>API: Create InstanceType (gpu: {type: "A100", count: 1})
+    CPA->>API: Create InstanceType (gpu: {pci_device_selector, resource_name, count})
     API->>DB: Store InstanceType
 
     Note over API: Tenant User creates ComputeInstance
@@ -145,7 +150,7 @@ sequenceDiagram
 
     Reconciler->>DB: Resolve InstanceType by name
     DB-->>Reconciler: InstanceTypeSpec (cores, memory, gpu)
-    Reconciler->>K8s: Stamp CR (cores, memoryGiB, gpuType, gpuCount)
+    Reconciler->>K8s: Stamp CR (cores, memoryGiB, gpuDevices[])
 
     Operator->>K8s: Watch ComputeInstance CR
     Operator->>AAP: Launch job (CR payload as extra vars)
@@ -153,9 +158,9 @@ sequenceDiagram
 ```
 
 This diagram shows the end-to-end data flow. The key addition is the GPU fields flowing
-from the InstanceType through the reconciler to the CR, where they are serialized as part
-of the CR payload to AAP. The AAP template maps the GPU type string to PCI device
-selectors via its own configuration.
+from the InstanceType through the reconciler to the CR. The reconciler expands the
+InstanceType's single GPU config × count into a `gpuDevices` list on the CR. The CR
+payload is serialized to AAP, where the `ocp_virt_vm` role reads the device list directly.
 
 Steps:
 
@@ -174,11 +179,11 @@ Steps:
 2. The ComputeInstance is created with no GPU fields on its own proto -- GPU flows through
    the InstanceType reference.
 3. The fulfillment reconciler's `addExplicitFields` resolves the InstanceType, reads
-   `spec.gpu`, and stamps `gpuType` and `gpuCount` onto the K8s ComputeInstance CR.
+   `spec.gpu`, and expands it into a `gpuDevices` list on the K8s ComputeInstance CR
+   (count × `{pciDeviceSelector, resourceName}`).
 4. The osac-operator watches the CR. The `extractExtraVars` method serializes the full CR
-   spec (including the new GPU fields) into `ansible_eda.event.payload`.
-5. The AAP `ocp_virt_vm` role reads `gpuType` and `gpuCount` from the payload, maps the
-   GPU type to PCI device selectors via the template configuration, and creates KubeVirt
+   spec (including `gpuDevices`) into `ansible_eda.event.payload`.
+5. The AAP `ocp_virt_vm` role reads `gpuDevices` from the payload and creates KubeVirt
    `hostDevices` entries in the VM domain spec.
 6. KubeVirt schedules the VM on a node with the matching GPU hardware.
 
@@ -187,11 +192,13 @@ Steps:
 **Actor:** Tenant User
 
 1. Tenant User calls `InstanceTypes/List`.
-2. Response includes GPU fields on each InstanceType. GPU-enabled types show `gpu.type`
-   and `gpu.count`; non-GPU types omit the `gpu` field (proto `optional`).
-3. CLI table rendering shows GPU TYPE and GPU COUNT columns (blank for non-GPU types).
+2. Response includes GPU fields on each InstanceType. GPU-enabled types show
+   `gpu.pci_device_selector`, `gpu.resource_name`, and `gpu.count`; non-GPU types omit
+   the `gpu` field (proto `optional`).
+3. CLI table rendering shows GPU DEVICE, GPU RESOURCE, and GPU COUNT columns (blank for
+   non-GPU types).
 4. Filtering by GPU fields is supported via CEL: `has(this.spec.gpu)` or
-   `this.spec.gpu.type == "A100"`.
+   `this.spec.gpu.resource_name == "nvidia.com/A100"`.
 
 #### Error Handling: GPU Hardware Unavailable
 
@@ -211,7 +218,7 @@ finalizers, or aggregated API servers are introduced.
 | Resource | Component | Change |
 |----------|-----------|--------|
 | `InstanceType` proto (public + private) | fulfillment-service | Add `GpuSpec` sub-message to `InstanceTypeSpec` |
-| `ComputeInstance` CRD | osac-operator | Add `gpuType` and `gpuCount` fields to `ComputeInstanceSpec` |
+| `ComputeInstance` CRD | osac-operator | Add `gpuDevices` list field to `ComputeInstanceSpec` |
 
 The InstanceType service methods (`Create`, `List`, `Get`, `Update`, `Delete`) remain
 unchanged in signature. GPU data flows through the existing `object` field in request and
@@ -227,10 +234,10 @@ The `@temp-api` file at `osac-ux/libs/ui-components/src/api/v1/instance-types.ts
 currently has no GPU fields. UI work is deferred to a follow-up milestone.
 
 When the proto changes in this design land and `pnpm gen-types` is run in osac-ux:
-- The generated TypeScript types will include the `gpu` field on `InstanceTypeSpec`.
+- The generated TypeScript types will include the `gpu` field on `InstanceTypeSpec`
+  with `pciDeviceSelector`, `resourceName`, and `count`.
 - The `formatInstanceTypeSizing` helper (which currently returns strings like
-  "4 vCPU, 8 GiB") will need updating to append GPU information (e.g.,
-  "4 vCPU, 8 GiB, 1x A100").
+  "4 vCPU, 8 GiB") will need updating to append GPU information.
 - InstanceType list and detail views will need GPU columns or display fields.
 
 No `@temp-api` deviations or anti-patterns apply -- the proto design uses a structured
@@ -247,14 +254,16 @@ Add the following to both `proto/public/osac/public/v1/instance_type_type.proto`
 // Hardware specification for GPU devices attached to compute instances
 // provisioned with this instance type.
 message GpuSpec {
-  // User-friendly GPU type identifier (e.g., "A100", "H100").
-  // Free text -- the system does not validate that this type exists
-  // on the cluster. Cloud Provider Admin is responsible for entering
-  // types that match the AAP template's GPU device mapping.
-  string type = 1 [(buf.validate.field).string.min_len = 1];
+  // PCI device selector identifying the GPU hardware (e.g., "10DE:20B0").
+  // Must match the device selector configured on the cluster's GPU nodes.
+  string pci_device_selector = 1 [(buf.validate.field).string.min_len = 1];
+
+  // Kubernetes device plugin resource name (e.g., "nvidia.com/A100").
+  // Used by KubeVirt to request GPU resources from the node.
+  string resource_name = 2 [(buf.validate.field).string.min_len = 1];
 
   // Number of GPU devices of this type.
-  int32 count = 2 [(buf.validate.field).int32 = {gte: 1, lte: 16}];
+  int32 count = 3 [(buf.validate.field).int32 = {gte: 1, lte: 16}];
 }
 ```
 
@@ -285,9 +294,9 @@ message InstanceTypeSpec {
 The `optional` keyword ensures that non-GPU instance types serialize without a `gpu`
 field, and `has(this.spec.gpu)` works in CEL filter expressions.
 
-Validation constraints on `GpuSpec` fields (`min_len = 1` on `type`, `gte = 1, lte = 16`
-on `count`) are enforced by protovalidate only when the `gpu` field is present. When `gpu`
-is omitted, the constraints are not evaluated.
+Validation constraints on `GpuSpec` fields (`min_len = 1` on `pci_device_selector` and
+`resource_name`, `gte = 1, lte = 16` on `count`) are enforced by protovalidate only when
+the `gpu` field is present. When `gpu` is omitted, the constraints are not evaluated.
 [Codebase: fulfillment-service/docs/API.md]
 
 #### Server Changes (fulfillment-service)
@@ -323,15 +332,21 @@ ComputeInstance CR. After the existing `spec.Cores` and `spec.MemoryGiB` assignm
 (line ~665):
 
 ```go
-// Resolve GPU from InstanceType
+// Expand GPU from InstanceType into device list
 if gpu := itSpec.GetGpu(); gpu != nil {
-    spec.GpuType = gpu.GetType()
-    spec.GpuCount = gpu.GetCount()
+    devices := make([]operatorv1alpha1.GpuDevice, gpu.GetCount())
+    for i := range devices {
+        devices[i] = operatorv1alpha1.GpuDevice{
+            PciDeviceSelector: gpu.GetPciDeviceSelector(),
+            ResourceName:      gpu.GetResourceName(),
+        }
+    }
+    spec.GpuDevices = devices
 }
 ```
 
-When the InstanceType has no GPU (`gpu` is nil), the CR fields remain at their zero values
-(`""` and `0`), which the operator and AAP treat as "no GPU."
+When the InstanceType has no GPU (`gpu` is nil), the CR's `gpuDevices` field remains
+empty, which the operator and AAP treat as "no GPU."
 
 #### Table Rendering (fulfillment-service)
 
@@ -346,8 +361,10 @@ columns:
     value: this.spec.cores
   - header: MEMORY
     value: this.spec.memory_gib
-  - header: GPU TYPE
-    value: this.spec.gpu.type
+  - header: GPU DEVICE
+    value: this.spec.gpu.pci_device_selector
+  - header: GPU RESOURCE
+    value: this.spec.gpu.resource_name
   - header: GPU COUNT
     value: this.spec.gpu.count
   - header: STATE
@@ -357,59 +374,54 @@ columns:
     value: this.spec.description
 ```
 
-For non-GPU instance types, `this.spec.gpu.type` and `this.spec.gpu.count` evaluate to
-empty/zero and render as blank cells.
+For non-GPU instance types, GPU columns evaluate to empty/zero and render as blank cells.
 
 #### CRD Changes (osac-operator)
 
-Add GPU fields to `ComputeInstanceSpec` in
-`api/v1alpha1/computeinstance_types.go`, following the existing pattern for
-`Cores` and `MemoryGiB`:
+Add a `GpuDevice` struct and a `GpuDevices` list field to `ComputeInstanceSpec` in
+`api/v1alpha1/computeinstance_types.go`:
 
 ```go
-// GpuType is the user-friendly GPU type identifier resolved from the
-// InstanceType (e.g., "A100", "H100"). Empty for non-GPU instances.
-// +optional
-GpuType string `json:"gpuType,omitempty"`
+// GpuDevice represents a single GPU device for KubeVirt host device passthrough.
+type GpuDevice struct {
+    // PciDeviceSelector is the PCI vendor:device ID (e.g., "10DE:20B0").
+    PciDeviceSelector string `json:"pciDeviceSelector"`
 
-// GpuCount is the number of GPU devices resolved from the InstanceType.
-// Zero for non-GPU instances.
+    // ResourceName is the Kubernetes device plugin resource (e.g., "nvidia.com/A100").
+    ResourceName string `json:"resourceName"`
+}
+
+// GpuDevices is the list of GPU devices resolved from the InstanceType.
+// Empty for non-GPU instances. Each entry maps to one KubeVirt hostDevice.
 // +optional
-// +kubebuilder:validation:Minimum=0
-// +kubebuilder:validation:Maximum=16
-GpuCount int32 `json:"gpuCount,omitempty"`
+GpuDevices []GpuDevice `json:"gpuDevices,omitempty"`
 ```
 
-These fields are populated by the fulfillment reconciler (not set by users directly),
-matching the pattern used by `Cores` and `MemoryGiB`. No CRD-level immutability rules
-are needed — the reconciler always stamps the same values because GPU fields on the
-source InstanceType are immutable (enforced at the API server level).
+These fields are populated by the fulfillment reconciler (not set by users directly).
+The reconciler expands the InstanceType's single GPU config × count into this list. No
+CRD-level immutability rules are needed — the reconciler always stamps the same values
+because GPU fields on the source InstanceType are immutable (enforced at the API server
+level).
 
 **No controller changes required.** The existing `extractExtraVars` method in
 `pkg/provisioning/aap_provider.go` serializes the entire ComputeInstance CR into the AAP
-payload. New fields on the CR spec are automatically included in
-`ansible_eda.event.payload.spec`. The AAP playbook reads `gpuType` and `gpuCount` from
-the payload and maps them to the `gpu_devices` role parameter.
+payload. The `gpuDevices` list is automatically included in
+`ansible_eda.event.payload.spec`. The AAP `ocp_virt_vm` role reads the device list
+directly from the payload.
 [Codebase: osac-operator/pkg/provisioning/aap_provider.go]
 
 #### AAP Integration (osac-aap)
 
-The `ocp_virt_vm` role already supports GPU passthrough via the `gpu_devices` parameter,
-which accepts a list of `{pci_device_selector, resource_name}` objects and creates
-KubeVirt `hostDevices` entries.
+No AAP changes are required. The `ocp_virt_vm` role already supports GPU passthrough via
+the `gpu_devices` parameter, which accepts a list of `{pci_device_selector, resource_name}`
+objects and creates KubeVirt `hostDevices` entries.
 [Codebase: osac-aap/collections/ansible_collections/osac/templates/roles/ocp_virt_vm/]
 
-The GPU type string on InstanceType is a user-friendly identifier (e.g., "A100"). The
-mapping from this identifier to PCI device selectors happens in the AAP template
-configuration, not in the OSAC API or operator. The Cloud Provider Admin is responsible
-for:
-
-1. Defining InstanceTypes with GPU type strings that match the AAP template's mapping.
-2. Configuring the AAP template with a mapping table (e.g., "A100" maps to
-   `pci_device_selector: "10DE:20B0"` and `resource_name: "nvidia.com/A100"`).
-
-This keeps the OSAC API hardware-agnostic while allowing the provisioning layer to handle
-vendor-specific device identification.
+The playbook already receives the `compute_instance` payload. The `gpuDevices` list on
+the CR spec is serialized into the payload by `extractExtraVars`, matching the field
+format the role expects. The Cloud Provider Admin is responsible for entering the correct
+PCI device selector and resource name when creating InstanceTypes — these values must
+match the GPU hardware and device plugins configured on the cluster nodes.
 
 #### Database
 
@@ -418,9 +430,10 @@ in the generic DAO's `data` column. The new `gpu` field is automatically include
 JSON representation.
 [Codebase: fulfillment-service/internal/database/migrations/51_create_instance_types_tables.up.sql]
 
-CEL-based filtering on GPU fields (`has(this.spec.gpu)`, `this.spec.gpu.type == "A100"`)
-works through the existing `FilterTranslator`, which translates CEL expressions into SQL
-JSON path queries against the `data` column.
+CEL-based filtering on GPU fields (`has(this.spec.gpu)`,
+`this.spec.gpu.resource_name == "nvidia.com/A100"`) works through the existing
+`FilterTranslator`, which translates CEL expressions into SQL JSON path queries against
+the `data` column.
 
 ### Security Considerations
 
@@ -433,19 +446,21 @@ ComputeInstances created with GPU-enabled InstanceTypes carry the standard tenan
 isolation metadata (`osac.openshift.io/tenant` annotation) and are subject to the same
 OPA policy enforcement as non-GPU instances.
 
-The GPU type field is free text with no system-side validation. This is a deliberate
-design choice [Locked: D3] -- the Cloud Provider Admin is trusted to enter correct GPU
-types. Malformed GPU type strings result in AAP provisioning failures, not security
-issues, since the provisioning layer validates against its own device mapping.
+The GPU fields (`pci_device_selector` and `resource_name`) are validated for non-empty
+strings but not checked against the cluster's actual hardware inventory. The Cloud
+Provider Admin is trusted to enter correct values. Incorrect PCI device selectors or
+resource names result in AAP provisioning failures or KubeVirt scheduling failures, not
+security issues.
 
 ### Failure Handling and Recovery
 
-**InstanceType with invalid GPU type:** The Cloud Provider Admin creates an InstanceType
-with a GPU type that does not match any AAP template mapping. ComputeInstances referencing
-this InstanceType proceed through reconciliation normally. The AAP job fails when it
-cannot resolve the GPU type to a PCI device selector. The ComputeInstance status reflects
-the AAP job failure through existing condition reporting. Recovery: Cloud Provider Admin
-marks the InstanceType as `DEPRECATED` or `OBSOLETE` and creates a corrected one.
+**InstanceType with invalid GPU device identifiers:** The Cloud Provider Admin creates an
+InstanceType with a `pci_device_selector` or `resource_name` that does not match the
+cluster's GPU hardware. ComputeInstances referencing this InstanceType proceed through
+reconciliation normally. The AAP job succeeds but KubeVirt cannot schedule the VM due to
+unsatisfied device resource requests. The ComputeInstance status reflects the failure
+through existing condition reporting. Recovery: Cloud Provider Admin marks the InstanceType
+as `DEPRECATED` or `OBSOLETE` and creates a corrected one.
 
 **GPU hardware unavailable on cluster:** A tenant creates a ComputeInstance referencing a
 GPU-enabled InstanceType, but no nodes have the requested GPU. KubeVirt creates the VM
@@ -482,9 +497,9 @@ are the responsibility of the node-level monitoring stack, not OSAC.
 
 ### Risks and Mitigations
 
-**Risk: GPU type string drift.** Cloud Provider Admin creates InstanceTypes with GPU type
-strings that become stale when AAP templates are reconfigured. Tenants reference stale
-InstanceTypes and get provisioning failures.
+**Risk: GPU device identifier drift.** Cloud Provider Admin creates InstanceTypes with
+PCI device selectors that become stale when cluster GPU hardware changes. Tenants
+reference stale InstanceTypes and get provisioning failures.
 **Mitigation:** Cloud Provider Admin deprecates stale InstanceTypes using the existing
 `DEPRECATED` -> `OBSOLETE` lifecycle. The PRD notes that a GPU discovery API (future
 feature) would further mitigate this. [Locked: D5]
@@ -499,12 +514,6 @@ reconciler so the K8s API accepts the new fields. PRs merge in proto-dependency 
 If the reconciler is deployed first, it retries until the CRD is updated (see Version
 Skew Strategy).
 
-**Risk: AAP template misconfiguration.** The AAP template's GPU type-to-PCI mapping is
-incorrect or missing, causing provisioning failures for GPU instances.
-**Mitigation:** This is an operational concern, not a design flaw. Cloud Provider Admins
-validate the mapping during initial setup. The AAP job reports clear failure reasons that
-surface through ComputeInstance conditions.
-
 ### Drawbacks
 
 Adding GPU fields to InstanceType couples GPU configuration to the InstanceType
@@ -513,24 +522,26 @@ of CPU/memory (e.g., attaching GPUs to an existing non-GPU instance type), this 
 becomes a constraint. However, the team explicitly rejected a separate GPU resource
 because it would not be reused outside InstanceType and adds lifecycle complexity.
 
-The free-text GPU type field provides no guardrails against misconfiguration. A typo in
-the GPU type silently passes through the API and only fails at provisioning time. This is
-a deliberate trade-off [Locked: D3] that avoids coupling the API to specific hardware
-inventories and defers validation to the provisioning layer, which has the authoritative
-device mapping.
+Storing PCI device selectors directly in the API exposes hardware-level details to the
+Cloud Provider Admin. A typo in the PCI device selector or resource name passes API
+validation (non-empty string) but causes provisioning failures at the KubeVirt scheduling
+layer. This is acceptable because the Cloud Provider Admin is the persona responsible for
+hardware configuration, and a future GPU discovery API [Locked: D5] could provide
+validated device lists.
 
 ## Alternatives (Not Implemented)
 
 ### Flat fields on InstanceTypeSpec
 
-Add `gpu_type` (string) and `gpu_count` (int32) as top-level fields on `InstanceTypeSpec`
-instead of a structured `GpuSpec` sub-message.
+Add `gpu_pci_device_selector` (string), `gpu_resource_name` (string), and `gpu_count`
+(int32) as top-level fields on `InstanceTypeSpec` instead of a structured `GpuSpec`
+sub-message.
 
 **Pros:** Simpler proto definition. No nested message.
 **Cons:** Cannot be extended without adding more top-level fields. Future GPU attributes
-(MIG profile, vGPU type, framebuffer memory) would require `gpu_mig_profile`,
-`gpu_vgpu_type`, etc., polluting the InstanceTypeSpec namespace. The `optional` keyword
-on individual fields does not cleanly express "this is a GPU-enabled instance type."
+(MIG profile, vGPU type, framebuffer memory) would require additional `gpu_*` fields,
+polluting the InstanceTypeSpec namespace. The `optional` keyword on individual fields does
+not cleanly express "this is a GPU-enabled instance type."
 **Rejection reason:** Team consensus favored the sub-message for extensibility and
 semantic grouping.
 
@@ -567,33 +578,36 @@ provisioning.
 
 **fulfillment-service (Ginkgo):**
 
-- `GpuSpec` validation: Create rejects `gpu.count = 0`, `gpu.count = -1`, and
-  `gpu.type = ""` when `gpu` is present.
+- `GpuSpec` validation: Create rejects `gpu.count = 0`, `gpu.count = -1`,
+  `gpu.pci_device_selector = ""`, and `gpu.resource_name = ""` when `gpu` is present.
 - Create accepts InstanceType with `gpu` omitted (non-GPU instance type).
-- Create accepts InstanceType with valid `gpu` (type = "A100", count = 1).
+- Create accepts InstanceType with valid `gpu` (pci_device_selector = "10DE:20B0",
+  resource_name = "nvidia.com/A100", count = 1).
 - Update rejects changes to `gpu` field (immutability).
 - Update allows changes to `description` and `state` on a GPU-enabled InstanceType
   without modifying `gpu`.
 - List returns GPU fields in response objects.
 - List with CEL filter `has(this.spec.gpu)` returns only GPU-enabled InstanceTypes.
-- List with CEL filter `this.spec.gpu.type == "A100"` returns matching InstanceTypes.
-- Table rendering includes GPU TYPE and GPU COUNT columns.
-- `addExplicitFields` stamps `gpuType` and `gpuCount` on CR when InstanceType has GPU.
-- `addExplicitFields` leaves GPU fields at zero values when InstanceType has no GPU.
+- List with CEL filter `this.spec.gpu.resource_name == "nvidia.com/A100"` returns
+  matching InstanceTypes.
+- Table rendering includes GPU DEVICE, GPU RESOURCE, and GPU COUNT columns.
+- `addExplicitFields` expands GPU config into `gpuDevices` list on CR when InstanceType
+  has GPU (count=2 produces 2 identical device entries).
+- `addExplicitFields` leaves `gpuDevices` empty when InstanceType has no GPU.
 
 **osac-operator (Ginkgo + envtest):**
 
-- ComputeInstance CR with `gpuType` and `gpuCount` passes CRD validation.
+- ComputeInstance CR with `gpuDevices` list passes CRD validation.
 - ComputeInstance CR without GPU fields passes CRD validation.
-- CRD rejects updates that change `gpuType` or `gpuCount` (immutability via CEL).
 
 ### Integration Tests
 
 **fulfillment-service (kind cluster):**
 
-- Create a GPU-enabled InstanceType, create a ComputeInstance referencing it, verify the
-  reconciler stamps `gpuType` and `gpuCount` on the K8s ComputeInstance CR.
-- Create a non-GPU InstanceType, create a ComputeInstance, verify CR has no GPU fields.
+- Create a GPU-enabled InstanceType (count=2), create a ComputeInstance referencing it,
+  verify the reconciler stamps a `gpuDevices` list with 2 entries on the K8s
+  ComputeInstance CR.
+- Create a non-GPU InstanceType, create a ComputeInstance, verify CR has no `gpuDevices`.
 - Verify referential integrity: cannot delete a GPU-enabled InstanceType while active
   ComputeInstances reference it.
 
@@ -619,42 +633,23 @@ For Dev Preview exit:
 - Manual E2E validation on a GPU-equipped cluster.
 - CLI displays GPU information in InstanceType listings.
 
-## Upgrade / Downgrade Strategy
-
-**Upgrade:** This adds optional fields to existing resources. Existing InstanceTypes
-without GPU fields continue to work unchanged. The `optional GpuSpec gpu` field defaults
-to absent. No data migration is needed.
-
-**Downgrade:** GPU-enabled InstanceTypes must be deleted before reverting the
-fulfillment-service. The older service does not know about the `gpu` field, so any
-write to an InstanceType that still carries GPU data in its JSON `data` column will
-silently drop the field. This follows the same pattern as other OSAC features
-(StorageTier, StorageBackend) that require resource cleanup before downgrade.
-
-1. Delete all ComputeInstances referencing GPU-enabled InstanceTypes (the existing
-   referential integrity trigger blocks InstanceType deletion while active
-   ComputeInstances reference it).
-2. Delete all GPU-enabled InstanceTypes.
-3. Revert the osac-operator CRD (removes GPU fields from the schema).
-4. Revert the fulfillment-service.
-
 ## Version Skew Strategy
 
 The fulfillment-service and osac-operator must be upgraded in order:
 
-1. **osac-operator CRD first**: Apply the updated CRD with GPU fields so the K8s API
-   accepts CRs with `gpuType` and `gpuCount`.
-2. **fulfillment-service second**: Deploy the updated reconciler that stamps GPU fields
-   onto CRs.
+1. **osac-operator CRD first**: Apply the updated CRD with the `gpuDevices` field so
+   the K8s API accepts CRs with GPU device entries.
+2. **fulfillment-service second**: Deploy the updated reconciler that expands GPU config
+   into the `gpuDevices` list on CRs.
 
-If the fulfillment-service is upgraded first, the reconciler attempts to set GPU fields
-on CRs using a CRD that does not yet have those fields. Kubernetes rejects the update
-with a validation error. The reconciler retries on the next loop. Once the CRD is updated,
+If the fulfillment-service is upgraded first, the reconciler attempts to set `gpuDevices`
+on CRs using a CRD that does not yet have that field. Kubernetes rejects the update with
+a validation error. The reconciler retries on the next loop. Once the CRD is updated,
 reconciliation succeeds.
 
-If the osac-operator is upgraded first, the CRD accepts GPU fields but no reconciler
-populates them. GPU fields remain at zero values. This is safe -- the operator and AAP
-treat zero-value GPU fields as "no GPU."
+If the osac-operator is upgraded first, the CRD accepts `gpuDevices` but no reconciler
+populates them. The field remains empty. This is safe -- the operator and AAP treat an
+empty `gpuDevices` list as "no GPU."
 
 ## Support Procedures
 
@@ -662,10 +657,9 @@ treat zero-value GPU fields as "no GPU."
 
 1. Check ComputeInstance conditions via the fulfillment API or `osac` CLI for AAP job
    failure reasons.
-2. Verify the AAP template has a mapping for the GPU type specified in the InstanceType.
-3. Check that GPU-equipped nodes exist and have the expected device plugin running
-   (`kubectl get nodes -o json | jq '.items[].status.allocatable'`).
-4. Check the KubeVirt VM pod events for GPU scheduling failures
+2. Verify the InstanceType's `pci_device_selector` and `resource_name` match the cluster's
+   GPU hardware (`kubectl get nodes -o json | jq '.items[].status.allocatable'`).
+3. Check the KubeVirt VM pod events for GPU scheduling failures
    (`kubectl describe pod <vm-pod>`).
 
 **Symptom: GPU columns blank in CLI output for a known GPU-enabled InstanceType.**
