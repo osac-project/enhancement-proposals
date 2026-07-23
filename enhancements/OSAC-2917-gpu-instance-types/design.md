@@ -80,16 +80,18 @@ This feature makes changes across three repositories:
    method to resolve GPU fields from the referenced InstanceType and stamp them onto the
    K8s ComputeInstance CR. Add GPU columns to the InstanceType CLI table rendering.
 
-2. **osac-operator**: Add a `GpuDevices` list field to the ComputeInstance CRD spec,
-   where each entry has `PciDeviceSelector` and `ResourceName`. These fields are
-   populated by the fulfillment reconciler and serialized as part of the CR payload sent
-   to AAP. No controller logic changes are needed -- the existing `extractExtraVars`
-   method serializes the entire CR spec, so new fields are automatically included.
+2. **osac-operator**: Add a `GpuSpec` struct with `PciDeviceSelector`, `ResourceName`,
+   and `Count` fields to the ComputeInstance CRD spec, mirroring the proto `GpuSpec`
+   shape. These fields are populated by the fulfillment reconciler and serialized as
+   part of the CR payload sent to AAP. No controller logic changes are needed -- the
+   existing `extractExtraVars` method serializes the entire CR spec, so new fields are
+   automatically included.
 
-3. **osac-aap**: Update the `ocp_virt_vm` role to read GPU devices from
-   `compute_instance.spec.gpuDevices` instead of the separate `gpu_devices` role
-   parameter. The playbook already passes the full CR payload as `compute_instance`,
-   so no playbook changes are needed.
+3. **osac-aap**: Update the `ocp_virt_vm` role to read GPU fields from
+   `compute_instance.spec.gpu` (`pciDeviceSelector`, `resourceName`, `count`)
+   instead of the separate `gpu_devices` role parameter, which is removed. The role
+   loops over `count` to create repeated `hostDevices` entries. The playbook already
+   passes the full CR payload as `compute_instance`, so no playbook changes are needed.
 
 No new gRPC services, database migrations, or CRDs are introduced.
 
@@ -150,7 +152,7 @@ sequenceDiagram
 
     Reconciler->>DB: Resolve InstanceType by name
     DB-->>Reconciler: InstanceTypeSpec (cores, memory, gpu)
-    Reconciler->>K8s: Stamp CR (cores, memoryGiB, gpuDevices[])
+    Reconciler->>K8s: Stamp CR (cores, memoryGiB, gpu: {pciDeviceSelector, resourceName, count})
 
     Operator->>K8s: Watch ComputeInstance CR
     Operator->>AAP: Launch job (CR payload as extra vars)
@@ -158,9 +160,9 @@ sequenceDiagram
 ```
 
 This diagram shows the end-to-end data flow. The key addition is the GPU fields flowing
-from the InstanceType through the reconciler to the CR. The reconciler expands the
-InstanceType's single GPU config × count into a `gpuDevices` list on the CR. The CR
-payload is serialized to AAP, where the `ocp_virt_vm` role reads the device list directly.
+from the InstanceType through the reconciler to the CR as a nested `gpu` struct (same
+shape as the proto). The CR payload is serialized to AAP, where the `ocp_virt_vm` role
+reads `gpu.count` to create the `hostDevices` entries.
 
 Steps:
 
@@ -179,12 +181,12 @@ Steps:
 2. The ComputeInstance is created with no GPU fields on its own proto -- GPU flows through
    the InstanceType reference.
 3. The fulfillment reconciler's `addExplicitFields` resolves the InstanceType, reads
-   `spec.gpu`, and expands it into a `gpuDevices` list on the K8s ComputeInstance CR
-   (count × `{pciDeviceSelector, resourceName}`).
+   `spec.gpu`, and stamps the `gpu` struct (`pciDeviceSelector`, `resourceName`,
+   `count`) onto the K8s ComputeInstance CR.
 4. The osac-operator watches the CR. The `extractExtraVars` method serializes the full CR
-   spec (including `gpuDevices`) into `ansible_eda.event.payload`.
-5. The AAP `ocp_virt_vm` role reads `gpuDevices` from the payload and creates KubeVirt
-   `hostDevices` entries in the VM domain spec.
+   spec (including the `gpu` struct) into `ansible_eda.event.payload`.
+5. The AAP `ocp_virt_vm` role reads `compute_instance.spec.gpu` from the payload and
+   loops over `count` to create KubeVirt `hostDevices` entries in the VM domain spec.
 6. KubeVirt schedules the VM on a node with the matching GPU hardware.
 
 #### Listing InstanceTypes with GPU Information
@@ -218,7 +220,7 @@ finalizers, or aggregated API servers are introduced.
 | Resource | Component | Change |
 |----------|-----------|--------|
 | `InstanceType` proto (public + private) | fulfillment-service | Add `GpuSpec` sub-message to `InstanceTypeSpec` |
-| `ComputeInstance` CRD | osac-operator | Add `gpuDevices` list field to `ComputeInstanceSpec` |
+| `ComputeInstance` CRD | osac-operator | Add `GpuSpec` struct (`gpu` field) to `ComputeInstanceSpec` |
 
 The InstanceType service methods (`Create`, `List`, `Get`, `Update`, `Delete`) remain
 unchanged in signature. GPU data flows through the existing `object` field in request and
@@ -332,21 +334,19 @@ ComputeInstance CR. After the existing `spec.Cores` and `spec.MemoryGiB` assignm
 (line ~665):
 
 ```go
-// Expand GPU from InstanceType into device list
+// Stamp GPU fields from InstanceType
 if gpu := itSpec.GetGpu(); gpu != nil {
-    devices := make([]operatorv1alpha1.GpuDevice, gpu.GetCount())
-    for i := range devices {
-        devices[i] = operatorv1alpha1.GpuDevice{
-            PciDeviceSelector: gpu.GetPciDeviceSelector(),
-            ResourceName:      gpu.GetResourceName(),
-        }
+    spec.Gpu = &v1alpha1.GpuSpec{
+        PciDeviceSelector: gpu.GetPciDeviceSelector(),
+        ResourceName:      gpu.GetResourceName(),
+        Count:             gpu.GetCount(),
     }
-    spec.GpuDevices = devices
 }
 ```
 
-When the InstanceType has no GPU (`gpu` is nil), the CR's `gpuDevices` field remains
-empty, which the operator and AAP treat as "no GPU."
+When the InstanceType has no GPU (`gpu` is nil), the CR's `gpu` field remains nil, which
+the operator and AAP treat as "no GPU." This follows the same pattern as other optional
+structs on `ComputeInstanceSpec` (e.g., `UserDataSecretRef`).
 
 #### Table Rendering (fulfillment-service)
 
@@ -378,36 +378,48 @@ For non-GPU instance types, GPU columns evaluate to empty/zero and render as bla
 
 #### CRD Changes (osac-operator)
 
-Add a `GpuDevice` struct and a `GpuDevices` list field to `ComputeInstanceSpec` in
-`api/v1alpha1/computeinstance_types.go`:
+Add a `GpuSpec` struct and `Gpu` field to `ComputeInstanceSpec` in
+`api/v1alpha1/computeinstance_types.go`, following the existing pattern for nested structs
+like `ImageSpec` and `DiskSpec`:
 
 ```go
-// GpuDevice represents a single GPU device for KubeVirt host device passthrough.
-type GpuDevice struct {
+// GpuSpec defines GPU passthrough configuration resolved from the InstanceType.
+type GpuSpec struct {
     // PciDeviceSelector is the PCI vendor:device ID (e.g., "10DE:20B0").
+    // +kubebuilder:validation:Required
+    // +kubebuilder:validation:MinLength=1
     PciDeviceSelector string `json:"pciDeviceSelector"`
 
     // ResourceName is the Kubernetes device plugin resource (e.g., "nvidia.com/A100").
+    // +kubebuilder:validation:Required
+    // +kubebuilder:validation:MinLength=1
     ResourceName string `json:"resourceName"`
+
+    // Count is the number of GPU devices of this type.
+    // +kubebuilder:validation:Required
+    // +kubebuilder:validation:Minimum=1
+    // +kubebuilder:validation:Maximum=16
+    Count int32 `json:"count"`
 }
 
-// GpuDevices is the list of GPU devices resolved from the InstanceType.
-// Empty for non-GPU instances. Each entry maps to one KubeVirt hostDevice.
+// In ComputeInstanceSpec:
+
+// Gpu defines GPU passthrough configuration resolved from the InstanceType.
+// Nil for non-GPU instances.
 // +optional
-GpuDevices []GpuDevice `json:"gpuDevices,omitempty"`
+Gpu *GpuSpec `json:"gpu,omitempty"`
 ```
 
-These fields are populated by the fulfillment reconciler (not set by users directly).
-The reconciler expands the InstanceType's single GPU config × count into this list. No
-CRD-level immutability rules are needed — the reconciler always stamps the same values
-because GPU fields on the source InstanceType are immutable (enforced at the API server
-level).
+The `Gpu` field is populated by the fulfillment reconciler (not set by users directly),
+following the nested struct pattern used by `ImageSpec` and `DiskSpec`. The struct mirrors the proto
+`GpuSpec` shape. No CRD-level immutability rules are needed — the reconciler always
+stamps the same values because GPU fields on the source InstanceType are immutable
+(enforced at the API server level).
 
 **No controller changes required.** The existing `extractExtraVars` method in
 `pkg/provisioning/aap_provider.go` serializes the entire ComputeInstance CR into the AAP
-payload. The `gpuDevices` list is automatically included in
-`ansible_eda.event.payload.spec`. The AAP `ocp_virt_vm` role reads the device list
-directly from the payload.
+payload. The `gpu` struct is automatically included in
+`ansible_eda.event.payload.spec`.
 [Codebase: osac-operator/pkg/provisioning/aap_provider.go]
 
 #### AAP Integration (osac-aap)
@@ -417,10 +429,13 @@ parameter, which accepts a list of `{pci_device_selector, resource_name}` object
 creates KubeVirt `hostDevices` entries.
 [Codebase: osac-aap/collections/ansible_collections/osac/templates/roles/ocp_virt_vm/]
 
-The role is updated to read GPU devices from `compute_instance.spec.gpuDevices`
-instead of the separate `gpu_devices` parameter, which is removed from the role's
-argument spec and task references. The playbook already passes the full CR payload as
-`compute_instance` (`ansible_eda.event.payload`), so no playbook changes are needed.
+The role is updated to read GPU fields from `compute_instance.spec.gpu`
+(`pciDeviceSelector`, `resourceName`, `count`) instead of the separate `gpu_devices`
+role parameter, which is removed from the role's argument spec and task references.
+The role loops over `count` to create repeated `hostDevices` entries, each using the
+same `pciDeviceSelector` and `resourceName`. The playbook already passes the full CR
+payload as `compute_instance` (`ansible_eda.event.payload`), so no playbook changes
+are needed.
 
 The Cloud Provider Admin is responsible for entering the correct PCI device selector and
 resource name when creating InstanceTypes — these values must match the GPU hardware and
@@ -594,13 +609,13 @@ provisioning.
 - List with CEL filter `this.spec.gpu.resource_name == "nvidia.com/A100"` returns
   matching InstanceTypes.
 - Table rendering includes GPU DEVICE, GPU RESOURCE, and GPU COUNT columns.
-- `addExplicitFields` expands GPU config into `gpuDevices` list on CR when InstanceType
-  has GPU (count=2 produces 2 identical device entries).
-- `addExplicitFields` leaves `gpuDevices` empty when InstanceType has no GPU.
+- `addExplicitFields` stamps `gpu` struct on CR when InstanceType has GPU.
+- `addExplicitFields` leaves `gpu` nil when InstanceType has no GPU.
 
 **osac-operator (Ginkgo + envtest):**
 
-- ComputeInstance CR with `gpuDevices` list passes CRD validation.
+- ComputeInstance CR with `gpu` struct (`pciDeviceSelector`, `resourceName`,
+  `count`) passes CRD validation.
 - ComputeInstance CR without GPU fields passes CRD validation.
 
 ### Integration Tests
@@ -608,9 +623,9 @@ provisioning.
 **fulfillment-service (kind cluster):**
 
 - Create a GPU-enabled InstanceType (count=2), create a ComputeInstance referencing it,
-  verify the reconciler stamps a `gpuDevices` list with 2 entries on the K8s
+  verify the reconciler stamps the `gpu` struct with `count=2` on the K8s
   ComputeInstance CR.
-- Create a non-GPU InstanceType, create a ComputeInstance, verify CR has no `gpuDevices`.
+- Create a non-GPU InstanceType, create a ComputeInstance, verify CR has no GPU fields.
 - Verify referential integrity: cannot delete a GPU-enabled InstanceType while active
   ComputeInstances reference it.
 
@@ -640,19 +655,19 @@ For Dev Preview exit:
 
 The fulfillment-service and osac-operator must be upgraded in order:
 
-1. **osac-operator CRD first**: Apply the updated CRD with the `gpuDevices` field so
-   the K8s API accepts CRs with GPU device entries.
-2. **fulfillment-service second**: Deploy the updated reconciler that expands GPU config
-   into the `gpuDevices` list on CRs.
+1. **osac-operator CRD first**: Apply the updated CRD with the `gpu` struct so the K8s
+   API accepts CRs with `gpu.pciDeviceSelector`, `gpu.resourceName`, and `gpu.count`.
+2. **fulfillment-service second**: Deploy the updated reconciler that stamps GPU fields
+   onto CRs.
 
-If the fulfillment-service is upgraded first, the reconciler attempts to set `gpuDevices`
-on CRs using a CRD that does not yet have that field. Kubernetes rejects the update with
-a validation error. The reconciler retries on the next loop. Once the CRD is updated,
-reconciliation succeeds.
+If the fulfillment-service is upgraded first, the reconciler attempts to set the `gpu`
+struct on CRs using a CRD that does not yet have that field. Kubernetes rejects the
+update with a validation error. The reconciler retries on the next loop. Once the CRD is
+updated, reconciliation succeeds.
 
-If the osac-operator is upgraded first, the CRD accepts `gpuDevices` but no reconciler
-populates them. The field remains empty. This is safe -- the operator and AAP treat an
-empty `gpuDevices` list as "no GPU."
+If the osac-operator is upgraded first, the CRD accepts the `gpu` field but no reconciler
+populates it. The field remains nil. This is safe -- the operator and AAP treat a missing
+`gpu` field as "no GPU."
 
 ## Support Procedures
 
