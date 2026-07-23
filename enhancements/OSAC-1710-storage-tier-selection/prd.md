@@ -13,14 +13,22 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 ## In Scope
 
 - Storage tier selection for ComputeInstance disks (boot disk and additional disks)
-- Storage tier as a mandatory field — provisioning fails if no tier is resolved after applying the precedence chain (user input, CatalogItem defaults, Template defaults)- Boot disk and each additional disk can use different tiers independently
+- Storage tier as a mandatory field — provisioning fails if no tier is resolved after applying the precedence chain (user input, CatalogItem defaults, Template defaults)
+- Boot disk and each additional disk can use different tiers independently
 - Validation that the requested tier exists at request time; clear error on failure
-- Tier resolution precedence: user input, then CatalogItem defaults, then ComputeInstanceTemplate defaults- Tier assignment immutability after ComputeInstance creation- VMaaS service only- UI support for tier selection in the ComputeInstance creation flow
+- Tier resolution precedence: user input, then CatalogItem defaults, then ComputeInstanceTemplate defaults
+- Tier assignment immutability after ComputeInstance creation
+- VMaaS service only
+- UI support for tier selection in the ComputeInstance creation flow
 - Documentation updates for the storage tier selection capability
 
 ## Out of Scope
 
-- CaaS cluster template tier selection- Pre-populated disk images as a source for new disks- OSAC-shipped template portability across CSP deployments- Developer environment storage backend and tier setup (handled by WG-Storage)- StorageTier model definition (covered by OSAC-1110)
+- CaaS cluster template tier selection
+- Pre-populated disk images as a source for new disks
+- OSAC-shipped template portability across CSP deployments
+- Developer environment storage backend and tier setup (handled by WG-Storage)
+- StorageTier model definition (covered by OSAC-1110)
 - StorageBackend registration (covered by OSAC-1111)
 - Tenant-level StorageClass resolution (handled by WG-Storage)
 - Storage quota or capacity management per tier
