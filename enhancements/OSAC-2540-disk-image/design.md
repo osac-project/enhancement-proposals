@@ -99,11 +99,11 @@ sequenceDiagram
 The diagram shows the two-phase flow: the API validates the DiskImage reference and persists the ComputeInstance, then the reconciler resolves the DiskImage to CRD-level fields when creating the Kubernetes resource. This keeps the CRD unchanged and concentrates DiskImage logic in the fulfillment-service.
 
 1. User calls `ComputeInstances/Create` with `spec.disk_image` set to a DiskImage ID (directly or via template/catalog item defaults).
-2. Server fetches the DiskImage and validates:
+2. Server applies template/catalog item defaults for `disk_image` if not provided by the user.
+3. Server validates `disk_image` is set (required field) — return `InvalidArgument` if missing.
+4. Server fetches the referenced DiskImage and validates:
    - DiskImage exists and is visible to the caller's tenant (global or same tenant).
    - DiskImage state is not OBSOLETE. If DEPRECATED, creation proceeds with a warning in the response.
-3. Server applies template/catalog item defaults for `disk_image` if not provided by the user.
-4. Server validates `disk_image` is set (required field).
 5. Server persists the ComputeInstance with the `disk_image` reference.
 6. Reconciler fetches the referenced DiskImage, extracts `source_type`, `source_ref`, and `guest_os_family`, maps them to CRD `ImageSpec` and `GuestOSFamily`, and creates the KubeVirt VirtualMachine CR.
 
@@ -217,7 +217,7 @@ message DiskImageSpec {
   GuestOSFamily guest_os_family = 3 [(buf.validate.field).enum.defined_only = true];
 
   // Supported CPU architectures. Informational metadata for filtering and discovery.
-  repeated Architecture architecture = 4 [(buf.validate.field).repeated.min_items = 1];
+  repeated Architecture architecture = 4 [(buf.validate.field).repeated = {min_items: 1, items: {enum: {defined_only: true}}}];
 
   // Lifecycle state of the image.
   DiskImageState state = 5;
@@ -346,7 +346,7 @@ CREATE TABLE IF NOT EXISTS disk_images (
     id                   TEXT        NOT NULL PRIMARY KEY,
     name                 TEXT        NOT NULL DEFAULT '',
     creation_timestamp   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deletion_timestamp   TIMESTAMPTZ,
+    deletion_timestamp   TIMESTAMPTZ NOT NULL DEFAULT 'epoch',
     finalizers           TEXT[]      NOT NULL DEFAULT '{}',
     creator              TEXT        NOT NULL DEFAULT '',
     tenant               TEXT        NOT NULL DEFAULT '',
@@ -357,7 +357,7 @@ CREATE TABLE IF NOT EXISTS disk_images (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS disk_images_name ON disk_images (name)
-    WHERE name != '' AND deletion_timestamp IS NULL;
+    WHERE name != '' AND deletion_timestamp = 'epoch';
 ```
 
 Migration `83_add_disk_image_ref_triggers.up.sql` adds bidirectional database triggers following the InstanceType pattern (`56_add_instance_type_ref_triggers.up.sql`):
@@ -372,11 +372,11 @@ CREATE INDEX compute_instance_templates_disk_image ON compute_instance_templates
   WHERE data->'specDefaults'->>'diskImage' IS NOT NULL;
 ```
 
-**BEFORE UPDATE trigger on `disk_images`:** Prevents soft-deleting a DiskImage when active `compute_instances`, `compute_instance_templates`, or `compute_instance_catalog_items` reference it. Fires only when `deletion_timestamp` transitions from epoch to a non-epoch value. Raises SQLSTATE `Z0003` with a message identifying the referencing resource.
+**BEFORE UPDATE trigger on `disk_images`:** Prevents soft-deleting a DiskImage when active `compute_instances`, `compute_instance_templates`, or `compute_instance_catalog_items` reference it. Fires `WHEN (old.deletion_timestamp = 'epoch' AND new.deletion_timestamp != 'epoch')`. Queries referencing tables for rows where `deletion_timestamp = 'epoch'` (active resources). Raises SQLSTATE `Z0003` with a message identifying the referencing resource.
 
 For CatalogItems, the trigger uses a text search of the serialized JSONB column (`data::text LIKE '%' || OLD.id || '%'`) because CatalogItem stores DiskImage IDs in opaque `google.protobuf.Value` field_definition defaults. False positives only prevent deletion (safe direction) and the probability is negligible given UUID-format IDs.
 
-**BEFORE INSERT OR UPDATE trigger on `compute_instances`:** Validates that the referenced DiskImage exists and is not soft-deleted. Uses `FOR SHARE` to acquire a shared lock on the DiskImage row, which conflicts with the exclusive lock held by a concurrent soft-delete. This eliminates the TOCTOU race condition between DiskImage deletion and ComputeInstance creation.
+**BEFORE INSERT OR UPDATE trigger on `compute_instances`:** Validates that the referenced DiskImage exists and has `deletion_timestamp = 'epoch'` (active). Uses `FOR SHARE` to acquire a shared lock on the DiskImage row, which conflicts with the exclusive lock held by a concurrent soft-delete. This eliminates the TOCTOU race condition between DiskImage deletion and ComputeInstance creation.
 
 **BEFORE INSERT OR UPDATE trigger on `compute_instance_templates`:** Same pattern as compute_instances, validating the `specDefaults.diskImage` reference.
 
@@ -426,6 +426,16 @@ Default list excludes OBSOLETE images. The server prepends `this.spec.state != 3
 **Spec defaults modifications (`internal/utils/spec_defaults.go`):**
 - Remove `mergeImageDefaults()` function and `is_windows` defaulting.
 - Add `disk_image` defaulting: if `spec.disk_image` is empty and `defaults.disk_image` is set, copy the default.
+
+#### CatalogItem DiskImage Validation
+
+CatalogItem Create and Update handlers validate DiskImage references in `field_definitions`. A new `validateFieldDefinitionsDiskImage()` function scans `field_definitions` for entries targeting `spec.disk_image`, extracts the default value, and validates:
+
+1. The referenced DiskImage exists.
+2. The DiskImage state is not OBSOLETE — return `InvalidArgument`.
+3. If the DiskImage state is DEPRECATED, return a warning.
+
+This follows the existing pattern: `validateFieldDefinitionsInstanceType()` in `private_compute_instance_catalog_items_server.go`. The function is called from both Create and Update handlers in the CatalogItem server.
 
 #### Reconciler Changes
 
@@ -663,8 +673,8 @@ No Helm chart, kustomize overlay, or osac-installer changes needed. Database mig
 ## Provenance
 
 Authored: draft @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
-Final: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3 (3 behind origin/main)
+Final: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3 (5 behind origin/main)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":5,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
