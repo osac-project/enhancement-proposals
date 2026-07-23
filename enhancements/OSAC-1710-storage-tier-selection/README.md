@@ -35,7 +35,7 @@ This design adds `storage_tier` to `ComputeInstanceDisk`, making it a required f
 ### Goals
 
 - Enable tenants to select different storage tiers for each disk on a ComputeInstance, so workloads get the appropriate storage QoS.
-- Allow admins to pre-configure tier defaults in CatalogItems and Templates, so tenant users can provision VMs without choosing a tier manually.
+- Support tier default resolution through the existing CatalogItem FieldDefinition and Template SpecDefaults mechanisms, without introducing new defaulting infrastructure.
 - Prevent provisioning with invalid or nonexistent tiers by validating at request time and returning clear errors.
 - Preserve disk immutability — once a ComputeInstance is created, its disk tiers cannot be changed.
 
