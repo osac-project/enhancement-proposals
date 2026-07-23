@@ -61,45 +61,55 @@ The tier is mandatory. After applying the resolution chain (user input, CatalogI
 
 StorageTier resources exist (OSAC-1110). StorageClasses are labeled with `osac.openshift.io/storage-tier` and `osac.openshift.io/tenant`. The tenant controller has resolved `Tenant.Status.StorageClasses` for the tenant.
 
-#### Happy Path: Tenant User Creates a ComputeInstance with Explicit Tiers
+#### Happy Path 1: Tenant User Creates a ComputeInstance with Explicit Tiers
 
-1. Tenant User sends `POST /api/public/v1/compute_instances` with `boot_disk.storage_tier: "fast"` and `additional_disks[0].storage_tier: "archive"`.
-2. Fulfillment-service applies FieldDefinitions from the CatalogItem (no override needed since user provided values).
-3. Fulfillment-service applies Template SpecDefaults (no override needed since user provided values).
+1. A CatalogItem exists with FieldDefinitions: `boot_disk.storage_tier` default `"standard"`, `additional_disks` default `[{size_gib: 500, storage_tier: "standard"}]`.
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk: {size_gib: 100, storage_tier: "fast"}` and `additional_disks: [{size_gib: 200, storage_tier: "archive"}]`.
+3. Fulfillment-service applies FieldDefinitions — no override needed since user provided all values.
 4. Fulfillment-service validates that `"fast"` and `"archive"` exist as StorageTier resources via the private StorageTier API.
 5. Fulfillment-service persists the ComputeInstance with the validated tiers.
 6. Reconciler maps proto fields to CRD: `spec.bootDisk.storageTier: "fast"`, `spec.additionalDisks[0].storageTier: "archive"`.
 7. AAP receives the CR payload. The `tenant_storage_class` role resolves each disk's tier to a tenant-specific StorageClass. Each DataVolume uses its own StorageClass.
 
-#### Happy Path: Boot Disk Tier Resolved from CatalogItem Defaults
+#### Happy Path 2: Boot Disk Tier Resolved from CatalogItem Defaults
 
-1. Tenant User sends `POST /api/public/v1/compute_instances` with `boot_disk.size_gib: 100` (no `storage_tier`) and no additional disks.
-2. Fulfillment-service applies FieldDefinitions: `boot_disk.storage_tier` has a default of `"standard"`, which is applied.
-3. Fulfillment-service validates `"standard"` exists.
-4. Provisioning proceeds.
+1. A CatalogItem exists with a FieldDefinition: `boot_disk.storage_tier` default `"standard"`. No `additional_disks` default.
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.size_gib: 100` (no `storage_tier`) and no additional disks.
+3. Fulfillment-service applies FieldDefinitions: `boot_disk.storage_tier` defaults to `"standard"`.
+4. Fulfillment-service validates `"standard"` exists.
+5. Provisioning proceeds.
 
-#### Happy Path: User Accepts CatalogItem Additional Disks Default
+#### Happy Path 3: User Accepts CatalogItem Additional Disks Default
 
-1. Tenant Admin created a CatalogItem with a FieldDefinition: `path: "additional_disks"`, `default: [{size_gib: 500, storage_tier: "fast"}]`.
-2. Tenant User sends `POST /api/public/v1/compute_instances` with `boot_disk.storage_tier: "standard"` and does not provide `additional_disks`.
-3. Fulfillment-service applies FieldDefinitions: the CatalogItem default provides the entire `additional_disks` array.
+1. A CatalogItem exists with a FieldDefinition: `path: "additional_disks"`, `default: [{size_gib: 500, storage_tier: "fast"}]`.
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "standard"` and omits `additional_disks` (field not set).
+3. Fulfillment-service detects `additional_disks` is absent (`!HasAdditionalDisks()`), applies the CatalogItem default: `[{size_gib: 500, storage_tier: "fast"}]`.
 4. Fulfillment-service validates that `"standard"` and `"fast"` exist as StorageTier resources.
 5. Provisioning proceeds with boot disk on `"standard"` and one additional disk on `"fast"`.
 
-#### Happy Path: User Overrides CatalogItem Additional Disks Default
+#### Happy Path 4: User Overrides CatalogItem Additional Disks Default
 
-1. Same CatalogItem as above defaults `additional_disks` to `[{size_gib: 500, storage_tier: "fast"}]`.
-2. Tenant User sends `POST /api/public/v1/compute_instances` with `boot_disk.storage_tier: "standard"` and `additional_disks: [{size_gib: 200, storage_tier: "archive"}]`.
-3. Fulfillment-service applies FieldDefinitions: the user-provided `additional_disks` replaces the CatalogItem default entirely.
+1. A CatalogItem exists with `additional_disks` default `[{size_gib: 500, storage_tier: "fast"}]`.
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "standard"` and `additional_disks: [{size_gib: 200, storage_tier: "archive"}]`.
+3. Fulfillment-service detects `additional_disks` is present (`HasAdditionalDisks()`), uses the user-provided value — the CatalogItem default is ignored.
 4. Fulfillment-service validates that `"standard"` and `"archive"` exist as StorageTier resources.
 5. Provisioning proceeds with boot disk on `"standard"` and one additional disk on `"archive"`.
 
-#### Happy Path: Boot Disk Tier Resolved from Template Defaults
+#### Happy Path 5: User Explicitly Requests No Additional Disks
 
-1. Tenant User sends `POST /api/public/v1/compute_instances` with no `boot_disk` at all and no additional disks.
-2. Fulfillment-service merges Template SpecDefaults: the template's `boot_disk` carries `storage_tier: "standard"` and `size_gib: 50`.
-3. Fulfillment-service validates the resolved tier.
-4. Provisioning proceeds.
+1. A CatalogItem exists with `additional_disks` default `[{size_gib: 500, storage_tier: "fast"}]`.
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "standard"` and `additional_disks: []` (empty array).
+3. Fulfillment-service detects `additional_disks` is present (`HasAdditionalDisks()`) with zero elements — the CatalogItem default is ignored.
+4. Provisioning proceeds with boot disk only, no additional disks.
+
+#### Happy Path 6: Boot Disk Tier Resolved from Template Defaults
+
+1. A CatalogItem exists with no FieldDefinition for `boot_disk.storage_tier`. Template SpecDefaults: `boot_disk: {size_gib: 50, storage_tier: "standard"}`.
+2. Tenant User creates a ComputeInstance using this CatalogItem with no `boot_disk` at all and no additional disks.
+3. Fulfillment-service applies FieldDefinitions — no `boot_disk.storage_tier` default found.
+4. Fulfillment-service merges Template SpecDefaults: the template's `boot_disk` carries `storage_tier: "standard"` and `size_gib: 50`.
+5. Fulfillment-service validates `"standard"` exists.
+6. Provisioning proceeds.
 
 #### Additional Disk Defaulting Semantics
 
@@ -107,26 +117,37 @@ The boot disk and additional disks follow different defaulting rules:
 
 - **Boot disk** supports per-field defaults through CatalogItem FieldDefinitions (`boot_disk.storage_tier` path) and Template SpecDefaults (`boot_disk` field). This works because the boot disk is a known, single, always-present disk -- an admin can meaningfully pre-select a tier for it.
 
-- **Additional disks** can be defaulted as a whole array through a CatalogItem FieldDefinition with `path: "additional_disks"`. This follows the same semantics as `network_attachments`: the FieldDefinition path resolver does not support per-element field addressing (e.g., `additional_disks[0].storage_tier`), so the default covers the entire array -- size and tier for each element. If the user accepts the default, provisioning proceeds with those disks. If the user wants to change anything -- just the size, just the tier, or the number of disks -- they must provide the entire `additional_disks` array, since there is no per-element merging.
+- **Additional disks** can be defaulted as a whole array through a CatalogItem FieldDefinition with `path: "additional_disks"`. This follows the same semantics as `network_attachments`: the FieldDefinition path resolver does not support per-element field addressing (e.g., `additional_disks[0].storage_tier`), so the default covers the entire array -- size and tier for each element. If the user wants to change anything -- just the size, just the tier, or the number of disks -- they must provide the entire `additional_disks` array, since there is no per-element merging.
 
-When no CatalogItem default exists for `additional_disks`, every additional disk must carry an explicit `storage_tier` from the user. Omitting it is a validation error.
+When the CatalogItem defines an `additional_disks` default, the distinction between an omitted field and an empty array is significant:
+- **Field omitted** (`!HasAdditionalDisks()`): the CatalogItem default applies. The user accepts whatever additional disks the admin pre-configured.
+- **Empty array** (`additional_disks: []`): the user explicitly opts out of additional disks.
+- **Non-empty array**: the user provides their own additional disks, replacing the CatalogItem default entirely.
 
-#### Error Path: Boot Disk Tier Not Resolved
+This means that choosing a CatalogItem with default additional disks is an implicit acceptance: if the user does not want those disks, they must explicitly opt out by sending an empty array.
 
-1. Tenant User sends a request with no `storage_tier` on the boot disk.
-2. Neither the CatalogItem FieldDefinitions nor the Template SpecDefaults provide a tier.
-3. Fulfillment-service returns `INVALID_ARGUMENT`: `"boot_disk.storage_tier is required but was not provided by user input, catalog item defaults, or template defaults"`. [Locked: D1]
+When the CatalogItem does not define an `additional_disks` default, omitting the field simply means no additional disks are created. When the user provides additional disks (directly or via CatalogItem default), every disk must include both `size_gib` and `storage_tier`.
 
-#### Error Path: Additional Disk Missing Tier
+#### Error Path 1: Boot Disk Tier Not Resolved
 
-1. Tenant User sends a request with `boot_disk.storage_tier: "fast"` and `additional_disks[0]: {size_gib: 200}` (no `storage_tier`). The user provided their own `additional_disks`, overriding any CatalogItem default.
-2. Fulfillment-service returns `INVALID_ARGUMENT`: `"additional_disks[0].storage_tier is required"`.
+1. A CatalogItem exists with no FieldDefinition for `boot_disk.storage_tier`. Template SpecDefaults: `boot_disk: {size_gib: 50}` (no `storage_tier`).
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.size_gib: 100` (no `storage_tier`).
+3. Fulfillment-service applies FieldDefinitions — no `boot_disk.storage_tier` default found.
+4. Fulfillment-service merges Template SpecDefaults — template's `boot_disk` has no `storage_tier` either.
+5. Fulfillment-service returns `INVALID_ARGUMENT`: `"boot_disk.storage_tier is required but was not provided by user input, catalog item defaults, or template defaults"`. [Locked: D1]
 
-#### Error Path: Tier Not Available
+#### Error Path 2: Additional Disk Missing Tier
 
-1. Tenant User specifies `boot_disk.storage_tier: "nonexistent"`.
-2. Fulfillment-service queries the StorageTier API -- no match found.
-3. Fulfillment-service returns `INVALID_ARGUMENT`: `"storage tier \"nonexistent\" does not exist"`.
+1. A CatalogItem exists with `additional_disks` default `[{size_gib: 500, storage_tier: "standard"}]`.
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "fast"` and `additional_disks: [{size_gib: 200}]` (no `storage_tier`). The user-provided array replaces the CatalogItem default.
+3. Fulfillment-service returns `INVALID_ARGUMENT`: `"additional_disks[0].storage_tier is required"`.
+
+#### Error Path 3: Tier Not Available
+
+1. A CatalogItem exists with FieldDefinition: `boot_disk.storage_tier` default `"standard"`.
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "nonexistent"`.
+3. Fulfillment-service queries the StorageTier API — no match found.
+4. Fulfillment-service returns `INVALID_ARGUMENT`: `"storage tier \"nonexistent\" does not exist"`.
 
 The same error message is used when a tier exists globally but is not available for the tenant (detected by AAP at provisioning time). This avoids leaking whether a tier exists in the platform's catalog.
 
@@ -172,8 +193,6 @@ This enhancement modifies existing API surfaces. No new CRDs, admission webhooks
 **CRD (osac-operator):** `DiskSpec` gains `StorageTier string`. The existing `XValidation:rule="self == oldSelf"` on `bootDisk` and `additionalDisks` enforces immutability for the new field automatically. [Locked: D6]
 
 **AAP extra_vars:** No structural change to `ansible_eda.event`. The CR payload already contains the full ComputeInstance spec, which now includes `storageTier` per disk. The `tenant_storage_classes` sibling field is unchanged.
-
-If the operator controller is down, ComputeInstance CRs will queue in Kubernetes and be reconciled when the controller recovers. No data loss occurs -- the CR is the source of truth. [Codebase: osac-operator/internal/controller/computeinstance_controller.go]
 
 ### Implementation Details/Notes/Constraints
 
@@ -465,8 +484,6 @@ No new observability changes. Existing monitoring mechanisms apply:
 - AAP job success/failure is tracked through existing provisioning job status on `ComputeInstance.Status.ProvisioningJobs`.
 
 ### Risks and Mitigations
-
-**Templates and CatalogItems must be updated**: Adding `storage_tier` as required means existing Templates and CatalogItems that lack a tier default will cause ComputeInstance creation to fail until updated. Since OSAC is pre-GA (CRDs are `v1alpha1`, no production tenants depend on backwards compatibility), this is an expected part of the upgrade rather than a breaking change. The rollout must include updating deployed Templates and CatalogItems with `storage_tier` values, and installation documentation must list tier configuration as a prerequisite.
 
 **Version skew during rolling deployment**: If the fulfillment-service is updated before the operator, the operator will receive CRs with `storageTier` fields that the old operator CRD schema does not recognize. Mitigation: deploy the CRD update (operator) first, then the fulfillment-service. The new CRD field is additive and does not break old operator code that ignores it.
 
