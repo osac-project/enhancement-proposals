@@ -37,14 +37,8 @@ def gh(args):
 
 def get_changed_files(pr_number):
     raw = gh(["api", f"repos/{REPO}/pulls/{pr_number}/files",
-              "--paginate", "--jq", "[.[].filename]"])
-    return json.loads(raw) if raw.strip() else []
-
-
-def get_incremental_files(before_sha, head_sha):
-    raw = gh(["api", f"repos/{REPO}/compare/{before_sha}...{head_sha}",
-              "--jq", "[.files[].filename]"])
-    return json.loads(raw) if raw.strip() else []
+              "--paginate", "--jq", ".[].filename"])
+    return [f for f in raw.splitlines() if f.strip()]
 
 
 def detect_skills(files):
@@ -119,16 +113,7 @@ def main():
     if shadow:
         print("SHADOW MODE: review will run but no comment will be posted")
 
-    event_name = os.environ.get("EVENT_NAME", "")
-    event_action = os.environ.get("EVENT_ACTION", "")
-    before_sha = os.environ.get("EVENT_BEFORE_SHA", "")
-
-    # For synchronize events, only review files changed in the latest push
-    if event_action == "synchronize" and before_sha and head_sha:
-        files = get_incremental_files(before_sha, head_sha)
-        print(f"Synchronize: checking incremental diff ({before_sha[:8]}..{head_sha[:8]})")
-    else:
-        files = get_changed_files(pr_number)
+    files = get_changed_files(pr_number)
 
     if not files:
         print("No files changed")
