@@ -16,6 +16,9 @@ from pathlib import Path
 PRD_KEYS = {"what", "why", "user_facing_focus", "right_sized", "testability"}
 DESIGN_KEYS = {"feasibility", "testability", "scope", "architecture"}
 
+PRD_PASS_THRESHOLD = 7
+DESIGN_PASS_THRESHOLD = 5
+
 PRD_DISPLAY = {
     "what": "WHAT (clear need)",
     "why": "WHY (justification)",
@@ -168,7 +171,7 @@ class EPHooks:
             "- scope (0-2): Is the scope well-defined and appropriately sized?\n"
             "- architecture (0-2): Does the design follow sound architectural principles?\n\n"
             "Scoring: 0 = missing/broken, 1 = present but weak, 2 = solid.\n"
-            "PASS threshold: total >= 4.\n\n"
+            "PASS threshold: total >= 5 AND no zeros on any criterion.\n\n"
             "Write your verdict to verdict.json with this exact structure:\n"
             '{\n'
             '  "verdict": "pass" or "fail",\n'
@@ -257,12 +260,14 @@ class EPHooks:
             scores[k] = max(0, min(2, int(scores.get(k, 0))))
         total = sum(scores.values())
         max_total = len(scores) * 2
-        pass_fail = "PASS" if total >= (max_total // 2) else "FAIL"
 
         notes = verdict.get("criterionNotes", {})
         findings = verdict.get("findings", {})
 
         is_prd = set(scores.keys()) & PRD_KEYS == PRD_KEYS
+        has_zero = 0 in scores.values()
+        threshold = PRD_PASS_THRESHOLD if is_prd else DESIGN_PASS_THRESHOLD
+        pass_fail = "PASS" if total >= threshold and not has_zero else "FAIL"
         marker = "AI EP Review:" if is_prd else "AI Design Review:"
         display_labels = PRD_DISPLAY if is_prd else DESIGN_DISPLAY
 
