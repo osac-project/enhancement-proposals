@@ -13,8 +13,9 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 ## In Scope
 
 - `display_name` (optional string, max 63 characters) and `description` (optional string, max 256 characters) added to the shared Metadata, automatically inherited by every resource type `[Clarify: R2.Q1, R4.Q4]`
-- Removal of existing `title` and `description` fields from the spec of spec-based resources: Project, Role, IdentityProvider, and InstanceType (description only) `[Clarify: R1.Q1, R4.Q2, R5.Q2]`
+- Removal of existing per-resource `title` and `description` fields from all resource types that currently have them: Project, Role, IdentityProvider, InstanceType (description only), ClusterTemplate, ComputeInstanceTemplate, BareMetalInstanceTemplate, NetworkClass, HostType, ComputeInstanceCatalogItem, BareMetalInstanceCatalogItem, and ClusterCatalogItem `[Clarify: R1.Q1, PR review: sk-ilya, ygalblum]`
 - Both fields are optional, mutable after creation, and clearable `[Clarify: R3.Q1]`
+- `display_name` does not have to be unique across resources `[Clarify: R2.Q2, PR review: sk-ilya]`
 - Users can filter and sort resource lists by `display_name` across UI, CLI, and API `[Clarify: R2.Q2]`
 - UI displays `display_name` in place of `metadata.name` when set; falls back to `metadata.name` when `display_name` is not set — this applies uniformly across list views, detail pages, breadcrumbs, and search results `[Clarify: R4.Q1, R5.Q1]`
 - E2E test coverage for create, update, and clear of `display_name` and `description` across representative resource types
@@ -22,11 +23,8 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 
 ## Out of Scope
 
-- Making `display_name` or `description` required for any resource type
 - Renaming or removing existing `metadata.name` semantics
-- Enforcing uniqueness constraints on `display_name`
-- Template parameter `title`/`description` fields within ComputeInstanceTemplate, BaremetalInstanceTemplate, and ClusterTemplate — only resource-level fields are affected `[Clarify: R1.Q3]`
-- Flat-shape, platform-defined resources that already have top-level `title`/`description` fields: ClusterTemplate, ComputeInstanceTemplate, BareMetalInstanceTemplate, NetworkClass, HostType, ComputeInstanceCatalogItem, BareMetalInstanceCatalogItem, and ClusterCatalogItem — these keep their existing fields unchanged `[Clarify: R4.Q2, R5.Q2]`
+- Template parameter `title`/`description` fields within ComputeInstanceTemplate, BareMetalInstanceTemplate, and ClusterTemplate — only resource-level fields are affected `[Clarify: R1.Q3]`
 
 ## User Stories
 
@@ -34,6 +32,10 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 
 - As a Cloud Provider Admin, I want resources across all tenant organizations to show a consistent, human-readable `display_name` and `description` so that I can quickly identify and audit resources when reviewing or supporting tenants, regardless of resource type.
 - As a Cloud Provider Admin, I want to filter and sort resource lists by `display_name` so that I can locate specific resources across tenants without memorizing DNS-label names. `[Clarify: R2.Q2]`
+
+### Cloud Infrastructure Admin
+
+- As a Cloud Infrastructure Admin, I want platform-defined resources I manage (NetworkClass, HostType, catalog items, templates) to use the same `metadata.display_name` and `metadata.description` fields as all other resources, so that naming conventions are consistent across platform and tenant resources. `[PR review: sk-ilya, ygalblum]`
 
 ### Tenant Admin
 
@@ -53,7 +55,7 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 
 ## Provenance
 
-Authored: revise @ prd 0.5.0 - 92734a2, workspace main @ aac0f8e
-Phases: draft, revise
+Authored: respond @ prd 0.5.0 - 7b6dfe0, workspace main @ 280ee0f
+Phases: draft, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"aac0f8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"7b6dfe0","source_repo":"280ee0f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":false} -->
