@@ -231,15 +231,25 @@ Additional disk tiers cannot be defaulted through FieldDefinitions. The path res
 
 #### 4. Fulfillment-Service Validation
 
-Extend `ValidateRequiredSpecFields()` with a single `validateDisk()` function that validates both boot disk and additional disks:
+Extend `ValidateRequiredSpecFields()` with a single `validateDisk()` function that validates both boot disk and additional disks. The function performs the full validation: nil check, size, tier presence, and tier existence against the StorageTier API.
 
 ```go
-func validateDisk(label string, disk *privatev1.ComputeInstanceDisk) error {
+func validateDisk(ctx context.Context, label string, disk *privatev1.ComputeInstanceDisk, storageTierClient StorageTierQuerier) error {
+    if disk == nil {
+        return grpcstatus.Errorf(grpccodes.InvalidArgument, "%s is required", label)
+    }
     if disk.GetSizeGib() <= 0 {
         return grpcstatus.Errorf(grpccodes.InvalidArgument, "%s.size_gib must be greater than 0", label)
     }
     if !disk.HasStorageTier() {
         return grpcstatus.Errorf(grpccodes.InvalidArgument, "%s.storage_tier is required", label)
+    }
+    exists, err := storageTierClient.Exists(ctx, disk.GetStorageTier())
+    if err != nil {
+        return grpcstatus.Errorf(grpccodes.Internal, "failed to check storage tier %q: %v", disk.GetStorageTier(), err)
+    }
+    if !exists {
+        return grpcstatus.Errorf(grpccodes.InvalidArgument, "storage tier %q does not exist", disk.GetStorageTier())
     }
     return nil
 }
@@ -248,32 +258,17 @@ func validateDisk(label string, disk *privatev1.ComputeInstanceDisk) error {
 Called from `ValidateRequiredSpecFields()` after defaults merging:
 
 ```go
-if err := validateDisk("boot_disk", spec.GetBootDisk()); err != nil {
+if err := validateDisk(ctx, "boot_disk", spec.GetBootDisk(), storageTierClient); err != nil {
     return err
 }
 for i, disk := range spec.GetAdditionalDisks() {
-    if err := validateDisk(fmt.Sprintf("additional_disks[%d]", i), disk); err != nil {
+    if err := validateDisk(ctx, fmt.Sprintf("additional_disks[%d]", i), disk, storageTierClient); err != nil {
         return err
     }
 }
 ```
 
-Add a tier existence check that queries the private StorageTier API to confirm each referenced tier name is a known resource. This runs at request time in the Create RPC handler, after validation but before persisting:
-
-```go
-func validateStorageTierExists(ctx context.Context, tierName string, storageTierClient StorageTierQuerier) error {
-    exists, err := storageTierClient.Exists(ctx, tierName)
-    if err != nil {
-        return grpcstatus.Errorf(grpccodes.Internal, "failed to check storage tier %q: %v", tierName, err)
-    }
-    if !exists {
-        return grpcstatus.Errorf(grpccodes.InvalidArgument, "storage tier %q does not exist", tierName)
-    }
-    return nil
-}
-```
-
-The server calls this for `boot_disk.storage_tier` and each `additional_disks[*].storage_tier`.
+After the full resolution chain, a nil boot disk is an error — it means neither the user, CatalogItem, nor Template provided one. Additional disks are user-provided, so nil elements should not occur, but the check is defensive.
 
 #### 5. Reconciler Mapping (Proto to CRD)
 
@@ -537,11 +532,3 @@ The `storage_tier` field cannot be disabled independently -- it is part of the `
 ## Infrastructure Needed
 
 None.
-
----
-
-## Provenance
-
-Authored: revise @ design 0.3.0 - 92734a2, workspace main @ 0921467 (dirty)
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"0921467 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["commit","revise"],"authoring_modes":["skill"],"context_changed":false} -->
