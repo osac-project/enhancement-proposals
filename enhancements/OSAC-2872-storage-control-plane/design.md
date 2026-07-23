@@ -7,6 +7,7 @@ creation-date: 2026-07-22
 last-updated: 2026-07-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2872
+  - https://redhat.atlassian.net/browse/OSAC-2876
 prd:
   - "prd.md"
 see-also:
@@ -57,7 +58,7 @@ The storage control plane spans three repositories plus the installer:
 | `osac-aap` | Ansible roles modified to deploy the OSAC CSI driver and vendor plugins to tenant clusters | Existing pattern: AAP handles cluster-side provisioning |
 | `osac-installer` | Umbrella Helm chart wiring: adds osac-csi-driver as an optional dependency | Existing pattern: each component ships its own chart, osac-installer assembles them |
 
-For each volume operation, the CSI controller makes one gRPC call to the fulfillment-service Volume API (which handles tier resolution, policy, credentials, and inventory internally), then proxies the vendor-specific call to the VAST controller on the hub via TCP gRPC. The node plugin routes mount/unmount to vendor node plugins based on `volume_context` metadata embedded at provisioning time, with no control plane calls.
+For each volume operation, the CSI controller calls the fulfillment-service Volume API for orchestration (tier resolution, policy, inventory), then proxies the vendor-specific call to the VAST controller on the hub via TCP gRPC, and finally updates the Volume API with the vendor result. The node plugin routes mount/unmount to vendor node plugins based on `volume_context` metadata embedded at provisioning time, with no control plane calls.
 
 ```mermaid
 graph TB
@@ -167,11 +168,11 @@ No control plane calls are made from the node. All routing information is baked 
 
 #### Error Handling
 
-**PVC with unconfigured StorageClass:** The PVC stays Pending with a standard Kubernetes event. No custom error handling. 
+**PVC with unconfigured StorageClass:** The PVC stays Pending with a standard Kubernetes event. No custom error handling.
 
 **Policy denial (unauthorized tenant or tier):** The Volume API returns `PERMISSION_DENIED`. The CSI controller returns a CSI error. The PVC stays Pending with an event describing the denial.
 
-**Vendor volume creation failure:** The Volume API has already persisted the volume record in `creating` state. The CSI controller returns the vendor error to Kubernetes. On retry, the Volume API's CreateVolume is idempotent: if a volume with the same identity exists in `creating` state, it returns the existing record and the CSI controller retries the vendor call.
+**Vendor volume creation failure:** The Volume API has already persisted the volume record in `creating` state. The CSI controller returns the vendor error to Kubernetes. On retry, the Volume API's CreateVolume is idempotent by volume name (derived deterministically from the PVC name): if a volume with the same name exists in `creating` state, it returns the existing record and the CSI controller retries the vendor call. The vendor CSI CreateVolume is also idempotent by name per the CSI spec, so duplicate vendor volumes are not created even if the controller crashes between the vendor call and the UpdateVolume call.
 
 **Fulfillment-service unreachable:** The CSI controller returns `UNAVAILABLE`. Kubernetes retries with exponential backoff.
 
@@ -196,8 +197,11 @@ No control plane calls are made from the node. All routing information is baked 
 - Names derived from tenant StorageTier names (e.g., `osac-gold`, `osac-fast`).
 - Labels: `osac.openshift.io/tenant`, `osac.openshift.io/storage-tier`, `osac.openshift.io/storage-protocol`
 - Parameters: `tier` (StorageTier name), `tenant` (tenant name)
+- `reclaimPolicy: Delete` (standard for dynamic provisioning; ensures vendor volumes are cleaned up when PVCs are deleted)
 
-**Finalizer on Volume records:** None. Volume lifecycle is driven by CSI operations, not by a Kubernetes controller.
+**Cluster teardown cleanup:** When a tenant cluster is deleted (ClusterOrder deletion), CSI DeleteVolume does not run for volumes on that cluster. The existing `osac-delete-tenant-cluster-storage` AAP playbook must be extended to query the Volume API for volumes associated with the cluster and delete them, ensuring vendor volumes are cleaned up and inventory records transition to DELETED.
+
+**Finalizer on Volume records:** None. Volume lifecycle is driven by CSI operations (and cluster teardown cleanup via AAP), not by a Kubernetes controller.
 
 **Existing resources modified:**
 - `osac-aap` storage roles: modified to deploy OSAC CSI driver instead of vendor CSI operator on tenant clusters.
@@ -283,7 +287,17 @@ service Volumes {
 }
 ```
 
-Request and response messages follow the existing pattern (e.g., `CreateVolumeRequest { Volume object }`, `CreateVolumeResponse { Volume object }`). The Signal RPC supports future controller-driven state transitions.
+Request and response messages follow the existing pattern. The `CreateVolumeResponse` includes transient routing fields beyond the persisted Volume object, so the CSI driver knows where to proxy the vendor call:
+
+```protobuf
+message CreateVolumeResponse {
+  Volume object = 1;
+  string backend_endpoint = 2;
+  map<string, string> vendor_params = 3;
+}
+```
+
+`backend_endpoint` and `vendor_params` are derived from tier resolution and returned once; they are not persisted in the Volume record. Credential delivery to the shared VAST controller depends on the resolution of Open Question 2. The Signal RPC supports future controller-driven state transitions.
 
 #### Volume API Server
 
@@ -384,7 +398,7 @@ New directory `osac-csi-driver/charts/csi-driver/` with:
 | `rbac.yaml` | ServiceAccount, ClusterRole, ClusterRoleBinding | RBAC for CSI operations |
 | `storageclasses.yaml` | StorageClass (templated) | One per tenant storage tier, parameterized from values |
 
-`values.yaml` key parameters:
+`values.yaml` key parameters (image tags and chart versions are pinned to tested versions at deploy time; values below are defaults):
 
 ```yaml
 driver:
@@ -437,9 +451,9 @@ StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{tie
 
 ### Security Considerations
 
-**Credential isolation:** Vendor credentials (VAST username/password) never leave the hub cluster. They are stored in the fulfillment-service's StorageBackend record and provided per-request to the CSI driver via the Volume API response. The CSI driver uses them to authenticate to the VAST CSI controller, then discards them. The tenant cluster stores only the credentials needed to authenticate to the fulfillment-service, not vendor credentials.
+**Credential isolation:** Vendor credentials (VAST username/password) are stored on the hub cluster only (in the fulfillment-service's StorageBackend record and per-tenant hub Secrets created by AAP). Whether credentials transit through the tenant cluster depends on the vendor credential delivery mechanism (see Open Question 2). The tenant cluster stores only the credentials needed to authenticate to the fulfillment-service, not vendor credentials.
 
-**Cross-cluster authentication:** The CSI driver on tenant clusters must authenticate to the fulfillment-service on the hub cluster. The recommended approach is a per-cluster service account token: during cluster provisioning, AAP creates a Kubernetes ServiceAccount on the hub cluster with a long-lived token, scoped to the Volume API's private endpoints. The token is injected into the CSI driver's Deployment on the tenant cluster as a Secret. This approach reuses the existing JWT authentication interceptor in the fulfillment-service.
+**Cross-cluster authentication:** The CSI driver on tenant clusters must authenticate to the fulfillment-service on the hub cluster. The recommended approach is service account tokens over TLS: during cluster provisioning, AAP creates a Kubernetes ServiceAccount on the hub cluster with a token scoped to the Volume API's private endpoints, and injects it into the CSI driver's Deployment on the tenant cluster as a Secret. This reuses the existing JWT authentication interceptor in the fulfillment-service. The same TLS transport covers the vendor proxy connection from the CSI controller to the VAST controller on the hub. A spike to evaluate authentication options (token over TLS, mTLS, SPIFFE) is recommended before implementation (see Open Question 1).
 
 **Tenant isolation:** The Volume API enforces tenant isolation via the same mechanism as all other fulfillment-service resources: the JWT token carries tenant claims, and the GenericDAO filters queries by tenant. A tenant can only see and operate on its own volumes. OPA policies additionally enforce tier-access rules (a tenant can only use tiers that have been assigned to it).
 
@@ -529,19 +543,19 @@ Continue deploying vendor CSI operators (VAST) directly on tenant clusters.
 
 ## Open Questions
 
-### 1. Cross-cluster authentication mechanism
+### 1. Cross-cluster authentication and transport security
 
-The design recommends per-cluster service account tokens, but the team has not formally decided on the mechanism. Options include mTLS with SPIFFE, service account tokens, or API keys per tenant cluster. This decision affects the security architecture and AAP provisioning roles.
-
-**Owner:** Storage team
-**Impact:** Blocks the CSI driver's fulfillment client implementation and the AAP provisioning role for credential distribution.
-
-### 2. VAST CSI controller deployment model
-
-Should the VAST CSI controller run as a shared Deployment on the hub cluster (one per hub, serving all tenants), or as a per-tenant Deployment? The design assumes a shared controller, but per-tenant isolation may be required for credential separation.
+The design recommends service account tokens over TLS for the CSI driver to authenticate to the fulfillment-service on the hub cluster. The team has not formally decided on the mechanism. Options: (a) service account tokens over TLS (simplest, reuses existing JWT auth), (b) mTLS with certificates on both sides (strongest, requires certificate management), (c) SPIFFE/SPIRE for automated mTLS certificate rotation. This decision also covers the vendor proxy transport: the CSI controller's gRPC connection to the VAST controller on the hub needs the same TLS treatment. A spike to evaluate these options is recommended before implementation.
 
 **Owner:** Storage team
-**Impact:** Affects the Helm chart structure and AAP provisioning roles.
+**Impact:** Blocks the CSI driver's fulfillment client implementation, the vendor proxy TLS configuration, and the AAP provisioning role for credential distribution.
+
+### 2. Vendor credential delivery to shared VAST controller
+
+The VAST CSI controller runs as a shared Deployment on the hub cluster (one per hub, serving all tenants). Per-tenant VAST credentials exist (AAP creates per-tenant VMS Manager credentials stored in hub Secrets). The open question is how per-tenant credentials reach the shared VAST controller per-request: (a) the Volume API returns credentials to the CSI driver, which passes them to the VAST controller via the CSI `secrets` parameter (credentials transit through the tenant cluster briefly), or (b) the Volume API proxies the vendor call directly so credentials never leave the hub. Option (a) is simpler but weakens the credential isolation claim. Option (b) is architecturally cleaner but moves vendor proxy logic into the fulfillment-service.
+
+**Owner:** Storage team
+**Impact:** Determines whether credentials transit through tenant clusters, affects the Volume API response contract, and may change the repo split for vendor proxy logic.
 
 ### 3. StorageClass naming convention
 
