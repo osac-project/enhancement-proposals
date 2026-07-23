@@ -24,7 +24,7 @@ This design introduces a DiskImage resource to the fulfillment-service. DiskImag
 
 ## Motivation
 
-ComputeInstances currently reference images via raw OCI URLs embedded in `ComputeInstanceImage` (source_type + source_ref), with OS type tracked as a boolean `is_windows` flag. This creates several problems for production use:
+ComputeInstances currently reference images via raw OCI URLs embedded in `ComputeInstanceImage` (source type + source reference), with OS type tracked as a boolean `is_windows` flag. This creates several problems for production use:
 
 - **No discoverability.** Users must know exact OCI references and registry tooling. There is no searchable catalog of available images, no filtering by OS family or architecture, and no human-readable metadata.
 
@@ -54,9 +54,9 @@ A DiskImage resource centralizes image metadata, provides a catalog for discover
 
 This design adds a new DiskImage resource to the fulfillment-service with full CRUD operations, modifies ComputeInstance and ComputeInstanceTemplate to reference DiskImage by ID instead of inline image fields, and adds deletion protection logic to the DiskImage server.
 
-DiskImage follows the standard OSAC object shape (`id`, `Metadata`, `DiskImageSpec`, `DiskImageStatus`) and reuses the InstanceType lifecycle state machine for deprecation and obsolescence management. The `source_type`, `source_ref`, and `guest_os_family` fields on DiskImageSpec are immutable after creation. Display name and description come from shared Metadata (OSAC-2921).
+DiskImage follows the standard OSAC object shape (`id`, `Metadata`, `DiskImageSpec`, `DiskImageStatus`) and reuses the InstanceType lifecycle state machine for deprecation and obsolescence management. The `source` and `guest_os_family` fields on DiskImageSpec are immutable after creation. Display name and description come from shared Metadata (OSAC-2921).
 
-On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` field are replaced by a `disk_image` string reference. The reconciler resolves the DiskImage at reconciliation time, extracts `source_type`, `source_ref`, and `guest_os_family`, and maps them to the existing CRD ImageSpec and GuestOSFamily fields. The osac-operator is unchanged.
+On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` field are replaced by a `disk_image` string reference. The reconciler resolves the DiskImage at reconciliation time, extracts `source` and `guest_os_family`, and maps them to the existing CRD ImageSpec and GuestOSFamily fields. The osac-operator is unchanged.
 
 ### Workflow Description
 
@@ -64,7 +64,7 @@ On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` fi
 
 **Actor:** Cloud Provider Admin (global images) or Tenant Admin (tenant-scoped images)
 
-1. Admin calls `DiskImages/Create` with the DiskImage object containing `spec.source_type`, `spec.source_ref`, `spec.guest_os_family`, and `spec.architecture`.
+1. Admin calls `DiskImages/Create` with the DiskImage object containing `spec.source`, `spec.guest_os_family`, and `spec.architecture`.
 2. Server validates required fields, sets `spec.state` to `DISK_IMAGE_STATE_AVAILABLE` if unspecified, persists the object, and returns it with system-generated `id` and `metadata`.
 3. For global images, `metadata.tenant` is empty. For tenant-scoped images, the server sets `metadata.tenant` from the caller's identity.
 
@@ -91,7 +91,7 @@ sequenceDiagram
 
     Reconciler->>DB: Get ComputeInstance
     Reconciler->>DB: Get DiskImage by disk_image ref
-    DB-->>Reconciler: DiskImage (source_type, source_ref, guest_os_family)
+    DB-->>Reconciler: DiskImage (source, guest_os_family)
     Reconciler->>Reconciler: Map to ImageSpec + GuestOSFamily
     Reconciler->>K8s: Create/Update CR with resolved fields
 ```
@@ -105,7 +105,7 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
    - DiskImage exists and is visible to the caller's tenant (global or same tenant).
    - DiskImage state is not OBSOLETE. If DEPRECATED, creation proceeds with a warning in the response.
 5. Server persists the ComputeInstance with the `disk_image` reference.
-6. Reconciler fetches the referenced DiskImage, extracts `source_type`, `source_ref`, and `guest_os_family`, maps them to CRD `ImageSpec` and `GuestOSFamily`, and creates the KubeVirt VirtualMachine CR.
+6. Reconciler fetches the referenced DiskImage, extracts `source` and `guest_os_family`, maps them to CRD `ImageSpec` and `GuestOSFamily`, and creates the KubeVirt VirtualMachine CR.
 
 #### Deprecating and Obsoleting a DiskImage
 
@@ -204,23 +204,20 @@ message DiskImage {
 
 // Desired configuration for a DiskImage.
 message DiskImageSpec {
-  // OCI source type (e.g., "registry"). Immutable after creation.
-  string source_type = 1 [(buf.validate.field).string.min_len = 1];
-
   // OCI artifact reference (e.g., "quay.io/containerdisks/fedora:41"). Immutable after creation.
-  string source_ref = 2 [(buf.validate.field).string.min_len = 1];
+  string source = 1 [(buf.validate.field).string.min_len = 1];
 
   // Guest operating system family. Immutable after creation.
-  GuestOSFamily guest_os_family = 3 [(buf.validate.field).enum.defined_only = true];
+  GuestOSFamily guest_os_family = 2 [(buf.validate.field).enum.defined_only = true];
 
   // Supported CPU architectures. Informational metadata for filtering and discovery.
-  repeated Architecture architecture = 4 [(buf.validate.field).repeated = {min_items: 1, items: {enum: {defined_only: true}}}];
+  repeated Architecture architecture = 3 [(buf.validate.field).repeated = {min_items: 1, items: {enum: {defined_only: true}}}];
 
   // Lifecycle state of the image.
-  DiskImageState state = 5;
+  DiskImageState state = 4;
 
   // Deprecation details. Only meaningful when state is DEPRECATED or OBSOLETE.
-  DiskImageDeprecation deprecation = 6;
+  DiskImageDeprecation deprecation = 5;
 }
 
 // System-provided status. Currently empty; reserved for future use.
@@ -231,7 +228,7 @@ Key design points:
 
 - `DiskImageState` follows the InstanceType lifecycle pattern. `DiskImageDeprecation` aligns with the ClusterVersion pattern — state lives only in `DiskImageSpec.state` (no duplication in the deprecation message), while `replacement`, `deprecation_timestamp`, and `obsolescence_timestamp` provide deprecation metadata. [Codebase: cluster_version_type.proto, instance_type_type.proto]
 - `GuestOSFamily` is a shared enum (defined in its own file) replacing the `is_windows` boolean. It uses the standard OSAC enum naming convention with `_UNSPECIFIED = 0`.
-- `source_type`, `source_ref`, and `guest_os_family` are required on create and immutable after creation. Immutability is enforced in the server's Update handler by rejecting changes to these fields. `architecture` remains mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
+- `source` and `guest_os_family` are required on create and immutable after creation. Immutability is enforced in the server's Update handler by rejecting changes to these fields. `architecture` remains mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
 - `architecture` is a `repeated Architecture` enum. Values: `ARCHITECTURE_AMD64`, `ARCHITECTURE_ARM64`, `ARCHITECTURE_S390X`. At least one value is required. Proto-level `defined_only` validation replaces the need for a server-side allowlist.
 - `state` defaults to `DISK_IMAGE_STATE_AVAILABLE` when unspecified on create.
 
@@ -299,8 +296,7 @@ message ComputeInstanceSpec {
   // ... existing field 17 (instance_type) unchanged ...
 
   // Reference to a DiskImage. Required for VM creation. The server resolves
-  // the DiskImage's source_type, source_ref, and guest_os_family at
-  // reconciliation time.
+  // the DiskImage's source and guest_os_family at reconciliation time.
   optional string disk_image = 18;
 }
 ```
@@ -391,14 +387,14 @@ Two new files in `internal/servers/`:
 - `private_disk_images_server.go` — private DiskImages server wrapping `GenericServer[*privatev1.DiskImage]`
 
 **Create handler:**
-1. Validate `source_type`, `source_ref`, and `architecture` are set.
+1. Validate `source` and `architecture` are set.
 2. If `state` is unspecified, set to `DISK_IMAGE_STATE_AVAILABLE`.
 3. If `guest_os_family` is unspecified, default to `GUEST_OS_FAMILY_LINUX`.
 4. Delegate to generic server for persistence.
 
 **Update handler:**
 1. Fetch existing DiskImage from database.
-2. Reject changes to `source_type`, `source_ref`, and `guest_os_family` (immutable fields) — return `InvalidArgument`. `architecture` is mutable.
+2. Reject changes to `source` and `guest_os_family` (immutable fields) — return `InvalidArgument`. `architecture` is mutable.
 3. If `state` transitions to DEPRECATED: auto-set `deprecation.deprecation_timestamp`.
 4. If `state` transitions to OBSOLETE: auto-set `deprecation.obsolescence_timestamp`.
 5. If `state` transitions back to AVAILABLE: clear `deprecation` field entirely.
@@ -437,11 +433,11 @@ This follows the existing pattern: `validateFieldDefinitionsInstanceType()` in `
 
 #### Template Publication Integration
 
-The `publish_templates` Ansible role (`osac-aap`) currently builds ComputeInstanceTemplate objects from static `meta/osac.yaml` values in each template role, including inline `image` fields (`source_type`, `source_ref`). With DiskImage replacing inline image fields on templates, `publish_templates` must be updated to create DiskImage resources before creating templates.
+The `publish_templates` Ansible role (`osac-aap`) currently builds ComputeInstanceTemplate objects from static `meta/osac.yaml` values in each template role, including inline `image` fields. With DiskImage replacing inline image fields on templates, `publish_templates` must be updated to create DiskImage resources before creating templates.
 
 **Updated publication flow:**
 
-1. For each template role with image metadata in `meta/osac.yaml`, `publish_templates` calls `DiskImages/Create` (or updates an existing DiskImage found by name) with `source_type`, `source_ref`, `guest_os_family`, and `architecture` from the role metadata.
+1. For each template role with image metadata in `meta/osac.yaml`, `publish_templates` calls `DiskImages/Create` (or updates an existing DiskImage found by name) with `source`, `guest_os_family`, and `architecture` from the role metadata.
 2. The DiskImage `metadata.name` is derived deterministically from the template role name, enabling idempotent create-or-update across publication runs.
 3. `publish_templates` uses the returned DiskImage ID to set `spec_defaults.disk_image` on the ComputeInstanceTemplate.
 4. The registration process already has API credentials to create DiskImages — this is a similar API call to the existing template creation.
@@ -456,7 +452,7 @@ In `computeinstance_reconciler_function.go`, replace the current image mapping (
 ```go
 if ciSpec.HasImage() {
     spec.Image = osacv1alpha1.ImageSpec{
-        SourceType: osacv1alpha1.ImageSourceType(ciSpec.GetImage().GetSourceType()),
+        SourceType: osacv1alpha1.ImageSourceTypeRegistry,
         SourceRef:  ciSpec.GetImage().GetSourceRef(),
     }
 }
@@ -475,8 +471,8 @@ if ciSpec.GetDiskImage() != "" {
         return fmt.Errorf("failed to fetch disk image %q: %w", ciSpec.GetDiskImage(), err)
     }
     spec.Image = osacv1alpha1.ImageSpec{
-        SourceType: osacv1alpha1.ImageSourceType(diskImage.GetSpec().GetSourceType()),
-        SourceRef:  diskImage.GetSpec().GetSourceRef(),
+        SourceType: osacv1alpha1.ImageSourceTypeRegistry,
+        SourceRef:  diskImage.GetSpec().GetSource(),
     }
     switch diskImage.GetSpec().GetGuestOsFamily() {
     case privatev1.GUEST_OS_FAMILY_WINDOWS:
@@ -495,7 +491,7 @@ DiskImage inherits the existing OSAC security model without modification:
 
 - **Authentication:** JWT validation via the gRPC interceptor chain (same as all other resources).
 - **Authorization:** OPA policies control access. See RBAC / Tenancy section below.
-- **Input validation:** `buf.validate` annotations enforce required fields, enum validity, and minimum lengths on proto fields. The `source_ref` field accepts any string (URLs, digests). OSAC does not validate OCI reference reachability — invalid references surface as errors at VM provisioning time, consistent with the current behavior.
+- **Input validation:** `buf.validate` annotations enforce required fields, enum validity, and minimum lengths on proto fields. The `source` field accepts any string (URLs, digests). OSAC does not validate OCI reference reachability — invalid references surface as errors at VM provisioning time, consistent with the current behavior.
 - **Tenant isolation:** The generic server enforces tenant field validation, ensuring tenant-scoped DiskImages are only accessible within their tenant. Global DiskImages (empty tenant) are readable by all tenants.
 
 No new attack surface is introduced. DiskImage does not handle binary uploads, registry authentication, or credential storage.
@@ -570,6 +566,10 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 *Mitigation:* UUID-format IDs make false-positive substring matches negligible. False positives are safe (they prevent deletion, never allow it). If this becomes a performance concern at scale, a materialized helper table maintaining reference counts can be added in a later migration.
 
+**Risk: CatalogItem deletion race window.** A CatalogItem's `validateFieldDefinitionsDiskImage()` check and its subsequent commit are not atomic with DiskImage deletion. A DiskImage could be deleted between validation and CatalogItem commit, leaving the CatalogItem referencing a deleted DiskImage. This matches the existing InstanceType pattern — opaque `google.protobuf.Value` prevents SQL-level `FOR SHARE` locking.
+
+*Mitigation:* The reverse trigger on `disk_images` DELETE scans CatalogItem JSONB via text search, blocking deletion if any CatalogItem references the DiskImage. The race window is narrow (between application validation and DB commit) and self-correcting — the CatalogItem would reference a DiskImage that was valid at validation time and deleted moments later. If stronger guarantees are needed, a typed `disk_image_id` column on a future CatalogItem schema could enable `FOR SHARE` locking.
+
 **Risk: OSAC-2921 (shared Metadata display_name/description) may not land before DiskImage.** DiskImage depends on OSAC-2921 for display_name and description in Metadata.
 
 *Mitigation:* DiskImage can land in parallel with OSAC-2921. Until OSAC-2921 lands, DiskImage uses `metadata.name` as the human-readable identifier (same as all other resources today). display_name and description become available once the Metadata proto is updated.
@@ -586,7 +586,7 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 ### Keep inline image fields alongside DiskImage reference
 
-Allow users to provide either a DiskImage reference or raw `source_type`/`source_ref` fields on ComputeInstance, with DiskImage taking precedence.
+Allow users to provide either a DiskImage reference or raw image source fields on ComputeInstance, with DiskImage taking precedence.
 
 *Pros:* Backward compatible. No migration needed for existing workflows.
 *Cons:* Defeats the governance goal. Users bypass the curated catalog by providing raw URLs. Two code paths for image resolution. Rejected because governance is the primary motivation. [Locked: D5]
@@ -596,7 +596,7 @@ Allow users to provide either a DiskImage reference or raw `source_type`/`source
 Create a `disk_image_references` table with triggers on ComputeInstance/Template/CatalogItem inserts and deletes to maintain a running count of references per DiskImage ID.
 
 *Pros:* O(1) deletion check. No JSONB scanning.
-*Cons:* Requires maintaining a reference-counting table across three source tables. The bidirectional trigger approach (chosen) provides the same atomicity guarantees with simpler implementation — the deletion trigger scans references directly and the insertion triggers validate with `FOR SHARE` locking.
+*Cons:* Requires maintaining a reference-counting table across three source tables. The bidirectional trigger approach (chosen) provides the same atomicity guarantees for ComputeInstances and Templates with simpler implementation — the deletion trigger scans references directly and the insertion triggers validate with `FOR SHARE` locking. CatalogItem references use application-level validation without row locking (see Risks).
 
 ### Irreversible deprecation (GCP-style)
 
@@ -609,14 +609,14 @@ Once deprecated, a DiskImage cannot return to AVAILABLE.
 
 ### Unit Tests
 
-- **DiskImage server Create:** validates required fields (source_type, source_ref, architecture), defaults state to AVAILABLE and guest_os_family to LINUX when unspecified, persists and returns the object.
-- **DiskImage server Update:** rejects changes to source_type, source_ref, and guest_os_family (immutability), auto-sets deprecation timestamps on state transitions, clears deprecation on reactivation.
+- **DiskImage server Create:** validates required fields (source, architecture), defaults state to AVAILABLE and guest_os_family to LINUX when unspecified, persists and returns the object.
+- **DiskImage server Update:** rejects changes to source and guest_os_family (immutability), auto-sets deprecation timestamps on state transitions, clears deprecation on reactivation.
 - **DiskImage server Delete:** returns FailedPrecondition when referenced by ComputeInstance, Template, or CatalogItem. Succeeds when unreferenced.
 - **DiskImage server List:** excludes OBSOLETE images by default. Returns OBSOLETE images when filter explicitly includes them.
 - **ComputeInstance server Create:** validates disk_image is set, rejects OBSOLETE DiskImage, accepts DEPRECATED DiskImage with warning in response, validates tenant visibility.
 - **Spec defaults:** disk_image default from template applied when user omits it. Existing mergeImageDefaults removed.
-- **Reconciler:** resolves DiskImage to ImageSpec and GuestOSFamily correctly for linux and windows. Returns error when DiskImage not found.
-- **Validation:** buf.validate annotations reject empty source_type, empty source_ref, unknown guest_os_family enum values, empty architecture list.
+- **Reconciler:** resolves DiskImage source to ImageSpec and GuestOSFamily correctly for linux and windows. Returns error when DiskImage not found.
+- **Validation:** buf.validate annotations reject empty source, unknown guest_os_family enum values, empty architecture list.
 - **Migration 82:** table creation, round-trip insert/select, unique name index behavior.
 - **Trigger migration:** BEFORE UPDATE on disk_images prevents soft-delete when referenced. BEFORE INSERT OR UPDATE on compute_instances rejects invalid or deleted disk_image reference. FOR SHARE lock prevents concurrent soft-delete race.
 
@@ -656,7 +656,7 @@ If the fulfillment-service is upgraded before ComputeInstances are migrated to u
 **Symptom: ComputeInstance stuck in non-ready state with "failed to fetch disk image" in reconciler logs.**
 
 *Cause:* The referenced DiskImage was deleted or is inaccessible.
-*Resolution:* Check if the DiskImage exists (`osac disk-images get <id>`). If deleted, recreate it with the same source_type and source_ref, or update the ComputeInstance to reference a different DiskImage.
+*Resolution:* Check if the DiskImage exists (`osac disk-images get <id>`). If deleted, recreate it with the same source, or update the ComputeInstance to reference a different DiskImage.
 
 **Symptom: DiskImage deletion returns FailedPrecondition.**
 
@@ -681,9 +681,8 @@ No Helm chart, kustomize overlay, or osac-installer changes needed. Database mig
 
 ## Provenance
 
-Authored: draft @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
-Final: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3 (5 behind origin/main)
+Committed: commit @ design 0.4.0 - 7b6dfe0, workspace design/OSAC-2540 @ fa9329a (68 behind origin/main, dirty)
 
-> Context changed between draft and respond.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":5,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.4.0","ai_workflows":"7b6dfe0","source_repo":"fa9329a (dirty)","source_repo_branch":"design/OSAC-2540","commits_behind_main":68,"commits_ahead_main":8,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":false} -->
