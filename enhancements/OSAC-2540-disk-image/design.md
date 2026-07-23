@@ -54,7 +54,7 @@ A DiskImage resource centralizes image metadata, provides a catalog for discover
 
 This design adds a new DiskImage resource to the fulfillment-service with full CRUD operations, modifies ComputeInstance and ComputeInstanceTemplate to reference DiskImage by ID instead of inline image fields, and adds deletion protection logic to the DiskImage server.
 
-DiskImage follows the standard OSAC object shape (`id`, `Metadata`, `DiskImageSpec`, `DiskImageStatus`) and reuses the InstanceType lifecycle state machine for deprecation and obsolescence management. The `source_type` and `source_ref` fields on DiskImageSpec are immutable after creation. Display name and description come from shared Metadata (OSAC-2921).
+DiskImage follows the standard OSAC object shape (`id`, `Metadata`, `DiskImageSpec`, `DiskImageStatus`) and reuses the InstanceType lifecycle state machine for deprecation and obsolescence management. The `source_type`, `source_ref`, and `guest_os_family` fields on DiskImageSpec are immutable after creation. Display name and description come from shared Metadata (OSAC-2921).
 
 On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` field are replaced by a `disk_image` string reference. The reconciler resolves the DiskImage at reconciliation time, extracts `source_type`, `source_ref`, and `guest_os_family`, and maps them to the existing CRD ImageSpec and GuestOSFamily fields. The osac-operator is unchanged.
 
@@ -184,17 +184,14 @@ enum Architecture {
 
 // Deprecation details for a DiskImage.
 message DiskImageDeprecation {
-  // Current deprecation state. Mirrors the spec-level state.
-  DiskImageState state = 1;
-
   // Suggested replacement DiskImage ID.
-  string replacement = 2;
+  string replacement = 1;
 
   // When deprecation was announced. Auto-set on transition to DEPRECATED.
-  google.protobuf.Timestamp deprecation_timestamp = 3;
+  google.protobuf.Timestamp deprecation_timestamp = 2;
 
   // When the image becomes or became obsolete. Auto-set on transition to OBSOLETE.
-  google.protobuf.Timestamp obsolescence_timestamp = 4;
+  google.protobuf.Timestamp obsolescence_timestamp = 3;
 }
 
 // A disk image wraps an OCI artifact reference with curated metadata for VM provisioning.
@@ -213,7 +210,7 @@ message DiskImageSpec {
   // OCI artifact reference (e.g., "quay.io/containerdisks/fedora:41"). Immutable after creation.
   string source_ref = 2 [(buf.validate.field).string.min_len = 1];
 
-  // Guest operating system family.
+  // Guest operating system family. Immutable after creation.
   GuestOSFamily guest_os_family = 3 [(buf.validate.field).enum.defined_only = true];
 
   // Supported CPU architectures. Informational metadata for filtering and discovery.
@@ -232,9 +229,9 @@ message DiskImageStatus {}
 
 Key design points:
 
-- `DiskImageState` and `DiskImageDeprecation` mirror the InstanceType pattern exactly, providing consistent lifecycle semantics across catalog resources. [Codebase: instance_type_type.proto]
+- `DiskImageState` follows the InstanceType lifecycle pattern. `DiskImageDeprecation` aligns with the ClusterVersion pattern — state lives only in `DiskImageSpec.state` (no duplication in the deprecation message), while `replacement`, `deprecation_timestamp`, and `obsolescence_timestamp` provide deprecation metadata. [Codebase: cluster_version_type.proto, instance_type_type.proto]
 - `GuestOSFamily` is a shared enum (defined in its own file) replacing the `is_windows` boolean. It uses the standard OSAC enum naming convention with `_UNSPECIFIED = 0`.
-- `source_type` and `source_ref` are required on create and immutable after creation. Immutability is enforced in the server's Update handler by rejecting changes to these fields. `guest_os_family` and `architecture` remain mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
+- `source_type`, `source_ref`, and `guest_os_family` are required on create and immutable after creation. Immutability is enforced in the server's Update handler by rejecting changes to these fields. `architecture` remains mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
 - `architecture` is a `repeated Architecture` enum. Values: `ARCHITECTURE_AMD64`, `ARCHITECTURE_ARM64`, `ARCHITECTURE_S390X`. At least one value is required. Proto-level `defined_only` validation replaces the need for a server-side allowlist.
 - `state` defaults to `DISK_IMAGE_STATE_AVAILABLE` when unspecified on create.
 
@@ -310,7 +307,7 @@ message ComputeInstanceSpec {
 
 The `ComputeInstanceImage` message is no longer used by ComputeInstance and can be removed once no other resource references it.
 
-`ComputeInstancesCreateResponse` gains a `repeated string warnings` field to convey non-fatal conditions (e.g., referencing a DEPRECATED DiskImage).
+`ComputeInstancesCreateResponse` already has a `repeated string warnings` field (used for InstanceType deprecation notices). DiskImage reuses this field to convey non-fatal conditions (e.g., referencing a DEPRECATED DiskImage with replacement hint).
 
 #### Proto Schema: ComputeInstanceTemplate Changes
 
@@ -360,7 +357,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS disk_images_name ON disk_images (name)
     WHERE name != '' AND deletion_timestamp = 'epoch';
 ```
 
-Migration `83_add_disk_image_ref_triggers.up.sql` adds bidirectional database triggers following the InstanceType pattern (`56_add_instance_type_ref_triggers.up.sql`):
+A new migration adds bidirectional database triggers following the InstanceType pattern (`56_add_instance_type_ref_triggers.up.sql`):
 
 **JSONB indexes** for disk_image lookups:
 
@@ -401,9 +398,9 @@ Two new files in `internal/servers/`:
 
 **Update handler:**
 1. Fetch existing DiskImage from database.
-2. Reject changes to `source_type` and `source_ref` (immutable fields) — return `InvalidArgument`. `guest_os_family` and `architecture` are mutable.
-3. If `state` transitions to DEPRECATED: auto-set `deprecation.deprecation_timestamp` and `deprecation.state`.
-4. If `state` transitions to OBSOLETE: auto-set `deprecation.obsolescence_timestamp` and `deprecation.state`.
+2. Reject changes to `source_type`, `source_ref`, and `guest_os_family` (immutable fields) — return `InvalidArgument`. `architecture` is mutable.
+3. If `state` transitions to DEPRECATED: auto-set `deprecation.deprecation_timestamp`.
+4. If `state` transitions to OBSOLETE: auto-set `deprecation.obsolescence_timestamp`.
 5. If `state` transitions back to AVAILABLE: clear `deprecation` field entirely.
 6. Delegate to generic server for persistence.
 
@@ -420,7 +417,7 @@ Default list excludes OBSOLETE images. The server prepends `this.spec.state != 3
 2. Fetch the referenced DiskImage. Return `NotFound` if it does not exist.
 3. Validate the DiskImage is visible to the caller's tenant (global or matching tenant).
 4. Validate the DiskImage state is not OBSOLETE — return `FailedPrecondition` with message: `"cannot create compute instance: disk image is obsolete"`.
-5. If the DiskImage state is DEPRECATED, add a warning to `ComputeInstancesCreateResponse.warnings`: `"disk image '<id>' is deprecated"`.
+5. If the DiskImage state is DEPRECATED, add a warning to `ComputeInstancesCreateResponse.warnings`: `"disk image '<id>' is deprecated"`. If `deprecation.replacement` is set, append `"; replacement: '<replacement_id>'"` to the warning.
 6. Persist the ComputeInstance with the `disk_image` reference.
 
 **Spec defaults modifications (`internal/utils/spec_defaults.go`):**
@@ -437,6 +434,19 @@ CatalogItem Create and Update handlers validate DiskImage references in `field_d
 4. If the DiskImage state is DEPRECATED, return a warning.
 
 This follows the existing pattern: `validateFieldDefinitionsInstanceType()` in `private_compute_instance_catalog_items_server.go`, extended with tenant visibility validation. The function is called from both Create and Update handlers in the CatalogItem server.
+
+#### Template Publication Integration
+
+The `publish_templates` Ansible role (`osac-aap`) currently builds ComputeInstanceTemplate objects from static `meta/osac.yaml` values in each template role, including inline `image` fields (`source_type`, `source_ref`). With DiskImage replacing inline image fields on templates, `publish_templates` must be updated to create DiskImage resources before creating templates.
+
+**Updated publication flow:**
+
+1. For each template role with image metadata in `meta/osac.yaml`, `publish_templates` calls `DiskImages/Create` (or updates an existing DiskImage found by name) with `source_type`, `source_ref`, `guest_os_family`, and `architecture` from the role metadata.
+2. The DiskImage `metadata.name` is derived deterministically from the template role name, enabling idempotent create-or-update across publication runs.
+3. `publish_templates` uses the returned DiskImage ID to set `spec_defaults.disk_image` on the ComputeInstanceTemplate.
+4. The registration process already has API credentials to create DiskImages — this is a similar API call to the existing template creation.
+
+This change is scoped to the `publish_templates` role in `osac-aap`. The fulfillment-service API supports this flow without modification.
 
 #### Reconciler Changes
 
@@ -493,8 +503,6 @@ No new attack surface is introduced. DiskImage does not handle binary uploads, r
 ### Failure Handling and Recovery
 
 **DiskImage not found during ComputeInstance creation:** Server returns `NotFound`. User corrects the reference and retries.
-
-**DiskImage not found during reconciliation:** Reconciler logs an error and requeues the ComputeInstance for retry. If the DiskImage was deleted between API validation and reconciliation (race condition), the ComputeInstance remains in a non-ready state until the reference is corrected or the DiskImage is recreated. This is identical to the existing behavior when an InstanceType is deleted after being referenced.
 
 **DiskImage becomes OBSOLETE after ComputeInstance creation:** No impact on existing ComputeInstances. The OBSOLETE check only applies at ComputeInstance creation time. Running VMs are never affected by DiskImage lifecycle transitions — consistent with all major cloud providers.
 
@@ -602,7 +610,7 @@ Once deprecated, a DiskImage cannot return to AVAILABLE.
 ### Unit Tests
 
 - **DiskImage server Create:** validates required fields (source_type, source_ref, architecture), defaults state to AVAILABLE and guest_os_family to LINUX when unspecified, persists and returns the object.
-- **DiskImage server Update:** rejects changes to source_type and source_ref (immutability), auto-sets deprecation timestamps on state transitions, clears deprecation on reactivation.
+- **DiskImage server Update:** rejects changes to source_type, source_ref, and guest_os_family (immutability), auto-sets deprecation timestamps on state transitions, clears deprecation on reactivation.
 - **DiskImage server Delete:** returns FailedPrecondition when referenced by ComputeInstance, Template, or CatalogItem. Succeeds when unreferenced.
 - **DiskImage server List:** excludes OBSOLETE images by default. Returns OBSOLETE images when filter explicitly includes them.
 - **ComputeInstance server Create:** validates disk_image is set, rejects OBSOLETE DiskImage, accepts DEPRECATED DiskImage with warning in response, validates tenant visibility.
@@ -610,7 +618,7 @@ Once deprecated, a DiskImage cannot return to AVAILABLE.
 - **Reconciler:** resolves DiskImage to ImageSpec and GuestOSFamily correctly for linux and windows. Returns error when DiskImage not found.
 - **Validation:** buf.validate annotations reject empty source_type, empty source_ref, unknown guest_os_family enum values, empty architecture list.
 - **Migration 82:** table creation, round-trip insert/select, unique name index behavior.
-- **Migration 83 (triggers):** BEFORE UPDATE on disk_images prevents soft-delete when referenced. BEFORE INSERT OR UPDATE on compute_instances rejects invalid or deleted disk_image reference. FOR SHARE lock prevents concurrent soft-delete race.
+- **Trigger migration:** BEFORE UPDATE on disk_images prevents soft-delete when referenced. BEFORE INSERT OR UPDATE on compute_instances rejects invalid or deleted disk_image reference. FOR SHARE lock prevents concurrent soft-delete race.
 
 ### Integration Tests
 
