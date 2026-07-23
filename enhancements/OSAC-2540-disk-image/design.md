@@ -432,10 +432,11 @@ Default list excludes OBSOLETE images. The server prepends `this.spec.state != 3
 CatalogItem Create and Update handlers validate DiskImage references in `field_definitions`. A new `validateFieldDefinitionsDiskImage()` function scans `field_definitions` for entries targeting `spec.disk_image`, extracts the default value, and validates:
 
 1. The referenced DiskImage exists.
-2. The DiskImage state is not OBSOLETE — return `InvalidArgument`.
-3. If the DiskImage state is DEPRECATED, return a warning.
+2. The DiskImage is visible to the CatalogItem's tenant — accept global DiskImages (empty tenant) or those belonging to the same tenant. Cross-tenant references are rejected with `InvalidArgument`. This prevents CatalogItems from persisting inaccessible references that would fail at ComputeInstance creation time. Note: `validateFieldDefinitionsInstanceType()` does not need this check because InstanceTypes are always global/shared.
+3. The DiskImage state is not OBSOLETE — return `InvalidArgument`.
+4. If the DiskImage state is DEPRECATED, return a warning.
 
-This follows the existing pattern: `validateFieldDefinitionsInstanceType()` in `private_compute_instance_catalog_items_server.go`. The function is called from both Create and Update handlers in the CatalogItem server.
+This follows the existing pattern: `validateFieldDefinitionsInstanceType()` in `private_compute_instance_catalog_items_server.go`, extended with tenant visibility validation. The function is called from both Create and Update handlers in the CatalogItem server.
 
 #### Reconciler Changes
 
@@ -667,14 +668,3 @@ Delete or update the referencing resources, then retry deletion.
 ## Infrastructure Needed
 
 No Helm chart, kustomize overlay, or osac-installer changes needed. Database migration runs automatically on fulfillment-service startup.
-
----
-
-## Provenance
-
-Authored: draft @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
-Final: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3 (5 behind origin/main)
-
-> Context changed between draft and respond.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":5,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
