@@ -679,6 +679,5 @@ GPU-equipped ComputeInstances continue to run unaffected.
 
 ## Infrastructure Needed
 
-None. All changes are to existing repositories (fulfillment-service, osac-operator,
-osac-aap). No new test infrastructure is required beyond existing kind clusters for
-integration tests.
+- A cluster with at least one GPU node for E2E testing. Unit and integration tests
+  run on existing kind clusters without GPU hardware.
