@@ -73,7 +73,7 @@ introduced.
 
 ## Proposal
 
-This feature makes three changes across two repositories:
+This feature makes changes across three repositories:
 
 1. **fulfillment-service**: Add a `GpuSpec` sub-message to `InstanceTypeSpec` in both
    public and private protos. Extend the ComputeInstance reconciler's `addExplicitFields`
@@ -86,10 +86,10 @@ This feature makes three changes across two repositories:
    to AAP. No controller logic changes are needed -- the existing `extractExtraVars`
    method serializes the entire CR spec, so new fields are automatically included.
 
-3. **osac-aap**: No changes required. The existing `ocp_virt_vm` role already accepts
-   `gpu_devices` as a list of `{pci_device_selector, resource_name}` objects. The role
-   reads GPU data from the `compute_instance` payload, which already flows through the
-   AAP playbook.
+3. **osac-aap**: Update the `ocp_virt_vm` role to read GPU devices from
+   `compute_instance.spec.gpuDevices` instead of the separate `gpu_devices` role
+   parameter. The playbook already passes the full CR payload as `compute_instance`,
+   so no playbook changes are needed.
 
 No new gRPC services, database migrations, or CRDs are introduced.
 
@@ -412,16 +412,19 @@ directly from the payload.
 
 #### AAP Integration (osac-aap)
 
-No AAP changes are required. The `ocp_virt_vm` role already supports GPU passthrough via
-the `gpu_devices` parameter, which accepts a list of `{pci_device_selector, resource_name}`
-objects and creates KubeVirt `hostDevices` entries.
+The `ocp_virt_vm` role already supports GPU passthrough via the `gpu_devices` role
+parameter, which accepts a list of `{pci_device_selector, resource_name}` objects and
+creates KubeVirt `hostDevices` entries.
 [Codebase: osac-aap/collections/ansible_collections/osac/templates/roles/ocp_virt_vm/]
 
-The playbook already receives the `compute_instance` payload. The `gpuDevices` list on
-the CR spec is serialized into the payload by `extractExtraVars`, matching the field
-format the role expects. The Cloud Provider Admin is responsible for entering the correct
-PCI device selector and resource name when creating InstanceTypes — these values must
-match the GPU hardware and device plugins configured on the cluster nodes.
+The role must be updated to read GPU devices from `compute_instance.spec.gpuDevices`
+instead of the separate `gpu_devices` parameter. The playbook already passes the full CR
+payload as `compute_instance` (`ansible_eda.event.payload`), so no playbook changes are
+needed. The separate `gpu_devices` role parameter can be deprecated.
+
+The Cloud Provider Admin is responsible for entering the correct PCI device selector and
+resource name when creating InstanceTypes — these values must match the GPU hardware and
+device plugins configured on the cluster nodes.
 
 #### Database
 
