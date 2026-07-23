@@ -209,7 +209,7 @@ No control plane calls are made from the node. All routing information is baked 
 - Parameters: `tier` (StorageTier name), `tenant` (tenant name)
 - `reclaimPolicy: Delete` (standard for dynamic provisioning; ensures vendor volumes are cleaned up when PVCs are deleted)
 
-**Cluster teardown cleanup:** When a tenant cluster is deleted (ClusterOrder deletion), CSI DeleteVolume does not run for volumes on that cluster. The existing `osac-delete-tenant-cluster-storage` AAP playbook must be extended to query the Volume API for volumes associated with the cluster and delete them, ensuring vendor volumes are cleaned up and inventory records transition to DELETED.
+**Cluster teardown cleanup:** When a tenant cluster is deleted (ClusterOrder deletion), CSI DeleteVolume does not run for volumes on that cluster. The `osac-delete-tenant-cluster-storage` AAP playbook must query the Volume API for volumes matching `spec.cluster_id` of the deleted cluster and call DeleteVolume on each. The reconciler then handles vendor-side cleanup. `cluster_id` is the ownership key that associates volumes to clusters.
 
 **Finalizer on Volume records:** None. Volume lifecycle is driven by CSI operations (and cluster teardown cleanup via AAP), not by a Kubernetes controller.
 
@@ -499,7 +499,12 @@ The `osac-create-tenant-cluster-storage` AAP playbook (Stage 2) is modified to:
 4. Create StorageClasses with provisioner `csi.osac.openshift.io` and parameters `tier=<tierName>`, `tenant=<tenantName>`.
 5. Create a CSI Secret on the target cluster with credentials for the fulfillment-service (not VAST credentials, which stay on the hub).
 
-The `osac-delete-tenant-cluster-storage` playbook is modified to uninstall the Helm chart and clean up StorageClasses.
+The `osac-delete-tenant-cluster-storage` playbook is modified to:
+
+1. Query the Volume API for all volumes with `cluster_id` matching the cluster being deleted.
+2. Call DeleteVolume on each (the reconciler handles vendor-side cleanup).
+3. Uninstall the OSAC CSI driver Helm chart from the target cluster.
+4. Clean up StorageClasses.
 
 StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{tier}` (or `osac-{tenant}-{tier}` if per-tenant naming is needed for isolation). The existing labels (`osac.openshift.io/tenant`, `osac.openshift.io/storage-tier`) are preserved so the StorageReconciler's tier resolution continues to work.
 
@@ -507,7 +512,7 @@ StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{tie
 
 **Credential isolation:** Vendor credentials (VAST username/password) never leave the hub cluster. They are stored in the fulfillment-service's StorageBackend record and per-tenant hub Secrets created by AAP. The Volume API retrieves and uses vendor credentials internally when calling the VAST controller; credentials are never returned to the CSI driver or exposed on tenant clusters. The tenant cluster stores only the credentials needed to authenticate to the fulfillment-service.
 
-**Cross-cluster authentication:** The CSI driver on tenant clusters must authenticate to the fulfillment-service on the hub cluster. The recommended approach is service account tokens over TLS: during cluster provisioning, AAP creates a Kubernetes ServiceAccount on the hub cluster with a token scoped to the Volume API's private endpoints, and injects it into the CSI driver's Deployment on the tenant cluster as a Secret. This reuses the existing JWT authentication interceptor in the fulfillment-service. The same TLS transport covers the vendor proxy connection from the CSI controller to the VAST controller on the hub. A spike to evaluate authentication options (token over TLS, mTLS, SPIFFE) is recommended before implementation (see Open Question 1).
+**Cross-cluster authentication:** The CSI driver on tenant clusters must authenticate to the fulfillment-service on the hub cluster with a tenant-scoped identity (not admin). The recommended approach is service account tokens over TLS: during cluster provisioning, AAP creates a tenant-scoped Kubernetes ServiceAccount on the hub cluster, and injects its token into the CSI driver's Deployment on the tenant cluster as a Secret. The fulfillment-service maps this token to the tenant, and all Volume API calls are subject to tenant-scoped OPA authorization. The same TLS transport covers the vendor proxy connection from the CSI controller to the VAST controller on the hub. A spike to evaluate authentication options (token over TLS, mTLS, SPIFFE) is recommended before implementation (see Open Question 1).
 
 **Tenant isolation:** The Volume API enforces tenant isolation via the same mechanism as all other fulfillment-service resources: the JWT token carries tenant claims, and the GenericDAO filters queries by tenant. A tenant can only see and operate on its own volumes. OPA policies additionally enforce tier-access rules (a tenant can only use tiers that have been assigned to it).
 
@@ -526,13 +531,19 @@ StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{tie
 | Volume stuck in CREATING (stale) | Vendor call keeps failing beyond threshold | Reconciler sets status.message with error details. Admin can inspect via private API and delete the record. | PVC stays Pending |
 | CSI node pod restarts | In-memory `volumeBackends` map is lost | kubelet re-issues NodeStageVolume with full `volume_context` | Temporary I/O error, then automatic recovery |
 | VAST array unreachable | Vendor CreateVolume returns error | Kubernetes retries with backoff | PVC stays Pending |
-| Volume stuck in CREATING state | Vendor creation timed out or controller crashed | Admin can manually delete the volume record via the private API. A reconciler to clean up stale records is a future improvement. | Volume visible in inventory as CREATING |
 
 ### RBAC / Tenancy
 
 **Volume API tenancy:** Volumes are tenant-scoped. The `metadata.tenant` field is set from JWT claims on create (same as all fulfillment-service resources). The GenericDAO filters List/Get queries by tenant.
 
-**OPA policy updates:** Add the Volume API's private endpoints to the admin allowlist in `authz.rego`. No client (public) rules needed since there is no public Volume API. The CSI driver authenticates as a service account with admin-level access to the private API.
+**CSI driver identity:** The CSI driver on each tenant cluster authenticates with a tenant-scoped identity, not an admin identity. The following security invariants apply regardless of the authentication mechanism chosen in the spike (Open Question 1):
+
+- Each CSI identity is bound server-side to exactly one tenant.
+- Volume API authorization is least-privilege and method-scoped (CreateVolume, GetVolume, DeleteVolume only).
+- CSI requests are subject to the same tenant ownership and tier-access OPA checks as any other caller.
+- The CSI identity does not use the broad admin allowlist.
+
+**OPA policy updates:** Add Volume API private endpoints to a new CSI-specific role in `authz.rego` (not the admin allowlist). This role permits only the Volume API methods the CSI driver needs (Create, Get, Delete) and enforces tenant scoping via JWT claims.
 
 **StorageClass visibility:** Tenants see StorageClasses on their clusters but cannot access vendor credentials. StorageClasses are labeled with `osac.openshift.io/tenant` for tenant-scoping.
 
@@ -560,6 +571,7 @@ StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{tie
 | Cross-cluster latency for CaaS | CreateVolume latency increases due to hub roundtrip | The latency is only at provisioning time (not at mount time). CSI sidecars handle retries. |
 | StorageClass naming migration | Existing volumes use vendor-specific StorageClasses; new volumes use OSAC StorageClasses | New clusters get OSAC StorageClasses from the start. Existing clusters continue using vendor StorageClasses until re-provisioned. |
 | Volume inventory divergence | Vendor-side volume exists but inventory record is stale or missing | Accepted risk. A reconciler to sync inventory with vendor state is a future improvement. |
+| Orphaned volumes after interrupted teardown | Teardown playbook crashes mid-cleanup, leaving volumes on the array | The volume reconciler handles DELETING volumes on restart. A periodic orphan scan (query volumes whose `cluster_id` references a deleted cluster) is a pre-GA hardening improvement. |
 
 ### Drawbacks
 
