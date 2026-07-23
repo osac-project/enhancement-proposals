@@ -35,7 +35,6 @@ This design adds `storage_tier` to `ComputeInstanceDisk`, making it a required f
 ### Goals
 
 - Enable tenants to select different storage tiers for each disk on a ComputeInstance, so workloads get the appropriate storage QoS.
-- Prevent provisioning with invalid or nonexistent tiers by validating at request time and returning clear errors.
 - Preserve disk immutability — once a ComputeInstance is created, its disk tiers cannot be changed.
 
 ### Non-Goals
