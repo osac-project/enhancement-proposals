@@ -37,8 +37,8 @@ def gh(args):
 
 def get_changed_files(pr_number):
     raw = gh(["api", f"repos/{REPO}/pulls/{pr_number}/files",
-              "--paginate", "--jq", "[.[].filename]"])
-    return json.loads(raw) if raw.strip() else []
+              "--paginate", "--jq", ".[].filename"])
+    return [f for f in raw.splitlines() if f.strip()]
 
 
 def detect_skills(files):
