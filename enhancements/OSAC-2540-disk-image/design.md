@@ -20,7 +20,7 @@ superseded-by:
 
 ## Summary
 
-This design introduces a DiskImage resource to the fulfillment-service. DiskImage wraps OCI artifact references with curated metadata — guest OS family, architecture, and lifecycle state — providing a discoverable image catalog for VM provisioning. ComputeInstance and ComputeInstanceTemplate replace their inline image fields with a mandatory DiskImage reference. Deletion protection prevents removing images that are still referenced by active resources. API reference documentation and user guide for DiskImage operations are in scope for this milestone. See [PRD](prd.md) for detailed requirements.
+This design introduces a DiskImage resource to the fulfillment-service. DiskImage wraps OCI artifact references with curated metadata — guest OS family, architecture, and lifecycle state — providing a discoverable image catalog for VM provisioning. ComputeInstance replaces its inline image fields with a DiskImage reference (required after template/catalog item defaults are applied). ComputeInstanceTemplate and ComputeInstanceCatalogItem provide optional DiskImage defaults. Deletion protection prevents removing images that are still referenced by active resources. API reference documentation and user guide for DiskImage operations are in scope for this milestone. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -32,7 +32,7 @@ ComputeInstances currently reference images via raw OCI URLs embedded in `Comput
 
 - **Inconsistent OS representation.** The API uses `is_windows: bool` while the CRD uses `GuestOSFamily: string`. Adding a third OS family (or any future differentiation) requires changing every consumer. The boolean provides no room for extension.
 
-- **Duplicated configuration.** Every ComputeInstance and ComputeInstanceTemplate carries its own image fields. Changing an image reference or correcting OS metadata requires updating every resource that uses it.
+- **Duplicated configuration.** Every ComputeInstance and ComputeInstanceTemplate carries its own image fields. With inline image fields, every new ComputeInstance must specify the same raw OCI reference independently. There is no single place to define an image once and reference it from multiple instances.
 
 A DiskImage resource centralizes image metadata, provides a catalog for discovery, enables lifecycle management (deprecation, obsolescence), and gives the platform a single point of control for image governance.
 
@@ -40,7 +40,7 @@ A DiskImage resource centralizes image metadata, provides a catalog for discover
 
 - Reuse the InstanceType lifecycle pattern (AVAILABLE/DEPRECATED/OBSOLETE with bidirectional transitions) for DiskImage state management.
 - Keep the osac-operator CRD unchanged; fulfillment-service resolves DiskImage references to ImageSpec and GuestOSFamily before creating the Kubernetes CR.
-- Enforce deletion protection at the API layer by querying ComputeInstances, ComputeInstanceTemplates, and ComputeInstanceCatalogItems before allowing DiskImage deletion.
+- Enforce deletion protection via bidirectional database triggers (following the InstanceType pattern) that prevent soft-deleting a DiskImage still referenced by active ComputeInstances, ComputeInstanceTemplates, or ComputeInstanceCatalogItems.
 - Support two-tier visibility (provider-global and tenant-scoped) using the existing tenant field in Metadata.
 
 ### Non-Goals
@@ -101,7 +101,7 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 1. User calls `ComputeInstances/Create` with `spec.disk_image` set to a DiskImage ID (directly or via template/catalog item defaults).
 2. Server fetches the DiskImage and validates:
    - DiskImage exists and is visible to the caller's tenant (global or same tenant).
-   - DiskImage state is not OBSOLETE. If DEPRECATED, creation proceeds (the deprecation warning is conveyed through the DiskImage's `spec.deprecation` field, visible when the user lists or gets the DiskImage).
+   - DiskImage state is not OBSOLETE. If DEPRECATED, creation proceeds with a warning in the response.
 3. Server applies template/catalog item defaults for `disk_image` if not provided by the user.
 4. Server validates `disk_image` is set (required field).
 5. Server persists the ComputeInstance with the `disk_image` reference.
@@ -125,9 +125,10 @@ Admin calls `DiskImages/Update` setting `spec.state` back to `DISK_IMAGE_STATE_A
 #### Deleting a DiskImage
 
 1. Admin calls `DiskImages/Delete` with the DiskImage ID.
-2. Server queries ComputeInstances, ComputeInstanceTemplates, and ComputeInstanceCatalogItems for references to this DiskImage ID.
-3. If any references exist, the server returns `FailedPrecondition` with a message listing the referencing resource types and counts.
-4. If no references exist, the server deletes the DiskImage.
+2. Server delegates to the generic server for soft-deletion (sets `deletion_timestamp`).
+3. The `BEFORE UPDATE` trigger on `disk_images` fires and queries `compute_instances`, `compute_instance_templates`, and `compute_instance_catalog_items` for active references.
+4. If any references exist, the trigger raises an exception (SQLSTATE `Z0003`), which the DAO translates to `FailedPrecondition` with a message identifying the referencing resource.
+5. If no references exist, the soft-delete proceeds.
 
 ### API Extensions
 
@@ -135,11 +136,11 @@ Admin calls `DiskImages/Update` setting `spec.state` back to `DISK_IMAGE_STATE_A
 
 **Modified gRPC messages:**
 - `ComputeInstanceSpec`: new `disk_image` field replaces `image` (ComputeInstanceImage) and `is_windows`.
-- `ComputeInstanceTemplateSpecDefaults`: new `disk_image` field replaces `image` and `is_windows`.
+- `ComputeInstanceTemplateSpecDefaults`: new `disk_image` field (optional) replaces `image` and `is_windows`. CatalogItems can also set `disk_image` defaults via `field_definitions`.
 
 **No CRD changes.** The osac-operator continues to receive resolved `ImageSpec` and `GuestOSFamily` values from the fulfillment-service reconciler.
 
-**No webhooks or finalizers.** DiskImage is an API-only resource with no Kubernetes representation. Deletion protection is enforced in the server's Delete handler via database queries.
+**No webhooks or finalizers.** DiskImage is an API-only resource with no Kubernetes representation. Deletion protection is enforced via bidirectional database triggers.
 
 If the fulfillment-service is down, DiskImage CRUD is unavailable. Existing ComputeInstances already provisioned are unaffected because the KubeVirt VMs are running independently.
 
@@ -171,6 +172,14 @@ enum GuestOSFamily {
   GUEST_OS_FAMILY_UNSPECIFIED = 0;
   GUEST_OS_FAMILY_LINUX = 1;
   GUEST_OS_FAMILY_WINDOWS = 2;
+}
+
+// CPU architecture.
+enum Architecture {
+  ARCHITECTURE_UNSPECIFIED = 0;
+  ARCHITECTURE_AMD64 = 1;
+  ARCHITECTURE_ARM64 = 2;
+  ARCHITECTURE_S390X = 3;
 }
 
 // Deprecation details for a DiskImage.
@@ -208,7 +217,7 @@ message DiskImageSpec {
   GuestOSFamily guest_os_family = 3 [(buf.validate.field).enum.defined_only = true];
 
   // Supported CPU architectures. Informational metadata for filtering and discovery.
-  repeated string architecture = 4 [(buf.validate.field).repeated.min_items = 1];
+  repeated Architecture architecture = 4 [(buf.validate.field).repeated.min_items = 1];
 
   // Lifecycle state of the image.
   DiskImageState state = 5;
@@ -225,8 +234,8 @@ Key design points:
 
 - `DiskImageState` and `DiskImageDeprecation` mirror the InstanceType pattern exactly, providing consistent lifecycle semantics across catalog resources. [Codebase: instance_type_type.proto]
 - `GuestOSFamily` is a shared enum (defined in its own file) replacing the `is_windows` boolean. It uses the standard OSAC enum naming convention with `_UNSPECIFIED = 0`.
-- `source_type` and `source_ref` are required on create and immutable after creation. Immutability is enforced in the server's Update handler by rejecting changes to these fields. [Locked: D2]
-- `architecture` is a repeated string field (not an enum) to accommodate new architectures without proto changes. Values follow GOARCH conventions: `amd64`, `arm64`. At least one value is required. Each value is validated server-side against an allowlist (`amd64`, `arm64`), following the `validRunStrategies` pattern in `spec_defaults.go`. [Locked: D7, D12]
+- `source_type` and `source_ref` are required on create and immutable after creation. Immutability is enforced in the server's Update handler by rejecting changes to these fields. `guest_os_family` and `architecture` remain mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
+- `architecture` is a `repeated Architecture` enum. Values: `ARCHITECTURE_AMD64`, `ARCHITECTURE_ARM64`, `ARCHITECTURE_S390X`. At least one value is required. Proto-level `defined_only` validation replaces the need for a server-side allowlist.
 - `state` defaults to `DISK_IMAGE_STATE_AVAILABLE` when unspecified on create.
 
 #### Proto Schema: DiskImages Service
@@ -270,6 +279,8 @@ service DiskImages {
 
 Request and response messages follow the standard pattern (see API.md). The private API additionally declares a `Signal` method with no REST transcoding.
 
+> **Note:** All type and service definitions must be duplicated for both public (`proto/public/osac/public/v1/`) and private (`proto/private/osac/private/v1/`) APIs.
+
 #### Proto Schema: ComputeInstance Changes
 
 ```protobuf
@@ -298,6 +309,8 @@ message ComputeInstanceSpec {
 ```
 
 The `ComputeInstanceImage` message is no longer used by ComputeInstance and can be removed once no other resource references it.
+
+`ComputeInstancesCreateResponse` gains a `repeated string warnings` field to convey non-fatal conditions (e.g., referencing a DEPRECATED DiskImage).
 
 #### Proto Schema: ComputeInstanceTemplate Changes
 
@@ -347,13 +360,27 @@ CREATE UNIQUE INDEX IF NOT EXISTS disk_images_name ON disk_images (name)
     WHERE name != '' AND deletion_timestamp IS NULL;
 ```
 
-No helper table is needed for deletion protection. The Delete handler queries `compute_instances`, `compute_instance_templates`, and `compute_instance_catalog_items` at delete time by scanning their `data` JSONB column for the DiskImage ID. The query patterns:
+Migration `83_add_disk_image_ref_triggers.up.sql` adds bidirectional database triggers following the InstanceType pattern (`56_add_instance_type_ref_triggers.up.sql`):
 
-- **ComputeInstances:** `SELECT COUNT(*) FROM compute_instances WHERE data->'spec'->>'diskImage' = $1 AND deletion_timestamp IS NULL`
-- **ComputeInstanceTemplates:** `SELECT COUNT(*) FROM compute_instance_templates WHERE data->'specDefaults'->>'diskImage' = $1 AND deletion_timestamp IS NULL`
-- **ComputeInstanceCatalogItems:** `SELECT COUNT(*) FROM compute_instance_catalog_items WHERE data::text LIKE '%' || $1 || '%' AND deletion_timestamp IS NULL` (CatalogItem stores DiskImage IDs in opaque `google.protobuf.Value` field_definition defaults, requiring a text search.)
+**JSONB indexes** for disk_image lookups:
 
-For CatalogItems, the text-based search may produce false positives if a DiskImage ID substring appears in unrelated field values. This is acceptable because false positives only prevent deletion (safe direction) and the probability is negligible given UUID-format IDs. A future optimization could use a materialized helper table with triggers if deletion performance becomes a concern.
+```sql
+CREATE INDEX compute_instances_disk_image ON compute_instances ((data->'spec'->>'diskImage'))
+  WHERE data->'spec'->>'diskImage' IS NOT NULL;
+
+CREATE INDEX compute_instance_templates_disk_image ON compute_instance_templates ((data->'specDefaults'->>'diskImage'))
+  WHERE data->'specDefaults'->>'diskImage' IS NOT NULL;
+```
+
+**BEFORE UPDATE trigger on `disk_images`:** Prevents soft-deleting a DiskImage when active `compute_instances`, `compute_instance_templates`, or `compute_instance_catalog_items` reference it. Fires only when `deletion_timestamp` transitions from epoch to a non-epoch value. Raises SQLSTATE `Z0003` with a message identifying the referencing resource.
+
+For CatalogItems, the trigger uses a text search of the serialized JSONB column (`data::text LIKE '%' || OLD.id || '%'`) because CatalogItem stores DiskImage IDs in opaque `google.protobuf.Value` field_definition defaults. False positives only prevent deletion (safe direction) and the probability is negligible given UUID-format IDs.
+
+**BEFORE INSERT OR UPDATE trigger on `compute_instances`:** Validates that the referenced DiskImage exists and is not soft-deleted. Uses `FOR SHARE` to acquire a shared lock on the DiskImage row, which conflicts with the exclusive lock held by a concurrent soft-delete. This eliminates the TOCTOU race condition between DiskImage deletion and ComputeInstance creation.
+
+**BEFORE INSERT OR UPDATE trigger on `compute_instance_templates`:** Same pattern as compute_instances, validating the `specDefaults.diskImage` reference.
+
+No bidirectional trigger is added for `compute_instance_catalog_items` because field_definitions are opaque `google.protobuf.Value` — the DiskImage reference cannot be reliably extracted at insert time. The reverse direction (BEFORE UPDATE on disk_images) covers CatalogItem references via text search.
 
 #### Event Payload
 
@@ -367,22 +394,21 @@ Two new files in `internal/servers/`:
 - `private_disk_images_server.go` — private DiskImages server wrapping `GenericServer[*privatev1.DiskImage]`
 
 **Create handler:**
-1. Validate `source_type`, `source_ref`, `guest_os_family`, and `architecture` are set.
+1. Validate `source_type`, `source_ref`, and `architecture` are set.
 2. If `state` is unspecified, set to `DISK_IMAGE_STATE_AVAILABLE`.
-3. Delegate to generic server for persistence.
+3. If `guest_os_family` is unspecified, default to `GUEST_OS_FAMILY_LINUX`.
+4. Delegate to generic server for persistence.
 
 **Update handler:**
 1. Fetch existing DiskImage from database.
-2. Reject changes to `source_type` and `source_ref` (immutable fields) — return `InvalidArgument`.
+2. Reject changes to `source_type` and `source_ref` (immutable fields) — return `InvalidArgument`. `guest_os_family` and `architecture` are mutable.
 3. If `state` transitions to DEPRECATED: auto-set `deprecation.deprecation_timestamp` and `deprecation.state`.
 4. If `state` transitions to OBSOLETE: auto-set `deprecation.obsolescence_timestamp` and `deprecation.state`.
 5. If `state` transitions back to AVAILABLE: clear `deprecation` field entirely.
 6. Delegate to generic server for persistence.
 
 **Delete handler:**
-1. Query ComputeInstances, ComputeInstanceTemplates, and ComputeInstanceCatalogItems for references.
-2. If any references found, return `FailedPrecondition` with message: `"cannot delete disk image: referenced by N compute instance(s), N template(s), N catalog item(s)"`.
-3. If no references, delegate to generic server for deletion.
+Delegates to the generic server for soft-deletion. The database trigger (`check_disk_image_not_in_use`) enforces deletion protection — if active resources reference the DiskImage, the trigger raises SQLSTATE `Z0003`, which the DAO translates to `FailedPrecondition`.
 
 **List handler:**
 Default list excludes OBSOLETE images. The server prepends `this.spec.state != 3` to the user's filter unless the user's filter explicitly references `this.spec.state`. Users who want obsolete images use `this.spec.state == 3` or omit the state filter by including any `this.spec.state` expression. [Locked: D4]
@@ -394,7 +420,8 @@ Default list excludes OBSOLETE images. The server prepends `this.spec.state != 3
 2. Fetch the referenced DiskImage. Return `NotFound` if it does not exist.
 3. Validate the DiskImage is visible to the caller's tenant (global or matching tenant).
 4. Validate the DiskImage state is not OBSOLETE — return `FailedPrecondition` with message: `"cannot create compute instance: disk image is obsolete"`.
-5. Persist the ComputeInstance with the `disk_image` reference.
+5. If the DiskImage state is DEPRECATED, add a warning to `ComputeInstancesCreateResponse.warnings`: `"disk image '<id>' is deprecated"`.
+6. Persist the ComputeInstance with the `disk_image` reference.
 
 **Spec defaults modifications (`internal/utils/spec_defaults.go`):**
 - Remove `mergeImageDefaults()` function and `is_windows` defaulting.
@@ -462,8 +489,6 @@ No new attack surface is introduced. DiskImage does not handle binary uploads, r
 
 **Deletion protection query failure (database error):** Server returns `Internal` error. The DiskImage is not deleted. Admin retries the operation.
 
-**Concurrent deletion race (DiskImage deleted while ComputeInstance is being created):** The ComputeInstance creation succeeds with a reference to a now-deleted DiskImage. The reconciler fails to resolve the reference and requeues. This is a narrow race window and self-resolving — the admin can recreate the DiskImage or the user can create a new ComputeInstance.
-
 **Reconciler restart mid-reconciliation:** Controller-runtime requeues all pending ComputeInstances. The DiskImage resolution is idempotent — re-fetching and re-mapping produces the same result.
 
 ### RBAC / Tenancy
@@ -524,11 +549,7 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 **Risk: CatalogItem deletion protection relies on text search of JSONB.** The CatalogItem stores DiskImage IDs in opaque `google.protobuf.Value` field_definition defaults, not as typed references. A text search of the serialized JSONB column is needed.
 
-*Mitigation:* UUID-format IDs make false-positive substring matches negligible. False positives are safe (they prevent deletion, never allow it). If this becomes a performance concern at scale, a materialized helper table with triggers can be added in a later migration.
-
-**Risk: Race between DiskImage deletion and ComputeInstance creation.** A DiskImage could be deleted after the Create handler validates it but before the reconciler resolves it.
-
-*Mitigation:* The reconciler requeues on resolution failure. The window is narrow (milliseconds). This matches the existing pattern for InstanceType references. No lock-based coordination is warranted.
+*Mitigation:* UUID-format IDs make false-positive substring matches negligible. False positives are safe (they prevent deletion, never allow it). If this becomes a performance concern at scale, a materialized helper table maintaining reference counts can be added in a later migration.
 
 **Risk: OSAC-2921 (shared Metadata display_name/description) may not land before DiskImage.** DiskImage depends on OSAC-2921 for display_name and description in Metadata.
 
@@ -551,19 +572,12 @@ Allow users to provide either a DiskImage reference or raw `source_type`/`source
 *Pros:* Backward compatible. No migration needed for existing workflows.
 *Cons:* Defeats the governance goal. Users bypass the curated catalog by providing raw URLs. Two code paths for image resolution. Rejected because governance is the primary motivation. [Locked: D5]
 
-### Enum for architecture instead of repeated string
-
-Define `Architecture` as a proto enum (ARCHITECTURE_AMD64, ARCHITECTURE_ARM64) instead of `repeated string`.
-
-*Pros:* Type safety. No invalid values possible with `defined_only` validation.
-*Cons:* Adding a new architecture requires a proto change, buf generate, and service redeploy. String values matching GOARCH conventions are well-understood and self-documenting. The field is informational metadata, not a system-critical selector. [Locked: D12]
-
 ### Materialized helper table for deletion protection
 
 Create a `disk_image_references` table with triggers on ComputeInstance/Template/CatalogItem inserts and deletes to maintain a running count of references per DiskImage ID.
 
 *Pros:* O(1) deletion check. No JSONB scanning.
-*Cons:* Trigger maintenance for three source tables. Complexity for a low-frequency operation (image deletion). The JSONB query approach handles expected scale (thousands of images, not millions). Can be added later if needed without API changes.
+*Cons:* Requires maintaining a reference-counting table across three source tables. The bidirectional trigger approach (chosen) provides the same atomicity guarantees with simpler implementation — the deletion trigger scans references directly and the insertion triggers validate with `FOR SHARE` locking.
 
 ### Irreversible deprecation (GCP-style)
 
@@ -576,15 +590,16 @@ Once deprecated, a DiskImage cannot return to AVAILABLE.
 
 ### Unit Tests
 
-- **DiskImage server Create:** validates required fields (source_type, source_ref, guest_os_family, architecture), sets default state to AVAILABLE, persists and returns the object.
+- **DiskImage server Create:** validates required fields (source_type, source_ref, architecture), defaults state to AVAILABLE and guest_os_family to LINUX when unspecified, persists and returns the object.
 - **DiskImage server Update:** rejects changes to source_type and source_ref (immutability), auto-sets deprecation timestamps on state transitions, clears deprecation on reactivation.
 - **DiskImage server Delete:** returns FailedPrecondition when referenced by ComputeInstance, Template, or CatalogItem. Succeeds when unreferenced.
 - **DiskImage server List:** excludes OBSOLETE images by default. Returns OBSOLETE images when filter explicitly includes them.
-- **ComputeInstance server Create:** validates disk_image is set, rejects OBSOLETE DiskImage, accepts DEPRECATED DiskImage, validates tenant visibility.
+- **ComputeInstance server Create:** validates disk_image is set, rejects OBSOLETE DiskImage, accepts DEPRECATED DiskImage with warning in response, validates tenant visibility.
 - **Spec defaults:** disk_image default from template applied when user omits it. Existing mergeImageDefaults removed.
 - **Reconciler:** resolves DiskImage to ImageSpec and GuestOSFamily correctly for linux and windows. Returns error when DiskImage not found.
 - **Validation:** buf.validate annotations reject empty source_type, empty source_ref, unknown guest_os_family enum values, empty architecture list.
 - **Migration 82:** table creation, round-trip insert/select, unique name index behavior.
+- **Migration 83 (triggers):** BEFORE UPDATE on disk_images prevents soft-delete when referenced. BEFORE INSERT OR UPDATE on compute_instances rejects invalid or deleted disk_image reference. FOR SHARE lock prevents concurrent soft-delete race.
 
 ### Integration Tests
 
@@ -647,7 +662,9 @@ No Helm chart, kustomize overlay, or osac-installer changes needed. Database mig
 
 ## Provenance
 
-Authored: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
-Phases: draft, draft, respond, respond
+Authored: draft @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
+Final: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3 (3 behind origin/main)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
