@@ -6,9 +6,11 @@ import unittest
 from ep_hooks import (
     DESIGN_DISPLAY,
     DESIGN_KEYS,
+    DESIGN_PASS_THRESHOLD,
     EPHooks,
     PRD_DISPLAY,
     PRD_KEYS,
+    PRD_PASS_THRESHOLD,
 )
 
 
@@ -220,6 +222,101 @@ class ApplyLabelsDisplayTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn("SHADOW", output)
         self.assertIn("8/8", output)
+
+
+class ApplyLabelsPassFailTests(unittest.TestCase):
+    """apply_labels() PASS/FAIL must match skill thresholds, not max_total // 2."""
+
+    def setUp(self):
+        self.hooks = EPHooks(
+            repo="test/repo", skills_path="/tmp", shadow=True,
+        )
+
+    def _verdict(self, scores):
+        return {
+            "verdict": "pass",
+            "scores": scores,
+            "total": sum(scores.values()),
+            "criterionNotes": {},
+            "summary": "test",
+            "feedback": "test",
+            "findings": {"critical": [], "important": [], "suggestions": []},
+        }
+
+    def _get_pass_fail(self, scores):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.hooks.apply_labels(
+                "EP-1", self._verdict(scores), "resolve", "/tmp",
+                ticket={"headRefOid": "abc12345"},
+            )
+        output = buf.getvalue()
+        if "PASS)" in output:
+            return "PASS"
+        return "FAIL"
+
+    def test_prd_threshold_constants(self):
+        self.assertEqual(PRD_PASS_THRESHOLD, 7)
+        self.assertEqual(DESIGN_PASS_THRESHOLD, 5)
+
+    def test_prd_all_ones_total5_fails(self):
+        scores = {"what": 1, "why": 1, "user_facing_focus": 1,
+                  "right_sized": 1, "testability": 1}
+        self.assertEqual(self._get_pass_fail(scores), "FAIL")
+
+    def test_prd_total8_with_zero_fails(self):
+        scores = {"what": 2, "why": 2, "user_facing_focus": 2,
+                  "right_sized": 2, "testability": 0}
+        self.assertEqual(self._get_pass_fail(scores), "FAIL")
+
+    def test_prd_total7_no_zeros_passes(self):
+        scores = {"what": 2, "why": 2, "user_facing_focus": 1,
+                  "right_sized": 1, "testability": 1}
+        self.assertEqual(self._get_pass_fail(scores), "PASS")
+
+    def test_prd_total6_no_zeros_fails(self):
+        scores = {"what": 1, "why": 1, "user_facing_focus": 2,
+                  "right_sized": 1, "testability": 1}
+        self.assertEqual(self._get_pass_fail(scores), "FAIL")
+
+    def test_prd_perfect_score_passes(self):
+        scores = {"what": 2, "why": 2, "user_facing_focus": 2,
+                  "right_sized": 2, "testability": 2}
+        self.assertEqual(self._get_pass_fail(scores), "PASS")
+
+    def test_design_total5_no_zeros_passes(self):
+        scores = {"feasibility": 2, "testability": 1,
+                  "scope": 1, "architecture": 1}
+        self.assertEqual(self._get_pass_fail(scores), "PASS")
+
+    def test_design_total4_no_zeros_fails(self):
+        scores = {"feasibility": 1, "testability": 1,
+                  "scope": 1, "architecture": 1}
+        self.assertEqual(self._get_pass_fail(scores), "FAIL")
+
+    def test_design_total6_with_zero_fails(self):
+        scores = {"feasibility": 2, "testability": 2,
+                  "scope": 2, "architecture": 0}
+        self.assertEqual(self._get_pass_fail(scores), "FAIL")
+
+    def test_design_perfect_score_passes(self):
+        scores = {"feasibility": 2, "testability": 2,
+                  "scope": 2, "architecture": 2}
+        self.assertEqual(self._get_pass_fail(scores), "PASS")
+
+
+class DesignPromptThresholdTests(unittest.TestCase):
+    """_design_prompt() threshold must match design-review skill."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+        self.prompt = self.hooks._design_prompt()
+
+    def test_prompt_pass_threshold(self):
+        self.assertIn("total >= 5", self.prompt)
+        self.assertIn("no zeros", self.prompt)
 
 
 if __name__ == "__main__":
