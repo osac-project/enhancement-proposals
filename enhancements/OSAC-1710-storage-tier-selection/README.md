@@ -78,13 +78,21 @@ StorageTier resources exist (OSAC-1110). StorageClasses are labeled with `osac.o
 3. Fulfillment-service validates `"standard"` exists.
 4. Provisioning proceeds.
 
-#### Happy Path: Additional Disks Resolved from CatalogItem Defaults
+#### Happy Path: User Accepts CatalogItem Additional Disks Default
 
 1. Tenant Admin created a CatalogItem with a FieldDefinition: `path: "additional_disks"`, `default: [{size_gib: 500, storage_tier: "fast"}]`.
-2. Tenant User sends `POST /api/public/v1/compute_instances` with `boot_disk.storage_tier: "standard"` and no `additional_disks`.
+2. Tenant User sends `POST /api/public/v1/compute_instances` with `boot_disk.storage_tier: "standard"` and does not provide `additional_disks`.
 3. Fulfillment-service applies FieldDefinitions: the CatalogItem default provides the entire `additional_disks` array.
 4. Fulfillment-service validates that `"standard"` and `"fast"` exist as StorageTier resources.
 5. Provisioning proceeds with boot disk on `"standard"` and one additional disk on `"fast"`.
+
+#### Happy Path: User Overrides CatalogItem Additional Disks Default
+
+1. Same CatalogItem as above defaults `additional_disks` to `[{size_gib: 500, storage_tier: "fast"}]`.
+2. Tenant User sends `POST /api/public/v1/compute_instances` with `boot_disk.storage_tier: "standard"` and `additional_disks: [{size_gib: 200, storage_tier: "archive"}]`.
+3. Fulfillment-service applies FieldDefinitions: the user-provided `additional_disks` replaces the CatalogItem default entirely.
+4. Fulfillment-service validates that `"standard"` and `"archive"` exist as StorageTier resources.
+5. Provisioning proceeds with boot disk on `"standard"` and one additional disk on `"archive"`.
 
 #### Happy Path: Boot Disk Tier Resolved from Template Defaults
 
