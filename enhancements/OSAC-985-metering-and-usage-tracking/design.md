@@ -97,7 +97,7 @@ The Metering Service consumes the fulfillment-service private Watch stream — t
 
 #### VMaaS VM Lifecycle
 
-When a Cloud Infrastructure Admin provisions a VM through the fulfillment-service, the Metering Service tracks its lifecycle:
+When a Tenant User provisions a VM through the fulfillment-service, the Metering Service tracks its lifecycle:
 
 ```mermaid
 sequenceDiagram
@@ -205,7 +205,7 @@ MaaS usage data must be queryable within 60 seconds of inference completion [PRD
 
 #### Reconciliation Loop
 
-The Reconciliation Loop runs every 60 minutes, comparing the State Projection against fulfillment-service List APIs:
+The Reconciliation Loop runs every 60 minutes (configurable via Helm values), comparing the State Projection against fulfillment-service List APIs:
 
 ```mermaid
 sequenceDiagram
@@ -569,8 +569,8 @@ The Watch Consumer and Reconciliation Loop both write to the State Projection. C
 
 #### Reconciliation Algorithm
 
-1. Paginate all resources via fulfillment List APIs (500/page)
-2. Build `resource_id → current_state` maps from fulfillment and State Projection
+1. Paginate all resources via fulfillment List APIs (500/page), accumulating a `resource_id → (current_state, fulfillment_version, billing_dimensions)` map. Only the map keys and lightweight state are retained — full resource payloads are discarded after each page. At 100K resources, the map is approximately 50 MB.
+2. Load the State Projection's `resource_id → current_state` map in a single query
 3. For each resource in fulfillment:
    - **Not in projection:** emit `correction.v1` with `reason=missed_creation`; upsert
    - **State mismatch:** emit `correction.v1` with `reason=state_drift`; update
