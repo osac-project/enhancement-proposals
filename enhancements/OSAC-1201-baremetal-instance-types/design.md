@@ -15,7 +15,7 @@ superseded-by: []
 
 ## Summary
 
-This enhancement introduces BareMetalInstanceType resources that provide a discoverable hardware type catalog for bare metal infrastructure provisioning. Cloud Provider Admins define BareMetalInstanceTypes via the OSAC API, specifying hardware metadata and a host label selector. Cloud Infrastructure Admins label inventory hosts to classify them by hardware profile. During provisioning, the BMaaS operator reads the selected BareMetalInstanceType, extracts its host label, and passes it to the inventory client to claim a matching host.
+This enhancement introduces BareMetalInstanceType resources that provide a discoverable hardware type catalog for bare metal infrastructure provisioning. Cloud Provider Admins define BareMetalInstanceTypes via the OSAC API, specifying hardware metadata and a host label selector. Cloud Infrastructure Admins label inventory hosts to classify them by hardware profile. During provisioning, the BMaaS operator reads the host label selector from the BareMetalInstance spec (embedded during creation) and passes it to the inventory client to claim a matching host.
 
 **Architectural Role:** BareMetalInstanceTypes serve as a user-facing discovery and selection mechanism. Once a Tenant User selects a type, the label on that type drives host selection in the inventory backend. The enhancement transforms opaque bareMetalInstanceType strings into a rich, discoverable catalog while keeping host-selection logic in the BMaaS operator where it already lives.
 
@@ -23,18 +23,18 @@ This enhancement introduces BareMetalInstanceType resources that provide a disco
 
 ## Motivation
 
-OSAC currently lacks a concept of hardware types surfaced from inventory backends, forcing users to work with opaque bareMetalInstanceType strings in cluster templates and bare metal configurations. This prevents tenant users from knowing what hardware types exist based on CPU, memory, accelerators, and other specifications when provisioning bare metal instances or clusters.
+OSAC currently lacks a concept of hardware types surfaced from inventory backends, forcing users to work with opaque bareMetalInstanceType strings in bare metal configurations. This prevents tenant users from knowing what hardware types exist based on CPU, memory, accelerators, and other specifications when provisioning bare metal instances.
 
-The current system provides no visibility into available hardware types, their specifications, or what inventory hosts back them. Users cannot make informed decisions about which hardware types suit their workloads, and cluster catalog items cannot reference specific hardware types for agent provisioning.
+The current system provides no visibility into available hardware types, their specifications, or what inventory hosts back them. Users cannot make informed decisions about which hardware types suit their workloads.
 
 This design addresses these limitations by introducing a manually-administered hardware type catalog where Cloud Provider Admins define types with host label selectors, Cloud Infrastructure Admins label hosts accordingly, and the BMaaS operator resolves the label at provisioning time to claim a matching host.
 
 ### Goals
 
 - Follows similar use patterns to the VMaaS's InstanceType for consistency with existing OSAC architecture
-- Support both direct BareMetalInstance and Cluster creation, integrating their catalog items with hardware types
+- Support BareMetalInstance creation with hardware type selection
 - Enable Cloud Provider Admins to define BareMetalInstanceTypes with host label selectors that the BMaaS operator uses to claim matching inventory hosts during provisioning
-- Require users to select a valid instance type, making bare metal hardware selection mandatory rather than optional
+- Require users to select a valid instance type, making bare-metal hardware selection mandatory rather than optional
 
 ### Non-Goals
 
@@ -46,7 +46,7 @@ This design addresses these limitations by introducing a manually-administered h
 
 ## Proposal
 
-This enhancement adds BareMetalInstanceType resources to the fulfillment-service following established API patterns. Cloud Provider Admins create BareMetalInstanceType resources specifying hardware metadata and a host label selector. Cloud Infrastructure Admins apply matching labels to inventory hosts. Tenant users list and select available types, then reference them when creating BareMetalInstances or Clusters through catalog items. At provisioning time, the BMaaS operator reads the selected type's label and passes it to the inventory client to claim a matching host.
+This enhancement adds BareMetalInstanceType resources to the fulfillment-service following established API patterns. Cloud Provider Admins create BareMetalInstanceType resources specifying hardware metadata and a host label selector. Cloud Infrastructure Admins apply matching labels to inventory hosts. Tenant users list and select available types, then reference them when creating BareMetalInstances. At provisioning time, the BMaaS operator reads the host label selector from the BareMetalInstance spec (embedded during creation) and passes it to the inventory client to claim a matching host.
 
 The design introduces three primary components: BareMetalInstanceType gRPC services in fulfillment-service, label-based host selection in bare-metal-fulfillment-operator, and integration points in existing bare metal workflows.
 
@@ -77,8 +77,8 @@ Cloud Infrastructure Admins apply a label (e.g., `"gpu-large"`) to all inventory
 
 1. **Discovery:** Tenant user lists available BareMetalInstanceTypes via UI, CLI, or API [FR-1]
 2. **Selection:** User examines hardware specifications and selects appropriate type based on workload requirements
-3. **Creation:** User creates BareMetalInstance with `instance_type` field referencing the selected type [FR-2], or creates Cluster whose ClusterTemplate NodeSet specifies the type via the `instance_type` field [FR-3]
-4. **Provisioning:** BMaaS operator reads the BareMetalInstanceType, extracts the host_label_selector, and passes it to the inventory client to claim a matching labeled host [FR-7]
+3. **Creation:** User creates BareMetalInstance with `instance_type` field referencing the selected type [FR-2]
+4. **Provisioning:** BMaaS operator reads the host_label_selector from the BareMetalInstance spec (embedded during creation) and passes it to the inventory client to claim a matching labeled host [FR-5]
 
 **Host Allocation Workflow:**
 
@@ -111,16 +111,13 @@ This enhancement adds the following API extensions to fulfillment-service:
 
 **Modified Services:**
 - `BareMetalInstances` — Add instance_type field support
-- `Clusters` — Support BareMetalInstanceType selection for cluster node sets [FR-3]
-- `ClusterCatalogItems` — Enable BareMetalInstanceType selection during cluster provisioning workflow
 - `BareMetalInstanceCatalogItems` — Enhanced to work with BareMetalInstanceType selection
-- `ClusterTemplates` — Support BareMetalInstanceType references in node set definitions
 
 **New Database Tables:**
 - `bare_metal_instance_types` — Follows standard DAO schema pattern with JSON-serialized protobuf data
 
 **Controller Extensions:**
-- Enhanced BareMetalInstance controller in bare-metal-fulfillment-operator to read the selected BareMetalInstanceType's host_label_selector and pass it to `inventory.Client.FindFreeHost` during provisioning [FR-7]
+- Enhanced BareMetalInstance controller in bare-metal-fulfillment-operator to read the host_label_selector from the BareMetalInstance spec (embedded during creation) and pass it to `inventory.Client.FindFreeHost` during provisioning [FR-5]
 
 **Operational Impact:**
 - fulfillment-service downtime prevents BareMetalInstanceType queries and new instance creation; once a BareMetalInstance is created with embedded `host_label_selector`, provisioning can continue without FS dependency. The `host_label_selector` and claimed host ID are persisted to BareMetalInstance status.
@@ -141,19 +138,7 @@ message BareMetalInstanceType {
 
 message BareMetalInstanceTypeSpec {
   BareMetalHardwareSpec hardware = 1 [(buf.validate.field).required = true];
-  BareMetalLabelSelector host_label_selector = 2 [(buf.validate.field).required = true];   // Required; Kubernetes-style label selector
   string description = 3;                                             // Human-readable description
-}
-
-message BareMetalLabelSelector {
-  map<string, string> match_labels = 1;                              // Simple key-value label matches
-  repeated BareMetalLabelSelectorRequirement match_expressions = 2;  // Advanced label selector requirements
-}
-
-message BareMetalLabelSelectorRequirement {
-  string key = 1 [(buf.validate.field).string.min_len = 1];
-  string operator = 2 [(buf.validate.field).string.pattern = "^(In|NotIn|Exists|DoesNotExist)$"];
-  repeated string values = 3;  // Required for In/NotIn operators, must be empty for Exists/DoesNotExist
 }
 
 message BareMetalInstanceTypeStatus {
@@ -205,6 +190,19 @@ message BareMetalNetworkPortSpec {
 }
 ```
 
+```protobuf
+// Private API distinction
+message BareMetalInstanceTypeSpec {
+  BareMetalHardwareSpec hardware = 1 [(buf.validate.field).required = true];
+  BareMetalLabelSelector host_label_selector = 2 [(buf.validate.field).required = true];   // Required; Kubernetes-style label selector
+  string description = 3;                                             // Human-readable description
+}
+
+message BareMetalLabelSelector {
+  map<string, string> match_labels = 1;                              // Simple key-value label matches
+}
+```
+
 **BareMetalInstance Integration:**
 
 The BareMetalInstanceSpec message adds an optional `instance_type` field and the resolved `host_label_selector` is embedded in the BareMetalInstance resource. Proto3 strings cannot enforce requiredness at the wire level, so the compatibility contract is defined by application-level validation and operator behavior:
@@ -217,10 +215,6 @@ message BareMetalInstanceSpec {
 
   // Required — references the BareMetalInstanceType for user selection
   string instance_type = 20 [(buf.validate.field).string.min_len = 1];
-
-  // Resolved host selection criteria from the referenced BareMetalInstanceType
-  // Embedded at creation time to eliminate operator dependency on fulfillment-service
-  BareMetalLabelSelector host_label_selector = 21 [(buf.validate.field).required = true];
 }
 ```
 
@@ -290,25 +284,6 @@ Cloud Infrastructure Admins apply the matching label to inventory hosts via the 
 - **Listing Operations:** [NFR-1] BareMetalInstanceType listing uses the same CEL filtering infrastructure as existing resources, ensuring consistent performance
 - **Provisioning Label Lookup:** The operator reads the embedded `host_label_selector` directly from the BareMetalInstance spec, eliminating the need to query fulfillment-service during provisioning cycles.
 
-**Integration with ClusterCatalogItems:** [FR-3]
-
-ClusterTemplateNodeSet objects are extended with a new `instance_type` field:
-
-```protobuf
-message ClusterTemplateNodeSet {
-  string host_type = 1;                         // Deprecated — use instance_type
-  string instance_type = 2;                     // Canonical field referencing BareMetalInstanceType by name
-  int32 size = 3;
-}
-```
-
-**Precedence rules (evaluated in order):**
-1. If `instance_type` is non-empty — use it; `host_type` is ignored
-2. Else if `host_type` is non-empty — use the legacy host_type path (no BareMetalInstanceType lookup)
-3. If both are empty — the node set is invalid; validation rejects the request
-
-New clients and catalog items must use `instance_type`. Existing templates using `host_type` continue to work unchanged.
-
 **Database Schema Considerations:**
 
 BareMetalInstanceTypes follow the generic DAO pattern with JSON-serialized protobuf storage [Codebase: fulfillment-service/]. The `host_label_selector` field is stored within the JSON blob; no materialized helper tables are needed since listing does not require label-based filtering.
@@ -323,7 +298,6 @@ BareMetalInstanceType servers follow the same authentication and authorization p
 |-----|---------|---------------|
 | List, Get | Public | Any authenticated tenant; all BareMetalInstanceTypes are globally-visible |
 | Get, Create, Update, Delete | Private | Cloud Provider Admin role enforced via AttributionLogic; no service accounts currently use these RPCs |
-| Signal | Private | Operator service account only; enforced by private API transport |
 
 **Tenant filtering:** All BareMetalInstanceTypes are globally-visible (shared tenant annotation) and returned to all authenticated callers. No tenant-scoped BareMetalInstanceTypes exist.
 
@@ -340,7 +314,7 @@ OPA policies and `osac.openshift.io/tenant` annotations provide defense-in-depth
 **No Matching Hosts:**
 - Operator sets a status condition (e.g., `HostSelectionFailed`) on the BareMetalInstance with a message indicating no hosts matched the label
 - Operator requeues with backoff; does not substitute a non-matching host
-- No silent capability mismatch — FR-7 enforcement is strict
+- No silent capability mismatch — FR-5 enforcement is strict
 
 **Invalid instance_type Reference:**
 - Operator sets a status condition indicating the referenced BareMetalInstanceType does not exist
@@ -352,17 +326,7 @@ OPA policies and `osac.openshift.io/tenant` annotations provide defense-in-depth
 
 **Reconciliation Behavior:**
 - Controller restart: if a host has already been claimed, the operator reads the persisted host ID from BareMetalInstance status and resumes; if no host has been claimed yet, the operator uses the embedded `host_label_selector` from the BareMetalInstance spec
-- Database connection loss: standard DAO retry behavior applies
 - Inventory backend unavailability: operator retries with exponential backoff; status condition reflects retry state
-
-**Idempotency Guarantees:**
-- BareMetalInstance creation with instance_type is idempotent; duplicate requests return existing instance
-- Host selection uses the following guard on every reconcile to prevent double-claiming:
-  1. Read BareMetalInstance status for a persisted `inventoryHostID`
-  2. If found: skip FindFreeHost and AssignHost entirely; resume provisioning from the persisted host ID and `host_label_selector`
-  3. If not found: query the inventory backend for any host already assigned to this `bareMetalInstanceID` (OpenStack: filter Ironic nodes by `bareMetalInstanceId` label; Metal3: find BareMetalHost where `Spec.ConsumerRef.Name == bareMetalInstanceID`); if such a host exists, treat it as the claimed host (recover from crash-before-persist) and persist its ID to status
-  4. If still not found: call FindFreeHost → AssignHost → **immediately** persist `inventoryHostID` + `host_label_selector` to BareMetalInstance status as the first write, before any further provisioning actions
-- Both existing backends already store the `bareMetalInstanceID` on assigned hosts (openstack.go: Ironic node label `bareMetalInstanceId`; metal3.go: `BareMetalHost.Spec.ConsumerRef.Name`), so step 3 requires no inventory client interface changes — only backend-native query logic in each implementation.
 
 ### RBAC / Tenancy
 
@@ -434,7 +398,7 @@ Existing OPA policies automatically apply to BareMetalInstanceType resources thr
 
 **Hardware Metadata Staleness:** Since hardware specs are entered manually by Cloud Provider Admins, they may not reflect actual hardware changes (e.g., if a host's accelerators are replaced). The label-based selection still works correctly; only the metadata shown to users becomes inaccurate. A future auto-sync (NFR-3, NFR-4) could address this.
 
-**Migration Burden:** Existing cluster templates and catalog items using opaque bareMetalInstanceType strings will eventually need updates to reference BareMetalInstanceTypes. The design maintains backward compatibility to minimize immediate migration requirements.
+**Migration Burden:** Existing catalog items using opaque bareMetalInstanceType strings will eventually need updates to reference BareMetalInstanceTypes. The design maintains backward compatibility to minimize immediate migration requirements.
 
 ## Alternatives (Not Implemented)
 
@@ -475,12 +439,7 @@ Existing OPA policies automatically apply to BareMetalInstanceType resources thr
 **Question:** Should the fulfillment-service (or operator) validate that the `host_label_selector` on a new BareMetalInstanceType matches at least one actual inventory host at creation time? This would catch coordination errors early but requires the API server to query the inventory backend at write time.
 **Owner:** Platform team
 **Impact:** Tradeoff between early error detection and write-path inventory backend dependency.
-
-### 3. Integration Simplification Strategy
-
-**Question:** With host selection deferred to the provisioning layer, how should BMaaS and CaaS handle a BareMetalInstance that remains in `HostSelectionFailed` state? Should there be an automatic retry policy, a maximum retry count, or manual intervention required?
-**Owner:** Platform team
-**Impact:** Affects user experience when labeled hosts are temporarily exhausted or unavailable.
+**Answer:** No, it will be taken care of when capacity tracking is being worked on.
 
 ## Test Plan
 
@@ -494,7 +453,6 @@ Existing OPA policies automatically apply to BareMetalInstanceType resources thr
 - End-to-end provisioning workflow: create BareMetalInstanceType → create BareMetalInstance → operator claims labeled host
 - BareMetalInstance creation with invalid instance_type reference (non-existent type)
 - Host selection failure scenario: type exists but no inventory hosts carry the label
-- ClusterCatalogItem integration with BareMetalInstanceType references
 
 **E2E Testing (via osac-test-infra):**
 - Complete workflow: Cloud Infra Admin labels hosts → Cloud Provider Admin creates BareMetalInstanceType → Tenant provisions BareMetalInstance → host with matching label is claimed
@@ -523,7 +481,7 @@ Users can adopt BareMetalInstanceType references incrementally:
 1. Deploy enhanced fulfillment-service with BareMetalInstanceType APIs
 2. Cloud Infrastructure Admins label inventory hosts
 3. Cloud Provider Admins create BareMetalInstanceType resources with matching labels
-4. Update cluster templates and catalog items to reference instance types
+4. Update catalog items to reference instance types
 5. Optionally deprecate catalog_item-based workflows
 
 **Downgrade Requirements:**
@@ -545,7 +503,7 @@ No new CRDs are introduced. All API changes are additive protobuf fields that ma
 - **Label mismatch:** BareMetalInstance status conditions surface the host_label_selector that found no matching hosts in inventory
 
 **Disabling the Feature:**
-- **Revert to catalog_item workflow:** Update cluster templates and remove instance_type references; BareMetalInstanceTypes remain but are unused
+- **Revert to catalog_item workflow:** Remove instance_type references from catalog items; BareMetalInstanceTypes remain but are unused
 
 **Recovery Procedures:**
 - **No matching hosts:** Cloud Infrastructure Admin applies the correct label to inventory hosts; operator retries automatically
