@@ -204,7 +204,7 @@ No control plane calls are made from the node. All routing information is baked 
 
 **StorageClass resources** (osac-csi-driver Helm chart / AAP)
 - Provisioner: `csi.osac.openshift.io`
-- Names derived from tenant StorageTier names (e.g., `osac-gold`, `osac-fast`).
+- Names follow the pattern `osac-{tenant}-{tier}` (e.g., `osac-acme.com-gold`).
 - Labels: `osac.openshift.io/tenant`, `osac.openshift.io/storage-tier`, `osac.openshift.io/storage-protocol`
 - Parameters: `tier` (StorageTier name), `tenant` (tenant name)
 - `reclaimPolicy: Delete` (standard for dynamic provisioning; ensures vendor volumes are cleaned up when PVCs are deleted)
@@ -506,7 +506,7 @@ The `osac-delete-tenant-cluster-storage` playbook is modified to:
 3. Uninstall the OSAC CSI driver Helm chart from the target cluster.
 4. Clean up StorageClasses.
 
-StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{tier}` (or `osac-{tenant}-{tier}` if per-tenant naming is needed for isolation). The existing labels (`osac.openshift.io/tenant`, `osac.openshift.io/storage-tier`) are preserved so the StorageReconciler's tier resolution continues to work.
+StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{tenant}-{tier}` (e.g., `osac-acme.com-gold`). The vendor name and protocol are dropped from the name since the OSAC driver abstracts both. The protocol remains available via the `osac.openshift.io/storage-protocol` label. The existing labels (`osac.openshift.io/tenant`, `osac.openshift.io/storage-tier`) are preserved so the StorageReconciler's label-based tier resolution continues to work. No code parses StorageClass names; labels are the structured data.
 
 ### Security Considerations
 
@@ -625,12 +625,6 @@ The VAST CSI controller runs as a shared Deployment on the hub cluster. Volume c
 **Owner:** Storage team
 **Impact:** Affects the CSI driver's attach/detach proxy implementation and whether the Volume API needs attach/detach RPCs.
 
-### 3. StorageClass naming convention
-
-The design proposes `osac-{tier}` or `osac-{tenant}-{tier}`. The current convention is `vast-{protocol}-{tenant}-{tier}`. The new naming must work with the existing StorageReconciler's label-based tier resolution. The label-based approach (`osac.openshift.io/storage-tier`) is more important than the name itself.
-
-**Owner:** Storage team
-**Impact:** Affects Helm chart templates and AAP roles.
 
 ## Test Plan
 
