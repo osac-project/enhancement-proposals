@@ -15,7 +15,7 @@ superseded-by: []
 
 ## Summary
 
-This enhancement introduces BareMetalInstanceType resources that provide a discoverable hardware type catalog for bare metal infrastructure provisioning. Cloud Provider Admins define BareMetalInstanceTypes via the OSAC API, specifying hardware metadata and a host label selector using the canonical `hostType` key. Cloud Infrastructure Admins label inventory hosts to classify them by hardware profile. During provisioning, the BMaaS operator reads the host label selector from the BareMetalInstance spec (embedded during creation) and passes the match_labels map directly to the inventory client to claim a matching host.
+This enhancement introduces BareMetalInstanceType resources that provide a discoverable hardware type catalog for bare metal infrastructure provisioning. Cloud Provider Admins define BareMetalInstanceTypes via the OSAC API, specifying hardware metadata and a host selector using the canonical `hostType` key. Cloud Infrastructure Admins label inventory hosts to classify them by hardware profile. During provisioning, the fulfillment-service controller resolves the BareMetalInstanceType reference and sets the `hostType` in the CRD, which the bare-metal-fulfillment-operator uses for host selection.
 
 **Architectural Role:** BareMetalInstanceTypes serve as a user-facing discovery and selection mechanism. Once a Tenant User selects a type, the label on that type drives host selection in the inventory backend. The enhancement transforms opaque bareMetalInstanceType strings into a rich, discoverable catalog while keeping host-selection logic in the BMaaS operator where it already lives.
 
@@ -78,7 +78,7 @@ Cloud Infrastructure Admins apply a label (e.g., `"gpu-large"`) to all inventory
 1. **Discovery:** Tenant user lists available BareMetalInstanceTypes via UI, CLI, or API [FR-1]
 2. **Selection:** User examines hardware specifications and selects appropriate type based on workload requirements
 3. **Creation:** User creates BareMetalInstance with `instance_type` field referencing the selected type [FR-2]
-4. **Provisioning:** BMaaS operator reads the host_label_selector from the BareMetalInstance spec (embedded during creation) and passes it to the inventory client to claim a matching labeled host [FR-5]
+4. **Provisioning:** fulfillment-service controller resolves the BareMetalInstanceType and sets the CRD's `hostType` field, which the bare-metal-fulfillment-operator uses for host selection [FR-5]
 
 **Host Allocation Workflow:**
 
@@ -90,7 +90,7 @@ sequenceDiagram
     participant Inventory as Inventory Backend
 
     Tenant->>FS: Create BareMetalInstance (instance_type="gpu-large")
-    FS-->>Tenant: Accept creation request (BareMetalInstance includes embedded host_label_selector)
+    FS-->>Tenant: Accept creation request
     Operator->>Inventory: FindFreeHost(matchExpressions from BareMetalInstance)
     Inventory-->>Operator: Return matching host
     Operator->>Inventory: AssignHost(host, labels)
@@ -117,7 +117,7 @@ This enhancement adds the following API extensions to fulfillment-service:
 - `bare_metal_instance_types` — Follows standard DAO schema pattern with JSON-serialized protobuf data
 
 **Controller Extensions:**
-- Enhanced BareMetalInstance controller in bare-metal-fulfillment-operator to read the host_label_selector from the BareMetalInstance spec (embedded during creation) and pass it to `inventory.Client.FindFreeHost` during provisioning [FR-5]
+- Enhanced BareMetalInstance controller in fulfillment-service to resolve `instance_type` references and populate the CRD's `hostType` field for bare-metal-fulfillment-operator consumption [FR-5]
 
 **Operational Impact:**
 - fulfillment-service downtime prevents BareMetalInstanceType queries and new instance creation; once a BareMetalInstance is created with embedded `host_label_selector`, provisioning can continue without FS dependency. The `host_label_selector` and claimed host ID are persisted to BareMetalInstance status.
@@ -206,18 +206,38 @@ message BareMetalLabelSelector {
 
 **BareMetalInstance Integration:**
 
-The BareMetalInstanceSpec message adds an optional `instance_type` field and the resolved `host_label_selector` is embedded in the BareMetalInstance resource. Proto3 strings cannot enforce requiredness at the wire level, so the compatibility contract is defined by application-level validation and operator behavior:
+The BareMetalInstanceSpec message adds a new `instance_type` field for referencing BareMetalInstanceType resources. The fulfillment-service controller resolves this reference and maps the host_selector to the existing CRD fields:
 
 ```protobuf
 message BareMetalInstanceSpec {
   // Existing fields preserved for backward compatibility
-  string catalog_item = 1;
-  // ... other existing fields ...
+  string catalog_item = 1 [(google.api.field_behavior) = IMMUTABLE];
+  optional string ssh_public_key = 2 [(google.api.field_behavior) = IMMUTABLE];
+  optional string user_data = 3 [(google.api.field_behavior) = IMMUTABLE];
+  optional BareMetalInstanceRunStrategy run_strategy = 4;
+  int64 restart_trigger = 5;
+  map<string, google.protobuf.Any> template_parameters = 6 [(google.api.field_behavior) = IMMUTABLE];
+  optional BareMetalInstanceImage image = 7 [(google.api.field_behavior) = IMMUTABLE];
 
-  // Required — references the BareMetalInstanceType for user selection
+  // New field — references the BareMetalInstanceType by name for hardware type selection
   string instance_type = 20 [(buf.validate.field).string.min_len = 1];
 }
 ```
+
+**Controller Mapping to CRD:**
+
+The fulfillment-service BareMetalInstance controller resolves the `instance_type` reference and maps the resolved `host_selector` to the existing CRD `HostType` field:
+
+```go
+// Current logic (hardcoded)
+object.Spec.HostType = defaultHostType
+
+// New logic (resolved from BareMetalInstanceType)
+instanceType, err := resolveBareMetalInstanceType(ctx, bareMetalInstance.Spec.InstanceType)
+object.Spec.HostType = instanceType.Spec.HostSelector["hostType"]
+```
+
+The existing CRD schema remains unchanged — the controller maps protobuf data to the existing `HostType` string field that the bare-metal-fulfillment-operator already uses for host selection.
 
 **Compatibility contract:**
 
@@ -226,15 +246,21 @@ message BareMetalInstanceSpec {
 | Both present (required) | Yes | Label-based host selection using embedded label selector |
 | Both present | No (version skew) | Operator sets `UnsupportedOperation` status condition and does not fall back silently to a non-labeled host; provisioning is held until the operator is upgraded |
 
-**Host Label Selection Implementation:** [FR-5, FR-6, FR-7]
+**Host Label Selection Implementation:** [FR-5]
 
-The bare-metal-fulfillment-operator extends its BareMetalInstance reconciler to perform label-based host selection:
+The host selection flow involves two controllers working with existing CRD fields:
 
-1. Validate that `instance_type` is set on the BareMetalInstanceSpec (required field)
-2. Extract the `host_label_selector` from the BareMetalInstance (which was resolved from the BareMetalInstanceType at creation time and embedded in the BareMetalInstance resource)
-3. Extract the `match_labels` map from the `host_label_selector.match_labels` field (type `map[string]string`)
-4. Call `inventory.Client.FindFreeHost(ctx, matchLabels)` with the `map[string]string` to claim a matching host
-5. Proceed with provisioning using the claimed host; if no host matches, set a `HostSelectionFailed` status condition and requeue
+1. **fulfillment-service controller** (during BareMetalInstance creation):
+   - Resolves `instance_type` reference to get BareMetalInstanceType
+   - Extracts `hostType` value from `host_selector["hostType"]`
+   - Maps to CRD: sets `object.Spec.HostType = hostType` (replaces hardcoded "default")
+
+2. **bare-metal-fulfillment-operator** (during reconciliation):
+   - Reads `object.Spec.HostType` from the CRD
+   - Calls `inventory.Client.FindFreeHost(ctx, {"hostType": hostType})` to claim a matching host
+   - Proceeds with provisioning using the claimed host; if no host matches, sets `HostSelectionFailed` status condition
+
+The bare-metal-fulfillment-operator continues to use its existing host selection logic — only the source of the `hostType` value changes from hardcoded to resolved from BareMetalInstanceType.
 
 The existing `inventory.Client` interface [Codebase: bare-metal-fulfillment-operator/internal/inventory/client.go] already supports `matchExpressions map[string]string` in `FindFreeHost`, requiring no interface changes. The operator passes the `match_labels` map directly to `FindFreeHost`. The `"hostType"` key is required in the `match_labels` and is the canonical selector key recognized by all existing backends:
 
