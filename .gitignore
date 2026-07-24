@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+
+# Workflow artifacts (bugfix, implement)
+.artifacts/

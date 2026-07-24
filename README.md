@@ -27,6 +27,40 @@ It is unlikely to require an enhancement if it:
 
 If you are not sure if the proposed work requires an enhancement, file an issue and ask!
 
+## How do I create a PRD?
+
+A PRD (Product Requirements Document) defines **what** a feature delivers and
+**why**, from the user's perspective. PRDs are merged before design work begins.
+For detailed guidance on writing PRDs, the PRD vs design EP boundary, personas,
+and good/bad examples, see [guidelines/prd_guide.md](guidelines/prd_guide.md).
+
+The recommended way to create a PRD is using the `/prd` skill in an AI-assisted
+development tool (Claude Code, Cursor, or similar):
+
+1. Run `/prd:ingest` with your Jira ticket to gather requirements.
+2. Run `/prd:clarify` to resolve ambiguities through guided Q&A.
+3. Run `/prd:draft` to generate the PRD from the project template.
+4. Run `/prd:publish` to create a PR on this repository.
+
+The skill produces a PRD that follows [guidelines/prd_template.md](guidelines/prd_template.md),
+addresses OSAC feature dimensions, and can be validated with `/prd-review`
+before submission.
+
+If you prefer to write manually, copy the template and follow the instructions
+inside it:
+
+```sh
+mkdir enhancements/OSAC-1234-my-nifty-feature
+cp guidelines/prd_template.md enhancements/OSAC-1234-my-nifty-feature/prd.md
+```
+
+Use the `OSAC-NNNN-feature-slug` naming convention (see
+[CONTRIBUTING.md](CONTRIBUTING.md) and the example directory name above).
+Create a pull request against `main` when ready.
+
+After the PRD is merged, create the design EP (`design.md`) in the same
+directory. See "How do I create an enhancement proposal?" below.
+
 ## How do I create an enhancement proposal?
 
 OSAC uses a two-document flow: a **PRD** (Product Requirements Document) describes WHAT and WHY, and a **design document** describes HOW.
@@ -35,7 +69,7 @@ OSAC uses a two-document flow: a **PRD** (Product Requirements Document) describ
 
 The [osac-workspace](https://github.com/osac-project/osac-workspace) provides AI-assisted workflows that guide you through the process:
 
-1. **PRD**: Run `/prd:ingest` to start a PRD, then `/prd:draft` and `/prd:publish` to create it in this repo as `enhancements/OSAC-NNNN-feature-slug/prd.md`.
+1. **PRD**: Run `/prd:ingest` to start a PRD, then `/prd:clarify`, `/prd:draft`, and `/prd:publish` to create it in this repo as `enhancements/OSAC-NNNN-feature-slug/prd.md`.
 2. **Design**: Run `/design:ingest` to start the design, then `/design:draft` and `/design:publish` to create it as `enhancements/OSAC-NNNN-feature-slug/design.md`.
 
 See the osac-workspace [AGENTS.md](https://github.com/osac-project/osac-workspace/blob/main/AGENTS.md) for full workflow details.
@@ -48,7 +82,7 @@ See the osac-workspace [AGENTS.md](https://github.com/osac-project/osac-workspac
     mkdir enhancements/OSAC-1234-my-nifty-feature
     ```
 
-2. Create your PRD (`prd.md`) and design document (`design.md`) in that directory. Use `guidelines/enhancement_template.md` as a starting point for the design if needed (note: this template predates the two-document split and includes sections like User Stories that now belong in the PRD).
+2. Create your PRD (`prd.md`) and design document (`design.md`) in that directory. Use [guidelines/prd_template.md](guidelines/prd_template.md) as a starting point for the PRD and [guidelines/design_template.md](guidelines/design_template.md) for the design — see [guidelines/prd_guide.md](guidelines/prd_guide.md) and [guidelines/design_guide.md](guidelines/design_guide.md) for authoring guidance on each.
 
 3. If your proposal requires additional assets -- images, sample configuration files, etc -- include them in the same directory.
 
