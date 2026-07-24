@@ -100,6 +100,21 @@ jobs:
       - name: Clone workspace
         run: git clone --depth 1 https://github.com/osac-project/osac-workspace /opt/skills
 
+      - name: Stage enhancement-proposals content for skill lookups
+        # Reuses the repo already checked out by the first step above (at
+        # base_ref) instead of a second, independent clone of a mutable ref.
+        # guidelines/ is the canonical PRD/design template + guide source
+        # skills/prd-review and skills/design-review resolve against.
+        # enhancements/ is design-review's calibration reference library
+        # (see review-patterns.md's "EP Reference Library"). ep_review.py
+        # excludes the current PR's own enhancement directory from this
+        # copy before running the skill, so a design/PRD update never sees
+        # its own stale pre-PR version staged as a "reference" example.
+        run: |
+          mkdir -p /opt/skills/enhancement-proposals
+          cp -r guidelines /opt/skills/enhancement-proposals/
+          cp -r enhancements /opt/skills/enhancement-proposals/
+
       - name: Set up GCP credentials
         run: echo "$GCP_SA_KEY" | base64 -d > /tmp/gcp-sa-key.json
         env:
