@@ -4,8 +4,10 @@ authors:
   - TBD
 creation-date: yyyy-mm-dd
 last-updated: yyyy-mm-dd
-tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
+tracking-link: # link to the tracking ticket (for example: Jira issue) that corresponds to this enhancement
   - TBD
+prd: # relative path to the PRD document for this enhancement
+  - "prd.md"
 see-also:
   - "/enhancements/this-other-neat-thing"
 replaces:
@@ -14,35 +16,41 @@ superseded-by:
   - "/enhancements/our-past-effort"
 ---
 
-> **Note:** OSAC now uses a two-document flow: a PRD (`prd.md`) for WHAT/WHY and
-> a design document (`design.md`) for HOW. New enhancements should use the
-> AI-assisted workflows in [osac-workspace](https://github.com/osac-project/osac-workspace)
-> (`/prd:ingest` → `/design:ingest`). This template is retained for reference by
-> older enhancements. See the [README](../README.md) for details.
-
 To get started with this template:
-1. **Create a directory.** Create the directory for your enhancement proposal.
-1. **Make a copy of this template.** Copy this template into the directory for
-   the proposal as `README.md`.
+1. **Create a directory.** Create a directory inside `enhancements/` using
+   the naming convention `OSAC-NNNN-feature-slug` (see
+   [CONTRIBUTING.md](../CONTRIBUTING.md)) — the same directory your `prd.md`
+   already lives in, or will live in.
+1. **Make a copy of this template.** Copy this file into that directory
+   as `design.md`.
 1. **Fill out the metadata at the top.** The embedded YAML document is
-   checked by the linter.
-1. **Fill out the "overview" sections.** This includes the Summary and
-   Motivation sections. These should be easy and explain why the community
-   should desire this enhancement.
+   checked by the linter. The `prd` field should point to the PRD file
+   in the same directory (typically `prd.md`).
+1. **Fill out the "overview" sections.** The Summary and Motivation
+   sections should be brief — detailed requirements live in the PRD.
+   Focus on the technical approach and design rationale.
+1. **Consult the author guide.** See
+   [design_guide.md](design_guide.md) for per-section authoring guidance,
+   the PRD vs design EP boundary, OSAC personas, and examples.
 1. **Create a PR.** Assign it to folks with expertise in that domain to help
    sponsor the process.
 1. **Merge after reaching consensus.** Merge when there is consensus
    that the design is complete and all reviewer questions have been
-   answered so that work can begin.  Come back and update the document
+   answered so that work can begin. Come back and update the document
    if important details (API field names, workflow, etc.) change
    during code review.
 1. **Keep all required headers.** If a section does not apply to an
-   enhancement, explain why but do not remove the section. This part
-   of the process is enforced by the linter CI job.
+   enhancement, explain why but do not remove the section — reviewers
+   and the automated EP review check for this.
 
-See ../README.md for background behind these instructions.
+**Using the `/design` skill (recommended):** If you are using an AI-assisted
+development tool (Claude Code, Cursor, or similar), use the `/design`
+workflow instead of copying this template manually. Run `/design:ingest`
+with your Jira ticket (after the PRD is merged) to start the guided flow:
+ingest, draft, publish. The skill produces a design document that follows
+this template.
 
-Start by filling out the header with the metadata for this enhancement.
+See [README.md](../README.md) for background behind these instructions.
 
 # Neat Enhancement Idea
 
@@ -53,91 +61,30 @@ part of any review.
 The YAML `title` should be lowercased and spaces/punctuation should be
 replaced with `-`.
 
-The `Metadata` section above is intended to support the creation of tooling
-around the enhancement process.
-
 ## Summary
 
-The `Summary` section is important for producing high quality
-user-focused documentation such as release notes or a development roadmap. It
-should be possible to collect this information before implementation begins in
-order to avoid requiring implementors to split their attention between writing
-release notes and implementing the feature itself.
-
-Your summary should be one paragraph long. More detail
-should go into the following sections.
+One to two sentences describing the technical approach proposed by this
+enhancement. Reference the PRD for full requirements context:
+"See [PRD](prd.md) for detailed requirements."
 
 ## Motivation
 
-This section is for explicitly listing the motivation, goals and non-goals of
-this proposal. Describe why the change is important and the benefits to users.
-
-### User Stories
-
-Detail the things that people will be able to do if this is implemented and
-what goal that allows them to achieve. In each story, explain who the actor
-is based on their role, explain what they want to do with the system,
-and explain the underlying goal they have, what it is they are going to
-achieve with this new feature.
-
-Use the standard three part formula:
-
-> "As a _role_, I want to _take some action_ so that I can _accomplish a
-goal_."
-
-Make the change feel real for users, without getting bogged down in
-implementation details.
-
-Here are some example user stories to show what they might look like:
-
-* As an OpenShift engineer, I want to write an enhancement, so that I
-  can get feedback on my design and build consensus about the approach
-  to take before starting the implementation.
-* As an OpenShift engineer, I want to understand the rationale behind
-  a particular feature's design and alternatives considered, so I can
-  work on a new enhancement in that problem space knowing the history
-  of the current design better.
-* As a product manager, I want to review this enhancement proposal, so
-  that I can make sure the customer requirements are met by the
-  design.
-* As an administrator, I want a one-click OpenShift installer, so that
-  I can easily set up a new cluster without having to follow a long
-  set of operations.
-
-In each example, the persona's goal is clear, and the goal is clearly provided
-by the capability being described.
-The engineer wants feedback on their enhancement from their peers, and writing
-an enhancement allows for that feedback.
-The product manager wants to make sure that their customer requirements are fulfilled,
-reviewing the enhancement allows them to check that.
-The administrator wants to set up his OpenShift cluster as easily as possible, and
-reducing the install to a single click simplifies that process.
-
-Here are some real examples from previous enhancements:
-* [As a member of OpenShift concerned with the release process (TRT, dev, staff engineer, maybe even PM),
-I want to opt in to pre-release features so that I can run periodic testing in CI and obtain a signal of
-feature quality.](https://github.com/openshift/enhancements/blob/master/enhancements/installer/feature-sets.md#user-stories)
-* [As a cloud-provider affiliated engineer / platform integrator / RH partner
-I want to have a mechanism to signal OpenShift's built-in operators about additional
-cloud-provider specific components so that I can inject my own platform-specific controllers into OpenShift
-to improve the integration between OpenShift and my cloud provider.](https://github.com/openshift/enhancements/blob/master/enhancements/cloud-integration/infrastructure-external-platform-type.md#user-stories)
-* [As an OpenShift cluster administrator, I want to add worker nodes to my
-existing single control-plane node cluster, so that it'll be able to meet
-growing computation demands.](https://github.com/openshift/enhancements/blob/master/enhancements/single-node/single-node-openshift-with-workers.md#user-stories)
-
-Include a story on how this proposal will be operationalized:
-life-cycled, monitored and remediated at scale.
+Restate the problem in implementation terms for technical reviewers. Describe
+the current system's limitations and why this approach is proposed. Keep brief
+— the PRD contains the full problem statement, user stories, and acceptance
+criteria. This section bridges from the PRD for readers who need implementation
+context.
 
 ### Goals
 
-Summarize the specific goals of the proposal. How will we know that
-this has succeeded?  A good goal describes something a user wants from
-their perspective, and does not include the implementation details
-from the proposal.
+Design-scoped goals that constrain the implementation approach. These are
+not product outcomes (those are in the PRD) but implementation constraints:
+e.g., "Reuse the existing controller reconciliation pattern" or "Support
+both IPv4 and dual-stack from the initial implementation."
 
 ### Non-Goals
 
-What is out of scope for this proposal? Listing non-goals helps to
+What is out of scope for this design. Listing non-goals helps to
 focus discussion and make progress. Highlight anything that is being
 deferred to a later phase of implementation that may call for its own
 enhancement.
@@ -169,41 +116,37 @@ diagram.
 Use sub-sections to explain variations, such as for error handling,
 failure recovery, or alternative outcomes.
 
-For example:
-
-**cluster creator** is a human user responsible for deploying a
-cluster.
-
-**application administrator** is a human user responsible for
-deploying an application in a cluster.
-
-1. The cluster creator sits down at their keyboard...
-2. ...
-3. The cluster creator sees that their cluster is ready to receive
-   applications, and gives the application administrator their
-   credentials.
-
-See
-https://github.com/openshift/enhancements/blob/master/enhancements/workload-partitioning/management-workload-partitioning.md#high-level-end-to-end-workflow
-and https://github.com/openshift/enhancements/blob/master/enhancements/agent-installer/automated-workflow-for-agent-based-installer.md for more detailed examples.
-
 ### API Extensions
 
-API Extensions are CRDs, admission and conversion webhooks, aggregated API servers,
-and finalizers, i.e. those mechanisms that change the OCP API surface and behaviour.
+API Extensions are new or modified gRPC services (fulfillment-service), CRDs,
+admission and conversion webhooks, aggregated API servers, and finalizers, i.e.
+those mechanisms that change the API surface and behaviour.
 
 - Name the API extensions this enhancement adds or modifies.
 - Does this enhancement modify the behaviour of existing resources, especially those owned
   by other parties than the authoring team (including upstream resources), and, if yes, how?
   Please add those other parties as reviewers to the enhancement.
 
-  Examples:
-  - Adds a finalizer to namespaces. Namespace cannot be deleted without our controller running.
-  - Restricts the label format for objects to X.
-  - Defaults field Y on object kind Z.
+## UX Alignment
 
-Fill in the operational impact of these API Extensions in the "Operational Aspects
-of API Extensions" section.
+*Skip this section if `osac-ux/libs/ui-components/src/api/v1/<resource>.ts` does not exist.*
+
+If a matching `@temp-api` file exists — whether this EP covers a new resource or
+adds/changes fields on an existing one — complete the table below. This section is
+reviewed alongside the proto design to ensure the backend ships fields the UI can
+consume without a migration pass.
+
+| UI field (`@temp-api` TypeScript) | Proto field (this EP) | Notes / deviation |
+|---|---|---|
+| `spec.fieldName` | `spec.field_name` | Direct mapping |
+| `spec.storageClass` | `spec.storage_tier_id` | Deviation: UI uses string enum; proto references StorageTier resource |
+
+List any deviations from the known anti-patterns (sub-resource actions,
+string-union storage classes, K8s-internal fields, one-time secrets, RHOAI
+operator fields). Each deviation requires a justification.
+
+After the backend ships and `pnpm gen-types` is run in osac-ux, the UI
+migration diff should be limited to the deviations documented here.
 
 ### Implementation Details/Notes/Constraints
 
@@ -213,15 +156,52 @@ a good place to talk about core concepts and how they relate. While it is useful
 to go into the details of the code changes required, it is not necessary to show
 how the code will be rewritten in the enhancement.
 
+### Security Considerations
+
+Cover authentication and authorization changes, data exposure risks, and
+input validation requirements. If the feature inherits the existing security
+model without changes, state that and explain why it is sufficient.
+
+For multi-tenant features, describe how tenant isolation is enforced
+(e.g., OPA policies, namespace scoping, annotation-based filtering).
+
+### Failure Handling and Recovery
+
+Enumerate concrete failure modes for the proposed design. For each:
+what happens, how the system recovers, and what the user observes.
+
+Cover controller reconciliation failures, API-side errors, and
+integration failures (e.g., AAP job failures, network provisioning
+timeouts). Note retry behavior and idempotency guarantees.
+
+### RBAC / Tenancy
+
+Describe role-based access rules, tenant isolation boundaries, and
+visibility constraints introduced or modified by this enhancement.
+
+For new resources, specify the required tenant isolation metadata:
+`osac.openshift.io/tenant` and `osac.openshift.io/owner-reference`
+annotations, and how they are enforced.
+
+If no RBAC or tenancy changes are required, state so with brief
+justification.
+
+### Observability and Monitoring
+
+List new metrics, Kubernetes events, alerts, or structured log events
+introduced by this enhancement. Describe what each metric measures and
+what threshold would indicate a problem.
+
+If no new observability changes are needed, state: "No new observability
+changes. Existing monitoring mechanisms apply."
+
 ### Risks and Mitigations
 
 What are the risks of this proposal and how do we mitigate. Think broadly. For
-example, consider both security and how this will impact the larger OKD
+example, consider both security and how this will impact the larger
 ecosystem.
 
 How will security be reviewed and by whom?
-
-How will UX be reviewed and by whom?
 
 Consider including folks that also work outside your immediate sub-project.
 
@@ -236,7 +216,7 @@ we might not want to undertake this proposal, and how do we overcome them?
 
 Does this proposal implement a behavior that's new/unique/novel? Is it poorly
 aligned with existing user expectations?  Will it be a significant maintenance
-burden?  Is it likely to be superceded by something else in the near future?
+burden?  Is it likely to be superseded by something else in the near future?
 
 ## Alternatives (Not Implemented)
 
@@ -256,17 +236,29 @@ to implement the design.  For instance,
 
 **Note:** *Section not required until targeted at a release.*
 
-Consider the following in developing a test plan for this enhancement:
-- Will there be e2e and integration tests, in addition to unit tests?
-- How will it be tested in isolation vs with other components?
-- What additional testing is necessary to support managed OpenShift service-based offerings?
+List concrete test scenarios for each test type, with enough detail that an
+implementer knows what to build.
 
-No need to outline all of the test cases, just the general strategy. Anything
-that would count as tricky in the implementation and anything particularly
-challenging to test should be called out.
+### Unit Tests
 
-All code is expected to have adequate tests (eventually with coverage
-expectations).
+List specific behaviors to unit-test (e.g., "validation rejects overlapping
+CIDRs", "status condition transitions from Pending to Provisioned").
+
+### Integration Tests
+
+List scenarios that exercise the component with its real dependencies in a
+kind cluster (e.g., "creating a VirtualNetwork reconciles the namespace and
+network resources", "deleting a parent resource cascades to children").
+Integration tests are the primary test layer for controller and server logic.
+
+### E2E Tests
+
+List user-facing workflows that span multiple components (e.g., "tenant
+creates a ComputeInstance attached to a Subnet and reaches it via PublicIP").
+Reference osac-test-infra pytest patterns.
+
+Call out anything tricky to test: CIDR parsing, dual-stack, concurrent
+reconciliation, AAP job coordination, etc.
 
 ## Graduation Criteria
 
@@ -366,46 +358,14 @@ Describe how to
 - detect the failure modes in a support situation, describe possible symptoms (events, metrics,
   alerts, which log output in which component)
 
-  Examples:
-  - If the webhook is not running, kube-apiserver logs will show errors like "failed to call admission webhook xyz".
-  - Operator X will degrade with message "Failed to launch webhook server" and reason "WehhookServerFailed".
-  - The metric `webhook_admission_duration_seconds("openpolicyagent-admission", "mutating", "put", "false")`
-    will show >1s latency and alert `WebhookAdmissionLatencyHigh` will fire.
-
 - disable the API extension (e.g. remove MutatingWebhookConfiguration `xyz`, remove APIService `foo`)
 
   - What consequences does it have on the cluster health?
-
-    Examples:
-    - Garbage collection in kube-controller-manager will stop working.
-    - Quota will be wrongly computed.
-    - Disabling/removing the CRD is not possible without removing the CR instances. Customer will lose data.
-      Disabling the conversion webhook will break garbage collection.
-
   - What consequences does it have on existing, running workloads?
-
-    Examples:
-    - New namespaces won't get the finalizer "xyz" and hence might leak resource X
-      when deleted.
-    - SDN pod-to-pod routing will stop updating, potentially breaking pod-to-pod
-      communication after some minutes.
-
   - What consequences does it have for newly created workloads?
-
-    Examples:
-    - New pods in namespace with Istio support will not get sidecars injected, breaking
-      their networking.
 
 - Does functionality fail gracefully and will work resume when re-enabled without risking
   consistency?
-
-  Examples:
-  - The mutating admission webhook "xyz" has FailPolicy=Ignore and hence
-    will not block the creation or updates on objects when it fails. When the
-    webhook comes back online, there is a controller reconciling all objects, applying
-    labels that were not applied during admission webhook downtime.
-  - Namespaces deletion will not delete all objects in etcd, leading to zombie
-    objects when another namespace with the same name is created.
 
 ## Infrastructure Needed [optional]
 
