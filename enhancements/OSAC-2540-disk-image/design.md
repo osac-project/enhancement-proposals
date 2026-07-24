@@ -228,7 +228,7 @@ Key design points:
 
 - `DiskImageState` follows the InstanceType lifecycle pattern. `DiskImageDeprecation` aligns with the ClusterVersion pattern — state lives only in `DiskImageSpec.state` (no duplication in the deprecation message), while `replacement`, `deprecation_timestamp`, and `obsolescence_timestamp` provide deprecation metadata. [Codebase: cluster_version_type.proto, instance_type_type.proto]
 - `GuestOSFamily` is a shared enum (defined in its own file) replacing the `is_windows` boolean. It uses the standard OSAC enum naming convention with `_UNSPECIFIED = 0`.
-- `source` and `guest_os_family` are required on create and immutable after creation. Immutability is enforced in the server's Update handler by rejecting changes to these fields. `architecture` remains mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
+- `source` is required on create. `guest_os_family` defaults to `GUEST_OS_FAMILY_LINUX` when unspecified. Both are immutable after creation — the server's Update handler rejects changes to these fields. `architecture` remains mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
 - `architecture` is a `repeated Architecture` enum. Values: `ARCHITECTURE_AMD64`, `ARCHITECTURE_ARM64`, `ARCHITECTURE_S390X`. At least one value is required. Proto-level `defined_only` validation replaces the need for a server-side allowlist.
 - `state` defaults to `DISK_IMAGE_STATE_AVAILABLE` when unspecified on create.
 
@@ -676,8 +676,9 @@ No Helm chart, kustomize overlay, or osac-installer changes needed. Database mig
 
 ## Provenance
 
-Committed: commit @ design 0.4.0 - 7b6dfe0, workspace design/OSAC-2540 @ 24522ee (83 behind origin/main, dirty)
+Authored: draft @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
+Final: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3 (5 behind origin/main)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.4.0","ai_workflows":"7b6dfe0","source_repo":"24522ee (dirty)","source_repo_branch":"design/OSAC-2540","commits_behind_main":83,"commits_ahead_main":9,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":5,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
