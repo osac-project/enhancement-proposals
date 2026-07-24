@@ -35,13 +35,13 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 
 ## User Stories
 
-### Tenant User
+### Tenant User/Tenant Admin
 
-- As a Tenant User, I want to select a storage tier for each disk when creating a ComputeInstance (e.g., "fast" for the boot disk, "archive" for an additional data disk), so that each disk gets the appropriate storage QoS for its workload.
+- As a Tenant User/Tenant Admin, I want to select a storage tier for each disk when creating a ComputeInstance (e.g., "fast" for the boot disk, "archive" for an additional data disk), so that each disk gets the appropriate storage QoS for its workload.
 
-- As a Tenant User, I want provisioning to fail with a clear error if I request a storage tier that is not available, so that I know immediately what went wrong instead of discovering a silent misconfiguration later.
+- As a Tenant User/Tenant Admin, I want provisioning to fail with a clear error if I request a storage tier that is not available, so that I know immediately what went wrong instead of discovering a silent misconfiguration later.
 
-- As a Tenant User, I want the storage tier on my disks to remain fixed after creation, so that my VM's storage characteristics are predictable and do not change unexpectedly.
+- As a Tenant User/Tenant Admin, I want the storage tier on my disks to remain fixed after creation, so that my VM's storage characteristics are predictable and do not change unexpectedly.
 
 ### Cloud Provider Admin
 
