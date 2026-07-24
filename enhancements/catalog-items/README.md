@@ -3,7 +3,7 @@ title: catalog-items
 authors:
   - mhrivnak
 creation-date: 2026-01-12
-last-updated: 2026-07-22
+last-updated: 2026-07-23
 tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
 see-also:
 replaces:
@@ -243,7 +243,7 @@ Note: Project-level scoping uses the existing `metadata.project` field (field 10
 
 `FieldDefinition`:
 - `path` (string) - dot-notation path of the field within the resource spec
-  (e.g., `template_parameters.cpu_count`, `node_sets.workers.size`)
+  (e.g., `template_parameters.ocp_release_version`, `node_sets.workers.size`)
 - `display_name` (string) - optional human-readable label for UIs and CLIs;
   derived from `path` if not set
 - `editable` (bool) - when true the user may provide a value for this field;
@@ -265,6 +265,38 @@ Both types will have corresponding `ClusterCatalogItemsService` and
 
 #### API Behavior
 
+##### Template defaults and node sets
+
+When a resource is created from its corresponding catalog item, the server
+first applies structural data from the referenced template before processing
+field definitions. This is necessary because templates may define data that cannot
+be expressed as individual field definitions - most notably, node sets.
+
+A cluster template defines which node sets exist (e.g., a control-plane node set
+with 3 replicas on host-type-A, a workers node set with 5 replicas on
+host-type-B). These node sets are structural: they define the shape of the
+cluster, not just individual field values. The server populates the cluster spec
+with this structural data from the template so that field definitions can then
+override individual properties within it.
+
+Specifically, the server:
+
+1. Applies the template's spec defaults to the cluster spec.
+2. Copies node sets from the template into the cluster spec, then applies the
+   catalog item's field definitions to node set properties. For each node set
+   property covered by a field definition:
+   - Non-editable properties receive the admin's fixed default value.
+   - Editable properties accept user-provided values (validated against
+     `validation_schema` if present), fall back to the admin's default when
+     the user does not provide a value, and otherwise retain the
+     template-applied value.
+   - User-provided node sets whose name is not declared by the template are
+     rejected (`INVALID_ARGUMENT`).
+   - Template-defined properties not covered by field definitions are
+     preserved as-is.
+
+##### Field definitions
+
 The `fields` list defines the contract between the admin and the user for a
 given catalog item. The UI includes all fields from the resource spec (e.g.,
 all fields in `ComputeInstanceSpec` for a `ComputeInstanceCatalogItem`), but
@@ -280,8 +312,8 @@ provisioning without requiring the admin to explicitly manage them.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:
-- `template_parameters.cpu_count` - a specific template parameter
-- `node_sets.workers.size` - the size of a named node set
+- `template_parameters.ocp_release_version` - a specific template parameter
+- `node_sets.workers.size` - the size of a node set named `workers` (defined by the template)
 - `image.name` - a sub-field of a complex field
 
 Wildcards are not supported in paths; each field must be listed individually.
@@ -329,15 +361,27 @@ additional steps before writing the object:
 1. Fetch the referenced `CatalogItem` by ID. Return `NOT_FOUND` if it does not
    exist or is not visible to the caller's tenant.
 2. Verify `published == true`. Return `NOT_FOUND` if the item is not published.
-3. For each field definition in `fields`:
-   - If `editable` is false: ignore any user-provided value for the field and
-     apply the catalog item's `default`.
+3. Fetch the template referenced by the catalog item (`ClusterTemplate` for
+   Clusters, `ComputeInstanceTemplate` for ComputeInstances). Return
+   `INVALID_ARGUMENT` if the template does not exist or has been deleted.
+4. Apply template structural data to the resource spec:
+   a. Apply the template's spec defaults.
+   b. Populate node sets from the template, merging with any user-provided
+      overrides. Reject any user-provided node set whose name is not declared
+      by the template (`INVALID_ARGUMENT`). For recognized node sets, validate
+      that user-provided host types are defined in the template.
+5. For each field definition in `fields`:
+   - If `editable` is false and the user provided a value: return
+     `INVALID_ARGUMENT`. Non-editable fields cannot be overridden.
+   - If `editable` is false and the user did not provide a value: apply the
+     catalog item's `default`. A non-editable field must have a `default`;
+     the server returns an error if one is missing.
    - If `editable` is true and the user provided a value: validate the value
      against `validation_schema` if one is present. Return `INVALID_ARGUMENT`
      with a descriptive message if validation fails.
    - If `editable` is true and the user did not provide a value: apply the
-     `default` if one is present.
-4. Store the resulting object as the Cluster or ComputeInstance spec.
+     `default` if one is present; otherwise retain the template-applied value.
+6. Store the resulting object as the Cluster or ComputeInstance spec.
 
 #### Tenancy and Authorization
 
