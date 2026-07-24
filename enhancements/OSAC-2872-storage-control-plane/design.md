@@ -425,7 +425,7 @@ The CreateVolume handler:
 2. Call `fulfillment.CreateVolume(ctx, {tenant, tier, size, accessMode, clusterID})`.
 3. If 200 (CREATING): poll `fulfillment.GetVolume(ctx, {id})` with backoff until `state = AVAILABLE`.
 4. If 409 (volume with this name already exists): poll `fulfillment.GetVolume` until `state = AVAILABLE`.
-5. When AVAILABLE: return `volume_context` to Kubernetes. Kubernetes stores it on the PV as `spec.csi.volumeAttributes`.
+5. When AVAILABLE: build `volume_context` from VolumeStatus fields (`status.backend_id` -> `osac.backend`, `status.vendor_volume_id` -> `osac.volume-id`, `status.protocol` -> `osac.protocol`) and return it to Kubernetes. Kubernetes stores it on the PV as `spec.csi.volumeAttributes`.
 6. If poll exceeds the CSI timeout: return error. Kubernetes retries the entire CreateVolume call, which hits the 409 path and resumes polling.
 
 The DeleteVolume handler:
