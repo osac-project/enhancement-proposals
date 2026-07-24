@@ -276,10 +276,10 @@ The skill produces a design EP that follows
 
 ## Review
 
-Design EPs are reviewed against four criteria: architecture (OSAC pattern
-compliance, tenant isolation, dependency clarity), feasibility
+Design EPs are reviewed against four criteria: architecture (pattern
+compliance, dependency clarity, terminology), feasibility
 (implementation depth, proto schemas, risk quality), scope (boundary
-clarity, PRD reference, dimension coverage), and testability (test
+clarity, persona coverage, dimension coverage), and testability (test
 strategy specificity, graduation criteria). Use the `design-review` skill
 for a detailed automated assessment before submitting your PR.
 

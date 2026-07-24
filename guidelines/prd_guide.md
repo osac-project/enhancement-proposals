@@ -172,7 +172,7 @@ The skill produces a PRD that follows the
 ## Review
 
 PRDs are reviewed against five criteria: clear user-facing need, business
-justification, freedom from design leakage, focused scope, and testable
+justification, freedom from design leakage, focused scope, and verifiable
 requirements. Use `/prd-review` for a detailed automated assessment before
 submitting your PR.
 
