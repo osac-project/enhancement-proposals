@@ -433,16 +433,11 @@ This follows the existing pattern: `validateFieldDefinitionsInstanceType()` in `
 
 #### Template Publication Integration
 
-The `publish_templates` Ansible role (`osac-aap`) currently builds ComputeInstanceTemplate objects from static `meta/osac.yaml` values in each template role, including inline `image` fields. With DiskImage replacing inline image fields on templates, `publish_templates` must be updated to create DiskImage resources before creating templates.
+The `publish_templates` Ansible role (`osac-aap`) currently builds ComputeInstanceTemplate objects from static `meta/osac.yaml` values in each template role, including inline `image` fields (`source_type`, `source_ref`). With DiskImage replacing inline image fields, template publication adapts as follows:
 
-**Updated publication flow:**
-
-1. For each template role with image metadata in `meta/osac.yaml`, `publish_templates` calls `DiskImages/Create` (or updates an existing DiskImage found by name) with `source`, `guest_os_family`, and `architecture` from the role metadata.
-2. The DiskImage `metadata.name` is derived deterministically from the template role name, enabling idempotent create-or-update across publication runs.
-3. `publish_templates` uses the returned DiskImage ID to set `spec_defaults.disk_image` on the ComputeInstanceTemplate.
-4. The registration process already has API credentials to create DiskImages — this is a similar API call to the existing template creation.
-
-This change is scoped to the `publish_templates` role in `osac-aap`. The fulfillment-service API supports this flow without modification.
+- `meta/osac.yaml` drops the `image` block from `spec_defaults`. Templates are generic Ansible roles — they do not carry default images. Image defaults belong on ComputeInstanceCatalogItems via `field_definitions`.
+- `publish_templates` stops publishing image-related defaults on templates. The `disk_image` field on `ComputeInstanceTemplateSpecDefaults` exists in the proto (keeping the structure aligned with the resource's spec) but is not set by any template today.
+- DiskImage registration is a separate admin action via API, UI, or CLI, as described in the PRD user stories (Cloud Provider Admin and Tenant Admin register DiskImages independently of template publication).
 
 #### Reconciler Changes
 
@@ -452,7 +447,7 @@ In `computeinstance_reconciler_function.go`, replace the current image mapping (
 ```go
 if ciSpec.HasImage() {
     spec.Image = osacv1alpha1.ImageSpec{
-        SourceType: osacv1alpha1.ImageSourceTypeRegistry,
+        SourceType: osacv1alpha1.ImageSourceType(ciSpec.GetImage().GetSourceType()),
         SourceRef:  ciSpec.GetImage().GetSourceRef(),
     }
 }
@@ -681,8 +676,8 @@ No Helm chart, kustomize overlay, or osac-installer changes needed. Database mig
 
 ## Provenance
 
-Committed: commit @ design 0.4.0 - 7b6dfe0, workspace design/OSAC-2540 @ fa9329a (68 behind origin/main, dirty)
+Committed: commit @ design 0.4.0 - 7b6dfe0, workspace design/OSAC-2540 @ 24522ee (83 behind origin/main, dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.4.0","ai_workflows":"7b6dfe0","source_repo":"fa9329a (dirty)","source_repo_branch":"design/OSAC-2540","commits_behind_main":68,"commits_ahead_main":8,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.4.0","ai_workflows":"7b6dfe0","source_repo":"24522ee (dirty)","source_repo_branch":"design/OSAC-2540","commits_behind_main":83,"commits_ahead_main":9,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
