@@ -118,8 +118,9 @@ failure recovery, or alternative outcomes.
 
 ### API Extensions
 
-API Extensions are CRDs, admission and conversion webhooks, aggregated API servers,
-and finalizers, i.e. those mechanisms that change the API surface and behaviour.
+API Extensions are new or modified gRPC services (fulfillment-service), CRDs,
+admission and conversion webhooks, aggregated API servers, and finalizers, i.e.
+those mechanisms that change the API surface and behaviour.
 
 - Name the API extensions this enhancement adds or modifies.
 - Does this enhancement modify the behaviour of existing resources, especially those owned
