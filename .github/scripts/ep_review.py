@@ -9,6 +9,7 @@ structured review comment on the PR.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -55,6 +56,37 @@ def detect_skills(files):
     if has_design:
         skills.append(("design-review", "skills/design-review/SKILL.md"))
     return skills
+
+
+def pr_enhancement_slugs(files):
+    """Extract enhancements/<slug>/ directories touched by this PR."""
+    slugs = set()
+    for f in files:
+        m = re.match(r"enhancements/([^/]+)/", f)
+        if m:
+            slugs.add(m.group(1))
+    return slugs
+
+
+def exclude_own_slug_from_reference_library(work_dir, files):
+    """Remove this PR's own enhancement directory from the staged
+    enhancement-proposals/enhancements/ reference library.
+
+    design-review's "Comparison with Similar Designs" step treats
+    enhancements/ as a library of *merged* designs to calibrate against.
+    If this PR updates an existing enhancement, the pre-PR version of that
+    same document would otherwise sit in the reference library right
+    alongside .context/pr-diff.txt's new version, and could get cited as a
+    "similar past design" — a stale ghost of the very document under
+    review, not a real precedent.
+    """
+    ref_root = Path(work_dir) / "enhancement-proposals" / "enhancements"
+    if not ref_root.exists():
+        return
+    for slug in pr_enhancement_slugs(files):
+        slug_dir = ref_root / slug
+        if slug_dir.exists():
+            shutil.rmtree(slug_dir)
 
 
 def run_review(hooks, skill_name, skill_path, ticket_key, ticket, work_dir):
@@ -164,6 +196,7 @@ def main():
             shutil.rmtree(work_dir)
         shutil.copytree(SKILLS_PATH, work_dir,
                         ignore=shutil.ignore_patterns('.git'))
+        exclude_own_slug_from_reference_library(work_dir, files)
 
         print(f"\nRunning {skill_name}...")
         try:
