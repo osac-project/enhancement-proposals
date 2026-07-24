@@ -100,6 +100,9 @@ jobs:
       - name: Clone workspace
         run: git clone --depth 1 https://github.com/osac-project/osac-workspace /opt/skills
 
+      - name: Clone enhancement-proposals (canonical PRD/design templates & guides)
+        run: git clone --depth 1 https://github.com/osac-project/enhancement-proposals /opt/skills/enhancement-proposals
+
       - name: Set up GCP credentials
         run: echo "$GCP_SA_KEY" | base64 -d > /tmp/gcp-sa-key.json
         env:
