@@ -15,7 +15,7 @@ superseded-by: []
 
 ## Summary
 
-This enhancement introduces BareMetalInstanceType resources that provide a discoverable hardware type catalog for bare metal infrastructure provisioning. Cloud Provider Admins define BareMetalInstanceTypes via the OSAC API, specifying hardware metadata and a host label selector. Cloud Infrastructure Admins label inventory hosts to classify them by hardware profile. During provisioning, the BMaaS operator reads the host label selector from the BareMetalInstance spec (embedded during creation) and passes it to the inventory client to claim a matching host.
+This enhancement introduces BareMetalInstanceType resources that provide a discoverable hardware type catalog for bare metal infrastructure provisioning. Cloud Provider Admins define BareMetalInstanceTypes via the OSAC API, specifying hardware metadata and a host label selector using the canonical `hostType` key. Cloud Infrastructure Admins label inventory hosts to classify them by hardware profile. During provisioning, the BMaaS operator reads the host label selector from the BareMetalInstance spec (embedded during creation) and passes the match_labels map directly to the inventory client to claim a matching host.
 
 **Architectural Role:** BareMetalInstanceTypes serve as a user-facing discovery and selection mechanism. Once a Tenant User selects a type, the label on that type drives host selection in the inventory backend. The enhancement transforms opaque bareMetalInstanceType strings into a rich, discoverable catalog while keeping host-selection logic in the BMaaS operator where it already lives.
 
@@ -66,8 +66,8 @@ sequenceDiagram
     participant CloudProvider as Cloud Provider Admin
     participant FS as fulfillment-service
 
-    CloudInfra->>Inventory: Label bare metal hosts (e.g., hardware-profile="gpu-large")
-    CloudProvider->>FS: Create BareMetalInstanceType (host_label_selector matching "hardware-profile=gpu-large", hardware spec)
+    CloudInfra->>Inventory: Label bare metal hosts (e.g., hostType="gpu-large")
+    CloudProvider->>FS: Create BareMetalInstanceType (host_label_selector matching "hostType=gpu-large", hardware spec)
     FS-->>CloudProvider: BareMetalInstanceType created
 ```
 
@@ -94,7 +94,7 @@ sequenceDiagram
     Operator->>Inventory: FindFreeHost(matchExpressions from BareMetalInstance)
     Inventory-->>Operator: Return matching host
     Operator->>Inventory: AssignHost(host, labels)
-    Operator->>FS: Update BareMetalInstance status (provisioned)
+    Operator->>FS: Update BareMetalInstance status
 ```
 
 **Error Handling:**
@@ -199,7 +199,8 @@ message BareMetalInstanceTypeSpec {
 }
 
 message BareMetalLabelSelector {
-  map<string, string> match_labels = 1;                              // Simple key-value label matches
+  map<string, string> match_labels = 1 [(buf.validate.field).map.min_pairs = 1];  // Simple key-value label matches; at least one pair required
+  // Note: Application-level validation must ensure "hostType" key is present in match_labels
 }
 ```
 
@@ -231,19 +232,20 @@ The bare-metal-fulfillment-operator extends its BareMetalInstance reconciler to 
 
 1. Validate that `instance_type` is set on the BareMetalInstanceSpec (required field)
 2. Extract the `host_label_selector` from the BareMetalInstance (which was resolved from the BareMetalInstanceType at creation time and embedded in the BareMetalInstance resource)
-3. Call `inventory.Client.FindFreeHost(ctx, labelSelector)` to claim a matching host
-4. Proceed with provisioning using the claimed host; if no host matches, set a `HostSelectionFailed` status condition and requeue
+3. Extract the `match_labels` map from the `host_label_selector.match_labels` field (type `map[string]string`)
+4. Call `inventory.Client.FindFreeHost(ctx, matchLabels)` with the `map[string]string` to claim a matching host
+5. Proceed with provisioning using the claimed host; if no host matches, set a `HostSelectionFailed` status condition and requeue
 
-The existing `inventory.Client` interface [Codebase: bare-metal-fulfillment-operator/internal/inventory/client.go] already supports `matchExpressions map[string]string` in `FindFreeHost`, requiring no interface changes. The `"hostType"` key is the canonical selector key recognized by all existing backends:
+The existing `inventory.Client` interface [Codebase: bare-metal-fulfillment-operator/internal/inventory/client.go] already supports `matchExpressions map[string]string` in `FindFreeHost`, requiring no interface changes. The operator passes the `match_labels` map directly to `FindFreeHost`. The `"hostType"` key is required in the `match_labels` and is the canonical selector key recognized by all existing backends:
 
 | Backend | `"hostType"` translation |
 |---------|--------------------------|
 | OpenStack (`openstack.go`) | Ironic node `ResourceClass` field |
 | Metal3 (`metal3.go`) | `BareMetalHost` label `osac.openshift.io/instance-type` |
 
-Cloud Infrastructure Admins must set the host type using the backend's native mechanism so that it matches the `host_label_selector` on the BareMetalInstanceType:
-- **OpenStack:** set the Ironic node's `resource_class` to the label value (e.g., `"gpu-large"`)
-- **Metal3:** set the `BareMetalHost` label `osac.openshift.io/instance-type` to the label value
+Cloud Infrastructure Admins must set the host type using the backend's native mechanism so that it matches the `hostType` value in the `host_label_selector.match_labels` on the BareMetalInstanceType:
+- **OpenStack:** set the Ironic node's `resource_class` to the `hostType` label value (e.g., `"gpu-large"`)
+- **Metal3:** set the `BareMetalHost` label `osac.openshift.io/instance-type` to the `hostType` label value
 
 **Cloud Provider Admin Workflow:**
 
@@ -255,12 +257,7 @@ name: gpu-large
 spec:
   host_label_selector:             # Kubernetes-style label selector
     match_labels:
-      hardware-profile: "gpu-large"
-    # Alternative using match_expressions:
-    # match_expressions:
-    #   - key: "hardware-profile"
-    #     operator: "In"
-    #     values: ["gpu-large"]
+      hostType: "gpu-large"        # Required canonical key
   description: "Large GPU node with dual A100"
   hardware:
     cpu:
@@ -303,7 +300,7 @@ BareMetalInstanceType servers follow the same authentication and authorization p
 
 **Reference validation:** When a Tenant User creates a BareMetalInstance with `instance_type` set, the Fulfillment Service validates that the referenced BareMetalInstanceType exists before accepting the request. Requests referencing a non-existent type are rejected with `NOT_FOUND`.
 
-**Input Validation:** Hardware metadata and `host_label_selector` are validated by protovalidate at API creation time (see schema constraints above); malformed requests are rejected before reaching the DAO layer.
+**Input Validation:** Hardware metadata and `host_label_selector` are validated by protovalidate at API creation time (see schema constraints above); malformed requests are rejected before reaching the DAO layer. Additional application-level validation ensures the `hostType` key is present in `match_labels` — requests missing this canonical key are rejected with validation errors before persistence.
 
 **Inventory Backend Access:** The BMaaS operator uses configured credentials with least-privilege access to inventory APIs for host selection.
 
