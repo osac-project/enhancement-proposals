@@ -43,7 +43,7 @@ Without metering for bare metal hosts, Cloud Provider Admins have no usage data 
 
 - As a Cloud Provider Admin, I want to view aggregated bare metal host usage across all tenants for a given time period, broken down by tenant, host type, and catalog item (per Part 1 CAP-17), so that I can account for the physical hardware each tenant holds.
 - As a Cloud Provider Admin, I want bare metal hosts to be metered from provisioning start through deletion regardless of power state, so that I can track the capacity commitment of physically reserved hardware even when the tenant has powered it off.
-- As a Cloud Provider Admin, I want to see both allocation and consumption meters for bare metal hosts, so that I can distinguish between reserved capacity and active usage. A bare metal host occupies physical capacity (rack space, power port, network cable) whether powered on or off — the allocation meter captures this. When powered on, it additionally consumes electricity, cooling, and CPU cycles — the consumption meter captures this. The dual-meter model gives providers two independent usage signals per host, enabling downstream systems to apply different rates to reserved vs. active capacity.
+- As a Cloud Provider Admin, I want to see both allocation and consumption meters for bare metal hosts, so that I can distinguish between reserved capacity and active usage. A bare metal host occupies physical capacity (rack space, power port, network cable) whether powered on or off — the allocation meter captures this. When powered on, it additionally consumes electricity, cooling, and CPU cycles — the consumption meter captures this. The dual-meter model gives providers two independent usage signals per host, enabling downstream systems to distinguish reserved from active capacity.
 
 ### Cloud Infrastructure Admin
 
@@ -94,7 +94,10 @@ BMaaS uses two meters because bare metal hosts have a dual capacity profile. The
 - [ ] A bare metal host with attached storage volumes and public IPs can be queried as a unified usage view
 - [ ] Allocation-based and consumption-based meters can coexist for the same resource; usage queries can distinguish between meter types
 - [ ] BMaaS meters are additive to the Part 1 metering deployment and require no separate infrastructure
-- [ ] All Part 1 cross-cutting acceptance criteria (per-second granularity, deduplication, retention, independent deployment) apply to BMaaS meters
+- [ ] BMaaS meters record usage at per-second granularity — a host existing for 30 seconds appears in usage data
+- [ ] Duplicate BMaaS metering events do not cause double-counting
+- [ ] BMaaS raw events are retained for at least 7 days; aggregated data is retained for at least 13 months
+- [ ] BMaaS metering deployment is independent of existing provisioning workflows
 
 ## 8. Assumptions
 
