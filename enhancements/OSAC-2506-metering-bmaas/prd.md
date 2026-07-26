@@ -8,7 +8,7 @@
 
 ## Glossary
 
-Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.md) apply here. Additional terms:
+Terms defined in the [Part 1 PRD](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) apply here. Additional terms:
 
 | Term | Definition |
 |------|-----------|
@@ -17,7 +17,7 @@ Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.
 
 ## 1. Problem Statement
 
-OSAC provisions bare metal hosts but has no mechanism to track their consumption over time. The first metering PRD ([Part 1](/enhancements/metering-and-usage-tracking/prd.md)) established metering for VMaaS, CaaS, and MaaS — all consumption-based meters where metering runs only while the resource is actively serving workloads. BMaaS is fundamentally different: bare metal hosts consume provider capacity from the moment they are provisioned until they are deleted, regardless of whether the tenant is actively using them. A bare metal host is physically reserved and cannot be reassigned — the provider commits rack space, a power port, and a network port whether the host is powered on or off.
+OSAC provisions bare metal hosts but has no mechanism to track their consumption over time. The first metering PRD ([Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md)) established metering for VMaaS, CaaS, and MaaS — all consumption-based meters where metering runs only while the resource is actively serving workloads. BMaaS is fundamentally different: bare metal hosts consume provider capacity from the moment they are provisioned until they are deleted, regardless of whether the tenant is actively using them. A bare metal host is physically reserved and cannot be reassigned — the provider commits rack space, a power port, and a network port whether the host is powered on or off.
 
 Without metering for bare metal hosts, Cloud Provider Admins have no usage data to account for the hardware capacity tenants hold, and Tenant Admins have no visibility into the extent of their bare metal footprint across projects and host types.
 
@@ -25,7 +25,7 @@ Without metering for bare metal hosts, Cloud Provider Admins have no usage data 
 
 - BMaaS allocation metering — metering for bare metal hosts from provisioning start to deletion, regardless of power state (RUNNING, STOPPED, STARTING, STOPPING)
 - BMaaS consumption metering — optional meter for powered-on time (RUNNING state only), enabling differentiated metering between active and stopped hosts
-- Parent-child attribution — extending [Part 1](/enhancements/metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that storage volumes and public IPs attached to a bare metal host can be queried as a unified usage view
+- Parent-child attribution — extending [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that storage volumes and public IPs attached to a bare metal host can be queried as a unified usage view
 
 ## 3. Out of Scope
 
@@ -33,7 +33,8 @@ Without metering for bare metal hosts, Cloud Provider Admins have no usage data 
 - Networking resource metering (VirtualNetworks, Subnets, PublicIPs, etc.) — tracked separately ([OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145))
 - Network bandwidth metering (ingress/egress traffic) — tracked separately ([OSAC-3149](https://redhat.atlassian.net/browse/OSAC-3149))
 - Costing, billing, quota enforcement, and budget alerts — deferred to a separate PRD
-- VMaaS, CaaS, and MaaS metering — covered in [Part 1](/enhancements/metering-and-usage-tracking/prd.md)
+- VMaaS, CaaS, and MaaS metering — covered in [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md)
+- UI for viewing BMaaS usage — metering data is consumed by the billing system, which provides the user-facing usage views
 - Workload-level metering inside bare metal hosts
 
 ## 4. User Stories
@@ -75,7 +76,7 @@ Without metering for bare metal hosts, Cloud Provider Admins have no usage data 
 
 ## 6. Usage Calculation Model
 
-OSAC captures usage data. Downstream systems (billing, quota, analytics) consume this data and apply their own logic. This section defines the metering units and accumulation rules for BMaaS, extending the usage calculation model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md).
+OSAC captures usage data. Downstream systems (billing, quota, analytics) consume this data and apply their own logic. This section defines the metering units and accumulation rules for BMaaS, extending the usage calculation model from [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md).
 
 BMaaS uses two meters because bare metal hosts have a dual capacity profile. The **allocation meter** runs continuously because the physical host is reserved for the tenant and cannot be reassigned — it occupies rack space, a power port, and a network port regardless of power state. The **consumption meter** runs only while the host is powered on, capturing active compute usage separately from the baseline reservation.
 
@@ -103,7 +104,7 @@ BMaaS uses two meters because bare metal hosts have a dual capacity profile. The
 
 ## 9. Dependencies
 
-- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/metering-and-usage-tracking/prd.md) is a prerequisite. Part 2a extends but does not replace it.
+- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Part 2a extends but does not replace it.
 - **OSAC-1201 (BareMetalInstanceType EP):** Must add `host_type` to the BareMetalInstance proto. Without this, BMaaS metering has no primary metering dimension.
 
 ## 10. Risks
