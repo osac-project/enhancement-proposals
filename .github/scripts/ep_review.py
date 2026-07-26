@@ -43,10 +43,10 @@ def get_changed_files(pr_number):
 
 def detect_skills(files):
     skills = []
-    has_prd = any(f.lower().endswith("prd.md") for f in files)
-    has_design = any(
-        f.lower().endswith("design.md") or
-        (f.lower().endswith("readme.md") and "enhancements/" in f.lower())
+    basenames = [os.path.basename(f).lower() for f in files]
+    has_prd = "prd.md" in basenames
+    has_design = "design.md" in basenames or any(
+        os.path.basename(f).lower() == "readme.md" and "enhancements/" in f.lower()
         for f in files
     )
 
