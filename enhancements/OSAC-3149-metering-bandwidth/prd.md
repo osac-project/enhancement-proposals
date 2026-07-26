@@ -8,7 +8,7 @@
 
 ## Glossary
 
-Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.md) apply here. Additional terms:
+Terms defined in the [Part 1 PRD](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) apply here. Additional terms:
 
 | Term | Definition |
 |------|-----------|
@@ -16,9 +16,9 @@ Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.
 
 ## 1. Problem Statement
 
-OSAC provisions networking infrastructure for tenants but has no mechanism to track network traffic volumes. Data transfer (ingress and egress) consumes provider bandwidth capacity and generates real infrastructure costs — transit fees, peering costs, upstream bandwidth. Unlike resource-based metering where usage is tied to the existence of a resource, bandwidth is a consumption-based meter driven by traffic volume rather than time.
+OSAC provisions networking infrastructure for tenants but has no mechanism to track network traffic volumes. Data transfer (ingress and egress) consumes provider bandwidth capacity — transit links, peering connections, and upstream bandwidth are finite resources. Unlike resource-based metering where usage is tied to the existence of a resource, bandwidth is a consumption-based meter driven by traffic volume rather than time.
 
-Without bandwidth metering, Cloud Provider Admins cannot apply data transfer pricing, and Tenant Admins have no visibility into which projects or applications generate the most network traffic. The data source for traffic counters must come from the networking vendor integration (e.g., Netris, OVN-Kubernetes).
+Without bandwidth metering, Cloud Provider Admins have no usage data for data transfer volumes, and Tenant Admins have no visibility into which projects or applications generate the most network traffic. The data source for traffic counters must come from the networking vendor integration (e.g., Netris, OVN-Kubernetes).
 
 ## 2. In Scope
 
@@ -33,13 +33,14 @@ Without bandwidth metering, Cloud Provider Admins cannot apply data transfer pri
 - Networking resource metering (VirtualNetworks, Subnets, PublicIPs, etc.) — tracked separately ([OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145))
 - Costing, billing, quota enforcement, and budget alerts — deferred to a separate PRD
 - Per-application bandwidth metering inside tenant environments
+- UI for viewing bandwidth usage — metering data is consumed by the billing system, which provides the user-facing usage views
 - Bandwidth shaping or rate limiting
 
 ## 4. User Stories
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to view network bandwidth usage across all tenants broken down by direction (ingress/egress) and tenant, so that I can apply data transfer pricing.
+- As a Cloud Provider Admin, I want to view network bandwidth usage across all tenants broken down by direction (ingress/egress) and tenant, so that I can account for data transfer volumes per tenant.
 
 ### Cloud Infrastructure Admin
 
@@ -47,7 +48,7 @@ Without bandwidth metering, Cloud Provider Admins cannot apply data transfer pri
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to view my organization's network bandwidth usage broken down by direction (ingress/egress) and, when the vendor data source supports it, by project, so that I can identify sources of high data transfer costs.
+- As a Tenant Admin, I want to view my organization's network bandwidth usage broken down by direction (ingress/egress) and, when the vendor data source supports it, by project, so that I can identify sources of high data transfer usage.
 
 ### Tenant User
 
@@ -64,23 +65,25 @@ Without bandwidth metering, Cloud Provider Admins cannot apply data transfer pri
 
 - **CAP-3:** Bandwidth meters are additive to the Part 1 metering deployment and require no separate infrastructure. Bandwidth meters use the same deduplication and retention requirements as Part 1 (CAP-15, CAP-16).
 
-## 6. Charge Calculation Model
+## 6. Usage Calculation Model
 
-OSAC provides usage data. The provider applies their own price schedule to generate charges. This section defines the metering units and formulas for bandwidth, extending the charge calculation model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md).
+OSAC captures usage data. Downstream systems (billing, quota, analytics) consume this data and apply their own logic. This section defines the metering units and accumulation rules for bandwidth, extending the usage calculation model from [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md).
 
 Bandwidth is a consumption meter. Unlike the resource-based allocation meters in sibling PRDs, it is driven by traffic volume rather than time.
 
-| Meter | Formula | Example (1 TiB egress) |
-|-------|---------|----------------------|
-| egress GiB | volume × rate/GiB | 1024 × $0.05/GiB = $51.20 |
-| ingress GiB | volume × rate/GiB | 1024 × $0.01/GiB = $10.24 |
+| Meter | Scope | Unit | Accumulation | Example |
+|-------|-------|------|-------------|---------|
+| egress GiB | continuous | GiB | total egress data transferred in period | 1,024 GiB (1 TiB) |
+| ingress GiB | continuous | GiB | total ingress data transferred in period | 1,024 GiB (1 TiB) |
 
 ## 7. Acceptance Criteria
 
 - [ ] Bandwidth usage is recorded per tenant as GiB transferred, broken down by direction (ingress/egress)
 - [ ] Bandwidth usage can be broken down by tenant, direction, and time period; project-level breakdown is available when the vendor data source supports project attribution
 - [ ] Bandwidth meters are additive to the Part 1 metering deployment and require no separate infrastructure
-- [ ] All Part 1 cross-cutting acceptance criteria (deduplication, retention, independent deployment) apply to bandwidth meters
+- [ ] Duplicate bandwidth metering events do not cause double-counting
+- [ ] Bandwidth raw events are retained for at least 7 days; aggregated data is retained for at least 13 months
+- [ ] Bandwidth metering deployment is independent of existing provisioning workflows
 
 ## 8. Assumptions
 
@@ -89,7 +92,7 @@ Bandwidth is a consumption meter. Unlike the resource-based allocation meters in
 
 ## 9. Dependencies
 
-- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/metering-and-usage-tracking/prd.md) is a prerequisite. Part 2d extends but does not replace it.
+- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Part 2d extends but does not replace it.
 - **Networking vendor integration:** Bandwidth metering depends on a data source for per-tenant traffic counters. The specific vendor API and integration mechanism will be determined during design.
 
 ## 10. Risks
@@ -102,7 +105,7 @@ Bandwidth is a consumption meter. Unlike the resource-based allocation meters in
 ### 10.2 Part 1 metering infrastructure not yet built
 
 - **Owner:** OSAC platform team
-- **Mitigation:** All Part 2d meters depend on the metering infrastructure (event pipeline, provider adapters) established by Part 1 (OSAC-985). Part 2d implementation cannot begin until Part 1 infrastructure is deployed.
+- **Mitigation:** All Part 2d meters depend on the metering infrastructure (event pipeline, usage store) established by Part 1 (OSAC-985). Part 2d implementation cannot begin until Part 1 infrastructure is deployed.
 
 ## 11. Open Questions
 
