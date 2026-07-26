@@ -100,7 +100,7 @@ Bandwidth is a consumption meter. Unlike the resource-based allocation meters in
 ### 10.1 Bandwidth data source unidentified
 
 - **Owner:** OSAC platform team / Networking team
-- **Mitigation:** No networking vendor has been selected to provide per-tenant ingress/egress traffic counters. Without a data source, bandwidth metering cannot be implemented. Engage Netris and OVN-Kubernetes teams during design to evaluate options. Bandwidth metering may ship after other Part 2 meters if the vendor integration is not ready.
+- **Mitigation:** It has not been confirmed whether the networking vendors integrated with OSAC (Netris, OVN-Kubernetes) expose per-tenant ingress/egress traffic counter APIs that OSAC can consume for metering. Without a confirmed data source, bandwidth metering cannot be implemented. The design phase must evaluate which vendor APIs are available and how traffic counter data reaches the metering system. Bandwidth metering may ship after other Part 2 meters if the vendor integration is not ready.
 
 ### 10.2 Part 1 metering infrastructure not yet built
 
