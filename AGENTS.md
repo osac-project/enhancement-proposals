@@ -6,14 +6,14 @@ This repository contains design documents (enhancement proposals) for the OSAC p
 
 **Do not create PRDs or design documents directly in this repo.** Use the osac-workspace AI workflows instead:
 
-- **PRD workflow**: `/prd:ingest` → `/prd:draft` → `/prd:publish`
+- **PRD workflow**: `/prd:ingest` → `/prd:clarify` → `/prd:draft` → `/prd:publish`
 - **Design workflow**: `/design:ingest` → `/design:draft` → `/design:publish`
 
 These workflows handle template selection, feature dimensions context, section guidance, and publishing. See `osac-workspace/AGENTS.md` for full instructions.
 
 ## Enhancement Proposals
 
-See `README.md` for qualification heuristics, review/approval process, and enhancement lifecycle.
+See `README.md` for qualification heuristics, review/approval process, and enhancement lifecycle. `guidelines/prd_guide.md` and `guidelines/design_guide.md` hold the per-section authoring guidance, PRD vs design EP boundary, and OSAC personas that the `/prd` and `/design` skills above draft against — use them to review an existing `prd.md`/`design.md` or to support a human author on the manual workflow, not as a way to author these documents yourself.
 
 ## Validation
 
