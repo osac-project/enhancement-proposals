@@ -27,6 +27,7 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 - File storage metering — allocation-based metering for shared file storage by storage tier and capacity (GiB-seconds)
 - Object storage bucket metering — allocation-based metering for reserved bucket capacity (GiB-seconds) and consumption-based metering for API request counts (read and write operations)
 - Parent-child attribution — extending [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that storage volumes attached to VMs, clusters, or bare metal hosts can be attributed to the parent resource in a unified usage view
+- Applies across VMaaS (block/file volumes on ComputeInstances), CaaS (volumes on ClusterOrders), and BMaaS (volumes on bare metal hosts)
 
 ## 3. Out of Scope
 
@@ -35,7 +36,7 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 - Network bandwidth metering — tracked separately ([OSAC-3149](https://redhat.atlassian.net/browse/OSAC-3149))
 - Costing, billing, quota enforcement, and budget alerts — deferred to a separate PRD
 - Object storage API-level metering beyond the S3-aligned two-tier classification (Class A and Class B). The ObjectStorageBucket resource depends on OSAC-2388.
-- VM boot disk storage tier attribution — requires `storage_tier_id` on ComputeInstanceDisk, tracked separately
+- VM boot disk storage tier attribution — tracked separately
 - UI for viewing storage usage — metering data is consumed by the billing system, which provides the user-facing usage views
 - Workload-level metering inside tenant environments
 
