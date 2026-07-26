@@ -78,7 +78,7 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 
 ### 5.4 Cross-cutting
 
-- **CAP-6:** Storage meters are additive to the Part 1 metering deployment and require no separate infrastructure. All storage meters use the same per-second granularity, deduplication, and retention requirements as Part 1 (CAP-4, CAP-15, CAP-16).
+- **CAP-6:** Storage usage data is available alongside existing metering data without additional admin configuration steps. All storage meters use the same accuracy and data-availability guarantees as Part 1 meters (CAP-4, CAP-15, CAP-16).
 
 ## 6. Usage Calculation Model
 
@@ -103,17 +103,18 @@ Storage uses allocation meters because storage capacity is reserved from creatio
 - [ ] Storage usage can be broken down by storage tier, tenant, project, and individual volume
 - [ ] A storage volume attached to a stopped VM continues generating usage data (extending Part 1 CAP-11)
 - [ ] A storage volume attached to a VM or cluster can be attributed to the parent resource in a unified usage view
-- [ ] Storage meters are additive to the Part 1 metering deployment and require no separate infrastructure
+- [ ] Storage usage data appears alongside existing metering data without additional admin setup
 - [ ] Storage meters record usage at per-second granularity — a volume existing for 30 seconds appears in usage data
-- [ ] Duplicate storage metering events do not cause double-counting
-- [ ] Storage raw events are retained for at least 7 days; aggregated data is retained for at least 13 months
-- [ ] Storage metering deployment is independent of existing provisioning workflows
+- [ ] Storage usage totals are accurate — querying the same period twice returns consistent results
+- [ ] Historical storage usage data is available for at least 13 months
+- [ ] Enabling storage metering does not disrupt existing provisioning workflows
 
 ## 8. Assumptions
 
 - Part 1 metering infrastructure is deployed and operational.
+- Storage meters are additive to the Part 1 metering deployment and require no separate infrastructure.
 - Tenant-facing storage APIs (Volume, FileShare) will be implemented before storage metering. Object storage metering depends on OSAC-2388 (Object Storage API).
-- Allocation-based metering is supported by the Part 1 metering infrastructure without architectural changes — allocation meters use different start/stop state semantics.
+- Allocation-based metering is supported by the Part 1 metering infrastructure without architectural changes.
 
 ## 9. Dependencies
 
