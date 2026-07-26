@@ -63,7 +63,7 @@ Without bandwidth metering, Cloud Provider Admins have no usage data for data tr
 
 ### 5.2 Cross-cutting
 
-- **CAP-3:** Bandwidth meters are additive to the Part 1 metering deployment and require no separate infrastructure. Bandwidth meters use the same deduplication and retention requirements as Part 1 (CAP-15, CAP-16).
+- **CAP-3:** Bandwidth metering is available without requiring changes to existing tenant or cluster workflows. Bandwidth meters use the same accuracy and data-availability guarantees as Part 1 meters (CAP-15, CAP-16).
 
 ## 6. Usage Calculation Model
 
@@ -80,14 +80,14 @@ Bandwidth is a consumption meter. Unlike the resource-based allocation meters in
 
 - [ ] Bandwidth usage is recorded per tenant as GiB transferred, broken down by direction (ingress/egress)
 - [ ] Bandwidth usage can be broken down by tenant, direction, and time period; project-level breakdown is available when the vendor data source supports project attribution
-- [ ] Bandwidth meters are additive to the Part 1 metering deployment and require no separate infrastructure
-- [ ] Duplicate bandwidth metering events do not cause double-counting
-- [ ] Bandwidth raw events are retained for at least 7 days; aggregated data is retained for at least 13 months
-- [ ] Bandwidth metering deployment is independent of existing provisioning workflows
+- [ ] Enabling bandwidth metering does not disrupt existing tenant or cluster provisioning workflows
+- [ ] Bandwidth usage totals are accurate — querying the same period twice returns consistent results
+- [ ] Historical bandwidth data is available for at least 13 months
 
 ## 8. Assumptions
 
 - Part 1 metering infrastructure is deployed and operational.
+- Bandwidth meters are additive to the Part 1 metering deployment and require no separate infrastructure.
 - Network bandwidth data will be provided by the networking vendor (e.g., Netris, OVN-Kubernetes) via an integration that provides traffic counters to the metering system.
 
 ## 9. Dependencies
