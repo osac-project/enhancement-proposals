@@ -45,10 +45,7 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 ### Cloud Provider Admin
 
 - As a Cloud Provider Admin, I want to view storage usage across all tenants broken down by storage tier (fast, standard, archival) and capacity, so that I can account for the storage capacity each tenant holds by tier.
-- As a Cloud Provider Admin, I want to view object storage usage across all tenants broken down by reserved capacity and API request counts (Class A: PUT/COPY/POST/LIST and Class B: GET/SELECT/all other), so that I can track both the storage space tenants hold and the API activity they generate. Object storage usage has two independent drivers: stored capacity (backend disk space) and access frequency (I/O and network). A high-traffic bucket consumes more provider resources than an archival one at the same capacity, so both dimensions must be visible for accurate usage tracking.
-
-### Cloud Provider Admin (Storage Tiers)
-
+- As a Cloud Provider Admin, I want to view object storage usage across all tenants broken down by reserved capacity and API request counts (Class A: PUT/COPY/POST/LIST and Class B: GET/SELECT/all other), so that I can track both the storage space tenants hold and the API activity they generate.
 - As a Cloud Provider Admin, I want storage usage to be automatically grouped by the storage tiers I have configured in OSAC, so that each tier (e.g., NVMe SSD, HDD archival) is metered independently — without requiring a separate registration step in the metering system.
 
 ### Tenant Admin
@@ -70,7 +67,7 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 
 ### 5.2 Object Storage Metering
 
-- **CAP-3:** Object storage buckets are metered using a dual model — allocation (provisioned quota as GiB-seconds, not actual bytes stored) and consumption (API request counts classified using S3-aligned categories: Class A for PUT/COPY/POST/LIST and Class B for GET/SELECT/all other requests). The allocation meter tracks the bucket's provisioned quota — the capacity reserved by the tenant at creation or resize — because backend storage is reserved at that size regardless of how much data is actually stored. When a bucket's quota is resized, the new capacity takes effect for subsequent metering intervals. Unlike block or file storage where usage is driven purely by reserved capacity over time, object storage usage is also driven by how actively the data is accessed. A 1 TiB bucket serving millions of read requests per day consumes significantly more provider resources in I/O and network bandwidth than an identically-sized archival bucket accessed once a month. The dual model gives providers two independent usage signals: storage capacity and API activity.
+- **CAP-3:** Object storage buckets are metered using a dual model — allocation (provisioned quota as GiB-seconds, not actual bytes stored) and consumption (API request counts classified using S3-aligned categories: Class A for PUT/COPY/POST/LIST and Class B for GET/SELECT/all other requests). When a bucket's quota is resized, the new capacity takes effect for subsequent metering intervals.
 
 ### 5.3 Query Dimensions and Attribution
 
@@ -85,7 +82,9 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 
 OSAC captures usage data. Downstream systems (billing, quota, analytics) consume this data and apply their own logic. This section defines the metering units and accumulation rules for storage, extending the usage calculation model from [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md).
 
-Storage uses allocation meters because storage capacity is reserved from creation and cannot be shared with other tenants. The storage tier is the primary metering dimension — different tiers represent different performance and capacity characteristics. Object storage adds consumption meters for API request counts alongside the allocation meter for reserved capacity, using S3-aligned request categories: Class A (PUT, COPY, POST, LIST) and Class B (GET, SELECT, and all other requests).
+Storage uses allocation meters because storage capacity is reserved from creation and cannot be shared with other tenants. The storage tier is the primary metering dimension — different tiers represent different performance and capacity characteristics.
+
+Object storage adds consumption meters for API request counts alongside the allocation meter for reserved capacity, using S3-aligned request categories: Class A (PUT, COPY, POST, LIST) and Class B (GET, SELECT, and all other requests). The allocation meter tracks provisioned quota — the capacity reserved by the tenant at creation or resize — because backend storage is reserved at that size regardless of how much data is actually stored. Unlike block or file storage where usage is driven purely by reserved capacity over time, object storage usage is also driven by how actively the data is accessed. A 1 TiB bucket serving millions of Class B requests per day consumes significantly more provider resources in I/O and network bandwidth than an identically-sized archival bucket accessed once a month. The dual model gives providers two independent usage signals: storage capacity and API activity.
 
 | Meter | Scope | Unit | Accumulation | Example (30 days) |
 |-------|-------|------|-------------|-------------------|
@@ -115,6 +114,7 @@ Storage uses allocation meters because storage capacity is reserved from creatio
 - Part 1 metering infrastructure is deployed and operational.
 - Storage meters are additive to the Part 1 metering deployment and require no separate infrastructure.
 - Tenant-facing storage APIs (Volume, FileShare) will be implemented before storage metering. Object storage metering depends on OSAC-2388 (Object Storage API).
+- Storage metering can be delivered incrementally as each storage API becomes available — block, file, and object storage meters are independent and do not depend on each other.
 - Allocation-based metering is supported by the Part 1 metering infrastructure without architectural changes.
 
 ## 9. Dependencies
