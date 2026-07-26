@@ -8,12 +8,12 @@
 
 ## Glossary
 
-Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.md) apply here. Additional terms:
+Terms defined in the [Part 1 PRD](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) apply here. Additional terms:
 
 | Term | Definition |
 |------|-----------|
-| **Allocation metering** | Metering that runs for the duration a resource exists (creation to deletion), regardless of whether the resource is actively in use. Reflects the provider's physical capacity cost. |
-| **Storage tier** | A provider-defined storage performance and cost category (e.g., fast, standard, archival). The required pricing dimension for all storage resources. |
+| **Allocation metering** | Metering that runs for the duration a resource exists (creation to deletion), regardless of whether the resource is actively in use. Reflects the provider's physical capacity commitment. |
+| **Storage tier** | A provider-defined storage performance category (e.g., fast, standard, archival). The required metering dimension for all storage resources. |
 
 ## 1. Problem Statement
 
@@ -26,7 +26,7 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 - Block storage metering — allocation-based metering for standalone volumes by storage tier and capacity (GiB-seconds)
 - File storage metering — allocation-based metering for shared file storage by storage tier and capacity (GiB-seconds)
 - Object storage bucket metering — allocation-based metering for reserved bucket capacity (GiB-seconds) and consumption-based metering for API request counts (read and write operations)
-- Parent-child attribution — extending [Part 1](/enhancements/metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that storage volumes attached to VMs, clusters, or bare metal hosts can be attributed to the parent resource in a unified usage view
+- Parent-child attribution — extending [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that storage volumes attached to VMs, clusters, or bare metal hosts can be attributed to the parent resource in a unified usage view
 
 ## 3. Out of Scope
 
@@ -36,23 +36,24 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 - Costing, billing, quota enforcement, and budget alerts — deferred to a separate PRD
 - Object storage API-level metering by individual operation type (PUT, GET, LIST, DELETE) — this PRD meters read vs. write request counts in aggregate. The ObjectStorageBucket resource depends on OSAC-2388.
 - VM boot disk storage tier attribution — requires `storage_tier_id` on ComputeInstanceDisk, tracked separately
+- UI for viewing storage usage — metering data is consumed by the billing system, which provides the user-facing usage views
 - Workload-level metering inside tenant environments
 
 ## 4. User Stories
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to view storage usage across all tenants broken down by storage tier (fast, standard, archival) and capacity, so that I can price storage according to the tier's cost to the provider.
+- As a Cloud Provider Admin, I want to view storage usage across all tenants broken down by storage tier (fast, standard, archival) and capacity, so that I can account for the storage capacity each tenant holds by tier.
 - As a Cloud Provider Admin, I want to view object storage usage across all tenants broken down by reserved capacity and API request counts (read/write), so that I can track both the storage space tenants hold and the API activity they generate. Object storage usage has two independent drivers: stored capacity (backend disk space) and access frequency (I/O and network). A high-traffic bucket consumes more provider resources than an archival one at the same capacity, so both dimensions must be visible for accurate usage tracking.
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want storage usage to be automatically grouped by the storage tiers I have configured in OSAC, so that each tier (e.g., NVMe SSD, HDD archival) can be priced independently in the provider's rate schedule — without requiring a separate registration step in the metering system.
+- As a Cloud Infrastructure Admin, I want storage usage to be automatically grouped by the storage tiers I have configured in OSAC, so that each tier (e.g., NVMe SSD, HDD archival) is metered independently — without requiring a separate registration step in the metering system.
 
 ### Tenant Admin
 
 - As a Tenant Admin, I want to view my organization's storage usage broken down by project, storage tier, and volume, so that I can identify which teams consume the most storage capacity and on which tier.
-- As a Tenant Admin, I want to view my organization's object storage bucket usage broken down by project, capacity, and API request counts, so that I can attribute object storage costs to the teams that use them.
+- As a Tenant Admin, I want to view my organization's object storage bucket usage broken down by project, capacity, and API request counts, so that I can attribute object storage usage to the teams that use them.
 
 ### Tenant User
 
@@ -68,29 +69,29 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 
 ### 5.2 Object Storage Metering
 
-- **CAP-3:** Object storage buckets are metered using a dual model — allocation (provisioned quota as GiB-seconds, not actual bytes stored) and consumption (API request counts for read and write operations). The allocation meter tracks the bucket's provisioned quota — the capacity reserved by the tenant at creation or resize — because backend storage is reserved at that size regardless of how much data is actually stored. When a bucket's quota is resized, the new capacity takes effect for subsequent metering intervals. Unlike block or file storage where cost is driven purely by reserved capacity over time, object storage cost is also driven by how actively the data is accessed. A 1 TiB bucket serving millions of read requests per day costs the provider significantly more in I/O and network bandwidth than an identically-sized archival bucket accessed once a month. The dual model lets providers price both dimensions independently: storage capacity at one rate and API activity at another.
+- **CAP-3:** Object storage buckets are metered using a dual model — allocation (provisioned quota as GiB-seconds, not actual bytes stored) and consumption (API request counts for read and write operations). The allocation meter tracks the bucket's provisioned quota — the capacity reserved by the tenant at creation or resize — because backend storage is reserved at that size regardless of how much data is actually stored. When a bucket's quota is resized, the new capacity takes effect for subsequent metering intervals. Unlike block or file storage where usage is driven purely by reserved capacity over time, object storage usage is also driven by how actively the data is accessed. A 1 TiB bucket serving millions of read requests per day consumes significantly more provider resources in I/O and network bandwidth than an identically-sized archival bucket accessed once a month. The dual model gives providers two independent usage signals: storage capacity and API activity.
 
 ### 5.3 Query Dimensions and Attribution
 
-- **CAP-4:** Storage usage is queryable by storage tier, capacity, tenant, and project. Storage tier is a required pricing dimension as specified by [Part 1](/enhancements/metering-and-usage-tracking/prd.md).
+- **CAP-4:** Storage usage is queryable by storage tier, capacity, tenant, and project. Storage tier is a required metering dimension as specified by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md).
 - **CAP-5:** Storage volumes attached to a VM, cluster, or bare metal host are attributable to the parent resource, extending Part 1 CAP-11 and CAP-12 so that the full usage of a parent resource can be queried as a unified view including all subsidiary storage.
 
 ### 5.4 Cross-cutting
 
 - **CAP-6:** Storage meters are additive to the Part 1 metering deployment and require no separate infrastructure. All storage meters use the same per-second granularity, deduplication, and retention requirements as Part 1 (CAP-4, CAP-15, CAP-16).
 
-## 6. Charge Calculation Model
+## 6. Usage Calculation Model
 
-OSAC provides usage data. The provider applies their own price schedule to generate charges. This section defines the metering units and formulas for storage, extending the charge calculation model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md).
+OSAC captures usage data. Downstream systems (billing, quota, analytics) consume this data and apply their own logic. This section defines the metering units and accumulation rules for storage, extending the usage calculation model from [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md).
 
-Storage uses allocation meters because storage capacity is reserved from creation and cannot be shared with other tenants. The storage tier determines the rate — NVMe SSD costs more per GiB than HDD archival. Object storage adds a consumption meter for API request counts alongside the allocation meter for reserved capacity.
+Storage uses allocation meters because storage capacity is reserved from creation and cannot be shared with other tenants. The storage tier is the primary metering dimension — different tiers represent different performance and capacity characteristics. Object storage adds a consumption meter for API request counts alongside the allocation meter for reserved capacity.
 
-| Meter | Formula | Example |
-|-------|---------|---------|
-| GiB-seconds per tier (block/file allocation) | capacity × duration × rate/GiB-s | 100 GiB × 2592000s × $0.000000015 = $3.89 (30 days, fast tier) |
-| GiB-seconds per tier (object storage allocation) | capacity × duration × rate/GiB-s | 500 GiB × 2592000s × $0.000000010 = $12.96 (30 days) |
-| API read requests (object storage consumption) | count × rate/request | 10,000,000 × $0.0000004 = $4.00 |
-| API write requests (object storage consumption) | count × rate/request | 1,000,000 × $0.000005 = $5.00 |
+| Meter | Scope | Unit | Accumulation | Example (30 days) |
+|-------|-------|------|-------------|-------------------|
+| GiB-seconds per tier (block/file allocation) | creation to deletion | GiB × seconds | capacity × wall-clock duration | 100 GiB × 2,592,000s |
+| GiB-seconds per tier (object storage allocation) | creation to deletion | GiB × seconds | provisioned quota × wall-clock duration | 500 GiB × 2,592,000s |
+| API read requests (object storage consumption) | continuous | count | total read operations in period | 10,000,000 requests |
+| API write requests (object storage consumption) | continuous | count | total write operations in period | 1,000,000 requests |
 
 ## 7. Acceptance Criteria
 
@@ -103,7 +104,10 @@ Storage uses allocation meters because storage capacity is reserved from creatio
 - [ ] A storage volume attached to a stopped VM continues generating usage data (extending Part 1 CAP-11)
 - [ ] A storage volume attached to a VM or cluster can be attributed to the parent resource in a unified usage view
 - [ ] Storage meters are additive to the Part 1 metering deployment and require no separate infrastructure
-- [ ] All Part 1 cross-cutting acceptance criteria (per-second granularity, deduplication, retention, independent deployment) apply to storage meters
+- [ ] Storage meters record usage at per-second granularity — a volume existing for 30 seconds appears in usage data
+- [ ] Duplicate storage metering events do not cause double-counting
+- [ ] Storage raw events are retained for at least 7 days; aggregated data is retained for at least 13 months
+- [ ] Storage metering deployment is independent of existing provisioning workflows
 
 ## 8. Assumptions
 
@@ -113,7 +117,7 @@ Storage uses allocation meters because storage capacity is reserved from creatio
 
 ## 9. Dependencies
 
-- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/metering-and-usage-tracking/prd.md) is a prerequisite. Part 2b extends but does not replace it.
+- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Part 2b extends but does not replace it.
 - **OSAC-984 (Storage Volume API):** Tenant-facing block storage Volume resource must exist in the fulfillment-service proto before storage metering can be implemented.
 - **OSAC-2387 (File Storage API):** FileShare resource must exist in the fulfillment-service proto before file storage metering can be implemented.
 - **OSAC-2388 (Object Storage API):** ObjectStorageBucket resource must exist in the fulfillment-service proto before object storage metering can be implemented.
@@ -128,14 +132,14 @@ Storage uses allocation meters because storage capacity is reserved from creatio
 ### 10.2 Part 1 metering infrastructure not yet built
 
 - **Owner:** OSAC platform team
-- **Mitigation:** All Part 2b meters depend on the metering infrastructure (event pipeline, provider adapters) established by Part 1 (OSAC-985). Part 2b implementation cannot begin until Part 1 infrastructure is deployed.
+- **Mitigation:** All Part 2b meters depend on the metering infrastructure (event pipeline, usage store) established by Part 1 (OSAC-985). Part 2b implementation cannot begin until Part 1 infrastructure is deployed.
 
 ## 11. Open Questions
 
 ### 11.1 Object storage API metering granularity
 
 - **Owner:** OSAC platform team
-- **Impact:** CAP-3. Should object storage metering distinguish between different API operation types (PUT/GET/LIST/DELETE) with separate meters, or aggregate all operations into read vs. write categories? This PRD aggregates into read vs. write. Fine-grained per-operation metering would increase dimensionality but give providers more pricing flexibility.
+- **Impact:** CAP-3. Should object storage metering distinguish between different API operation types (PUT/GET/LIST/DELETE) with separate meters, or aggregate all operations into read vs. write categories? This PRD aggregates into read vs. write. Fine-grained per-operation metering would increase dimensionality but give providers more granular usage data.
 
 ## Related PRDs
 
