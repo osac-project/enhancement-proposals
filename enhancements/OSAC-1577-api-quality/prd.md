@@ -10,11 +10,14 @@
 
 API validation in the OSAC fulfillment service is hand-written in Go and drifts from proto documentation, producing inconsistent error messages and allowing invalid input through gaps in coverage. The public and private APIs are maintained as separate proto files that must be kept in sync manually — a process that is error-prone and creates unnecessary maintenance burden. Cross-object constraints that depend on soft-deletion state (e.g., preventing a compute instance from attaching to a soft-deleted subnet) cannot be enforced by standard PostgreSQL foreign keys and require ad-hoc implementations that vary by resource type. These inconsistencies compound across the growing number of resource types and slow down both API development and API consumption.
 
+## Prior Work
+
+- Declarative input validation via protovalidate (OSAC-1275) — complete. Replaced hand-written Go validation with schema-derived validation. `[Clarify: R1.Q3]`
+
 ## In Scope
 
-- Declarative input validation via protovalidate annotations in proto files, replacing hand-written Go validation (OSAC-1275 — complete) `[Clarify: R1.Q3]`
 - Automated generation of the public API from annotated private API definitions via a protoc plugin, eliminating manual dual-maintenance of proto files (OSAC-1274)
-- A standard pattern for enforcing cross-object constraints that respect soft deletion — preventing relationships to soft-deleted objects at the database level, replacing per-resource ad-hoc logic (OSAC-1331)
+- A standard pattern for enforcing cross-object constraints that respect soft deletion — preventing relationships to soft-deleted objects, replacing per-resource ad-hoc logic (OSAC-1331)
 - Incremental DAO/query semantics cleanup and consistency fixes across resource types (OSAC-1540)
 
 ## Out of Scope
@@ -53,7 +56,7 @@ API validation in the OSAC fulfillment service is hand-written in Go and drifts 
 
 ## Provenance
 
-Authored: revise @ prd 0.5.0 - 92734a2, workspace main @ 5450556
-Phases: draft, revise
+Authored: respond @ prd 0.5.0 - 92734a2, workspace main @ 5450556
+Phases: draft, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"5450556","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"5450556","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":false} -->
