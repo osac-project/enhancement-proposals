@@ -72,7 +72,7 @@ Without metering for bare metal hosts, Cloud Provider Admins have no usage data 
 
 ### 5.3 Cross-cutting
 
-- **CAP-5:** Allocation-meter and consumption-meter data is available alongside existing metering data without additional admin configuration steps. All BMaaS meters use the same accuracy and data-availability guarantees as Part 1 meters (CAP-4, CAP-15, CAP-16).
+- **CAP-5:** Allocation-meter and consumption-meter data is available alongside existing metering data without additional admin configuration steps. All BMaaS meters use the same accuracy and data-availability guarantees as Part 1 meters (Part 1 CAP-4, Part 1 CAP-15, Part 1 CAP-16).
 
 ## 6. Usage Calculation Model
 
@@ -148,4 +148,4 @@ Final: respond @ prd 0.6.0 - 139e6c1, workspace main @ e454759
 
 > Context changed between respond and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"e454759","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"e454759","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
