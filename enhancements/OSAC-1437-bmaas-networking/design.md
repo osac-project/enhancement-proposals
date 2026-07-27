@@ -77,13 +77,13 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 
 ### Goals
 
-- Multi-NIC support with explicit physical interface mapping (tenant specifies port name from BareMetalInstanceType)
+- Multi-NIC support with explicit physical interface mapping (tenant specifies interface name from HostType)
 - Resource-specific attachment message (`BareMetalNetworkAttachment`) with `interface` and `primary` fields
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher calls `create_network_attachment` per interface to configure switch ports
 - IP discovery after provisioning: operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches port MAC to DHCP-assigned IP, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
-- BareMetalInstanceType resource with structured network ports (`BareMetalNetworkPortSpec`: name, role, type, speed, description)
+- HostType resource with structured NetworkInterface list (name, role, description)
 - Remove unused `networkClass` field from BareMetalInstance spec entirely (unused per reviewer feedback)
 
 ### Non-Goals
@@ -94,37 +94,51 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 
 ## Proposal
 
-### BareMetalInstanceType and Interface Validation
+### HostType and Interface Validation
 
-#### BareMetalInstanceType Resource
+#### HostType Resource
 
-BareMetalInstanceType is defined in the [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types). This networking EP requires the enhanced `network_ports` with `name` and `role` fields. For networking, BareMetalInstanceTypes include a structured network port list:
+The `HostType` resource in the fulfillment-service describes a class of hardware. For networking, BM host types include a structured interface list:
 
 ```protobuf
-message BareMetalNetworkPortSpec {
-  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0" — unique within the type
+message HostType {
+  string id = 1;
+  Metadata metadata = 2;
+  string title = 3;
+  string description = 4;
+  repeated NetworkInterface interfaces = 5;  // BM only, empty for VM host types
+}
+
+message NetworkInterface {
+  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0"
   string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
-  string type = 3;        // e.g., Ethernet, InfiniBand
-  string speed = 4;       // e.g., 1Gbps, 100Gbps
-  string description = 5; // e.g., "100GbE fabric interface"
+  string description = 3; // e.g., "100GbE fabric interface"
 }
 ```
 
-**The `network_ports` list is only populated for BareMetalInstanceTypes.** VM host types have no BareMetalInstanceType — VMs get virtual NICs from the CUDN overlay, not physical interfaces. The BM-vs-VM discriminator is on the HostType: if a HostType has interfaces → BM. If empty → VM.
+**The `interfaces` list is only populated for BM host types.** VM host types have an empty list — VMs get virtual NICs from the CUDN overlay, not physical interfaces. This also serves as the BM-vs-VM discriminator: if a HostType has interfaces → BM. If empty → VM.
 
-Ports are ordered. When multiple ports share the same role, the first one in the list is the default for that role (used by CaaS for automatic resolution — see CaaS design).
+Interfaces are ordered. When multiple interfaces share the same role, the first one in the list is the default for that role (used by CaaS for automatic resolution — see CaaS design).
 
-#### How BMaaS Uses BareMetalInstanceType
+#### How BMaaS Uses HostType
 
-The tenant provides `BareMetalNetworkAttachment` with an explicit `interface` field referencing a port `name` from the BareMetalInstanceType's `network_ports`. The fulfillment-service validates:
-- The `interface` name exists in the BareMetalInstanceType's `network_ports` list
-- The BareMetalInstanceType is resolved from the catalog_item / template
+The tenant provides `BareMetalNetworkAttachment` with an explicit `interface` field referencing an interface `name` from the HostType's `interfaces` list. The fulfillment-service validates:
+- The `interface` name exists in the HostType's `interfaces` list
+- The HostType is resolved from the catalog_item / template's `host_type` field
 
-Unlike CaaS (which picks the interface automatically by role from the HostType), BMaaS gives the tenant direct control over which physical port maps to which subnet. The tenant can see the available network ports via the BareMetalInstanceType API before creating the BaremetalInstance.
+Unlike CaaS (which picks the interface automatically by role), BMaaS gives the tenant direct control over which physical interface maps to which subnet.
 
-#### Relationship to HostType
+#### Future: BareMetalInstanceType Integration
 
-BareMetalInstanceType is the tenant-facing discovery catalog with full hardware specs (network port type, speed). It maps to a system-level HostType via `host_label_selector["hostType"]`. The HostType is the operational resource that the operator uses, with `NetworkInterface` fields (name, role, description). Both resources describe the same physical NICs — port/interface names are consistent across both. The `interface` field on `BareMetalNetworkAttachment` references port names from `BareMetalInstanceType.network_ports`, which correspond to the same-named interfaces on the underlying HostType. Server validation can validate against either resource (both have the same interface/port names).
+The [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types) introduces a tenant-facing hardware catalog for BMaaS. Once it lands, `BareMetalInstanceType` will provide richer tenant discovery (hardware specs, network port type and speed) and map to a HostType via `host_label_selector["hostType"]`.
+
+When BareMetalInstanceType is available with enhanced `network_ports` (including `name` and `role` fields — see our [requested enhancements](https://github.com/osac-project/enhancement-proposals/pull/119#issuecomment-5088323110)):
+- BMaaS tenants will discover available interfaces via the BareMetalInstanceType API (with type + speed info)
+- Interface validation will switch from HostType to BareMetalInstanceType
+- Interface/port names will be consistent across both resources (same physical NICs)
+- HostType remains the system-level resource used by the operator and by CaaS
+
+Until then, BMaaS uses HostType directly for interface validation — the same resource CaaS uses.
 
 #### Interface Role Convention
 
@@ -188,12 +202,12 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```
 
 5. **fulfillment-service:**
-   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)). The system selects the first network port with role `fabric` from the BareMetalInstanceType as the default interface for the single attachment (matching PRD FR-5).
+   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)). The system selects the first interface with role `fabric` from the HostType as the default interface for the single attachment (matching PRD FR-5).
    - Validates:
      - Each subnet exists, is Ready
      - All subnets belong to the same VirtualNetwork
      - Each SecurityGroup exists, is Ready, belongs to the same VN
-     - Each `interface` references a valid port name from the BareMetalInstanceType's network ports list
+     - Each `interface` references a valid interface name from the HostType's interfaces list
      - No duplicate interfaces across attachments
      - If >1 attachment without `interface`, reject (explicit interface required when multi-homed)
      - Number of attachments ≤ number of available interfaces on template
@@ -209,7 +223,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
       - Reads `network_attachments` from the CR spec
-      - **Operator dispatches switch-side config:** For each attachment, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from BareMetalInstanceType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. The host will receive an IP from the fabric's DHCP server once it boots on the V-Net.
+      - **Operator dispatches switch-side config:** For each attachment, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (interface name from HostType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. The host will receive an IP from the fabric's DHCP server once it boots on the V-Net.
       - Network attachments must be Ready before provisioning proceeds
 
    c. `reconcileProvisioning` (runs after networking):
