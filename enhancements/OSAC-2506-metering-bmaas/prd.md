@@ -12,7 +12,7 @@ Terms defined in the [Part 1 PRD](/enhancements/OSAC-985-metering-and-usage-trac
 
 | Term | Definition |
 |------|-----------|
-| **Allocation metering** | Metering that runs for the duration a resource exists (creation to deletion), regardless of whether the resource is actively in use. Reflects the provider's physical capacity commitment. |
+| **Allocation metering** | Metering that runs from provisioning complete through deletion, regardless of whether the resource is actively in use. Reflects the provider's physical capacity commitment. |
 | **Host type** | A provider-defined bare metal hardware configuration used as the primary metering dimension for BMaaS. Analogous to instance type for VMaaS. |
 
 ## 1. Problem Statement
@@ -144,5 +144,8 @@ This PRD is part of the Metering Part 2 family, which was split from a combined 
 ## Provenance
 
 Authored: respond @ prd 0.6.0 - 7b6dfe0, workspace main @ 3100993
+Final: respond @ prd 0.6.0 - 139e6c1, workspace main @ e454759
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"7b6dfe0","source_repo":"3100993","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false} -->
+> Context changed between respond and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"e454759","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
