@@ -694,7 +694,7 @@ To disable auto ExternalIP attachment:
 Consequences:
 - Auto ExternalIP allocation fails with error (resource not created)
 - Manual ExternalIP workflows remain functional
-- Default networking at tenant onboarding remains functional (only auto external access is disabled)
+- Default networking at tenant onboarding is partially functional — VN, Subnets, and SG are created, but NATGateway creation also fails (requires ExternalIP from pool). Auto external access is disabled
 
 ## Infrastructure Needed
 

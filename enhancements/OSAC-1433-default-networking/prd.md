@@ -35,6 +35,8 @@ where a single create command produces a reachable instance.
 - Auto-provisioning of VirtualNetworks or Subnets beyond the initial
   default (tenants create additional VNs manually)
 - UI support for simplified creation (deferred — API and CLI only for now)
+- Automatic migration of existing tenants to receive default networking
+  resources (only new tenants get defaults at onboarding)
 
 ## 3. User Stories
 
