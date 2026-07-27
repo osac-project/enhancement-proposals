@@ -80,9 +80,10 @@ OSAC networking is handled by two managers:
 
 - **K8s Manager** (optional) — handles everything needed to make VMs part of
   the fabric: creates the K8s overlay (e.g., CUDN with LocalNet) and bridges
-  it to the fabric segment. Only needed for regions that host VMs. Once VMs
-  are on the fabric, the fabric manager handles them identically to
-  bare-metal servers.
+  it to the fabric segment. Also creates MetalLB IPAddressPool CRs at subnet
+  creation time for CaaS VIP allocation. Needed for regions that host VMs or
+  CaaS clusters. Once VMs are on the fabric, the fabric manager handles them
+  identically to bare-metal servers.
 
 #### Why Two Managers?
 
@@ -1097,8 +1098,10 @@ template roles create DNS records. A DNS API is a separate enhancement.
 #### BM-Only Regions
 
 If a region's NetworkClass has no k8sManager, the region does not support
-VMs. ComputeInstance creation is rejected if the target region has no
-k8sManager — there is no K8s overlay to place the VM on.
+VMs or CaaS clusters. ComputeInstance creation is rejected if the target
+region has no k8sManager — there is no K8s overlay to place the VM on.
+Cluster creation is also rejected — without a k8sManager, there is no
+MetalLB IPAddressPool for VIP allocation on the hosting cluster.
 
 #### CIDR Overlap
 
@@ -1119,8 +1122,10 @@ VirtualNetwork at creation time.
 
 This design requires K8s-to-fabric connectivity in every deployment that
 hosts VMs. The k8sManager must bridge the OVN overlay to the physical
-fabric for VMs to participate. In BM-only deployments, the k8sManager is
-not needed and the design reduces to fabric-manager-only.
+fabric for VMs to participate. It is also required for CaaS clusters, where
+it creates MetalLB IPAddressPool CRs at subnet creation time for API and
+ingress VIP allocation. In BM-only deployments without CaaS, the
+k8sManager is not needed and the design reduces to fabric-manager-only.
 
 The trade-off is justified by infrastructure-agnostic subnets: any resource
 type on any subnet, uniform security enforcement via the fabric, and no

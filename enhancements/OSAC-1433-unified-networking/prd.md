@@ -388,6 +388,6 @@ _No non-functional requirements were specified in the original document._
 
 - **Unified Networking Design**: [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) — Technical design document fulfilling these requirements
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
-- **Original Networking API**: [/enhancements/networking](/enhancements/networking) — VMaaS-only networking API (superseded for multi-service scenarios)
-- **BareMetal Instance API**: [/enhancements/baremetal-instance-api](/enhancements/baremetal-instance-api) — Defines BaremetalInstance resource
+- **Original Networking API**: [/enhancements/OSAC-356-networking](/enhancements/OSAC-356-networking) — VMaaS-only networking API (superseded for multi-service scenarios)
+- **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference

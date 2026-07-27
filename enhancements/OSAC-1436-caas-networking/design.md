@@ -65,7 +65,7 @@ Cluster provisioning today follows this flow:
 
 ### Agent Pool Model
 
-The current assumption is that **pre-booted Assisted Installer agents** are ready in a pool, waiting to be assigned to clusters. These agents sit on a **parking network** — a fabric-manager-managed V-Net that provides basic connectivity (DHCP, PXE, management access) while agents are idle.
+The current assumption is that **pre-booted Assisted Installer agents** are ready in a pool, waiting to be assigned to clusters. These agents sit on a **parking network** — a fabric-manager-managed V-Net that provides basic connectivity (DHCP, PXE, management access) while agents are idle. The parking network V-Net ID is a **deployment-level configuration** (e.g., AAP group_var `parking_vnet_id`), not a per-cluster or per-tenant parameter.
 
 When an agent is selected for a cluster:
 1. The agent's port is **moved from the parking network to the tenant's subnet V-Net** (via `create_network_attachment`)
@@ -218,7 +218,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Deletes HyperShift HostedCluster + NodePools
       - DNS cleanup
       - No switch port cleanup — template doesn't handle networking
-    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `delete_network_attachment` per BM node (passing host_name, logical_interface_name from the agent's node set definition, subnet_ref). The role removes the port from the tenant's subnet V-Net and **returns it to the parking network** — the agent is back in the idle pool. See [Agent Pool Model](#agent-pool-model).
+    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `delete_network_attachment` per BM node (passing host_name, logical_interface_name from the agent's node set definition, subnet_ref, and `parking_vnet_id` from deployment configuration). The role removes the port from the tenant's subnet V-Net and **returns it to the parking network** — the agent is back in the idle pool. See [Agent Pool Model](#agent-pool-model).
     - ClusterOrder controller `reconcileAgentCleanup` (delete): removes operator-set reservation labels from agents, making them available for future clusters.
     - Removes ClusterOrder finalizer
 
