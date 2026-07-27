@@ -442,7 +442,7 @@ Bare-metal servers have multiple physical interfaces. The tenant discovers
 available network ports via the BareMetalInstanceType API — each
 BareMetalInstanceType lists its network ports with name, role, type, speed,
 and description (see
-[BareMetalInstanceType](#baremetalinstancetype)). Given the port identifiers, the tenant specifies which
+[HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype)). Given the port identifiers, the tenant specifies which
 interface to attach to which subnet. Each
 `network_attachment` maps one physical interface to one subnet. If
 `interface` is omitted, the fabric manager picks a default.
@@ -487,14 +487,14 @@ osac create cluster --template ocp_4_17_small \
 
 For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
 are architecturally possible but deferred. The fulfillment-service resolves
-the interface from the BareMetalInstanceType (`fabric_interface` — first network port with
+the interface from the HostType (`fabric_interface` — first interface with
 role `fabric`). The operator handles agent selection and network attachment
 (switch port configuration) before triggering the provisioning template.
 See [CaaS Networking](/enhancements/OSAC-1436-caas-networking) for the detailed flow.
 
 Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
 (where the tenant specifies interfaces directly), for clusters the
-**system** resolves the interface from the BareMetalInstanceType's network ports.
+**system** resolves the interface from the HostType's interfaces list.
 The tenant specifies which subnet to use (one per cluster); the system maps it to the
 correct physical interfaces based on each node set's host type.
 
@@ -747,13 +747,33 @@ message VirtualNetworkSpec {
 
 No scope or service field — subnets are infrastructure-agnostic.
 
-#### BareMetalInstanceType
+#### HostType and BareMetalInstanceType
 
-The `BareMetalInstanceType` resource describes a class of bare-metal
-hardware. It is defined in the
-[BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types).
-For networking, BareMetalInstanceTypes include a structured network port
-list:
+**HostType** is a generic system-level resource that describes the network
+interfaces available on a class of hosts. It supports both BM and VM node
+sets. CaaS uses HostType for fabric interface resolution via
+`ClusterNodeSet.host_type`.
+
+```protobuf
+message NetworkInterface {
+  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0" — unique within the type
+  string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
+  string description = 3; // e.g., "100GbE fabric interface"
+}
+```
+
+BM host types have populated `interfaces`; VM host types have an empty
+list. This serves as the BM-vs-VM discriminator: if a HostType has
+interfaces → BM. If empty → VM.
+
+Interfaces are ordered. When multiple interfaces share the same role
+(e.g., two `fabric` interfaces), the first one in the list is the default
+for that role — used by CaaS for automatic interface resolution.
+
+**BareMetalInstanceType** is a tenant-facing catalog resource defined in
+the [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types).
+It provides a richer hardware discovery catalog for BMaaS, including
+structured network ports with additional type and speed information:
 
 ```protobuf
 message BareMetalNetworkPortSpec {
@@ -765,14 +785,12 @@ message BareMetalNetworkPortSpec {
 }
 ```
 
-The `network_ports` list is only populated for BareMetalInstanceTypes. VM
-host types have no BareMetalInstanceType — VMs get virtual NICs from the
-CUDN overlay, not physical interfaces. This serves as the BM-vs-VM
-discriminator: if a BareMetalInstanceType has network_ports → BM.
-
-Ports are ordered. When multiple ports share the same role (e.g., two
-`fabric` ports), the first one in the list is the default for that role
-— used by CaaS for automatic interface resolution.
+BareMetalInstanceType maps to a HostType via its
+`host_label_selector["hostType"]`. The `BareMetalNetworkPortSpec` on
+BareMetalInstanceType provides additional type and speed info beyond what
+HostType's NetworkInterface has. Both resources describe the same physical
+NICs — HostType is the operational config and BareMetalInstanceType is the
+discovery catalog.
 
 | Role | Meaning |
 |------|---------|
@@ -781,15 +799,20 @@ Ports are ordered. When multiple ports share the same role (e.g., two
 | `storage` | Storage fabric traffic |
 | `lifecycle` | Out-of-band lifecycle management (PXE boot, Redfish/BMC) — not tenant-attachable |
 
-Roles are conventions, not enforced enums. Ports with role `lifecycle` are
-used by the provisioning system (Ironic, Metal3) and should not appear
-in `network_attachments`.
+Roles are conventions, not enforced enums. Ports/interfaces with role
+`lifecycle` are used by the provisioning system (Ironic, Metal3) and
+should not appear in `network_attachments`.
 
-BMaaS: the tenant specifies port names directly on
-`BareMetalNetworkAttachment.interface`, validated against the
-BareMetalInstanceType's network ports list. CaaS: the fulfillment-service
-resolves the interface automatically (first `fabric`-role port → stored as
+**CaaS** uses HostType: the fulfillment-service resolves the interface
+automatically (first `fabric`-role interface → stored as
 `fabric_interface` on the node set definition).
+
+**BMaaS** uses BareMetalInstanceType: the tenant discovers interfaces
+from BareMetalInstanceType and specifies port names directly on
+`BareMetalNetworkAttachment.interface`, validated against the
+BareMetalInstanceType's network ports list. The `interface` field
+references port names that exist on both HostType and
+BareMetalInstanceType (they describe the same physical NICs).
 
 #### Network Attachment Types
 
@@ -843,7 +866,7 @@ message ClusterNetworkAttachment {
 
 A single attachment applies to the whole cluster — all node sets share the same subnet.
 The `fabric_interface` is resolved by the fulfillment-service at creation time for each
-node set from its host type (first network port with role `fabric` — see [BareMetalInstanceType](#baremetalinstancetype))
+node set from its host type (first interface with role `fabric` — see [HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype))
 and stored on the node set definition. The tenant does not set this field.
 
 #### Resource Specs

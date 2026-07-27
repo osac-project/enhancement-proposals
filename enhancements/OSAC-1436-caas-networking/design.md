@@ -58,7 +58,7 @@ Cluster provisioning today follows this flow:
 
 - Move cluster networking lifecycle to the OSAC Networking API (VirtualNetwork, Subnet, SecurityGroup)
 - Tenant-controlled cluster node subnet placement via `network_attachment` field on ClusterSpec
-- BM-based node sets with fabric interface resolution from BareMetalInstanceType
+- BM-based node sets with fabric interface resolution from HostType
 - VIP feedback loop: template provisions MetalLB VIPs → ClusterOrder status → fulfillment-service → Cluster → ExternalIPAttachment controller
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call API/ingress external access
 - Remove step collections (`netris.steps`, `agentless_net.steps`) from CaaS networking
@@ -85,7 +85,7 @@ This differs from BMaaS, where servers start with no network attachment and are 
 - VMaaS or BMaaS networking (this EP covers CaaS only)
 - VM-based cluster node sets (v0.2 supports BM node sets only; VM worker nodes require HyperShift ↔ CUDN integration not in scope)
 - DNS API (DNS record creation stays inline in the template until DNS API is implemented)
-- Multi-NIC cluster nodes (v0.2: one attachment per cluster → one subnet; each node set resolves its own fabric interface from its BareMetalInstanceType)
+- Multi-NIC cluster nodes (v0.2: one attachment per cluster → one subnet; each node set resolves its own fabric interface from its HostType)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
 - On-demand agent booting (v0.2 assumes pre-booted agent pool; may change in future)
 
@@ -136,7 +136,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Validates network_attachment:
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
-    - For each node_set: resolves `host_type` → BareMetalInstanceType → picks first network port with role `fabric` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
+    - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
     - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-provisioned: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with enriched `network_attachment` in spec
@@ -230,43 +230,41 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Delete Subnet → dispatcher calls both managers: fabric manager removes V-Net segment, k8s_manager removes CUDN overlay + MetalLB IPAddressPool from hosting clusters
     - Delete VirtualNetwork → fabric manager removes tenant segment
 
-### BareMetalInstanceType and Interface Resolution
+### HostType and Interface Resolution
 
-#### BareMetalInstanceType Resource
+#### HostType Resource
 
-BareMetalInstanceType is defined in the [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types). This networking EP requires the enhanced `network_ports` with `name` and `role` fields. For networking, BareMetalInstanceTypes include a structured network port list:
+HostType is a generic system-level resource that describes the network interfaces available on a class of hosts. It supports both BM and VM node sets — BM host types have populated interfaces, VM host types have an empty list. CaaS `ClusterNodeSet.host_type` references this resource.
 
 ```protobuf
-message BareMetalNetworkPortSpec {
+message NetworkInterface {
   string name = 1;        // e.g., "data-0", "data-1", "mgmt-0" — unique within the type
   string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
-  string type = 3;        // e.g., Ethernet, InfiniBand
-  string speed = 4;       // e.g., 1Gbps, 100Gbps
-  string description = 5; // e.g., "100GbE fabric interface"
+  string description = 3; // e.g., "100GbE fabric interface"
 }
 ```
 
-**The `network_ports` list is only populated for BareMetalInstanceTypes.** VM host types have no BareMetalInstanceType — VMs get virtual NICs from the CUDN overlay, not physical interfaces. This also serves as the BM-vs-VM discriminator: if a BareMetalInstanceType has network_ports → BM.
+**The `interfaces` list is populated for BM host types and empty for VM host types.** VMs get virtual NICs from the CUDN overlay, not physical interfaces. This serves as the BM-vs-VM discriminator: if a HostType has interfaces → BM. If empty → VM.
 
-Ports are ordered. When multiple ports share the same role (e.g., two `fabric` ports), the first one in the list is the default for that role.
+Interfaces are ordered. When multiple interfaces share the same role (e.g., two `fabric` interfaces), the first one in the list is the default for that role.
 
-#### How CaaS Uses BareMetalInstanceType
+#### How CaaS Uses HostType
 
-The tenant provides a single `ClusterNetworkAttachment` with `subnet` only — no node_set or interface field. The fulfillment-service resolves the interface from the BareMetalInstanceType for each node set:
+The tenant provides a single `ClusterNetworkAttachment` with `subnet` only — no node_set or interface field. The fulfillment-service resolves the interface from the HostType for each node set:
 
 1. For each node set in the cluster spec (e.g., "gpu"), read `ClusterSpec.node_sets["gpu"].host_type` = "acme_1tb_h100"
-2. BareMetalInstanceType "acme_1tb_h100" has network_ports:
+2. HostType "acme_1tb_h100" has interfaces:
    ```
    [{name: "data-0", role: "fabric"},
     {name: "data-1", role: "fabric"},
     {name: "mgmt-0", role: "management"}]
    ```
-3. fulfillment-service picks the first network port with role `fabric` → `data-0`, stores as `fabric_interface` on the node set definition
+3. fulfillment-service picks the first interface with role `fabric` → `data-0`, stores as `fabric_interface` on the node set definition
 4. Operator calls `create_network_attachment` with `interface=data-0` per node
 
-For v0.2: **CaaS supports BM node sets only.** VM-based cluster node sets are architecturally possible (the BareMetalInstanceType BM-vs-VM discriminator and CUDN overlay support it) but are deferred — the HyperShift ↔ CUDN integration for VM worker nodes is not in scope.
+For v0.2: **CaaS supports BM node sets only.** VM-based cluster node sets are architecturally possible (the HostType BM-vs-VM discriminator and CUDN overlay support it) but are deferred — the HyperShift ↔ CUDN integration for VM worker nodes is not in scope.
 
-For v0.2: **one attachment per cluster → one subnet; each node set uses its own fabric interface from its BareMetalInstanceType.**
+For v0.2: **one attachment per cluster → one subnet; each node set uses its own fabric interface from its HostType.**
 
 #### Interface Role Convention
 
@@ -316,7 +314,7 @@ message ClusterNetworkAttachment {
   repeated string security_groups = 2;  // SecurityGroup IDs, mutable
 }
 // Note: fabric_interface is system-populated on each node set definition
-// by the fulfillment-service (resolved from the node set's BareMetalInstanceType).
+// by the fulfillment-service (resolved from the node set's HostType).
 
 message ClusterSpec {
   string template = 1;
@@ -356,7 +354,7 @@ type ClusterOrderStatus struct {
 
 type NodeSetStatus struct {
     Name            string        `json:"name"`
-    FabricInterface string        `json:"fabricInterface,omitempty"` // System-populated from BareMetalInstanceType
+    FabricInterface string        `json:"fabricInterface,omitempty"` // System-populated from HostType
     Agents          []AgentStatus `json:"agents"`
 }
 
@@ -378,7 +376,7 @@ Migration adds to clusters table:
 #### Server Validation
 
 - network_attachment: subnet exists, is Ready
-- Each node set's host_type must have at least one network port with role `fabric` for fabric_interface resolution
+- Each node set's host_type must have at least one interface with role `fabric` for fabric_interface resolution
 - Immutability: network_attachment is immutable after creation
 - target_endpoint validation on ExternalIPAttachment: required when target is cluster, must be `API` or `INGRESS`
 
@@ -555,7 +553,7 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 
 - fulfillment-service: network_attachment validation (subnet exists, Ready, same VN)
 - fulfillment-service: fabric_interface resolution per node set (host_type must have fabric-role interface)
-- fulfillment-service: interface resolution from BareMetalInstanceType (pick first fabric-role network port)
+- fulfillment-service: interface resolution from HostType (pick first fabric-role interface)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - osac-operator ClusterOrder controller: agent selection logic
 - osac-operator ClusterOrder controller: network attachment resolution
@@ -572,7 +570,7 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 
 ### Tricky Test Cases
 
-- Multiple node sets sharing the same subnet (verify correct fabric interface resolution per node set from BareMetalInstanceType)
+- Multiple node sets sharing the same subnet (verify correct fabric interface resolution per node set from HostType)
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
 - VIP feedback loop failure (Signal RPC fails, fulfillment-service does not sync VIPs)
@@ -598,7 +596,7 @@ GA criteria:
 - [ ] k8s_manager implementation (OSAC-1511 or OSAC-1717) delivered and production-tested
 - [ ] Multi-job tracking (OSAC-1459) implemented and stable
 - [ ] Dispatcher infrastructure (OSAC-1457, OSAC-1458, OSAC-1460) delivered
-- [ ] BareMetalInstanceType network ports (BareMetalNetworkPortSpec) implemented and tested
+- [ ] HostType with NetworkInterface fields implemented and tested
 - [ ] Production deployment verified (MOC or other OSAC deployment)
 - [ ] User feedback incorporated (usability, error messages, edge cases)
 
@@ -704,7 +702,7 @@ Consequences:
 - k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
 - fabric_manager Ansible role with `create_network_attachment` / `delete_network_attachment` (OSAC-2081)
 - Integration test environment with CUDN or EVPN fabric
-- BareMetalInstanceType test data with structured network ports (BareMetalNetworkPortSpec)
+- HostType test data with NetworkInterface fields
 
 ## Dependencies
 
@@ -729,8 +727,8 @@ Consequences:
 | CLI --network-attachment for Cluster | OSAC-2076 | New |
 | Integration test | OSAC-2078 | New |
 | Fabric manager create/delete_network_attachment role | OSAC-2081 (Netris BM) | New |
-| BareMetalInstanceType: add structured network ports (BareMetalNetworkPortSpec) | Not tracked | **GAP** |
+| HostType: add NetworkInterface fields (name, role, description) | Not tracked | **GAP** |
 | Remove cluster_infra / external_access step collection dispatch | Not tracked | **GAP** |
 | Remove NETWORK_STEPS_COLLECTION dependency | Not tracked | **GAP** |
 | Agent selection logic in operator (reconcileAgentSelection) | Not tracked | **GAP** |
-| fulfillment-service: resolve interface from BareMetalInstanceType (fabric_interface) | Not tracked | **GAP** |
+| fulfillment-service: resolve interface from HostType (fabric_interface) | Not tracked | **GAP** |

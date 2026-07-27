@@ -110,7 +110,7 @@ message BareMetalNetworkPortSpec {
 }
 ```
 
-**The `network_ports` list is only populated for BareMetalInstanceTypes.** VM host types have no BareMetalInstanceType — VMs get virtual NICs from the CUDN overlay, not physical interfaces. This also serves as the BM-vs-VM discriminator: if a BareMetalInstanceType has network_ports → BM.
+**The `network_ports` list is only populated for BareMetalInstanceTypes.** VM host types have no BareMetalInstanceType — VMs get virtual NICs from the CUDN overlay, not physical interfaces. The BM-vs-VM discriminator is on the HostType: if a HostType has interfaces → BM. If empty → VM.
 
 Ports are ordered. When multiple ports share the same role, the first one in the list is the default for that role (used by CaaS for automatic resolution — see CaaS design).
 
@@ -120,7 +120,11 @@ The tenant provides `BareMetalNetworkAttachment` with an explicit `interface` fi
 - The `interface` name exists in the BareMetalInstanceType's `network_ports` list
 - The BareMetalInstanceType is resolved from the catalog_item / template
 
-Unlike CaaS (which picks the interface automatically by role), BMaaS gives the tenant direct control over which physical port maps to which subnet. The tenant can see the available network ports via the BareMetalInstanceType API before creating the BaremetalInstance.
+Unlike CaaS (which picks the interface automatically by role from the HostType), BMaaS gives the tenant direct control over which physical port maps to which subnet. The tenant can see the available network ports via the BareMetalInstanceType API before creating the BaremetalInstance.
+
+#### Relationship to HostType
+
+BareMetalInstanceType is the tenant-facing discovery catalog with full hardware specs (network port type, speed). It maps to a system-level HostType via `host_label_selector["hostType"]`. The HostType is the operational resource that the operator uses, with `NetworkInterface` fields (name, role, description). Both resources describe the same physical NICs — port/interface names are consistent across both. The `interface` field on `BareMetalNetworkAttachment` references port names from `BareMetalInstanceType.network_ports`, which correspond to the same-named interfaces on the underlying HostType. Server validation can validate against either resource (both have the same interface/port names).
 
 #### Interface Role Convention
 
