@@ -212,7 +212,7 @@ message BareMetalInstanceTypeSpec {
 
 message BareMetalLabelSelector {
   map<string, string> match_labels = 1 [(buf.validate.field).map.min_pairs = 1];  // Simple key-value label matches; at least one pair required
-  // Note: Application-level validation must ensure "hostType" key is present in match_labels
+  // Labels passed directly to inventory backend using backend-native naming conventions
 }
 ```
 
@@ -246,10 +246,11 @@ object.Spec.HostType = defaultHostType
 
 // New logic (resolved from BareMetalInstanceType)
 instanceType, err := resolveBareMetalInstanceType(ctx, bareMetalInstance.Spec.InstanceType)
-object.Spec.HostType = instanceType.Spec.HostSelector["hostType"]
+// Pass all labels directly to the CRD selector - no canonical hostType extraction
+object.Spec.Selector.HostSelector = instanceType.Spec.HostLabelSelector.MatchLabels
 ```
 
-The existing CRD schema remains unchanged — the controller maps protobuf data to the existing `HostType` string field that the bare-metal-fulfillment-operator already uses for host selection.
+The existing CRD schema remains unchanged — the controller maps all protobuf labels directly to `object.Spec.Selector.HostSelector`, allowing backends to use their preferred label naming conventions without transformation.
 
 **Compatibility contract:**
 
@@ -264,39 +265,40 @@ The host selection flow involves two controllers working with existing CRD field
 
 1. **fulfillment-service controller** (during BareMetalInstance creation):
    - Resolves `instance_type` reference to get BareMetalInstanceType
-   - Extracts `hostType` value from `host_selector["hostType"]`
-   - Maps to CRD: sets `object.Spec.HostType = hostType` (replaces hardcoded "default")
+   - Maps all labels from `host_label_selector.match_labels` directly to CRD `object.Spec.Selector.HostSelector`
 
 2. **bare-metal-fulfillment-operator** (during reconciliation):
-   - Reads `object.Spec.HostType` from the CRD
-   - Calls `inventory.Client.FindFreeHost(ctx, {"hostType": hostType})` to claim a matching host
+   - Reads `object.Spec.Selector.HostSelector` labels from the CRD
+   - Calls `inventory.Client.FindFreeHost(ctx, selectorLabels)` to claim a matching host
    - Proceeds with provisioning using the claimed host; if no host matches, sets `HostSelectionFailed` status condition
 
-The bare-metal-fulfillment-operator continues to use its existing host selection logic — only the source of the `hostType` value changes from hardcoded to resolved from BareMetalInstanceType.
+The bare-metal-fulfillment-operator continues to use its existing host selection logic — the labels now pass through directly from BareMetalInstanceType to inventory backend without transformation.
 
-The existing `inventory.Client` interface [Codebase: bare-metal-fulfillment-operator/internal/inventory/client.go] already supports `matchExpressions map[string]string` in `FindFreeHost`, requiring no interface changes. The operator passes the `match_labels` map directly to `FindFreeHost`. The `"hostType"` key is required in the `match_labels` and is the canonical selector key recognized by all existing backends:
+The existing `inventory.Client` interface [Codebase: bare-metal-fulfillment-operator/internal/inventory/client.go] already supports `matchExpressions map[string]string` in `FindFreeHost`, requiring no interface changes. The operator passes the `match_labels` map directly to `FindFreeHost`. Each backend interprets labels according to its native naming conventions:
 
-| Backend | `"hostType"` translation |
-|---------|--------------------------|
-| OpenStack (`openstack.go`) | Ironic node `ResourceClass` field |
-| Metal3 (`metal3.go`) | `BareMetalHost` label `osac.openshift.io/instance-type` |
+| Backend | Label examples |
+|---------|----------------|
+| OpenStack (`openstack.go`) | `{"resourceClass": "gpu-large"}` → Ironic node `ResourceClass` field |
+| Metal3 (`metal3.go`) | `{"osac.openshift.io/hardware-profile": "gpu-large",`  → BareMetalHost label |
 
-Cloud Infrastructure Admins must set the host type using the backend's native mechanism so that it matches the `hostType` value in the `host_label_selector.match_labels` on the BareMetalInstanceType:
-- **OpenStack:** set the Ironic node's `resource_class` to the `hostType` label value (e.g., `"gpu-large"`)
-- **Metal3:** set the `BareMetalHost` label `osac.openshift.io/instance-type` to the `hostType` label value
+This approach allows backends to use their preferred label formats without requiring a canonical key transformation.
+
+Cloud Infrastructure Admins must set inventory host labels using the backend's native mechanism so that they match the exact keys and values in the `host_label_selector.match_labels` on the corresponding BareMetalInstanceType:
+- **OpenStack:** set the Ironic node metadata to match BareMetalInstanceType labels (e.g., `resourceClass: "gpu-large"`)
+- **Metal3:** set the `BareMetalHost` labels to match BareMetalInstanceType labels (e.g., `osac.openshift.io/hardware-profile: "gpu-large"`)
 
 **Cloud Provider Admin Workflow:**
 
 Cloud Provider Admins use the private API directly to create BareMetalInstanceType resources:
 
 ```yaml
-# Example: creating a BareMetalInstanceType via private API
-name: gpu-large
+# Example: creating a BareMetalInstanceType for Metal3 backend
+name: gpu-large-connected
 spec:
-  host_label_selector:             # Kubernetes-style label selector
+  host_label_selector:
     match_labels:
-      hostType: "gpu-large"        # Required canonical key
-  description: "Large GPU node with dual A100"
+      osac.openshift.io/hardware-profile: "gpu-large"
+  description: "Large GPU node with dual A100 and multiple network connections"
   hardware:
     cpu:
       cores: 64
@@ -468,6 +470,7 @@ Existing OPA policies automatically apply to BareMetalInstanceType resources thr
 **Question:** Should host labels be free-form strings (e.g., `"gpu-large"`) or namespaced key-value pairs (e.g., `"osac.openshift.io/hardware-profile=gpu-large"`)? A namespaced format avoids collisions with other labels on inventory hosts but adds complexity for Cloud Infrastructure Admins.
 **Owner:** Platform team
 **Impact:** Affects the `host_label_selector` field definition in the proto schema and the `FindFreeHost` label selector format passed to inventory clients.
+**Answer:** Labels should pass directly through to the backend without transformation. This allows different backends to use their preferred naming conventions (e.g., Metal3 uses `osac.openshift.io/hardware-profile`, while other backends might use simple keys like `hostType`). Cloud Infrastructure Admins and Cloud Provider Admins coordinate on the exact label keys and values for their specific backend, making the mapping straightforward and backend-native.
 
 ### 2. Label Validation at Type Creation Time
 
