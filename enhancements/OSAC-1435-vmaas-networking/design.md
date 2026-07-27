@@ -225,7 +225,7 @@ Add `ComputeNetworkAttachmentStatus` to `ComputeInstanceStatus`:
 ```go
 type ComputeInstanceStatus struct {
     // ... existing fields ...
-    NetworkAttachmentStatuses []ComputeNetworkAttachmentStatus `json:"networkAttachmentStatuses,omitempty"`
+    ComputeNetworkAttachmentStatuses []ComputeNetworkAttachmentStatus `json:"computeNetworkAttachmentStatuses,omitempty"`
 }
 
 type ComputeNetworkAttachmentStatus struct {
@@ -235,7 +235,7 @@ type ComputeNetworkAttachmentStatus struct {
 }
 ```
 
-The feedback controller populates `NetworkAttachmentStatuses` by watching the KubeVirt VMI `status.interfaces` and mapping each interface IP to the corresponding attachment by CUDN NAD reference.
+The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching the KubeVirt VMI `status.interfaces` and mapping each interface IP to the corresponding attachment by CUDN NAD reference.
 
 #### Server Validation (fulfillment-service)
 

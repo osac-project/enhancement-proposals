@@ -151,7 +151,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
     - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `subnet_ref`. The role checks if the port is already on a V-Net (parking network) — if so, removes it first — then adds the port to the tenant's subnet V-Net. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
-    - After switch port configuration, the operator's `reconcileNetworking` watches Agent CR network status to discover DHCP-assigned IPs and populates `AgentStatus.IPAddress` on the ClusterOrder status. The feedback controller then syncs these IPs to the fulfillment-service.
+    - **Per-agent IP discovery:** After switch port configuration moves agent ports to the tenant V-Net, agents receive new IPs from the tenant subnet's DHCP server. The Assisted Installer Agent CR reports network status including the assigned IP in `status.inventory.interfaces[].ipv4Addresses[]`. The operator watches for this field to be updated after the port move and populates `AgentStatus.IPAddress` on the ClusterOrder status. The feedback controller then syncs these IPs to the fulfillment-service. If the Agent CR does not report an IP within a configurable timeout (default: 5 minutes after port move), the operator sets a `NetworkingIPDiscoveryTimeout` condition on the ClusterOrder and requeues, preventing indefinite blocking.
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
@@ -403,11 +403,11 @@ Migration adds to clusters table:
 | Component | Responsibility |
 |-----------|---------------|
 | fulfillment-service | Validate network_attachment (singular), resolve fabric_interface per node set, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP |
-| osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, select agents, configure network attachments (dispatcher), discover agent IPs (watch Agent CR network status after DHCP, populate `AgentStatus.IPAddress`), trigger AAP workflow |
+| osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, select agents, configure network attachments (dispatcher), discover agent IPs (watch Agent CR `status.inventory.interfaces[]` after port move, populate `AgentStatus.IPAddress`, timeout with `NetworkingIPDiscoveryTimeout` condition), trigger AAP workflow |
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs/IPs appear |
 | osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiEndpoint`/`ingressEndpoint` (MetalLB-allocated, template-discovered) from status, create DNAT via fabric_manager |
 | AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents), provision MetalLB VIPs, write VIPs to ClusterOrder status, host-side networking handled by DHCP — no agent selection logic |
-| fabric_manager (Ansible role) | create_network_attachment (V-Net port attachment + DHCP lease query for IP discovery), delete_network_attachment (V-Net port removal), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
+| fabric_manager (Ansible role) | create_network_attachment (V-Net port attachment), delete_network_attachment (V-Net port removal), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
 
 #### Auto-Provisioned Resource Lifecycle

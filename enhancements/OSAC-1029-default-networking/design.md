@@ -222,6 +222,7 @@ This enhancement adds three main capabilities: default networking (including NAT
 message NetworkClassSpec {
   // ... existing fields ...
   NetworkDefaults defaults = 10; // new field
+  int32 metallb_vip_prefix_length = 11; // e.g., 28 — reserves sub-range of each subnet for MetalLB VIPs (CaaS)
 }
 
 message NetworkDefaults {
@@ -229,7 +230,6 @@ message NetworkDefaults {
   string ipv4_subnet_cidr = 2;      // e.g., "10.0.1.0/24"
   repeated SecurityGroupRule security_group_rules = 3;
   string ipv6_subnet_cidr = 4;      // e.g., "fd00:osac:1::/64"
-  int32 metallb_vip_prefix_length = 5; // e.g., 28 — reserves last /28 of each subnet for MetalLB VIPs (CaaS)
 }
 
 message SecurityGroupRule {
@@ -303,15 +303,15 @@ Condition values:
 ```go
 type NetworkClassSpec struct {
     // ... existing fields ...
-    Defaults *NetworkDefaults `json:"defaults,omitempty"`
+    Defaults               *NetworkDefaults `json:"defaults,omitempty"`
+    MetalLBVIPPrefixLength int32            `json:"metallbVIPPrefixLength,omitempty"` // reserves sub-range of each subnet for MetalLB VIPs (CaaS)
 }
 
 type NetworkDefaults struct {
-    VirtualNetworkCIDR      string              `json:"virtualNetworkCIDR,omitempty"`
-    IPv4SubnetCIDR          string              `json:"ipv4SubnetCIDR,omitempty"`
-    IPv6SubnetCIDR          string              `json:"ipv6SubnetCIDR,omitempty"`
-    SecurityGroupRules      []SecurityGroupRule `json:"securityGroupRules,omitempty"`
-    MetalLBVIPPrefixLength  int32               `json:"metallbVIPPrefixLength,omitempty"` // reserves sub-range for MetalLB VIPs (CaaS)
+    VirtualNetworkCIDR string              `json:"virtualNetworkCIDR,omitempty"`
+    IPv4SubnetCIDR     string              `json:"ipv4SubnetCIDR,omitempty"`
+    IPv6SubnetCIDR     string              `json:"ipv6SubnetCIDR,omitempty"`
+    SecurityGroupRules []SecurityGroupRule  `json:"securityGroupRules,omitempty"`
 }
 
 type SecurityGroupRule struct {
