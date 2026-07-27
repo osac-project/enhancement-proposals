@@ -213,7 +213,7 @@ subnet. The pre-provisioning ordering constraint is eliminated. ExternalIPs
 are for external (off-subnet) access only, not for intra-cluster
 communication. ExternalIPAttachments start in Pending state and activate once
 the cluster's VIPs are discovered (see
-[CaaS Networking](/enhancements/caas-networking)).
+[CaaS Networking](/enhancements/OSAC-1436-caas-networking)).
 
 ## 2. Goals and Non-Goals
 
@@ -387,7 +387,7 @@ _No non-functional requirements were specified in the original document._
 ## 6. Dependencies
 
 - **Unified Networking Design**: [/enhancements/unified-networking](/enhancements/unified-networking) — Technical design document fulfilling these requirements
-- **Default Networking**: [/enhancements/default-networking](/enhancements/default-networking) — Related enhancement for resource ordering workflow
+- **Default Networking**: [/enhancements/OSAC-1029-default-networking](/enhancements/OSAC-1029-default-networking) — Related enhancement for resource ordering workflow
 - **Original Networking API**: [/enhancements/networking](/enhancements/networking) — VMaaS-only networking API (superseded for multi-service scenarios)
 - **BareMetal Instance API**: [/enhancements/baremetal-instance-api](/enhancements/baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference

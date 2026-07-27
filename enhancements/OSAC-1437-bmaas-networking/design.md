@@ -9,7 +9,7 @@ tracking-link:
 prd: "prd.md"
 see-also:
   - "Unified Networking: /enhancements/unified-networking"
-  - "Default Networking: /enhancements/default-networking"
+  - "Default Networking: /enhancements/OSAC-1029-default-networking"
   - "baremetal-instance-api: https://github.com/osac-project/baremetal-instance-api"
 replaces:
   - N/A
@@ -71,20 +71,20 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 - BaremetalInstance spec has no `network_attachments` field
 - No switch port configuration during BM provisioning
 - No integration with the OSAC Networking API
-- The `NetworkClass` field populated from inventory is stored but unused. This is a static config string (e.g., "openstack") set at operator startup — NOT the OSAC NetworkClass CRD. Should be renamed to `NetworkFabricManager` to avoid collision.
+- The `NetworkClass` field populated from inventory is stored but unused. This is a static config string (e.g., "openstack") set at operator startup — NOT the OSAC NetworkClass CRD. This field should be removed entirely from the BareMetalInstance spec (it is unused per reviewer feedback).
 - No ExternalIPAttachment support for `baremetal_instance` target
 - No IP address feedback mechanism (ExternalIPAttachment controller needs BM's IP to create DNAT rules)
 
 ### Goals
 
-- Multi-NIC support with explicit physical interface mapping (tenant specifies interface name from HostType)
+- Multi-NIC support with explicit physical interface mapping (tenant specifies port name from BareMetalInstanceType)
 - Resource-specific attachment message (`BareMetalNetworkAttachment`) with `interface` and `primary` fields
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher calls `create_network_attachment` per interface to configure switch ports
 - IP discovery after provisioning: operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches port MAC to DHCP-assigned IP, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
-- HostType resource extended with structured `NetworkInterface` list (name, role, description) for BM host types only
-- Rename `networkClass` → `networkFabricManager` to avoid collision with OSAC NetworkClass CRD
+- BareMetalInstanceType resource with structured network ports (`BareMetalNetworkPortSpec`: name, role, type, speed, description)
+- Remove unused `networkClass` field from BareMetalInstance spec entirely (unused per reviewer feedback)
 
 ### Non-Goals
 
@@ -94,39 +94,33 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 
 ## Proposal
 
-### HostType and Interface Validation
+### BareMetalInstanceType and Interface Validation
 
-#### HostType Resource (shared with CaaS)
+#### BareMetalInstanceType Resource
 
-The `HostType` resource in the fulfillment-service describes a class of hardware — physical (BM) or virtual (VM). Today it only has `id`, `title`, `description` (free text). For networking, BM host types need a structured interface list:
+BareMetalInstanceType is defined in the [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types). This networking EP requires the enhanced `network_ports` with `name` and `role` fields. For networking, BareMetalInstanceTypes include a structured network port list:
 
 ```protobuf
-message HostType {
-  string id = 1;
-  Metadata metadata = 2;
-  string title = 3;
-  string description = 4;
-  repeated NetworkInterface interfaces = 5;  // BM only, empty for VM host types
-}
-
-message NetworkInterface {
-  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0"
+message BareMetalNetworkPortSpec {
+  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0" — unique within the type
   string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
-  string description = 3; // e.g., "100GbE data interface"
+  string type = 3;        // e.g., Ethernet, InfiniBand
+  string speed = 4;       // e.g., 1Gbps, 100Gbps
+  string description = 5; // e.g., "100GbE fabric interface"
 }
 ```
 
-**The `interfaces` list is only populated for BM host types.** VM host types have an empty list — VMs get virtual NICs from the CUDN overlay, not physical interfaces. This also serves as the BM-vs-VM discriminator: if a HostType has interfaces → BM. If empty → VM.
+**The `network_ports` list is only populated for BareMetalInstanceTypes.** VM host types have no BareMetalInstanceType — VMs get virtual NICs from the CUDN overlay, not physical interfaces. This also serves as the BM-vs-VM discriminator: if a BareMetalInstanceType has network_ports → BM.
 
-Interfaces are ordered. When multiple interfaces share the same role, the first one in the list is the default for that role (used by CaaS for automatic resolution — see CaaS design).
+Ports are ordered. When multiple ports share the same role, the first one in the list is the default for that role (used by CaaS for automatic resolution — see CaaS design).
 
-#### How BMaaS Uses HostType
+#### How BMaaS Uses BareMetalInstanceType
 
-The tenant provides `BareMetalNetworkAttachment` with an explicit `interface` field. The fulfillment-service validates:
-- The `interface` name exists in the HostType's `interfaces` list
-- The HostType is resolved from the catalog_item / template
+The tenant provides `BareMetalNetworkAttachment` with an explicit `interface` field referencing a port `name` from the BareMetalInstanceType's `network_ports`. The fulfillment-service validates:
+- The `interface` name exists in the BareMetalInstanceType's `network_ports` list
+- The BareMetalInstanceType is resolved from the catalog_item / template
 
-Unlike CaaS (which picks the interface automatically by role), BMaaS gives the tenant direct control over which physical interface maps to which subnet. The tenant can see the available interfaces via the HostType API before creating the BaremetalInstance.
+Unlike CaaS (which picks the interface automatically by role), BMaaS gives the tenant direct control over which physical port maps to which subnet. The tenant can see the available network ports via the BareMetalInstanceType API before creating the BaremetalInstance.
 
 #### Interface Role Convention
 
@@ -137,7 +131,7 @@ Unlike CaaS (which picks the interface automatically by role), BMaaS gives the t
 | `storage` | Storage fabric traffic |
 | `lifecycle` | Out-of-band lifecycle management (PXE boot, Redfish/BMC) |
 
-Roles are conventions, not enforced enums. BMaaS uses them for display/documentation; the tenant selects by interface name, not role. The `lifecycle` interface is used by the provisioning system (Ironic, Metal3) for PXE boot and BMC operations — it is NOT tenant-attachable and should not appear in `network_attachments`.
+Roles are conventions, not enforced enums. BMaaS uses them for display/documentation; the tenant selects by port name, not role. Ports with role `lifecycle` are used by the provisioning system (Ironic, Metal3) for PXE boot and BMC operations — they are NOT tenant-attachable and should not appear in `network_attachments`.
 
 ### Workflow Description
 
@@ -190,12 +184,12 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```
 
 5. **fulfillment-service:**
-   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/default-networking)). The system selects the first interface with role `fabric` from the HostType as the default interface for the single attachment (matching PRD FR-5).
+   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/OSAC-1029-default-networking)). The system selects the first network port with role `fabric` from the BareMetalInstanceType as the default interface for the single attachment (matching PRD FR-5).
    - Validates:
      - Each subnet exists, is Ready
      - All subnets belong to the same VirtualNetwork
      - Each SecurityGroup exists, is Ready, belongs to the same VN
-     - Each `interface` references a valid interface from the HostType's NetworkInterface list
+     - Each `interface` references a valid port name from the BareMetalInstanceType's network ports list
      - No duplicate interfaces across attachments
      - If >1 attachment without `interface`, reject (explicit interface required when multi-homed)
      - Number of attachments ≤ number of available interfaces on template
@@ -207,11 +201,11 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    a. `reconcileInventory` (unchanged):
       - FindFreeHost → AssignHost (Ironic/Metal3)
-      - Populates HostClass, NetworkFabricManager from inventory
+      - Populates HostClass from inventory
 
    b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
       - Reads `network_attachments` from the CR spec
-      - **Operator dispatches switch-side config:** For each attachment, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from HostType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. The host will receive an IP from the fabric's DHCP server once it boots on the V-Net.
+      - **Operator dispatches switch-side config:** For each attachment, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (Netris port name from BareMetalInstanceType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. The host will receive an IP from the fabric's DHCP server once it boots on the V-Net.
       - Network attachments must be Ready before provisioning proceeds
 
    c. `reconcileProvisioning` (runs after networking):
@@ -276,7 +270,7 @@ message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, mutable
   string interface = 3;                 // optional, immutable: physical interface
-                                        // from HostType
+                                        // from BareMetalInstanceType
   bool primary = 4;                     // optional, immutable: default gateway
 }
 
@@ -349,7 +343,7 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 - All referenced subnets must belong to the same VirtualNetwork
 - The same interface cannot appear in multiple attachments
-- The `interface` must reference a valid identifier from the HostType (its NetworkInterface list defines available interfaces)
+- The `interface` must reference a valid port name from the BareMetalInstanceType (its network ports list defines available ports)
 - Interfaces with role `lifecycle` are rejected in `network_attachments` — lifecycle interfaces (PXE boot, BMC) are reserved for the provisioning system and are not tenant-attachable
 - If >1 attachment specified, each must have an explicit `interface` (multiple attachments without `interface` is invalid)
 - Number of attachments ≤ number of available interfaces on the template
@@ -387,7 +381,7 @@ The feedback controller syncs this to the fulfillment-service DB via the existin
 
 ```
 bare-metal-fulfillment-operator BareMetalInstance controller phases:
-1. reconcileInventory → allocate host, populate HostClass, NetworkFabricManager
+1. reconcileInventory → allocate host, populate HostClass
    Sets condition: InventoryAssigned=True
 2. reconcileNetworking → configure switch ports (dispatcher, switch-side only)
    Requires: InventoryAssigned=True
@@ -523,7 +517,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 ### Unit Tests
 
 - fulfillment-service: primary validation (reject >1 primary, accept single implicit primary, accept explicit primary)
-- fulfillment-service: interface validation (reject interface not in HostType, reject duplicate interfaces, reject >1 attachment without interface)
+- fulfillment-service: interface validation (reject interface not in BareMetalInstanceType, reject duplicate interfaces, reject >1 attachment without interface)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - bare-metal-fulfillment-operator: reconcileNetworking phase ordering (after inventory, before provisioning)
 - bare-metal-fulfillment-operator: dispatcher call per attachment (create_network_attachment with correct params)
@@ -533,7 +527,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: create BaremetalInstance with multiple attachments, verify switch ports configured for each interface, IPs allocated from each subnet
 - E2E: create BaremetalInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
-- E2E: create BaremetalInstance with interface not in HostType, verify error returned
+- E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with >1 attachment but no interface fields, verify error returned
 - E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
 
@@ -555,7 +549,7 @@ Tech Preview criteria:
 - [ ] BaremetalInstance CRD updated with `NetworkAttachments` field, CEL validation, and status field for IP addresses
 - [ ] bare-metal-fulfillment-operator `reconcileNetworking` phase implemented
 - [ ] Dispatcher integration for `create_network_attachment` and `delete_network_attachment`
-- [ ] HostType proto extended with `NetworkInterface` list
+- [ ] BareMetalInstanceType with network ports (`BareMetalNetworkPortSpec`) available and tested
 - [ ] Auto ExternalIP attachment provisioning functional
 - [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status, feedback syncs to fulfillment-service)
 - [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP, IP feedback)
@@ -698,5 +692,5 @@ Consequences:
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |
 | IP discovery: `query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status | Not tracked | **GAP** |
 | bare-metal-fulfillment-operator dispatcher capability + RBAC for Subnet/NetworkClass CRs | Not tracked | **GAP** |
-| Rename BareMetalInstance spec.networkClass → networkFabricManager | Not tracked | **GAP** |
-| HostType: add structured NetworkInterface list (name, description) | Not tracked | **GAP** |
+| Remove unused BareMetalInstance spec.networkClass field | Not tracked | **GAP** |
+| BareMetalInstanceType: network ports (BareMetalNetworkPortSpec) with name, role, type, speed, description | Not tracked | **GAP** |

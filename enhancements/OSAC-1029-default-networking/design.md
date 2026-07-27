@@ -9,9 +9,9 @@ tracking-link:
 prd: "prd.md"
 see-also:
   - "/enhancements/unified-networking"
-  - "/enhancements/vmaas-networking"
-  - "/enhancements/caas-networking"
-  - "/enhancements/bmaas-networking"
+  - "/enhancements/OSAC-1435-vmaas-networking"
+  - "/enhancements/OSAC-1436-caas-networking"
+  - "/enhancements/OSAC-1437-bmaas-networking"
 replaces:
   - N/A
 superseded-by:

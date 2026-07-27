@@ -11,10 +11,10 @@ see-also:
   - Networking API: /enhancements/OSAC-356-networking
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
-  - VMaaS Networking: /enhancements/vmaas-networking
-  - CaaS Networking: /enhancements/caas-networking
-  - BMaaS Networking: /enhancements/bmaas-networking
-  - Default Networking: /enhancements/default-networking
+  - VMaaS Networking: /enhancements/OSAC-1435-vmaas-networking
+  - CaaS Networking: /enhancements/OSAC-1436-caas-networking
+  - BMaaS Networking: /enhancements/OSAC-1437-bmaas-networking
+  - Default Networking: /enhancements/OSAC-1029-default-networking
 replaces:
   - /enhancements/OSAC-356-networking
 superseded-by:
@@ -324,9 +324,9 @@ like any other resource.
 The dispatch table above covers **networking resources only**. Compute
 resources (ComputeInstance, BaremetalInstance, Cluster) handle per-instance
 network attachment through their provisioning operators — see per-service
-designs at [VMaaS](/enhancements/vmaas-networking),
-[CaaS](/enhancements/caas-networking),
-[BMaaS](/enhancements/bmaas-networking).
+designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
+[CaaS](/enhancements/OSAC-1436-caas-networking),
+[BMaaS](/enhancements/OSAC-1437-bmaas-networking).
 
 ### Resource Hierarchy
 
@@ -438,9 +438,10 @@ and gets an IP from the subnet CIDR.
 **BaremetalInstance:**
 
 Bare-metal servers have multiple physical interfaces. The tenant discovers
-available interfaces via the HostType API — each BM HostType lists its
-physical interfaces with name, role, and description (see
-[HostType](#hosttype)). Given the interface identifiers, the tenant specifies which
+available network ports via the BareMetalInstanceType API — each
+BareMetalInstanceType lists its network ports with name, role, type, speed,
+and description (see
+[BareMetalInstanceType](#baremetalinstancetype)). Given the port identifiers, the tenant specifies which
 interface to attach to which subnet. Each
 `network_attachment` maps one physical interface to one subnet. If
 `interface` is omitted, the fabric manager picks a default.
@@ -469,8 +470,8 @@ fabric segment. Each interface gets an IP from its subnet's CIDR.
 Validation rules:
 - All referenced subnets must belong to the same VirtualNetwork
 - The same interface cannot appear in multiple attachments
-- The `interface` must reference a valid interface name from the HostType's
-  NetworkInterface list
+- The `interface` must reference a valid port name from the BareMetalInstanceType's
+  network ports list
 - Multiple attachments without `interface` is invalid — if more than one
   attachment is specified, each must have an explicit `interface`
 - The number of attachments cannot exceed the number of available interfaces
@@ -485,14 +486,14 @@ osac create cluster --template ocp_4_17_small \
 
 For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
 are architecturally possible but deferred. The fulfillment-service resolves
-the interface from the HostType (`fabric_interface` — first interface with
+the interface from the BareMetalInstanceType (`fabric_interface` — first network port with
 role `fabric`). The operator handles agent selection and network attachment
 (switch port configuration) before triggering the provisioning template.
-See [CaaS Networking](/enhancements/caas-networking) for the detailed flow.
+See [CaaS Networking](/enhancements/OSAC-1436-caas-networking) for the detailed flow.
 
 Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
 (where the tenant specifies interfaces directly), for clusters the
-**system** resolves the interface from the HostType's NetworkInterface list.
+**system** resolves the interface from the BareMetalInstanceType's network ports.
 The tenant specifies which subnet to use (one per cluster); the system maps it to the
 correct physical interfaces based on each node set's host type.
 
@@ -571,7 +572,7 @@ is configured immediately.
 **Auto-provisioning lifecycle (auto_external_ip_attachment):**
 
 Auto ExternalIP attachment provisioning (described in per-service
-EPs and [Default Networking](/enhancements/default-networking)) is a
+EPs and [Default Networking](/enhancements/OSAC-1029-default-networking)) is a
 two-phase process:
 
 *Phase 1 — synchronous (during the create API call):*
@@ -651,7 +652,7 @@ IP discovery mechanism per service type:
 |---------|-----------------|-------------------|-------------|
 | VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
 | CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to DHCP-assigned IP (see [BMaaS OQ#4 — Resolved](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to DHCP-assigned IP (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
 The fabric manager's `create_network_attachment` role is switch-side
 only — it adds the host's port to the V-Net. The role is generic: it
@@ -745,35 +746,32 @@ message VirtualNetworkSpec {
 
 No scope or service field — subnets are infrastructure-agnostic.
 
-#### HostType
+#### BareMetalInstanceType
 
-The `HostType` resource describes a class of hardware. For networking,
-BM host types include a structured interface list:
+The `BareMetalInstanceType` resource describes a class of bare-metal
+hardware. It is defined in the
+[BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types).
+For networking, BareMetalInstanceTypes include a structured network port
+list:
 
 ```protobuf
-message HostType {
-  string id = 1;
-  Metadata metadata = 2;
-  string title = 3;
-  string description = 4;
-  repeated NetworkInterface interfaces = 5;  // BM only, empty for VM host types
-}
-
-message NetworkInterface {
-  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0"
+message BareMetalNetworkPortSpec {
+  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0" — unique within the type
   string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
-  string description = 3; // e.g., "100GbE fabric interface"
+  string type = 3;        // e.g., Ethernet, InfiniBand
+  string speed = 4;       // e.g., 1Gbps, 100Gbps
+  string description = 5; // e.g., "100GbE fabric interface"
 }
 ```
 
-The `interfaces` list is only populated for BM host types. VM host types
-have an empty list — VMs get virtual NICs from the CUDN overlay, not
-physical interfaces. This serves as the BM-vs-VM discriminator: if a
-HostType has interfaces → BM; if empty → VM.
+The `network_ports` list is only populated for BareMetalInstanceTypes. VM
+host types have no BareMetalInstanceType — VMs get virtual NICs from the
+CUDN overlay, not physical interfaces. This serves as the BM-vs-VM
+discriminator: if a BareMetalInstanceType has network_ports → BM.
 
-Interfaces are ordered. When multiple interfaces share the same role
-(e.g., two `fabric` interfaces), the first one in the list is the default
-for that role — used by CaaS for automatic interface resolution.
+Ports are ordered. When multiple ports share the same role (e.g., two
+`fabric` ports), the first one in the list is the default for that role
+— used by CaaS for automatic interface resolution.
 
 | Role | Meaning |
 |------|---------|
@@ -782,14 +780,14 @@ for that role — used by CaaS for automatic interface resolution.
 | `storage` | Storage fabric traffic |
 | `lifecycle` | Out-of-band lifecycle management (PXE boot, Redfish/BMC) — not tenant-attachable |
 
-Roles are conventions, not enforced enums. The `lifecycle` interface is
+Roles are conventions, not enforced enums. Ports with role `lifecycle` are
 used by the provisioning system (Ironic, Metal3) and should not appear
 in `network_attachments`.
 
-BMaaS: the tenant specifies interface names directly on
-`BareMetalNetworkAttachment.interface`, validated against the HostType's
-interface list. CaaS: the fulfillment-service resolves the interface
-automatically (first `fabric`-role interface → stored as
+BMaaS: the tenant specifies port names directly on
+`BareMetalNetworkAttachment.interface`, validated against the
+BareMetalInstanceType's network ports list. CaaS: the fulfillment-service
+resolves the interface automatically (first `fabric`-role port → stored as
 `fabric_interface` on the node set definition).
 
 #### Network Attachment Types
@@ -820,13 +818,13 @@ primary designation and default gateway semantics.
 message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
-  string interface = 3;                 // optional, immutable: physical interface from HostType
+  string interface = 3;                 // optional, immutable: physical port name from BareMetalInstanceType
   bool primary = 4;                     // optional, immutable: designates default gateway
 }
 ```
 
 Each entry maps one physical interface to one subnet. The `interface`
-field references a name from the HostType's NetworkInterface list.
+field references a port name from the BareMetalInstanceType's network ports list.
 If omitted, the fabric manager picks a default. Multiple entries create
 a multi-homed BM server. See [Multi-NIC Behavior](#multi-nic-behavior)
 for primary designation and default gateway semantics, and
@@ -844,7 +842,7 @@ message ClusterNetworkAttachment {
 
 A single attachment applies to the whole cluster — all node sets share the same subnet.
 The `fabric_interface` is resolved by the fulfillment-service at creation time for each
-node set from its host type (first interface with role `fabric` — see [HostType](#hosttype))
+node set from its host type (first network port with role `fabric` — see [BareMetalInstanceType](#baremetalinstancetype))
 and stored on the node set definition. The tenant does not set this field.
 
 #### Resource Specs
@@ -861,7 +859,7 @@ message ComputeInstanceSpec {
 
 Field 14 (`network_attachments`, shared `NetworkAttachment`) is deprecated and will be
 removed after migration. Field 18 (`compute_network_attachments`, `ComputeNetworkAttachment`)
-is the new canonical field. See the [VMaaS Networking EP](/enhancements/vmaas-networking/design.md)
+is the new canonical field. See the [VMaaS Networking EP](/enhancements/OSAC-1435-vmaas-networking/design.md)
 for the dual-field migration strategy.
 
 **BaremetalInstance** (new — defined in the
@@ -959,7 +957,7 @@ IP discovered after DHCP assignment on the tenant V-Net. After
 `reconcileProvisioning` completes, the operator dispatches
 `query_dhcp_lease` to the fabric manager's DHCP lease API, matching
 the server's port MAC address to find the assigned IP (see
-[BMaaS OQ#4 — Resolved](/enhancements/bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)).
+[BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)).
 The operator writes the discovered IP to CR status, and the feedback
 controller syncs to fulfillment-service.
 

@@ -9,7 +9,7 @@ tracking-link:
 prd: "prd.md"
 see-also:
   - "Unified Networking: /enhancements/unified-networking"
-  - "Default Networking: /enhancements/default-networking"
+  - "Default Networking: /enhancements/OSAC-1029-default-networking"
 replaces:
   - N/A
 superseded-by:
