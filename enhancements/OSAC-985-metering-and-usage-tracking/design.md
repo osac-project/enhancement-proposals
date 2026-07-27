@@ -197,7 +197,7 @@ sequenceDiagram
 
 MaaS usage data must be queryable within 60 seconds of inference completion [PRD: CAP-13]. The Metering Service publishes to Kafka synchronously before returning HTTP 202.
 
-**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The Metering Service maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` are rejected with HTTP 422 and not published to Kafka (the DLQ is reserved for adapter-side delivery failures). Rejected events increment `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}` (alert: > 0 for 5m) and are logged at ERROR level with the full event payload for investigation.
+**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The Metering Service maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` are rejected with HTTP 422 and not published to Kafka (the DLQ is reserved for adapter-side delivery failures). Rejected events increment `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}` (alert: > 0 for 5m) and are logged at ERROR level with structured identifiers only (`event_id`, `source`, `type`, `organization_id`, error reason) and a SHA-256 payload hash for correlation. Full event payloads are never written to application logs — they may contain sensitive inference data. If forensic investigation requires the full payload, operators can enable debug-level logging via a runtime flag, which routes rejected events to a separate log stream with restricted access.
 
 **MaaS delivery resilience:** MaaS inference events have no fulfillment resource to reconcile against — unlike VMaaS/CaaS, lost events are unrecoverable. The current AI Gateway IPP plugin (`external-metering`) has no retry logic — if the HTTP POST to `/ingest/inference` fails, the error is logged and the event is lost. Additionally, the metering report blocks the ext-proc response pipeline, so Metering Service latency directly adds to inference response time. Any Metering Service downtime (restart, network partition) causes permanent MaaS event loss at the current plugin implementation. This will be resolved by raising a requirement for the IPP plugin to support publishing directly to Kafka, eliminating the HTTP hop, the data loss window, and the response-path latency coupling.
 
@@ -230,6 +230,10 @@ sequenceDiagram
             else State mismatch
                 RL->>SP: upsert(state=fulfillment_state)
                 RL->>KP: osac.resource.correction.v1 (reason=state_drift)
+                KP->>K: publish → osac.metering.corrections
+            else Billing dimensions mismatch (same state)
+                RL->>SP: upsert(billing_dimensions=fulfillment_dimensions)
+                RL->>KP: osac.resource.correction.v1 (reason=billing_dimensions_drift)
                 KP->>K: publish → osac.metering.corrections
             else Stale heartbeat (> 120s while billable)
                 RL->>KP: osac.resource.heartbeat.v1 (synthetic catch-up)
@@ -318,10 +322,10 @@ All lifecycle events share a base schema. The base event carries **common fields
 | `project_id` | string (optional) | Project identifier (sub-tenant grouping; null until P2 prerequisite) |
 | `catalog_item_id` | string (optional) | Originating catalog offer [PRD: CAP-17] |
 | `template_id` | string (optional) | Originating template [PRD: CAP-17] |
-| `previous_state` | string | State before transition (null for created events) |
-| `current_state` | string | State after transition |
-| `transition_time` | string (RFC3339) | When the transition occurred |
-| `duration_seconds` | integer | Seconds spent in `previous_state` |
+| `previous_state` | string | State before transition (null for created events). Lifecycle events only — not present in `osac.inference.usage.v1` |
+| `current_state` | string | State after transition. Lifecycle events only — not present in `osac.inference.usage.v1` |
+| `transition_time` | string (RFC3339) | When the transition occurred. Lifecycle events only — not present in `osac.inference.usage.v1` |
+| `duration_seconds` | integer | Seconds spent in `previous_state`. Lifecycle events only — not present in `osac.inference.usage.v1` |
 | `billing_dimensions` | object | Resource-type-specific attributes (see Billing Dimensions) |
 | `schema_version` | string | Event schema version (e.g., `v1`) |
 
@@ -338,7 +342,7 @@ Events fall into two categories: **billing-essential** events that define interv
 | `osac.resource.resumed.v1` | Yes | Yes (recovery) | No | Billing | New billing interval opens |
 | `osac.resource.deleted.v1` | Yes | Yes | No | Audit | Resource removed; billing already closed by `suspended.v1` |
 | `osac.resource.heartbeat.v1` | Yes (60s, RUNNING) | Yes (60s, PROGRESSING/READY) | No | Billing | Periodic usage confirmation |
-| `osac.resource.correction.v1` | Yes | Yes | Yes | Billing | Adjusts prior interval |
+| `osac.resource.correction.v1` | Yes | Yes | No | Billing | Adjusts prior interval |
 | `osac.inference.usage.v1` | No | No | Yes | Billing | Per-request token usage |
 
 #### Correction Event Schema
@@ -347,7 +351,7 @@ The `osac.resource.correction.v1` event is emitted by the Reconciliation Loop wh
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `reason` | string | `missed_creation`, `state_drift`, `missed_deletion` |
+| `reason` | string | `missed_creation`, `state_drift`, `billing_dimensions_drift`, `missed_deletion` |
 | `description` | string | Human-readable explanation of the discrepancy |
 | `corrected_state` | string | The state the resource should be in |
 | `previous_state_in_projection` | string | What the Metering Service believed (null for `missed_creation`) |
@@ -570,14 +574,15 @@ The Watch Consumer and Reconciliation Loop both write to the State Projection. C
 #### Reconciliation Algorithm
 
 1. Paginate all resources via fulfillment List APIs (500/page), accumulating a `resource_id → (current_state, fulfillment_version, billing_dimensions)` map. Only the map keys and lightweight state are retained — full resource payloads are discarded after each page. At 100K resources, the map is approximately 50 MB.
-2. Load the State Projection's `resource_id → current_state` map in a single query
+2. Load the State Projection's `resource_id → (current_state, billing_dimensions)` map in a single query
 3. For each resource in fulfillment:
    - **Not in projection:** emit `correction.v1` with `reason=missed_creation`; upsert
    - **State mismatch:** emit `correction.v1` with `reason=state_drift`; update
+   - **Billing dimensions mismatch (same state):** emit `correction.v1` with `reason=billing_dimensions_drift`; close the prior billing interval and reopen with corrected dimensions; update
    - **Stale heartbeat (> 120s while billable):** emit synthetic heartbeat
 4. For each resource in projection not in fulfillment: emit `correction.v1` with `reason=missed_deletion`; mark deleted
 
-The reconciler compares `fulfillment_version` to reject stale updates. Corrections are published to `osac.metering.corrections`, not `osac.metering.lifecycle`, so adapters can distinguish primary events from adjustments. The initial implementation reconciles lifecycle state only; billing_dimensions changes (e.g., VM resize or cluster scale) that occur without a state change are caught by the Watch Consumer in real time but not by hourly reconciliation. Adding billing_dimensions comparison to the reconciler is a future improvement.
+The reconciler compares `fulfillment_version` to reject stale updates. Corrections are published to `osac.metering.corrections`, not `osac.metering.lifecycle`, so adapters can distinguish primary events from adjustments.
 
 #### Reliability
 
@@ -590,6 +595,8 @@ At-least-once delivery is enforced at every hop:
 | MaaS HTTP Ingest → Kafka | Synchronous Kafka publish before HTTP 202; AI Gateway retries on non-2xx |
 | Kafka → Adapter | Consumer offset committed only after successful `Flush()` |
 | Adapter → Billing Provider | Exponential backoff (max 10 attempts, ~13.5 min); DLQ after exhaustion |
+
+**Crash safety:** The Watch Consumer publishes to Kafka before updating the State Projection. If a crash occurs between Kafka publish and projection upsert, the event is already durable in Kafka — the next Watch event or startup reconciliation updates the projection to match. The worst case is a brief projection staleness, not a lost event. MaaS HTTP Ingest publishes directly to Kafka without updating the State Projection, so crash safety is inherent — Kafka `acks=all` confirms durability before the HTTP 202 response. A transactional outbox pattern is not justified for the single-replica deployment model, where the crash window between two sequential in-process operations is narrow and reconciliation provides the safety net.
 
 Each CloudEvent has a globally unique `id` (UUID v4). Adapters maintain a dedup cache (in-memory, TTL 10 min) keyed on CloudEvent `id`. For providers with native idempotency (e.g., OpenMeter), the `id` is passed as the idempotency key.
 
@@ -626,7 +633,7 @@ metering:
 
 #### Dead-Letter Queue
 
-Events move to `osac.metering.dlq` when the adapter exhausts retry attempts or encounters a non-retryable error. DLQ event envelope includes: `dlq.original-topic`, `dlq.original-offset`, `dlq.failure-reason`, `dlq.failure-count`, `dlq.failed-at`. DLQ retention is 90 days. Manual replay is supported via a CLI tool (`osac-metering-dlq-replay`).
+Events move to `osac.metering.dlq` when the adapter exhausts retry attempts or encounters a non-retryable error. Each DLQ record is self-contained — it embeds the full original CloudEvent so replay does not depend on source topic retention. DLQ event envelope includes: `dlq.original-topic`, `dlq.original-offset`, `dlq.original-event` (the complete original CloudEvent), `dlq.failure-reason`, `dlq.failure-count`, `dlq.failed-at`. DLQ retention is 90 days. Manual replay is supported via a CLI tool (`osac-metering-dlq-replay`) that reads the embedded event from `dlq.original-event` and re-submits it to the adapter.
 
 #### High Availability and Restart Recovery
 
@@ -655,7 +662,7 @@ This satisfies NFR-1 ("no single point of failure") because the Metering Service
 | Aspect | Mechanism |
 |--------|-----------|
 | Transport | SASL/TLS on all connections |
-| Producer ACL | Metering Service: WRITE to all `osac.metering.*` topics |
+| Producer ACL | Metering Service: WRITE to `osac.metering.lifecycle`, `osac.metering.heartbeat`, `osac.metering.inference`, `osac.metering.corrections` |
 | Consumer ACL | Each adapter: READ on consumed topics only |
 | DLQ ACL | Adapters: WRITE to `osac.metering.dlq` |
 | Admin ACL | No adapter has topic management ACL |
@@ -844,6 +851,7 @@ Using pytest / osac-test-infra against a deployed OSAC installation:
 
 - CaaS lifecycle events with per-component billing (control plane + worker node sets)
 - MaaS HTTP ingest with tenant resolution and Kafka publication
+- `stream-usage-enforcer` plugin deployed in PayloadProcessorConfig; validated by E2E test confirming nonzero token counts for streaming inference requests
 - Full reconciliation loop (state drift, stale heartbeat, correction events)
 - DLQ handling and replay tooling
 - Cost Management and M360 adapters
@@ -938,4 +946,4 @@ Final: respond @ design 0.4.0 - 139e6c1, workspace main @ e454759
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.0","ai_workflows":"139e6c1","source_repo":"e454759","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.0","ai_workflows":"139e6c1","source_repo":"e454759","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
