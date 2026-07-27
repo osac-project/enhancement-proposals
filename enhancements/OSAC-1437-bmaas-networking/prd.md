@@ -142,7 +142,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 ## 7. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default Subnet and SecurityGroup selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1029-default-networking)
+- **Default Networking PRD** — default Subnet and SecurityGroup selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 - **Networking manager dispatch** — the system must be able to route networking operations to the correct fabric manager (in progress)
 - **NAT gateway support** — outbound NAT must be available as a networking resource
 - **External access for BM targets** — the external IP attachment system must support bare-metal servers as targets

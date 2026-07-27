@@ -14,7 +14,7 @@ see-also:
   - VMaaS Networking: /enhancements/OSAC-1435-vmaas-networking
   - CaaS Networking: /enhancements/OSAC-1436-caas-networking
   - BMaaS Networking: /enhancements/OSAC-1437-bmaas-networking
-  - Default Networking: /enhancements/OSAC-1029-default-networking
+  - Default Networking: /enhancements/OSAC-1433-default-networking
 replaces:
   - /enhancements/OSAC-356-networking
 superseded-by:
@@ -572,7 +572,7 @@ is configured immediately.
 **Auto-provisioning lifecycle (auto_external_ip_attachment):**
 
 Auto ExternalIP attachment provisioning (described in per-service
-EPs and [Default Networking](/enhancements/OSAC-1029-default-networking)) is a
+EPs and [Default Networking](/enhancements/OSAC-1433-default-networking)) is a
 two-phase process:
 
 *Phase 1 — synchronous (during the create API call):*

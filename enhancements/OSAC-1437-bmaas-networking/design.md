@@ -9,7 +9,7 @@ tracking-link:
 prd: "prd.md"
 see-also:
   - "Unified Networking: /enhancements/OSAC-1433-unified-networking"
-  - "Default Networking: /enhancements/OSAC-1029-default-networking"
+  - "Default Networking: /enhancements/OSAC-1433-default-networking"
   - "baremetal-instance-api: https://github.com/osac-project/baremetal-instance-api"
 replaces:
   - N/A
@@ -184,7 +184,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```
 
 5. **fulfillment-service:**
-   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/OSAC-1029-default-networking)). The system selects the first network port with role `fabric` from the BareMetalInstanceType as the default interface for the single attachment (matching PRD FR-5).
+   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)). The system selects the first network port with role `fabric` from the BareMetalInstanceType as the default interface for the single attachment (matching PRD FR-5).
    - Validates:
      - Each subnet exists, is Ready
      - All subnets belong to the same VirtualNetwork
