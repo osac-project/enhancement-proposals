@@ -144,3 +144,13 @@ This PRD is part of the Metering Part 2 family:
 - **Part 2b: Storage** — this document (OSAC-3141)
 - **Part 2c: Networking** — [OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145)
 - **Part 2d: Network Bandwidth** — [OSAC-3149](https://redhat.atlassian.net/browse/OSAC-3149)
+
+---
+
+## Provenance
+
+Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3141 @ 6d6dc5e
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"6d6dc5e","source_repo_branch":"prd/OSAC-3141","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false} -->
