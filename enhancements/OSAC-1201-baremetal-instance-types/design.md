@@ -180,14 +180,26 @@ message BareMetalDiskSpec {
 message BareMetalAcceleratorSpec {
   string type = 1 [(buf.validate.field).string.min_len = 1];         // e.g. GPU, FPGA, TPU
   string model = 2 [(buf.validate.field).string.min_len = 1];
-  optional string vendor = 3;                                         // e.g. NVIDIA, AMD, Intel
+  optional string vendor = 3;                                        // e.g. NVIDIA, AMD, Intel
   optional int32 memory_gb = 4 [(buf.validate.field).int32.gt = 0];  // Validated when present
 }
 
 message BareMetalNetworkPortSpec {
-  string type = 1 [(buf.validate.field).string.min_len = 1];         // e.g. Ethernet, InfiniBand
-  string speed = 2 [(buf.validate.field).string.min_len = 1];        // e.g. 1Gbps, 10Gbps
+  string name = 1 [(buf.validate.field).string.min_len = 1];         // e.g. data-0, mgmt-0 — unique identifier within the type
+  string role = 2 [(buf.validate.field).string.min_len = 1];         // e.g. fabric, management, storage, lifecycle
+  string type = 3 [(buf.validate.field).string.min_len = 1];         // e.g. Ethernet, InfiniBand
+  string speed = 4 [(buf.validate.field).string.min_len = 1];        // e.g. 1Gbps, 10Gbps, 100Gbps
 }
+
+// Network Port Role Conventions:
+// - fabric: Primary east-west tenant data traffic; default attachment target for BMaaS and CaaS
+// - management: In-band control plane traffic
+// - storage: Storage fabric traffic for future storage network attachments
+// - lifecycle: Out-of-band BMC/PXE; excluded from tenant validation (not attachable)
+//
+// Ordering: Ports are ordered; when multiple ports share the same role, the first in the list
+// is the default for that role. CaaS resolves the first "fabric" port for cluster node sets.
+// BMaaS uses the first "fabric" port when interface is omitted in network attachments.
 ```
 
 ```protobuf
@@ -309,7 +321,7 @@ Cloud Infrastructure Admins apply the matching label to inventory hosts via the 
 
 **Database Schema Considerations:**
 
-BareMetalInstanceTypes follow the generic DAO pattern with JSON-serialized protobuf storage [Codebase: fulfillment-service/]. The `host_label_selector` field is stored within the JSON blob; no materialized helper tables are needed since listing does not require label-based filtering.
+BareMetalInstanceTypes follow the generic DAO pattern with JSON-serialized protobuf storage [Codebase: fulfillment-service/]. The `host_selector` field is stored within the JSON blob; no materialized helper tables are needed since listing does not require label-based filtering.
 
 ### Security Considerations
 
