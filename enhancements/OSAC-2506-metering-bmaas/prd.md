@@ -24,7 +24,7 @@ Without metering for bare metal hosts, Cloud Provider Admins have no usage data 
 ## 2. In Scope
 
 - BMaaS allocation metering — metering for bare metal hosts from provisioning complete to deletion, regardless of power state (RUNNING, STOPPED, STARTING, STOPPING)
-- BMaaS consumption metering — optional meter for powered-on time (RUNNING state only), enabling differentiated metering between active and stopped hosts
+- BMaaS consumption metering — meter for powered-on time (RUNNING state only), enabling differentiated metering between active and stopped hosts
 - Parent-child attribution — extending [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that storage volumes and public IPs attached to a bare metal host can be queried as a unified usage view
 
 ## 3. Out of Scope
@@ -63,16 +63,16 @@ Without metering for bare metal hosts, Cloud Provider Admins have no usage data 
 ### 5.1 BMaaS Allocation Metering
 
 - **CAP-1:** Bare metal hosts are metered using allocation-based metering from provisioning complete to deletion, regardless of power state (RUNNING, STOPPED, STARTING, STOPPING). The allocation meter (`host-type-seconds`) reflects the physical capacity reservation by the tenant.
-- **CAP-2:** Providers can optionally enable a consumption meter (`bare-metal-compute-seconds`) that runs only while the host is in RUNNING state, enabling differentiated metering between active and stopped hosts.
+- **CAP-2:** A consumption meter (`bare-metal-compute-seconds`) runs while the host is in RUNNING state, enabling differentiated metering between active and stopped hosts.
 - **CAP-3:** BMaaS usage is queryable by host type, catalog item (per Part 1 CAP-17), tenant, and project. Host type is the primary metering dimension, analogous to instance type for VMaaS.
 
 ### 5.2 Dual Metering Model
 
-- **CAP-4:** Allocation-based and consumption-based meters can coexist for the same resource. A bare metal host has both an allocation meter (host reserved) and an optional consumption meter (host powered on). Usage queries can distinguish between these meter types.
+- **CAP-4:** Allocation-based and consumption-based meters coexist for the same resource. A bare metal host has both an allocation meter (host reserved) and a consumption meter (host powered on). Usage queries can distinguish between these meter types.
 
 ### 5.3 Cross-cutting
 
-- **CAP-5:** BMaaS usage data is available alongside existing metering data without additional admin configuration steps. All BMaaS meters use the same accuracy and data-availability guarantees as Part 1 meters (CAP-4, CAP-15, CAP-16).
+- **CAP-5:** Allocation-meter data is available alongside existing metering data without additional admin configuration steps; the optional consumption meter is available when explicitly enabled by the provider. All BMaaS meters use the same accuracy and data-availability guarantees as Part 1 meters (CAP-4, CAP-15, CAP-16).
 
 ## 6. Usage Calculation Model
 
@@ -83,19 +83,19 @@ BMaaS uses two meters because bare metal hosts have a dual capacity profile. The
 | Meter | Scope | Unit | Accumulation | Example (24 hours) |
 |-------|-------|------|-------------|-------------------|
 | host-type-seconds (allocation) | provisioning complete to deletion | seconds | wall-clock duration the host is available | 86,400s |
-| bare-metal-compute-seconds (consumption, optional) | RUNNING only | seconds | wall-clock duration the host is powered on | 43,200s (if running 12 of 24 hours) |
+| bare-metal-compute-seconds (consumption) | RUNNING only | seconds | wall-clock duration the host is powered on | 43,200s (if running 12 of 24 hours) |
 
 ## 7. Acceptance Criteria
 
 - [ ] A bare metal host generates allocation usage data (host-type-seconds) from provisioning complete to deletion, queryable per tenant and host type
 - [ ] A bare metal host in STOPPED state continues generating allocation usage data
-- [ ] A bare metal host in RUNNING state generates consumption usage data (bare-metal-compute-seconds) when the consumption meter is enabled
+- [ ] A bare metal host in RUNNING state generates consumption usage data (bare-metal-compute-seconds)
 - [ ] BMaaS usage can be broken down by host type, catalog item (per Part 1 CAP-17), tenant, and project
 - [ ] A bare metal host with attached storage volumes and public IPs can be queried as a unified usage view
-- [ ] Allocation-based and consumption-based meters can coexist for the same resource; usage queries can distinguish between meter types
-- [ ] BMaaS usage data appears alongside existing metering data without additional admin setup
+- [ ] Allocation-based and consumption-based meters coexist for the same resource; usage queries can distinguish between meter types
+- [ ] Allocation-meter data appears alongside existing metering data without additional admin setup; consumption-meter data appears when the provider has enabled it
 - [ ] BMaaS meters record usage at per-second granularity — a host existing for 30 seconds appears in usage data
-- [ ] BMaaS usage totals are accurate — querying the same period twice returns consistent results
+- [ ] BMaaS usage totals for finalized periods (deleted hosts) are accurate — querying the same period twice returns consistent results
 - [ ] Historical BMaaS usage data is available for at least 13 months
 - [ ] Enabling BMaaS metering does not disrupt existing provisioning workflows
 
