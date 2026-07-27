@@ -71,12 +71,12 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 
 ### 5.3 Query Dimensions and Attribution
 
-- **CAP-4:** Storage usage is queryable by storage tier, capacity, tenant, and project. Storage tier is a required metering dimension as specified by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md).
+- **CAP-4:** Storage usage is queryable by storage tier, capacity, tenant, and project. Storage tier is a required metering dimension for all storage resources.
 - **CAP-5:** Storage volumes attached to a VM, cluster, or bare metal host are attributable to the parent resource, extending Part 1 CAP-11 and CAP-12 so that the full usage of a parent resource can be queried as a unified view including all subsidiary storage.
 
 ### 5.4 Cross-cutting
 
-- **CAP-6:** Storage usage data is available alongside existing metering data without additional admin configuration steps. All storage meters use the same accuracy and data-availability guarantees as Part 1 meters (CAP-4, CAP-15, CAP-16).
+- **CAP-6:** Storage usage data is available alongside existing metering data without additional admin configuration steps. All storage meters use the same accuracy and data-availability guarantees as Part 1 meters (Part 1 CAP-4, CAP-15, CAP-16).
 
 ## 6. Usage Calculation Model
 
@@ -95,14 +95,14 @@ Object storage adds consumption meters for API request counts alongside the allo
 
 ## 7. Acceptance Criteria
 
-- [ ] A block storage volume generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, storage tier, and capacity
-- [ ] A file storage share generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, storage tier, and capacity
-- [ ] An object storage bucket generates capacity usage data (GiB-seconds) from creation to deletion, queryable per tenant and storage tier
+- [ ] A block storage volume generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, project, storage tier, and capacity
+- [ ] A file storage share generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, project, storage tier, and capacity
+- [ ] An object storage bucket generates capacity usage data (GiB-seconds) from creation to deletion, queryable per tenant, project, storage tier, and capacity
 - [ ] An object storage bucket generates API request count usage data, broken down by Class A (PUT/COPY/POST/LIST) and Class B (GET/SELECT/all other) requests
-- [ ] When a storage volume or object storage bucket is resized, subsequent usage data reflects the new capacity
-- [ ] Storage usage can be broken down by storage tier, tenant, project, and individual volume
+- [ ] When a storage volume, file storage share, or object storage bucket is resized, subsequent usage data reflects the new capacity
+- [ ] Storage usage can be broken down by storage tier, tenant, project, and individual volume or share
 - [ ] A storage volume attached to a stopped VM continues generating usage data (extending Part 1 CAP-11)
-- [ ] A storage volume attached to a VM or cluster can be attributed to the parent resource in a unified usage view
+- [ ] A storage volume attached to a VM, cluster, or bare-metal host can be attributed to the parent resource in a unified usage view
 - [ ] Storage usage data appears alongside existing metering data without additional admin setup
 - [ ] Storage meters record usage at per-second granularity — a volume existing for 30 seconds appears in usage data
 - [ ] Storage usage totals are accurate — querying the same period twice returns consistent results
@@ -149,8 +149,8 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3141 @ 6d6dc5e
+Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3141 @ 7ebef6f
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"6d6dc5e","source_repo_branch":"prd/OSAC-3141","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"7ebef6f","source_repo_branch":"prd/OSAC-3141","commits_behind_main":0,"commits_ahead_main":8,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false} -->
