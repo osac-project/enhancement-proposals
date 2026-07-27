@@ -542,8 +542,10 @@ The handler does not call the vendor CSI controller. The pg_notify event trigger
 **DeleteVolume handler logic:**
 
 1. Verify ownership (tenant from JWT claims).
-2. Transition state to `DELETING`.
-3. Return success. The reconciler and operator handle the actual vendor deletion.
+2. If state is already `DELETING` or `DELETED`, return success (idempotent).
+3. If volume not found, return success (idempotent, already cleaned up).
+4. Transition state to `DELETING`.
+5. Return success. The reconciler and operator handle the actual vendor deletion.
 
 **Database migration** (`82_create_volumes_tables.up.sql`):
 
@@ -557,13 +559,15 @@ Standard table structure: `id`, `name`, `creation_timestamp`, `deletion_timestam
 
 `fulfillment-service/internal/controllers/volume/volume_reconciler_function.go` follows the existing ComputeInstance reconciler pattern:
 
-1. Subscribes to volume events via the private events server (`has(event.volume)` filter).
-2. On `OBJECT_CREATED` or `OBJECT_SIGNALED` event: fetches the volume record from PostgreSQL.
+1. Subscribes to all volume events via the private events server (`has(event.volume)` filter), including `OBJECT_CREATED`, `OBJECT_UPDATED`, and `OBJECT_SIGNALED`. This ensures deletion transitions (state -> DELETING) are processed immediately, not deferred to the periodic sync.
+2. On event: fetches the volume record from PostgreSQL.
 3. If the volume is in CREATING state and no Volume CR exists on the hub: builds a `VolumeSpec` (maps proto fields to CRD fields), creates the Volume CR on the hub via `hubClient.Create()`.
 4. If the volume is in DELETING state: updates or deletes the Volume CR on the hub.
 5. On periodic sync (default 1 hour): re-reconciles all volumes to catch any missed events.
 
-The `hubClient` is obtained from `hub_cache.go`, which constructs a controller-runtime client from the hub's kubeconfig stored in the database. The Volume CR is created with label `osac.openshift.io/volume-uuid: <fulfillment-service-volume-id>` for the feedback controller to map back.
+The `hubClient` is obtained from `hub_cache.go`, which constructs a controller-runtime client from the hub's kubeconfig stored in the database. The Volume CR is created with:
+- Label `osac.openshift.io/volume-uuid: <fulfillment-service-volume-id>` for the feedback controller to map back.
+- Annotation `osac.openshift.io/tenant: <tenant>` propagated from the volume record's `metadata.tenant` field (set server-side from JWT claims, not client-supplied). The operator uses this annotation to derive the credential Secret name.
 
 #### Volume CRD (osac-operator)
 
@@ -659,7 +663,7 @@ The `volume-cleanup` finalizer is added to a ClusterOrder when the first volume 
 
 The Volume controller manages the full volume lifecycle across hub and tenant clusters. The following steps map to the conditions and phases defined above:
 
-```
+```text
 Step  Who                     What happens                          Phase / Conditions
 ----  ---                     ------------                          ------------------
 1     FS Reconciler           Creates Volume CR on hub              Progressing
@@ -768,7 +772,7 @@ The CreateVolume handler:
 2. Call `fulfillment.CreateVolume(ctx, {tenant, tier, size, accessMode, clusterID, pvcRef})`.
 3. If 200 (CREATING): poll `fulfillment.GetVolume(ctx, {id})` with backoff until `state = AVAILABLE`.
 4. If 409 (volume with this name already exists): poll `fulfillment.GetVolume` until `state = AVAILABLE`.
-5. When AVAILABLE: build `volume_context` from VolumeStatus fields (`status.backend_id` -> `osac.backend`, `status.vendor_volume_id` -> `osac.volume-id`, `status.protocol` -> `osac.protocol`) and return it to Kubernetes. Kubernetes stores it on the PV as `spec.csi.volumeAttributes`.
+5. When AVAILABLE: build `volume_context` from VolumeStatus fields (`status.backend` -> `osac.backend`, `status.vendor_volume_id` -> `osac.volume-id`, `status.protocol` -> `osac.protocol`) and return it to Kubernetes. Kubernetes stores it on the PV as `spec.csi.volumeAttributes`.
 6. If poll exceeds the CSI timeout: return error. Kubernetes retries the entire CreateVolume call, which hits the 409 path and resumes polling.
 
 The DeleteVolume handler:
@@ -865,7 +869,7 @@ StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{ten
 
 **OPA policy updates:** Add Volume API private endpoints to a new CSI-specific role in `authz.rego` (not the admin allowlist). This role permits only the Volume API methods the CSI driver needs (Create, Get, Delete) and enforces tenant scoping via JWT claims.
 
-**Input validation:** The Volume API validates all inputs before persisting: `storage_tier_id` must reference an existing StorageTier, `size_gib` must be positive, `access_mode` must be a recognized value. Validation follows the protovalidate interceptor pattern. The CSI driver validates that required StorageClass parameters (`tier`) are present before calling the Volume API.
+**Input validation:** The Volume API validates all inputs before persisting: `storage_tier` must reference an existing StorageTier, `size_gib` must be positive, `access_mode` must be a recognized value. Validation follows the protovalidate interceptor pattern. The CSI driver validates that required StorageClass parameters (`tier`) are present before calling the Volume API.
 
 ### Failure Handling and Recovery
 
@@ -894,7 +898,7 @@ StorageClass naming changes from `vast-{protocol}-{tenant}-{tier}` to `osac-{ten
 
 **OPA policy updates:** Add Volume API private endpoints to a new CSI-specific role in `authz.rego` (not the admin allowlist). This role permits only the Volume API methods the CSI driver needs (Create, Get, Delete) and enforces tenant scoping via JWT claims.
 
-**Operator RBAC:** The Volume controller needs RBAC for Volume CRs (get, list, watch, create, update, patch, delete), Secrets in the storage config namespace (get for tenant credentials), and network access to the vendor CSI controller service in `osac-csi-backend` namespace.
+**Operator RBAC:** The Volume controller needs RBAC for Volume CRs (get, list, watch, create, update, patch, delete), ClusterOrders (get, watch, update, patch for the `volume-cleanup` finalizer), Secrets in the storage config namespace (get for tenant credentials), and network access to the vendor CSI controller service in `osac-csi-backend` namespace.
 
 **StorageClass visibility:** Tenants see StorageClasses on their clusters but cannot access vendor credentials. StorageClasses are labeled with `osac.openshift.io/tenant` for tenant-scoping.
 
