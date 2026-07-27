@@ -12,7 +12,7 @@ Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.
 
 | Term | Definition |
 |------|-----------|
-| **Allocation metering** | Metering that runs for the duration a resource exists (creation to deletion), regardless of whether the resource is actively in use. Reflects the provider's physical capacity reservation. |
+| **Allocation metering** | Metering that runs from the point a resource is allocated until deletion, regardless of whether the resource is actively in use. Reflects the provider's physical capacity reservation. |
 | **Network class** | A provider-defined network backend configuration that determines VirtualNetwork behavior and metering classification. |
 
 ## 1. Problem Statement
@@ -78,7 +78,7 @@ PublicIP resources are VMaaS-only — the `PublicIPAttachment` target is limited
 
 ### 5.1 Networking Resource Allocation Metering
 
-- **CAP-1:** Tenant-facing networking resources (VirtualNetwork, Subnet, SecurityGroup, PublicIP, ExternalIP, NATGateway, and their attachments) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion.
+- **CAP-1:** Tenant-facing networking resources (VirtualNetwork, Subnet, SecurityGroup, PublicIP, ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion. Attachment resources (PublicIPAttachment, ExternalIPAttachment) are metered for their own lifecycle — from attachment creation to attachment deletion.
 - **CAP-2:** Networking usage is queryable by resource type, network class (for VirtualNetworks), IP family (IPv4/IPv6 for IP resources), region, tenant, and project.
 
 ### 5.2 Unattached IP Metering
@@ -112,6 +112,7 @@ Each networking resource type has a flat allocation meter. Usage is queryable by
 - [ ] An allocated-but-unattached PublicIP or ExternalIP generates usage data
 - [ ] Networking usage can be broken down by resource type, network class, IP family, region, tenant, and project
 - [ ] Networking resources attached to a parent resource (PublicIPAttachments to ComputeInstances, ExternalIPAttachments to ComputeInstances/Clusters/BareMetalInstances, Subnets via network attachments) can be attributed to the parent in a unified usage view
+- [ ] A PublicIPAttachment or ExternalIPAttachment generates usage data (resource-seconds) from attachment creation to attachment deletion
 - [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
 - [ ] Networking usage data maintains per-second granularity, deduplication, and retention consistent with Part 1 metering
 
@@ -151,8 +152,8 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3145 @ 60a4729
+Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3145 @ 314c274
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"60a4729","source_repo_branch":"prd/OSAC-3145","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"314c274","source_repo_branch":"prd/OSAC-3145","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
