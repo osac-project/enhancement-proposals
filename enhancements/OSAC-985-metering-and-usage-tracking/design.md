@@ -501,7 +501,7 @@ The adapter decides which base fields to include in the provider's meter definit
 
 #### Schema Versioning
 
-All event types carry a `schema_version` field and the CloudEvents `type` includes the version suffix (e.g., `osac.resource.started.v1`). Breaking changes increment the version; adapters must handle both `v1` and `v2` during transition windows (minimum 30 days, matching Kafka retention). Non-breaking additions (new optional fields) do not increment the version.
+All event types carry a `schema_version` field and the CloudEvents `type` includes the version suffix (e.g., `osac.resource.started.v1`). Breaking changes increment the version; adapters must handle both the old and new versions during transition windows (minimum 30 days, matching Kafka retention). For example, if `v1` is updated to `v2`, both versions coexist until all consumers have migrated. Non-breaking additions (new optional fields) do not increment the version.
 
 #### Kafka Topic Design
 
@@ -928,3 +928,14 @@ The Metering Service depends on two upstream components:
 - **Helm charts:** `osac-metering` chart (Metering Service + Kafka topic provisioning) and `osac-metering-adapter` chart (per-provider adapter deployment).
 - **New repository:** `osac-project/osac-metering` for Metering Service and adapter source code, Helm charts, and CI configuration.
 - **Deployment order:** (1) Kafka cluster and topics via Strimzi KafkaTopic CRs, (2) PostgreSQL database with schema migrations, (3) `osac-metering` chart (Metering Service — runs startup reconciliation, waits for Kafka and PostgreSQL readiness), (4) `osac-metering-adapter` chart (adapter — waits for Kafka readiness and Metering Service topics to exist).
+
+---
+
+## Provenance
+
+Authored: draft @ design 0.3.0 - 883316f, workspace main @ 36479c7
+Final: respond @ design 0.4.0 - 139e6c1, workspace main @ e454759
+
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.0","ai_workflows":"139e6c1","source_repo":"e454759","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true} -->
