@@ -72,7 +72,7 @@ Without metering for bare metal hosts, Cloud Provider Admins have no usage data 
 
 ### 5.3 Cross-cutting
 
-- **CAP-5:** Allocation-meter data is available alongside existing metering data without additional admin configuration steps; the optional consumption meter is available when explicitly enabled by the provider. All BMaaS meters use the same accuracy and data-availability guarantees as Part 1 meters (CAP-4, CAP-15, CAP-16).
+- **CAP-5:** Allocation-meter and consumption-meter data is available alongside existing metering data without additional admin configuration steps. All BMaaS meters use the same accuracy and data-availability guarantees as Part 1 meters (CAP-4, CAP-15, CAP-16).
 
 ## 6. Usage Calculation Model
 
@@ -93,7 +93,7 @@ BMaaS uses two meters because bare metal hosts have a dual capacity profile. The
 - [ ] BMaaS usage can be broken down by host type, catalog item (per Part 1 CAP-17), tenant, and project
 - [ ] A bare metal host with attached storage volumes and public IPs can be queried as a unified usage view
 - [ ] Allocation-based and consumption-based meters coexist for the same resource; usage queries can distinguish between meter types
-- [ ] Allocation-meter data appears alongside existing metering data without additional admin setup; consumption-meter data appears when the provider has enabled it
+- [ ] Allocation-meter and consumption-meter data appears automatically alongside existing metering data without additional admin setup
 - [ ] BMaaS meters record usage at per-second granularity — a host existing for 30 seconds appears in usage data
 - [ ] BMaaS usage totals for finalized periods (deleted hosts) are accurate — querying the same period twice returns consistent results
 - [ ] Historical BMaaS usage data is available for at least 13 months
@@ -143,8 +143,6 @@ This PRD is part of the Metering Part 2 family, which was split from a combined 
 
 ## Provenance
 
-Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-2506 @ 4aa9fb8
+Authored: respond @ prd 0.6.0 - 7b6dfe0, workspace main @ 3100993
 
-> Authoring phases not recorded this session (commit-time snapshot only).
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"4aa9fb8","source_repo_branch":"prd/OSAC-2506","commits_behind_main":0,"commits_ahead_main":11,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"7b6dfe0","source_repo":"3100993","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false} -->
