@@ -126,7 +126,7 @@ tenant-facing abstraction.
 #### Gap #1: CaaS and BMaaS have no networking API
 
 The Networking API only supports ComputeInstance (VMaaS). The Cluster resource
-has no `network_attachments` field — there is no way for a tenant to specify
+has no network configuration — there is no way for a tenant to specify
 which VirtualNetwork, Subnet, or SecurityGroup a cluster's nodes should use.
 A tenant cannot place two clusters in the same VirtualNetwork to share an
 address space, or isolate clusters in separate VirtualNetworks — the networking
@@ -160,7 +160,7 @@ that a manager is assigned to a role it can handle.
 
 #### Gap #4: ExternalIPAttachment only supports VMs
 
-The ExternalIPAttachment target is a `oneof` with only `compute_instance`.
+ExternalIPAttachment only supports VMs as a target.
 CaaS needs ExternalIPs for cluster API server and ingress endpoints (two
 separate IPs for two different purposes on the same Cluster). BMaaS needs
 ExternalIPs for bare-metal servers. Neither can use the existing

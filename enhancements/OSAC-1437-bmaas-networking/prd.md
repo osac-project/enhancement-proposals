@@ -71,7 +71,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Host Type Interface Discovery
 
-- **FR-2:** The host type API exposes available physical network interfaces for bare-metal host types. Each interface includes a name (e.g., "data-0"), role (e.g., "primary-traffic", "management", "storage"), and description (e.g., "100GbE primary traffic interface"). VM host types do not expose interface lists. Interfaces are ordered; when multiple interfaces share the same role, the first in the list is the default for that role. [User]
+- **FR-2:** The host type API exposes available physical network interfaces for bare-metal host types. Each interface includes a name (e.g., "data-0"), role (e.g., "fabric", "management", "storage"), and description (e.g., "100GbE fabric interface"). VM host types do not expose interface lists. Interfaces are ordered; when multiple interfaces share the same role, the first in the list is the default for that role. [User]
 
 #### Interface Validation
 
