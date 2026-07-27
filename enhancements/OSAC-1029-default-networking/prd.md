@@ -181,7 +181,7 @@ where a single create command produces a reachable instance.
 - **Unified Networking EP** — this PRD builds on the unified networking
   resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP,
   ExternalIPAttachment, NATGateway) defined in the
-  [Unified Networking EP](/enhancements/unified-networking)
+  [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
 - **OSAC-1712 (automatic pool selection)** — the auto ExternalIP pool
   selection reuses the identical algorithm: pick the READY pool with the
   most available capacity matching the IP family

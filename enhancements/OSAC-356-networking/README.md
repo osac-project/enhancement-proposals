@@ -11,7 +11,7 @@ see-also:
 replaces:
   - N/A
 superseded-by:
-  - /enhancements/unified-networking
+  - /enhancements/OSAC-1433-unified-networking
 ---
 
 # OSAC Networking API

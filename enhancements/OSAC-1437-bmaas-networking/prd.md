@@ -6,7 +6,7 @@
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1437 |
 | Date        | 2026-07-08 |
 
-> This PRD is an expansion of the [Unified Networking PRD](/enhancements/unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements; this document defines the service-specific requirements and user stories.
+> This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements; this document defines the service-specific requirements and user stories.
 
 ## 1. Problem Statement
 
@@ -141,7 +141,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 ## 7. Dependencies
 
-- **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/unified-networking)
+- **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
 - **Default Networking PRD** — default Subnet and SecurityGroup selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1029-default-networking)
 - **Networking manager dispatch** — the system must be able to route networking operations to the correct fabric manager (in progress)
 - **NAT gateway support** — outbound NAT must be available as a networking resource

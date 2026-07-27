@@ -7,7 +7,7 @@ last-updated: 2026-06-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1029
 see-also:
-  - Unified Networking Design: /enhancements/unified-networking
+  - Unified Networking Design: /enhancements/OSAC-1433-unified-networking
   - Original Networking API: /enhancements/OSAC-356-networking
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
@@ -97,7 +97,7 @@ The OSAC Networking API must serve as a foundational service across all three
 OSAC service types — VMaaS, CaaS, and BMaaS — with a single, consistent
 resource model. The technical design that fulfills these requirements is
 described in a companion enhancement:
-[Unified Networking Design](/enhancements/unified-networking).
+[Unified Networking Design](/enhancements/OSAC-1433-unified-networking).
 
 The original [Networking API enhancement](/enhancements/OSAC-356-networking) was designed
 with VMaaS (ComputeInstance) as the only consumer, explicitly listing CaaS and
@@ -386,7 +386,7 @@ _No non-functional requirements were specified in the original document._
 
 ## 6. Dependencies
 
-- **Unified Networking Design**: [/enhancements/unified-networking](/enhancements/unified-networking) — Technical design document fulfilling these requirements
+- **Unified Networking Design**: [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) — Technical design document fulfilling these requirements
 - **Default Networking**: [/enhancements/OSAC-1029-default-networking](/enhancements/OSAC-1029-default-networking) — Related enhancement for resource ordering workflow
 - **Original Networking API**: [/enhancements/networking](/enhancements/networking) — VMaaS-only networking API (superseded for multi-service scenarios)
 - **BareMetal Instance API**: [/enhancements/baremetal-instance-api](/enhancements/baremetal-instance-api) — Defines BaremetalInstance resource

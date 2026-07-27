@@ -8,7 +8,7 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1029
 prd: "prd.md"
 see-also:
-  - "/enhancements/unified-networking"
+  - "/enhancements/OSAC-1433-unified-networking"
   - "/enhancements/OSAC-1435-vmaas-networking"
   - "/enhancements/OSAC-1436-caas-networking"
   - "/enhancements/OSAC-1437-bmaas-networking"
@@ -24,7 +24,7 @@ This enhancement provides default networking resources (including dual-stack sub
 
 ## Summary
 
-This enhancement is an expansion of the [Unified Networking EP](/enhancements/unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system automatically provisions a default VirtualNetwork, IPv4 Subnet, IPv6 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration (dual-stack). Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
+This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system automatically provisions a default VirtualNetwork, IPv4 Subnet, IPv6 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration (dual-stack). Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -153,7 +153,7 @@ This enhancement adds three main capabilities: default networking (including NAT
      - Both labeled `osac.openshift.io/auto-provisioned: "true"`. ExternalIP also labeled `osac.openshift.io/auto-provisioned-for: <resource-id>` for orphan cleanup.
    - ComputeInstance CR created with `auto_external_ip_attachment: true`
    - osac-operator reconciles ExternalIP (fabric manager allocates address → Allocated), then VM provisioning, then ExternalIPAttachment controller activates once ExternalIP is Allocated AND `compute_network_attachment_statuses` is populated with the primary attachment's `ip_address`
-   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
+   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
    - Result: VM is reachable via ExternalIP
 
 7. **If ExternalIPPool has no capacity:**
@@ -177,7 +177,7 @@ This enhancement adds three main capabilities: default networking (including NAT
    - osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (external addresses assigned)
    - Cluster provisioning proceeds — MetalLB allocates internal VIPs from its IPAddressPool. Template discovers VIPs and writes to ClusterOrder status (`apiEndpoint`, `ingressEndpoint`).
    - ExternalIPAttachment controllers activate once ExternalIP is Allocated AND ClusterOrder `apiEndpoint`/`ingressEndpoint` are populated → creates DNAT: external IP → internal VIP
-   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
+   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
    - Result: Cluster is reachable via ExternalIPs for both API and ingress
 
 9. **CLI flag mapping for clusters:**
@@ -359,7 +359,7 @@ type ClusterSpec struct {
 - Pool selection: pick READY ExternalIPPool with most available capacity matching IP family (defaults to IPv4)
 - If multiple pools have equal capacity: selection is deterministic but implementation-defined (e.g., alphabetical by pool name)
 - If no pool has capacity: return error `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
-- Pool capacity is checked and decremented synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically — actual IP address allocation from the fabric manager and DNAT rule creation happen asynchronously through the operator reconciliation loop. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow.
+- Pool capacity is checked and decremented synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically — actual IP address allocation from the fabric manager and DNAT rule creation happen asynchronously through the operator reconciliation loop. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow.
 
 ### Implementation Details/Notes/Constraints
 

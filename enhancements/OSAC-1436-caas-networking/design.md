@@ -8,7 +8,7 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
 see-also:
-  - "Unified Networking: /enhancements/unified-networking"
+  - "Unified Networking: /enhancements/OSAC-1433-unified-networking"
   - "Default Networking: /enhancements/OSAC-1029-default-networking"
 replaces:
   - N/A
@@ -22,7 +22,7 @@ This enhancement extends the unified networking API to support CaaS-specific req
 
 ## Summary
 
-This enhancement is an expansion of the [Unified Networking EP](/enhancements/unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
+This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
 
 Cluster provisioning currently uses inline networking logic in the CaaS template — all VLAN creation, SNAT, DNAT, IP allocation, DNS, and MetalLB configuration happens in step collections with zero tenant control. This enhancement moves networking lifecycle to the OSAC Networking API, enables tenants to place clusters on shared or isolated VirtualNetworks, and introduces a VIP feedback loop for cluster API/ingress endpoints to enable auto-provisioned external access. See [PRD](prd.md) for detailed requirements.
 
@@ -137,7 +137,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
     - For each node_set: resolves `host_type` → BareMetalInstanceType → picks first network port with role `fabric` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
-    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-provisioned: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
+    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-provisioned: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with enriched `network_attachment` in spec
 
@@ -209,7 +209,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 12. **Delete Cluster:**
-    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-provisioned-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/unified-networking/design.md#external-access-same-for-all-resource-types).
+    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-provisioned-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
