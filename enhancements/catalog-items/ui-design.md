@@ -3,7 +3,7 @@ title: catalog-items-ui
 authors:
   - eaharoni
 creation-date: 2026-07-16
-last-updated: 2026-07-22
+last-updated: 2026-07-27
 tracking-link:
   - https://github.com/osac-project/enhancement-proposals/pull/115
 prd:
@@ -53,7 +53,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly `Gallery` of `CatalogItemCard` cards (the same card-based layout as the tenant user `CatalogPage`) with search, scope badges, publication status, and kebab actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (clusters only — pod_cidr, service_cidr) → Access (ssh_key, pull_secret). VM catalog items auto-include `network_attachments` in the API payload without showing it in the wizard; Bare Metal has no networking fields. The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
-Each wizard step is a separate per-kind component with static, hardcoded fields — the same pattern as the tenant user provisioning wizard. Individual fields reuse shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that each render an editable toggle, a type-appropriate default value input, and type-specific validation options. Complex fields like `node_sets` (a map of objects) use a dedicated `NodeSetsFieldEditor` that reuses the existing `ClusterNodeSetsArrayField` from the tenant user wizard. Shared page-level components (`CatalogItemGeneralFields`, `CatalogItemCard`, `CatalogItemActionsMenu`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic.
+Each wizard step is a separate per-kind component with static, hardcoded fields — the same pattern as the tenant user provisioning wizard. Individual fields reuse shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that each render an editable toggle, a type-appropriate default value input, and type-specific validation options. `node_sets` (Cluster only) is not one of these primitives — it has a dedicated `NodeSetsFieldEditor` (see §8) that is **template-driven** rather than freely composed: fulfillment-service rejects any `node_sets` entry whose map key or host type isn't defined in the selected `ClusterTemplate`, so the editor renders one fixed row per template node set (host type read-only) and only collects a default `size` per row — no add/remove, no host-type picker. Shared page-level components (`CatalogItemGeneralFields`, `CatalogItemCard`, `CatalogItemActionsMenu`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic.
 
 ### Workflow Description
 
@@ -63,7 +63,7 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
 2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows a gallery of catalog item cards for that resource type across all tenants.
 3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope, and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template. **Scope:** CSP Admin selects between **General** (visible to all tenants) or **Organization** (scoped to a specific tenant, selected from a tenant dropdown).
-5. **Step 2 — Configuration:** A per-kind step component with static fields for the resource spec (excluding access and networking fields). Each field uses a shared field definition primitive (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that renders an editable toggle, a type-appropriate default value input, and type-specific validation options. Default values are pre-populated from the selected template. By default, fields are non-editable; non-editable fields require a default value. For Cluster, includes `NodeSetsFieldEditor` for configuring default node set entries (name, host type dropdown, size) and size constraints. For resource reference fields (`ResourceSelectorFieldDefinition`), the admin selects a default from a dropdown of existing resources — no validation constraints are configured.
+5. **Step 2 — Configuration:** A per-kind step component with static fields for the resource spec (excluding access and networking fields). Each field uses a shared field definition primitive (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that renders an editable toggle, a type-appropriate default value input, and type-specific validation options. Default values are pre-populated from the selected template. By default, fields are non-editable; non-editable fields require a default value. For Cluster, includes `NodeSetsFieldEditor` for setting a default `size` per node set defined in the selected template (host type is read-only, inherited from the template) and size constraints. For resource reference fields (`ResourceSelectorFieldDefinition`), the admin selects a default from a dropdown of existing resources — no validation constraints are configured.
 6. **Step 3 — Networking** (clusters only): `ClusterNetworkingStep` with `pod_cidr` and `service_cidr` as `StringFieldDefinition` fields. This step is not shown for VM or Bare Metal catalog items.
 7. **Step 4 — Access:** Per-kind access step component with `ssh_public_key`/`ssh_key` and `pull_secret` (clusters) as `StringFieldDefinition` fields. Both default to editable.
    For VM catalog items, the UI automatically includes `network_attachments` in the API payload as an editable field with no default or validation — it is not shown in any wizard step. Bare Metal catalog items have no networking fields.
@@ -435,7 +435,7 @@ All actions are hidden for Tenant Admins viewing general (global) items. The pub
 
 **Tabs:**
 - **Overview:** Read-only display of general information (name, description, resource type, scope with level and target name — General/Organization/Project, template name, creation date)
-- **Field Definitions:** Read-only list showing all field definitions with: Path, Editable (Yes/No), Default Value, Validation Constraints. For `node_sets` (Cluster), shows the default node set entries (host type, size), the allow add/remove setting, and any size constraints.
+- **Field Definitions:** Read-only list showing all field definitions with: Path, Editable (Yes/No), Default Value, Validation Constraints. For `node_sets` (Cluster), shows the default node set entries (host type, size) and any size constraints.
 - **Provisioned Resources:** Table of resources (Clusters, ComputeInstances, or BareMetalInstances) provisioned from this catalog item, fetched via the resource list endpoint with a `this.spec.catalog_item == "<id>"` CEL filter
 
 #### 8. Shared Field Definition Primitives and Per-Kind Step Components
@@ -507,44 +507,36 @@ const ClusterConfigurationStep = () => (
 
 **Network attachments handling (VM only):** The `network_attachments` field is not shown in any wizard step. The UI automatically includes it in the API payload as an editable field with no default value and no validation schema. This allows tenant users to configure network attachments during VM provisioning without requiring the admin to explicitly manage them in the catalog item wizard.
 
-**NodeSetsFieldEditor (Cluster only):**
+**NodeSetsFieldEditor (Cluster only) — revised 2026-07-27, template-driven:**
 
 **Location:** `libs/ui-components/src/components/catalogManagement/fieldDefinitions/NodeSetsFieldEditor.tsx`
 
-The `node_sets` field is a `map<string, ClusterNodeSet>` where each entry has a `host_type` (string reference to a HostType resource) and a `size` (int32, number of nodes). The map key is auto-derived from the host type. Because this is a structured map of objects, it gets a dedicated editor within `ClusterConfigurationStep`.
+The `node_sets` field is a `map<string, ClusterNodeSet>` where each entry has a `host_type` (string reference to a HostType resource) and a `size` (int32, number of nodes). **The map key and host type are not admin-composable — they are the same key/host-type pairs already defined on the selected `ClusterTemplate.node_sets`.** fulfillment-service's `PrivateClustersServer.validateNodeSets` (`internal/servers/private_clusters_server.go`) rejects any `node_sets` entry whose map key isn't a key on the template, or whose host type doesn't match the template's value for that key — so an admin cannot construct an invalid default even by mistake. This superseded an earlier revision of this design that had the map key "auto-derived from the host type" and reused the tenant wizard's freely add/remove `ClusterNodeSetsArrayField`; that model didn't hold once the backend validation above was confirmed (see [OSAC-1421 discussion](https://github.com/osac-project/osac-ui/pull/99), [OSAC-2936 PR #102](https://github.com/osac-project/osac-ui/pull/102)).
 
-**Default value — reuses `ClusterNodeSetsArrayField`:** The default node set entries are configured using the existing `ClusterNodeSetsArrayField` component from the tenant user cluster creation wizard. This component renders each node set as a `FormFieldGroup` with two fields: **Host Type** (`SelectField` dropdown from `useHostTypes()`) and **Nodes** (pool size, `ClusterPoolSizeField`). It supports adding entries via an "Add node set" link button and removing entries via a minus icon per row (except the first). Already-selected host types are disabled in other rows to prevent duplicates. The entries are pre-populated from the selected template's `node_sets` map.
+**Rendering — one fixed row per template node set, no `ClusterNodeSetsArrayField` reuse:** `NodeSetsFieldEditor` takes the selected `ClusterTemplate` as a prop (resolved from the already-fetched template list by the id chosen on the General step) and renders exactly one row per key in `template.nodeSets` — no add, no remove. Each row shows the node-set key as its label and the host type as **read-only** text (resolved to a display name via `useHostTypes()`, falling back to the raw id while loading or if not found); the only input is **Nodes** (`size`, a number field). If no template is selected yet, the editor shows an info message instead of rows; if the selected template has no `node_sets`, it shows a different info message instead of an empty table.
 
-**Admin-specific controls** (rendered above or alongside the `ClusterNodeSetsArrayField`):
+**Admin-specific controls** (rendered above the per-template-key rows):
 
 - **Editable** toggle — controls whether tenant users can modify the size of existing node sets during provisioning. When non-editable, the default sizes are locked.
-- **Allow add/remove** toggle — controls whether tenant users can add new node sets or remove existing ones. This is independent of the editable toggle: an admin can allow users to change sizes (editable: true) while preventing them from adding/removing node sets (allowAddRemove: false), or vice versa.
-- **Size validation constraints** — minimum and maximum number inputs for the `size` field across all node sets.
+- **Size validation constraints** — minimum and maximum number inputs for the `size` field, applied across all node sets.
+
+(The former **Allow add/remove** toggle is removed — it controlled a capability, adding/removing node sets, that tenants can no longer have: the set of node sets is fixed by the template.)
 
 **Formik state for node_sets:**
 
 ```typescript
-interface NodeSetEntry {
-  rowId: string;                // random UUID for React key (same as ClusterNodeSetRow)
-  hostType: LabeledResourceRef; // { value: string, label: string }
-  size: string;                 // number of nodes as string (same as ClusterNodeSetRow)
-  sizeMin?: number;             // validation: minimum size
-  sizeMax?: number;             // validation: maximum size
-}
-
-// Stored in Formik as:
-// fieldDefinitions.node_sets.entries: NodeSetEntry[]
+// fieldDefinitions.node_sets.sizeByKey: Record<string, string> — keyed by the template's own node-set key
 // fieldDefinitions.node_sets.editable: boolean
-// fieldDefinitions.node_sets.allowAddRemove: boolean
+// fieldDefinitions.node_sets.sizeMin?: string
+// fieldDefinitions.node_sets.sizeMax?: string
 ```
 
-On submission, the `node_sets` entries are serialized into the field definition:
+On submission, the `node_sets` field definition is built by iterating the **template's** `node_sets` keys (not the Formik state's keys), pairing each with the admin-entered size and the template's own `host_type`:
 
 ```json
 {
   "path": "node_sets",
   "editable": true,
-  "allowAddRemove": false,
   "default": {
     "compute": { "host_type": "acme_1tb", "size": 3 },
     "gpu": { "host_type": "acme_1tb_h100", "size": 1 }
@@ -561,26 +553,27 @@ On submission, the `node_sets` entries are serialized into the field definition:
 }
 ```
 
-**Yup validation for node_sets:**
+**Yup validation for node_sets:** built dynamically from the selected template's current node-set keys — one positive-size check per key, rather than a fixed shape:
 
 ```typescript
-const nodeSetEntrySchema = Yup.object({
-  rowId: Yup.string().required(),
-  hostType: Yup.object({
-    value: Yup.string().required('Host type is required'),
-    label: Yup.string(),
-  }).required(),
-  size: Yup.string().required('Size is required'),
-  sizeMin: Yup.number().integer().min(0).nullable(),
-  sizeMax: Yup.number().integer().nullable(),
-});
-
-const nodeSetsSchema = Yup.object({
-  editable: Yup.boolean().required(),
-  allowAddRemove: Yup.boolean().required(),
-  entries: Yup.array().of(nodeSetEntrySchema).min(1, 'At least one node set is required'),
-});
+const nodeSetsSchema = (templateNodeSetKeys: string[]) =>
+  Yup.object({
+    sizeByKey: Yup.object(
+      Object.fromEntries(
+        templateNodeSetKeys.map((key) => [
+          key,
+          Yup.string().test(
+            'positive-size',
+            'Size must be a positive number',
+            (value) => Number.isFinite(Number(value)) && Number(value) > 0,
+          ),
+        ]),
+      ),
+    ),
+  });
 ```
+
+Because `templateNodeSetKeys` comes from the template rather than admin input, there is no duplicate-host-type or minimum-row-count check to write — the template's keys are already unique by construction, and an empty `node_sets` on the template is handled by the empty-state message above rather than a validation error.
 
 #### 9. Validation Constraints
 
@@ -701,7 +694,7 @@ No new observability changes. The UI is a frontend application — observability
 
 Adding a catalog management section increases the UI surface area and introduces the first role-gated navigation in osac-ui. This creates a precedent that future admin features will follow, adding complexity to the navigation and routing system. The alternative — managing catalog items exclusively via CLI — avoids this complexity but provides a poor admin experience for non-technical cloud provider administrators.
 
-Each wizard step is a per-kind component with static, hardcoded fields using shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`). This mirrors the tenant user provisioning wizard pattern but adds editable/default/validation controls per field. The `node_sets` field adds further complexity with its dedicated `NodeSetsFieldEditor` for map-of-objects structure. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, node set add/remove). All fields from the resource spec are shown as static form fields, which simplifies the UX (no add/remove mechanism for fields) but means each per-kind step component must be kept in sync with the proto definitions.
+Each wizard step is a per-kind component with static, hardcoded fields using shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`). This mirrors the tenant user provisioning wizard pattern but adds editable/default/validation controls per field. The `node_sets` field adds further complexity with its dedicated `NodeSetsFieldEditor` for map-of-objects structure, template-driven rather than freely composed. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, no-template-selected and template-has-no-node-sets states). All fields from the resource spec are shown as static form fields, which simplifies the UX (no add/remove mechanism for fields) but means each per-kind step component must be kept in sync with the proto definitions.
 
 The JSX composition approach shares common components across three sets of kind-specific pages. This avoids the indirection of a single config-driven component but introduces more files (three page sets instead of one). The shared components ensure consistency while allowing per-kind divergence where needed.
 
@@ -779,12 +772,12 @@ Testing strategy for the catalog management UI:
 - Scope badge: verify badge renders correctly for all three scope levels (General, Organization, Project)
 - Unsupported schema detection: verify schemas with unsupported keywords show read-only "use CLI" message; schemas with only supported keywords show structured controls
 - Network attachments auto-inclusion (VM only): verify `network_attachments` is excluded from VM wizard but included in API payload as editable with no default or validation; verify Bare Metal has no networking fields; verify Cluster uses pod_cidr/service_cidr in Networking step
-- NodeSetsFieldEditor: verify node set entries pre-populate from template; verify add/remove; verify host type dropdown; verify size constraints serialization; verify at least one entry required
+- NodeSetsFieldEditor: verify rows render one-per-template-node-set with host type read-only; verify no template selected shows an info message; verify template with no node sets shows an info message; verify size constraints serialization
 
 **Component-level tests (required):**
 - Per-kind step components: verify each step renders correct static fields for its resource type; verify field definition primitives render editable toggle, default value, and validation; verify ssh_key/pull_secret default to editable in Access steps
 - Field definition primitives: verify StringFieldDefinition renders regex pattern option; verify NumberFieldDefinition renders min/max; verify ResourceSelectorFieldDefinition renders dropdown from API; verify BooleanFieldDefinition renders toggle
-- NodeSetsFieldEditor (Cluster only): verify node set entries pre-populate from template; verify add/remove entries; verify host type dropdown fetches from HostTypes API; verify size validation (min/max); verify at least one node set required; verify serialization to field definition payload
+- NodeSetsFieldEditor (Cluster only): verify rows come from the selected template's `node_sets` keys with host type read-only (resolved via HostTypes API for display only); verify size validation (positive number per template key, min/max); verify no-template and template-has-no-node-sets empty states; verify serialization to field definition payload uses the template's keys and host types
 - Validation constraints per primitive: verify StringFieldDefinition produces correct pattern schema; verify NumberFieldDefinition produces correct min/max schema; verify empty constraints produce omitted validationSchema
 - Unsupported schema handling: verify existing CLI-created items with complex schemas show read-only "use CLI" message; verify supported schemas show editable structured controls
 
