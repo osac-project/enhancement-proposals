@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-06-03
 last-updated: 2026-06-10
 tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-1029
+  - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
 see-also:
   - Networking API: /enhancements/OSAC-356-networking

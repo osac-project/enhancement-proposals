@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-06-03
 last-updated: 2026-06-10
 tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-1029
+  - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking
   - Original Networking API: /enhancements/OSAC-356-networking
@@ -22,7 +22,7 @@ superseded-by:
 | Field       | Value   |
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
-| Jira        | https://redhat.atlassian.net/browse/OSAC-1029 |
+| Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
 | Date        | 2026-06-03 |
 
 ## Terminology

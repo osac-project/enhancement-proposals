@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-07-08
 last-updated: 2026-07-08
 tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-1029
+  - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
 see-also:
   - "/enhancements/OSAC-1433-unified-networking"

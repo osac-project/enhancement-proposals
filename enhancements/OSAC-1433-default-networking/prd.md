@@ -3,7 +3,7 @@
 | Field       | Value   |
 |-------------|---------|
 | Author(s)   | Dan Manor |
-| Jira        | https://redhat.atlassian.net/browse/OSAC-1029 |
+| Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
 | Date        | 2026-07-02 |
 
 ## 1. Problem Statement
