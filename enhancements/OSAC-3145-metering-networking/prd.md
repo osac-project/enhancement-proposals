@@ -112,8 +112,8 @@ Each networking resource type has a flat allocation meter. Resource type and net
 - [ ] An allocated-but-unattached PublicIP or ExternalIP generates usage data
 - [ ] Networking usage can be broken down by resource type, network class, IP family, region, tenant, and project
 - [ ] Networking resources attached to a parent resource (PublicIPAttachments to ComputeInstances, ExternalIPAttachments to ComputeInstances/Clusters/BareMetalInstances, Subnets via network attachments) can be attributed to the parent in a unified usage view
-- [ ] Networking meters are additive to the Part 1 metering deployment and require no separate infrastructure
-- [ ] All Part 1 cross-cutting acceptance criteria (per-second granularity, deduplication, retention, independent deployment) apply to networking meters
+- [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
+- [ ] Networking usage data maintains per-second granularity, deduplication, and retention consistent with Part 1 metering
 
 ## 8. Assumptions
 
@@ -151,8 +151,8 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3145 @ 6d766ff (dirty)
+Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3145 @ 16c8909
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"6d766ff (dirty)","source_repo_branch":"prd/OSAC-3145","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"16c8909","source_repo_branch":"prd/OSAC-3145","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
