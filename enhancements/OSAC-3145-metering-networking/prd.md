@@ -93,7 +93,7 @@ PublicIP resources are VMaaS-only — the `PublicIPAttachment` target is limited
 
 This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
 
-Each networking resource type has a flat allocation meter. Resource type and network class (for VirtualNetworks) are the metering dimensions.
+Each networking resource type has a flat allocation meter. Usage is queryable by resource type, region, tenant, and project; VirtualNetworks additionally use network class, IP resources use IP family, and IP attachment status is exposed where applicable (see CAP-2 and CAP-3).
 
 | Resource | Meter | Unit | Example (30 days) |
 |----------|-------|------|-------------------|
@@ -151,8 +151,8 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3145 @ 16c8909
+Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3145 @ 60a4729
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"16c8909","source_repo_branch":"prd/OSAC-3145","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"60a4729","source_repo_branch":"prd/OSAC-3145","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
