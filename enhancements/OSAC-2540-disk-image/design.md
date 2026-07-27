@@ -55,9 +55,9 @@ A DiskImage resource centralizes image metadata, provides a catalog for discover
 
 This design adds a new DiskImage resource to the fulfillment-service with full CRUD operations, modifies ComputeInstance and ComputeInstanceTemplate to reference DiskImage by ID instead of inline image fields, and adds deletion protection logic to the DiskImage server.
 
-DiskImage follows the standard OSAC object shape (`id`, `Metadata`, `DiskImageSpec`, `DiskImageStatus`) and reuses the InstanceType lifecycle state machine for deprecation and obsolescence management. The `source` and `guest_os_family` fields on DiskImageSpec are immutable after creation. Display name and description come from shared Metadata (OSAC-2921).
+DiskImage follows the standard OSAC object shape (`id`, `Metadata`, `DiskImageSpec`, `DiskImageStatus`) and reuses the InstanceType lifecycle state machine for deprecation and obsolescence management. The `source_type`, `source_ref`, and `guest_os_family` fields on DiskImageSpec are immutable after creation. `guest_os_family` is passed through to AAP, which uses it to determine KubeVirt VM domain configuration (e.g., Windows VMs get secure boot and TPM). Display name and description come from shared Metadata (OSAC-2921).
 
-On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` field are replaced by a `disk_image` string reference. The reconciler resolves the DiskImage at reconciliation time, extracts `source` and `guest_os_family`, and maps them to the existing CRD ImageSpec and GuestOSFamily fields. The osac-operator is unchanged.
+On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` field are replaced by a `disk_image` string reference. The reconciler resolves the DiskImage at reconciliation time, extracts `source_type`, `source_ref`, and `guest_os_family`, and maps them to the existing CRD ImageSpec and GuestOSFamily fields. The osac-operator is unchanged.
 
 ### Workflow Description
 
@@ -65,7 +65,7 @@ On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` fi
 
 **Actor:** Cloud Provider Admin (global images) or Tenant Admin (tenant-scoped images)
 
-1. Admin calls `DiskImages/Create` with the DiskImage object containing `spec.source`, `spec.guest_os_family`, and `spec.architecture`.
+1. Admin calls `DiskImages/Create` with the DiskImage object containing `spec.source_type`, `spec.source_ref`, `spec.guest_os_family`, and `spec.architecture`.
 2. Server validates required fields, sets `spec.state` to `DISK_IMAGE_STATE_AVAILABLE` if unspecified, persists the object, and returns it with system-generated `id` and `metadata`.
 3. For global images, `metadata.tenant` is empty. For tenant-scoped images, the server sets `metadata.tenant` from the caller's identity.
 
@@ -106,13 +106,13 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
    - DiskImage exists and is visible to the caller's tenant (global or same tenant).
    - DiskImage state is not OBSOLETE. If DEPRECATED, creation proceeds with a warning in the response.
 5. Server persists the ComputeInstance with the `disk_image` reference.
-6. Reconciler fetches the referenced DiskImage, extracts `source` and `guest_os_family`, maps them to CRD `ImageSpec` and `GuestOSFamily`, and creates the KubeVirt VirtualMachine CR.
+6. Reconciler fetches the referenced DiskImage, extracts `source_type`, `source_ref`, and `guest_os_family`, maps them to CRD `ImageSpec` and `GuestOSFamily`, and creates the KubeVirt VirtualMachine CR.
 
 #### Deprecating and Obsoleting a DiskImage
 
 **Actor:** Cloud Provider Admin or Tenant Admin (for their own images)
 
-1. Admin calls `DiskImages/Update` setting `spec.state` to `DISK_IMAGE_STATE_DEPRECATED` and optionally setting `spec.deprecation.replacement` to the ID of a recommended replacement DiskImage.
+1. Admin calls `DiskImages/Update` setting `spec.state` to `DISK_IMAGE_STATE_DEPRECATED`.
 2. Server auto-sets `spec.deprecation.deprecation_timestamp` to the current time.
 3. Deprecated images remain usable for new VM creation but are flagged in listings.
 4. Admin later calls `DiskImages/Update` setting `spec.state` to `DISK_IMAGE_STATE_OBSOLETE`.
@@ -185,14 +185,11 @@ enum Architecture {
 
 // Deprecation details for a DiskImage.
 message DiskImageDeprecation {
-  // Suggested replacement DiskImage ID.
-  string replacement = 1;
-
   // When deprecation was announced. Auto-set on transition to DEPRECATED.
-  google.protobuf.Timestamp deprecation_timestamp = 2;
+  google.protobuf.Timestamp deprecation_timestamp = 1;
 
   // When the image becomes or became obsolete. Auto-set on transition to OBSOLETE.
-  google.protobuf.Timestamp obsolescence_timestamp = 3;
+  google.protobuf.Timestamp obsolescence_timestamp = 2;
 }
 
 // A disk image wraps an OCI artifact reference with curated metadata for VM provisioning.
@@ -203,22 +200,33 @@ message DiskImage {
   DiskImageStatus status = 4;
 }
 
+// Image source type.
+enum SourceType {
+  SOURCE_TYPE_UNSPECIFIED = 0;
+  SOURCE_TYPE_REGISTRY = 1;
+}
+
 // Desired configuration for a DiskImage.
 message DiskImageSpec {
+  // Image source type. Immutable after creation.
+  SourceType source_type = 1 [(buf.validate.field).enum.defined_only = true];
+
   // OCI artifact reference (e.g., "quay.io/containerdisks/fedora:41"). Immutable after creation.
-  string source = 1 [(buf.validate.field).string.min_len = 1];
+  string source_ref = 2 [(buf.validate.field).string.min_len = 1];
 
   // Guest operating system family. Immutable after creation.
-  GuestOSFamily guest_os_family = 2 [(buf.validate.field).enum.defined_only = true];
+  // Passed through to AAP, which uses it to determine KubeVirt VM domain
+  // configuration (e.g., Windows VMs get secure boot and TPM).
+  GuestOSFamily guest_os_family = 3 [(buf.validate.field).enum.defined_only = true];
 
   // Supported CPU architectures. Informational metadata for filtering and discovery.
-  repeated Architecture architecture = 3 [(buf.validate.field).repeated = {min_items: 1, items: {enum: {defined_only: true}}}];
+  repeated Architecture architecture = 4 [(buf.validate.field).repeated = {min_items: 1, items: {enum: {defined_only: true}}}];
 
   // Lifecycle state of the image.
-  DiskImageState state = 4;
+  DiskImageState state = 5;
 
   // Deprecation details. Only meaningful when state is DEPRECATED or OBSOLETE.
-  DiskImageDeprecation deprecation = 5;
+  DiskImageDeprecation deprecation = 6;
 }
 
 // System-provided status. Currently empty; reserved for future use.
@@ -227,9 +235,9 @@ message DiskImageStatus {}
 
 Key design points:
 
-- `DiskImageState` follows the InstanceType lifecycle pattern. `DiskImageDeprecation` aligns with the ClusterVersion pattern — state lives only in `DiskImageSpec.state` (no duplication in the deprecation message), while `replacement`, `deprecation_timestamp`, and `obsolescence_timestamp` provide deprecation metadata. [Codebase: cluster_version_type.proto, instance_type_type.proto]
+- `DiskImageState` follows the InstanceType lifecycle pattern. `DiskImageDeprecation` aligns with the ClusterVersion pattern — state lives only in `DiskImageSpec.state` (no duplication in the deprecation message), while `deprecation_timestamp` and `obsolescence_timestamp` provide deprecation metadata. [Codebase: cluster_version_type.proto, instance_type_type.proto]
 - `GuestOSFamily` is a shared enum (defined in its own file) replacing the `is_windows` boolean. It uses the standard OSAC enum naming convention with `_UNSPECIFIED = 0`.
-- `source` is required on create. `guest_os_family` defaults to `GUEST_OS_FAMILY_LINUX` when unspecified. Both are immutable after creation — the server's Update handler rejects changes to these fields. `architecture` remains mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
+- `source_type` and `source_ref` are required on create. `guest_os_family` defaults to `GUEST_OS_FAMILY_LINUX` when unspecified. All three are immutable after creation — the server's Update handler rejects changes to these fields. `architecture` remains mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
 - `architecture` is a `repeated Architecture` enum. Values: `ARCHITECTURE_AMD64`, `ARCHITECTURE_ARM64`, `ARCHITECTURE_S390X`. At least one value is required. Proto-level `defined_only` validation replaces the need for a server-side allowlist.
 - `state` defaults to `DISK_IMAGE_STATE_AVAILABLE` when unspecified on create.
 
@@ -304,7 +312,7 @@ message ComputeInstanceSpec {
 
 The `ComputeInstanceImage` message is no longer used by ComputeInstance and can be removed once no other resource references it.
 
-`ComputeInstancesCreateResponse` already has a `repeated string warnings` field (used for InstanceType deprecation notices). DiskImage reuses this field to convey non-fatal conditions (e.g., referencing a DEPRECATED DiskImage with replacement hint).
+`ComputeInstancesCreateResponse` already has a `repeated string warnings` field (used for InstanceType deprecation notices). DiskImage reuses this field to convey non-fatal conditions (e.g., referencing a DEPRECATED DiskImage).
 
 #### Proto Schema: ComputeInstanceTemplate Changes
 
@@ -388,14 +396,14 @@ Two new files in `internal/servers/`:
 - `private_disk_images_server.go` — private DiskImages server wrapping `GenericServer[*privatev1.DiskImage]`
 
 **Create handler:**
-1. Validate `source` and `architecture` are set.
+1. Validate `source_type`, `source_ref`, and `architecture` are set.
 2. If `state` is unspecified, set to `DISK_IMAGE_STATE_AVAILABLE`.
 3. If `guest_os_family` is unspecified, default to `GUEST_OS_FAMILY_LINUX`.
 4. Delegate to generic server for persistence.
 
 **Update handler:**
 1. Fetch existing DiskImage from database.
-2. Reject changes to `source` and `guest_os_family` (immutable fields) — return `InvalidArgument`. `architecture` is mutable.
+2. Reject changes to `source_type`, `source_ref`, and `guest_os_family` (immutable fields) — return `InvalidArgument`. `architecture` is mutable.
 3. If `state` transitions to DEPRECATED: auto-set `deprecation.deprecation_timestamp`.
 4. If `state` transitions to OBSOLETE: auto-set `deprecation.obsolescence_timestamp`.
 5. If `state` transitions back to AVAILABLE: clear `deprecation` field entirely.
@@ -414,7 +422,7 @@ Default list excludes OBSOLETE images. The server prepends `this.spec.state != 3
 2. Fetch the referenced DiskImage. Return `NotFound` if it does not exist.
 3. Validate the DiskImage is visible to the caller's tenant (global or matching tenant).
 4. Validate the DiskImage state is not OBSOLETE — return `FailedPrecondition` with message: `"cannot create compute instance: disk image is obsolete"`.
-5. If the DiskImage state is DEPRECATED, add a warning to `ComputeInstancesCreateResponse.warnings`: `"disk image '<id>' is deprecated"`. If `deprecation.replacement` is set, append `"; replacement: '<replacement_id>'"` to the warning.
+5. If the DiskImage state is DEPRECATED, add a warning to `ComputeInstancesCreateResponse.warnings`: `"disk image '<id>' is deprecated"`.
 6. Persist the ComputeInstance with the `disk_image` reference.
 
 **Spec defaults modifications (`internal/utils/spec_defaults.go`):**
@@ -487,7 +495,7 @@ DiskImage inherits the existing OSAC security model without modification:
 
 - **Authentication:** JWT validation via the gRPC interceptor chain (same as all other resources).
 - **Authorization:** OPA policies control access. See RBAC / Tenancy section below.
-- **Input validation:** `buf.validate` annotations enforce required fields, enum validity, and minimum lengths on proto fields. The `source` field accepts any string (URLs, digests). OSAC does not validate OCI reference reachability — invalid references surface as errors at VM provisioning time, consistent with the current behavior.
+- **Input validation:** `buf.validate` annotations enforce required fields, enum validity, and minimum lengths on proto fields. The `source_ref` field accepts any string (URLs, digests). OSAC does not validate OCI reference reachability — invalid references surface as errors at VM provisioning time, consistent with the current behavior.
 - **Tenant isolation:** The generic server enforces tenant field validation, ensuring tenant-scoped DiskImages are only accessible within their tenant. Global DiskImages (empty tenant) are readable by all tenants.
 
 No new attack surface is introduced. DiskImage does not handle binary uploads, registry authentication, or credential storage.
@@ -628,7 +636,7 @@ Once deprecated, a DiskImage cannot return to AVAILABLE.
 ### E2E Tests
 
 - **Image catalog workflow:** Provider Admin registers a global DiskImage, Tenant User lists images (sees it), creates a ComputeInstance using the DiskImage, verifies the VM runs.
-- **Deprecation workflow:** Provider Admin deprecates a DiskImage with a replacement hint, Tenant User lists images (sees deprecation warning), creates a VM (succeeds with deprecated image), Provider Admin obsoletes the DiskImage, Tenant User attempts VM creation (fails).
+- **Deprecation workflow:** Provider Admin deprecates a DiskImage, Tenant User lists images (sees deprecation warning), creates a VM (succeeds with deprecated image), Provider Admin obsoletes the DiskImage, Tenant User attempts VM creation (fails).
 - **Tenant-scoped image:** Tenant Admin registers a tenant-scoped DiskImage, Tenant User in same tenant creates a VM with it, Tenant User in different tenant cannot see or use it.
 
 ## Graduation Criteria
