@@ -42,6 +42,7 @@ A DiskImage resource centralizes image metadata, provides a catalog for discover
 - Keep the osac-operator CRD unchanged; fulfillment-service resolves DiskImage references to ImageSpec and GuestOSFamily before creating the Kubernetes CR.
 - Enforce deletion protection via bidirectional database triggers (following the InstanceType pattern) that prevent soft-deleting a DiskImage still referenced by active ComputeInstances, ComputeInstanceTemplates, or ComputeInstanceCatalogItems.
 - Support two-tier visibility (provider-global and tenant-scoped) using the existing tenant field in Metadata.
+- Design for future BareMetalInstance integration — fields are service-neutral, not VM-specific (OSAC-1270).
 
 ### Non-Goals
 
