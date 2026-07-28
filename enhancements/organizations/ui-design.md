@@ -13,7 +13,7 @@ This design covers the OSAC Console (frontend and Go proxy) changes required to 
 
 1. **Shell changes** — role-differentiated sidebar navigation for four UI roles (`admin`, `tenant-idp-manager`, `tenant-admin`, `tenant-user`), with matching route guards and default routes.
 2. **Project context switcher** — a multi-select masthead component that scopes resource pages to zero, one, or many projects, with hierarchical display and persistent selection.
-3. **New management screens** — Organization CRUD (Cloud Provider Admin), Identity Provider configuration (Cloud Provider Admin / Tenant Admin / break-glass), Roles & Groups management (Cloud Provider Admin / Tenant Admin / break-glass), and Project CRUD with permissions (Cloud Provider Admin / Tenant Admin / Tenant User).
+3. **New management screens** — Tenant CRUD (Cloud Provider Admin), Identity Provider configuration (Cloud Provider Admin / Tenant Admin / break-glass), Roles & Groups management (Cloud Provider Admin / Tenant Admin / break-glass), and Project CRUD with permissions (Cloud Provider Admin / Tenant Admin / Tenant User).
 4. **Authentication changes** — a fourth `tenant-idp-manager` role mapping and `PermissionDenied` error handling in the Connect interceptor. The Go proxy continues to talk to a single Keycloak instance — Keycloak handles routing to the tenant-specific IdP internally.
 
 The backend APIs (fulfillment-service, Keycloak integration, Kuadrant authorization) are assumed to exist per the PRD. This design addresses how the UI consumes them.
@@ -26,7 +26,7 @@ The backend APIs (fulfillment-service, Keycloak integration, Kuadrant authorizat
 - Keep the `ui-components` package API-layer-agnostic: new hooks use the `useApiQuery`/`useApiFetch` pattern with no direct `@tanstack/react-query` imports.
 - Add `tenant-idp-manager` as a fourth UI role without breaking the existing role-based rendering contract.
 - Automatically scope project-scoped resource queries to the project context switcher selection — `useApiQuery` detects project-scoped resources via protobuf `Metadata.project` introspection and injects CEL filters without per-hook opt-in.
-- Expose break-glass credentials exactly once at organization creation time; never persist or re-display them.
+- Expose break-glass credentials exactly once at tenant creation time; never persist or re-display them.
 
 ## 2.2 Non-Goals
 
@@ -36,7 +36,7 @@ The backend APIs (fulfillment-service, Keycloak integration, Kuadrant authorizat
 
 # 3. Motivation / Background
 
-The OSAC Console currently serves a single-tenant experience: navigation is identical for all roles, there is no project context switcher, and no management screens exist for organizations, identity providers, roles, or projects. The session context carries only `role` and `username` — no tenant or organization identity.
+The OSAC Console currently serves a single-tenant experience: navigation is identical for all roles, there is no project context switcher, and no management screens exist for tenants, identity providers, roles, or projects. The session context carries only `role` and `username` — no tenant identity.
 
 The `navRowsForRole` function in `shellNav.ts` accepts a `role` parameter but ignores it, always returning the tenant-user navigation. The `UserRole` type defines three roles (`admin`, `tenant-admin`, `tenant-user`) but the UI does not differentiate between them. The OIDC login hook maps Keycloak `realm_access.roles` to these three values; the `tenant-idp-manager` Keycloak role falls through to `tenant-user`, which is incorrect — break-glass users would see Services and Networking pages they cannot use. [Codebase: apps/app-frontend/src/shell/shellNav.ts], [Codebase: apps/app-frontend/src/hooks/oidc-login.tsx]
 
@@ -61,7 +61,7 @@ flowchart TD
     subgraph "libs/ui-components"
         Session[SessionContext: role, username]
         Switcher[ProjectContextSwitcher]
-        AdminPages[pages/admin/: Organization CRUD]
+        AdminPages[pages/admin/: Tenant CRUD]
         BreakGlassPages[pages/breakglass/: IdP, Roles]
         TenantAdminPages[pages/tenantadmin/: Projects]
         Hooks[api/v1/: new query + mutation hooks]
@@ -98,9 +98,9 @@ The diagram shows the dependency graph between new and modified components. `app
 
 | Role | Sections | Default route |
 |------|----------|---------------|
-| `admin` | Administration (Organizations) + Organization (IdP, Roles & Groups, Projects) + Services + Networking | `/admin/organizations` |
-| `tenant-idp-manager` | Organization (Identity Provider, Roles & Groups) | `/organization/identity-provider` |
-| `tenant-admin` | Organization (Identity Provider, Roles & Groups, Projects) + Services + Networking | `/catalog` |
+| `admin` | Administration (Tenants) + Tenant (IdP, Roles & Groups, Projects) + Services + Networking | `/admin/tenants` |
+| `tenant-idp-manager` | Tenant (Identity Provider, Roles & Groups) | `/tenant/identity-provider` |
+| `tenant-admin` | Tenant (Identity Provider, Roles & Groups, Projects) + Services + Networking | `/catalog` |
 | `tenant-user` | Projects + Services + Networking | `/catalog` |
 
 The `defaultRouteForRole` function in `shellRoutes.ts` returns the corresponding default route per role.
@@ -117,10 +117,10 @@ New route trees are added to `AppShell.tsx`, each wrapped in a `RoleRoute` guard
 
 | Path prefix | Guard | Component |
 |-------------|-------|-----------|
-| `/admin/organizations/*` | `admin` | `OrganizationRoutes` |
-| `/organization/identity-provider/*` | `admin`, `tenant-idp-manager`, `tenant-admin` | `IdentityProviderRoutes` |
-| `/organization/roles/*` | `admin`, `tenant-idp-manager`, `tenant-admin` | `RolesGroupsRoutes` |
-| `/organization/projects/*` | `admin`, `tenant-admin`, `tenant-user` | `ProjectRoutes` |
+| `/admin/tenants/*` | `admin` | `TenantRoutes` |
+| `/tenant/identity-provider/*` | `admin`, `tenant-idp-manager`, `tenant-admin` | `IdentityProviderRoutes` |
+| `/tenant/roles/*` | `admin`, `tenant-idp-manager`, `tenant-admin` | `RolesGroupsRoutes` |
+| `/tenant/projects/*` | `admin`, `tenant-admin`, `tenant-user` | `ProjectRoutes` |
 
 Existing tenant routes (`/catalog`, `/vms`, `/clusters`, `/bare-metal`, `/networking/*`) are guarded by `admin`, `tenant-admin`, and `tenant-user`.
 
@@ -186,10 +186,13 @@ A new `ProjectContextProvider` wraps the app shell. It holds:
 interface ProjectContextValue {
   selectedProjects: string[];       // empty = "All projects"
   setSelectedProjects: (ids: string[]) => void;
+  isReady: boolean;                 // false until localStorage hydration completes
 }
 ```
 
-Selection is persisted to `localStorage` under a tenant-and-user-scoped key (`osac.selectedProjects.<tenantId>.<username>`) and restored on mount. Scoping to the tenant and authenticated username ensures that users across different tenants — or different users sharing a browser — do not inherit each other's project selections. The `tenantId` and `username` come from `SessionContext`. When either value changes (e.g., re-login to a different tenant), the stored selection is not carried over. When a selected project is deleted (detected by comparing the query result against the stored IDs), it is silently removed from the selection.
+**Hydration flow:** `ProjectContextProvider` initializes with `isReady: false` and `selectedProjects: []`. On mount (and whenever `tenantId` or `username` changes), it reads the scoped `localStorage` key, sets `selectedProjects` to the stored value (or `[]` if none exists), and then sets `isReady: true`. While `isReady` is false, the provider renders a full-page spinner (PatternFly `Bullseye` + `Spinner`) instead of its children — no page content, queries, or route rendering occurs until hydration completes. This gates the entire UI, ensuring the transient empty `selectedProjects` state is never visible to components or interpreted as "All projects".
+
+Selection is persisted to `localStorage` under a tenant-and-user-scoped key (`osac.selectedProjects.<tenantId>.<username>`). Scoping to the tenant and authenticated username ensures that users across different tenants — or different users sharing a browser — do not inherit each other's project selections. The `tenantId` and `username` come from `SessionContext`. When either value changes (e.g., re-login to a different tenant), `isReady` resets to false and the provider re-hydrates from the new key. When a selected project is deleted (detected by comparing the query result against the stored IDs), it is silently removed from the selection.
 
 The masthead switcher displays the current selection as a summary (e.g., "All projects", "team-a", "2 projects"). To change the selection, the user clicks a "Select projects" action which opens a modal. The modal handles hierarchical display (PatternFly `TreeView`, up to 4 levels deep) and paginated loading — it fetches projects page by page, building the tree incrementally, and supports search/filter to locate projects without scrolling through all pages. This separation keeps the masthead lightweight while the modal handles the complexity of pagination and tree rendering.
 
@@ -241,9 +244,11 @@ Hooks follow the existing `useApiFetch(ServiceDesc)` → Connect client → `use
 | `useUpdateIdentityProvider` | `PATCH` | `/api/fulfillment/v1/identity_providers/{object.id}` |
 | `useDeleteIdentityProvider` | `DELETE` | `/api/fulfillment/v1/identity_providers/{id}` |
 
-Note on Roles & Groups: The PRD describes role-to-group bindings (where groups are synced from the IdP to Keycloak). The actual fulfillment-service API uses `RoleBinding` objects that bind a role to a list of users — not groups. The Roles & Groups page design uses the API's `RoleBinding` model (role → users) rather than the PRD's group-based model. If the API is updated to support group-based bindings, the `RoleBindingDrawer` component switches to group selection. See open question §9.3.
+Note on Roles & Groups: The PRD describes role-to-group bindings (where groups are synced from the IdP to Keycloak). The actual fulfillment-service API uses `RoleBinding` objects that bind a role to a list of users — not groups. The Roles & Groups page design uses the API's `RoleBinding` model (role → users) rather than the PRD's group-based model. If the API is updated to support group-based bindings, the `RoleBindingDrawer` component switches to group selection. RoleBinding management is restricted to `tenant-admin` only.
 
-Note: The actual API uses flat top-level paths (e.g., `/api/fulfillment/v1/identity_providers`) with `metadata.tenant` for scoping — not the nested organization paths described in the PRD.
+Note on ProjectMemberships: ProjectMembership assignment (adding/removing users from a project with VIEWER or MANAGER roles) can be performed by `tenant-admin` or by the project's creator/managers. The permissions tab on the project detail page is visible to these users; `tenant-user` members with VIEWER role see the project and its resources but cannot manage membership.
+
+Note: The actual API uses flat top-level paths (e.g., `/api/fulfillment/v1/identity_providers`) with `metadata.tenant` for scoping — not the nested paths described in the PRD.
 
 ### `ApiRoute` type extension
 
@@ -284,13 +289,13 @@ Impact is minimal and bounded to the browser:
 - **Network**: New pages issue 1–3 API calls on mount (same pattern as existing resource pages). The project switcher fetches the project list once per mount and relies on TanStack Query stale-while-revalidate.
 - **Storage**: `localStorage` stores the project selection per tenant/user (a JSON array of project IDs, typically < 1 KB).
 
-Organization and project list pages use TanStack Query's `refetchInterval` (matching the pattern used by existing resource list pages) to auto-refresh and reflect changes made by other users. No custom polling logic — the standard TanStack Query refetch interval applies.
+Tenant and project list pages use TanStack Query's `refetchInterval` (matching the pattern used by existing resource list pages) to auto-refresh and reflect changes made by other users. No custom polling logic — the standard TanStack Query refetch interval applies.
 
 ## 4.5 Security Considerations
 
 ### Break-glass credential display
 
-Organization creation returns break-glass credentials in the API response. The console displays them in a one-time confirmation dialog with copy-to-clipboard. After the user dismisses the dialog:
+Tenant creation returns break-glass credentials in the API response. The console displays them in a one-time confirmation dialog with copy-to-clipboard. After the user dismisses the dialog:
 - Credentials are not persisted to `localStorage`, `sessionStorage`, or any client-side store.
 - Navigation away from the dialog is irreversible — the fulfillment-service does not persist the password (it is generated, sent to Keycloak, returned in the response, and discarded). Reading the tenant afterward returns empty credentials. Password reset is only possible via the Keycloak admin API directly.
 - The password is temporary — the break-glass user must change it on first login.
@@ -316,8 +321,8 @@ No secrets, tokens, or credentials are stored in source or tests. OIDC tokens re
 | Keycloak outage | Login page fails to load or returns a connection error | Requires Keycloak recovery — no client-side workaround (break-glass auth also depends on Keycloak) |
 | Session expired (401 from API) | Redirect to login flow | Automatic — `UnauthorizedError` triggers re-authentication |
 | Permission denied (403 from API) | Access-denied empty state on the page | User contacts admin for role/permission changes |
-| Organization list load fails | Error state with retry action (TanStack Query) | Automatic retry; manual refresh |
-| Organization create fails | Inline error on the create form | User corrects input and resubmits |
+| Tenant list load fails | Error state with retry action (TanStack Query) | Automatic retry; manual refresh |
+| Tenant create fails | Inline error on the create form | User corrects input and resubmits |
 | Break-glass credential dialog dismissed without copying | Credentials lost — cannot be retrieved | Cloud Provider Admin must reset via Keycloak Admin Console |
 | IdP connectivity test fails | Error details shown inline on the Identity Provider page | User corrects IdP configuration and retests |
 | Project list load fails | Error state in project switcher dropdown and project list page | TanStack Query retry |
@@ -330,9 +335,9 @@ No secrets, tokens, or credentials are stored in source or tests. OIDC tokens re
 
 | Role | Keycloak source | Navigation | Project switcher |
 |------|-----------------|------------|------------------|
-| `admin` | `admin` group membership | Administration + Organization + Services + Networking | Yes |
-| `tenant-idp-manager` | `tenant-idp-manager` role | Organization (IdP + Roles & Groups only) | No |
-| `tenant-admin` | `tenant-admin` role | Organization + Services + Networking | Yes |
+| `admin` | `admin` group membership | Administration + Tenant + Services + Networking | Yes |
+| `tenant-idp-manager` | `tenant-idp-manager` role | Tenant (IdP + Roles & Groups only) | No |
+| `tenant-admin` | `tenant-admin` role | Tenant + Services + Networking | Yes |
 | `tenant-user` | _(no explicit role)_ | Projects + Services + Networking | Yes |
 
 The `ROLE_MAP` in `oidc-login.tsx` is removed. `roleFromRoles` checks Keycloak group membership and `realm_access.roles` to resolve the UI role in priority order (`admin` > `tenant-admin` > `tenant-idp-manager` > `tenant-user`). Authenticated users with no recognized group or role are treated as `tenant-user`. If the user is not authenticated at all, the existing login redirect applies.
@@ -343,25 +348,25 @@ Route access is enforced by `RoleRoute`, which reads `role` from `SessionContext
 
 ### Tenant isolation
 
-All API calls are scoped to the authenticated user's tenant via the Go proxy session (the Keycloak realm determines the tenant). The UI does not implement tenant filtering — the API returns only resources belonging to the user's organization.
+All API calls are scoped to the authenticated user's tenant via the Go proxy session (the Keycloak realm determines the tenant). The UI does not implement tenant filtering — the API returns only resources belonging to the user's tenant.
 
-Cloud Provider Admins (`admin`) operate cross-tenant — their API calls to the Organization/Tenant endpoints return all organizations. The organization list page does not apply tenant filtering.
+Cloud Provider Admins (`admin`) operate cross-tenant — their API calls to the Tenant endpoints return all tenants. The tenant list page does not apply tenant filtering.
 
 ### Visibility constraints
 
-- Cloud Provider Admins (`admin`) have full access to all sections — Administration, Organization, Services, and Networking — including the project context switcher.
+- Cloud Provider Admins (`admin`) have full access to all sections — Administration, Tenant, Services, and Networking — including the project context switcher.
 - Break-glass users (`tenant-idp-manager`) see only Identity Provider and Roles & Groups — no project switcher, no resource pages, no project management.
 - Tenant Users see only projects they have at least `VIEWER` membership on (API-enforced — the project list endpoint returns only accessible projects).
-- Project permissions tab on the project detail page is visible to `admin` and `tenant-admin` only.
+- Project permissions tab on the project detail page is visible to `admin`, `tenant-admin`, and project managers (users with `MANAGER` membership on that project).
 
 ## 4.8 Extensibility / Future-Proofing
 
 The design accommodates likely future enhancements without over-engineering:
 
 - **Additional IdP types**: The IdP configuration form renders fields based on `IdentityProviderSpec.config` (a protobuf `oneof`). Adding LDAP/SAML support requires adding form sections conditional on the selected type — no architectural change to the form infrastructure.
-- **Quotas**: Organization and project detail pages use a tab layout. A "Quotas" tab can be added when quota management is implemented.
-- **Multiple IdPs per Organization**: The API supports multiple IdPs per tenant with no server-side limit. The IdP page uses a list → detail pattern (same as other resource pages), accommodating multiple IdPs out of the box.
-- **Organization-scoped login**: The Go proxy connects to a single Keycloak instance and obtains the OIDC issuer URL from the fulfillment capabilities endpoint. Keycloak internally routes to the correct IdP per organization based on the username. The UI simply redirects to Keycloak to start the login process and receives the user's token — org resolution is a Keycloak concern, not a UI concern.
+- **Quotas**: Tenant and project detail pages use a tab layout. A "Quotas" tab can be added when quota management is implemented.
+- **Multiple IdPs per Tenant**: The API supports multiple IdPs per tenant with no server-side limit. The IdP page uses a list → detail pattern (same as other resource pages), accommodating multiple IdPs out of the box.
+- **Tenant-scoped login**: The Go proxy connects to a single Keycloak instance and obtains the OIDC issuer URL from the fulfillment capabilities endpoint. Keycloak internally routes to the correct IdP per tenant based on the username. The UI simply redirects to Keycloak to start the login process and receives the user's token — tenant resolution is a Keycloak concern, not a UI concern.
 
 # 5. Alternatives Considered
 
@@ -401,7 +406,7 @@ The design accommodates likely future enhancements without over-engineering:
 
 **Pros of (a)**: Matches PRD language and user mental model. **Cons of (a)**: Divergence between UI labels and API field names complicates debugging and documentation.
 
-**Decision**: Deferred — this is an open question (§9.2). The component architecture uses "Organization" in user-facing labels and "Tenant" in code/API references, allowing either choice without refactoring.
+**Decision**: Use "Tenant" everywhere — aligned with the API model. The `Organization` protobuf type is deprecated in favor of `Tenant`; keeping the UI in sync avoids a permanent translation layer between labels and API fields.
 
 # 6. Observability and Monitoring
 
@@ -417,10 +422,10 @@ Unit tests (Vitest + React Testing Library):
 
 - **Role resolution** — `roleFromRoles` returns the correct `UserRole` for each priority combination; returns `'tenant-user'` when no recognized group or role is present (matching Keycloak semantics where tenant-user has no explicit role).
 - **Role-differentiated navigation** — `navRowsForRole` returns the correct `NavRow[]` for each of the four roles; `defaultRouteForRole` returns the matching default route.
-- **Route guards** — `RoleRoute` renders children for authorized roles; renders access-denied state for unauthorized roles (e.g., `tenant-user` accessing `/admin/organizations`).
+- **Route guards** — `RoleRoute` renders children for authorized roles; renders access-denied state for unauthorized roles (e.g., `tenant-user` accessing `/admin/tenants`).
 - **Project context switcher** — `ProjectContextProvider` persists selection to `localStorage` under `osac.selectedProjects.<tenantId>.<username>`; restores on mount; silently removes deleted projects from selection.
 - **Automatic project scoping** — `useApiQuery` injects CEL filter for project-scoped resources (resources with `Metadata.project`); omits filter for non-project-scoped resources; omits filter when no projects are selected ("All projects").
-- **Organization CRUD** — create form validates required fields; break-glass credential dialog displays credentials and warns about one-time visibility; delete confirmation modal shows server error on `FailedPrecondition` (child resources exist).
+- **Tenant CRUD** — create form validates required fields; break-glass credential dialog displays credentials and warns about one-time visibility; delete confirmation modal shows server error on `FailedPrecondition` (child resources exist).
 - **Identity Provider form** — OIDC config form validates `client_id`, `client_secret`, `issuer`, `default_scopes` fields; connectivity test displays success/failure inline.
 - **Roles & Groups** — roles table renders read-only list; `RoleBindingDrawer` manages role-to-user bindings.
 - **Project CRUD** — create modal validates required fields; delete confirmation modal shows server error on `FailedPrecondition`; permissions tab renders project memberships with VIEWER/MANAGER roles.
@@ -429,12 +434,12 @@ Unit tests (Vitest + React Testing Library):
 
 Integration tests (Vitest with mock Connect transport):
 
-- Organization create happy path: fill form → submit → break-glass credential dialog → dismiss → redirect to detail page.
+- Tenant create happy path: fill form → submit → break-glass credential dialog → dismiss → redirect to detail page.
 - IdP configuration: create OIDC IdP → test connectivity → verify status display.
 - Project switcher interaction: select projects → verify list page re-fetches with CEL filter → deselect → verify unfiltered fetch.
 - No-role user flow: authenticate with no recognized roles → verify tenant-user shell renders (tenant-user is the implicit default for users without explicit Keycloak roles).
 
-Tricky areas: project scoping with `Metadata.project` introspection (ensuring non-project-scoped resources like Organizations are never filtered); role priority when a user has multiple roles; break-glass credential dialog dismissal (credentials must not be recoverable after close); `localStorage` key scoping per tenant and username.
+Tricky areas: project scoping with `Metadata.project` introspection (ensuring non-project-scoped resources like Tenants are never filtered); role priority when a user has multiple roles; break-glass credential dialog dismissal (credentials must not be recoverable after close); `localStorage` key scoping per tenant and username.
 
 # 8. Impact and Compatibility
 
@@ -444,7 +449,7 @@ Tricky areas: project scoping with `Metadata.project` introspection (ensuring no
 
 ## Breaking changes to existing behavior
 
-- `navRowsForRole` currently returns the same nav for all roles. After this change, `admin` users see a different sidebar. This is intentional and required by the PRD, but it changes the experience for any existing `admin` users.
+- `navRowsForRole` currently returns the same nav for all roles. After this change, Cloud Provider Admin (`admin`) users see a different sidebar. This is intentional and required by the PRD, but it changes the experience for any existing admin users.
 - The Connect error interceptor now throws `ForbiddenError` on 403 responses. Because the interceptor converts `ConnectError` *before* the error reaches hook consumers, any code catching `ConnectError` for `PermissionDenied` must be updated to catch `ForbiddenError` instead.
 
 ## Migration
@@ -457,21 +462,17 @@ Existing resource pages (VMs, Clusters, Bare Metal, Virtual Networks) gain proje
 
 # 9. Open Questions
 
-## 9.1 Should the UI use "Organization" or "Tenant" as the user-facing term?
+## ~~9.1 Should the UI use "Organization" or "Tenant" as the user-facing term?~~
 
-The PRD uses "Organization" throughout. The API model has deprecated `Organization` in favor of `Tenant`. The current codebase has both: the public API exports `Organization` types (legacy) and `Tenant` types (current).
+**Resolved.** Use "Tenant" as the user-facing term, aligned with the current API model. All user-facing labels, breadcrumbs, page titles, nav items, and i18n keys use "Tenant" (e.g., "Tenants" list page, "Create tenant" action, "Tenant details" header).
 
-- **Owner:** Product / UX team
-- **Impact:** All user-facing labels, breadcrumbs, page titles, nav items, i18n keys
+## ~~9.2 Which permissions model is authoritative — Keycloak Authorization Services scopes or ProjectMembership VIEWER/MANAGER?~~
 
-## 9.2 Which permissions model is authoritative — Keycloak Authorization Services scopes or ProjectMembership VIEWER/MANAGER?
+**Resolved.** The permissions model uses `ProjectMembership` with two roles — `VIEWER` and `MANAGER`. Membership in either role grants access to the project and all its resources. The only difference is project-level mutability: a `VIEWER` has read-only access to the Project itself, while a `MANAGER` can update and delete the Project. The PRD's fine-grained scopes (`VIEW_PROJECT`, `MANAGE_PROJECT`, `CREATE_COMPUTE_INSTANCE`) are not implemented — the two-role model is authoritative.
 
-The PRD describes fine-grained scoped permissions (`VIEW_PROJECT`, `MANAGE_PROJECT`, `CREATE_COMPUTE_INSTANCE`). The fulfillment-service implementation uses `ProjectMembership` with two roles (`VIEWER`, `MANAGER`) and `RoleBinding` objects for org-level role assignment.
-
-This affects: the Project detail Permissions tab (does it show scoped permissions or VIEWER/MANAGER membership?), the Roles & Groups page (does it manage groups or RoleBindings?), and form field design for granting access.
-
-- **Owner:** API / Backend team
-- **Impact:** §4.1 (Roles & Groups page, Project permissions tab), §4.3 (which mutation hooks are needed)
+Access rules:
+- **RoleBindings** (tenant-level role assignment): managed by `tenant-admin` only.
+- **ProjectMemberships** (assigning users to projects): managed by `tenant-admin` or by the project's creator/managers.
 
 ## ~~9.3 How should the project context switcher work with paginated project listing?~~
 
