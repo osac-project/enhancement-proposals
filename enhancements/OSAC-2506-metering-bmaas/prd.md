@@ -138,8 +138,8 @@ This PRD is part of the Metering Part 2 family, which was split from a combined 
 ## Provenance
 
 Authored: respond @ prd 0.6.0 - 7b6dfe0, workspace main @ 3100993
-Final: respond @ prd 0.6.0 - 139e6c1, workspace main @ e454759
+Final: respond @ prd 0.6.2 - 75ae801, workspace main @ f30bca2
 
 > Context changed between respond and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"e454759","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.2","ai_workflows":"75ae801","source_repo":"f30bca2","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
