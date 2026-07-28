@@ -29,7 +29,7 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 ### Cloud Provider Admin
 
 - As a Cloud Provider Admin, I want resources across all tenant organizations to show a consistent, human-readable `display_name` and `description` so that I can quickly identify and audit resources when reviewing or supporting tenants, regardless of resource type.
-- As a Cloud Provider Admin, I want to filter and sort resource lists by `display_name` so that I can locate specific resources across tenants without memorizing DNS-label names. `[Clarify: R2.Q2]`
+- As a Cloud Provider Admin, I want to filter and sort resource lists by `display_name` so that I can find resources across tenants using natural-language terms. `[Clarify: R2.Q2, PR review: mhrivnak]`
 
 ### Cloud Infrastructure Admin
 
@@ -37,7 +37,7 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want all resource types I manage (VMs, virtual networks, public IPs, security groups, etc.) to support a friendly `display_name` and `description` so that I can label and document resources meaningfully instead of being limited by `metadata.name` restrictions.
+- As a Tenant Admin, I want all resource types I manage (VMs, virtual networks, public IPs, security groups, etc.) to support a friendly `display_name` and `description` so that I can give resources a natural-language name and description that are not constrained to DNS-label format. `[PR review: mhrivnak]`
 - As a Tenant Admin, I want to update or clear `display_name` and `description` on existing resources so that I can correct labels or remove outdated descriptions as resources evolve. `[Clarify: R3.Q1]`
 
 ### Tenant User
@@ -57,4 +57,4 @@ Final: respond @ prd 0.6.0 - 7b6dfe0, workspace main @ 280ee0f
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"7b6dfe0","source_repo":"280ee0f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"7b6dfe0","source_repo":"280ee0f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
