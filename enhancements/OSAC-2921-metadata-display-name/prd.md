@@ -16,7 +16,6 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 - Two new shared Metadata fields: `display_name` (optional, max 63 characters) and `description` (optional, max 256 characters) — both mutable, clearable, and not required to be unique `[Clarify: R2.Q1, R3.Q1, R4.Q4, PR review: sk-ilya]`
 - Reconciliation of existing per-resource `title`/`description` fields — removed from all 12 resource types that currently have them: Project, Role, IdentityProvider, InstanceType (description only), ClusterTemplate, ComputeInstanceTemplate, BareMetalInstanceTemplate, NetworkClass, HostType, ComputeInstanceCatalogItem, BareMetalInstanceCatalogItem, ClusterCatalogItem `[Clarify: R1.Q1, PR review: sk-ilya, ygalblum]`
 - Filtering and sorting by `display_name` `[Clarify: R2.Q2]`
-- E2E test coverage and documentation
 
 ## Out of Scope
 
@@ -53,8 +52,8 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 ## Provenance
 
 Authored: draft @ prd 0.5.0 - 92734a2, workspace main @ aac0f8e
-Final: respond @ prd 0.6.0 - 7b6dfe0, workspace main @ 280ee0f
+Final: respond @ prd 0.6.1 - 96de078, workspace main @ 7b4fff2
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"7b6dfe0","source_repo":"280ee0f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.1","ai_workflows":"96de078","source_repo":"7b4fff2","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
