@@ -38,7 +38,7 @@ A DiskImage resource centralizes image metadata, provides a catalog for discover
 
 ### Goals
 
-- Reuse the InstanceType lifecycle pattern (AVAILABLE/DEPRECATED/OBSOLETE with bidirectional transitions) for DiskImage state management.
+- Reuse the InstanceType lifecycle pattern (AVAILABLE/DEPRECATED/OBSOLETE with bidirectional transitions) for DiskImage lifecycle management.
 - Keep the osac-operator CRD unchanged; fulfillment-service resolves DiskImage references to ImageSpec and GuestOSFamily before creating the Kubernetes CR.
 - Enforce deletion protection via bidirectional database triggers (following the InstanceType pattern) that prevent soft-deleting a DiskImage still referenced by active ComputeInstances, ComputeInstanceTemplates, or ComputeInstanceCatalogItems.
 - Support two-tier visibility (provider-global and tenant-scoped) using the existing tenant field in Metadata.
@@ -55,7 +55,7 @@ A DiskImage resource centralizes image metadata, provides a catalog for discover
 
 This design adds a new DiskImage resource to the fulfillment-service with full CRUD operations, modifies ComputeInstance and ComputeInstanceTemplate to reference DiskImage by ID instead of inline image fields, and adds deletion protection logic to the DiskImage server.
 
-DiskImage follows the standard OSAC object shape (`id`, `Metadata`, `DiskImageSpec`, `DiskImageStatus`) and reuses the InstanceType lifecycle state machine for deprecation and obsolescence management. The `source_type`, `source_ref`, and `guest_os_family` fields on DiskImageSpec are immutable after creation. `guest_os_family` is passed through to AAP, which uses it to determine KubeVirt VM domain configuration (e.g., Windows VMs get secure boot and TPM). Display name and description come from shared Metadata (OSAC-2921).
+DiskImage follows the standard OSAC object shape (`id`, `Metadata`, `DiskImageSpec`, `DiskImageStatus`) and reuses the InstanceType lifecycle pattern for deprecation and obsolescence management. The `source_type`, `source_ref`, and `guest_os_family` fields on DiskImageSpec are immutable after creation. `guest_os_family` is passed through to AAP, which uses it to determine KubeVirt VM domain configuration (e.g., Windows VMs get secure boot and TPM). Display name and description come from shared Metadata (OSAC-2921).
 
 On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` field are replaced by a `disk_image` string reference. The reconciler resolves the DiskImage at reconciliation time, extracts `source_type`, `source_ref`, and `guest_os_family`, and maps them to the existing CRD ImageSpec and GuestOSFamily fields. The osac-operator is unchanged.
 
@@ -66,7 +66,7 @@ On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` fi
 **Actor:** Cloud Provider Admin (global images) or Tenant Admin (tenant-scoped images)
 
 1. Admin calls `DiskImages/Create` with the DiskImage object containing `spec.source_type`, `spec.source_ref`, `spec.guest_os_family`, and `spec.architecture`.
-2. Server validates required fields, sets `spec.state` to `DISK_IMAGE_STATE_AVAILABLE` if unspecified, persists the object, and returns it with system-generated `id` and `metadata`.
+2. Server validates required fields, sets `spec.lifecycle` to `DISK_IMAGE_LIFECYCLE_AVAILABLE` if unspecified, persists the object, and returns it with system-generated `id` and `metadata`.
 3. For global images, `metadata.tenant` is empty. For tenant-scoped images, the server sets `metadata.tenant` from the caller's identity.
 
 #### Creating a ComputeInstance with DiskImage
@@ -84,7 +84,7 @@ sequenceDiagram
     User->>API: Create ComputeInstance (disk_image=<id>)
     API->>DB: Get DiskImage by ID
     DB-->>API: DiskImage object
-    API->>API: Validate state != OBSOLETE
+    API->>API: Validate lifecycle != OBSOLETE
     API->>API: Validate tenant visibility
     API->>DB: Persist ComputeInstance
     DB-->>API: ComputeInstance (with disk_image ref)
@@ -104,7 +104,7 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 3. Server validates `disk_image` is set (required field) — return `InvalidArgument` if missing.
 4. Server fetches the referenced DiskImage and validates:
    - DiskImage exists and is visible to the caller's tenant (global or same tenant).
-   - DiskImage state is not OBSOLETE. If DEPRECATED, creation proceeds with a warning in the response.
+   - DiskImage lifecycle is not OBSOLETE. If DEPRECATED, creation proceeds with a warning in the response.
 5. Server persists the ComputeInstance with the `disk_image` reference.
 6. Reconciler fetches the referenced DiskImage, extracts `source_type`, `source_ref`, and `guest_os_family`, maps them to CRD `ImageSpec` and `GuestOSFamily`, and creates the KubeVirt VirtualMachine CR.
 
@@ -112,16 +112,16 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 
 **Actor:** Cloud Provider Admin or Tenant Admin (for their own images)
 
-1. Admin calls `DiskImages/Update` setting `spec.state` to `DISK_IMAGE_STATE_DEPRECATED`.
+1. Admin calls `DiskImages/Update` setting `spec.lifecycle` to `DISK_IMAGE_LIFECYCLE_DEPRECATED`.
 2. Server auto-sets `spec.deprecation.deprecation_timestamp` to the current time.
 3. Deprecated images remain usable for new VM creation but are flagged in listings.
-4. Admin later calls `DiskImages/Update` setting `spec.state` to `DISK_IMAGE_STATE_OBSOLETE`.
+4. Admin later calls `DiskImages/Update` setting `spec.lifecycle` to `DISK_IMAGE_LIFECYCLE_OBSOLETE`.
 5. Server auto-sets `spec.deprecation.obsolescence_timestamp`.
-6. Obsolete images are excluded from default list results (retrievable via explicit filter `this.spec.state == 3`) and block new ComputeInstance creation.
+6. Obsolete images are excluded from default list results (retrievable via explicit filter `this.spec.lifecycle == 3`) and block new ComputeInstance creation.
 
 #### Reactivating a DiskImage
 
-Admin calls `DiskImages/Update` setting `spec.state` back to `DISK_IMAGE_STATE_AVAILABLE`. Server clears the `spec.deprecation` field. The DiskImage becomes fully available again. [Locked: D4]
+Admin calls `DiskImages/Update` setting `spec.lifecycle` back to `DISK_IMAGE_LIFECYCLE_AVAILABLE`. Server clears the `spec.deprecation` field. The DiskImage becomes fully available again. [Locked: D4]
 
 #### Deleting a DiskImage
 
@@ -161,11 +161,11 @@ Once `pnpm gen-types` runs against the updated protos, the UI migration will inv
 // disk_image_type.proto
 
 // Lifecycle states for DiskImage resources.
-enum DiskImageState {
-  DISK_IMAGE_STATE_UNSPECIFIED = 0;
-  DISK_IMAGE_STATE_AVAILABLE = 1;
-  DISK_IMAGE_STATE_DEPRECATED = 2;
-  DISK_IMAGE_STATE_OBSOLETE = 3;
+enum DiskImageLifecycle {
+  DISK_IMAGE_LIFECYCLE_UNSPECIFIED = 0;
+  DISK_IMAGE_LIFECYCLE_AVAILABLE = 1;
+  DISK_IMAGE_LIFECYCLE_DEPRECATED = 2;
+  DISK_IMAGE_LIFECYCLE_OBSOLETE = 3;
 }
 
 // Guest operating system family.
@@ -223,9 +223,9 @@ message DiskImageSpec {
   repeated Architecture architecture = 4 [(buf.validate.field).repeated = {min_items: 1, items: {enum: {defined_only: true}}}];
 
   // Lifecycle state of the image.
-  DiskImageState state = 5;
+  DiskImageLifecycle lifecycle = 5;
 
-  // Deprecation details. Only meaningful when state is DEPRECATED or OBSOLETE.
+  // Deprecation details. Only meaningful when lifecycle is DEPRECATED or OBSOLETE.
   DiskImageDeprecation deprecation = 6;
 }
 
@@ -235,11 +235,11 @@ message DiskImageStatus {}
 
 Key design points:
 
-- `DiskImageState` follows the InstanceType lifecycle pattern. `DiskImageDeprecation` aligns with the ClusterVersion pattern — state lives only in `DiskImageSpec.state` (no duplication in the deprecation message), while `deprecation_timestamp` and `obsolescence_timestamp` provide deprecation metadata. [Codebase: cluster_version_type.proto, instance_type_type.proto]
+- `DiskImageLifecycle` follows the InstanceType lifecycle pattern. `DiskImageDeprecation` aligns with the ClusterVersion pattern — lifecycle lives only in `DiskImageSpec.lifecycle` (no duplication in the deprecation message), while `deprecation_timestamp` and `obsolescence_timestamp` provide deprecation metadata. [Codebase: cluster_version_type.proto, instance_type_type.proto]
 - `GuestOSFamily` is a shared enum (defined in its own file) replacing the `is_windows` boolean. It uses the standard OSAC enum naming convention with `_UNSPECIFIED = 0`.
 - `source_type` and `source_ref` are required on create. `guest_os_family` defaults to `GUEST_OS_FAMILY_LINUX` when unspecified. All three are immutable after creation — the server's Update handler rejects changes to these fields. `architecture` remains mutable to accommodate changes in the underlying image (e.g., mutable OCI tags where the image transitions from single-arch to multi-arch). [Locked: D2]
 - `architecture` is a `repeated Architecture` enum. Values: `ARCHITECTURE_AMD64`, `ARCHITECTURE_ARM64`, `ARCHITECTURE_S390X`. At least one value is required. Proto-level `defined_only` validation replaces the need for a server-side allowlist.
-- `state` defaults to `DISK_IMAGE_STATE_AVAILABLE` when unspecified on create.
+- `lifecycle` defaults to `DISK_IMAGE_LIFECYCLE_AVAILABLE` when unspecified on create.
 
 #### Proto Schema: DiskImages Service
 
@@ -397,23 +397,23 @@ Two new files in `internal/servers/`:
 
 **Create handler:**
 1. Validate `source_type`, `source_ref`, and `architecture` are set.
-2. If `state` is unspecified, set to `DISK_IMAGE_STATE_AVAILABLE`.
+2. If `lifecycle` is unspecified, set to `DISK_IMAGE_LIFECYCLE_AVAILABLE`.
 3. If `guest_os_family` is unspecified, default to `GUEST_OS_FAMILY_LINUX`.
 4. Delegate to generic server for persistence.
 
 **Update handler:**
 1. Fetch existing DiskImage from database.
 2. Reject changes to `source_type`, `source_ref`, and `guest_os_family` (immutable fields) — return `InvalidArgument`. `architecture` is mutable.
-3. If `state` transitions to DEPRECATED: auto-set `deprecation.deprecation_timestamp`.
-4. If `state` transitions to OBSOLETE: auto-set `deprecation.obsolescence_timestamp`.
-5. If `state` transitions back to AVAILABLE: clear `deprecation` field entirely.
+3. If `lifecycle` transitions to DEPRECATED: auto-set `deprecation.deprecation_timestamp`.
+4. If `lifecycle` transitions to OBSOLETE: auto-set `deprecation.obsolescence_timestamp`.
+5. If `lifecycle` transitions back to AVAILABLE: clear `deprecation` field entirely.
 6. Delegate to generic server for persistence.
 
 **Delete handler:**
 Delegates to the generic server for soft-deletion. The database trigger (`check_disk_image_not_in_use`) enforces deletion protection — if active resources reference the DiskImage, the trigger raises SQLSTATE `Z0003`, which the DAO translates to `FailedPrecondition`.
 
 **List handler:**
-Default list excludes OBSOLETE images. The server prepends `this.spec.state != 3` to the user's filter unless the user's filter explicitly references `this.spec.state`. Users who want obsolete images use `this.spec.state == 3` or omit the state filter by including any `this.spec.state` expression. [Locked: D4]
+Default list excludes OBSOLETE images. The server prepends `this.spec.lifecycle != 3` to the user's filter unless the user's filter explicitly references `this.spec.lifecycle`. Users who want obsolete images use `this.spec.lifecycle == 3` or omit the lifecycle filter by including any `this.spec.lifecycle` expression. [Locked: D4]
 
 #### ComputeInstance Server Changes
 
@@ -421,8 +421,8 @@ Default list excludes OBSOLETE images. The server prepends `this.spec.state != 3
 1. After template/catalog item defaults are applied, validate that `spec.disk_image` is set — return `InvalidArgument` if missing.
 2. Fetch the referenced DiskImage. Return `NotFound` if it does not exist.
 3. Validate the DiskImage is visible to the caller's tenant (global or matching tenant).
-4. Validate the DiskImage state is not OBSOLETE — return `FailedPrecondition` with message: `"cannot create compute instance: disk image is obsolete"`.
-5. If the DiskImage state is DEPRECATED, add a warning to `ComputeInstancesCreateResponse.warnings`: `"disk image '<id>' is deprecated"`.
+4. Validate the DiskImage lifecycle is not OBSOLETE — return `FailedPrecondition` with message: `"cannot create compute instance: disk image is obsolete"`.
+5. If the DiskImage lifecycle is DEPRECATED, add a warning to `ComputeInstancesCreateResponse.warnings`: `"disk image '<id>' is deprecated"`.
 6. Persist the ComputeInstance with the `disk_image` reference.
 
 **Spec defaults modifications (`internal/utils/spec_defaults.go`):**
@@ -435,8 +435,8 @@ CatalogItem Create and Update handlers validate DiskImage references in `field_d
 
 1. The referenced DiskImage exists.
 2. The DiskImage is visible to the CatalogItem's tenant — accept global DiskImages (empty tenant) or those belonging to the same tenant. Cross-tenant references are rejected with `InvalidArgument`. This prevents CatalogItems from persisting inaccessible references that would fail at ComputeInstance creation time. Note: `validateFieldDefinitionsInstanceType()` does not need this check because InstanceTypes are always global/shared.
-3. The DiskImage state is not OBSOLETE — return `InvalidArgument`.
-4. If the DiskImage state is DEPRECATED, return a warning.
+3. The DiskImage lifecycle is not OBSOLETE — return `InvalidArgument`.
+4. If the DiskImage lifecycle is DEPRECATED, return a warning.
 
 This follows the existing pattern: `validateFieldDefinitionsInstanceType()` in `private_compute_instance_catalog_items_server.go`, extended with tenant visibility validation. The function is called from both Create and Update handlers in the CatalogItem server.
 
@@ -561,7 +561,7 @@ The generic server's existing tenant filtering handles this automatically. Tenan
 No new observability changes. Existing monitoring mechanisms apply:
 
 - DiskImage CRUD operations are captured by the existing gRPC Prometheus metrics (request count, latency, error rate per method).
-- DiskImage lifecycle transitions (state changes) are logged via the existing structured logging interceptor.
+- DiskImage lifecycle transitions are logged via the existing structured logging interceptor.
 - The event system propagates DiskImage changes via the new `disk_image` payload field (field 40), enabling downstream consumers to react to image lifecycle events.
 
 ### Risks and Mitigations
@@ -613,8 +613,8 @@ Once deprecated, a DiskImage cannot return to AVAILABLE.
 
 ### Unit Tests
 
-- **DiskImage server Create:** validates required fields (source, architecture), defaults state to AVAILABLE and guest_os_family to LINUX when unspecified, persists and returns the object.
-- **DiskImage server Update:** rejects changes to source and guest_os_family (immutability), auto-sets deprecation timestamps on state transitions, clears deprecation on reactivation.
+- **DiskImage server Create:** validates required fields (source, architecture), defaults lifecycle to AVAILABLE and guest_os_family to LINUX when unspecified, persists and returns the object.
+- **DiskImage server Update:** rejects changes to source and guest_os_family (immutability), auto-sets deprecation timestamps on lifecycle transitions, clears deprecation on reactivation.
 - **DiskImage server Delete:** returns FailedPrecondition when referenced by ComputeInstance, Template, or CatalogItem. Succeeds when unreferenced.
 - **DiskImage server List:** excludes OBSOLETE images by default. Returns OBSOLETE images when filter explicitly includes them.
 - **ComputeInstance server Create:** validates disk_image is set, rejects OBSOLETE DiskImage, accepts DEPRECATED DiskImage with warning in response, validates tenant visibility.
@@ -672,7 +672,7 @@ Delete or update the referencing resources, then retry deletion.
 
 **Symptom: Tenant User cannot see a DiskImage that should be available.**
 
-*Cause:* The DiskImage is scoped to a different tenant, or the DiskImage state is OBSOLETE (hidden from default list).
+*Cause:* The DiskImage is scoped to a different tenant, or the DiskImage lifecycle is OBSOLETE (hidden from default list).
 *Resolution:* Verify the DiskImage's tenant field (`osac disk-images get <id>` as admin). If OBSOLETE, user must filter explicitly.
 
 **Disabling:** DiskImage cannot be disabled independently. Removing the DiskImages service from the fulfillment-service would break ComputeInstance creation (disk_image is a required reference). Existing running VMs are unaffected.
