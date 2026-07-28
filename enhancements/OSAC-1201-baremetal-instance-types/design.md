@@ -15,7 +15,7 @@ superseded-by: []
 
 ## Summary
 
-This enhancement introduces BareMetalInstanceType resources that provide a discoverable hardware type catalog for bare metal infrastructure provisioning. Cloud Provider Admins define BareMetalInstanceTypes via the OSAC API, specifying hardware metadata and a host selector using the canonical `hostType` key. Cloud Infrastructure Admins label inventory hosts to classify them by hardware profile. During provisioning, the fulfillment-service controller resolves the BareMetalInstanceType reference and sets the `hostType` in the CRD, which the bare-metal-fulfillment-operator uses for host selection.
+This enhancement introduces BareMetalInstanceType resources that provide a discoverable hardware type catalog for bare metal infrastructure provisioning. Cloud Provider Admins define BareMetalInstanceTypes via the OSAC API, specifying hardware metadata and a host label selector. Cloud Infrastructure Admins label inventory hosts to classify them by hardware profile. During provisioning, the fulfillment-service controller resolves the BareMetalInstanceType reference and sets the host selector labels in the CRD, which the bare-metal-fulfillment-operator uses for host selection.
 
 **Architectural Role:** BareMetalInstanceTypes serve as a user-facing discovery and selection mechanism. Once a Tenant User selects a type, the label on that type drives host selection in the inventory backend. The enhancement transforms opaque bareMetalInstanceType strings into a rich, discoverable catalog while keeping host-selection logic in the BMaaS operator where it already lives.
 
@@ -71,14 +71,14 @@ sequenceDiagram
     FS-->>CloudProvider: BareMetalInstanceType created
 ```
 
-Cloud Infrastructure Admins apply a label (e.g., `"gpu-large"`) to all inventory hosts that share that hardware profile. Cloud Provider Admins then create a corresponding BareMetalInstanceType in OSAC with the same label and the hardware metadata that describes those hosts. These two steps must be coordinated out-of-band — OSAC does not validate that the label on a BareMetalInstanceType matches any actual hosts at creation time.
+Cloud Infrastructure Admins apply one or more labels (e.g., `"gpu-large"`) to all inventory hosts that share that hardware profile. Cloud Provider Admins then create a corresponding BareMetalInstanceType in OSAC with the same label and the hardware metadata that describes those hosts. These two steps must be coordinated out-of-band — OSAC does not validate that the label on a BareMetalInstanceType matches any actual hosts at creation time.
 
 **Tenant Usage Workflow:**
 
 1. **Discovery:** Tenant user lists available BareMetalInstanceTypes via UI, CLI, or API [FR-1]
 2. **Selection:** User examines hardware specifications and selects appropriate type based on workload requirements
 3. **Creation:** User creates BareMetalInstance with `instance_type` field referencing the selected type [FR-2]
-4. **Provisioning:** fulfillment-service controller resolves the BareMetalInstanceType and sets the CRD's `hostType` field, which the bare-metal-fulfillment-operator uses for host selection [FR-5]
+4. **Provisioning:** fulfillment-service controller resolves the BareMetalInstanceType and sets the CRD's host selector labels, which the bare-metal-fulfillment-operator uses for host selection [FR-5]
 
 **Host Allocation Workflow:**
 
@@ -117,7 +117,7 @@ This enhancement adds the following API extensions to fulfillment-service:
 - `bare_metal_instance_types` — Follows standard DAO schema pattern with JSON-serialized protobuf data
 
 **Controller Extensions:**
-- Enhanced BareMetalInstance controller in fulfillment-service to resolve `instance_type` references and populate the CRD's `hostType` field for bare-metal-fulfillment-operator consumption [FR-5]
+- Enhanced BareMetalInstance controller in fulfillment-service to resolve `instance_type` references and populate the CRD's host selector labels for bare-metal-fulfillment-operator consumption [FR-5]
 
 **Operational Impact:**
 - fulfillment-service downtime prevents BareMetalInstanceType queries and new instance creation; once a BareMetalInstance is created with embedded `host_label_selector`, provisioning can continue without FS dependency. The `host_label_selector` and claimed host ID are persisted to BareMetalInstance status.
@@ -148,7 +148,7 @@ message BareMetalInstanceTypeStatus {
 message BareMetalHardwareSpec {
   BareMetalCPUSpec cpu = 1 [(buf.validate.field).required = true];
   BareMetalMemorySpec memory = 2 [(buf.validate.field).required = true];
-  BareMetalStorageSpec storage = 3;                                   // Optional — not all types have local storage
+  repeated BareMetalDiskSpec disks = 3;
   repeated BareMetalAcceleratorSpec accelerators = 4;
   repeated BareMetalNetworkPortSpec network_ports = 5;
   map<string, string> capabilities = 6;                               // Freeform capability tags
@@ -164,11 +164,6 @@ message BareMetalCPUSpec {
 message BareMetalMemorySpec {
   int64 total_gb = 1 [(buf.validate.field).int64.gt = 0];
   string type = 2;                                                    // Optional — e.g. DDR4, DDR5
-}
-
-message BareMetalStorageSpec {
-  repeated BareMetalDiskSpec disks = 1;
-  int64 total_capacity_gb = 2 [(buf.validate.field).int64.gt = 0];
 }
 
 message BareMetalDiskSpec {
@@ -238,7 +233,7 @@ message BareMetalInstanceSpec {
 
 **Controller Mapping to CRD:**
 
-The fulfillment-service BareMetalInstance controller resolves the `instance_type` reference and maps the resolved `host_selector` to the existing CRD `HostType` field:
+The fulfillment-service BareMetalInstance controller resolves the `instance_type` reference and maps the resolved `host_label_selector` labels to the CRD's `Selector.HostSelector` field:
 
 ```go
 // Current logic (hardcoded)
@@ -340,7 +335,7 @@ BareMetalInstanceType servers follow the same authentication and authorization p
 
 **Reference validation:** When a Tenant User creates a BareMetalInstance with `instance_type` set, the Fulfillment Service validates that the referenced BareMetalInstanceType exists before accepting the request. Requests referencing a non-existent type are rejected with `NOT_FOUND`.
 
-**Input Validation:** Hardware metadata and `host_label_selector` are validated by protovalidate at API creation time (see schema constraints above); malformed requests are rejected before reaching the DAO layer. Additional application-level validation ensures the `hostType` key is present in `match_labels` — requests missing this canonical key are rejected with validation errors before persistence.
+**Input Validation:** Hardware metadata and `host_label_selector` are validated by protovalidate at API creation time (see schema constraints above); malformed requests are rejected before reaching the DAO layer. The `match_labels` map requires at least one key-value pair (enforced by `min_pairs = 1`), but no canonical key is mandated — backends use their own naming conventions.
 
 **Inventory Backend Access:** The BMaaS operator uses configured credentials with least-privilege access to inventory APIs for host selection.
 
@@ -556,8 +551,8 @@ None. This enhancement uses existing OSAC infrastructure: fulfillment-service AP
 ## Provenance
 
 Authored: revise @ design 0.3.0 - 92734a2, workspace main @ 5450556
-Final: revise @ design 0.4.0 - 7b6dfe0, workspace main @ aac0f8e
+Final: revise @ design 0.4.2 - 75ae801, workspace main @ aac0f8e
 
 > Context changed between revise and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.0","ai_workflows":"7b6dfe0","source_repo":"aac0f8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.2","ai_workflows":"75ae801","source_repo":"aac0f8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true} -->
