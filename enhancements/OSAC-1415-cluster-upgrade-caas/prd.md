@@ -43,21 +43,21 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 - Tenant Users and Tenant Admins receive a warning condition on a node pool when it approaches the N-2 minor version skew limit relative to the control plane, so they can initiate a node pool upgrade before the node pool falls out of the supported range
 
 **Platform-managed z-stream upgrades:**
-- The Cloud Provider Admin selects the fleet-wide z-stream target version for control plane upgrades and applies it across all clusters via progressive rollout; available z-stream versions are sourced from the cluster's available update graph, the same mechanism used for tenant-visible upgrade versions
+- The Cloud Provider Admin selects the fleet-wide z-stream target version for the control plane's current minor version and applies it across all clusters via progressive rollout; available z-stream versions are sourced from the cluster's available update graph, the same mechanism used for tenant-visible upgrade versions
 - Z-stream upgrades are triggered on-demand by the Cloud Provider Admin; the regular cadence targets critical CVE remediation within FedRAMP-aligned timelines (High CVEs: 30 days, Medium: 90 days)
 - If a z-stream rollout causes a significant regression, the Cloud Provider Admin can pause the rollout and roll back affected control planes
 - Tenants cannot select or initiate z-stream control plane upgrades; these are applied by the Cloud Provider Admin
 - If the fleet-wide z-stream target version is not reachable from a cluster's available update graph, the cluster is flagged as an error in the rollout status and no upgrade is initiated for that cluster
 - Tenant Users and Tenant Admins are notified via resource status conditions when the platform applies a z-stream upgrade to their cluster
-- The Cloud Provider Admin can force a control plane y-stream upgrade for a specific cluster at end-of-life; node pools remain at their current version during the forced upgrade and continue to serve workloads — if the current node pool version is approaching the N-2 minor version skew limit relative to the forced target, a warning condition surfaces on the node pool; if the forced upgrade fails, the cluster enters a limited-support state (SLA no longer applies, but support remains available); a status condition on the cluster signals the limited-support state to tenants
+- The Cloud Provider Admin can force a control plane y-stream upgrade for a specific cluster at end-of-life; each forced upgrade is a single one-hop operation — the target version must be directly reachable from the cluster's available update graph; if reaching the desired target requires multiple hops, the Cloud Provider Admin is responsible for planning and executing the intermediate upgrades sequentially; node pools remain at their current version during the forced upgrade and continue to serve workloads — if the current node pool version is approaching the N-2 minor version skew limit relative to the forced target, a warning condition surfaces on the node pool; if the forced upgrade fails, the cluster enters a limited-support state (SLA no longer applies, but support remains available); a status condition on the cluster signals the limited-support state to tenants
 
 **User-facing API surfaces:**
 
 | Surface | Change |
 |---------|--------|
-| Fulfillment API (gRPC and REST) | New upgrade sub-resource per cluster component (control plane and node pool) with full CRUD and status. Available upgrade versions endpoint per cluster component. Org-scoped endpoint for Tenant Admins to list upgrade records across all clusters in their organization. |
-| CLI | Upgrade lifecycle commands: list available versions, initiate upgrade, cancel pending upgrade, view upgrade status, view upgrade history. |
-| UI | Upgrade lifecycle actions and history in the cluster detail view. Available versions and risk display before upgrade initiation. Cloud Provider Admin: fleet-wide z-stream target selection and upgrade status monitoring. |
+| Fulfillment API (gRPC and REST) | New upgrade sub-resource per cluster component (control plane and node pool) with full CRUD and status. Available upgrade versions endpoint per cluster component. Org-scoped endpoint for Tenant Admins to list upgrade records across all clusters in their organization. Fleet-wide z-stream upgrade target resource for Cloud Provider Admins (set target version, trigger rollout, pause, rollback). Fleet-wide rollout status endpoint exposing per-cluster upgrade state. |
+| CLI | Upgrade lifecycle commands: list available versions, initiate upgrade, cancel pending upgrade, view upgrade status, view upgrade history. Cloud Provider Admin: set fleet-wide z-stream target, trigger and monitor rollout, pause and roll back rollout, force EOL upgrade on a specific cluster. |
+| UI | Upgrade lifecycle actions and history in the cluster detail view. Available versions and risk display before upgrade initiation. Cloud Provider Admin: fleet-wide z-stream target selection, rollout triggering, pause, rollback, and cross-cluster upgrade status monitoring. |
 
 **E2E testing:** E2E coverage for upgrade initiation, status tracking, upgrade history, and pending upgrade cancellation in osac-test-infra.
 
@@ -145,8 +145,8 @@ No active role in this feature; all platform-level upgrade operations are covere
 
 ## Provenance
 
-Committed: commit @ prd 0.6.1 - 96de078, workspace prd/OSAC-1415 @ 5a21f81 (295 behind origin/main, dirty)
+Committed: commit @ prd 0.6.1 - 96de078, workspace prd/OSAC-1415 @ 7e2344f (295 behind origin/main, dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.1","ai_workflows":"96de078","source_repo":"5a21f81 (dirty)","source_repo_branch":"prd/OSAC-1415","commits_behind_main":295,"commits_ahead_main":2,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.1","ai_workflows":"96de078","source_repo":"7e2344f (dirty)","source_repo_branch":"prd/OSAC-1415","commits_behind_main":295,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
