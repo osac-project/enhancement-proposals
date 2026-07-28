@@ -224,17 +224,17 @@ sequenceDiagram
 
         loop For each resource
             alt Missing from State Projection
-                RL->>SP: upsert(resource, state=current)
                 RL->>KP: osac.resource.correction.v1 (reason=missed_creation)
                 KP->>K: publish → osac.metering.corrections
+                RL->>SP: upsert(resource, state=current)
             else State mismatch
-                RL->>SP: upsert(state=fulfillment_state)
                 RL->>KP: osac.resource.correction.v1 (reason=state_drift)
                 KP->>K: publish → osac.metering.corrections
+                RL->>SP: upsert(state=fulfillment_state)
             else Billing dimensions mismatch (same state)
-                RL->>SP: upsert(billing_dimensions=fulfillment_dimensions)
                 RL->>KP: osac.resource.correction.v1 (reason=billing_dimensions_drift)
                 KP->>K: publish → osac.metering.corrections
+                RL->>SP: upsert(billing_dimensions=fulfillment_dimensions)
             else Stale heartbeat (> 120s while billable)
                 RL->>KP: osac.resource.heartbeat.v1 (synthetic catch-up)
                 KP->>K: publish → osac.metering.heartbeat
@@ -242,9 +242,9 @@ sequenceDiagram
         end
 
         loop For each resource in projection not in fulfillment
-            RL->>SP: mark deleted
             RL->>KP: osac.resource.correction.v1 (reason=missed_deletion)
             KP->>K: publish → osac.metering.corrections
+            RL->>SP: mark deleted
         end
     end
 ```
@@ -596,7 +596,13 @@ At-least-once delivery is enforced at every hop:
 | Kafka → Adapter | Consumer offset committed only after successful `Flush()` |
 | Adapter → Billing Provider | Exponential backoff (max 10 attempts, ~13.5 min); DLQ after exhaustion |
 
-**Crash safety:** The Watch Consumer publishes to Kafka before updating the State Projection. If a crash occurs between Kafka publish and projection upsert, the event is already durable in Kafka — the next Watch event or startup reconciliation updates the projection to match. The worst case is a brief projection staleness, not a lost event. MaaS HTTP Ingest publishes directly to Kafka without updating the State Projection, so crash safety is inherent — Kafka `acks=all` confirms durability before the HTTP 202 response. A transactional outbox pattern is not justified for the single-replica deployment model, where the crash window between two sequential in-process operations is narrow and reconciliation provides the safety net.
+**Crash safety:** The Watch Consumer and Reconciliation Loop use different ordering strategies, reflecting their different recovery guarantees:
+
+- **Watch Consumer (upsert-first):** Updates the State Projection before publishing to Kafka. If a crash occurs between upsert and publish, the lifecycle event is lost from Kafka — but the heartbeat generator (every 60 seconds) provides continuous usage confirmation for billable resources, so the maximum billing gap is one heartbeat interval. The exact transition timestamp is lost but the billing interval is not. Reconciliation provides further catch-up for state mismatches on restart.
+- **Reconciliation Loop (publish-first):** Publishes corrections to Kafka before updating the State Projection. Reconciliation is the last line of defense — a lost correction has no further catch-up mechanism. If a crash occurs between publish and upsert, the next reconciliation cycle detects the same mismatch and emits a duplicate correction. Duplicate corrections are acceptable: the adapter's idempotency key (CloudEvent `id`) rejects exact replays, and semantically redundant corrections (different `id`, same state) are harmless because the adapter applies the correction to an already-correct billing record.
+- **MaaS HTTP Ingest:** Publishes directly to Kafka without updating the State Projection, so crash safety is inherent — Kafka `acks=all` confirms durability before the HTTP 202 response.
+
+A transactional outbox pattern is not justified for the single-replica deployment model, where the crash window between two sequential in-process operations is narrow and the component-specific ordering strategies above provide adequate recovery.
 
 Each CloudEvent has a globally unique `id` (UUID v4). Adapters maintain a dedup cache (in-memory, TTL 10 min) keyed on CloudEvent `id`. For providers with native idempotency (e.g., OpenMeter), the `id` is passed as the idempotency key.
 
@@ -942,8 +948,8 @@ The Metering Service depends on two upstream components:
 ## Provenance
 
 Authored: draft @ design 0.3.0 - 883316f, workspace main @ 36479c7
-Final: respond @ design 0.4.0 - 139e6c1, workspace main @ e454759
+Final: respond @ design 0.4.1 - 96de078, workspace main @ e36b12b
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.0","ai_workflows":"139e6c1","source_repo":"e454759","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.1","ai_workflows":"96de078","source_repo":"e36b12b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
