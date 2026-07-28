@@ -109,7 +109,7 @@ BMaaS uses two meters because bare metal hosts have a dual capacity profile. The
 ## 9. Dependencies
 
 - **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Part 2a extends but does not replace it.
-- **OSAC-1201 (BareMetalInstanceType):** Must define host types for bare metal hosts. Without this, BMaaS metering has no primary metering dimension.
+- **OSAC-1201 (BareMetalInstanceType):** Must define host types for bare metal hosts. Without this, BMaaS metering has no primary metering dimension. See the [BareMetalInstanceType EP](https://github.com/osac-project/enhancement-proposals/pull/119) (OSAC-2675) for the design.
 
 ## 10. Risks
 
@@ -122,13 +122,6 @@ BMaaS uses two meters because bare metal hosts have a dual capacity profile. The
 
 - **Owner:** OSAC platform team
 - **Mitigation:** All Part 2a meters depend on the metering infrastructure established by Part 1 (OSAC-985). Part 2a implementation cannot begin until Part 1 infrastructure is deployed. The Part 1 design is complete; implementation has not started.
-
-## 11. Open Questions
-
-### 11.1 Should BMaaS allocation metering include FAILED state?
-
-- **Owner:** OSAC platform team / Providers
-- **Impact:** CAP-1. A bare metal host in FAILED state may still be physically reserved — the hardware exists in the rack and cannot be assigned to another tenant until the failed instance is deleted. This argues for continuing allocation metering during FAILED state. However, if the failure is caused by provider infrastructure (e.g., IPMI unreachable, firmware issue), metering a tenant for a host they cannot use raises the same concern as Part 1 D-5 (failed-state metering) for VMs. The design must determine whether FAILED state continues or pauses the allocation meter. Note: the metering decision is independent of any downstream billing policy — metering captures what happened; billing systems decide what to charge for.
 
 ## Related PRDs
 
