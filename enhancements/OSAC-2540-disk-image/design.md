@@ -475,8 +475,8 @@ if ciSpec.GetDiskImage() != "" {
         return fmt.Errorf("failed to fetch disk image %q: %w", ciSpec.GetDiskImage(), err)
     }
     spec.Image = osacv1alpha1.ImageSpec{
-        SourceType: osacv1alpha1.ImageSourceTypeRegistry,
-        SourceRef:  diskImage.GetSpec().GetSource(),
+        SourceType: osacv1alpha1.ImageSourceType(diskImage.GetSpec().GetSourceType()),
+        SourceRef:  diskImage.GetSpec().GetSourceRef(),
     }
     switch diskImage.GetSpec().GetGuestOsFamily() {
     case privatev1.GUEST_OS_FAMILY_WINDOWS:
