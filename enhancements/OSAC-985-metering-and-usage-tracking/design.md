@@ -3,7 +3,7 @@ title: metering-and-usage-tracking
 authors:
   - masayag@redhat.com
 creation-date: 2026-07-12
-last-updated: 2026-07-20
+last-updated: 2026-07-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-985
 prd:
@@ -54,7 +54,7 @@ The design introduces four components:
 1. **OSAC Metering Service** (Go binary) — consumes the fulfillment-service Watch stream and AI Gateway events; maintains a PostgreSQL State Projection; generates heartbeats and corrections; publishes CloudEvents to Kafka
 2. **Kafka cluster** (AMQ Streams / Strimzi) — five purpose-built topics with 30-day retention providing durability, replay, and provider migration capability
 3. **Provider Adapter framework** (Go) — a shared framework for building billing provider adapters, handling Kafka consumption, retry, DLQ, and idempotency
-4. **Provider Adapters** — one active per deployment, selected via Helm values; initial adapters for OpenMeter, Cost Management, and Monetize360
+4. **Provider Adapters** — one active per deployment, selected via Helm values; initial adapters for Cost Management and Monetize360
 
 The Metering Service contains four subsystems: Watch Consumer (snapshot → lifecycle transition conversion), Heartbeat Generator (60-second periodic usage records), Reconciliation Loop (hourly State Projection vs fulfillment List API comparison), and MaaS HTTP Ingest (inference event reception).
 
@@ -952,4 +952,4 @@ Final: respond @ design 0.4.1 - 96de078, workspace main @ e36b12b
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.1","ai_workflows":"96de078","source_repo":"e36b12b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.1","ai_workflows":"96de078","source_repo":"e36b12b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
