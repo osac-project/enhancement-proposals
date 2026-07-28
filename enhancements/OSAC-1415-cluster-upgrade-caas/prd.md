@@ -15,7 +15,8 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 **Services:** CaaS — OpenShift clusters provisioned by OSAC via Hosted Control Planes.
 
 **Tenant upgrade capabilities:**
-- Tenant Users and Tenant Admins can view available upgrade versions for a cluster's control plane and node pools; for both components, versions are sourced from the cluster's own Cincinnati evaluation (only directly reachable versions are surfaced) and filtered by the cluster's update channel
+- Each cluster has an update channel assigned at cluster creation time, which scopes the cluster's available update graph and the set of versions eligible for upgrade
+- Tenant Users and Tenant Admins can view available upgrade versions for a cluster's control plane and node pools; for both components, versions are sourced from the cluster's available update graph (only directly reachable versions are surfaced) and filtered by the cluster's update channel
 - Available node pool versions are additionally capped at the current control plane version; a node pool cannot be upgraded past the version of its control plane
 - Tenant Users and Tenant Admins can initiate a control plane y-stream upgrade to any directly reachable version, one hop at a time
 - Tenant Users and Tenant Admins can initiate a node pool upgrade (y-stream or z-stream), one hop at a time
@@ -37,16 +38,16 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
   | Last update timestamp | When the state last changed |
 
 - Upgrade status and progress are visible through conditions on each upgrade record
-- Control plane and node pool upgrade records are independent; if a node pool upgrade fails after the control plane upgrade has already succeeded, the tenant can initiate a new node pool upgrade to retry independently
+- Control plane and node pool upgrade records are independent; when component versions diverge (e.g., after a partial upgrade or NP upgrade failure), the cluster resource surfaces a condition indicating the mismatch and exposes the current version of each component — control plane and each node pool — so tenants can assess the state without consulting individual upgrade records; the supported next action is to initiate a new node pool upgrade to retry independently
 - Past upgrades per cluster component are available as a history, recording version transitions and their outcomes; history is tied to the cluster's lifetime and is removed when the cluster is deleted
 - Tenant Users and Tenant Admins receive a warning condition on a node pool when it approaches the N-2 minor version skew limit relative to the control plane, so they can initiate a node pool upgrade before the node pool falls out of the supported range
 
 **Platform-managed z-stream upgrades:**
-- The Cloud Provider Admin selects the fleet-wide z-stream target version for control plane upgrades and applies it across all clusters via progressive rollout; available z-stream versions are sourced from the cluster's own Cincinnati evaluation, the same mechanism used for tenant-visible upgrade versions
+- The Cloud Provider Admin selects the fleet-wide z-stream target version for control plane upgrades and applies it across all clusters via progressive rollout; available z-stream versions are sourced from the cluster's available update graph, the same mechanism used for tenant-visible upgrade versions
 - Z-stream upgrades are triggered on-demand by the Cloud Provider Admin; the regular cadence targets critical CVE remediation within FedRAMP-aligned timelines (High CVEs: 30 days, Medium: 90 days)
 - If a z-stream rollout causes a significant regression, the Cloud Provider Admin can pause the rollout and roll back affected control planes
 - Tenants cannot select or initiate z-stream control plane upgrades; these are applied by the Cloud Provider Admin
-- If the fleet-wide z-stream target version is not reachable from a cluster's current Cincinnati graph, the cluster is flagged as an error in the rollout status and no upgrade is initiated for that cluster
+- If the fleet-wide z-stream target version is not reachable from a cluster's available update graph, the cluster is flagged as an error in the rollout status and no upgrade is initiated for that cluster
 - Tenant Users and Tenant Admins are notified via resource status conditions when the platform applies a z-stream upgrade to their cluster
 - The Cloud Provider Admin can force a control plane y-stream upgrade for a specific cluster at end-of-life; node pools remain at their current version during the forced upgrade and continue to serve workloads — if the current node pool version is approaching the N-2 minor version skew limit relative to the forced target, a warning condition surfaces on the node pool; if the forced upgrade fails, the cluster enters a limited-support state (SLA no longer applies, but support remains available); a status condition on the cluster signals the limited-support state to tenants
 
@@ -71,14 +72,13 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 - Tenant-initiated upgrade rollback — clusters cannot be rolled back by tenants; rollback is a platform-level operation reserved for Cloud Provider Admins
 - Maintenance windows and upgrade exclusion windows; scheduled upgrades and maintenance windows are both future work
 - One-off scheduled upgrades; upgrades are initiated on-demand and begin after the cancellation window expires
-- Tenant admin version allowlist; version availability is determined by the cluster's Cincinnati evaluation
-- Channel selection; channel is set at cluster creation (OSAC-1269)
+- Tenant admin version allowlist; version availability is determined by the cluster's available update graph
 - Push notification infrastructure (email, webhook, or external alerting)
 - Installation and configuration of the OpenShift Update Service Operator for disconnected environments
 - Drift detection; out-of-band version changes are not tracked as a distinct event type
 - Upgrade history retention after cluster deletion; history does not outlive the cluster
 - Standalone audit trail; full operational auditing is a separate capability
-- Custom release image upgrades; users can only select from versions surfaced by the cluster's Cincinnati evaluation
+- Custom release image upgrades; users can only select from versions surfaced by the cluster's available update graph
 - Upgrade policies per cluster tier; configuring different upgrade rules for dev, staging, and production clusters is deferred
 - Cancelling an in-progress upgrade; once the cancellation window closes, the upgrade cannot be stopped
 
@@ -134,17 +134,19 @@ No active role in this feature; all platform-level upgrade operations are covere
 
 ## Dependencies
 
-- **OSAC-1269** (Managed Cluster Versions): must be complete before OSAC-1415 ships; provides cluster channel assignment at creation time, which determines the Cincinnati update graph used by this feature.
-- **Cincinnati / OpenShift Update Service**: source of available upgrade versions and per-version risk data, read from each cluster's own evaluation. In disconnected environments, the OpenShift Update Service Operator must be pre-configured as a prerequisite.
 - **HCP (HostedCluster + NodePool)**: source of upgrade state, conditions, and history; the design will confirm the specific HyperShift API surface used.
+
+## Risks
+
+- **Version discovery availability**: if the update service is unreachable (e.g., network partition or local OpenShift Update Service failure in a disconnected environment), the platform cannot surface available upgrade versions or per-version risk data; the design will specify error behavior and retry semantics.
+- **Upgrade duration variability**: cluster upgrades can take minutes to hours depending on cluster size, workload, and the number of node pools; the platform exposes upgrade progress via conditions but makes no completion time guarantee.
 
 ---
 
 ## Provenance
 
-Authored: draft @ prd 0.6.0 - 139e6c1, workspace main @ 411e256
-Final: revise @ prd 0.6.1 - 96de078, workspace main @ 7b4fff2
+Committed: commit @ prd 0.6.1 - 96de078, workspace prd/OSAC-1415 @ 5a21f81 (295 behind origin/main, dirty)
 
-> Context changed between draft and revise.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.1","ai_workflows":"96de078","source_repo":"7b4fff2","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.1","ai_workflows":"96de078","source_repo":"5a21f81 (dirty)","source_repo_branch":"prd/OSAC-1415","commits_behind_main":295,"commits_ahead_main":2,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":false} -->
