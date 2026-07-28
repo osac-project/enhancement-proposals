@@ -105,6 +105,7 @@ BMaaS uses two meters because bare metal hosts have a dual capacity profile. The
 - BMaaS meters are additive to the Part 1 metering deployment and require no separate infrastructure.
 - Bare metal hosts will have a host type attribute available before BMaaS metering is implemented. OSAC-1201 (BareMetalInstanceType) is the expected vehicle for this.
 - Allocation-based metering is supported by the Part 1 metering infrastructure without architectural changes.
+- Bare metal hosts used as CaaS cluster nodes generate BMaaS usage data independently of CaaS metering. Both meters capture distinct usage dimensions (hardware reservation vs. managed service). Deduplication or bundling is a downstream billing concern.
 
 ## 9. Dependencies
 
