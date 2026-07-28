@@ -12,18 +12,16 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 
 ## In Scope
 
-- `display_name` (optional string, max 63 characters) and `description` (optional string, max 256 characters) added to the shared Metadata, automatically inherited by every resource type `[Clarify: R2.Q1, R4.Q4]`
-- Removal of existing per-resource `title` and `description` fields from all resource types that currently have them: Project, Role, IdentityProvider, InstanceType (description only), ClusterTemplate, ComputeInstanceTemplate, BareMetalInstanceTemplate, NetworkClass, HostType, ComputeInstanceCatalogItem, BareMetalInstanceCatalogItem, and ClusterCatalogItem `[Clarify: R1.Q1, PR review: sk-ilya, ygalblum]`
-- Both fields are optional, mutable after creation, and clearable `[Clarify: R3.Q1]`
-- `display_name` does not have to be unique across resources `[Clarify: R2.Q2, PR review: sk-ilya]`
-- Users can filter and sort resource lists by `display_name` across UI, CLI, and API `[Clarify: R2.Q2]`
-- UI displays `display_name` in place of `metadata.name` when set; falls back to `metadata.name` when `display_name` is not set — this applies uniformly across list views, detail pages, breadcrumbs, and search results `[Clarify: R4.Q1, R5.Q1]`
-- E2E test coverage for create, update, and clear of `display_name` and `description` across representative resource types
-- Documentation updated to describe the new fields and fallback behavior
+- Consistent, user-friendly resource naming across all OSAC resource types, all personas, and all client interfaces (API, CLI, Web UI) `[PR review: mhrivnak]`
+- Two new shared Metadata fields: `display_name` (optional, max 63 characters) and `description` (optional, max 256 characters) — both mutable, clearable, and not required to be unique `[Clarify: R2.Q1, R3.Q1, R4.Q4, PR review: sk-ilya]`
+- Reconciliation of existing per-resource `title`/`description` fields — removed from all 12 resource types that currently have them: Project, Role, IdentityProvider, InstanceType (description only), ClusterTemplate, ComputeInstanceTemplate, BareMetalInstanceTemplate, NetworkClass, HostType, ComputeInstanceCatalogItem, BareMetalInstanceCatalogItem, ClusterCatalogItem `[Clarify: R1.Q1, PR review: sk-ilya, ygalblum]`
+- Filtering and sorting by `display_name` `[Clarify: R2.Q2]`
+- E2E test coverage and documentation
 
 ## Out of Scope
 
-- Renaming or removing existing `metadata.name` semantics
+- Resource identity — `metadata.name` remains the unique identifier `[PR review: mhrivnak]`
+- Display behavior (how clients present `display_name` vs `metadata.name`) — deferred to UX and design phase `[PR review: mhrivnak, ygalblum]`
 - Template parameter `title`/`description` fields within ComputeInstanceTemplate, BareMetalInstanceTemplate, and ClusterTemplate — only resource-level fields are affected `[Clarify: R1.Q3]`
 
 ## User Stories
@@ -45,7 +43,6 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 ### Tenant User
 
 - As a Tenant User, I want to give my resources a friendly `display_name` (up to 63 characters) and `description` when creating them so that I can identify and organize them more easily than relying on the constrained `metadata.name` field. `[Clarify: R2.Q1]`
-- As a Tenant User, I want list views to show `display_name` when set and fall back to `metadata.name` when it is not, so that I always see the most useful identifier regardless of whether a display name was provided.
 
 ## Dependencies
 
@@ -55,7 +52,9 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 
 ## Provenance
 
-Authored: respond @ prd 0.5.0 - 7b6dfe0, workspace main @ 280ee0f
-Phases: draft, revise, respond
+Authored: draft @ prd 0.5.0 - 92734a2, workspace main @ aac0f8e
+Final: respond @ prd 0.6.0 - 7b6dfe0, workspace main @ 280ee0f
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"7b6dfe0","source_repo":"280ee0f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"7b6dfe0","source_repo":"280ee0f","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true} -->
