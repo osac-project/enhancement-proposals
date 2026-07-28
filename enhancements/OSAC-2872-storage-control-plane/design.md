@@ -997,7 +997,7 @@ The design routes ControllerPublishVolume/ControllerUnpublishVolume (attach/deta
 **Owner:** Storage team
 **Impact:** Determines whether the CSI driver needs a direct cross-cluster connection to the VAST controller, or if all operations go through the Volume API.
 
-### 3. Data-plane credentials for node mount operations
+### 4. Data-plane credentials for node mount operations
 
 The design states that vendor credentials never reach the tenant cluster. This is true for management API credentials (create/delete/attach/detach volumes on the array), which stay on the hub. However, the VAST node plugin may need data-plane credentials at mount time (e.g., iSCSI CHAP authentication). The current AAP setup references `csi.storage.k8s.io/node-stage-secret-name` on block StorageClasses, suggesting a CSI Secret with connection credentials is needed on the tenant cluster for mount operations.
 
