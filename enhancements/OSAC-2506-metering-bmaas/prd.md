@@ -93,7 +93,7 @@ BMaaS uses two meters because bare metal hosts have a dual capacity profile. The
 - [ ] BMaaS usage can be broken down by host type, catalog item (per Part 1 CAP-17), tenant, and project
 - [ ] A bare metal host with attached storage volumes and public IPs can be queried as a unified usage view
 - [ ] Allocation-based and consumption-based meters coexist for the same resource; usage queries can distinguish between meter types
-- [ ] Allocation-meter and consumption-meter data appears automatically alongside existing metering data without additional admin setup
+- [ ] Allocation-meter and consumption-meter data is accessible through the same metering query APIs as existing VMaaS/CaaS meters without additional admin setup
 - [ ] BMaaS meters record usage at per-second granularity — a host existing for 30 seconds appears in usage data
 - [ ] BMaaS usage totals for finalized periods (deleted hosts) are accurate — querying the same period twice returns consistent results
 - [ ] Historical BMaaS usage data is available for at least 13 months
