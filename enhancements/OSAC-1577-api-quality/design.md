@@ -182,9 +182,7 @@ option (cleanapi.file).private = true;
 
 protoc-gen-cleanapi can remove `google.api.http` annotations but cannot rewrite route prefixes. OSAC uses `/api/private/v1/` for private routes and `/api/fulfillment/v1/` (plus `/api/events/v1/`) for public routes.
 
-**Approach:** The private protos define routes with the private prefix. The `remove_http_options = true` file option strips all HTTP annotations from the generated public protos. Public routes are re-added via post-generation text replacement (`sed`) of the route prefix, or by extending protoc-gen-cleanapi with a route prefix remapping option (e.g., `option (cleanapi.file).http_prefix = "private:fulfillment";`). A separate `public_routes.proto` approach was ruled out — `google.api.http` is a `MethodOptions` extension and cannot be applied retroactively at the service level from another file.
-
-The choice between sed and plugin extension is captured in Open Question #1.
+**Approach:** The private protos define routes with the private prefix. The `remove_http_options = true` file option strips all HTTP annotations from the generated public protos. Public routes are re-added by extending protoc-gen-cleanapi with a route prefix remapping option (e.g., `option (cleanapi.file).http_prefix = "private:fulfillment";`). A separate `public_routes.proto` approach was ruled out — `google.api.http` is a `MethodOptions` extension and cannot be applied retroactively at the service level from another file.
 
 ##### Validation Annotations
 
@@ -504,14 +502,7 @@ Enforce soft-deletion constraints in Go server code instead of PostgreSQL trigge
 
 ## Open Questions
 
-### 1. Public Route Definition Mechanism
-
-How should public HTTP routes (`/api/fulfillment/v1/...`) be defined after cleanapi strips the private routes? Options: (a) post-generation sed replacement of route prefixes, (b) extend protoc-gen-cleanapi with a route remapping option. A separate `public_routes.proto` approach was ruled out — `google.api.http` is a `MethodOptions` extension and cannot be applied from another file.
-
-**Owner:** OSAC-1274 implementer
-**Impact:** Determines whether the plugin needs enhancement or the build pipeline needs a post-processing step.
-
-### 2. Ref Table Granularity for OSAC-1331
+### 1. Ref Table Granularity for OSAC-1331
 
 Should each parent-child relationship get its own `_refs` table (e.g., `compute_instance_subnet_refs`, `compute_instance_instance_type_refs`), or should a single generic refs table (`object_refs(child_table, child_id, parent_table, parent_id)`) be used?
 
@@ -591,14 +582,3 @@ All three epics modify the fulfillment-service only. Since OSAC does not support
 ## Infrastructure Needed
 
 None. All changes use existing build and test infrastructure. protoc-gen-cleanapi is built from source or installed via `go install` — no new external service dependencies.
-
----
-
-## Provenance
-
-Authored: draft @ design 0.4.0 - 139e6c1, workspace main @ 0987735
-Final: respond @ design 0.4.2 - 75ae801, workspace main @ e82da1d
-
-> Context changed between draft and respond.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.2","ai_workflows":"75ae801","source_repo":"e82da1d","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
