@@ -4,7 +4,7 @@
 |-------------|--------------------------------------------------------------------------------|
 | Author(s)   | rawagner@redhat.com                                                            |
 | Jira        | [OSAC-2792](https://redhat.atlassian.net/browse/OSAC-2792)                     |
-| PRD         | [03-prd.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1030-organizations/README.md)                                    |
+| PRD         | [README.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1030-organizations/README.md)                                    |
 | Date        | 2026-07-16                                                                     |
 
 # 1. Overview
