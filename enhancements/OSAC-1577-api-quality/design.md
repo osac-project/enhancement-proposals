@@ -222,7 +222,7 @@ protoc \
   proto/private/osac/private/v1/*.proto
 
 # Step 2: lint staged output (fails here preserves existing public protos)
-buf lint
+buf lint --path proto/public-staging
 
 # Step 3: replace committed public protos with staged output
 rm -rf proto/public/osac/public/v1/
