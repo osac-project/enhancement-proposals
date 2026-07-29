@@ -61,18 +61,19 @@ This design covers three epics under OSAC-1577:
 1. Developer edits a private proto file in `proto/private/osac/private/v1/`.
 2. Developer annotates private-only fields with `[(cleanapi.field).private = true]`, private-only messages with `option (cleanapi.message).private = true;`, and private-only RPCs with `option (cleanapi.method).private = true;`.
 3. Developer adds `buf.validate` annotations to public-facing fields in the private proto file.
-4. Developer runs `make proto` (or equivalent), which:
+4. Developer runs `uv run dev.py build protos` (or equivalent), which:
    a. Runs `protoc` with protoc-gen-cleanapi to generate public protos into `proto/public/osac/public/v1/`
-   b. Runs `buf lint` on both modules
+   b. Runs `buf lint` on both modules (public-api and private-api)
    c. Runs `buf generate` to produce Go code for both public and private APIs
 5. Developer commits both the annotated private protos and the generated public protos.
 
 ```mermaid
 flowchart LR
     A["Private .proto<br/>(annotated)"] -->|protoc-gen-cleanapi| B["Public .proto<br/>(generated)"]
+    A -->|buf lint| E["Lint check"]
     A -->|buf generate| C["Private Go code"]
+    B -->|buf lint| E
     B -->|buf generate| D["Public Go code"]
-    B -->|buf lint| E["Lint check"]
 ```
 
 The generated public protos are committed to the repository (not gitignored) so that downstream consumers can import them without running the generation tool. The generation step is idempotent — running it twice produces the same output.
@@ -114,32 +115,67 @@ option (cleanapi.file).remove_http_options = true;
 
 The `remove_http_options = true` option strips all `google.api.http` annotations from the generated public protos. Public HTTP routes are then defined in a separate, manually maintained route file (see Route Handling below).
 
-Private-only elements are annotated at the appropriate level:
+Private-only elements are annotated at the appropriate level. Complete example using `virtual_networks_service.proto`:
 
 ```protobuf
-// In metadata_type.proto (private):
-message Metadata {
-  google.protobuf.Timestamp creation_timestamp = 1;
-  google.protobuf.Timestamp deletion_timestamp = 2;
-  repeated string finalizers = 3 [(cleanapi.field).private = true];
-  string creator = 4;
-  // ...
+// proto/private/osac/private/v1/virtual_networks_service.proto
+syntax = "proto3";
+
+package osac.private.v1;
+
+import "cleanapi/cleanapi.proto";
+import "osac/private/v1/virtual_network_type.proto";
+import "google/api/annotations.proto";
+
+option (cleanapi.file).package = "osac.public.v1";
+option (cleanapi.file).remove_http_options = true;
+
+service VirtualNetworks {
+  rpc Get(VirtualNetworkGetRequest) returns (VirtualNetworkGetResponse) {
+    option (google.api.http) = {
+      get: "/api/private/v1/virtual_networks/{id}"
+    };
+  }
+
+  rpc Signal(VirtualNetworkSignalRequest) returns (VirtualNetworkSignalResponse) {
+    option (cleanapi.method).private = true;
+    option (google.api.http) = {
+      post: "/api/private/v1/virtual_networks/{id}/signal"
+    };
+  }
 }
 ```
+
+```protobuf
+// proto/private/osac/private/v1/virtual_network_type.proto (abbreviated)
+syntax = "proto3";
+
+package osac.private.v1;
+
+import "cleanapi/cleanapi.proto";
+import "buf/validate/validate.proto";
+
+option (cleanapi.file).package = "osac.public.v1";
+
+message VirtualNetworkSpec {
+  string network_class = 1 [(buf.validate.field).string.min_len = 1];
+  string ipv4_cidr = 2;
+  string region = 3 [(cleanapi.field).private = true];
+  string implementation_strategy = 4 [(cleanapi.field).private = true];
+}
+
+message VirtualNetworkStatus {
+  string hub = 1 [(cleanapi.field).private = true];
+  repeated Condition conditions = 2;
+}
+```
+
+The generated public proto for this file would contain `VirtualNetworkSpec` with only `network_class` and `ipv4_cidr`, `VirtualNetworkStatus` with only `conditions`, the `Get` RPC without HTTP annotations, and no `Signal` RPC.
 
 Entirely private files (hub, storage_backend, storage_tier types and services) use file-level exclusion:
 
 ```protobuf
 option (cleanapi.file).private = true;
-```
-
-Private-only RPCs (e.g., `Signal` in each service) use method-level exclusion:
-
-```protobuf
-rpc Signal(SignalRequest) returns (SignalResponse) {
-  option (cleanapi.method).private = true;
-  // ...
-}
 ```
 
 ##### Route Handling
@@ -169,27 +205,30 @@ These files are not generated — they remain manually maintained in `proto/publ
 
 protoc-gen-cleanapi uses `protoc --plugin` invocation, not the buf plugin protocol. The build pipeline adds a new step before `buf generate`:
 
-```makefile
-.PHONY: proto
-proto: proto-generate proto-lint proto-codegen
+The cleanapi generation step is added to `dev.py` as a new subcommand (e.g., `uv run dev.py build protos`). The pipeline:
 
-proto-generate:
-	protoc \
-	  --proto_path=proto/private \
-	  --proto_path=proto/deps \
-	  --plugin=protoc-gen-cleanapi=$(CLEANAPI_BIN) \
-	  --cleanapi_out=proto/public/osac/public/v1 \
-	  --cleanapi_opt=proto_root=proto/private \
-	  proto/private/osac/private/v1/*.proto
+1. Run `protoc` with protoc-gen-cleanapi to generate public protos
+2. Run `buf lint` on both modules
+3. Run `buf generate` for Go code generation
 
-proto-lint:
-	buf lint
+```bash
+# Step 1: generate public protos from annotated private protos
+protoc \
+  --proto_path=proto/private \
+  --proto_path=proto/deps \
+  --plugin=protoc-gen-cleanapi=$(CLEANAPI_BIN) \
+  --cleanapi_out=proto/public/osac/public/v1 \
+  --cleanapi_opt=proto_root=proto/private \
+  proto/private/osac/private/v1/*.proto
 
-proto-codegen:
-	buf generate
+# Step 2: lint both modules
+buf lint
+
+# Step 3: generate Go code
+buf generate
 ```
 
-The `protoc-gen-cleanapi` binary is vendored or fetched via `go install` in the Makefile. The `proto/deps` path includes `cleanapi.proto` and other proto dependencies (google/api, buf/validate).
+The `protoc-gen-cleanapi` binary is fetched via `go install`. The `proto/deps` path includes `cleanapi.proto` and other proto dependencies (google/api, buf/validate).
 
 #### OSAC-1331: Safe Deletion Constraints
 
@@ -539,5 +578,8 @@ None. All changes use existing build and test infrastructure. protoc-gen-cleanap
 ## Provenance
 
 Authored: draft @ design 0.4.0 - 139e6c1, workspace main @ 0987735
+Final: respond @ design 0.4.2 - 75ae801, workspace main @ e82da1d
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.0","ai_workflows":"139e6c1","source_repo":"0987735","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.2","ai_workflows":"75ae801","source_repo":"e82da1d","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true} -->
