@@ -7,7 +7,7 @@ last-updated: 2026-07-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 see-also:
-  - Catalog Items: /enhancements/catalog-items
+  - Catalog Items: /enhancements/OSAC-1002-catalog-items
   - VM Instance Types: /enhancements/OSAC-46-vm-instance-types
 replaces:
   - N/A

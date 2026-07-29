@@ -16,7 +16,7 @@
 | **Usage** | Measured consumption of a resource (e.g., instance-type-seconds consumed while a VM was running). |
 | **Allocation** | Reserved capacity of a resource, regardless of whether it is actively used. |
 | **Resource class** | A provider-defined category for differentiated pricing. Examples: host type for CaaS worker nodes (e.g., `gpu-h100`, `cpu-only`), template for VMaaS, machine class for BMaaS, storage tier for Storage-aaS. To the metering system, it is an opaque label used for grouping. |
-| **Service** | An offering that can be purchased from a service provider, and can include many types of usage or other charges (e.g., a cloud database service may include compute, storage, and networking charges). In OSAC, a catalog item (per the [catalog-items](/enhancements/catalog-items) EP) maps to a Service — it's what the tenant provisions from. A single Service may bundle multiple independently priceable components (e.g., compute, OS entitlement, boot storage for VMaaS; control plane, workers, cluster version for CaaS). Metering data includes catalog item and template references for any metered resource, enabling downstream systems to trace charges back to the originating catalog offer. |
+| **Service** | An offering that can be purchased from a service provider, and can include many types of usage or other charges (e.g., a cloud database service may include compute, storage, and networking charges). In OSAC, a catalog item (per the [catalog-items](/enhancements/OSAC-1002-catalog-items) EP) maps to a Service — it's what the tenant provisions from. A single Service may bundle multiple independently priceable components (e.g., compute, OS entitlement, boot storage for VMaaS; control plane, workers, cluster version for CaaS). Metering data includes catalog item and template references for any metered resource, enabling downstream systems to trace charges back to the originating catalog offer. |
 | **Price List** | A comprehensive list of prices offered by a service provider. |
 | **Billing Period** | The time window that an organization receives an invoice for, inclusive of the start date and exclusive of the end date. |
 | **Budget** | A spending limit on a scope (tenant, project, resource type) for a configurable time period. |
@@ -164,7 +164,7 @@ Beyond raw metering, providers need a pricing layer to define rate schedules, ge
 
 ### D-1. Tenant User usage visibility
 
-Tenant Users see usage for projects they have access to, not all tenant usage. The metering system scopes data at the tenant level; the Usage API applies project-level RBAC filtering using the same permissions defined in the [Organizations](/enhancements/organizations) EP (e.g., `VIEW_PROJECT`).
+Tenant Users see usage for projects they have access to, not all tenant usage. The metering system scopes data at the tenant level; the Usage API applies project-level RBAC filtering using the same permissions defined in the [Organizations](/enhancements/OSAC-1030-organizations) EP (e.g., `VIEW_PROJECT`).
 
 ### D-2. Metering system unavailability
 

@@ -8,7 +8,7 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1118
 see-also:
   - /enhancements/bare-metal-fulfillment
-  - /enhancements/catalog-items
+  - /enhancements/OSAC-1002-catalog-items
 replaces:
   - N/A
 superseded-by:

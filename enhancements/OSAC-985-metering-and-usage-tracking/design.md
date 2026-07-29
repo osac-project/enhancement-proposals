@@ -9,9 +9,9 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/catalog-items"
+  - "/enhancements/OSAC-1002-catalog-items"
   - "/enhancements/vm-instance-types"
-  - "/enhancements/organizations"
+  - "/enhancements/OSAC-1030-organizations"
 ---
 
 # OSAC Metering and Usage Tracking
