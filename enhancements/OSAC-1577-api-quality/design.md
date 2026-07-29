@@ -558,7 +558,8 @@ E2E test scenarios are covered by the existing osac-test-infra test suite. No ne
 
 ## Graduation Criteria
 
-Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview → Tech Preview → GA based on production deployment feedback.
+- **Public API equivalence (OSAC-1274):** Initial cleanapi-generated public protos are semantically equivalent to the existing hand-maintained public protos — same fields, field numbers, types, and options — verified by diffing generated vs. committed protos before removing the hand-maintained copies.
+- Release graduation (Dev Preview → Tech Preview → GA) will be defined when targeting a release based on production deployment feedback.
 
 ## Upgrade / Downgrade Strategy
 
