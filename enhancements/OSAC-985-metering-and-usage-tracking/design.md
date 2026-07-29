@@ -10,7 +10,7 @@ prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-1002-catalog-items"
-  - "/enhancements/vm-instance-types"
+  - "/enhancements/OSAC-46-vm-instance-types"
   - "/enhancements/OSAC-1030-organizations"
 ---
 

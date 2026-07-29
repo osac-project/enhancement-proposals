@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/networking"
+  - "/enhancements/OSAC-356-networking"
   - "/enhancements/bare-metal-fulfillment"
 replaces:
   - N/A
