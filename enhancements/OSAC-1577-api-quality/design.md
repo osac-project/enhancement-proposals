@@ -182,9 +182,9 @@ option (cleanapi.file).private = true;
 
 protoc-gen-cleanapi can remove `google.api.http` annotations but cannot rewrite route prefixes. OSAC uses `/api/private/v1/` for private routes and `/api/fulfillment/v1/` (plus `/api/events/v1/`) for public routes.
 
-**Approach:** The private protos define routes with the private prefix. The `remove_http_options = true` file option strips all HTTP annotations from the generated public protos. Public HTTP routes are defined in a separate `public_routes.proto` file (or per-service route override files) that import the generated public service definitions and add `google.api.http` annotations via service option extensions.
+**Approach:** The private protos define routes with the private prefix. The `remove_http_options = true` file option strips all HTTP annotations from the generated public protos. Public routes are re-added via post-generation text replacement (`sed`) of the route prefix, or by extending protoc-gen-cleanapi with a route prefix remapping option (e.g., `option (cleanapi.file).http_prefix = "private:fulfillment";`). A separate `public_routes.proto` approach was ruled out — `google.api.http` is a `MethodOptions` extension and cannot be applied retroactively at the service level from another file.
 
-Alternative considered: defining routes with the public prefix in the private protos and remapping for the private server. Rejected because the private server is the primary server and should use its natural route prefix.
+The choice between sed and plugin extension is captured in Open Question #1.
 
 ##### Validation Annotations
 
@@ -207,28 +207,35 @@ protoc-gen-cleanapi uses `protoc --plugin` invocation, not the buf plugin protoc
 
 The cleanapi generation step is added to `dev.py` as a new subcommand (e.g., `uv run dev.py build protos`). The pipeline:
 
-1. Run `protoc` with protoc-gen-cleanapi to generate public protos
-2. Run `buf lint` on both modules
-3. Run `buf generate` for Go code generation
+1. Generate public protos into a staging directory
+2. Run `buf lint` on both modules against the staged output
+3. On success, replace `proto/public/osac/public/v1/` with the staged output
+4. Run `buf generate` for Go code generation
 
 ```bash
-# Step 1: generate public protos from annotated private protos
+# Step 1: generate into staging dir
+rm -rf proto/public-staging
 protoc \
   --proto_path=proto/private \
   --proto_path=proto/deps \
   --plugin=protoc-gen-cleanapi=$(CLEANAPI_BIN) \
-  --cleanapi_out=proto/public/osac/public/v1 \
+  --cleanapi_out=proto/public-staging \
   --cleanapi_opt=proto_root=proto/private \
   proto/private/osac/private/v1/*.proto
 
-# Step 2: lint both modules
+# Step 2: lint staged output (fails here preserves existing public protos)
 buf lint
 
-# Step 3: generate Go code
+# Step 3: replace committed public protos with staged output
+rm -rf proto/public/osac/public/v1/
+mv proto/public-staging/* proto/public/osac/public/v1/
+rm -rf proto/public-staging
+
+# Step 4: generate Go code
 buf generate
 ```
 
-The `protoc-gen-cleanapi` binary is fetched via `go install`. The `proto/deps` path includes `cleanapi.proto` and other proto dependencies (google/api, buf/validate).
+The `protoc-gen-cleanapi` binary is pinned to a specific version or commit in `dev.py`. The `proto/deps` path includes `cleanapi.proto` and other proto dependencies (google/api, buf/validate).
 
 #### OSAC-1331: Safe Deletion Constraints
 
@@ -315,30 +322,41 @@ CREATE TABLE compute_instance_subnet_refs (
 );
 ```
 
-A trigger on `compute_instances` materializes the `subnet_id` from the JSONB `data` column into this ref table. The FK to `active_subnets` then enforces that the referenced subnet is active.
+A trigger on `compute_instances` materializes the `subnet_id` from the JSONB `data` column into this ref table:
+
+- **INSERT** (active instance): extract `subnet_id` from JSONB `data`, insert into ref table
+- **UPDATE** (reference change): update ref table row with new `subnet_id`
+- **Soft-delete** (instance `deletion_timestamp` set): remove row from ref table — the instance is no longer an active child
+- **Undelete** (instance `deletion_timestamp` reset to epoch): re-insert ref row from JSONB `data`
+- **Hard-delete** (row deleted): `ON DELETE CASCADE` on `compute_instance_id` removes the ref row
+
+The FK from `subnet_id` to `active_subnets(id)` enforces that the referenced subnet is active. Migration backfill inserts refs only for currently active compute instances (`deletion_timestamp = 'epoch'`).
 
 ##### Migration Strategy
 
-A single migration (next available number after 79):
+A single migration (next available number after 79), executed in one transaction:
 
 1. Create all `active_<table>` tables
 2. Create the `maintain_active_objects` trigger function
-3. Backfill `active_<table>` tables from existing data (`INSERT INTO active_<table> SELECT id FROM <table> WHERE deletion_timestamp = 'epoch'`)
-4. Create materialized ref tables for each parent-child relationship
-5. Backfill ref tables from existing JSONB data
-6. Attach triggers to maintain both active and ref tables
-7. Drop the old per-resource Pattern A trigger functions (migrations 52, 55, 56, 59, 73, 76)
+3. Lock all affected source tables (`LOCK TABLE <table> IN SHARE ROW EXCLUSIVE MODE`) to prevent concurrent writes during backfill
+4. Backfill `active_<table>` tables from existing data (`INSERT INTO active_<table> SELECT id FROM <table> WHERE deletion_timestamp = 'epoch'`)
+5. Attach `maintain_active_objects` triggers to parent tables
+6. Create materialized ref tables for each parent-child relationship
+7. Backfill ref tables from existing JSONB data (active instances only: `WHERE deletion_timestamp = 'epoch'`)
+8. Attach ref materialization triggers to child tables
+9. Drop the old per-resource Pattern A triggers (e.g., `DROP TRIGGER check_subnets_not_in_use ON subnets`)
+10. Drop the old per-resource Pattern A trigger functions (e.g., `DROP FUNCTION check_subnets_not_in_use()`) from migrations 52, 55, 56, 59, 73, 76
 
 The existing Pattern B helper tables (`tenant_domains`, `project_membership_subjects`, `storage_tier_backends`) are unaffected — they enforce uniqueness constraints, not soft-deletion constraints.
 
 ##### DAO Error Translation
 
-PostgreSQL FK violations produce SQLSTATE `23503` (foreign_key_violation). The generic DAO's `translateError` functions must map `23503` to either `ErrReference` (Z0002) or `ErrInUse` (Z0003) depending on context:
+PostgreSQL FK violations produce SQLSTATE `23503` (foreign_key_violation). The generic DAO's `translateError` must map `23503` to either `ErrReference` (Z0002) or `ErrInUse` (Z0003) based on the constraint name, not the operation type alone:
 
-- FK violation on INSERT (child referencing inactive parent) → `ErrReference`
-- FK violation on UPDATE of `deletion_timestamp` (parent has active children) → `ErrInUse`
+- FK on `<child>_refs` table referencing `active_<parent>(id)` → `ErrReference` (child references inactive parent). Triggered by INSERT or UPDATE on the child.
+- FK on `active_<parent>(id)` referenced by a `_refs` table → `ErrInUse` (parent has active children). Triggered by DELETE from `active_<parent>` during soft-delete.
 
-The DAO determines the context from the operation type (create vs. update/delete) and the FK constraint name. Constraint names follow the pattern `<child_table>_<parent>_id_fkey` for reference errors and are matched in the error translator.
+Constraint names follow a naming convention that encodes direction: `<child_table>_<parent>_id_fkey` for child-to-parent references, allowing the error translator to classify without relying on the calling operation.
 
 ##### CheckSchema Updates
 
@@ -488,7 +506,7 @@ Enforce soft-deletion constraints in Go server code instead of PostgreSQL trigge
 
 ### 1. Public Route Definition Mechanism
 
-How should public HTTP routes (`/api/fulfillment/v1/...`) be defined after cleanapi strips the private routes? Options: (a) a separate `public_routes.proto` with service option extensions, (b) post-generation sed replacement of route prefixes, (c) extend protoc-gen-cleanapi with a route remapping option.
+How should public HTTP routes (`/api/fulfillment/v1/...`) be defined after cleanapi strips the private routes? Options: (a) post-generation sed replacement of route prefixes, (b) extend protoc-gen-cleanapi with a route remapping option. A separate `public_routes.proto` approach was ruled out — `google.api.http` is a `MethodOptions` extension and cannot be applied from another file.
 
 **Owner:** OSAC-1274 implementer
 **Impact:** Determines whether the plugin needs enhancement or the build pipeline needs a post-processing step.
@@ -582,4 +600,4 @@ Final: respond @ design 0.4.2 - 75ae801, workspace main @ e82da1d
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.2","ai_workflows":"75ae801","source_repo":"e82da1d","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.2","ai_workflows":"75ae801","source_repo":"e82da1d","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
