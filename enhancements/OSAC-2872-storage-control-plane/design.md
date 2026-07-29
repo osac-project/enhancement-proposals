@@ -4,7 +4,7 @@ authors:
   - Akshay Nadkarni
   - Roy Golan
 creation-date: 2026-07-22
-last-updated: 2026-07-27
+last-updated: 2026-07-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2872
   - https://redhat.atlassian.net/browse/OSAC-2876
@@ -319,7 +319,7 @@ sequenceDiagram
 8. kubelet calls NodePublishVolume; OSAC CSI Node routes to VAST node plugin.
 9. VAST node plugin bind-mounts the staged volume to the pod's mount point.
 
-No control plane calls are made from the node. All routing information is baked into `volume_context` at CreateVolume time. The exact wait mechanism for the CSI driver (poll, long-call, or streaming) is deferred to implementation.
+No control plane calls are made from the node. All routing information is baked into `volume_context` at CreateVolume time. The exact wait mechanism for the CSI driver (poll, long-call, or streaming), idempotency keys for `(volume_id, node_id)` deduplication, and request correlation across retries are deferred to implementation.
 
 ##### Flow: Deletion
 
@@ -793,6 +793,7 @@ Replace the `LoggingStub` with real gRPC clients. Two interfaces cover the two f
 type VolumeClient interface {
     CreateVolume(ctx context.Context, req *CreateVolumeRequest) (*Volume, error)
     GetVolume(ctx context.Context, req *GetVolumeRequest) (*Volume, error)
+    ListVolumes(ctx context.Context, req *ListVolumesRequest) (*ListVolumesResponse, error)
     DeleteVolume(ctx context.Context, req *DeleteVolumeRequest) error
     Close() error
 }
