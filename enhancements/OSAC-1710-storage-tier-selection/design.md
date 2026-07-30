@@ -3,7 +3,7 @@ title: computeinstance-storage-tier-selection
 authors:
   - Carlo Lobrano
 creation-date: 2026-07-22
-last-updated: 2026-07-23
+last-updated: 2026-07-30
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1710
 prd:
@@ -28,7 +28,7 @@ This enhancement enables per-disk storage tier selection for ComputeInstances. A
 
 The ComputeInstance provisioning flow currently treats all disks identically from a storage perspective. The `DiskSpec` carries only `SizeGiB`, and the AAP playbook reads a single `STORAGE_REQUESTED_TIER` environment variable to select one StorageClass for every DataVolume -- boot disk and additional disks alike.
 
-This means a database VM that needs high-IOPS storage and a log-archive VM that could use cold storage both receive the same tier. The storage tier model already exists in the system: OSAC-1110 defines StorageTier resources, the tenant controller resolves tiers to per-tenant StorageClasses via `Tenant.Status.StorageClasses`, and the AAP `tenant_storage_class` role can filter by tier name. The missing piece is a per-disk field in the ComputeInstance data model that carries the tier selection through the stack.
+This means a database VM that needs high-IOPS storage and a log-archive VM that could use cold storage both receive the same tier. The storage tier model already exists in the system: OSAC-1110 defines StorageTier resources, the storage controller resolves tiers to per-tenant StorageClasses via `Tenant.Status.StorageClasses`, and the AAP `tenant_storage_class` role can filter by tier name. The missing piece is a per-disk field in the ComputeInstance data model that carries the tier selection through the stack.
 
 This design adds `storage_tier` to `ComputeInstanceDisk`, making it a required field with a well-defined default resolution chain. The field flows from the proto API through the fulfillment-service reconciler to the CRD and into the AAP payload. The AAP role resolves each disk's tier to a StorageClass independently, replacing the single-tier `STORAGE_REQUESTED_TIER` environment variable.
 
@@ -39,7 +39,7 @@ This design adds `storage_tier` to `ComputeInstanceDisk`, making it a required f
 ### Non-Goals
 
 - Tier discovery for tenant users (OSAC-1110 scope).
-- CaaS cluster template tier selection. [Locked: D3]
+- CaaS cluster template tier selection.
 - Storage quota or capacity management per tier.
 - Auto-scaling or cross-tier migration of existing disks.
 
@@ -59,7 +59,7 @@ The tier is mandatory. After applying the resolution chain (user input, CatalogI
 
 #### Starting State
 
-StorageTier resources exist (OSAC-1110). StorageClasses are labeled with `osac.openshift.io/storage-tier` and `osac.openshift.io/tenant`. The tenant controller has resolved `Tenant.Status.StorageClasses` for the tenant.
+StorageTier resources exist (OSAC-1110). StorageClasses are labeled with `osac.openshift.io/storage-tier` and `osac.openshift.io/tenant`. The storage controller has resolved `Tenant.Status.StorageClasses` for the tenant.
 
 #### Happy Path 1: Tenant User Creates a ComputeInstance with Explicit Tiers
 
@@ -134,7 +134,7 @@ When the CatalogItem does not define an `additional_disks` default, omitting the
 2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.size_gib: 100` (no `storage_tier`).
 3. Fulfillment-service applies FieldDefinitions — no `boot_disk.storage_tier` default found.
 4. Fulfillment-service merges Template SpecDefaults — template's `boot_disk` has no `storage_tier` either.
-5. Fulfillment-service returns `INVALID_ARGUMENT`: `"boot_disk.storage_tier is required but was not provided by user input, catalog item defaults, or template defaults"`. [Locked: D1]
+5. Fulfillment-service returns `INVALID_ARGUMENT`: `"boot_disk.storage_tier is required but was not provided by user input, catalog item defaults, or template defaults"`.
 
 #### Error Path 2: Additional Disk Missing Tier
 
@@ -190,7 +190,7 @@ This enhancement modifies existing API surfaces. No new CRDs, admission webhooks
 
 **Proto API (private + public):** `ComputeInstanceDisk` message gains `optional string storage_tier = 2`. Existing CRUD operations on ComputeInstances, Templates, and CatalogItems carry the new field without RPC changes.
 
-**CRD (osac-operator):** `DiskSpec` gains `StorageTier string`. The existing `XValidation:rule="self == oldSelf"` on `bootDisk` and `additionalDisks` enforces immutability for the new field automatically. [Locked: D6]
+**CRD (osac-operator):** `DiskSpec` gains `StorageTier string`. The existing `XValidation:rule="self == oldSelf"` on `bootDisk` and `additionalDisks` enforces immutability for the new field automatically.
 
 **AAP extra_vars:** No structural change to `ansible_eda.event`. The CR payload already contains the full ComputeInstance spec, which now includes `storageTier` per disk. The `tenant_storage_classes` sibling field is unchanged.
 
@@ -273,7 +273,7 @@ Example FieldDefinition for a CatalogItem that pre-configures a data disk:
 }
 ```
 
-Per-element field addressing (e.g., `additional_disks[0].storage_tier`) is not supported -- the path resolver uses dot-notation only. [Locked: D2]
+Per-element field addressing (e.g., `additional_disks[0].storage_tier`) is not supported -- the path resolver uses dot-notation only.
 
 #### 4. Fulfillment-Service Validation
 
@@ -362,7 +362,7 @@ type DiskSpec struct {
 
 The `Pattern` validation matches the tier label regex used by `groupByTier()` in `storage_tier_resolution.go`, ensuring consistency between tier names in the CRD and the StorageClass label values. [Codebase: osac-operator/internal/controller/storage_tier_resolution.go]
 
-Immutability is inherited: `bootDisk` uses `XValidation:rule="self == oldSelf"` which compares the entire `DiskSpec` struct. Adding `StorageTier` to the struct means it is automatically covered by the immutability check. No additional XValidation rules are needed. [Locked: D6]
+Immutability is inherited: `bootDisk` uses `XValidation:rule="self == oldSelf"` which compares the entire `DiskSpec` struct. Adding `StorageTier` to the struct means it is automatically covered by the immutability check. No additional XValidation rules are needed.
 
 #### 7. AAP Changes
 
@@ -377,7 +377,7 @@ _requested_storage_tier: "{{ lookup('env', 'STORAGE_REQUESTED_TIER') | default('
 # AFTER: removed entirely
 ```
 
-The tier is no longer a global setting. Each disk carries its own tier in the CR payload. [Locked: D4 from design session]
+The tier is no longer a global setting. Each disk carries its own tier in the CR payload.
 
 ##### 7b. Per-Disk StorageClass Resolution
 
@@ -419,6 +419,8 @@ Refactor `create_resources.yaml` in the `ocp_virt_vm` role. Instead of resolving
 The boot disk DataVolume uses `boot_disk_storage_class`. Each additional disk DataVolume uses `additional_disk_storage_classes[disk_index]`.
 
 The `tenant_storage_class` role itself requires no changes -- it accepts `tenant_storage_class_storage_tier` as input and returns `tenant_storage_class_name`. The role is simply called once per disk instead of once per ComputeInstance.
+
+All tier resolution (boot disk + additional disks) completes before any DataVolumes are created. If resolution fails for any disk, no DataVolumes are created, preventing partial resource creation. The `tenant_storage_class` role should include `disk_index` in its error output so that failures identify which specific disk had the problem.
 
 ##### 7c. DataVolume Template Updates
 
@@ -503,9 +505,9 @@ Instead of making `storage_tier` mandatory, define a system-wide default tier (e
 
 Pros: simpler migration, fewer changes to existing Templates/CatalogItems, lower barrier to ComputeInstance creation.
 
-Cons: reintroduces implicit behavior that the team explicitly rejected in the design session. The name "default" was also rejected for tier naming (D7). A global default means tenants cannot predict which tier they get unless they read operator configuration, defeating the purpose of per-disk selection.
+Cons: reintroduces implicit behavior that the team explicitly rejected in the design session. The name "default" was also rejected for tier naming. A global default means tenants cannot predict which tier they get unless they read operator configuration, defeating the purpose of per-disk selection.
 
-Rejected because: the team reached consensus that storage tier selection should be explicit, with no fallback to a default. [Locked: D1]
+Rejected because: the team reached consensus that storage tier selection should be explicit, with no fallback to a default.
 
 ### Per-disk tier as optional with fallback to boot disk tier
 
