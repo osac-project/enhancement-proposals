@@ -28,6 +28,7 @@ Without metering for object storage, Cloud Provider Admins have no usage data to
 - Object storage bucket metering — allocation-based metering for reserved bucket capacity (GiB-seconds) and consumption-based metering for API request counts (read and write operations)
 - Dual metering model — provisioned quota tracked as GiB-seconds (allocation), and API request counts classified using S3-aligned categories: Class A (PUT/COPY/POST/LIST) and Class B (GET/SELECT/all other)
 - Quota resize handling — when a bucket's quota is resized, subsequent metering intervals reflect the new capacity
+- Object storage is a standalone resource type — not tied to a specific service (VMaaS, CaaS, BMaaS). Any tenant can provision object storage buckets independently of compute or cluster resources
 - The ObjectStorageBucket resource depends on OSAC-2388
 
 ## 3. Out of Scope
@@ -87,7 +88,7 @@ Object storage uses a dual metering model:
 
 ## 7. Acceptance Criteria
 
-- [ ] An object storage bucket generates capacity usage data (GiB-seconds) from creation to deletion, queryable per tenant and project
+- [ ] An object storage bucket generates capacity usage data (GiB-seconds) from creation to deletion, queryable per tenant, project, and bucket
 - [ ] An object storage bucket generates API request count usage data, broken down by Class A (PUT/COPY/POST/LIST) and Class B (GET/SELECT/all other) requests
 - [ ] When a bucket's quota is resized, subsequent usage data reflects the new capacity
 - [ ] Object storage usage can be broken down by tenant, project, and individual bucket
@@ -103,7 +104,7 @@ Object storage uses a dual metering model:
 - Object storage meters are additive to the Part 1 metering deployment and require no separate infrastructure.
 - The ObjectStorageBucket API (OSAC-2388) will be implemented before object storage metering.
 - Allocation-based metering is supported by the Part 1 metering infrastructure without architectural changes.
-- Consumption-based metering (API request counting) is supported by the Part 1 metering infrastructure, or will be extended to support it as part of this feature.
+- Consumption-based metering (API request counting) will require extending the Part 1 metering infrastructure to support high-throughput event ingestion. This extension is in scope for this feature.
 
 ## 9. Dependencies
 
@@ -141,6 +142,7 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Authored: draft @ prd 0.6.3 - 68284c8, workspace main @ ef4f3af
+Authored: revise @ prd 0.6.3 - 68284c8, workspace main @ ef4f3af
+Phases: draft, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"68284c8","source_repo":"ef4f3af","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"68284c8","source_repo":"ef4f3af","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false} -->
