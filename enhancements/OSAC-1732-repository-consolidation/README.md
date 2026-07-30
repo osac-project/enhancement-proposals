@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-05-07
 last-updated: 2026-05-07
 tracking-link:
-  - TBD
+  - https://redhat.atlassian.net/browse/OSAC-1732
 see-also:
   - N/A
 replaces:

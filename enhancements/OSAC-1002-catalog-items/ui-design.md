@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - "README.md"
 see-also:
-  - "/enhancements/catalog-items"
+  - "/enhancements/OSAC-1002-catalog-items"
   - "/enhancements/OSAC-1421-cluster-and-vm-provisioning-wizard"
 replaces:
 superseded-by:

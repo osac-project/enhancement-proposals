@@ -4,12 +4,12 @@
 |-------------|--------------------------------------------------------------------------------|
 | Author(s)   | rawagner@redhat.com                                                            |
 | Jira        | [OSAC-2792](https://redhat.atlassian.net/browse/OSAC-2792)                     |
-| PRD         | [03-prd.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/organizations/README.md)                                    |
+| PRD         | [README.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1030-organizations/README.md)                                    |
 | Date        | 2026-07-16                                                                     |
 
 # 1. Overview
 
-This design covers the OSAC Console (frontend and Go proxy) changes required to support the Organizations & Authentication feature defined in the [PRD](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/organizations/README.md). The work spans four areas:
+This design covers the OSAC Console (frontend and Go proxy) changes required to support the Organizations & Authentication feature defined in the [PRD](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1030-organizations/README.md). The work spans four areas:
 
 1. **Shell changes** — role-differentiated sidebar navigation for four UI roles (`admin`, `tenant-idp-manager`, `tenant-admin`, `tenant-user`), with matching route guards and default routes.
 2. **Project context switcher** — a multi-select masthead component that scopes resource pages to zero, one, or many projects, with hierarchical display and persistent selection.

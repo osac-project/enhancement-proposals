@@ -8,7 +8,7 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-979
 see-also:
   - "/enhancements/vmaas"
-  - "/enhancements/catalog-items"
+  - "/enhancements/OSAC-1002-catalog-items"
 replaces:
   - N/A
 superseded-by:
@@ -788,7 +788,7 @@ This enhancement establishes the foundation for a complete image management life
 - **Cross-region image replication**: Automatically replicating images across multiple registries for multi-region deployments.
 - **Image policies**: Tenant-level policies restricting which global images are available or requiring approval for new tenant images.
 - **User-created images**: Allowing tenant users (not just admins) to register images, with optional admin approval workflows.
-- **CatalogItems integration**: CatalogItems (see `/enhancements/catalog-items`) may reference ComputeImages as building blocks — e.g., a catalog entry could combine a ComputeImage with a predefined instance size and network configuration into a one-click deployment template.
+- **CatalogItems integration**: CatalogItems (see `/enhancements/OSAC-1002-catalog-items`) may reference ComputeImages as building blocks — e.g., a catalog entry could combine a ComputeImage with a predefined instance size and network configuration into a one-click deployment template.
 
 ## Test Plan
 

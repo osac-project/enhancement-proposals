@@ -4,8 +4,8 @@ authors:
   - mhrivnak
 creation-date: 2026-01-27
 last-updated: 2026-02-05
-tracking-link: # link to the tracking ticket (for example: Github issue) that corresponds to this enhancement
-  - TBD
+tracking-link:
+  - https://redhat.atlassian.net/browse/OSAC-1034
 see-also:
 replaces:
 superseded-by:

@@ -10,7 +10,7 @@ prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-24-tenant-onboarding"
-  - "/enhancements/organizations"
+  - "/enhancements/OSAC-1030-organizations"
 replaces:
   - N/A
 superseded-by:

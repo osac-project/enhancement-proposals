@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - prd.md
 see-also:
-  - /enhancements/catalog-items
+  - /enhancements/OSAC-1002-catalog-items
   - /enhancements/OSAC-46-vm-instance-types
 replaces:
   - N/A
