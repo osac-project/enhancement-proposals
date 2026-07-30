@@ -399,6 +399,8 @@ Refactor `create_resources.yaml` in the `ocp_virt_vm` role. Instead of resolving
 # Resolve StorageClass for each additional disk and build the list in one pass
 - name: Resolve and collect StorageClass for additional disks
   ansible.builtin.include_tasks: resolve_additional_disk.yaml
+  vars:
+    tenant_storage_class_disk_index: "{{ disk_index }}"
   loop: "{{ ansible_eda.event.payload.spec.additionalDisks | default([]) }}"
   loop_control:
     index_var: disk_index
