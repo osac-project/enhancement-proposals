@@ -23,8 +23,8 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 
 ## 2. In Scope
 
-- Block storage metering — allocation-based metering for standalone volumes by storage tier and capacity (GiB-seconds)
-- File storage metering — allocation-based metering for shared file storage by storage tier and capacity (GiB-seconds)
+- Block storage metering — allocation-based metering for standalone Volumes (OSAC-984) by storage tier and capacity (GiB-seconds)
+- File storage metering — allocation-based metering for FileShares (OSAC-2387) by storage tier and capacity (GiB-seconds)
 - Parent-child attribution — extending [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that storage volumes attached to VMs, clusters, or bare metal hosts can be attributed to the parent resource in a unified usage view
 - Applies across VMaaS (block/file volumes on ComputeInstances), CaaS (volumes on ClusterOrders), and BMaaS (volumes on bare metal hosts)
 
@@ -85,10 +85,10 @@ Storage uses allocation meters because storage capacity is reserved from creatio
 
 - [ ] A block storage volume generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, storage tier, and capacity
 - [ ] A file storage share generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, storage tier, and capacity
-- [ ] When a storage volume is resized, subsequent usage data reflects the new capacity
+- [ ] When a block volume or file share is resized, subsequent usage data reflects the new capacity
 - [ ] Storage usage can be broken down by storage tier, tenant, project, and individual volume
 - [ ] A storage volume attached to a stopped VM continues generating usage data (extending Part 1 CAP-11)
-- [ ] A storage volume attached to a VM or cluster can be attributed to the parent resource in a unified usage view
+- [ ] A storage volume attached to a VM, cluster, or bare metal host can be attributed to the parent resource in a unified usage view
 - [ ] Storage usage data appears alongside existing metering data without additional admin setup
 - [ ] Storage meters record usage at per-second granularity — a volume existing for 30 seconds appears in usage data
 - [ ] Storage usage totals are accurate — querying the same period twice returns consistent results
@@ -136,5 +136,6 @@ This PRD is part of the Metering Part 2 family:
 ## Provenance
 
 Authored: revise @ prd 0.6.3 - 68284c8, workspace main @ ef4f3af
+Phases: revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"68284c8","source_repo":"ef4f3af","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"68284c8","source_repo":"ef4f3af","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false} -->
