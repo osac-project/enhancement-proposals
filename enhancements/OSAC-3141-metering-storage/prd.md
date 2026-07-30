@@ -1,4 +1,4 @@
-# Metering and Usage Tracking — Part 2b: Storage
+# Metering and Usage Tracking — Part 2b: Block and File Storage
 
 | Field       | Value                |
 |-------------|----------------------|
@@ -17,7 +17,7 @@ Terms defined in the [Part 1 PRD](/enhancements/OSAC-985-metering-and-usage-trac
 
 ## 1. Problem Statement
 
-OSAC provisions storage resources — block volumes, file shares, and object storage buckets — but has no mechanism to track their consumption over time. Storage resources consume provider capacity from the moment they are created until they are deleted, regardless of whether they are actively in use. A block volume occupies backend disk space whether the parent VM is running or not. A file share reserves capacity on the storage backend from creation. An object storage bucket reserves provisioned quota on the backend regardless of how much data is actually stored.
+OSAC provisions storage resources — block volumes and file shares — but has no mechanism to track their consumption over time. Storage resources consume provider capacity from the moment they are created until they are deleted, regardless of whether they are actively in use. A block volume occupies backend disk space whether the parent VM is running or not. A file share reserves capacity on the storage backend from creation.
 
 Without metering for these resources, Cloud Provider Admins have no usage data to account for the storage capacity tenants hold, and Tenant Admins have no visibility into their storage footprint across projects and storage tiers. This gap grows as OSAC adds new storage types — every new storage resource added without metering is usage the provider cannot track.
 
@@ -25,17 +25,16 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 
 - Block storage metering — allocation-based metering for standalone volumes by storage tier and capacity (GiB-seconds)
 - File storage metering — allocation-based metering for shared file storage by storage tier and capacity (GiB-seconds)
-- Object storage bucket metering — allocation-based metering for reserved bucket capacity (GiB-seconds) and consumption-based metering for API request counts (read and write operations)
 - Parent-child attribution — extending [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that storage volumes attached to VMs, clusters, or bare metal hosts can be attributed to the parent resource in a unified usage view
 - Applies across VMaaS (block/file volumes on ComputeInstances), CaaS (volumes on ClusterOrders), and BMaaS (volumes on bare metal hosts)
 
 ## 3. Out of Scope
 
+- Object storage metering — tracked separately ([OSAC-3444](https://redhat.atlassian.net/browse/OSAC-3444))
 - BMaaS metering — tracked separately ([OSAC-2506](https://redhat.atlassian.net/browse/OSAC-2506))
 - Networking resource metering — tracked separately ([OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145))
 - Network bandwidth metering — tracked separately ([OSAC-3149](https://redhat.atlassian.net/browse/OSAC-3149))
 - Costing, billing, quota enforcement, and budget alerts — deferred to a separate PRD
-- Object storage API-level metering beyond the S3-aligned two-tier classification (Class A and Class B). The ObjectStorageBucket resource depends on OSAC-2388.
 - VM boot disk storage tier attribution — tracked separately
 - UI for viewing storage usage — metering data is consumed by the billing system, which provides the user-facing usage views
 - Workload-level metering inside tenant environments
@@ -45,18 +44,15 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 ### Cloud Provider Admin
 
 - As a Cloud Provider Admin, I want to view storage usage across all tenants broken down by storage tier (fast, standard, archival) and capacity, so that I can account for the storage capacity each tenant holds by tier.
-- As a Cloud Provider Admin, I want to view object storage usage across all tenants broken down by reserved capacity and API request counts (Class A: PUT/COPY/POST/LIST and Class B: GET/SELECT/all other), so that I can track both the storage space tenants hold and the API activity they generate.
 - As a Cloud Provider Admin, I want storage usage to be automatically grouped by the storage tiers I have configured in OSAC, so that each tier (e.g., NVMe SSD, HDD archival) is metered independently — without requiring a separate registration step in the metering system.
 
 ### Tenant Admin
 
 - As a Tenant Admin, I want to view my organization's storage usage broken down by project, storage tier, and volume, so that I can identify which teams consume the most storage capacity and on which tier.
-- As a Tenant Admin, I want to view my organization's object storage bucket usage broken down by project, capacity, and API request counts (Class A and Class B), so that I can attribute object storage usage to the teams that use them.
 
 ### Tenant User
 
 - As a Tenant User, I want to view storage usage for the projects I belong to, broken down by volume and storage tier, so that I can track how much storage capacity my workloads consume and on which tier.
-- As a Tenant User, I want to view object storage bucket usage for the projects I belong to, broken down by capacity and API request counts (Class A and Class B), so that I can understand how my applications use object storage.
 
 ## 5. Capabilities
 
@@ -65,18 +61,14 @@ Without metering for these resources, Cloud Provider Admins have no usage data t
 - **CAP-1:** Block storage volumes are metered using allocation-based metering from creation to deletion. The metering unit is GiB-seconds per storage tier.
 - **CAP-2:** File storage shares are metered using the same allocation model as block storage — GiB-seconds per storage tier from creation to deletion.
 
-### 5.2 Object Storage Metering
+### 5.2 Query Dimensions and Attribution
 
-- **CAP-3:** Object storage buckets are metered using a dual model — allocation (provisioned quota as GiB-seconds, not actual bytes stored) and consumption (API request counts classified using S3-aligned categories: Class A for PUT/COPY/POST/LIST and Class B for GET/SELECT/all other requests). When a bucket's quota is resized, the new capacity takes effect for subsequent metering intervals.
+- **CAP-3:** Storage usage is queryable by storage tier, capacity, tenant, and project. Storage tier is a required metering dimension as specified by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md).
+- **CAP-4:** Storage volumes attached to a VM, cluster, or bare metal host are attributable to the parent resource, extending Part 1 CAP-11 and CAP-12 so that the full usage of a parent resource can be queried as a unified view including all subsidiary storage.
 
-### 5.3 Query Dimensions and Attribution
+### 5.3 Cross-cutting
 
-- **CAP-4:** Storage usage is queryable by storage tier, capacity, tenant, and project. Storage tier is a required metering dimension for all storage resources.
-- **CAP-5:** Storage volumes attached to a VM, cluster, or bare metal host are attributable to the parent resource, extending Part 1 CAP-11 and CAP-12 so that the full usage of a parent resource can be queried as a unified view including all subsidiary storage.
-
-### 5.4 Cross-cutting
-
-- **CAP-6:** Storage usage data is available alongside existing metering data without additional admin configuration steps. All storage meters use the same accuracy and data-availability guarantees as Part 1 meters (Part 1 CAP-4, CAP-15, CAP-16).
+- **CAP-5:** Storage usage data is available alongside existing metering data without additional admin configuration steps. All storage meters use the same accuracy and data-availability guarantees as Part 1 meters (CAP-4, CAP-15, CAP-16).
 
 ## 6. Usage Calculation Model
 
@@ -84,25 +76,19 @@ OSAC captures usage data. Downstream systems (billing, quota, analytics) consume
 
 Storage uses allocation meters because storage capacity is reserved from creation and cannot be shared with other tenants. The storage tier is the primary metering dimension — different tiers represent different performance and capacity characteristics.
 
-Object storage adds consumption meters for API request counts alongside the allocation meter for reserved capacity, using S3-aligned request categories: Class A (PUT, COPY, POST, LIST) and Class B (GET, SELECT, and all other requests). The allocation meter tracks provisioned quota — the capacity reserved by the tenant at creation or resize — because backend storage is reserved at that size regardless of how much data is actually stored. Unlike block or file storage where usage is driven purely by reserved capacity over time, object storage usage is also driven by how actively the data is accessed. A 1 TiB bucket serving millions of Class B requests per day consumes significantly more provider resources in I/O and network bandwidth than an identically-sized archival bucket accessed once a month. The dual model gives providers two independent usage signals: storage capacity and API activity.
-
 | Meter | Scope | Unit | Accumulation | Example (30 days) |
 |-------|-------|------|-------------|-------------------|
-| GiB-seconds per tier (block/file allocation) | creation to deletion | GiB × seconds | capacity × wall-clock duration | 100 GiB × 2,592,000s |
-| GiB-seconds per tier (object storage allocation) | creation to deletion | GiB × seconds | provisioned quota × wall-clock duration | 500 GiB × 2,592,000s |
-| Class A requests (object storage consumption) | continuous | count | total PUT/COPY/POST/LIST operations in period | 1,000,000 requests |
-| Class B requests (object storage consumption) | continuous | count | total GET/SELECT/other operations in period | 10,000,000 requests |
+| GiB-seconds per tier (block allocation) | creation to deletion | GiB × seconds | capacity × wall-clock duration | 100 GiB × 2,592,000s |
+| GiB-seconds per tier (file allocation) | creation to deletion | GiB × seconds | capacity × wall-clock duration | 50 GiB × 2,592,000s |
 
 ## 7. Acceptance Criteria
 
-- [ ] A block storage volume generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, project, storage tier, and capacity
-- [ ] A file storage share generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, project, storage tier, and capacity
-- [ ] An object storage bucket generates capacity usage data (GiB-seconds) from creation to deletion, queryable per tenant, project, storage tier, and capacity
-- [ ] An object storage bucket generates API request count usage data, broken down by Class A (PUT/COPY/POST/LIST) and Class B (GET/SELECT/all other) requests
-- [ ] When a storage volume, file storage share, or object storage bucket is resized, subsequent usage data reflects the new capacity
-- [ ] Storage usage can be broken down by storage tier, tenant, project, and individual volume or share
+- [ ] A block storage volume generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, storage tier, and capacity
+- [ ] A file storage share generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, storage tier, and capacity
+- [ ] When a storage volume is resized, subsequent usage data reflects the new capacity
+- [ ] Storage usage can be broken down by storage tier, tenant, project, and individual volume
 - [ ] A storage volume attached to a stopped VM continues generating usage data (extending Part 1 CAP-11)
-- [ ] A storage volume attached to a VM, cluster, or bare-metal host can be attributed to the parent resource in a unified usage view
+- [ ] A storage volume attached to a VM or cluster can be attributed to the parent resource in a unified usage view
 - [ ] Storage usage data appears alongside existing metering data without additional admin setup
 - [ ] Storage meters record usage at per-second granularity — a volume existing for 30 seconds appears in usage data
 - [ ] Storage usage totals are accurate — querying the same period twice returns consistent results
@@ -113,8 +99,8 @@ Object storage adds consumption meters for API request counts alongside the allo
 
 - Part 1 metering infrastructure is deployed and operational.
 - Storage meters are additive to the Part 1 metering deployment and require no separate infrastructure.
-- Tenant-facing storage APIs (Volume, FileShare) will be implemented before storage metering. Object storage metering depends on OSAC-2388 (Object Storage API).
-- Storage metering can be delivered incrementally as each storage API becomes available — block, file, and object storage meters are independent and do not depend on each other.
+- Tenant-facing storage APIs (Volume, FileShare) will be implemented before storage metering.
+- Storage metering can be delivered incrementally as each storage API becomes available — block and file storage meters are independent and do not depend on each other.
 - Allocation-based metering is supported by the Part 1 metering infrastructure without architectural changes.
 
 ## 9. Dependencies
@@ -122,14 +108,13 @@ Object storage adds consumption meters for API request counts alongside the allo
 - **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Part 2b extends but does not replace it.
 - **OSAC-984 (Storage Volume API):** Tenant-facing block storage Volume resource must exist in the fulfillment-service proto before storage metering can be implemented.
 - **OSAC-2387 (File Storage API):** FileShare resource must exist in the fulfillment-service proto before file storage metering can be implemented.
-- **OSAC-2388 (Object Storage API):** ObjectStorageBucket resource must exist in the fulfillment-service proto before object storage metering can be implemented.
 
 ## 10. Risks
 
 ### 10.1 Storage APIs do not exist yet
 
 - **Owner:** OSAC platform team
-- **Mitigation:** Block storage (OSAC-984), file storage (OSAC-2387), and object storage (OSAC-2388) APIs must be implemented before their respective meters can be built. Storage metering delivery is gated on these APIs. Coordinate with the storage team to align timelines.
+- **Mitigation:** Block storage (OSAC-984) and file storage (OSAC-2387) APIs must be implemented before their respective meters can be built. Storage metering delivery is gated on these APIs. Coordinate with the storage team to align timelines.
 
 ### 10.2 Part 1 metering infrastructure not yet built
 
@@ -141,16 +126,15 @@ Object storage adds consumption meters for API request counts alongside the allo
 This PRD is part of the Metering Part 2 family:
 
 - **Part 2a: BMaaS** — [OSAC-2506](https://redhat.atlassian.net/browse/OSAC-2506)
-- **Part 2b: Storage** — this document (OSAC-3141)
+- **Part 2b: Block and File Storage** — this document (OSAC-3141)
 - **Part 2c: Networking** — [OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145)
 - **Part 2d: Network Bandwidth** — [OSAC-3149](https://redhat.atlassian.net/browse/OSAC-3149)
+- **Part 2e: Object Storage** — [OSAC-3444](https://redhat.atlassian.net/browse/OSAC-3444)
 
 ---
 
 ## Provenance
 
-Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3141 @ 7ebef6f
+Authored: revise @ prd 0.6.3 - 68284c8, workspace main @ ef4f3af
 
-> Authoring phases not recorded this session (commit-time snapshot only).
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"7ebef6f","source_repo_branch":"prd/OSAC-3141","commits_behind_main":0,"commits_ahead_main":8,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"68284c8","source_repo":"ef4f3af","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false} -->
