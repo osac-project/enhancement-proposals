@@ -287,7 +287,7 @@ func validateDisk(ctx context.Context, label string, disk *privatev1.ComputeInst
     if disk.GetSizeGib() <= 0 {
         return grpcstatus.Errorf(grpccodes.InvalidArgument, "%s.size_gib must be greater than 0", label)
     }
-    if !disk.HasStorageTier() {
+    if !disk.HasStorageTier() || disk.GetStorageTier() == "" {
         return grpcstatus.Errorf(grpccodes.InvalidArgument, "%s.storage_tier is required", label)
     }
     exists, err := storageTierClient.Exists(ctx, disk.GetStorageTier())
@@ -396,31 +396,21 @@ Refactor `create_resources.yaml` in the `ocp_virt_vm` role. Instead of resolving
   ansible.builtin.set_fact:
     boot_disk_storage_class: "{{ tenant_storage_class_name }}"
 
-# Resolve StorageClass for each additional disk
-- name: Resolve StorageClass for additional disks
-  ansible.builtin.include_role:
-    name: osac.service.tenant_storage_class
-  vars:
-    tenant_storage_class_storage_tier: "{{ item.storageTier }}"
-  loop: "{{ ansible_eda.event.payload.spec.additionalDisks | default([]) }}"
-  loop_control:
-    index_var: disk_index
-  register: additional_disk_sc_results
-
-- name: Build additional disk storage class list
-  ansible.builtin.set_fact:
-    additional_disk_storage_classes: >-
-      {{ additional_disk_storage_classes | default([]) + [tenant_storage_class_name] }}
+# Resolve StorageClass for each additional disk and build the list in one pass
+- name: Resolve and collect StorageClass for additional disks
+  ansible.builtin.include_tasks: resolve_additional_disk.yaml
   loop: "{{ ansible_eda.event.payload.spec.additionalDisks | default([]) }}"
   loop_control:
     index_var: disk_index
 ```
 
+Where `resolve_additional_disk.yaml` calls the `tenant_storage_class` role for the current disk and appends the result to `additional_disk_storage_classes` in the same iteration, avoiding the stale-variable problem of a separate collection loop.
+
 The boot disk DataVolume uses `boot_disk_storage_class`. Each additional disk DataVolume uses `additional_disk_storage_classes[disk_index]`.
 
-The `tenant_storage_class` role itself requires no changes -- it accepts `tenant_storage_class_storage_tier` as input and returns `tenant_storage_class_name`. The role is simply called once per disk instead of once per ComputeInstance.
+The `tenant_storage_class` role requires one change: accept an optional `tenant_storage_class_disk_index` input so that failure messages identify which disk had the problem (e.g., `"additional disk 2: storage tier \"archive\" has no StorageClass for tenant xyz"`). This error propagates through the AAP job status into the ComputeInstance's `Provisioned` condition, making it visible via `kubectl describe computeinstance` without requiring AAP log access.
 
-All tier resolution (boot disk + additional disks) completes before any DataVolumes are created. If resolution fails for any disk, no DataVolumes are created, preventing partial resource creation. The `tenant_storage_class` role should include `disk_index` in its error output so that failures identify which specific disk had the problem.
+All tier resolution (boot disk + additional disks) completes before any DataVolumes are created. If resolution fails for any disk, no DataVolumes are created, preventing partial resource creation.
 
 ##### 7c. DataVolume Template Updates
 
