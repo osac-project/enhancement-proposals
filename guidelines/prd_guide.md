@@ -87,6 +87,12 @@ specific things users interact with.
 - "As a Tenant Admin, I want to store OIDC client secrets for IDP
   integration, so that my team's identity provider credentials are
   centrally managed."
+- "As a Tenant Admin or Tenant User, I want persistent storage to be
+  available on my CaaS cluster when it is ready, so that I can run
+  stateful workloads without waiting for manual configuration." (Two
+  personas, one story — see
+  [OSAC-1332-caas-cluster-storage](../enhancements/OSAC-1332-caas-cluster-storage/prd.md)
+  for the full pattern.)
 
 ### Bad examples
 
@@ -140,6 +146,26 @@ must use an OSAC persona name from the table above.
 A PRD that covers storage provisioning, networking policy enforcement,
 and cluster monitoring is three features, not one. Test independence:
 could each ship on its own and provide value? If yes, split them.
+
+### Duplicated persona stories
+
+Copying the same story under multiple persona headings just to change the
+persona name inflates the document without adding information:
+
+- "As a Tenant Admin, I want persistent storage to be available on my
+  CaaS cluster when it is ready..." followed by a near-identical "As a
+  Tenant User, I want persistent storage to be available on my CaaS
+  cluster when it is ready..." (Same capability, same outcome — the
+  duplication tells the reader nothing new.)
+
+**Fix:** When two or more personas want the genuinely identical
+capability, combine them under one heading and story: "### Tenant Admin /
+Tenant User" with "As a Tenant Admin or Tenant User, I want persistent
+storage to be available on my CaaS cluster when it is ready, so that I
+can run stateful workloads without waiting for manual configuration."
+Only combine when the capability is truly identical — if personas
+experience it differently (different constraints, different visibility
+scope), keep separate stories.
 
 ## Workflow
 
