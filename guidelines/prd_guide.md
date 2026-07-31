@@ -55,6 +55,25 @@ Referencing OSAC platform terms by name is acceptable context in a PRD:
 Naming these is fine. Mandating which internal component solves a problem
 or describing controller logic is not.
 
+### A narrow exception: illustrative examples
+
+A single minimal example — a sample request/response shape, a short flow
+list, a format a user types — may accompany prose when it's the clearest
+way to convey a user-observable capability or constraint. This is not
+license to describe internal architecture: apply the same litmus test to
+the example as to any other statement.
+
+- Good: "Tenants specify port mappings in the format `8080:80`
+  (host:container) when creating a ComputeInstance." — a value the user
+  types; conveys the format without describing the implementation.
+- Bad: "The reconciler records the mapping as `conditions: [{type:
+  PortMappingApplied, hostPort: 8080, containerPort: 80}]`." — reads like
+  a design doc even though it's framed as an example; the condition type
+  and field names are only visible in code.
+
+Use sparingly — one example per capability, always followed by prose
+stating the user-facing implication.
+
 ## OSAC Personas
 
 Use these exact names in user stories. Every PRD should identify which
