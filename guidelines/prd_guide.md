@@ -109,8 +109,7 @@ specific things users interact with.
 - "As a Tenant Admin or Tenant User, I want persistent storage to be
   available on my CaaS cluster when it is ready, so that I can run
   stateful workloads without waiting for manual configuration." (Two
-  personas, one story — see `enhancements/OSAC-1332-caas-cluster-storage/prd.md`
-  for the full pattern.)
+  personas, one story — identical capability and outcome for both.)
 
 ### Bad examples
 
