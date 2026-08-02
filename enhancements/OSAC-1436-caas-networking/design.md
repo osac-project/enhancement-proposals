@@ -99,7 +99,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
 1. **Create VirtualNetwork:**
    ```bash
-   osac create virtualnetwork --region moc-region-1 --cidr 10.0.0.0/16 --name my-net
+   osac create virtualnetwork --network-class moc-bm-1 --cidr 10.0.0.0/16 --name my-net
    ```
    Dispatcher → `osac.templates.{{ fabric_manager }}.create_virtual_network`
 
@@ -107,7 +107,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
    ```
-   Dispatcher → TWO jobs: fabric_manager creates VLAN/fabric segment + k8s_manager creates CUDN overlay (if region hosts VMs)
+   Dispatcher → TWO jobs: fabric_manager creates VLAN/fabric segment + k8s_manager creates CUDN overlay (if deployment hosts VMs)
 
 3. **Create SecurityGroup:**
    ```bash
@@ -656,12 +656,12 @@ kubectl describe cluster <name> -n <namespace>
 # Check status.conditions for NetworkingResolutionFailed
 ```
 
-**Cause:** Subnet not found, not Ready, or BM-only region (no k8s_manager)
+**Cause:** Subnet not found, not Ready, or BM-only deployment (no k8s_manager)
 
 **Resolution:**
 1. Check Subnet status: `kubectl get subnet <subnet-name> -n <namespace>`
 2. If Subnet is not Ready, investigate Subnet provisioning failure (check AAP job logs)
-3. If BM-only region, tenant must create Cluster in a region with k8s_manager configured
+3. If BM-only deployment, tenant must create Cluster in a deployment with k8s_manager configured
 
 ### Symptom: Auto-provisioned ExternalIP not cleaned up after Cluster deletion
 

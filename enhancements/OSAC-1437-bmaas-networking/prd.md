@@ -135,7 +135,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 ## 6. Assumptions
 
 - The tenant has default networking resources (virtual network, subnet, security group) pre-created at onboarding (see Default Networking PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
-- The target region's networking infrastructure has fabric manager configured (the system can resolve which network automation to use).
+- The NetworkClass has a fabric manager configured (the system can resolve which network automation to use).
 - The host type for the bare-metal template has a populated physical network interface list. If the list is empty, creating a server with explicit network attachments fails with a clear error.
 - Out-of-band provisioning interfaces (PXE boot, BMC) are reserved for system use and are NOT tenant-attachable (should not appear in network attachments).
 
