@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion — but provides no managed path for upgrading a cluster's OpenShift version. Clusters are provisioned via Hosted Control Planes (HCP), where the control plane and worker node pools are independent upgrade targets with distinct ownership and ordering constraints; today neither target has first-class support in the OSAC API. Tenants who need a newer version must interact directly with HCP infrastructure, bypassing OSAC governance entirely: upgrades proceed without organizational oversight, leave no record in OSAC, and are invisible to OSAC's monitoring. As clusters age, the gap compounds: EOL versions lose Red Hat support coverage and security patches, but OSAC has no mechanism to surface upgrade readiness, track version transitions, or enforce upgrade progress.
+OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion — but provides no managed path for upgrading a cluster's OpenShift version. Clusters are provisioned via Hosted Control Planes (HCP), where the control plane and worker node pools are independent upgrade targets with distinct ownership and ordering constraints; today neither target has first-class support in the OSAC API. Tenants who need a newer version must interact directly with HCP infrastructure, bypassing OSAC entirely: upgrades leave no record in OSAC and are invisible to its monitoring. As clusters age, the gap compounds: EOL versions lose Red Hat support coverage and security patches, but OSAC has no mechanism to surface upgrade readiness, track version transitions, or apply platform-wide patches.
 
 ## In Scope
 
@@ -16,7 +16,10 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 
 **Tenant upgrade capabilities:**
 - Each cluster has an update channel assigned at cluster creation time, which scopes the cluster's available update graph and the set of versions eligible for upgrade
-- Tenant Users and Tenant Admins can view available upgrade versions for a cluster's control plane and node pools; for both components, versions are sourced from the cluster's available update graph (only directly reachable versions are surfaced) and filtered by the cluster's update channel
+- Tenant Users and Tenant Admins can view available upgrade versions for a cluster's control plane and node pools
+  - Versions are sourced from the cluster's available update graph — only directly reachable versions are surfaced
+  - Versions are filtered by the cluster's update channel
+  - A version is only available for upgrade if an enabled ClusterVersion (OSAC-1269) exists for it
 - Available node pool versions are additionally capped at the current control plane version; a node pool cannot be upgraded past the version of its control plane
 - Tenant Users and Tenant Admins can initiate a control plane y-stream upgrade to any directly reachable version, one hop at a time
 - Tenant Users and Tenant Admins can initiate a node pool upgrade (y-stream or z-stream), one hop at a time
@@ -25,17 +28,7 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 - Only one active upgrade per cluster component (control plane or node pool) is permitted at a time; control plane and node pool upgrades are independent and may proceed concurrently
 
 **Upgrade tracking and visibility:**
-- Each upgrade is tracked as a discrete record per cluster component, with a stable lifecycle: pending (within cancellation window), running, succeeded, or failed
-- Each upgrade record includes the following fields:
-
-  | Field | Description |
-  |-------|-------------|
-  | Target version | The OpenShift version the upgrade is moving to |
-  | Upgrade type | Control plane or node pool |
-  | Node pool identifier | The name of the node pool being upgraded; present only for node pool upgrade records |
-  | State | Current lifecycle state (pending, running, succeeded, failed) with a human-readable description |
-  | Creation timestamp | When the upgrade was initiated |
-  | Last update timestamp | When the state last changed |
+- Each upgrade is tracked as a discrete record per cluster component, with a stable lifecycle: pending (within cancellation window), running, succeeded, or failed. Each record identifies the cluster and the component being upgraded — control plane, or a specific named node pool — along with the source version, the target version, the current lifecycle state with a human-readable description, and the timestamps for when the upgrade was initiated and when the state last changed.
 
 - Upgrade status and progress are visible through conditions on each upgrade record
 - Control plane and node pool upgrade records are independent; when component versions diverge (e.g., after a partial upgrade or NP upgrade failure), the cluster resource surfaces a condition indicating the mismatch and exposes the current version of each component — control plane and each node pool — so tenants can assess the state without consulting individual upgrade records; the supported next action is to initiate a new node pool upgrade to retry independently
@@ -45,7 +38,7 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 **Platform-managed z-stream upgrades:**
 - The Cloud Provider Admin selects the fleet-wide z-stream target version for the control plane's current minor version and applies it across all clusters via progressive rollout; available z-stream versions are sourced from the cluster's available update graph, the same mechanism used for tenant-visible upgrade versions
 - Z-stream upgrades are triggered on-demand by the Cloud Provider Admin; the regular cadence targets critical CVE remediation within FedRAMP-aligned timelines (High CVEs: 30 days, Medium: 90 days)
-- If a z-stream rollout causes a significant regression, the Cloud Provider Admin can pause the rollout and roll back affected control planes
+- If a z-stream rollout causes a significant regression, the Cloud Provider Admin can pause the rollout to prevent further clusters from being upgraded; clusters that have already been upgraded cannot be automatically rolled back (HCP does not support control plane version downgrade) — remediation for already-affected clusters requires manual intervention, such as opening a support case with Red Hat
 - Tenants cannot select or initiate z-stream control plane upgrades; these are applied by the Cloud Provider Admin
 - If the fleet-wide z-stream target version is not reachable from a cluster's available update graph, the cluster is flagged as an error in the rollout status and no upgrade is initiated for that cluster
 - Tenant Users and Tenant Admins are notified via resource status conditions when the platform applies a z-stream upgrade to their cluster
@@ -55,21 +48,21 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 
 | Surface | Change |
 |---------|--------|
-| Fulfillment API (gRPC and REST) | New upgrade sub-resource per cluster component (control plane and node pool) with full CRUD and status. Available upgrade versions endpoint per cluster component. Org-scoped endpoint for Tenant Admins to list upgrade records across all clusters in their organization. Fleet-wide z-stream upgrade target resource for Cloud Provider Admins (set target version, trigger rollout, pause, rollback). Fleet-wide rollout status endpoint exposing per-cluster upgrade state. |
-| CLI | Upgrade lifecycle commands: list available versions, initiate upgrade, cancel pending upgrade, view upgrade status, view upgrade history. Cloud Provider Admin: set fleet-wide z-stream target, trigger and monitor rollout, pause and roll back rollout, force EOL upgrade on a specific cluster. |
-| UI | Upgrade lifecycle actions and history in the cluster detail view. Available versions and risk display before upgrade initiation. Cloud Provider Admin: fleet-wide z-stream target selection, rollout triggering, pause, rollback, and cross-cluster upgrade status monitoring. |
+| Fulfillment API | New upgrade sub-resource per cluster component (control plane and node pool). Available upgrade versions endpoint per cluster component. Org-scoped endpoint for Tenant Admins to list upgrade records across all clusters in their organization. Fleet-wide z-stream upgrade resource for Cloud Provider Admins (set target version, trigger rollout, pause, and monitor per-cluster status). |
+| CLI | Upgrade lifecycle commands: list available versions, initiate upgrade, cancel pending upgrade, view upgrade status, view upgrade history. Cloud Provider Admin: set fleet-wide z-stream target, trigger and monitor rollout, pause rollout, force EOL upgrade on a specific cluster. |
+| UI | Upgrade lifecycle actions and history in the cluster detail view. Available versions and risk display before upgrade initiation. Cloud Provider Admin: fleet-wide z-stream target selection, rollout triggering, pause, and cross-cluster upgrade status monitoring. |
 
 **E2E testing:** E2E coverage for upgrade initiation, status tracking, upgrade history, and pending upgrade cancellation in osac-test-infra.
 
 **Documentation:** User guides for upgrade initiation and monitoring (Tenant User), z-stream upgrade visibility (Tenant Admin), and fleet-wide z-stream management (Cloud Provider Admin).
 
-**Interfaces:** Fulfillment API (gRPC and REST), CLI, and UI console.
+**Interfaces:** Fulfillment API, CLI, and UI console.
 
 ## Out of Scope
 
 - SNO and traditional (non-HCP) control plane node upgrades
 - Fully automatic z-stream control plane upgrades triggered by version availability; unlike ROSA's auto-upgrade mechanism, z-stream upgrades in this version are on-demand operations initiated explicitly by the Cloud Provider Admin
-- Tenant-initiated upgrade rollback — clusters cannot be rolled back by tenants; rollback is a platform-level operation reserved for Cloud Provider Admins
+- Automated upgrade rollback — HCP does not support control plane version downgrade; neither tenants nor Cloud Provider Admins can roll back a completed upgrade through OSAC; remediation for a regressed upgrade requires manual intervention (e.g., a Red Hat support case)
 - Maintenance windows and upgrade exclusion windows; scheduled upgrades and maintenance windows are both future work
 - One-off scheduled upgrades; upgrades are initiated on-demand and begin after the cancellation window expires
 - Tenant admin version allowlist; version availability is determined by the cluster's available update graph
@@ -81,6 +74,7 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 - Custom release image upgrades; users can only select from versions surfaced by the cluster's available update graph
 - Upgrade policies per cluster tier; configuring different upgrade rules for dev, staging, and production clusters is deferred
 - Cancelling an in-progress upgrade; once the cancellation window closes, the upgrade cannot be stopped
+- Channel switching for installed clusters (e.g., moving from Stable to Fast or EUS); the cluster's update channel is set at creation time and inherited by the upgrade feature — switching channels on an existing cluster is a separate capability
 
 ## User Stories
 
@@ -145,8 +139,7 @@ No active role in this feature; all platform-level upgrade operations are covere
 
 ## Provenance
 
-Committed: commit @ prd 0.6.1 - 96de078, workspace prd/OSAC-1415 @ 7e2344f (295 behind origin/main, dirty)
+Authored: revise @ prd 0.6.3 - 68284c8, workspace main @ 43c34a8
+Phases: respond, revise
 
-> Authoring phases not recorded this session (commit-time snapshot only).
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.1","ai_workflows":"96de078","source_repo":"7e2344f (dirty)","source_repo_branch":"prd/OSAC-1415","commits_behind_main":295,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"68284c8","source_repo":"43c34a8","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise"],"authoring_modes":["skill"],"context_changed":false} -->
