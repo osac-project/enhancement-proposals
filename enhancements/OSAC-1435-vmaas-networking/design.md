@@ -50,7 +50,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 - No per-resource-type attachment message (`ComputeNetworkAttachment`)
 - Single-NIC only — template creates one `l2bridge` interface
 - No dispatcher — uses `implementation_strategy` annotation
-- BM-only region validation (reject VM when no k8sManager)
+- BM-only deployment validation (reject VM when no k8sManager)
 - Auto ExternalIP allocation (tenant must manually create ExternalIP + ExternalIPAttachment)
 
 ### Goals
@@ -59,7 +59,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 - Resource-specific attachment message (`ComputeNetworkAttachment`) with `primary` field
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
-- BM-only region validation to reject VM provisioning when no k8s_manager is available
+- BM-only deployment validation to reject VM provisioning when no k8s_manager is available
 
 ### Non-Goals
 
@@ -75,7 +75,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 1. **Tenant creates VirtualNetwork:**
    ```bash
-   osac create virtualnetwork --region moc-region-1 --cidr 10.0.0.0/16 --name my-net
+   osac create virtualnetwork --network-class moc-bm-virt --cidr 10.0.0.0/16 --name my-net
    ```
    - fulfillment-service → creates VirtualNetwork CR
    - osac-operator VirtualNetwork controller → dispatcher resolves NetworkClass → calls `osac.templates.{{ fabric_manager }}.create_virtual_network`
@@ -241,7 +241,7 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 
 - During migration: accept both old field (14) and new field (18). If both set, reject. If old set, convert internally.
 - Primary validation: if multiple attachments, exactly one primary
-- BM-only region check: if region's NetworkClass has no k8sManager, reject ComputeInstance creation for that region
+- BM-only deployment check: if the NetworkClass has no k8sManager, reject ComputeInstance creation
 
 #### Template Changes (osac-aap)
 
@@ -327,7 +327,7 @@ New structured log events:
 
 New Kubernetes events on ComputeInstance:
 - `NetworkingResolved`: subnet → namespace resolution succeeded
-- `NetworkingResolutionFailed`: subnet resolution failed (not found, not Ready, BM-only region)
+- `NetworkingResolutionFailed`: subnet resolution failed (not found, not Ready, BM-only deployment)
 - `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
 
 No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
@@ -392,7 +392,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 - fulfillment-service: primary validation (reject >1 primary, accept single implicit primary, accept explicit primary)
 - fulfillment-service: dual-field validation (reject both old and new, convert old → new)
-- fulfillment-service: BM-only region validation (reject VM when no k8s_manager)
+- fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (explicit primary, implicit single-attachment)
 
@@ -401,7 +401,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 - E2E: create ComputeInstance with multiple attachments, verify multi-NIC KubeVirt VM provisioned
 - E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
-- E2E: create ComputeInstance in BM-only region, verify error returned
+- E2E: create ComputeInstance in BM-only deployment, verify error returned
 - E2E: create ComputeInstance with old `network_attachments` field, verify backward compat (internal conversion)
 
 ### Tricky Test Cases
@@ -486,12 +486,12 @@ kubectl describe computeinstance <name> -n <namespace>
 # Check status.conditions for NetworkingResolutionFailed
 ```
 
-**Cause:** Subnet not found, not Ready, or BM-only region (no k8s_manager)
+**Cause:** Subnet not found, not Ready, or BM-only deployment (no k8s_manager)
 
 **Resolution:**
 1. Check Subnet status: `kubectl get subnet <subnet-name> -n <namespace>`
 2. If Subnet is not Ready, investigate Subnet provisioning failure (check AAP job logs)
-3. If BM-only region, tenant must create VM in a region with k8s_manager configured
+3. If BM-only deployment, tenant must create VM in a deployment with k8s_manager configured
 
 ### Symptom: Multi-NIC VM has no default gateway
 

@@ -19,7 +19,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 - A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary
 - A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically for inbound access
 - A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and security group
-- The platform prevents VM creation in regions that do not support virtualization
+- The platform prevents VM creation in deployments that do not support virtualization
 
 ### 2.2 Non-Goals
 
@@ -34,7 +34,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 - As a Tenant User, I want to designate one network interface as primary, so that it provides the VM's default gateway and DNS configuration
 - As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
 - As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
-- As a Tenant User, I want clear error messages when I try to create a VM in a region that only supports bare-metal servers, so that I understand the limitation and can choose a different region
+- As a Tenant User, I want clear error messages when I try to create a VM in a deployment that only supports bare-metal servers, so that I understand the limitation and can choose a different deployment
 
 ### Tenant Admin Stories
 
@@ -43,7 +43,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 ### Cloud Infrastructure Admin Stories
 
-- As a Cloud Infrastructure Admin, I want to configure which regions support VM provisioning, so that VM creation is rejected with a clear error in BM-only regions
+- As a Cloud Infrastructure Admin, I want to configure which deployments support VM provisioning, so that VM creation is rejected with a clear error in BM-only deployments
 
 ### Cloud Provider Admin Stories
 
@@ -70,9 +70,9 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 - **FR-5:** The allocated IP address for each network attachment is visible in the VM status after provisioning completes. When an external IP is attached to a VM, inbound traffic to the external IP is routed to the VM's primary attachment IP. [User]
 
-#### Region Validation
+#### Deployment Validation
 
-- **FR-6:** When a VM is created, the platform validates that the target region supports virtualization. If the region only supports bare-metal servers, the create request fails with a clear error message explaining the limitation. [User]
+- **FR-6:** When a VM is created, the platform validates that the target deployment supports virtualization. If the deployment only supports bare-metal servers, the create request fails with a clear error message explaining the limitation. [User]
 
 #### Backward Compatibility
 
@@ -86,7 +86,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 - [ ] A Tenant User can create a VM with multiple `--network-attachment` flags and designate one as `--primary`
 - [ ] A Tenant User can create a VM with `--external-ip-attachment` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
-- [ ] Creating a VM in a bare-metal-only region returns an error with a clear message
+- [ ] Creating a VM in a bare-metal-only deployment returns an error with a clear message
 - [ ] A multi-interface VM is provisioned with all interfaces operational, with the primary interface providing the default gateway
 - [ ] VM status shows the allocated IP address for each network attachment after provisioning completes
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's primary attachment IP
@@ -98,7 +98,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 ## 6. Assumptions
 
 - The tenant has default networking resources (virtual network, subnet, security group) pre-created by the platform (see Default Networking PRD). If defaults are not configured, creating a VM without explicit network configuration fails with a clear error.
-- The target region supports virtualization. Bare-metal-only regions do not support VMs.
+- The target deployment supports virtualization. Bare-metal-only deployments do not support VMs.
 
 ## 7. Dependencies
 

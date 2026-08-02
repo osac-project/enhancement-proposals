@@ -123,7 +123,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 ## 6. Assumptions
 
 - The tenant has default networking resources (virtual network, subnet, security group) pre-created. If defaults are not configured, creating a cluster without explicit network configuration fails with a clear error.
-- The target region's network infrastructure is configured to support virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways, and network connectivity management.
+- The deployment's network infrastructure is configured to support virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways, and network connectivity management.
 - Bare-metal host types have structured network interface configuration. The system uses this to determine which interface to configure for each subnet.
 
 ## 7. Dependencies

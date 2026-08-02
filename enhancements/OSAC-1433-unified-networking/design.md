@@ -81,8 +81,8 @@ OSAC networking is handled by two managers:
 - **K8s Manager** (optional) — handles everything needed to make VMs part of
   the fabric: creates the K8s overlay (e.g., CUDN with LocalNet) and bridges
   it to the fabric segment. Also creates MetalLB IPAddressPool CRs at subnet
-  creation time for CaaS VIP allocation. Needed for regions that host VMs or
-  CaaS clusters. Once VMs are on the fabric, the fabric manager handles them
+  creation time for CaaS VIP allocation. Needed for deployments that host
+  both VMs and BMs and require multi-tenancy across all. Once VMs are on the fabric, the fabric manager handles them
   identically to bare-metal servers.
 
 #### Why Two Managers?
@@ -112,7 +112,6 @@ kind: NetworkClass
 metadata:
   name: moc-region-1
 spec:
-  region: moc-region-1
   fabricManager: netris
   k8sManager: cudn_localnet
 status:
@@ -128,7 +127,6 @@ kind: NetworkClass
 metadata:
   name: bos-region-1
 spec:
-  region: bos-region-1
   fabricManager: neutron
   k8sManager: cudn_localnet
 status:
@@ -136,7 +134,7 @@ status:
     addressFamily: ipv4
 ```
 
-**BM-only region (no VMs):**
+**BM-only deployment (no VMs):**
 
 ```yaml
 apiVersion: osac.openshift.io/v1alpha1
@@ -144,7 +142,6 @@ kind: NetworkClass
 metadata:
   name: gpu-region-1
 spec:
-  region: gpu-region-1
   fabricManager: netris
 status:
   capabilities:
@@ -160,7 +157,7 @@ manager and k8sManager ConfigMaps and populates `status.capabilities`
 automatically.
 
 If the provider needs to restrict a capability that the managers support
-(e.g., disable IPv6 in a region even though the fabric manager supports
+(e.g., disable IPv6 in a deployment even though the fabric manager supports
 it), they can set `spec.disableCapabilities`:
 
 ```yaml
@@ -286,14 +283,14 @@ that subnet are reachable from the fabric at their subnet IP.
 
 VirtualNetwork and Subnet do not carry a scope or service field. Subnets are
 infrastructure-agnostic — the dispatcher provisions both the fabric segment
-and (if the region has a k8sManager) the K8s overlay for every subnet. Any
-resource type can be placed on any subnet.
+and (if the NetworkClass has a k8sManager) the K8s overlay for every subnet.
+Any resource type can be placed on any subnet.
 
 At subnet creation, the dispatcher runs:
 
 1. **Fabric manager** — creates fabric segment (e.g., VLAN, VPC)
 2. **K8s manager** (if present) — creates K8s overlay on each hosting
-   cluster in the region and bridges it to the fabric segment
+   cluster in the deployment and bridges it to the fabric segment
 
 VMs are placed in the K8s overlay (which is bridged to the fabric), BM
 servers and cluster nodes are placed directly on the fabric segment. The
@@ -303,7 +300,7 @@ resources, regardless of type, are on the fabric.
 ### Dispatcher (Operator Composition Logic)
 
 The osac-operator acts as a **dispatcher**: when reconciling any networking
-resource, it resolves the NetworkClass for the region and calls the
+resource, it resolves the NetworkClass and calls the
 appropriate managers. Each manager corresponds to an Ansible role — the
 dispatcher triggers the appropriate AAP playbook, passing the resource and
 context as the event payload.
@@ -368,13 +365,13 @@ K8s manager the provider has deployed. Annotations mark what is **new** or
 #### Provider Setup
 
 1. Provider deploys hosting cluster(s) and fabric controller
-2. Provider creates NetworkClass for the region (**new** — provider-only,
+2. Provider creates NetworkClass for the deployment (**new** — provider-only,
    tenants never see it)
 3. Provider creates ExternalIPPool (**renamed** from PublicIPPool):
 
 ```bash
 osac admin create externalippool \
-  --region moc-region-1 \
+  --network-class moc-region-1 \
   --cidrs 203.0.113.0/24 \
   --ip-family ipv4 \
   --name external-pool-1
@@ -391,7 +388,7 @@ servers.
 **Create VirtualNetwork:**
 
 ```bash
-osac create virtualnetwork --region moc-region-1 --cidr 10.0.0.0/16 \
+osac create virtualnetwork --network-class moc-region-1 --cidr 10.0.0.0/16 \
   --name my-net
 ```
 
@@ -405,7 +402,7 @@ osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
 ```
 
 The fabric manager creates a fabric segment (e.g., VLAN) for the subnet.
-If the region has a K8s manager, it also creates a K8s overlay on each
+If the NetworkClass has a K8s manager, it also creates a K8s overlay on each
 hosting cluster and bridges it to the fabric segment. After this step, VMs placed in the
 overlay and BM servers with switch ports on the fabric segment are in the
 same L2 domain.
@@ -739,9 +736,9 @@ in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 
 ```protobuf
 message VirtualNetworkSpec {
-  string region = 1;       // required, immutable
-  string ipv4_cidr = 2;    // optional, immutable
-  string ipv6_cidr = 3;    // optional, immutable
+  string network_class = 1; // required, immutable
+  string ipv4_cidr = 2;     // optional, immutable
+  string ipv6_cidr = 3;     // optional, immutable
 }
 ```
 
@@ -1101,9 +1098,9 @@ determines the target.
 is handled by the CaaS template (provider-configured). The `primary` field
 does not apply to `ClusterNetworkAttachment`.
 
-#### Multiple Hosting Clusters Per Region
+#### Multiple Hosting Clusters Per Deployment
 
-Multiple hosting clusters are supported per region. At subnet creation, the
+Multiple hosting clusters are supported per deployment. At subnet creation, the
 k8sManager creates a K8s overlay on each hosting cluster and bridges it to
 the fabric segment. VMs on different hosting clusters share the same subnet
 via the fabric.
@@ -1118,13 +1115,13 @@ separate enhancement.
 DNS is a service-integration concern, not part of the networking API. CaaS
 template roles create DNS records. A DNS API is a separate enhancement.
 
-#### BM-Only Regions
+#### BM-Only Deployments
 
-If a region's NetworkClass has no k8sManager, the region does not support
-VMs or CaaS clusters. ComputeInstance creation is rejected if the target
-region has no k8sManager — there is no K8s overlay to place the VM on.
-Cluster creation is also rejected — without a k8sManager, there is no
-MetalLB IPAddressPool for VIP allocation on the hosting cluster.
+If a NetworkClass has no k8sManager, the deployment does not support VMs or CaaS
+clusters. ComputeInstance creation is rejected if the target NetworkClass
+has no k8sManager — there is no K8s overlay to place the VM on. Cluster
+creation is also rejected — without a k8sManager, there is no MetalLB
+IPAddressPool for VIP allocation on the hosting cluster.
 
 #### CIDR Overlap
 

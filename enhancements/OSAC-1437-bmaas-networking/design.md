@@ -159,7 +159,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 1. **Create VirtualNetwork:**
    ```bash
-   osac create virtualnetwork --region moc-region-1 --cidr 10.0.0.0/16 --name my-net
+   osac create virtualnetwork --network-class moc --cidr 10.0.0.0/16 --name my-net
    ```
    Dispatcher → `osac.templates.{{ fabric_manager }}.create_virtual_network`
 
@@ -167,7 +167,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
    ```
-   Dispatcher → fabric_manager creates VLAN/fabric segment. If the region has a k8s_manager: also creates CUDN overlay (but BM doesn't use it — the overlay exists for VMs that may share the same subnet).
+   Dispatcher → fabric_manager creates VLAN/fabric segment. If the NetworkClass has a k8s_manager: also creates CUDN overlay (but BM doesn't use it — the overlay exists for VMs that may share the same subnet).
 
 3. **Create SecurityGroup:**
    ```bash
