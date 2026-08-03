@@ -25,7 +25,7 @@ This design specifies the `osac-ui` implementation for `StorageTier` (OSAC-1110)
 
 ## Motivation
 
-OSAC has no API-managed inventory of storage tier offerings today: tier configuration lives in the `STORAGE_TIERS` environment variable plus Kubernetes label conventions, invisible to the OSAC API and to any UI. `StorageTier` (this EP) replaces that with a DB-backed private gRPC resource binding a named offering to a registered `StorageBackend` with QoS properties. `osac-ui` is the only interface Cloud Provider Admins have to manage this data, since neither `StorageTier` nor `StorageBackend` (OSAC-1111) has a public API or CLI.
+OSAC has no API-managed inventory of storage tier offerings today: tier configuration lives in the `STORAGE_TIERS` environment variable plus Kubernetes label conventions, invisible to the OSAC API and to any UI. `StorageTier` (this EP) replaces that with a DB-backed private gRPC resource binding a named offering to a registered `StorageBackend` with QoS properties. `osac-ui` is the only *graphical* interface Cloud Provider Admins have to manage this data — neither `StorageTier` nor `StorageBackend` (OSAC-1111) has a public API, though both already have private `osac` CLI support (`osac create/describe storagetier`, `osac create/describe storagebackend`, confirmed merged in `fulfillment-service`).
 
 Neither the OSAC-1110 nor the OSAC-1111 PRD states a UI requirement — unlike `ClusterVersion` (OSAC-1269), whose PRD explicitly required "The UI console supports catalog management for admins" (FR-9). In the absence of an explicit requirement, this design follows the closest in-codebase precedent for each resource individually: `StorageTier` composition is an interactive, form-shaped task (pick a backend by name, set QoS values); `StorageBackend` registration is a one-time, infrequent action (register an endpoint and credentials for a new storage array) structurally identical to `NetworkClass`, which `osac-ui` manages today with zero admin UI, exposed only as a read-only dropdown source elsewhere in the app. This design builds a UI for the former and deliberately not for the latter — see Non-Goals.
 
@@ -45,7 +45,7 @@ Neither the OSAC-1110 nor the OSAC-1111 PRD states a UI requirement — unlike `
 
 ### Non-Goals
 
-- Any admin UI for `StorageBackend` (create/edit/delete/lifecycle-state screens) — neither PRD states a UI requirement for it, and `osac-ui` already manages a structurally identical resource (`NetworkClass`) with no CRUD UI, exposing it only as a read-only dropdown source. Backend registration and credential rotation remain API/CLI operations outside this design's scope.
+- Any admin UI for `StorageBackend` (create/edit/delete/lifecycle-state screens) — neither PRD states a UI requirement for it, and `osac-ui` already manages a structurally identical resource (`NetworkClass`) with no CRUD UI, exposing it only as a read-only dropdown source. Backend registration and credential rotation remain `osac` CLI (`osac create storagebackend`) or direct API operations outside this design's scope.
 - Any UI for Volume/PVC management or inventory — out of scope per OSAC-2872 (Storage Control Plane), which explicitly states "No UX changes in this EP... UI integration is OSAC-984 scope."
 - Any tenant-facing surface — neither resource has a public API; there is nothing for a tenant to see or do here.
 - Tenant-to-tier assignment UI — owned by the future OSAC Storage Controller (OSAC-23) and OSAC-2872's policy engine, not this design.
@@ -69,30 +69,30 @@ sequenceDiagram
 
     Note over Admin,FS: Create a storage tier
     Admin->>UI: Open "Create" modal
-    UI->>FS: List StorageBackends (filter: state == READY)
-    FS-->>UI: [{id, name, state}, ...]
+    UI->>FS: List StorageBackends (filter: status.state == READY)
+    FS-->>UI: [{id, metadata.name, status.state}, ...]
     Admin->>UI: Name tier, pick backend, set protocol + QoS
     UI->>UI: Client-side validation (DNS-label name, positive integer QoS)
-    UI->>FS: CreateStorageTier(name, description, backends: [{backendId, protocol, qos...}])
-    FS-->>UI: StorageTier {id, state: ACTIVE}
+    UI->>FS: CreateStorageTier(metadata.name, spec: {description, backends: [{backendId, protocol, qos...}]})
+    FS-->>UI: StorageTier {id, status.state: ACTIVE}
     UI->>UI: Refresh list
 
     Note over Admin,FS: Edit QoS on an existing tier
     Admin->>UI: Open "Edit" on a row
     UI->>FS: GetStorageTier(id)
-    FS-->>UI: StorageTier (current backend, protocol, QoS)
+    FS-->>UI: StorageTier (current spec.backends[0], spec fields)
     Admin->>UI: Change quota; UI shows QoS-propagation info alert
-    UI->>FS: UpdateStorageTier(id, backends[0].quotaGib=..., lock=true)
+    UI->>FS: UpdateStorageTier(id, spec.backends[0].quotaGib=..., lock=true)
     FS-->>UI: Updated StorageTier
 
-    Note over Admin,FS: Delete a tier referenced by a Tenant (rejected)
+    Note over Admin,FS: Delete a tier referenced by a Tenant (rejected, once OSAC-23's trigger lands)
     Admin->>UI: Delete row
     UI->>FS: DeleteStorageTier(id)
     FS-->>UI: FAILED_PRECONDITION "in use by Tenant(s)"
     UI->>Admin: Show error verbatim; tier remains in the list
 ```
 
-The diagram shows the three primary flows this UI supports: creation (with a `READY`-filtered backend picker), QoS editing (informing the admin that some changes require StorageClass recreation to take effect for new volumes), and deletion (surfacing the server's referential-integrity rejection verbatim rather than pre-checking it client-side). All three route through the same private `StorageTiers` service; `osac-ui` never talks to the fulfillment-service outside of a typed hook.
+The diagram shows the three primary flows this UI supports: creation (with a `READY`-filtered backend picker), QoS editing (informing the admin that some changes require StorageClass recreation to take effect for new volumes), and deletion (surfacing the server's referential-integrity rejection verbatim rather than pre-checking it client-side). All three route through the same private `StorageTiers` service; `osac-ui` never talks to the fulfillment-service outside of a typed hook. The deletion flow's `FAILED_PRECONDITION` path is not yet reachable in practice: the fulfillment-service's current migrations implement the `StorageBackend`↔`StorageTier` referential-integrity triggers (verified in `76_add_storage_tier_ref_triggers.up.sql`), but the tenant-reference-blocks-delete trigger is still deferred to a follow-up migration shipping with OSAC-23, exactly as [design.md](design.md) states. Until that trigger lands, `DeleteStorageTier` always succeeds — the UI still implements this error-handling path now, since it costs nothing extra and the trigger is expected to land before this UI ships.
 
 ### API Extensions
 
@@ -111,8 +111,8 @@ Two new private-only hook modules in `libs/ui-components/src/api/v1/private/`:
 |---|---|---|
 | `usePrivateStorageTiers(params)` | `List` | pagination + CEL filter + ordering supported by the hook; the list page itself renders every tier unpaginated (see §3), consistent with the catalog's expected small size |
 | `usePrivateStorageTier(id)` | `Get` | edit-form prefill |
-| `useCreateStorageTier()` | `Create` | submits `metadata.name`, `description`, `backends: [...]` |
-| `useUpdateStorageTier()` | `Update` | submits `description`/`backends[0].*`; `metadata.name` never included; uses `lock=true` for optimistic concurrency |
+| `useCreateStorageTier()` | `Create` | submits `metadata.name`, `spec: { description, backends: [...] }` |
+| `useUpdateStorageTier()` | `Update` | submits `spec.description`/`spec.backends[0].*` via `update_mask`; `metadata.name` never included (rejected as immutable — verified in `private_storage_tiers_server.go`'s `validateStorageTierUpdate`); uses `lock=true` for optimistic concurrency |
 | `useDeleteStorageTier()` | `Delete` | no client-side pre-check for in-use references |
 | `usePrivateStorageBackends(params)` | `List` | read-only; used for the Tier form's backend picker and the list table's name lookup only |
 | `usePrivateStorageBackend(id)` | `Get` | read-only; used by the edit form to resolve a tier's currently-assigned backend when it has fallen out of the `READY` filter (see §5) |
@@ -130,17 +130,17 @@ This is a route-level guard, in addition to nav-entry hiding — not a substitut
 
 #### 3. List Page
 
-`libs/ui-components/src/pages/admin/StorageTiersListPage.tsx`, following the existing `VirtualNetworksListPage`/`ClustersTable` shape: a page-header wrapper around a plain PatternFly `Table` (no generic column abstraction exists in `osac-ui` today). Columns: NAME, BACKEND, PROTOCOL, STATE, and a row-actions kebab (Edit, Delete). BACKEND resolves `backends[0].backendId` to a name via a batched `List` call to the read-only backend hook plus a `Map<string, StorageBackend>` lookup — avoiding one `Get` per row — falling back to the raw ID if the lookup fails. STATE renders via `StorageTierStateLabel` (§6). Delete calls `useDeleteStorageTier()` with no pre-check; a blocked delete (`FAILED_PRECONDITION`, tier referenced by a Tenant) is shown verbatim and the row stays in place.
+`libs/ui-components/src/pages/admin/StorageTiersListPage.tsx`, following the existing `VirtualNetworksListPage`/`ClustersTable` shape: a page-header wrapper around a plain PatternFly `Table` (no generic column abstraction exists in `osac-ui` today). Columns: NAME, BACKEND, PROTOCOL, STATE, and a row-actions kebab (Edit, Delete). BACKEND resolves `spec.backends[0].backendId` to a name via a batched `List` call to the read-only backend hook plus a `Map<string, StorageBackend>` lookup — avoiding one `Get` per row — falling back to the raw ID if the lookup fails. STATE reads `status.state` and renders via `StorageTierStateLabel` (§6). Delete calls `useDeleteStorageTier()` with no pre-check; a blocked delete (`FAILED_PRECONDITION`, tier referenced by a Tenant) is shown verbatim and the row stays in place — see the Workflow Description note on this path not being reachable until OSAC-23's trigger lands.
 
 #### 4. Create Form
 
-A modal (`StorageTierCreateModal`) modeled on `osac-ui`'s existing `VirtualNetworkCreateModal` (Formik + Yup, single mutation on submit): `name` (DNS-label validated, §9), `description` (optional), `backend` (single-select, populated from `usePrivateStorageBackends({ filter: STORAGE_BACKEND_READY_LIST_FILTER })`), `protocol` (`NFS`/`BLOCK`), `maxReadBandwidthMbs` / `maxWriteBandwidthMbs` / `quotaGib` (positive-integer numeric fields), `encryptionEnabled` (checkbox). Submits `{ name, description, backends: [{ backendId, protocol, maxReadBandwidthMbs, maxWriteBandwidthMbs, quotaGib, encryptionEnabled }] }`.
+A modal (`StorageTierCreateModal`) modeled on `osac-ui`'s existing `VirtualNetworkCreateModal` (Formik + Yup, single mutation on submit): `name` (DNS-label validated, §8), `description` (optional), `backend` (single-select, populated from `usePrivateStorageBackends({ filter: STORAGE_BACKEND_READY_LIST_FILTER })`), `protocol` (`NFS`/`BLOCK`), `maxReadBandwidthMbs` / `maxWriteBandwidthMbs` / `quotaGib` (positive-integer numeric fields), `encryptionEnabled` (checkbox). Submits `{ metadata: { name }, spec: { description, backends: [{ backendId, protocol, maxReadBandwidthMbs, maxWriteBandwidthMbs, quotaGib, encryptionEnabled }] } }`. The server rejects more than one entry in `spec.backends` with `INVALID_ARGUMENT` ("only one backend association is supported in v0.1") — verified in `private_storage_tiers_server.go`'s `validateBackends`.
 
 The backend picker is single-select, matching the server's v0.1 constraint of exactly one backend per tier — the underlying `backends` array is already shaped to accommodate a future multi-select without a data-model change (see Risks and Mitigations).
 
 #### 5. Edit Form
 
-`StorageTierEditForm`: `name` renders disabled (immutable); `description` and all of `backends[0]`'s fields — including `backendId` — remain editable, since only `metadata.name` is documented as immutable and this matches the literal FieldMask partial-update contract. The backend picker's option list is the union of the `READY`-filtered list and the tier's currently-assigned backend (fetched via `usePrivateStorageBackend(backendId)` if it has since left `READY`) — this avoids the create form's simpler single-filter approach silently dropping a tier's existing selection when its backend has been moved to `MAINTENANCE`/`DECOMMISSIONED`. Changing any QoS field shows an inline info alert: "Bandwidth and quota changes take effect immediately for existing and new volumes. Changes to encryption or protocol require the associated StorageClass to be recreated before new volumes pick them up; existing volumes are unaffected."
+`StorageTierEditForm`: `name` renders disabled (immutable — enforced server-side in `validateStorageTierUpdate`, which rejects any `metadata.name` change with `INVALID_ARGUMENT`); `description` and all of `spec.backends[0]`'s fields — including `backendId` — remain editable, since only `metadata.name` is immutable and this matches the literal FieldMask partial-update contract. The backend picker's option list is the union of the `READY`-filtered list and the tier's currently-assigned backend (fetched via `usePrivateStorageBackend(backendId)` if it has since left `READY`) — this avoids the create form's simpler single-filter approach silently dropping a tier's existing selection when its backend has been moved out of `READY`. Changing any QoS field shows an inline info alert: "Bandwidth and quota changes take effect immediately for existing and new volumes. Changes to encryption or protocol require the associated StorageClass to be recreated before new volumes pick them up; existing volumes are unaffected."
 
 #### 6. Lifecycle State Label
 
@@ -148,19 +148,24 @@ The backend picker is single-select, matching the server's v0.1 constraint of ex
 
 #### 7. Data Model (as consumed by this UI)
 
-`StorageBackend` fields beyond `id`/`metadata.name`/`status.state` (`provider`, `endpoint`, `credentials`, `status.model`, `status.firmwareVersion`) are never read or written by this UI — they exist in the full proto per [../OSAC-1111-storage-backend/design.md](../OSAC-1111-storage-backend/design.md) but are irrelevant here:
+Both `StorageBackend` and `StorageTier` use the standard OSAC `spec`/`status` object shape, not the flat shape an earlier revision of this document assumed. `StorageBackend` fields beyond `id`/`metadata.name`/`status.state` (`spec.provider`, `spec.endpoint`, `spec.credentials`, `status.message`) are never read or written by this UI — they exist in the full proto per [../OSAC-1111-storage-backend/design.md](../OSAC-1111-storage-backend/design.md) but are irrelevant here:
 
 ```
-StorageBackend { id, metadata { name }, status: { state: READY | MAINTENANCE | DECOMMISSIONED } }
+StorageBackend {
+  id, metadata { name },
+  status: { state: READY }   // only value defined today; UNSPECIFIED is the proto3 zero value
+}
 
 StorageTier {
-  id, metadata { name },              // name immutable after creation
-  description?: string,
-  backends: [ BackendAssociation ],    // v0.1: server accepts exactly one
-  state: ACTIVE
+  id, metadata { name },                // name immutable after creation
+  spec: {
+    description?: string,
+    backends: [ BackendAssociation ]    // v0.1: server accepts exactly one
+  },
+  status: { state: ACTIVE, message?: string }  // ACTIVE is the only value defined today
 }
 BackendAssociation {
-  backendId: string,                   // references StorageBackend.id
+  backendId: string,                    // references StorageBackend.id
   protocol: NFS | BLOCK,
   maxReadBandwidthMbs: int32,
   maxWriteBandwidthMbs: int32,
@@ -169,11 +174,11 @@ BackendAssociation {
 }
 ```
 
-Both protos are prerequisites for this design to compile: neither `storage_backend_type_pb`/`storage_backends_service_pb` nor `storage_tier_type_pb`/`storage_tiers_service_pb` exist yet in `osac-ui`'s generated types (`libs/types`), since neither has merged in the fulfillment-service. `pnpm gen-types` must be re-run once they do, exporting both from `libs/types/src/index-private.ts` (both are private-only resources — no public variant is needed for either).
+Both protos are already merged and generated: `storage_backend_type_pb`/`storage_backends_service_pb` and `storage_tier_type_pb`/`storage_tiers_service_pb` exist in `osac-ui`'s generated types (`libs/types`) and are already exported from `libs/types/src/index-private.ts` — verified directly against `fulfillment-service`'s `origin/main` (`StorageBackend`: PR #728, merged 2026-06-18; `StorageTier`: PR #832, merged 2026-07-02, restructured to `spec`/`status` by PR #887, merged 2026-07-12) and against `osac-ui`'s current `libs/types`. This design has no remaining external blocker — see Risks and Mitigations.
 
 #### 8. Validation Constraints
 
-- `name`: RFC 1035 DNS label (1–63 chars, lowercase alphanumeric plus hyphens, no leading/trailing hyphen), validated client-side before submission. This is a defensive measure: OSAC-2872 (Storage Control Plane) generates the StorageClass name `osac-{tenant}-{tier}` directly from the tier name, but whether the fulfillment-service itself enforces DNS-label formatting on `StorageTier.metadata.name` (as it does for `StorageBackend.metadata.name`) is unconfirmed — see Open Questions.
+- `name`: RFC 1035 DNS label (1–63 chars, lowercase alphanumeric plus hyphens, no leading/trailing hyphen), validated client-side before submission. **Confirmed the server performs no format validation of its own**: `private_storage_tiers_server.go`'s `validateStorageTierCreate` only checks that `metadata.name` is non-empty (the same is true of `private_storage_backends_server.go` for `StorageBackend.metadata.name` — the OSAC-1111 design's stated intent to reuse a generic DNS-label validator was not implemented this way). This client-side check is therefore the *only* validation preventing a StorageClass-incompatible name from being submitted, not a defensive duplicate of a server-side rule — OSAC-2872 (Storage Control Plane) generates the StorageClass name `osac-{tenant}-{tier}` directly from the tier name, so an invalid name here would surface as a failure much later, in volume provisioning.
 - `maxReadBandwidthMbs`, `maxWriteBandwidthMbs`, `quotaGib`: positive integers, rejected client-side before submission; the server is the final authority.
 
 ### Security Considerations
@@ -187,7 +192,7 @@ This UI never handles `StorageBackend` credentials, endpoint, or operational met
 | Create/Update: duplicate active tier name | Server's `ALREADY_EXISTS` shown as a form-level error. |
 | Create/Update: referenced `StorageBackend` does not exist (e.g., deleted between the picker's `List` call and submission) | Server's `NOT_FOUND` naming the invalid backend ID shown as a form-level error. |
 | Update: concurrent conflicting write | Server's `FAILED_PRECONDITION`/`ABORTED` (stale version) shown as a submission error; admin re-fetches and retries. |
-| Delete: tier still referenced by a Tenant | Server's `FAILED_PRECONDITION` shown verbatim. |
+| Delete: tier still referenced by a Tenant | Server's `FAILED_PRECONDITION` shown verbatim. Not yet reachable in the current backend — the enforcing trigger is deferred to OSAC-23 (see Workflow Description); build the handling now regardless, since it costs nothing extra and the trigger is expected before this UI ships. |
 | Backend picker's `List` call fails or is slow | `Select` shows its loading state; on failure, no options render. |
 | List table's backend-name lookup fails | BACKEND column falls back to the raw `backendId`. |
 
@@ -203,13 +208,13 @@ No new observability changes. Existing monitoring mechanisms (fulfillment-servic
 
 **Reintroducing removed nav/route-gating code.** This design restores role-gated admin navigation and routing that existed for an unrelated, now-reverted feature. *Mitigation:* the reintroduction follows the exact shape of the removed code (conditional section push in `navRowsForRole`, conditional `<Route>` in `AppShell.tsx`), so it carries no new architectural risk — only the risk of reproducing a stale variant if the removed code is copied without verifying it against the current `shellNav.ts`/`AppShell.tsx` at implementation time.
 
-**External blocker on both fulfillment-service protos.** This design cannot be implemented until `StorageBackend` and `StorageTier` protos merge and `libs/types` regenerates. *Mitigation:* none needed beyond sequencing — this is a known, tracked dependency (see [design.md](design.md) and [../OSAC-1111-storage-backend/design.md](../OSAC-1111-storage-backend/design.md)), not a risk to the UI design itself.
+**Single-backend-per-tier UI matches a v0.1 server constraint that may change.** *Mitigation:* the `spec.backends` field is modeled internally as an array even though only one row renders; when the server relaxes the constraint, the form adds a second row rather than changing its data shape.
 
-**Single-backend-per-tier UI matches a v0.1 server constraint that may change.** *Mitigation:* the `backends` field is modeled internally as an array even though only one row renders; when the server relaxes the constraint, the form adds a second row rather than changing its data shape.
+**Delete-blocked-by-tenant-reference cannot be exercised until OSAC-23 lands.** The UI implements this error-handling path (§ Failure Handling and Recovery) against a server behavior that does not exist yet — the DB trigger enforcing it is deferred to a follow-up migration shipping with OSAC-23. *Mitigation:* none needed for this UI's correctness — the code path is inert until the trigger lands, not incorrect. Component/unit tests for this path must mock the `FAILED_PRECONDITION` response rather than relying on integration test coverage, since no real backend will produce it before OSAC-23 ships.
 
 ### Drawbacks
 
-`StorageBackend` registration and credential rotation have no UI at all — an admin must use `grpcurl`/REST calls (or a future CLI) to register a backend before any tier can reference it. This is a deliberate trade-off (see Motivation and Non-Goals): both PRDs describe backend registration as infrequent, and building a masked-credential-input primitive and a full lifecycle-action UI for a rarely-exercised workflow was judged not worth the added surface area, matching the precedent this codebase already sets for `NetworkClass`. If backend registration turns out to be more frequent in practice than the PRDs assume, this trade-off should be revisited.
+`StorageBackend` registration and credential rotation have no UI at all — an admin must use the `osac create storagebackend`/`osac describe storagebackend` CLI commands (already implemented) or direct API calls to register a backend before any tier can reference it. This is a deliberate trade-off (see Motivation and Non-Goals): both PRDs describe backend registration as infrequent, and building a masked-credential-input primitive and a full lifecycle-action UI for a rarely-exercised workflow was judged not worth the added surface area, matching the precedent this codebase already sets for `NetworkClass`. If backend registration turns out to be more frequent in practice than the PRDs assume, this trade-off should be revisited.
 
 ## Alternatives (Not Implemented)
 
@@ -220,15 +225,6 @@ No new observability changes. Existing monitoring mechanisms (fulfillment-servic
 **Multi-select backend picker now, instead of single-select.** Pros: no rework when the server relaxes the v0.1 one-backend-per-tier constraint. Cons: builds UI for a server capability that does not exist yet, with no PRD guidance on multi-backend UX (ordering, per-backend QoS override). Rejected: single-select matches the current contract; the data model is already future-proof without it.
 
 **Do nothing (continue with the `STORAGE_TIERS` env var).** Pros: zero UI work. Cons: this is the status quo the OSAC-1110 PRD is replacing — no API-managed catalog, no UI, blocks OSAC-23/OSAC-2872. Rejected because the PRD requires an API-managed tier catalog with CRUD access and there is no other planned interface for Cloud Provider Admins to compose tier offerings.
-
-## Open Questions
-
-### 1. Does the fulfillment-service enforce RFC 1035 DNS-label formatting on `StorageTier.metadata.name`, matching `StorageBackend.metadata.name`'s documented validation?
-
-Client-side validation is added defensively because OSAC-2872 generates a StorageClass name from the tier name, but [design.md](design.md) does not state whether the server enforces this the way [../OSAC-1111-storage-backend/design.md](../OSAC-1111-storage-backend/design.md) explicitly does for backend names.
-
-- **Owner:** OSAC-1110 design owner (Roy Golan)
-- **Impact:** §8 Validation Constraints, Security Considerations.
 
 ## Test Plan
 
@@ -243,7 +239,7 @@ Client-side validation is added defensively because OSAC-2872 generates a Storag
 - Full create → list → edit → delete flow against a real (or kind-deployed) fulfillment-service, including duplicate-name rejection and delete-blocked-by-tenant-reference.
 - Role gating: a non-admin does not see the nav entry and cannot reach the page by direct URL.
 
-This EP's UI work cannot be exercised end-to-end until the `StorageBackend`/`StorageTier` protos merge in the fulfillment-service — e2e coverage is blocked on that regardless of `osac-ui` readiness.
+The tenant-reference-blocks-delete scenario cannot be exercised as a true e2e test until OSAC-23's enforcing trigger lands (see Risks and Mitigations) — cover it with a mocked `FAILED_PRECONDITION` response in the meantime, and add the real e2e case once the trigger exists.
 
 ## Documentation
 
@@ -278,5 +274,8 @@ None.
 ## Provenance
 
 Authored: draft @ design 0.5.0 - 68284c8, workspace worktree-delightful-gliding-perlis @ 57ca666
+Final: revise @ design 0.5.0 - 68284c8, workspace docs/OSAC-1110-1111-storage-ui-design @ 47288de
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.5.0","ai_workflows":"68284c8","source_repo":"57ca666","source_repo_branch":"worktree-delightful-gliding-perlis","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.5.0","ai_workflows":"68284c8","source_repo":"47288de","source_repo_branch":"docs/OSAC-1110-1111-storage-ui-design","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":true} -->
