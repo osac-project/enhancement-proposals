@@ -82,7 +82,7 @@ sequenceDiagram
     UI->>FS: GetStorageTier(id)
     FS-->>UI: StorageTier (current spec.backends[0], spec fields)
     Admin->>UI: Change quota; UI shows QoS-propagation info alert
-    UI->>FS: UpdateStorageTier(id, spec.backends[0].quotaGib=..., lock=true)
+    UI->>FS: UpdateStorageTier(id, spec.backends: [complete updated array], update_mask: ["spec.backends"], lock=true)
     FS-->>UI: Updated StorageTier
 
     Note over Admin,FS: Delete a tier referenced by a Tenant (rejected, once OSAC-23's trigger lands)
@@ -112,7 +112,7 @@ Two new private-only hook modules in `libs/ui-components/src/api/v1/private/`:
 | `usePrivateStorageTiers(params)` | `List` | pagination + CEL filter + ordering supported by the hook; the list page itself renders every tier unpaginated (see §3), consistent with the catalog's expected small size |
 | `usePrivateStorageTier(id)` | `Get` | edit-form prefill |
 | `useCreateStorageTier()` | `Create` | submits `metadata.name`, `spec: { description, backends: [...] }` |
-| `useUpdateStorageTier()` | `Update` | submits `spec.description`/`spec.backends[0].*` via `update_mask`; `metadata.name` never included (rejected as immutable — verified in `private_storage_tiers_server.go`'s `validateStorageTierUpdate`); uses `lock=true` for optimistic concurrency |
+| `useUpdateStorageTier()` | `Update` | submits `spec.description` and/or the complete `spec.backends` array (never an indexed sub-path — standard protobuf `FieldMask` addresses whole fields, not repeated-element indices) with a matching `update_mask` (`["spec.description"]`, `["spec.backends"]`, or both); `metadata.name` never included (rejected as immutable — verified in `private_storage_tiers_server.go`'s `validateStorageTierUpdate`); uses `lock=true` for optimistic concurrency |
 | `useDeleteStorageTier()` | `Delete` | no client-side pre-check for in-use references |
 | `usePrivateStorageBackends(params)` | `List` | read-only; used for the Tier form's backend picker and the list table's name lookup only |
 | `usePrivateStorageBackend(id)` | `Get` | read-only; used by the edit form to resolve a tier's currently-assigned backend when it has fallen out of the `READY` filter (see §5) |
@@ -123,8 +123,8 @@ Two new private-only hook modules in `libs/ui-components/src/api/v1/private/`:
 
 This design reintroduces the same shape for "Storage tiers":
 
-- `navRowsForRole` conditionally pushes `{ kind: 'section', sectionId: 'nav-administration', label: t('Administration'), children: [{ id: 'storage-tiers', label: t('Storage tiers'), path: '/admin/storage-tiers' }] }` when `role === 'providerAdmin' || role === 'tenantAdmin'`.
-- `AppShell.tsx` gains a matching role-conditional route: `{(role === 'providerAdmin' || role === 'tenantAdmin') && <Route path="/admin/storage-tiers/*" element={<ShellRoute><StorageTiersListPage /></ShellRoute>} />}`. A non-admin navigating to the URL directly falls through to the existing catch-all route and is redirected, rather than the page rendering and issuing API calls that would fail server-side.
+- `navRowsForRole` conditionally pushes `{ kind: 'section', sectionId: 'nav-administration', label: t('Administration'), children: [{ id: 'storage-tiers', label: t('Storage tiers'), path: '/admin/storage-tiers' }] }` when `role === 'providerAdmin'`. Unlike the removed code this reintroduction is modeled on (which also granted `tenantAdmin`, appropriate for that feature's tenant-scoped catalog items), `StorageTier` is platform-scoped and managed exclusively by Cloud Provider Admins — `tenantAdmin` is a tenant-scoped role in `osac-ui`'s three-tier model (`providerAdmin` | `tenantAdmin` | `tenantUser`) and has no legitimate access to it.
+- `AppShell.tsx` gains a matching role-conditional route: `{role === 'providerAdmin' && <Route path="/admin/storage-tiers/*" element={<ShellRoute><StorageTiersListPage /></ShellRoute>} />}`. A non-admin — including a `tenantAdmin` — navigating to the URL directly falls through to the existing catch-all route and is redirected, rather than the page rendering and issuing API calls that would fail server-side.
 
 This is a route-level guard, in addition to nav-entry hiding — not a substitute for the private API's own OPA-enforced authorization, which remains the authoritative check regardless of what the UI does.
 
@@ -136,21 +136,21 @@ This is a route-level guard, in addition to nav-entry hiding — not a substitut
 
 A modal (`StorageTierCreateModal`) modeled on `osac-ui`'s existing `VirtualNetworkCreateModal` (Formik + Yup, single mutation on submit): `name` (DNS-label validated, §8), `description` (optional), `backend` (single-select, populated from `usePrivateStorageBackends({ filter: STORAGE_BACKEND_READY_LIST_FILTER })`), `protocol` (`NFS`/`BLOCK`), `maxReadBandwidthMbs` / `maxWriteBandwidthMbs` / `quotaGib` (positive-integer numeric fields), `encryptionEnabled` (checkbox). Submits `{ metadata: { name }, spec: { description, backends: [{ backendId, protocol, maxReadBandwidthMbs, maxWriteBandwidthMbs, quotaGib, encryptionEnabled }] } }`. The server rejects more than one entry in `spec.backends` with `INVALID_ARGUMENT` ("only one backend association is supported in v0.1") — verified in `private_storage_tiers_server.go`'s `validateBackends`.
 
-The backend picker is single-select, matching the server's v0.1 constraint of exactly one backend per tier — the underlying `backends` array is already shaped to accommodate a future multi-select without a data-model change (see Risks and Mitigations).
+The backend picker is single-select, matching the server's v0.1 constraint of exactly one backend per tier (`validateBackends` in `private_storage_tiers_server.go` rejects more than one with `INVALID_ARGUMENT`) — the underlying `backends` array is already shaped to accommodate a future multi-select without a data-model change (see Risks and Mitigations). **Acknowledged deviation from OSAC-1110 FR-3**, which specifies "one or more backend associations": this UI implements the server's actual current v0.1 behavior, not the PRD's stated end-state; whether to build multi-select UI ahead of the server relaxing this constraint is unresolved as of this revision (see PR review discussion) and is not decided by this document.
 
 #### 5. Edit Form
 
-`StorageTierEditForm`: `name` renders disabled (immutable — enforced server-side in `validateStorageTierUpdate`, which rejects any `metadata.name` change with `INVALID_ARGUMENT`); `description` and all of `spec.backends[0]`'s fields — including `backendId` — remain editable, since only `metadata.name` is immutable and this matches the literal FieldMask partial-update contract. The backend picker's option list is the union of the `READY`-filtered list and the tier's currently-assigned backend (fetched via `usePrivateStorageBackend(backendId)` if it has since left `READY`) — this avoids the create form's simpler single-filter approach silently dropping a tier's existing selection when its backend has been moved out of `READY`. Changing any QoS field shows an inline info alert: "Bandwidth and quota changes take effect immediately for existing and new volumes. Changes to encryption or protocol require the associated StorageClass to be recreated before new volumes pick them up; existing volumes are unaffected."
+`StorageTierEditForm`: `name` renders disabled (immutable — enforced server-side in `validateStorageTierUpdate`, which rejects any `metadata.name` change with `INVALID_ARGUMENT`); `description` and all of `spec.backends[0]`'s fields — including `backendId` — remain editable, since only `metadata.name` is immutable. Editing *any* single field within the one backend association (e.g., just `quotaGib`) still submits the *complete* `spec.backends` array with `update_mask: ["spec.backends"]`, not an indexed path like `spec.backends[0].quotaGib` — standard protobuf `FieldMask` has no syntax for addressing one element of a repeated field, so a partial-array update is not possible even though only one element exists in v0.1. The form's Formik state holds the full backend association object regardless of which single field the admin changed, and submits it whole. The backend picker's option list is the union of the `READY`-filtered list and the tier's currently-assigned backend (fetched via `usePrivateStorageBackend(backendId)` if it has since left `READY`) — this avoids the create form's simpler single-filter approach silently dropping a tier's existing selection when its backend has been moved out of `READY`. Changing any QoS field shows an inline info alert: "Bandwidth and quota changes take effect immediately for existing and new volumes. Changes to encryption or protocol require the associated StorageClass to be recreated before new volumes pick them up; existing volumes are unaffected."
 
 #### 6. Lifecycle State Label
 
-`StorageTierStateLabel`, mapping `StorageTierState` directly to a PatternFly `Label` — `ACTIVE` → green, the only reachable value in this phase — without going through the shared `ResourceStatusLabel`/`StatusKind` primitive, whose semantics (`ready`/`failed`/`progressing`) describe runtime reconciliation state that does not apply to a resource with no reconciler.
+`StorageTierStateLabel` wraps the shared `ResourceStatusLabel`/`StatusKind` primitive rather than introducing a standalone component: `ACTIVE` maps to `status="ready"` (green, "Active"), and the proto3 zero value `UNSPECIFIED` maps to `status="unspecified"` (grey). `StatusKind`'s remaining values (`failed`, `progressing`) describe runtime reconciliation states that `StorageTier` — having no reconciler — never reaches, so this mapping only ever produces two of the primitive's four possible renderings; `ResourceStatusLabel`'s `text` prop still carries `StorageTier`-specific wording ("Active") rather than reusing generic reconciliation text, keeping the semantic mismatch contained to a single, obvious two-line mapping function rather than exposed to callers.
 
 #### 7. Data Model (as consumed by this UI)
 
 Both `StorageBackend` and `StorageTier` use the standard OSAC `spec`/`status` object shape, not the flat shape an earlier revision of this document assumed. `StorageBackend` fields beyond `id`/`metadata.name`/`status.state` (`spec.provider`, `spec.endpoint`, `spec.credentials`, `status.message`) are never read or written by this UI — they exist in the full proto per [../OSAC-1111-storage-backend/design.md](../OSAC-1111-storage-backend/design.md) but are irrelevant here:
 
-```
+```text
 StorageBackend {
   id, metadata { name },
   status: { state: READY }   // only value defined today; UNSPECIFIED is the proto3 zero value
@@ -198,13 +198,15 @@ This UI never handles `StorageBackend` credentials, endpoint, or operational met
 
 ### RBAC / Tenancy
 
-`StorageTier` is a platform-scoped, non-tenant resource managed exclusively by Cloud Provider Admins. The "Storage tiers" nav entry and route are visible/reachable only when `role === 'providerAdmin' || role === 'tenantAdmin'` — reintroducing role-gated admin navigation and routing that existed in `osac-ui` for a prior feature before being fully removed (§2), rather than extending a currently-live mechanism. No new RBAC concept is introduced beyond that reintroduction. There is no tenant-facing visibility to reason about, since neither resource has a public API.
+`StorageTier` is a platform-scoped, non-tenant resource managed exclusively by Cloud Provider Admins. The "Storage tiers" nav entry and route are visible/reachable only when `role === 'providerAdmin'` — `tenantAdmin`, a tenant-scoped role, is deliberately excluded, unlike the removed prior-feature code this reintroduction is modeled on for mechanism (§2), whose two-role check does not apply to a platform-only resource. No new RBAC concept is introduced beyond the reintroduced nav/route-gating mechanism itself. There is no tenant-facing visibility to reason about, since neither resource has a public API.
 
 ### Observability and Monitoring
 
 No new observability changes. Existing monitoring mechanisms (fulfillment-service gRPC Prometheus metrics and structured logging) already cover the underlying API calls; this design adds no client-side telemetry beyond what any other page in `osac-ui` already emits (none, per current convention).
 
 ### Risks and Mitigations
+
+**DNS-label name validity is enforced only by this UI, not by the server.** §8 documents that `private_storage_tiers_server.go` performs no name-format validation — any direct `osac` CLI or API caller can persist a `StorageTier.metadata.name` that later breaks StorageClass generation in OSAC-2872, bypassing this UI's client-side check entirely. *Mitigation:* none available within this document's scope — this UI cannot enforce a constraint on callers that don't go through it. The fulfillment-service should add the same RFC 1035 validation to `CreateStorageTier`/`UpdateStorageTier` server-side (matching the client-side rule this design already applies); that is a backend change to `design.md`/OSAC-1110, not this UI design, and is flagged here as a cross-team follow-up rather than implemented.
 
 **Reintroducing removed nav/route-gating code.** This design restores role-gated admin navigation and routing that existed for an unrelated, now-reverted feature. *Mitigation:* the reintroduction follows the exact shape of the removed code (conditional section push in `navRowsForRole`, conditional `<Route>` in `AppShell.tsx`), so it carries no new architectural risk — only the risk of reproducing a stale variant if the removed code is copied without verifying it against the current `shellNav.ts`/`AppShell.tsx` at implementation time.
 
@@ -220,7 +222,7 @@ No new observability changes. Existing monitoring mechanisms (fulfillment-servic
 
 **Full CRUD UI for both `StorageBackend` and `StorageTier`.** Pros: complete admin control over both resources from one screen. Cons: neither PRD states a UI requirement for `StorageBackend`, and building one mirrors the exact shape (platform-scoped, admin-registered, no reconciler) of `NetworkClass`, which `osac-ui` deliberately manages with zero CRUD UI; it also requires a masked-credential-input primitive and a full lifecycle-action UI for an infrequent workflow. Rejected in favor of Tiers-only.
 
-**Reusing `ResourceStatusLabel`'s `StatusKind` union for `StorageTierStateLabel`.** Pros: one fewer component. Cons: `StatusKind`'s semantics describe runtime reconciliation state; `StorageTier` has no reconciler. Rejected in favor of a standalone `StateLabel` component.
+**Standalone `StorageTierStateLabel` with its own color map, bypassing `ResourceStatusLabel` entirely.** Pros: no semantic mismatch to explain — a resource with no reconciler never needs a mapping to `StatusKind`'s reconciliation-oriented values. Cons: duplicates a component that already renders exactly the needed PatternFly `Label` shape, for a two-value enum that maps onto `StatusKind` with no ambiguity (`ACTIVE`→`ready`, `UNSPECIFIED`→`unspecified`). Rejected in favor of a thin wrapper around `ResourceStatusLabel`: the mismatch between `StatusKind`'s reconciliation semantics and `StorageTier`'s catalog-lifecycle semantics is real, but confining it to one small, explicit mapping function is cheaper than a second component that duplicates `ResourceStatusLabel`'s rendering logic.
 
 **Multi-select backend picker now, instead of single-select.** Pros: no rework when the server relaxes the v0.1 one-backend-per-tier constraint. Cons: builds UI for a server capability that does not exist yet, with no PRD guidance on multi-backend UX (ordering, per-backend QoS override). Rejected: single-select matches the current contract; the data model is already future-proof without it.
 
@@ -230,7 +232,7 @@ No new observability changes. Existing monitoring mechanisms (fulfillment-servic
 
 **Unit and component tests** (Vitest + React Testing Library, mocked Connect transport per `osac-ui` convention — no fetch/REST mocks):
 - Hook modules: correct RPC invoked per hook, cache invalidation on mutation success, `STORAGE_BACKEND_READY_LIST_FILTER`'s literal value.
-- Nav/routing: `navRowsForRole` includes the `nav-administration` section only for `providerAdmin`/`tenantAdmin`; a non-admin navigating to `/admin/storage-tiers` directly is redirected rather than shown the page.
+- Nav/routing: `navRowsForRole` includes the `nav-administration` section only for `providerAdmin`, and excludes it for both `tenantAdmin` and `tenantUser`; a non-admin navigating to `/admin/storage-tiers` directly is redirected rather than shown the page.
 - List page: table renders expected rows/columns, backend-name resolution and its ID-fallback path, empty/loading states, delete success and `FAILED_PRECONDITION` handling.
 - Create form: DNS-label and positive-integer validation, backend picker excludes non-`READY` backends, `ALREADY_EXISTS`/`NOT_FOUND` error surfacing.
 - Edit form: prefill, `name` rendered disabled, backend picker includes a non-`READY` currently-assigned backend, QoS-change alert triggers correctly, stale-version conflict handling.
@@ -255,7 +257,7 @@ This is new UI with no upgrade impact — it is additive to `osac-ui` and does n
 
 ## Version Skew Strategy
 
-No version skew concern beyond the standard `osac-ui`/fulfillment-service coupling: this UI requires the `StorageBackend`/`StorageTier` protos to be present in `libs/types`, generated from whatever fulfillment-service version is deployed. Once generated, proto backward compatibility (additive-only field changes) covers ordinary version skew.
+Proto backward compatibility (additive-only field changes) covers schema-level version skew, but this UI depends on more than the schema: it also assumes the specific behaviors verified in this document — the `spec.backends` single-entry constraint (`validateBackends` rejecting more than one), the `status.state == READY` filter semantics, the `update_mask`/`FieldMask` handling, and the exact error codes in Failure Handling and Recovery. None of these are guaranteed by additive schema compatibility alone; a fulfillment-service version older than the one this design was verified against (StorageBackend PR #728, StorageTier PR #832/#887) may not exhibit them. **Minimum supported fulfillment-service version:** the commit introducing PR #887 (StorageTier `spec`/`status` restructuring, 2026-07-12) — this UI's payload shapes are written against that structure and will fail against an older, flat-shape server. There is no client-side capability gate or version check in this design; deploying this UI against an older fulfillment-service is a deployment-sequencing concern, not one this UI detects or handles at runtime.
 
 ## Support Procedures
 
@@ -274,8 +276,8 @@ None.
 ## Provenance
 
 Authored: draft @ design 0.5.0 - 68284c8, workspace worktree-delightful-gliding-perlis @ 57ca666
-Final: revise @ design 0.5.0 - 68284c8, workspace docs/OSAC-1110-1111-storage-ui-design @ 47288de
+Final: respond @ design 0.5.0 - 68284c8, workspace docs/OSAC-1110-1111-storage-ui-design @ 47288de (25 behind origin/main)
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.5.0","ai_workflows":"68284c8","source_repo":"47288de","source_repo_branch":"docs/OSAC-1110-1111-storage-ui-design","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.5.0","ai_workflows":"68284c8","source_repo":"47288de","source_repo_branch":"docs/OSAC-1110-1111-storage-ui-design","commits_behind_main":25,"commits_ahead_main":3,"main_ref":"main","phases":["draft","revise","respond"],"authoring_modes":["skill"],"context_changed":true} -->
