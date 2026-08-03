@@ -196,11 +196,16 @@ a genuine difference. Do not invent a differentiating detail (a
 motivation, a downstream consumer, a constraint) that the Jira ticket or
 clarification answers never mentioned, just to make two stories look
 distinct enough to justify separate headings. Apply this with particular
-care to Cloud Provider Admin and Cloud Infrastructure Admin — their table
-descriptions already overlap (both work for the cloud provider, both see
-across all tenants) — default to combining their stories for
-shared-visibility capabilities unless the source material states a
-concrete difference in what each persona can actually do.
+care to Cloud Provider Admin and Cloud Infrastructure Admin — both work
+for the cloud provider, which makes it tempting to invent a difference
+just to keep them separate. Neither direction is automatically correct:
+the persona table states cross-tenant visibility explicitly for Cloud
+Provider Admin, not for Cloud Infrastructure Admin, so don't assume
+identical visibility scope for both. Combine their stories only when the
+source material (or the table itself) establishes a genuinely identical
+capability and outcome for both; keep them separate when the source
+material describes a real difference in what each can do — don't invent
+a difference either way.
 
 ### Inventing a persona for an internal service
 
