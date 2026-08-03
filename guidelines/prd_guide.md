@@ -86,6 +86,11 @@ personas are affected.
 | **Tenant Admin** | Works for the tenant organization. Manages their org's config, users, IDP, quotas, and org-specific catalogs. Can only see their own organization. | Create networking objects, manage tenant resources, onboard users |
 | **Tenant User** | Works for the tenant organization. Self-service provisions cloud resources, manages full lifecycle. Prefers click-ops but wants API/CLI for automation. | Order machines/clusters/VMs, manage instance lifecycle, view quota |
 
+Internal OSAC services (BMaaS, CaaS, VMaaS, MaaS, Enclave) are not
+personas, even when a requirement is driven by one service consuming
+another's capability. Describe that need in Dependencies instead — see
+"Inventing a persona for an internal service" below.
+
 ## Writing Good User Stories
 
 Use the standard formula:
@@ -183,6 +188,35 @@ can run stateful workloads without waiting for manual configuration."
 Only combine when the capability is truly identical — if personas
 experience it differently (different constraints, different visibility
 scope), keep separate stories.
+
+**The swap test:** if two persona-specific stories differ only in the
+persona name and cosmetic wording — not in a constraint, scope, or
+outcome actually stated in the source material — that's duplication, not
+a genuine difference. Do not invent a differentiating detail (a
+motivation, a downstream consumer, a constraint) that the Jira ticket or
+clarification answers never mentioned, just to make two stories look
+distinct enough to justify separate headings. Apply this with particular
+care to Cloud Provider Admin and Cloud Infrastructure Admin — their table
+descriptions already overlap (both work for the cloud provider, both see
+across all tenants) — default to combining their stories for
+shared-visibility capabilities unless the source material states a
+concrete difference in what each persona can actually do.
+
+### Inventing a persona for an internal service
+
+Giving an internal OSAC service its own "persona" story just because it
+consumes the new capability:
+
+- "### CaaS (Internal Service Consumer) — As the CaaS system, I want to
+  read a provisioned instance's new status field so that I can correlate
+  it with a registering agent." (CaaS is a service from the vocabulary
+  table, not one of the four personas above — this belongs in
+  Dependencies, not User Stories.)
+
+**Fix:** Describe the service's need in Dependencies: "[Service] depends
+on this metadata being present and reliable in [resource] status to
+[correlate/verify/consume] X." Reserve User Stories for the four personas
+in the table above.
 
 ## Workflow
 
