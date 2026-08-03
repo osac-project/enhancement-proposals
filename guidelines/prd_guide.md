@@ -55,6 +55,25 @@ Referencing OSAC platform terms by name is acceptable context in a PRD:
 Naming these is fine. Mandating which internal component solves a problem
 or describing controller logic is not.
 
+### A narrow exception: illustrative examples
+
+A single minimal example — a sample request/response shape, a short flow
+list, a format a user types — may accompany prose when it's the clearest
+way to convey a user-observable capability or constraint. This is not
+license to describe internal architecture: apply the same litmus test to
+the example as to any other statement.
+
+- Good: "Tenants specify port mappings in the format `8080:80`
+  (host:container) when creating a ComputeInstance." — a value the user
+  types; conveys the format without describing the implementation.
+- Bad: "The reconciler records the mapping as `conditions: [{type:
+  PortMappingApplied, hostPort: 8080, containerPort: 80}]`." — reads like
+  a design doc even though it's framed as an example; the condition type
+  and field names are only visible in code.
+
+Use sparingly — one example per capability, always followed by prose
+stating the user-facing implication.
+
 ## OSAC Personas
 
 Use these exact names in user stories. Every PRD should identify which
@@ -87,6 +106,10 @@ specific things users interact with.
 - "As a Tenant Admin, I want to store OIDC client secrets for IDP
   integration, so that my team's identity provider credentials are
   centrally managed."
+- "As a Tenant Admin or Tenant User, I want persistent storage to be
+  available on my CaaS cluster when it is ready, so that I can run
+  stateful workloads without waiting for manual configuration." (Two
+  personas, one story — identical capability and outcome for both.)
 
 ### Bad examples
 
@@ -140,6 +163,26 @@ must use an OSAC persona name from the table above.
 A PRD that covers storage provisioning, networking policy enforcement,
 and cluster monitoring is three features, not one. Test independence:
 could each ship on its own and provide value? If yes, split them.
+
+### Duplicated persona stories
+
+Copying the same story under multiple persona headings just to change the
+persona name inflates the document without adding information:
+
+- "As a Tenant Admin, I want persistent storage to be available on my
+  CaaS cluster when it is ready..." followed by a near-identical "As a
+  Tenant User, I want persistent storage to be available on my CaaS
+  cluster when it is ready..." (Same capability, same outcome — the
+  duplication tells the reader nothing new.)
+
+**Fix:** When two or more personas want the genuinely identical
+capability, combine them under one heading and story: "### Tenant Admin /
+Tenant User" with "As a Tenant Admin or Tenant User, I want persistent
+storage to be available on my CaaS cluster when it is ready, so that I
+can run stateful workloads without waiting for manual configuration."
+Only combine when the capability is truly identical — if personas
+experience it differently (different constraints, different visibility
+scope), keep separate stories.
 
 ## Workflow
 
