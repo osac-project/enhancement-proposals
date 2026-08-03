@@ -220,8 +220,8 @@ consumes the new capability:
 
 **Fix:** Describe the service's need in Dependencies: "[Service] depends
 on this metadata being present and reliable in [resource] status to
-[correlate/verify/consume] X." Reserve User Stories for the four personas
-in the table above.
+[correlate/verify/consume] X." Reserve User Stories for the personas
+listed in the table above.
 
 ## Workflow
 
