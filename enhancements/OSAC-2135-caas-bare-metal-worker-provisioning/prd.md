@@ -38,15 +38,19 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 
 - As a Cloud Infrastructure Admin, I want CaaS to automatically handle provisioning retries and release of failed bare-metal resources, so that transient BMaaS failures do not leave orphaned infrastructure.
 
-### Tenant User
+### Tenant Admin / Tenant User
 
 - As a Tenant User, I want to create a ClusterOrder specifying bare-metal resource classes for my worker nodes, so that my cluster is backed by physical hardware without me managing infrastructure directly.
 
 - As a Tenant User, I want my cluster creation and management experience to remain unchanged, so that I am never exposed to underlying bare-metal instances, images, or installation internals.
 
+- As a Tenant User, I want to scale my cluster's bare-metal worker count up or down, so that I can adjust capacity to match my workload needs.
+
 ### Cloud Provider Admin
 
 - As a Cloud Provider Admin, I want CaaS-provisioned bare-metal instances and associated images hidden from tenant-facing views and catalogs, so that tenants cannot accidentally interact with underlying infrastructure nodes.
+
+- As a Cloud Provider Admin, I want to be able to access CaaS-managed BareMetalInstances for debugging (ssh, console, restart), so that I can troubleshoot worker node issues without disrupting the tenant experience.
 
 ## Assumptions
 
@@ -58,12 +62,13 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 - **BareMetalInstanceType definitions `[Jira: OSAC-2675]`:** Resource class specifications must be finalized so that ClusterOrder can reference them.
 - **BMaaS host lifecycle API:** BMaaS must support requesting, observing readiness of, and releasing bare-metal hosts so that CaaS can manage the full provisioning lifecycle.
 - **Cluster-specific host preparation:** BMaaS must support provisioning hosts preconfigured for a specific cluster, so that CaaS can request worker nodes without separate configuration steps.
+- **BMaaS networking for subnet attachment `[Jira: OSAC-1437]`:** BMaaS must support network attachments on BareMetalInstances so that CaaS-managed worker hosts are moved to the cluster's tenant subnet as part of the BMI lifecycle.
 
 ---
 
 ## Provenance
 
 Authored: respond @ prd 0.6.3 - c045d41, workspace feat/osac-taxonomy-presentation @ d22bfa1
-Phases: revise, respond
+Phases: revise, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"c045d41","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"c045d41","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
