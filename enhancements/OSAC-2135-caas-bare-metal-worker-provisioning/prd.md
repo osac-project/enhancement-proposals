@@ -14,11 +14,11 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 
 - On-demand provisioning of bare-metal worker nodes when a tenant orders a cluster specifying bare-metal resource classes.
 - Tenant-visible ClusterOrder status reflects provisioning progress and reports clear failure conditions when bare-metal hosts cannot be provisioned.
-- Tenant experience remains unchanged — no bare-metal infrastructure details (hosts, images, or installation agents) are visible to tenants.
-- CaaS-managed infrastructure resources are hidden from tenant-facing APIs, UIs, and catalogs.
+- Tenant experience remains unchanged — no CaaS-managed bare-metal infrastructure details (hosts, images, or installation agents) are visible to tenants. Tenant-owned BareMetalInstance workflows (BMaaS) are unaffected.
+- CaaS-managed worker instances and associated images are hidden from tenant-facing APIs, UIs, and catalogs.
 - Manual scale-up and scale-down of bare-metal worker nodes (tenant-initiated worker count changes).
 - Release of CaaS-managed BareMetalInstances when a cluster is decommissioned or scaled down.
-- No UI changes required — tenant console workflows are unaffected.
+- No CaaS-related UI changes required — tenant console workflows for cluster management and tenant-owned bare-metal instances are unaffected.
 
 ## Out of Scope
 
@@ -63,6 +63,7 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 
 ## Provenance
 
-Authored: revise @ prd 0.6.3 - c045d41, workspace feat/osac-taxonomy-presentation @ d22bfa1
+Authored: respond @ prd 0.6.3 - c045d41, workspace feat/osac-taxonomy-presentation @ d22bfa1
+Phases: revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"c045d41","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"c045d41","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond"],"authoring_modes":["skill"],"context_changed":false} -->
