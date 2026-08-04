@@ -13,18 +13,21 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 ## In Scope
 
 - On-demand provisioning of bare-metal worker nodes when a tenant orders a cluster specifying bare-metal resource classes.
+- Tenant-visible ClusterOrder status reflects provisioning progress and reports clear failure conditions when bare-metal hosts cannot be provisioned.
 - Tenant experience remains unchanged — no bare-metal infrastructure details (hosts, images, or installation agents) are visible to tenants.
 - CaaS-managed infrastructure resources are hidden from tenant-facing APIs, UIs, and catalogs.
-- Cleanup of CaaS-managed BareMetalInstances when a cluster is decommissioned or manually scaled down.
+- Manual scale-up and scale-down of bare-metal worker nodes (tenant-initiated worker count changes).
+- Release of CaaS-managed BareMetalInstances when a cluster is decommissioned or scaled down.
+- No UI changes required — tenant console workflows are unaffected.
 
 ## Out of Scope
 
-- **Day-2 autoscaling:** Automated workload-driven scaling based on resource utilization. Scaling down requires complex orchestration around cluster node draining and is deferred to a future phase.
+- **Day-2 autoscaling:** Automated workload-driven scaling based on resource utilization. CaaS does not currently support autoscaling; this is deferred to a future phase.
 - **Virtual machine worker nodes:** Provisioning VM-based worker nodes using this pattern (deferred to future VMaaS integration).
 - **Admin tuning APIs:** Administrator-facing APIs for adjusting provisioning heuristics or retry thresholds.
 - **Boot-over-network optimization:** Network boot acceleration or advanced bare-metal caching strategies `[Jira: OSAC-2134]`.
 - **Custom networking configuration:** Direct management of tenant-specific VLANs or advanced network routing by CaaS.
-- **Host sanitization:** Physical host cleanup after deprovisioning (disk wipe, network reset) is BMaaS's responsibility.
+- **Host sanitization:** Physical host cleanup after deprovisioning (disk wipe, network reset) is BMaaS's responsibility. BMaaS must complete sanitization before returning a host to the provisioning pool; a host that fails sanitization must not be made available for reuse.
 - **Billing and quota:** Cluster-level metering and quota tracking are covered by a separate CaaS metering feature.
 
 ## User Stories
@@ -32,6 +35,8 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 ### Cloud Infrastructure Admin
 
 - As a Cloud Infrastructure Admin, I want bare-metal worker nodes to be provisioned automatically when CaaS clusters need them, so that I no longer need to maintain a static pool of pre-booted agents.
+
+- As a Cloud Infrastructure Admin, I want CaaS to automatically handle provisioning retries and release of failed bare-metal resources, so that transient BMaaS failures do not leave orphaned infrastructure.
 
 ### Tenant User
 
@@ -45,10 +50,19 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 
 ## Assumptions
 
-- BMaaS can provision bare-metal hosts with the required boot configuration without manual intervention.
-- A standard boot image exists that can initialize a host as a cluster worker node when given the appropriate configuration payload.
+- BMaaS can provision bare-metal hosts that join a cluster as worker nodes without manual admin intervention.
+- BMaaS can prepare provisioned hosts with the boot configuration needed for a specific cluster.
 
 ## Dependencies
 
 - **BareMetalInstanceType definitions `[Jira: OSAC-2675]`:** Resource class specifications must be finalized so that ClusterOrder can reference them.
-- **Boot configuration pass-through:** BMaaS must support passing cluster-specific boot configuration to provisioned hosts.
+- **BMaaS host lifecycle API:** BMaaS must support requesting, observing readiness of, and releasing bare-metal hosts so that CaaS can manage the full provisioning lifecycle.
+- **Cluster-specific host preparation:** BMaaS must support provisioning hosts preconfigured for a specific cluster, so that CaaS can request worker nodes without separate configuration steps.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.6.3 - c045d41, workspace feat/osac-taxonomy-presentation @ d22bfa1
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"c045d41","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false} -->
