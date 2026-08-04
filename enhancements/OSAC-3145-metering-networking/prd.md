@@ -17,7 +17,7 @@ Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.
 
 ## 1. Problem Statement
 
-OSAC provisions networking resources — virtual networks, subnets, security groups, public IPs, external IPs, NAT gateways — but has no mechanism to track their consumption over time. These resources consume provider capacity from the moment they are provisioned until deletion, regardless of whether they are actively carrying traffic. A public IP consumes address pool space whether it is attached to a resource or not — the provider's pool is finite and each allocation reduces availability. A VirtualNetwork consumes backend network configuration and VLAN allocation from creation.
+OSAC provisions networking resources — virtual networks, subnets, security groups, external IPs, NAT gateways — but has no mechanism to track their consumption over time. These resources consume provider capacity from the moment they are provisioned until deletion, regardless of whether they are actively carrying traffic. An external IP consumes address pool space whether it is attached to a resource or not — the provider's pool is finite and each allocation reduces availability. A VirtualNetwork consumes backend network configuration and VLAN allocation from creation.
 
 Without metering for these resources, Cloud Provider Admins have no usage data to account for the networking infrastructure tenants hold, and Tenant Admins have no visibility into their networking footprint across projects.
 
@@ -33,18 +33,16 @@ Networking resources are service-agnostic — a VirtualNetwork or Subnet is mete
 | Subnet | Yes | Yes | Yes |
 | SecurityGroup | Yes | Yes | Yes |
 | NATGateway | Yes | Yes | Yes |
-| PublicIP | Yes | — | — |
-| PublicIPAttachment | Yes (ComputeInstance) | — | — |
 | ExternalIP | Yes | Yes | Yes |
 | ExternalIPAttachment | Yes (ComputeInstance) | Yes (Cluster) | Yes (BareMetalInstance) |
 
-PublicIP resources are VMaaS-only — the `PublicIPAttachment` target is limited to ComputeInstance. ExternalIP resources support all three services — `ExternalIPAttachment` targets ComputeInstance, Cluster, and BareMetalInstance.
+ExternalIP resources support all three services — `ExternalIPAttachment` targets ComputeInstance, Cluster, and BareMetalInstance.
 
 ### 2.2 Capabilities
 
-- Networking resource allocation metering — metering for VirtualNetworks, Subnets, SecurityGroups, PublicIPs, ExternalIPs, NATGateways, and their attachments from READY/ALLOCATED state to deletion
-- Unattached IP metering — PublicIPs and ExternalIPs generate usage data regardless of attachment status
-- Parent-child attribution — extending [Part 1](/enhancements/metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that networking resources attached to a parent resource can be attributed to it in a unified usage view: PublicIPAttachments to ComputeInstances, ExternalIPAttachments to ComputeInstances, Clusters, and BareMetalInstances, and Subnets to any resource connected via network attachments
+- Networking resource allocation metering — metering for VirtualNetworks, Subnets, SecurityGroups, ExternalIPs, NATGateways, and their attachments from READY/ALLOCATED state to deletion
+- Unattached IP metering — ExternalIPs generate usage data regardless of attachment status
+- Parent-child attribution — extending [Part 1](/enhancements/metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that networking resources attached to a parent resource can be attributed to it in a unified usage view: ExternalIPAttachments to ComputeInstances, Clusters, and BareMetalInstances, and Subnets to any resource connected via network attachments
 
 ## 3. Out of Scope
 
@@ -59,7 +57,7 @@ PublicIP resources are VMaaS-only — the `PublicIPAttachment` target is limited
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want networking resource usage data across all tenants to be available broken down by resource type (VirtualNetwork, PublicIP, NATGateway), so that downstream systems can track the network infrastructure each tenant consumes.
+- As a Cloud Provider Admin, I want networking resource usage data across all tenants to be available broken down by resource type (VirtualNetwork, ExternalIP, NATGateway), so that downstream systems can track the network infrastructure each tenant consumes.
 
 ### Cloud Infrastructure Admin
 
@@ -68,22 +66,22 @@ PublicIP resources are VMaaS-only — the `PublicIPAttachment` target is limited
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want my organization's networking resource usage data to be available broken down by project, including the count and duration of VirtualNetworks, PublicIPs, and NATGateways, so that downstream systems can attribute networking consumption to the teams that provisioned them.
+- As a Tenant Admin, I want my organization's networking resource usage data to be available broken down by project, including the count and duration of VirtualNetworks, ExternalIPs, and NATGateways, so that downstream systems can attribute networking consumption to the teams that provisioned them.
 
 ### Tenant User
 
-- As a Tenant User, I want networking resource usage data for the projects I belong to — including PublicIP allocation duration and NATGateway uptime — to be available so that downstream systems can report the networking resource consumption of my deployments.
+- As a Tenant User, I want networking resource usage data for the projects I belong to — including ExternalIP allocation duration and NATGateway uptime — to be available so that downstream systems can report the networking resource consumption of my deployments.
 
 ## 5. Capabilities
 
 ### 5.1 Networking Resource Allocation Metering
 
-- **CAP-1:** Tenant-facing networking resources (VirtualNetwork, Subnet, SecurityGroup, PublicIP, ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion. Attachment resources (PublicIPAttachment, ExternalIPAttachment) are metered for their own lifecycle — from attachment creation to attachment deletion.
+- **CAP-1:** Tenant-facing networking resources (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion. Attachment resources (ExternalIPAttachment) are metered for their own lifecycle — from attachment creation to attachment deletion.
 - **CAP-2:** Networking usage is queryable by resource type, network class (for VirtualNetworks), IP family (IPv4/IPv6 for IP resources), region, tenant, and project.
 
 ### 5.2 Unattached IP Metering
 
-- **CAP-3:** PublicIPs and ExternalIPs are metered regardless of whether they are attached to a resource. An allocated-but-unattached IP consumes address pool space that other tenants cannot use — the provider's pool is finite and each allocation reduces availability. Metering unattached IPs provides visibility into idle address consumption, enabling providers to identify underutilized allocations. The `attached` status is included as a queryable dimension so that downstream systems (e.g., cost management, quota enforcement) can distinguish between active and idle IP usage.
+- **CAP-3:** ExternalIPs are metered regardless of whether they are attached to a resource. An allocated-but-unattached IP consumes address pool space that other tenants cannot use — the provider's pool is finite and each allocation reduces availability. Metering unattached IPs provides visibility into idle address consumption, enabling providers to identify underutilized allocations. The `attached` status is included as a queryable dimension so that downstream systems (e.g., cost management, quota enforcement) can distinguish between active and idle IP usage.
 
 ### 5.3 Cross-cutting
 
@@ -99,20 +97,18 @@ Each networking resource type has a flat allocation meter. Usage is queryable by
 |----------|-------|------|-------------------|
 | VirtualNetwork | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
 | Subnet | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
-| PublicIP (IPv4) | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
 | ExternalIP (IPv4) | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
-| PublicIPAttachment | resource-seconds | seconds of attachment | 2,592,000 resource-seconds |
 | ExternalIPAttachment | resource-seconds | seconds of attachment | 2,592,000 resource-seconds |
 | NATGateway | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
 | SecurityGroup | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
 
 ## 7. Acceptance Criteria
 
-- [ ] Each tenant-facing networking resource (VirtualNetwork, Subnet, SecurityGroup, PublicIP, ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
-- [ ] An allocated-but-unattached PublicIP or ExternalIP generates usage data
+- [ ] Each tenant-facing networking resource (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
+- [ ] An allocated-but-unattached ExternalIP generates usage data
 - [ ] Networking usage can be broken down by resource type, network class, IP family, region, tenant, and project
-- [ ] Networking resources attached to a parent resource (PublicIPAttachments to ComputeInstances, ExternalIPAttachments to ComputeInstances/Clusters/BareMetalInstances, Subnets via network attachments) can be attributed to the parent in a unified usage view
-- [ ] A PublicIPAttachment or ExternalIPAttachment generates usage data (resource-seconds) from attachment creation to attachment deletion
+- [ ] Networking resources attached to a parent resource (ExternalIPAttachments to ComputeInstances/Clusters/BareMetalInstances, Subnets via network attachments) can be attributed to the parent in a unified usage view
+- [ ] An ExternalIPAttachment generates usage data (resource-seconds) from attachment creation to attachment deletion
 - [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
 - [ ] Networking usage data maintains per-second granularity, deduplication, and retention consistent with Part 1 metering
 
@@ -152,8 +148,6 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Committed: commit @ prd 0.6.0 - 139e6c1, workspace prd/OSAC-3145 @ 314c274
+Authored: respond @ prd 0.6.3 - 6ec8c11, workspace main @ 78853cd
 
-> Authoring phases not recorded this session (commit-time snapshot only).
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.6.0","ai_workflows":"139e6c1","source_repo":"314c274","source_repo_branch":"prd/OSAC-3145","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"6ec8c11","source_repo":"78853cd","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false} -->
