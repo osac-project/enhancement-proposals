@@ -57,7 +57,7 @@ flowchart TD
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to select and publish the fleet-wide z-stream target version for control plane upgrades, so that all managed clusters run a consistent, supported patch version without requiring tenant action.
+- As a Cloud Provider Admin, I want to select and publish a z-stream target version per minor version cohort for control plane upgrades, so that all clusters running that minor version are brought to a consistent patch level without requiring tenant action.
 - As a Cloud Provider Admin, I want to pause a z-stream rollout that is causing regressions, so that I can stop further clusters from being upgraded while I assess the impact.
 - As a Cloud Provider Admin, I want to monitor control plane upgrade status across all clusters, so that I can detect stalled or failed upgrades and intervene.
 - As a Cloud Provider Admin, I want to force a control plane y-stream upgrade for a specific cluster approaching EOL, so that the platform can maintain supportability independently of tenant scheduling.
@@ -70,9 +70,12 @@ No active role in this feature; all platform-level upgrade operations are covere
 
 - Only CaaS-provisioned, HCP OpenShift clusters are covered: SNO and traditional (non-HCP) control plane node upgrades are not managed by OSAC
 - Available versions are directly reachable (one hop) in the cluster's update graph, filtered by the cluster's update channel
-- A reachable version is only available for upgrade if an enabled ClusterVersion (OSAC-1269) exists for it
-- Node pool versions are additionally capped at the current control plane version
-- Only one active upgrade per cluster component (control plane or node pool) is permitted; control plane and node pool upgrades are independent and may proceed concurrently
+- A reachable version is only available for upgrade if an enabled ClusterVersion (OSAC-1269) exists for it; "enabled" here corresponds to the ACTIVE or DEPRECATED states defined in OSAC-1269
+- Node pool versions are additionally capped at the control plane's committed version — the version it has successfully reached
+- If a control plane upgrade is in progress, the cap remains at the pre-upgrade version; it advances to the new version only once the control plane upgrade completes successfully
+- All node sets in a cluster share the same target OCP version; node pool upgrades apply uniformly across all node sets
+- Only one active upgrade per cluster component is permitted; the two components are the control plane and the node pool tier; control plane and node pool tier upgrades are independent and may proceed concurrently
+- If any node set fails to upgrade, the node pool tier upgrade is treated as failed; failure details identify which node set(s) did not complete the transition
 - A cancellation window of a few minutes exists after upgrade initiation
 - In-progress upgrades cannot be cancelled
 - Completed upgrades cannot be rolled back through OSAC
