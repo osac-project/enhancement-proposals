@@ -28,11 +28,10 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 - Only one active upgrade per cluster component (control plane or node pool) is permitted at a time; control plane and node pool upgrades are independent and may proceed concurrently
 
 **Upgrade tracking and visibility:**
-- Each upgrade is tracked as a discrete record per cluster component, with a stable lifecycle: pending (within cancellation window), running, succeeded, or failed. Each record identifies the cluster and the component being upgraded — control plane, or a specific named node pool — along with the source version, the target version, the current lifecycle state with a human-readable description, and the timestamps for when the upgrade was initiated and when the state last changed.
-
-- Upgrade status and progress are visible through conditions on each upgrade record
-- Control plane and node pool upgrade records are independent; when component versions diverge (e.g., after a partial upgrade or NP upgrade failure), the cluster resource surfaces a condition indicating the mismatch and exposes the current version of each component — control plane and each node pool — so tenants can assess the state without consulting individual upgrade records; the supported next action is to initiate a new node pool upgrade to retry independently
-- Past upgrades per cluster component are available as a history, recording version transitions and their outcomes; history is tied to the cluster's lifetime and is removed when the cluster is deleted
+- Each active upgrade has a visible lifecycle state — pending (within the cancellation window), running, succeeded, or failed — along with a human-readable description, the source and target versions, and timestamps for initiation and last state change
+- Upgrade status and progress are visible per cluster component (control plane and each named node pool)
+- Control plane and node pool upgrades are independent; when component versions diverge (e.g., after a partial upgrade or node pool upgrade failure), the cluster surfaces a condition indicating the mismatch and exposes the current version of each component — control plane and each node pool — so tenants can assess the state; the supported next action is to initiate a new node pool upgrade to retry independently
+- Past upgrade transitions and their outcomes are visible per cluster component as upgrade history; history is tied to the cluster's lifetime and is removed when the cluster is deleted
 - Tenant Users and Tenant Admins receive a warning condition on a node pool when it approaches the N-2 minor version skew limit relative to the control plane, so they can initiate a node pool upgrade before the node pool falls out of the supported range
 
 **Platform-managed z-stream upgrades:**
@@ -48,7 +47,7 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 
 | Surface | Change |
 |---------|--------|
-| Fulfillment API | New upgrade sub-resource per cluster component (control plane and node pool). Available upgrade versions endpoint per cluster component. Org-scoped endpoint for Tenant Admins to list upgrade records across all clusters in their organization. Fleet-wide z-stream upgrade resource for Cloud Provider Admins (set target version, trigger rollout, pause, and monitor per-cluster status). |
+| Fulfillment API | Upgrade initiation and cancellation per cluster component (control plane and node pool). Available upgrade versions query per cluster component. Upgrade status, progress, and history per cluster component. Org-wide upgrade visibility for Tenant Admins. Fleet-wide z-stream target management, rollout triggering and pausing, and per-cluster rollout status for Cloud Provider Admins. |
 | CLI | Upgrade lifecycle commands: list available versions, initiate upgrade, cancel pending upgrade, view upgrade status, view upgrade history. Cloud Provider Admin: set fleet-wide z-stream target, trigger and monitor rollout, pause rollout, force EOL upgrade on a specific cluster. |
 | UI | Upgrade lifecycle actions and history in the cluster detail view. Available versions and risk display before upgrade initiation. Cloud Provider Admin: fleet-wide z-stream target selection, rollout triggering, pause, and cross-cluster upgrade status monitoring. |
 
@@ -89,11 +88,11 @@ flowchart TD
     D --> E
     E --> F[Cancellation window opens]
     F --> G{User cancels\nwithin window?}
-    G -- Yes --> H[Pending upgrade record deleted]
+    G -- Yes --> H[Pending upgrade cancelled]
     G -- No --> I[Upgrade begins]
     I --> J{Outcome}
-    J -- Succeeded --> K[Upgrade record: succeeded]
-    J -- Failed --> L[Upgrade record: failed\nwith details]
+    J -- Succeeded --> K[Upgrade state: succeeded]
+    J -- Failed --> L[Upgrade state: failed\nwith details]
 ```
 
 ### Tenant User
@@ -139,7 +138,9 @@ No active role in this feature; all platform-level upgrade operations are covere
 
 ## Provenance
 
-Authored: revise @ prd 0.6.3 - 68284c8, workspace main @ 43c34a8
-Phases: respond, revise
+Authored: respond @ prd 0.6.3 - 68284c8, workspace main @ 43c34a8
+Final: revise @ prd 0.6.3 - c045d41, workspace main @ d22bfa1
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"68284c8","source_repo":"43c34a8","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise"],"authoring_modes":["skill"],"context_changed":false} -->
+> Context changed between respond and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"c045d41","source_repo":"d22bfa1","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true} -->
