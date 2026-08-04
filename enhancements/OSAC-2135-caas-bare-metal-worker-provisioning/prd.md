@@ -31,7 +31,7 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want CaaS to provision bare-metal worker nodes on demand through the BMaaS private API, so that I no longer need to maintain a static pool of pre-booted agents and can focus on managing BMaaS inventory.
+- As a Cloud Infrastructure Admin, I want bare-metal worker nodes to be provisioned automatically when CaaS clusters need them, so that I no longer need to maintain a static pool of pre-booted agents.
 
 ### Tenant User
 
@@ -45,11 +45,10 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 
 ## Assumptions
 
-- The BMaaS private API can accept and pass through discovery ignition payload as user data to the target physical host.
-- The standard boot image is pre-configured to process the ignition payload and start the installation agent without manual intervention.
+- BMaaS can provision bare-metal hosts with the required boot configuration without manual intervention.
+- A standard boot image exists that can initialize a host as a cluster worker node when given the appropriate configuration payload.
 
 ## Dependencies
 
-- **Host metadata in status `[Jira: OSAC-3254]`:** BMaaS must expose physical network interface identifiers in BareMetalInstance status so that CaaS can correlate provisioned hosts with registering agents.
 - **BareMetalInstanceType definitions `[Jira: OSAC-2675]`:** Resource class specifications must be finalized so that ClusterOrder can reference them.
-- **User data pass-through:** The BMaaS private API must support ingestion and pass-through of ignition configurations in BareMetalInstance specifications.
+- **Boot configuration pass-through:** BMaaS must support passing cluster-specific boot configuration to provisioned hosts.
