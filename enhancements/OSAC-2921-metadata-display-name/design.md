@@ -3,7 +3,7 @@ title: metadata-display-name
 authors:
   - ushkalim@redhat.com
 creation-date: 2026-08-02
-last-updated: 2026-08-02
+last-updated: 2026-08-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2921
 prd:
@@ -69,8 +69,12 @@ changes, not proto-only edits.
 - Changing TemplateParameter `title`/`description`, HostType interface
   `description`, or FieldDefinition `display_name`. [Locked: D3]
 - Aligning public/private Metadata field number divergence for existing
-  fields (`name` is 4 public / 6 private).
-- Encrypting or sanitizing description content beyond length validation.
+  fields (`name` is 4 public / 6 private). Tracked as a follow-up outside
+  this enhancement.
+- Server-side encryption or content sanitization of `description` beyond
+  length validation. Descriptions remain opaque stored strings; safe
+  rendering is a **client** responsibility (see Security Considerations).
+  UI/CLI hardening beyond the policy stated here is tracked as a follow-up.
 
 ## Proposal
 
@@ -277,8 +281,17 @@ Rules:
 - Prefer `title` / `spec.title` for `display_name` when present.
 - Copy description from the corresponding path; if longer than 256 Unicode
   code points, truncate to 256.
-- After copy, remove the old keys from `data` JSON so leftover fields do not
-  linger after proto reservation.
+- After copy, delete **only the explicit migrated path for that resource
+  type** (for example top-level `title`/`description` on flat-shape types,
+  or `spec.title`/`spec.description` on metadata-bearing types). Do **not**
+  perform a generic delete of every matching key name in the JSON document.
+  Nested fields that this enhancement excludes must remain intact, including
+  `TemplateParameter.title` / `description`, `FieldDefinition.display_name`,
+  and HostType interface `description`. [Locked: D3]
+- When any row's description is truncated, emit a migration-time **warning**
+  that includes the resource/table type and the count of truncated rows for
+  that type. Do **not** log description contents. Also call out truncation
+  in release notes.
 - Types without old fields leave columns as `''`.
 
 Pattern reference: `13_add_name.up.sql`, `16_add_labels.up.sql`,
@@ -316,6 +329,11 @@ This enhancement:
    `name`, `display_name` if that matches existing filter identifier
    style). Reject anything else with `InvalidArgument`.
 4. Defaults to `id asc` when `order` is empty (preserves current behavior).
+5. When the request specifies a non-`id` primary order (for example
+   `metadata.display_name asc`), append `id asc` as an implicit secondary
+   sort key unless `id` is already present in the order expression. This
+   keeps offset/limit pagination stable when `display_name` values are
+   duplicated.
 
 ### Server and test updates
 
@@ -355,8 +373,17 @@ NetworkClass, templates, and catalog items).
 No new authn/authz surfaces. Fields are ordinary Metadata readable/writable
 under existing object permissions and OPA tenancy. Descriptions are opaque
 user-controlled strings — same trust model as annotations and existing
-per-type descriptions. Validate length only; do not execute description
-content.
+per-type descriptions. The API validates length only and does not sanitize,
+transform, or execute description content.
+
+**Client safe rendering (required):** Treat `metadata.description` (and any
+future Markdown presentation of it) as untrusted user input. UI and CLI
+clients that render descriptions as Markdown or HTML **must** encode or
+sanitize before display (for example HTML-escape plain text, or run a
+Markdown renderer with a strict allowlist that strips scripts and unsafe
+URLs). Do not pass raw description strings into `innerHTML`, shell
+expansion, or other execution contexts. Broader UI hardening beyond this
+policy is tracked as a follow-up outside the server cutover.
 
 ### Failure Handling and Recovery
 
@@ -389,7 +416,10 @@ observed via normal migration runner logs.
 | Risk | Mitigation |
 |------|------------|
 | Breaking API for twelve types | One release with reserved fields; coordinate E2E and UI; changelog callout |
-| Truncation of Project descriptions > 256 | Document in release notes; truncate at migration |
+| Truncation of Project descriptions > 256 | Truncate at migration; emit per-type count warning (no content); document in release notes |
+| Accidental deletion of nested title/description | Path-specific JSON cleanup only; tests assert excluded nested fields remain |
+| Unstable List pages when display_name duplicates | Implicit secondary `id asc` on ordered lists |
+| XSS if clients render description as HTML/Markdown | Client encode/sanitize requirement in Security Considerations; UI follow-up |
 | Wide migration (many tables) | Follow established add-column migration pattern; test on representative tables in integration suite |
 | List `order` allowlist too narrow | Start with `id`, `name`, `display_name`; expand later without schema change |
 | Confusion with FieldDefinition.display_name | Document distinction in API.md and this design |
@@ -411,39 +441,39 @@ review explicitly rejected. [Locked: D1, D4, D6]
 
 ### Keep flat-shape title/description; only migrate spec-based types
 
-**Pros:** Smaller blast radius.  
+**Pros:** Smaller blast radius.
 **Cons:** Leaves inconsistent naming on platform types; rejected in PRD
-review. [Locked: D1, D4]  
+review. [Locked: D1, D4]
 **Rejection:** Locked decision.
 
 ### Store display_name/description only inside data JSON
 
-**Pros:** Avoids altering every table.  
+**Pros:** Avoids altering every table.
 **Cons:** Breaks Metadata column model; FilterTranslator Metadata path
-expects columns; inconsistent with `name`/`labels`.  
+expects columns; inconsistent with `name`/`labels`.
 **Rejection:** Violates GenericDAO Metadata persistence pattern
 [Codebase: fulfillment-service/internal/database/dao/generic_dao.go].
 
 ### Backend auto-populate display_name from metadata.name
 
-**Pros:** Clients always see a non-empty display_name.  
+**Pros:** Clients always see a non-empty display_name.
 **Cons:** Confuses users on edit (field appears set without user action);
-PRD deferred display behavior to clients. [Locked: D9]  
+PRD deferred display behavior to clients. [Locked: D9]
 **Rejection:** Clarification and PR review consensus against backend fill.
 
 ### Dual-write / deprecation window for title fields
 
-**Pros:** Softer client migration.  
+**Pros:** Softer client migration.
 **Cons:** Prolongs dual paths; PRD requires removal, not aliasing.
-[Locked: D1]  
+[Locked: D1]
 **Rejection:** Locked decision for one-shot removal.
 
 ### Fail migration if any description exceeds 256
 
-**Pros:** No silent data loss.  
-**Cons:** Blocks upgrade until operators manually shorten rows.  
+**Pros:** No silent data loss.
+**Cons:** Blocks upgrade until operators manually shorten rows.
 **Rejection:** Truncation chosen for operable upgrades; call out in release
-notes.
+notes and emit migration-time warnings with per-type truncated counts.
 
 ## Test Plan
 
@@ -455,17 +485,26 @@ notes.
   including clear-to-empty via update_mask.
 - FilterTranslator translates `this.metadata.display_name == 'x'`.
 - List order parses `metadata.display_name desc` and rejects unknown fields.
+- List order with `metadata.display_name` appends secondary `id asc` when
+  `id` is not already present.
 - Server tests for the twelve types create/update without title fields and
   assert Metadata values.
 - Migration unit/integration test: seed rows with flat and spec title/
   description (including >256 description), run migration, assert column
-  values and JSON keys removed.
+  values and **only** the migrated JSON paths removed.
+- Migration preserves excluded nested fields (`TemplateParameter.title`,
+  `FieldDefinition.display_name`, HostType interface `description`).
+- Migration emits a warning with resource type and truncated-row count when
+  descriptions exceed 256 (no description contents in logs).
+- Create/Update retry with the same payload remains idempotent.
 
 ### Integration (`ginkgo run it`)
 
 - Create Project / NetworkClass / ComputeInstanceCatalogItem with
   display_name; List with filter and order; Update clear; Get confirms
   empty string.
+- List with duplicate `display_name` values and `order=metadata.display_name`
+  returns stable pages across offset/limit (no duplicates/skips).
 
 ### E2E (osac-test-infra pytest)
 
@@ -476,12 +515,30 @@ notes.
 - Representative create/list/filter for a tenant resource (e.g.
   ComputeInstance) with display_name set.
 
+### Client / UI (follow-up)
+
+- UI and CLI unit tests covering encode/sanitize before Markdown/HTML
+  render of `metadata.description` land with the client hardening follow-up
+  (not required to unblock the server API cutover).
+
 ## Graduation Criteria
 
-Graduation criteria will be defined when targeting a release. Expected
-stages: Dev Preview → Tech Preview → GA based on production deployment
-feedback. Documentation of Metadata fields and migration notes must ship
-with the first user-facing release that includes the API break.
+Stages: Dev Preview → Tech Preview → GA.
+
+**Dev Preview (minimum for first user-facing release with this API break):**
+
+- Unit and integration suites above pass in CI, including migration backfill,
+  excluded nested JSON paths, truncation warnings, and stable ordered List
+  pagination with duplicate `display_name`.
+- E2E catalog-item and representative tenant create/list/filter paths pass
+  against a cluster running the migrated schema.
+- API.md / CLI help document `metadata.display_name` and `metadata.description`,
+  and release notes call out the breaking field removals and truncation
+  behavior.
+- Client safe-rendering policy is documented for UI/CLI consumers.
+
+**Tech Preview / GA:** Defined when targeting a release, based on production
+deployment feedback and completion of UI/CLI hardening follow-ups.
 
 ## Upgrade / Downgrade Strategy
 
@@ -541,6 +598,7 @@ None.
 
 ## Provenance
 
-Authored: draft @ design 0.4.2 - 75ae801, workspace main @ 3cb3621
+Authored: respond @ design 0.4.2 - 75ae801, workspace main @ 3cb3621
+Phases: draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.2","ai_workflows":"75ae801","source_repo":"3cb3621","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.2","ai_workflows":"75ae801","source_repo":"3cb3621","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false} -->
