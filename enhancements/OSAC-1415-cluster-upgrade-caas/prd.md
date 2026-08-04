@@ -40,6 +40,7 @@ flowchart TD
 - As a Tenant User, I want to be informed when my cluster's control plane and node pool versions have diverged and a node pool upgrade is needed, so that I can keep my cluster working and supported.
 - As a Tenant User, I want to view the upgrade history for my cluster, so that I can see which version transitions have occurred and their outcomes.
 - As a Tenant User, I want to know when the platform applies a z-stream upgrade to my cluster, so that I am aware of platform-managed changes to my cluster's version.
+- As a Tenant User, I want to see when my cluster has entered limited-support state due to a failed forced EOL upgrade, so that I understand the SLA change and know that support remains available.
 
 ### Tenant Admin / Tenant User
 
@@ -59,6 +60,7 @@ flowchart TD
 
 - As a Cloud Provider Admin, I want to select and publish a z-stream target version per minor version cohort for control plane upgrades, so that all clusters running that minor version are brought to a consistent patch level without requiring tenant action.
 - As a Cloud Provider Admin, I want to pause a z-stream rollout that is causing regressions, so that I can stop further clusters from being upgraded while I assess the impact.
+- As a Cloud Provider Admin, I want to resume a paused z-stream rollout once the regression is resolved, so that clusters not yet upgraded at the time of pause continue receiving the upgrade.
 - As a Cloud Provider Admin, I want to monitor control plane upgrade status across all clusters, so that I can detect stalled or failed upgrades and intervene.
 - As a Cloud Provider Admin, I want to force a control plane y-stream upgrade for a specific cluster approaching EOL, so that the platform can maintain supportability independently of tenant scheduling.
 
@@ -78,20 +80,21 @@ No active role in this feature; all platform-level upgrade operations are covere
 - If any node set fails to upgrade, the node pool tier upgrade is treated as failed; failure details identify which node set(s) did not complete the transition
 - A cancellation window of a few minutes exists after upgrade initiation
 - In-progress upgrades cannot be cancelled
-- Completed upgrades cannot be rolled back through OSAC
+- Completed upgrades cannot be rolled back through OSAC; HCP does not support control plane version downgrade, so remediation for regression-affected clusters requires intervention outside of OSAC
 - Tenants cannot select or initiate z-stream control plane upgrades; these are applied by the Cloud Provider Admin via progressive rollout
 - Z-stream upgrades are triggered on-demand; the regular cadence targets FedRAMP-aligned CVE remediation timelines (High CVEs: 30 days, Medium: 90 days)
+- A paused rollout is visible as a distinct state in the rollout status; pausing stops new clusters from being selected for the rollout; resuming targets clusters in the cohort that had not yet been upgraded at pause time
 - If the fleet-wide z-stream target version is not reachable from a cluster's available update graph, the cluster is flagged in the rollout status and no upgrade is initiated for that cluster
 - During a forced EOL upgrade, node pools remain at their current version and continue to serve workloads
-- If a forced EOL upgrade fails, the cluster enters a limited-support state (SLA no longer applies, but support remains available); the limited-support state is visible to tenants on the cluster
+- If a forced EOL upgrade fails, the cluster enters a limited-support state (SLA no longer applies, but support remains available)
 
 **User-facing API surfaces:**
 
 | Surface | Change |
 |---------|--------|
-| Fulfillment API | Upgrade initiation and cancellation per cluster component (control plane and node pool). Available upgrade versions query per cluster component. Upgrade status, progress, and history per cluster component. Org-wide upgrade visibility for Tenant Admins. Fleet-wide z-stream target management, rollout triggering and pausing, and per-cluster rollout status for Cloud Provider Admins. |
-| CLI | Upgrade lifecycle commands: list available versions, initiate upgrade, cancel pending upgrade, view upgrade status, view upgrade history. Cloud Provider Admin: set fleet-wide z-stream target, trigger and monitor rollout, pause rollout, force EOL upgrade on a specific cluster. |
-| UI | Upgrade lifecycle actions and history in the cluster detail view. Available versions and risk display before upgrade initiation. Cloud Provider Admin: fleet-wide z-stream target selection, rollout triggering, pause, and cross-cluster upgrade status monitoring. |
+| Fulfillment API | Upgrade initiation and cancellation per cluster component (control plane and node pool). Available upgrade versions query per cluster component. Upgrade status, progress, and history per cluster component. Org-wide upgrade visibility for Tenant Admins. Fleet-wide z-stream target management, rollout triggering, pausing, and resuming, and per-cluster rollout status for Cloud Provider Admins. |
+| CLI | Upgrade lifecycle commands: list available versions, initiate upgrade, cancel pending upgrade, view upgrade status, view upgrade history. Cloud Provider Admin: set fleet-wide z-stream target, trigger, pause, and resume rollout, force EOL upgrade on a specific cluster. |
+| UI | Upgrade lifecycle actions and history in the cluster detail view. Available versions and risk display before upgrade initiation. Cloud Provider Admin: fleet-wide z-stream target selection, rollout triggering, pause, resume, and cross-cluster upgrade status monitoring. |
 
 **E2E testing:** E2E coverage for upgrade initiation, status tracking, upgrade history, and pending upgrade cancellation in osac-test-infra.
 
