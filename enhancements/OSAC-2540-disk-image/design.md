@@ -63,9 +63,9 @@ On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` fi
 
 #### Registering a DiskImage
 
-**Actor:** Cloud Provider Admin (global images) or Tenant Admin (tenant-scoped images)
+**Actor:** Cloud Provider Admin (global images), Tenant Admin or Tenant User (tenant-scoped images)
 
-1. Admin calls `DiskImages/Create` with the DiskImage object containing `spec.source_type`, `spec.source_ref`, `spec.guest_os_family`, and `spec.architecture`.
+1. Caller invokes `DiskImages/Create` with the DiskImage object containing `spec.source_type`, `spec.source_ref`, `spec.guest_os_family`, and `spec.architecture`.
 2. Server validates required fields, sets `spec.lifecycle` to `DISK_IMAGE_LIFECYCLE_AVAILABLE` if unspecified, persists the object, and returns it with system-generated `id` and `metadata`.
 3. For global images, `metadata.tenant` is empty. For tenant-scoped images, the server sets `metadata.tenant` from the caller's identity.
 
@@ -110,7 +110,7 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 
 #### Deprecating and Obsoleting a DiskImage
 
-**Actor:** Cloud Provider Admin or Tenant Admin (for their own images)
+**Actor:** Cloud Provider Admin (global images), Tenant Admin or Tenant User (tenant-scoped images)
 
 1. Admin calls `DiskImages/Update` setting `spec.lifecycle` to `DISK_IMAGE_LIFECYCLE_DEPRECATED`.
 2. Server auto-sets `spec.deprecation.deprecation_timestamp` to the current time.
@@ -535,8 +535,7 @@ DiskImage uses the standard OSAC tenant isolation model:
 
 | Role | DiskImages methods |
 |------|-------------------|
-| Client (all authenticated users) | Get, List |
-| Tenant Admin | Create, Update, Delete (tenant-scoped images only) |
+| Client (all authenticated users) | Get, List, Create, Update, Delete (tenant-scoped images only) |
 | Cloud Provider Admin (is_admin) | Create, Update, Delete (all images including global) |
 
 The `has_client_permissions` block in `authz.rego` gains:
@@ -544,17 +543,12 @@ The `has_client_permissions` block in `authz.rego` gains:
 ```rego
 "/osac.public.v1.DiskImages/Get",
 "/osac.public.v1.DiskImages/List",
-```
-
-The `is_tenant_admin` block gains:
-
-```rego
 "/osac.public.v1.DiskImages/Create",
 "/osac.public.v1.DiskImages/Update",
 "/osac.public.v1.DiskImages/Delete",
 ```
 
-Cloud Provider Admins are covered by the existing `is_admin` catch-all rule.
+All authenticated users (Tenant Users and Tenant Admins) can create, update, and delete tenant-scoped DiskImages. The generic server's tenant filtering ensures users can only operate on images in their own tenant. Cloud Provider Admins are covered by the existing `is_admin` catch-all rule and can manage global images.
 
 **Tenant isolation metadata:**
 
@@ -571,7 +565,7 @@ Cloud Provider Admins are covered by the existing `is_admin` catch-all rule.
 
 The generic server's existing tenant filtering handles this automatically. Tenant Users see global images and their own tenant's images in List results.
 
-**Tenant Admin manages CatalogItems, not Templates.** [Locked: D10] Tenant Admin can create DiskImages and reference them in ComputeInstanceCatalogItems via field_definitions. ComputeInstanceTemplates are managed by Cloud Provider Admins.
+**Tenant Admin manages CatalogItems, not Templates.** [Locked: D10] Tenant Admin and Tenant Users can create tenant-scoped DiskImages and reference them in ComputeInstanceCatalogItems via field_definitions. ComputeInstanceTemplates are managed by Cloud Provider Admins.
 
 ### Observability and Monitoring
 
@@ -599,7 +593,7 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 **Adds an indirection layer.** Every ComputeInstance creation now requires a DiskImage lookup, adding one database query to the create path and one to the reconciliation path. This is a minor cost for the governance and discoverability benefits.
 
-**Mandatory DiskImage reference removes flexibility.** Users can no longer specify ad-hoc OCI URLs. Every image must be pre-registered as a DiskImage. This is intentional — governance requires a closed catalog — but increases the setup burden for new deployments. Cloud Provider Admins must register DiskImages before tenants can create VMs.
+**Mandatory DiskImage reference removes flexibility.** Users can no longer specify ad-hoc OCI URLs. Every image must be pre-registered as a DiskImage. This is intentional — governance requires a closed catalog — but increases the setup burden for new deployments. At minimum, a Cloud Provider Admin or Tenant User must register a DiskImage before VMs can be created.
 
 **CatalogItem deletion protection is imprecise.** The text-search approach for CatalogItem references is a pragmatic trade-off. A typed reference would be cleaner but would require changing the CatalogItem field_definitions design, which is out of scope.
 
@@ -654,7 +648,8 @@ Once deprecated, a DiskImage cannot return to AVAILABLE.
 
 - **Image catalog workflow:** Provider Admin registers a global DiskImage, Tenant User lists images (sees it), creates a ComputeInstance using the DiskImage, verifies the VM runs.
 - **Deprecation workflow:** Provider Admin deprecates a DiskImage, Tenant User lists images (sees deprecation warning), creates a VM (succeeds with deprecated image), Provider Admin obsoletes the DiskImage, Tenant User attempts VM creation (fails).
-- **Tenant-scoped image:** Tenant Admin registers a tenant-scoped DiskImage, Tenant User in same tenant creates a VM with it, Tenant User in different tenant cannot see or use it.
+- **Tenant-scoped image (admin):** Tenant Admin registers a tenant-scoped DiskImage, Tenant User in same tenant creates a VM with it, Tenant User in different tenant cannot see or use it.
+- **Tenant-scoped image (user):** Tenant User registers a tenant-scoped DiskImage, another Tenant User in same tenant can see and use it, Tenant User in different tenant cannot.
 
 ## Graduation Criteria
 
@@ -703,8 +698,8 @@ No Helm chart, kustomize overlay, or osac-installer changes needed. Database mig
 ## Provenance
 
 Authored: draft @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3
-Final: respond @ design 0.3.0 - 92734a2, workspace main @ 17cb3b3 (5 behind origin/main)
+Final: revise @ design 0.7.1 - b8b3f86, workspace main @ 8f899d5
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"17cb3b3","source_repo_branch":"main","commits_behind_main":5,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","respond","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
