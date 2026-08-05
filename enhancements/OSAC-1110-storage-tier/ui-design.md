@@ -9,6 +9,7 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1111
 prd:
   - "prd.md"
+  - "../OSAC-1111-storage-backend/prd.md"
 see-also:
   - "/enhancements/OSAC-1111-storage-backend"
   - "/enhancements/OSAC-2872-storage-control-plane"
@@ -21,7 +22,7 @@ superseded-by:
 
 ## Summary
 
-This design specifies the `osac-ui` implementation for both `StorageBackend` (OSAC-1111) and `StorageTier` (OSAC-1110) admin management: a combined "Storage" admin section, with a Backends tab and a Tiers tab, where Cloud Provider Admins register storage infrastructure and compose named tier offerings (e.g., "fast", "standard") on top of it. See [PRD](prd.md) for detailed requirements and [design.md](design.md) for the `StorageTier` API contract this UI consumes.
+This design specifies the `osac-ui` implementation for both `StorageBackend` (OSAC-1111) and `StorageTier` (OSAC-1110) admin management: a combined "Storage" admin section, with a Backends tab and a Tiers tab, where Cloud Provider Admins register storage infrastructure and compose named tier offerings (e.g., "fast", "standard") on top of it. See the [StorageTier PRD](prd.md) and [StorageBackend PRD](../OSAC-1111-storage-backend/prd.md) for detailed requirements, and [design.md](design.md) / [../OSAC-1111-storage-backend/design.md](../OSAC-1111-storage-backend/design.md) for the API contracts this UI consumes.
 
 ## Motivation
 
@@ -379,4 +380,4 @@ Final: respond @ design 0.5.0 - 68284c8, workspace docs/OSAC-1110-1111-storage-u
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.5.0","ai_workflows":"68284c8","source_repo":"47288de","source_repo_branch":"docs/OSAC-1110-1111-storage-ui-design","commits_behind_main":25,"commits_ahead_main":3,"main_ref":"main","phases":["draft","revise","respond","respond","respond","respond","respond","revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.5.0","ai_workflows":"68284c8","source_repo":"47288de","source_repo_branch":"docs/OSAC-1110-1111-storage-ui-design","commits_behind_main":25,"commits_ahead_main":3,"main_ref":"main","phases":["draft","revise","respond","respond","respond","respond","respond","revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true} -->
