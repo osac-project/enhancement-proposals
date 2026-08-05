@@ -20,6 +20,8 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 - Platform-forced end-of-life (EOL) y-stream control plane upgrades
 - Platform-initiated z-stream (patch version, e.g., 4.15.10 → 4.15.11) control plane upgrades
 - Tenant-initiated node pool upgrades
+- Console (UI) support for version selection, risk review, status monitoring, and cancellation (Tenant User, Tenant Admin), and fleet-wide z-stream rollout management (Cloud Provider Admin)
+- User documentation for upgrade initiation, monitoring, and fleet-wide rollout management
 
 ## Out of Scope
 
@@ -80,15 +82,4 @@ No active role in this feature; all platform-level upgrade operations are covere
 
 - **OSAC-1269 (ClusterVersion API):** A version is available for upgrade only if an allowed (not blocked) ClusterVersion exists for it
 
----
-
-## Provenance
-
-Authored: respond @ prd 0.6.3 - 68284c8, workspace main @ 43c34a8
-Final: revise @ prd 0.7.1 - b8b3f86, workspace main @ 8f899d5
-
-> Context changed between respond and revise.
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"declined"} -->
