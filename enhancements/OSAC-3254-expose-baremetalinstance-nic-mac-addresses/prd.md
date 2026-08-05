@@ -13,14 +13,13 @@ When BMaaS provisions a BareMetalInstance, it assigns a physical host from the i
 ## In Scope
 
 - MAC addresses of all physical network interfaces of the assigned host, sourced from the inventory backend and exposed in BareMetalInstance status once provisioning completes
-- Read access to this metadata via the BareMetalInstance API (Get, List) and OSAC CLI, following existing BMaaS tenant authorization boundaries
+- Read access to this metadata via the BareMetalInstance API (Get, List), OSAC CLI, and OSAC web console, following existing BMaaS tenant authorization boundaries
 
 ## Out of Scope
 
 - IP addresses — assigned via DHCP at runtime and not a property of the inventory
 - Full hardware specifications such as CPU, RAM, and disk layout (covered by BareMetalInstanceType)
 - CaaS agent correlation workflow that consumes this data (covered by OSAC-2135)
-- UI representation in the OSAC web console
 
 ## User Stories
 
@@ -44,8 +43,8 @@ When BMaaS provisions a BareMetalInstance, it assigns a physical host from the i
 
 ## Provenance
 
-Committed: commit @ prd 0.7.1 - b8b3f86, workspace prd/OSAC-3254 @ e49bc0c
+Committed: commit @ prd 0.7.1 - b8b3f86, workspace prd/OSAC-3254 @ 112202d (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"e49bc0c","source_repo_branch":"prd/OSAC-3254","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"112202d (dirty)","source_repo_branch":"prd/OSAC-3254","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
