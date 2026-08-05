@@ -81,6 +81,8 @@ management.
 - The create form should follow the existing wizard interaction pattern:
   submit remains enabled, and clicking submit surfaces validation errors from
   the schema instead of pre-emptively disabling the action.
+- The validation schema should reject decimal values for `cores` and
+  `memory_gib`, not just zero or negative numbers.
 
 ### Lifecycle Actions
 
@@ -119,7 +121,8 @@ restrictions) — the same validation that already backs `NameField` for
 resources such as `ComputeInstance`, so no new field component is needed.
 
 - **Numeric fields**: use the shared `InputField` with `type="number"` for
-`spec.cores` and `spec.memory_gib`.
+`spec.cores` and `spec.memory_gib`, with `step=1`. After schema validation,
+convert those values to integers before constructing the API request body.
 
 - **API hooks**: add `libs/ui-components/src/api/v1/private/instance-type.ts`,
 following the existing `private/tenant.ts` pattern (private `InstanceTypes`
@@ -164,16 +167,22 @@ design adds only a UI client for those existing permissions.
 - Obsolete-transition failures use the title
   `Failed to mark instance type as obsolete`.
 - Reactivation failures use the title `Failed to reactivate instance type`.
-- Invalid create input surfaces standard validation errors. In particular, the
-  backend rejects `spec.cores <= 0` with `field 'spec.cores' must be greater
-  than zero` and rejects `spec.memory_gib <= 0` with
-  `field 'spec.memory_gib' must be greater than zero`.
+- Invalid create input should normally be handled by schema validation before
+  the request is sent. If the backend still returns field-specific validation
+  errors for `spec.cores` or `spec.memory_gib`, map them onto the matching
+  `InputField` rather than surfacing them only through the top-level create
+  failure alert.
 
 ## Test Plan
 
 - Unit-test the new private API hooks.
 - Unit-test the provider list and create flows, including loading, empty, and
   error states.
+- Unit-test create-form validation for positive integers only, including
+  rejection of decimal values for `cores` and `memory_gib`.
+- Unit-test create submission to confirm validated numeric values are converted
+  before building the API request and that backend field errors map to the
+  matching `InputField`.
 - Unit-test lifecycle state rendering and action availability for `ACTIVE`,
   `DEPRECATED`, and `OBSOLETE`.
 - Unit-test lifecycle row actions so the correct update request is sent for
@@ -186,6 +195,6 @@ No new backend or E2E coverage is required for this design.
 ## Provenance
 
 Authored: respond @ design 0.3.0 - 1e226e0, workspace main @ 8f899d5
-Phases: draft, revise, revise, respond, respond, respond
+Phases: draft, revise, revise, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
