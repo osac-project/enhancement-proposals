@@ -123,11 +123,11 @@ client from `@osac/types/private`) together with the update-mask pattern
 already used by `usePatchComputeInstance` in `compute-instance.ts`. Register a
 new `'v1/private/instance_types'` entry in `ApiRoute`
 (`libs/ui-components/src/api/types.ts`) first. Hooks needed:
-  - `useInstanceTypes` — list, via the private client, returning all lifecycle
-    states. This is distinct from the existing tenant-facing `useInstanceTypes`
-    in `v1/instance-types.ts`, which filters to `ACTIVE` via
-    `INSTANCE_TYPE_ACTIVE_LIST_FILTER`; the provider list page needs every
-    state, so it can't reuse that hook.
+  - `useAdminInstanceTypes` — list, via the private client, returning all
+    lifecycle states. The codebase already has a tenant-facing
+    `useInstanceTypes` in `v1/instance-types.ts`, so the provider/admin flow
+    should use a distinct hook name rather than introducing a second
+    `useInstanceTypes`.
   - `useCreateInstanceType` — create mutation for the create page, invalidating
     the list query on success (same shape as `useCreateTenant`).
   - `useUpdateInstanceTypeState` — one mutation hook parameterized by a
@@ -177,7 +177,7 @@ No new backend or E2E coverage is required for this design.
 
 ## Provenance
 
-Authored: revise @ design 0.3.0 - 1e226e0, workspace main @ 8f899d5
-Phases: draft, revise, revise
+Authored: respond @ design 0.3.0 - 1e226e0, workspace main @ 8f899d5
+Phases: draft, revise, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false} -->
