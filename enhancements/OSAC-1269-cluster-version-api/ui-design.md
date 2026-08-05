@@ -4,12 +4,12 @@
 |-------------|---------------------------------------|
 | Author(s)   | Elay Aharoni |
 | Jira        | [OSAC-1269](https://issues.redhat.com/browse/OSAC-1269) |
-| PRD         | [prd.md](../../../enhancement-proposals/enhancements/OSAC-1269-cluster-version-api/prd.md) |
+| PRD         | [prd.md](./prd.md) |
 | Date        | 2026-07-30 |
 
 # 1. Overview
 
-This design specifies the `osac-ui` implementation for `ClusterVersion` (OSAC-1269): a managed catalog of OpenShift versions that replaces raw `release_image` input across the cluster-creation wizard, catalog item field definitions, and cluster list/detail views. It covers three UI surfaces: (1) an admin catalog management screen for creating, editing, and transitioning the lifecycle state of `ClusterVersion` entries; (2) version selection in the cluster-creation wizard, replacing the free-text release-image field; (3) version and lifecycle-state display on cluster list and detail views via a client-side join against the `ClusterVersion` catalog. The backend API and data model — the fulfillment-service `ClusterVersions` service, `ClusterSpec.version_name`, and the public/private visibility split for `spec.image` — are an already-finalized contract [Codebase: enhancement-proposals `design.md`]; this document addresses only how `osac-ui` consumes and surfaces them. See the [PRD](../../../enhancement-proposals/enhancements/OSAC-1269-cluster-version-api/prd.md) for the full product requirements.
+This design specifies the `osac-ui` implementation for `ClusterVersion` (OSAC-1269): a managed catalog of OpenShift versions that replaces raw `release_image` input across the cluster-creation wizard, catalog item field definitions, and cluster list/detail views. It covers three UI surfaces: (1) an admin catalog management screen for creating, editing, and transitioning the lifecycle state of `ClusterVersion` entries; (2) version selection in the cluster-creation wizard, replacing the free-text release-image field; (3) version and lifecycle-state display on cluster list and detail views via a client-side join against the `ClusterVersion` catalog. The backend API and data model — the fulfillment-service `ClusterVersions` service, `ClusterSpec.version_name`, and the public/private visibility split for `spec.image` — are an already-finalized contract [Codebase: enhancement-proposals `design.md`]; this document addresses only how `osac-ui` consumes and surfaces them. See the [PRD](./prd.md) for the full product requirements.
 
 # 2. Goals and Non-Goals
 
@@ -87,6 +87,8 @@ No schema changes originate in `osac-ui` — `ClusterVersion` is defined and own
 
 No new backend API — this section covers the new `osac-ui`-internal hook surface wrapping the already-specified `ClusterVersions` service [Codebase: enhancement-proposals `design.md`]. New `ApiRoute` entries in `libs/ui-components/src/api/types.ts`: `'v1/cluster_versions'` (public) and `'v1/private/cluster_versions'` (private), following the existing `v1/cluster_catalog_items` / `v1/private/cluster_catalog_items` pairing.
 
+`ClusterVersionsUpdateRequest` carries a `google.protobuf.FieldMask update_mask` — `Update` is a partial-update RPC, not a full-object replace. `useUpdateClusterVersion()` and `useSetClusterVersionLifecycleState()` must derive `update_mask` from the fields actually being sent using `buildUpdateMaskPaths()` (`libs/ui-components/src/api/v1/update-mask.ts`), the same utility `compute-instance.ts` and `baremetal-instance.ts` already use for their own partial updates. Omitting `update_mask` — or worse, sending the full object without one — would risk depending on server-side default-merge behavior for `version`/`image` instead of an explicit, verifiable guarantee that those immutable fields are never touched.
+
 | Hook | Module | RPC | Notes |
 |---|---|---|---|
 | `useClusterVersions(params)` | public | `List` | `select: data.items`; used with `CLUSTER_VERSION_ACTIVE_LIST_FILTER` (wizard) or `CLUSTER_VERSION_ALL_STATES_FILTER` (cluster table join) |
@@ -94,8 +96,8 @@ No new backend API — this section covers the new `osac-ui`-internal hook surfa
 | `usePrivateClusterVersions(params)` | private | `List` | admin list page; no default state filter needed (private `List` does not hide obsolete/disabled) |
 | `usePrivateClusterVersion(id)` | private | `Get` | admin edit-form prefill |
 | `useCreateClusterVersion()` | private | `Create` | submits `spec.version`, `spec.image`, `spec.enabled` |
-| `useUpdateClusterVersion()` | private | `Update` | submits only `spec.enabled` / `spec.isDefault`; `version`/`image` are never included in the payload |
-| `useSetClusterVersionLifecycleState()` | private | `Update` | submits only `spec.state` |
+| `useUpdateClusterVersion()` | private | `Update` | submits only `spec.enabled` / `spec.isDefault` plus a matching `update_mask`; `version`/`image` are never included in the payload or the mask |
+| `useSetClusterVersionLifecycleState()` | private | `Update` | submits only `spec.state` plus a matching `update_mask` |
 | `useDeleteClusterVersion()` | private | `Delete` | — |
 
 Example — admin creates a version:
@@ -112,11 +114,20 @@ Example — wizard lists selectable versions:
 
 ```json
 // Request (useClusterVersions, CLUSTER_VERSION_ACTIVE_LIST_FILTER)
-{ "filter": "this.spec.state == 1" }
+{ "filter": "this.spec.state == 1 && this.spec.enabled == true" }
 
 // Response (spec.image absent — public schema)
 { "items": [ { "id": "uuid", "metadata": { "name": "4-17-0" }, "spec": { "version": "4.17.0", "enabled": true, "isDefault": true, "state": "ACTIVE" }, "status": {} } ] }
 ```
+
+Example — cluster table join lists every version regardless of lifecycle state or enablement:
+
+```json
+// Request (useClusterVersions, CLUSTER_VERSION_ALL_STATES_FILTER)
+{ "filter": "this.spec.state in [0, 1, 2, 3] && this.spec.enabled in [true, false]" }
+```
+
+`CLUSTER_VERSION_ALL_STATES_FILTER` must explicitly reference **both** `spec.state` and `spec.enabled`, not just state — the fulfillment-service design's own rule ("Public `ClusterVersions/List` hides disabled and obsolete versions by default unless the caller explicitly filters on lifecycle or availability fields") is ambiguous about whether an explicit filter on only one of those two dimensions is enough to un-hide both. A filter that touches only `spec.state` (e.g., the naive "match everything" `this.spec.state != -1`) risks silently continuing to hide disabled entries — which would break FR-6 for any existing cluster referencing a version an admin has since disabled. **This should be confirmed against the actual fulfillment-service implementation during Story 1.02/2.01's implementation** (see `05-stories/epic-2/story-01-cluster-list-version-join.md`) rather than assumed from the design doc's prose alone.
 
 All changes are additive to the API surface from the UI's perspective; the `Clusters`/`ClusterTemplates` field rename (`release_image` → `version_name`) is a breaking change already accounted for in the fulfillment-service design and covered by §7 below.
 
@@ -187,5 +198,8 @@ The fulfillment-service design already validates version-change against `allowed
 ## Provenance
 
 Authored: draft @ design 0.4.1 - 96de078, workspace fix/proxy-any-wrapper-type-resolution @ afbc45d (2 behind origin/main)
+Final: respond @ design 0.7.1 - b8b3f86, workspace main @ acca7a4 (dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.1","ai_workflows":"96de078","source_repo":"afbc45d","source_repo_branch":"fix/proxy-any-wrapper-type-resolution","commits_behind_main":2,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"acca7a4 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
