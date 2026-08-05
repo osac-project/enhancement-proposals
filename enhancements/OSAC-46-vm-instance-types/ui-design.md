@@ -104,7 +104,7 @@ available through the CLI for exceptional cleanup cases.
 
 - `metadata.name` -> Name
 - `spec.description` -> Description
-- `spec.cores` -> CPU cores 
+- `spec.cores` -> CPU cores
 - `spec.memory_gib` -> Memory (GiB)
 
 ## Implementation details
