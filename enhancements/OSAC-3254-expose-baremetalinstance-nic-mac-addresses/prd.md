@@ -12,7 +12,7 @@ When BMaaS provisions a BareMetalInstance, it assigns a physical host from the i
 
 ## In Scope
 
-- MAC addresses of all physical network interfaces of the assigned host, sourced from the inventory backend and exposed in BareMetalInstance status once provisioning completes
+- MAC addresses of all physical network interfaces of the assigned host, available in BareMetalInstance details once provisioning completes
 - Read access to this metadata via the BareMetalInstance API (Get, List), OSAC CLI, and OSAC web console, following existing BMaaS tenant authorization boundaries
 
 ## Out of Scope
@@ -23,13 +23,9 @@ When BMaaS provisions a BareMetalInstance, it assigns a physical host from the i
 
 ## User Stories
 
-### CaaS (internal OSAC service)
-
-- As an OSAC service (CaaS), I want to read the MAC addresses of the physical network interfaces of a provisioned BareMetalInstance so that I can match it to the Assisted Installer agent that registered from that host.
-
 ### Tenant User, Tenant Admin, Cloud Provider Admin, Cloud Infrastructure Admin
 
-- As a {persona}, I want to see the MAC addresses of a BareMetalInstance's physical network interfaces via the CLI and API so that I can identify servers and correlate them across systems.
+- As a Tenant User, Tenant Admin, Cloud Provider Admin, or Cloud Infrastructure Admin, I want to see the MAC addresses of a BareMetalInstance's physical network interfaces via the UI, CLI, and API so that I can identify servers and correlate them across systems.
 
 ## Assumptions
 
@@ -43,8 +39,8 @@ When BMaaS provisions a BareMetalInstance, it assigns a physical host from the i
 
 ## Provenance
 
-Committed: commit @ prd 0.7.1 - b8b3f86, workspace prd/OSAC-3254 @ c218f89 (dirty)
+Committed: commit @ prd 0.7.1 - b8b3f86, workspace prd/OSAC-3254 @ 1c351b8 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"c218f89 (dirty)","source_repo_branch":"prd/OSAC-3254","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"1c351b8 (dirty)","source_repo_branch":"prd/OSAC-3254","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
