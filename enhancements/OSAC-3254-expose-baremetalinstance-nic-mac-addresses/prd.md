@@ -1,4 +1,4 @@
-# Expose NIC MAC Addresses in BareMetalInstance Status
+# Expose NIC MAC Addresses in BareMetalInstance Details
 
 | Field     | Value                                                       |
 |-----------|-------------------------------------------------------------|
@@ -39,8 +39,8 @@ When BMaaS provisions a BareMetalInstance, it assigns a physical host from the i
 
 ## Provenance
 
-Committed: commit @ prd 0.7.1 - b8b3f86, workspace prd/OSAC-3254 @ 1c351b8 (dirty)
+Committed: commit @ prd 0.7.1 - b8b3f86, workspace prd/OSAC-3254 @ 6e12de2 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"1c351b8 (dirty)","source_repo_branch":"prd/OSAC-3254","commits_behind_main":0,"commits_ahead_main":3,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"6e12de2 (dirty)","source_repo_branch":"prd/OSAC-3254","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
