@@ -36,8 +36,8 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 - As a Tenant User, Tenant Admin, or Cloud Provider Admin, I want to select an upgrade version for a cluster component that is directly reachable (one hop) and allowed by the platform, so that I can initiate a valid upgrade.
 - As a Tenant User, Tenant Admin, or Cloud Provider Admin, I want to review any risks associated with a target upgrade version before initiating an upgrade, so that I can make an informed upgrade decision.
 - As a Tenant User, Tenant Admin, or Cloud Provider Admin, I want to acknowledge the risks associated with an upgrade version and proceed, or decline and keep the current version, so that the cluster remains operational and supported.
+- As a Tenant User, Tenant Admin, or Cloud Provider Admin, I want a brief cancellation window during which the upgrade remains pending after I initiate it, so that I can cancel the upgrade, correct a mistake, and re-initiate if needed.
 - As a Tenant User, Tenant Admin, or Cloud Provider Admin, I want to monitor the status of an upgrade — its current state (pending, running, succeeded, or failed), the source and target versions, and when each state transition happened, so that I can take an appropriate action in a timely manner.
-- As a Tenant User, Tenant Admin, or Cloud Provider Admin, I want a brief cancellation window after initiating an upgrade, so that I can cancel the upgrade, correct a mistake, and re-initiate if needed.
 - As a Tenant User, Tenant Admin, or Cloud Provider Admin, I want to see when a cluster has entered limited support state due to a failed forced EOL upgrade, so that I understand the impact on the cluster's support status.
 
 ### Tenant User
@@ -91,4 +91,4 @@ Final: revise @ prd 0.7.1 - b8b3f86, workspace main @ 8f899d5
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
