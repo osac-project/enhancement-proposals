@@ -8,107 +8,87 @@
 
 ## Problem Statement
 
-OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion — but provides no managed path for upgrading a cluster's OpenShift version. Clusters are provisioned via Hosted Control Planes (HCP), where the control plane and worker node pools are independent upgrade targets with distinct ownership and ordering constraints; today neither target has first-class support in the OSAC API. Tenants who need a newer version must interact directly with HCP infrastructure, bypassing OSAC entirely. As clusters age, the gap compounds: end-of-life (EOL) versions lose Red Hat support coverage and security patches, but OSAC has no mechanism to surface upgrade readiness, track version transitions, or apply platform-wide patches.
+OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion — but provides no managed path for upgrading a cluster's OpenShift version. Clusters are provisioned via Hosted Control Planes (HCP), where the control plane and node pools are independent upgrade targets with distinct ownership and ordering constraints; today neither has first-class support in the OSAC API. Tenants who need a newer version must interact directly with HCP infrastructure, bypassing OSAC entirely. As clusters age, the gap widens: end-of-life (EOL) versions lose Red Hat support coverage and security patches, but OSAC has no mechanism to surface upgrade readiness, track version transitions, or apply platform-wide patches.
+
+## In Scope
+
+- Upgrading CaaS-provisioned, HCP OpenShift clusters
+- Upgrade version discovery and restrictions
+- Upgrade initiation, monitoring
+- Cancellation of pending upgrades
+- Tenant-initiated y-stream control plane upgrades
+- Platform-forced end-of-life (EOL) y-stream control plane upgrades
+- Platform-intitiated z-stream control plane upgrades
+- Tenant-initiated node pool upgrades
+
+## Out of Scope
+
+- SNO and traditional (non-HCP) cluster upgrades
+- Upgrade rollback or version downgrade
+- Tenant-initiated z-stream control plane upgrades
+- Platform-initiated node pool upgrades
+- Cancellation of in-progress upgrades
 
 ## User Stories
 
-The following diagram shows the tenant-initiated upgrade flow. It applies equally to control plane y-stream upgrades and node pool upgrades.
+### Tenant User / Tenant Admin / Cloud Provider Admin
 
-```mermaid
-flowchart TD
-    A[User requests available upgrade versions] --> B[Platform returns versions\nwith associated risks]
-    B --> C{Risks identified\nfor target version?}
-    C -- Yes --> D[User acknowledges risks\nin upgrade request]
-    C -- No --> E[Upgrade initiated]
-    D --> E
-    E --> F[Cancellation window opens]
-    F --> G{User cancels\nwithin window?}
-    G -- Yes --> H[Pending upgrade cancelled]
-    G -- No --> I[Upgrade begins]
-    I --> J{Outcome}
-    J -- Succeeded --> K[Upgrade state: succeeded]
-    J -- Failed --> L[Upgrade state: failed\nwith details]
-```
+- As a User, I want to select a directly reacheable (one hop) and allowed by the platform upgrade version for my cluster component, so that I can initiate an valid upgrade.
+- As a User, I want to review any risks associated with a target upgrade version before initiating an upgrade, so that I can make an informed upgrade decision.
+- As a User, I want to aknowlege the risks associated with an upgrade version and proceed, or decline and keep the current version, so that my cluster remains operational and supported.
+- As a User, I want to monitor the status of an upgrade — its current state (pending, running, succeeded, or failed), the source and target versions, and when each state transition happened, so that I can take an appropriate action in a timely manner.
+- As a User, I want a brief cancellation window after initiating an upgrade, so that I can cancel the upgrade, correct a mistake, and re-initiate if needed.
+- As a User, I want to see when a cluster has entered limited-support state due to a failed forced EOL upgrade, so that I understand the SLA and support changes.
 
 ### Tenant User
 
-- As a Tenant User, I want to view the available upgrade versions for my cluster's control plane and node pools, including any known risks per version, so that I can make an informed upgrade decision.
-- As a Tenant User, I want to initiate a control plane y-stream upgrade for my cluster, acknowledging any identified risks, so that I can keep my cluster's OpenShift version current.
-- As a Tenant User, I want to initiate a node pool upgrade for my cluster — acknowledging any identified risks — so that my worker nodes run a supported OpenShift version.
-- As a Tenant User, I want to monitor the status of an upgrade — its current state (pending, running, succeeded, or failed), the source and target versions, and when each state transition happened, so that I can take an appropriate action in a timely manner.
-- As a Tenant User, I want to be warned when a node pool is approaching the N-2 minor version skew limit relative to the control plane, so that I can initiate a node pool upgrade before it falls out of the supported range.
+- As a Tenant User, I want to initiate a node pool version upgrade, so that my cluster remains operational and supported.
+- As a Tenant User, I want to initiate a control plane y-stream upgrade, so that my cluster remains operational and supported.
+- As a Tenant User, I want the same target version applied uniformly across all node sets, so that the version of all node sets in the same cluster are aligned.
+- As a Tenant User, I want a node pool upgrade marked as failed if any node set fails to upgrade, so that I can investigate and remediate the problem.
+- As a Tenant User, I want to see failure details per node pool when a node pool upgrade fails, so that I can identify and address the problem.
+- As a Tenant User, I want the node pool version capped at the control plane version of the same cluster, so that the cluster reamins operational and supported.
+- As a Tenant User, if a control plane upgrade is in progress, I want the node pool version cap to remain at the control plane's current version until the upgrade succeeds, so that the node pool version always remains correctly capped, even if the control plane upgrade fails.
+- As a Tenant User, I want to be informed when a node pool is approaching the N-2 minor version skew limit relative to the control plane, so that I can initiate a node pool upgrade before it falls out of the supported range.
+- As a Tenant User, I want to view the upgrade history for my cluster (control plane and node pool), so that I can see which version transitions have occurred and their outcomes.
+- As a Tenant User, I want to know when the platform applies a control plane upgrade to my cluster, so that I am aware of platform-managed changes to my cluster's version.
 - As a Tenant User, I want to be informed when my cluster's control plane and node pool versions have diverged and a node pool upgrade is needed, so that I can keep my cluster working and supported.
-- As a Tenant User, I want to view the upgrade history for my cluster, so that I can see which version transitions have occurred and their outcomes.
-- As a Tenant User, I want to know when the platform applies a z-stream upgrade to my cluster, so that I am aware of platform-managed changes to my cluster's version.
-- As a Tenant User, I want to see when my cluster has entered limited-support state due to a failed forced EOL upgrade, so that I understand the SLA change and know that support remains available.
-
-### Tenant Admin / Tenant User
-
-- As a Tenant Admin or Tenant User, I want to cancel an upgrade I initiated before it starts, so that I can correct a mistake within the cancellation window.
+- As a Tenant User, I want my cluster's control plane and node pool to be upgraded concurrently, so that I can minimize the total upgrade duration.
+- As a Tenant User, I want only one upgrade at a time to be active per component, so that I can avoid conflicts and race conditions.
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to view the available upgrade versions for each cluster's control plane and node pools within my organization, so that I can plan and coordinate upgrades across my teams.
-- As a Tenant Admin, I want to initiate a control plane y-stream upgrade for any cluster in my organization — acknowledging any identified risks — so that I can manage the OpenShift version lifecycle on behalf of my organization.
-- As a Tenant Admin, I want to initiate a node pool upgrade for any cluster in my organization — acknowledging any identified risks — so that worker nodes remain within a supported version range.
-- As a Tenant Admin, I want to monitor the status of an upgrade for any cluster in my organization — its current state (pending, running, succeeded, or failed), the source and target versions, and when each state transition happened.
-- As a Tenant Admin, I want to be informed when a cluster in my organization has its control plane and node pool versions diverged and a node pool upgrade is needed.
-- As a Tenant Admin, I want to view the upgrade history for any cluster in my organization, so that I can see which version transitions have occurred and their outcomes.
-- As a Tenant Admin, I want to know when the platform applies a z-stream upgrade to a cluster in my organization, so that I have visibility into platform-managed changes affecting my clusters.
+- As a Tenant Admin, I want to act as the Tenant User on any cluster within my organization, so that I can manage the version lifecycle on behalf of my organization.
+- As a Tenant Admin, I want to be informed when a cluster in my organization has diverged control plane and node pool versions and a node pool upgrade is needed, so that I can coordinate the upgrade.
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to select and publish a z-stream target version per minor version cohort for control plane upgrades, so that all clusters running that minor version are brought to a consistent patch level without requiring tenant action.
+- As a Cloud Provider Admin, I want all upgrades to target only versions allowed by the platform as per OSAC-1269, namely versions for which `ClusterVersion` exists, and has status `ACTIVE` or `DEPRECATED`, so that the platform runs only approved and supported versions.
+- As a Cloud Provider Admin, I want all control plane y-stream upgrades capped at the target y-stream's current fleet-wide z-stream version, so that all z-stream versions remain aligned and managed by the platform.
+- As a Cloud Provider Admin, I want to select a z-stream target version y-stream version cohort and initiate a progressive rollout, so that all clusters running that y-stream version that can be directly upgraded are brought to a consistent z-stream level without requiring tenant action.
 - As a Cloud Provider Admin, I want to pause a z-stream rollout that is causing regressions, so that I can stop further clusters from being upgraded while I assess the impact.
 - As a Cloud Provider Admin, I want to resume a paused z-stream rollout once the regression is resolved, so that clusters not yet upgraded at the time of pause continue receiving the upgrade.
 - As a Cloud Provider Admin, I want to monitor control plane upgrade status across all clusters, so that I can detect stalled or failed upgrades and intervene.
+- As a Cloud Provider Admin, I want to know which clusters in a z-stream rollout will be excluded because the target version is not directly reachable from their current version, so that I can assess the cause and plan remediation.
 - As a Cloud Provider Admin, I want to force a control plane y-stream upgrade for a specific cluster approaching EOL, so that the platform can maintain supportability independently of tenant scheduling.
 
 ### Cloud Infrastructure Admin
 
 No active role in this feature; all platform-level upgrade operations are covered by the Cloud Provider Admin stories above.
 
-## Constraints
+## Dependencies
 
-- Only CaaS-provisioned, HCP OpenShift clusters are covered: SNO and traditional (non-HCP) control plane node upgrades are not managed by OSAC
-- Available versions are directly reachable (one hop) in the cluster's update graph, filtered by the cluster's update channel
-- A reachable version is only available for upgrade if an enabled ClusterVersion (OSAC-1269) exists for it; "enabled" here corresponds to the ACTIVE or DEPRECATED states defined in OSAC-1269
-- Node pool versions are additionally capped at the control plane's committed version — the version it has successfully reached
-- If a control plane upgrade is in progress, the cap remains at the pre-upgrade version; it advances to the new version only once the control plane upgrade completes successfully
-- All node sets in a cluster share the same target OCP version; node pool upgrades apply uniformly across all node sets
-- Only one active upgrade per cluster component is permitted; the two components are the control plane and the node pool tier; control plane and node pool tier upgrades are independent and may proceed concurrently
-- If any node set fails to upgrade, the node pool tier upgrade is treated as failed; failure details identify which node set(s) did not complete the transition
-- A cancellation window of a few minutes exists after upgrade initiation
-- In-progress upgrades cannot be cancelled
-- Completed upgrades cannot be rolled back through OSAC; HCP does not support control plane version downgrade, so remediation for regression-affected clusters requires intervention outside of OSAC
-- Tenants cannot select or initiate z-stream control plane upgrades; these are applied by the Cloud Provider Admin via progressive rollout
-- Z-stream upgrades are triggered on-demand; the regular cadence targets FedRAMP-aligned CVE remediation timelines (High CVEs: 30 days, Medium: 90 days)
-- A paused rollout is visible as a distinct state in the rollout status; pausing stops new clusters from being selected for the rollout; resuming targets clusters in the cohort that had not yet been upgraded at pause time
-- If the fleet-wide z-stream target version is not reachable from a cluster's available update graph, the cluster is flagged in the rollout status and no upgrade is initiated for that cluster
-- During a forced EOL upgrade, node pools remain at their current version and continue to serve workloads
-- If a forced EOL upgrade fails, the cluster enters a limited-support state (SLA no longer applies, but support remains available)
-
-**User-facing API surfaces:**
-
-| Surface | Change |
-|---------|--------|
-| Fulfillment API | Upgrade initiation and cancellation per cluster component (control plane and node pool). Available upgrade versions query per cluster component. Upgrade status, progress, and history per cluster component. Org-wide upgrade visibility for Tenant Admins. Fleet-wide z-stream target management, rollout triggering, pausing, and resuming, and per-cluster rollout status for Cloud Provider Admins. |
-| CLI | Upgrade lifecycle commands: list available versions, initiate upgrade, cancel pending upgrade, view upgrade status, view upgrade history. Cloud Provider Admin: set fleet-wide z-stream target, trigger, pause, and resume rollout, force EOL upgrade on a specific cluster. |
-| UI | Upgrade lifecycle actions and history in the cluster detail view. Available versions and risk display before upgrade initiation. Cloud Provider Admin: fleet-wide z-stream target selection, rollout triggering, pause, resume, and cross-cluster upgrade status monitoring. |
-
-**E2E testing:** E2E coverage for upgrade initiation, status tracking, upgrade history, and pending upgrade cancellation in osac-test-infra.
-
-**Documentation:** User guides for upgrade initiation and monitoring (Tenant User), z-stream upgrade visibility (Tenant Admin), and fleet-wide z-stream management (Cloud Provider Admin).
-
-**Interfaces:** Fulfillment API, CLI, and UI console.
+- **OSAC-1269 (ClusterVersion API):** A version is available for upgrade only if an allowed (not blocked) ClusterVersion exists for it
 
 ---
 
 ## Provenance
 
 Authored: respond @ prd 0.6.3 - 68284c8, workspace main @ 43c34a8
-Final: revise @ prd 0.6.3 - 6ec8c11, workspace main @ d22bfa1
+Final: revise @ prd 0.7.1 - b8b3f86, workspace main @ 8f899d5
 
 > Context changed between respond and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"6ec8c11","source_repo":"d22bfa1","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
