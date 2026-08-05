@@ -14,7 +14,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.01 | AC-1 | critical | automated |
+| OSAC-3629 | AC-1 | critical | automated |
 
 ##### Preconditions
 
@@ -35,7 +35,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.01 | AC-1 | critical | automated |
+| OSAC-3629 | AC-1 | critical | automated |
 
 ##### Preconditions
 
@@ -57,7 +57,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.02 | AC-3 | critical | automated |
+| OSAC-3630 | AC-3 | critical | automated |
 
 ##### Preconditions
 
@@ -78,7 +78,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.02 | AC-4 | critical | automated |
+| OSAC-3630 | AC-4 | critical | automated |
 
 ##### Preconditions
 
@@ -101,7 +101,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.04 | AC-2, AC-3 | critical | automated |
+| OSAC-3632 | AC-2, AC-3 | critical | automated |
 
 ##### Preconditions
 
@@ -127,7 +127,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.02 | AC-5 | critical | automated |
+| OSAC-3630 | AC-5 | critical | automated |
 
 ##### Preconditions
 
@@ -147,7 +147,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.03 | AC-2, AC-3 | high | automated |
+| OSAC-3631 | AC-2, AC-3 | high | automated |
 
 ##### Preconditions
 
@@ -171,7 +171,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.02 | AC-6 | high | automated |
+| OSAC-3630 | AC-6 | high | automated |
 
 ##### Preconditions
 
@@ -190,7 +190,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.02 | AC-1, AC-2 | high | automated |
+| OSAC-3630 | AC-1, AC-2 | high | automated |
 
 ##### Preconditions
 
@@ -210,7 +210,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.02 | AC-1 | high | automated |
+| OSAC-3630 | AC-1 | high | automated |
 
 ##### Preconditions
 
@@ -229,7 +229,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.02 | AC-6 | high | automated |
+| OSAC-3630 | AC-6 | high | automated |
 
 ##### Preconditions
 
@@ -248,7 +248,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.02 | AC-6 | medium | automated |
+| OSAC-3630 | AC-6 | medium | automated |
 
 ##### Preconditions
 
@@ -267,7 +267,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.02 | AC-6 | medium | automated |
+| OSAC-3630 | AC-6 | medium | automated |
 
 ##### Preconditions
 
@@ -288,7 +288,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.01 | AC-4 | high | automated |
+| OSAC-3629 | AC-4 | high | automated |
 
 ##### Preconditions
 
@@ -309,7 +309,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 2.01 | AC-1, AC-3 | high | automated |
+| OSAC-3635 | AC-1, AC-3 | high | automated |
 
 ##### Preconditions
 
@@ -331,7 +331,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 2.01 | AC-6 | medium | automated |
+| OSAC-3635 | AC-6 | medium | automated |
 
 ##### Preconditions
 
@@ -353,7 +353,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.06 | AC-1, AC-2 | medium | manual |
+| OSAC-3634 | AC-1, AC-2 | medium | manual |
 
 ##### Preconditions
 
@@ -373,7 +373,7 @@
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 1.06 | AC-4 | medium | manual |
+| OSAC-3634 | AC-4 | medium | manual |
 
 ##### Preconditions
 
