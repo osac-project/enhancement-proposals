@@ -65,6 +65,10 @@ management.
 
 - Add a list page that shows existing instance types with basic columns:
   name, cores, memory (GiB), description, and `Lifecycle State`.
+- If fetching instance types fails, show the same non-loading error state used
+  by other list pages, including a retry action.
+- Distinguish a failed `useAdminInstanceTypes` request from a successful empty
+  result; the latter remains the normal empty state.
 - The `Lifecycle State` column should use the same visual treatment as
   ClusterVersions: `ACTIVE` in green, `DEPRECATED` in gold, and `OBSOLETE` in
   grey.
@@ -148,6 +152,10 @@ design adds only a UI client for those existing permissions.
 
 ## Failure Handling
 
+- List-page fetch failures should use the same pattern as other list pages: a
+  non-loading error state with a retry action for failed
+  `useAdminInstanceTypes` requests. This is distinct from the empty-result
+  state returned by a successful request with no instance types.
 - Create and lifecycle-operation failures surface as a dismissible inline alert
   at the top of the page. The alert body should render the backend error
   message directly.
@@ -178,6 +186,6 @@ No new backend or E2E coverage is required for this design.
 ## Provenance
 
 Authored: respond @ design 0.3.0 - 1e226e0, workspace main @ 8f899d5
-Phases: draft, revise, revise, respond
+Phases: draft, revise, revise, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
