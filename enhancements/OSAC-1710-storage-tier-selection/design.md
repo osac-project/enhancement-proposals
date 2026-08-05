@@ -570,3 +570,13 @@ The `storage_tier` field cannot be disabled independently -- it is part of the `
 ## Infrastructure Needed
 
 None.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.3.0 - 92734a2, workspace main @ 0921467 (dirty)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"92734a2","source_repo":"0921467 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["commit","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
