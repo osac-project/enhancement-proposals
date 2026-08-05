@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion — but provides no managed path for upgrading a cluster's OpenShift version. Clusters are provisioned via Hosted Control Planes (HCP), where the control plane and node pools are independent upgrade targets with distinct ownership and ordering constraints; today neither has first-class support in the OSAC API. Tenants who need a newer version must interact directly with HCP infrastructure, bypassing OSAC entirely. As clusters age, the gap widens: end-of-life (EOL) versions lose Red Hat support coverage and security patches, but OSAC has no mechanism to surface upgrade readiness, track version transitions, or apply platform-wide patches.
+OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion — but provides no managed path for upgrading a cluster's OpenShift version. Clusters are provisioned via Hosted Control Planes (HCP), where the control plane and node pools are independent upgrade targets with distinct ownership and ordering constraints; today neither has first-class support in the OSAC API. Tenants who need a newer version have no way to upgrade their cluster at all — they cannot access the underlying HCP infrastructure directly, and OSAC exposes no upgrade capability in its place. As clusters age, the gap widens: end-of-life (EOL) versions lose Red Hat support coverage and security patches, but OSAC has no mechanism to surface upgrade readiness, track version transitions, or apply platform-wide patches.
 
 ## In Scope
 
