@@ -36,7 +36,7 @@ The design unifies two event sources — the fulfillment-service Watch stream (V
 4. **Metering decoupled from provisioning** — the Metering Service is a read-only consumer of fulfillment-service state; no metering code path is on the critical path of resource lifecycle operations [PRD: D-2]
 5. **Reconciliation as first-class correctness** — the hourly reconciliation loop is not a fallback for failures; it is expected to detect and correct gaps continuously, even in a healthy system
 6. **Explicit over implicit** — every state transition is enriched with `previous_state`, `current_state`, `transition_time`, and `duration_seconds`; receiving adapters never need to infer state from sequences of events
-7. **Cloud-native and air-gap compatible** — all components run as containerized workloads on OpenShift with no external SaaS dependencies [PRD: NFR-12]
+7. **Cloud-native and air-gap compatible** — all components run as containerized workloads on OpenShift with no external SaaS dependencies [PRD: CAP-14]
 
 ### Non-Goals
 
@@ -645,7 +645,7 @@ Events move to `osac.metering.dlq` when the adapter exhausts retry attempts or e
 
 The Metering Service runs as a **single-replica Kubernetes Deployment** with startup reconciliation as the availability mechanism. The Watch Consumer, Heartbeat Generator, and Reconciliation Loop are singleton processes — running multiple replicas without coordination would produce duplicate Watch stream subscriptions, duplicate heartbeats, and duplicate correction events. Leader election (e.g., via Kubernetes lease) would add coordination complexity disproportionate to the availability gain, because the Metering Service is not on the provisioning critical path and Kafka provides event durability.
 
-This satisfies NFR-1 ("no single point of failure") because the Metering Service is stateless in the durable sense: the State Projection is a rebuildable cache, Kafka is the durable event store, and the fulfillment-service List APIs are the authoritative resource state. A pod restart loses at most one heartbeat interval (~60 seconds of metering gap), which the startup reconciliation fills before the Watch Consumer resumes.
+This satisfies the high-availability goal [PRD: D-2] because the Metering Service is stateless in the durable sense: the State Projection is a rebuildable cache, Kafka is the durable event store, and the fulfillment-service List APIs are the authoritative resource state. A pod restart loses at most one heartbeat interval (~60 seconds of metering gap), which the startup reconciliation fills before the Watch Consumer resumes.
 
 **On restart:** (1) run a full reconciliation against fulfillment List APIs before accepting Watch events; (2) reconnect the Watch stream; (3) resume heartbeat generation once the State Projection is populated. Cold start and warm start are handled identically — reconciliation always runs at startup. Kafka Publisher resumes from its last committed position.
 
@@ -838,7 +838,7 @@ Using pytest / osac-test-infra against a deployed OSAC installation:
 - **Duplicate suppression:** send a duplicate lifecycle event with the same CloudEvent `id` → verify adapter does not double-submit
 - **Restart recovery:** restart Metering Service pod → verify startup reconciliation runs → verify no metering gap for resources that were billable during downtime
 - **Short-lived resource (CAP-4):** create and delete a VM within 30s → verify the resource appears in usage data
-- **Performance (NFR-2, NFR-4):** sustained heartbeat generation at 10K concurrent billable resources — verify Kafka publish latency remains under 5s and no heartbeat lag exceeds 120s
+- **Performance:** sustained heartbeat generation at 10K concurrent billable resources — verify Kafka publish latency remains under 5s and no heartbeat lag exceeds 120s
 - **Upgrade (CAP-15):** upgrade Metering Service pod (Recreate strategy) while resources are billable — verify startup reconciliation fills the gap and no metering data is lost
 
 ## Graduation Criteria
