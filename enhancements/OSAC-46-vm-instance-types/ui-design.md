@@ -88,9 +88,11 @@ management.
 
 - Add table row actions for lifecycle management using the same approach as the
   ClusterVersion design: `Deprecate`, `Obsolete`, and `Reactivate`.
+- Add a `Delete` row action that is available only when the current instance
+  type state is `OBSOLETE`.
 - Compute available lifecycle actions from the current backend state. For
-  example, an `OBSOLETE` instance type offers `Reactivate` and `Deprecate`,
-  but not `Obsolete`.
+  example, an `OBSOLETE` instance type offers `Reactivate`, `Deprecate`, and
+  `Delete`, but not `Obsolete`.
 
 This design does not add a general edit form for lifecycle metadata. State
 transitions happen through explicit row actions, while timestamps remain
@@ -100,10 +102,9 @@ This design also does not add a details page. `InstanceType` currently has no
 conditions or additional read-only detail data that would provide value beyond
 the list and create flows in this phase.
 
-This design intentionally omits a delete action from the UI. Deletion is not
-the recommended lifecycle for instance types; admins should generally use
-`DEPRECATED` and `OBSOLETE` state transitions instead. Hard delete remains
-available through the CLI for exceptional cleanup cases.
+Delete is not available for `ACTIVE` or `DEPRECATED` instance types. After the
+item reaches `OBSOLETE`, the list page should enable a `Delete` row action for
+final cleanup.
 
 ## Field naming
 
@@ -144,6 +145,9 @@ new `'v1/private/instance_types'` entry in `ApiRoute`
     list query on success. Each row action (`Deprecate`, `Obsolete`,
     `Reactivate`) calls this one hook with its action, rather than each needing
     a separate mutation hook.
+  - `useDeleteInstanceType` — delete mutation for the list page, using the
+    existing `InstanceTypes.Delete` API and invalidating the list query on
+    success. The delete action is rendered only for `OBSOLETE` items.
 
 
 ## Security and RBAC
@@ -166,6 +170,7 @@ design adds only a UI client for those existing permissions.
 - Obsolete-transition failures use the title
   `Failed to mark instance type as obsolete`.
 - Reactivation failures use the title `Failed to reactivate instance type`.
+- Delete failures use the title `Failed to delete instance type`.
 - Invalid create input should normally be handled by schema validation before
   the request is sent. If the backend still returns field-specific validation
   errors for `spec.cores` or `spec.memory_gib`, map them onto the matching
@@ -186,6 +191,8 @@ design adds only a UI client for those existing permissions.
   `DEPRECATED`, and `OBSOLETE`.
 - Unit-test lifecycle row actions so the correct update request is sent for
   `Deprecate`, `Obsolete`, and `Reactivate`.
+- Unit-test that `Delete` is offered only for `OBSOLETE` items and that it
+  triggers the delete mutation plus list invalidation.
 
 No new backend or E2E coverage is required for this design.
 
@@ -194,6 +201,6 @@ No new backend or E2E coverage is required for this design.
 ## Provenance
 
 Authored: respond @ design 0.3.0 - 1e226e0, workspace main @ 8f899d5
-Phases: draft, revise, revise, respond, respond, respond, respond, respond
+Phases: draft, revise, revise, respond, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
