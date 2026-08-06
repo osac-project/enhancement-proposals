@@ -17,6 +17,7 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 - DiskImage-specific metadata: icon (optional), guest OS family (required, enum: linux, windows), architecture (required, one or more from: amd64, arm64). Display name and description are inherited from shared Metadata
 - DiskImage wraps an existing OCI artifact reference (source_type + source_ref), both immutable after creation
 - Two-tier visibility: provider-global images (available to all tenants) and tenant-scoped images (visible only within a tenant)
+- Tenant Users can create, update, and delete tenant-scoped DiskImages — all tenant-scoped images are visible to all users in the tenant regardless of who created them
 - Image lifecycle management: deprecation to warn users, obsolescence to block new VM creation, and reactivation
 - ComputeInstance references a DiskImage instead of inline image fields
 - ComputeInstanceTemplate references a DiskImage instead of inline image fields
@@ -41,6 +42,11 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 - Private registry authentication (pull credentials)
 - Registry restriction for tenant admin image references
 - Tenant admin filtering of global images (all global images visible to all tenants)
+- Per-tenant restriction of user image creation (tenant-level settings)
+- Per-user DiskImage permission grants (owner-only operations)
+- User-private image visibility (all tenant-scoped images visible to all users in the tenant)
+- Image quota or cleanup mechanisms
+- Image approval workflows
 
 ## User Stories
 
@@ -70,6 +76,9 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 
 ### Tenant User
 
+- As a Tenant User, I want to register a tenant-scoped DiskImage with an OCI reference so that I can use my own images for VM creation without requiring admin involvement.
+- As a Tenant User, I want to update mutable metadata and delete tenant-scoped DiskImages, with the system preventing deletion if active ComputeInstances, ComputeInstanceTemplates, or ComputeInstanceCatalogItems reference them.
+- As a Tenant User, I want to deprecate, obsolete, and reactivate tenant-scoped DiskImages so that I can manage image lifecycle within my tenant.
 - As a Tenant User, I want to see only images available to my tenant (global and my tenant's own) so that I cannot access other tenants' images.
 - As a Tenant User, I want to browse available images with metadata (display name, description, guest OS family, architecture) so that I can choose the right image for my VM.
 - As a Tenant User, I want to search and filter images by guest OS family, architecture, or name so that I can quickly find what I need.
@@ -98,8 +107,8 @@ ComputeInstances reference images via raw OCI URLs, with no discoverability, no 
 ## Provenance
 
 Authored: draft @ prd 0.5.0 - 883316f, workspace main @ 7ea4384
-Final: revise @ prd 0.5.0 - 92734a2, workspace main @ aac0f8e
+Final: revise @ prd 0.7.1 - b8b3f86, workspace main @ 8f899d5
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"aac0f8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","respond","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","respond","respond","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
