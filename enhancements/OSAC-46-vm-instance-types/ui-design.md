@@ -70,7 +70,7 @@ management.
 - Distinguish a failed `useAdminInstanceTypes` request from a successful empty
   result; the latter remains the normal empty state.
 - The `Lifecycle State` column should use the same visual treatment as
-  ClusterVersions: `ACTIVE` in green, `DEPRECATED` in gold, and `OBSOLETE` in
+  ClusterVersions: `ACTIVE` in green, `DEPRECATED` in orange, and `OBSOLETE` in
   grey.
 
 ### Create Page
