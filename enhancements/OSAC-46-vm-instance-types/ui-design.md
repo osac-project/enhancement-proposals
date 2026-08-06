@@ -3,7 +3,7 @@ title: vm-instance-types-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-08-05
-last-updated: 2026-08-05
+last-updated: 2026-08-06
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3586
 prd:
@@ -59,7 +59,7 @@ management.
 - Add a new `Instance Types` nav item under `Infrastructure`.
 - Add admin routes for:
   - `/admin/infrastructure/instance-types` for the list page
-  - `/admin/infrastructure/instance-types/new` for the create page
+  - `/admin/infrastructure/instance-types/create` for the create page
 
 ### List Page
 
@@ -87,11 +87,10 @@ management.
 ### Lifecycle Actions
 
 - Add table row actions for lifecycle management using the same approach as the
-  ClusterVersion design: `Mark deprecated`, `Mark obsolete`, and
-  `Reactivate`.
+  ClusterVersion design: `Deprecate`, `Obsolete`, and `Reactivate`.
 - Compute available lifecycle actions from the current backend state. For
-  example, an `OBSOLETE` instance type offers `Reactivate` and
-  `Mark deprecated`, but not `Mark obsolete`.
+  example, an `OBSOLETE` instance type offers `Reactivate` and `Deprecate`,
+  but not `Obsolete`.
 
 This design does not add a general edit form for lifecycle metadata. State
 transitions happen through explicit row actions, while timestamps remain
@@ -142,7 +141,7 @@ new `'v1/private/instance_types'` entry in `ApiRoute`
     input, mirroring how `usePatchComputeInstance` is parameterized by
     `ComputeInstancePowerAction`. It builds the `spec.state` update body and the
     corresponding `updateMask` via `buildUpdateMaskPaths`, and invalidates the
-    list query on success. Each row action (`Mark deprecated`, `Mark obsolete`,
+    list query on success. Each row action (`Deprecate`, `Obsolete`,
     `Reactivate`) calls this one hook with its action, rather than each needing
     a separate mutation hook.
 
@@ -186,7 +185,7 @@ design adds only a UI client for those existing permissions.
 - Unit-test lifecycle state rendering and action availability for `ACTIVE`,
   `DEPRECATED`, and `OBSOLETE`.
 - Unit-test lifecycle row actions so the correct update request is sent for
-  `Mark deprecated`, `Mark obsolete`, and `Reactivate`.
+  `Deprecate`, `Obsolete`, and `Reactivate`.
 
 No new backend or E2E coverage is required for this design.
 
@@ -195,6 +194,6 @@ No new backend or E2E coverage is required for this design.
 ## Provenance
 
 Authored: respond @ design 0.3.0 - 1e226e0, workspace main @ 8f899d5
-Phases: draft, revise, revise, respond, respond, respond, respond
+Phases: draft, revise, revise, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0","source_repo":"8f899d5","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":347,"main_ref":"main","phases":["draft","revise","revise","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false} -->
