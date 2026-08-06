@@ -34,15 +34,14 @@ Networking resources are service-agnostic — a VirtualNetwork or Subnet is mete
 | SecurityGroup | Yes | Yes | Yes |
 | NATGateway | Yes | Yes | Yes |
 | ExternalIP | Yes | Yes | Yes |
-| ExternalIPAttachment | Yes (ComputeInstance) | Yes (Cluster) | Yes (BareMetalInstance) |
 
-ExternalIP resources support all three services — `ExternalIPAttachment` targets ComputeInstance, Cluster, and BareMetalInstance.
+ExternalIP resources support all three services and can be attached to ComputeInstances, Clusters, and BareMetalInstances. Attachment status is tracked as a queryable dimension on the ExternalIP meter, not as a separately metered resource.
 
 ### 2.2 Capabilities
 
-- Networking resource allocation metering — metering for VirtualNetworks, Subnets, SecurityGroups, ExternalIPs, NATGateways, and their attachments from READY/ALLOCATED state to deletion
-- Unattached IP metering — ExternalIPs generate usage data regardless of attachment status
-- Parent-child attribution — extending [Part 1](/enhancements/metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that networking resources attached to a parent resource can be attributed to it in a unified usage view: ExternalIPAttachments to ComputeInstances, Clusters, and BareMetalInstances, and Subnets to any resource connected via network attachments
+- Networking resource allocation metering — metering for VirtualNetworks, Subnets, SecurityGroups, ExternalIPs, and NATGateways from READY/ALLOCATED state to deletion
+- Unattached IP metering — ExternalIPs generate usage data regardless of attachment status, with attachment status as a queryable dimension
+- Parent-child attribution — extending [Part 1](/enhancements/metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that networking resources attached to a parent resource can be attributed to it in a unified usage view: ExternalIPs to ComputeInstances, Clusters, and BareMetalInstances, and Subnets to any resource connected via network attachments
 
 ## 3. Out of Scope
 
@@ -76,7 +75,7 @@ ExternalIP resources support all three services — `ExternalIPAttachment` targe
 
 ### 5.1 Networking Resource Allocation Metering
 
-- **CAP-1:** Tenant-facing networking resources (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion. Attachment resources (ExternalIPAttachment) are metered for their own lifecycle — from attachment creation to attachment deletion.
+- **CAP-1:** Tenant-facing networking resources (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion.
 - **CAP-2:** Networking usage is queryable by resource type, network class (for VirtualNetworks), IP family (IPv4/IPv6 for IP resources), region, tenant, and project.
 
 ### 5.2 Unattached IP Metering
@@ -91,14 +90,13 @@ ExternalIP resources support all three services — `ExternalIPAttachment` targe
 
 This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
 
-Each networking resource type has a flat allocation meter. Usage is queryable by resource type, region, tenant, and project; VirtualNetworks additionally use network class, IP resources use IP family, and IP attachment status is exposed where applicable (see CAP-2 and CAP-3).
+Each networking resource type has a flat allocation meter. Usage is queryable by resource type, region, tenant, and project; VirtualNetworks additionally use network class, ExternalIPs use IP family and attachment status (see CAP-2 and CAP-3).
 
 | Resource | Meter | Unit | Example (30 days) |
 |----------|-------|------|-------------------|
 | VirtualNetwork | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
 | Subnet | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
 | ExternalIP (IPv4) | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
-| ExternalIPAttachment | resource-seconds | seconds of attachment | 2,592,000 resource-seconds |
 | NATGateway | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
 | SecurityGroup | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
 
@@ -107,8 +105,7 @@ Each networking resource type has a flat allocation meter. Usage is queryable by
 - [ ] Each tenant-facing networking resource (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
 - [ ] An allocated-but-unattached ExternalIP generates usage data
 - [ ] Networking usage can be broken down by resource type, network class, IP family, region, tenant, and project
-- [ ] Networking resources attached to a parent resource (ExternalIPAttachments to ComputeInstances/Clusters/BareMetalInstances, Subnets via network attachments) can be attributed to the parent in a unified usage view
-- [ ] An ExternalIPAttachment generates usage data (resource-seconds) from attachment creation to attachment deletion
+- [ ] Networking resources attached to a parent resource (ExternalIPs to ComputeInstances/Clusters/BareMetalInstances, Subnets via network attachments) can be attributed to the parent in a unified usage view
 - [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
 - [ ] Networking usage data maintains per-second granularity, deduplication, and retention consistent with Part 1 metering
 
@@ -149,5 +146,10 @@ This PRD is part of the Metering Part 2 family:
 ## Provenance
 
 Authored: respond @ prd 0.6.3 - 6ec8c11, workspace main @ 78853cd
+Final: respond @ prd 0.7.1 - b8b3f86, workspace main @ 3c46f33
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.3","ai_workflows":"6ec8c11","source_repo":"78853cd","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false} -->
+> Context changed between respond and respond.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"3c46f33","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
