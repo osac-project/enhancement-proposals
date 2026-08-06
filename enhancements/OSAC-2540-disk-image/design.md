@@ -3,7 +3,7 @@ title: disk-image
 authors:
   - msluiter@redhat.com
 creation-date: 2026-07-22
-last-updated: 2026-07-22
+last-updated: 2026-08-06
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2540
 prd:
