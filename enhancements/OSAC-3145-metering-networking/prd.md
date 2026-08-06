@@ -90,7 +90,7 @@ ExternalIP resources support all three services and can be attached to ComputeIn
 
 This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
 
-Each networking resource type has a flat allocation meter. Usage is queryable by resource type, region, tenant, and project; VirtualNetworks additionally use network class, ExternalIPs use IP family and attachment status (see CAP-2 and CAP-3).
+Each networking resource type has a flat allocation meter. Usage is queryable by resource type, region, tenant, and project; VirtualNetworks additionally use network class; ExternalIPs additionally use IP family and attachment status (see CAP-2 and CAP-3).
 
 | Resource | Meter | Unit | Example (30 days) |
 |----------|-------|------|-------------------|
@@ -104,7 +104,7 @@ Each networking resource type has a flat allocation meter. Usage is queryable by
 
 - [ ] Each tenant-facing networking resource (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
 - [ ] An allocated-but-unattached ExternalIP generates usage data
-- [ ] Networking usage can be broken down by resource type, network class, IP family, region, tenant, and project
+- [ ] Networking usage can be broken down by resource type, region, tenant, and project; VirtualNetworks additionally expose network class; IP resources expose IP family; ExternalIPs expose attachment status
 - [ ] Networking resources attached to a parent resource (ExternalIPs to ComputeInstances/Clusters/BareMetalInstances, Subnets via network attachments) can be attributed to the parent in a unified usage view
 - [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
 - [ ] Networking usage data maintains per-second granularity, deduplication, and retention consistent with Part 1 metering
@@ -145,11 +145,8 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Authored: respond @ prd 0.6.3 - 6ec8c11, workspace main @ 78853cd
-Final: respond @ prd 0.7.1 - b8b3f86, workspace main @ 3c46f33
+Committed: commit @ prd 0.7.1 - b8b3f86, workspace prd/OSAC-3145 @ 2c5bc7d (50 behind origin/main, dirty)
 
-> Context changed between respond and respond.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"3c46f33","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"2c5bc7d (dirty)","source_repo_branch":"prd/OSAC-3145","commits_behind_main":50,"commits_ahead_main":8,"main_ref":"main","phases":["commit","commit","commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
