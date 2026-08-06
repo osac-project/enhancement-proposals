@@ -30,6 +30,7 @@ OSAC CaaS manages the full cluster lifecycle — creation, scaling, and deletion
 - Tenant-initiated z-stream control plane upgrades
 - Platform-initiated node pool upgrades
 - Cancellation of running upgrades
+- Switching upgrade channels — a cluster remains on the channel it was created with
 
 ## User Stories
 
