@@ -59,7 +59,7 @@ This diagram shows that no component talks to a Connect client directly — ever
 
 Options are built with a new `formatClusterVersionOptionLabel` helper (`libs/ui-components/src/components/vm/utils.ts`-style, co-located with the new `cluster-versions.ts` module or an analogous `components/Cluster/utils.ts`), appending a "(deprecated)" suffix for `DEPRECATED` entries — obsolete entries never appear as options because the active-list filter excludes them. Per FR-7/FR-15, selecting a deprecated version does not block submission; the step renders an inline PatternFly `Alert` (`variant="warning"`) below the select when the chosen version's state is `DEPRECATED` (e.g., "Version 4.17.0 is deprecated and will be removed in a future release."). Server-side validation errors (version not found, obsolete, or unresolvable) surface through the wizard's existing submission-error handling — no new error-display mechanism is introduced.
 
-**Cluster list (`ClustersTable.tsx`, tenant- and admin-visible).** The table's container calls `useClusterVersions({ filter: CLUSTER_VERSION_ALL_STATES_FILTER })` once (a new constant distinct from the wizard's active-only filter — obsolete entries must be included here because an existing cluster may still reference one, per FR-6) and builds a `Map<string, ClusterVersion>` keyed by `metadata.name`. Each row looks up its `cluster.spec?.versionName` in the map — no per-row fetch. Two new columns: **Version** (the resolved `spec.version` string, e.g. "4.17.0", falling back to the raw `version_name` while the map is loading or if the entry can't be resolved — mirroring `ClusterConfigurationCard.tsx`'s existing catalog-item-name fallback) and **Lifecycle** (`ClusterVersionStateLabel`, blank if unresolved).
+**Cluster list (`ClustersTable.tsx`, tenant- and admin-visible).** The table's container computes the distinct `version_name` values referenced by the currently-rendered clusters and calls `useClusterVersions({ filter: buildClusterVersionNamesFilter(names) })` once — a targeted `metadata.name` lookup (`this.metadata.name in [...]`), not a lifecycle-wide listing [User]. This is deliberately not a lifecycle/enablement filter: it sidesteps entirely whether the public `List` RPC's "hides disabled and obsolete by default unless explicitly filtered on lifecycle or availability" rule can be satisfied by a filter that doesn't discriminate on those fields (see §4.3 and §5's rejected alternative) — a name-scoped request has no ambiguity about which entries it should return, since it names them directly, and it's still one `List` call regardless of cluster count. It builds a `Map<string, ClusterVersion>` keyed by `metadata.name`. Each row looks up its `cluster.spec?.versionName` in the map — no per-row fetch. If no clusters are rendered, skip the fetch entirely (an empty name list has nothing to resolve). Two new columns: **Version** (the resolved `spec.version` string, e.g. "4.17.0", falling back to the raw `version_name` while the map is loading or if the entry can't be resolved — mirroring `ClusterConfigurationCard.tsx`'s existing catalog-item-name fallback) and **Lifecycle** (`ClusterVersionStateLabel`, blank if unresolved).
 
 **Cluster detail (`ClusterConfigurationCard.tsx`).** The line that currently renders `displayValue(cluster.spec?.releaseImage)` is replaced with `useClusterVersion(cluster.spec?.versionName)`, rendering the version string plus `ClusterVersionStateLabel`, with a `Skeleton` while loading — the exact pattern already used in the same file for `cluster.spec?.catalogItem` via `useClusterCatalogItem`. A single `Get`-by-name call resolves regardless of the version's lifecycle state (FR-2's "a specific version can be viewed regardless of its state"), so no all-states filter is needed here, unlike the list table's batched `List` call.
 
@@ -72,9 +72,9 @@ The list page follows `ClustersTable.tsx`'s plain PatternFly `Table` convention 
 - **Set as default** — calls `useUpdateClusterVersion()` with `is_default: true`; disabled (with a tooltip) when the entry's state is `OBSOLETE` or `enabled` is `false`, matching the backend invariant that obsolete/disabled versions cannot be default. A confirmation dialog warns that this replaces the current default.
 - **Delete** — calls `useDeleteClusterVersion()`. No client-side pre-check for in-use references; the server's FR-11 error ("cannot delete version '4.17.0': in use by cluster 'cluster-abc'") is surfaced verbatim via the existing form/toast error-display convention.
 
-**Create** is a single-step form/modal (not the multi-step wizard component, since there is nothing to configure beyond the entry itself): version (semver-format text input), release image URL, enabled (checkbox, default checked). The entry is always created in `ACTIVE` state; admins use the "Mark deprecated"/"Mark obsolete" row actions after creation to transition it, keeping the create form focused on the two immutable, one-time-entry fields plus `enabled`. [User]
+**Create** is a single-step form/modal (not the multi-step wizard component, since there is nothing to configure beyond the entry itself): version (semver-format text input), **name** (`metadata.name` — text input, live-defaulted to the server's own slugification of the version as it's typed, e.g. `4.17.0` → `4-17-0`, editable before submit), release image URL, enabled (checkbox, default checked). The name field exists because `metadata.name` is the identifier every other surface references (`spec.version_name`, template defaults, the CLI's `--version` resolution) — leaving it fully server-generated with no admin visibility risks an unpredictable name, especially on collision (the server appends a random hex suffix). The entry is always created in `ACTIVE` state; admins use the "Mark deprecated"/"Mark obsolete" row actions after creation to transition it, keeping the create form focused on the three immutable, one-time-entry fields plus `enabled`. [User]
 
-**Lifecycle state label.** A new `ClusterVersionStateLabel` component, co-located under `libs/ui-components/src/components/Cluster/` alongside `ClusterStatusLabel.tsx`, maps `ClusterVersionState` to a PatternFly `Label`: `ACTIVE` → green, `DEPRECATED` → gold, `OBSOLETE` → grey. [User]
+**Lifecycle state label.** A new `ClusterVersionStateLabel` component, co-located under `libs/ui-components/src/components/Cluster/` alongside `ClusterStatusLabel.tsx`, maps `ClusterVersionState` to a PatternFly `Label`: `ACTIVE` → green, `DEPRECATED` → orange (per UX, not gold/amber), `OBSOLETE` → grey. [User]
 
 ## 4.2 Data Model / Schema Changes
 
@@ -91,11 +91,11 @@ No new backend API — this section covers the new `osac-ui`-internal hook surfa
 
 | Hook | Module | RPC | Notes |
 |---|---|---|---|
-| `useClusterVersions(params)` | public | `List` | `select: data.items`; used with `CLUSTER_VERSION_ACTIVE_LIST_FILTER` (wizard) or `CLUSTER_VERSION_ALL_STATES_FILTER` (cluster table join) |
+| `useClusterVersions(params)` | public | `List` | `select: data.items`; used with `CLUSTER_VERSION_ACTIVE_LIST_FILTER` (wizard) or `buildClusterVersionNamesFilter(names)` (cluster table join — filters by the referenced clusters' `metadata.name` values, not by lifecycle state) |
 | `useClusterVersion(id)` | public | `Get` | `select: data.object`; used by cluster detail join |
 | `usePrivateClusterVersions(params)` | private | `List` | admin list page; no default state filter needed (private `List` does not hide obsolete/disabled) |
 | `usePrivateClusterVersion(id)` | private | `Get` | admin edit-form prefill |
-| `useCreateClusterVersion()` | private | `Create` | submits `spec.version`, `spec.image`, `spec.enabled` |
+| `useCreateClusterVersion()` | private | `Create` | submits `metadata.name`, `spec.version`, `spec.image`, `spec.enabled` — `metadata.name` is populated from the form's (editable, live-defaulted) name field, not left for the server to auto-generate |
 | `useUpdateClusterVersion()` | private | `Update` | submits only `spec.enabled` / `spec.isDefault` plus a matching `update_mask`; `version`/`image` are never included in the payload or the mask |
 | `useSetClusterVersionLifecycleState()` | private | `Update` | submits only `spec.state` plus a matching `update_mask` |
 | `useDeleteClusterVersion()` | private | `Delete` | — |
@@ -104,7 +104,7 @@ Example — admin creates a version:
 
 ```json
 // Request (useCreateClusterVersion)
-{ "object": { "spec": { "version": "4.18.0", "image": "quay.io/openshift-release-dev/ocp-release:4.18.0-multi", "enabled": true } } }
+{ "object": { "metadata": { "name": "4-18-0" }, "spec": { "version": "4.18.0", "image": "quay.io/openshift-release-dev/ocp-release:4.18.0-multi", "enabled": true } } }
 
 // Response
 { "object": { "id": "uuid", "metadata": { "name": "4-18-0" }, "spec": { "version": "4.18.0", "image": "quay.io/openshift-release-dev/ocp-release:4.18.0-multi", "enabled": true, "state": "ACTIVE" }, "status": {} } }
@@ -120,14 +120,14 @@ Example — wizard lists selectable versions:
 { "items": [ { "id": "uuid", "metadata": { "name": "4-17-0" }, "spec": { "version": "4.17.0", "enabled": true, "isDefault": true, "state": "ACTIVE" }, "status": {} } ] }
 ```
 
-Example — cluster table join lists every version regardless of lifecycle state or enablement:
+Example — cluster table join resolves exactly the versions referenced by the rendered clusters, regardless of their lifecycle state or enablement:
 
 ```json
-// Request (useClusterVersions, CLUSTER_VERSION_ALL_STATES_FILTER)
-{ "filter": "this.spec.state in [0, 1, 2, 3] && this.spec.enabled in [true, false]" }
+// Request (useClusterVersions, buildClusterVersionNamesFilter(["4-17-0", "4-16-0"]))
+{ "filter": "this.metadata.name in ['4-17-0', '4-16-0']" }
 ```
 
-`CLUSTER_VERSION_ALL_STATES_FILTER` must explicitly reference **both** `spec.state` and `spec.enabled`, not just state — the fulfillment-service design's own rule ("Public `ClusterVersions/List` hides disabled and obsolete versions by default unless the caller explicitly filters on lifecycle or availability fields") is ambiguous about whether an explicit filter on only one of those two dimensions is enough to un-hide both. A filter that touches only `spec.state` (e.g., the naive "match everything" `this.spec.state != -1`) risks silently continuing to hide disabled entries — which would break FR-6 for any existing cluster referencing a version an admin has since disabled. **This should be confirmed against the actual fulfillment-service implementation during Story 1.02/2.01's implementation** (see `05-stories/epic-2/story-01-cluster-list-version-join.md`) rather than assumed from the design doc's prose alone.
+`buildClusterVersionNamesFilter()` filters by identity (`metadata.name`), not by lifecycle state or enablement — this was chosen over a broad "match every state and enabled value" filter specifically to avoid depending on how the public `List` RPC's "hides disabled and obsolete by default unless explicitly filtered on lifecycle or availability fields" rule behaves for a filter that doesn't discriminate on those fields (a real ambiguity — see §5's rejected alternative for the version of this design that tried to resolve it with a tautological state/enabled filter instead). A named lookup has no such ambiguity: it either returns the requested entries or it doesn't, independent of their state or enablement.
 
 All changes are additive to the API surface from the UI's perspective; the `Clusters`/`ClusterTemplates` field rename (`release_image` → `version_name`) is a breaking change already accounted for in the fulfillment-service design and covered by §7 below.
 
@@ -165,7 +165,9 @@ The public/private hook split generalizes to any future field that needs admin-o
 
 **Placing ClusterVersion admin management inside the existing `CatalogManagementListPage` tabs** (as a fourth tab alongside Clusters/VMs/Bare Metal). Rejected: those tabs manage catalog *items* (provisioning templates), a conceptually different resource kind from a primitive reference catalog; conflating them would make the tab's contents inconsistent (item cards with publish/scope badges vs. a plain CRUD table) and confuse the "what am I managing" mental model for admins. A dedicated nav entry keeps the resource kinds visually distinct while still living under the same Administration section, satisfying NFR-1's "familiar location" without a false structural equivalence. [User]
 
-**Per-row version fetch in `ClustersTable.tsx`** instead of a batched list + lookup map. Rejected: with N clusters, this issues N `Get` calls per table render; TanStack Query's cache would dedupe repeated calls for the same version across rows but still issues one request per distinct version referenced on first render, and doesn't scale as cleanly as a single `List` call that already returns the full catalog in one round trip.
+**Per-row version fetch in `ClustersTable.tsx`** instead of a batched list + lookup map. Rejected: with N clusters, this issues N `Get` calls per table render; TanStack Query's cache would dedupe repeated calls for the same version across rows but still issues one request per distinct version referenced on first render, and doesn't scale as cleanly as a single `List` call scoped to exactly the referenced names.
+
+**A state/enabled-based "all states" filter** (e.g. `this.spec.state in [0,1,2,3] && this.spec.enabled in [true,false]`) for the cluster table's batched lookup, instead of filtering by the referenced clusters' `metadata.name` values. Rejected: this is a tautology — it's logically equivalent to no filter at all — and it depends on an unconfirmed assumption about whether the public `List` RPC's default disabled/obsolete hiding can be overridden by a filter that doesn't discriminate on those exact fields. A `metadata.name`-scoped filter sidesteps the question entirely: it's a targeted identity lookup, not a lifecycle listing, so there's no default-hiding behavior to reason about. [User]
 
 **Extending `ResourceStatusLabel`'s `StatusKind` union with `'deprecated' | 'obsolete'`** instead of a standalone `ClusterVersionStateLabel`. Rejected in favor of a standalone component: `StatusKind`'s existing semantics (ready/failed/progressing/unspecified) describe runtime reconciliation state, and every other consumer of `ResourceStatusLabel` relies on that meaning; adding catalog-lifecycle semantics to the same union risks a consumer accidentally treating a "deprecated" `ClusterVersion` as some kind of resource-condition failure. A standalone component (following the same `Cluster/*StatusLabel.tsx` file-per-resource convention) keeps the two lifecycle semantics from bleeding into each other.
 
@@ -198,8 +200,8 @@ The fulfillment-service design already validates version-change against `allowed
 ## Provenance
 
 Authored: draft @ design 0.4.1 - 96de078, workspace fix/proxy-any-wrapper-type-resolution @ afbc45d (2 behind origin/main)
-Final: respond @ design 0.7.1 - b8b3f86, workspace main @ acca7a4 (dirty)
+Final: respond @ design 0.7.1 - b8b3f86, workspace main @ 752f695 (dirty)
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"acca7a4 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"752f695 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
