@@ -130,7 +130,7 @@ A Tenant User increases `node_sets[].size` for a bare-metal node set. The fulfil
 
 **Step-by-step:**
 
-1. The controller computes `desired - current` where `current` counts only workers in active phases (`Provisioning`, `WaitingForAgent`, `Binding`, `Ready`). Workers in `Failed` phase do not count toward capacity — the controller creates replacements to reach the desired count. Failed worker entries remain in `status.workers` for diagnostics but are cleaned up (BMI deleted) before the replacement is created.
+1. The controller computes `desired - current` where `current` counts workers in active phases (`Provisioning`, `WaitingForAgent`, `Binding`, `Ready`) and workers still within their retry budget. Workers that have exhausted retries remain in `status.workers` for diagnostics but do not count toward capacity — new workers are created to fill the gap.
 2. The controller re-reads the InfraEnv's `status.bootArtifacts.discoveryIgnitionURL` to fetch fresh ignition. The InfraEnv persists from initial provisioning; if it was deleted (e.g., manual cleanup), the `ensureInfraEnv` phase recreates it.
 3. The controller resolves the RHCOS DiskImage from the NodePool's current release image (not the ClusterOrder's original). This ensures workers added after a cluster upgrade use a compatible boot image.
 4. For each new worker, the controller follows provisioning steps 4-10 from the initial flow (the ignition Secret from step 4 is reused — one per cluster, not per worker).
@@ -164,7 +164,7 @@ This diagram shows the scale-down flow. CAPI handles node drain and agent unbind
 **Step-by-step:**
 
 1. The controller computes the excess worker count (current minus desired).
-2. The controller decreases NodePool `.spec.replicas` by the excess count.
+2. The controller removes `PermanentlyFailed` workers first — deletes their dead BMIs and removes their `status.workers` entries. If more removals are needed after clearing all failed slots, the controller decreases NodePool `.spec.replicas` by the remaining excess.
 3. CAPI's MachineDeployment controller (used by HyperShift's default Replace upgrade type) manages MachineSets, which select Machines for deletion. CaaS does not control the selection order.
 4. CAPI drains each selected node, then the AgentMachine controller unbinds the Agent (clears `ClusterDeploymentName`, removes labels and ignition refs).
 5. Because BMH resources exist, the Agent enters `UnbindingPendingUserAction`. The BMH agent controller triggers Ironic deprovision (clears `bmh.Spec.Image`, removes the `detached` annotation).
@@ -190,6 +190,14 @@ On ClusterOrder deletion, the controller runs the scale-down flow for all remain
 **Modified behavior of existing resources:**
 
 - `BareMetalInstance` (fulfillment-service): CaaS-created BMIs carry `metadata.labels["osac.openshift.io/managed-by"] = "caas"`. The public `BareMetalInstances.List` API adds an implicit filter excluding BMIs with this label, so they do not appear in tenant listings. The private API returns all BMIs regardless. This change affects the fulfillment-service public server (`baremetal_instances_server.go`), which must inject the exclusion filter.
+
+**Tenant-visible status:** The PRD requires tenant-visible failure conditions. ClusterOrder conditions (`WorkersFailed`, `InfraEnvReady`, `RHCOSImageNotFound`) live on the hub cluster, which tenants cannot access. The existing feedback controller syncs ClusterOrder status to the public Cluster API via the `Signal` RPC. This design extends the feedback controller to translate worker conditions into the tenant-visible Cluster status:
+
+- `WorkersFailed=True` on ClusterOrder → `WORKER_PROVISIONING_FAILED` condition on the public Cluster, with a tenant-safe message (e.g., "2 of 5 worker nodes failed to provision") that omits infrastructure details (no BMI names, MACs, or Ironic errors)
+- `PermanentlyFailed` workers → Cluster condition message includes: "Scale down and scale up to retry"
+- All other conditions (`InfraEnvReady=False`, `RHCOSImageNotFound`) → mapped to a generic `WORKER_PROVISIONING_BLOCKED` condition on the Cluster, indicating the cluster cannot provision workers due to an infrastructure issue requiring Cloud Infrastructure Admin intervention
+
+This ensures tenants see provisioning progress and actionable failure messages without exposure to CaaS internals.
 
 **Operational impact:** If the osac-operator is down, no new bare-metal workers are provisioned and scale-up/scale-down operations stall. Existing workers continue running — HyperShift manages the cluster independently. On restart, the controller reconciles current state and resumes any pending operations.
 
@@ -250,7 +258,21 @@ status:
 
 The `workers[]` list always contains all worker references regardless of their individual state. The `WorkersFailed` condition provides the summary — which workers failed and why. The ClusterOrder remains in `Progressing` phase (not `Failed`) because 3 workers are operational. The operator inspects individual BMIs via the private API to diagnose failures.
 
-The controller tracks worker lifecycle internally through phases: `Provisioning` → `WaitingForAgent` → `Binding` → `Ready` (and `Unbinding` → `Deleting` for scale-down). `Failed` is reachable from any active phase and is terminal — the controller does not automatically retry failed workers. Failures are reported via ClusterOrder conditions and Kubernetes events.
+The controller tracks worker lifecycle internally through phases: `Provisioning` → `WaitingForAgent` → `Binding` → `Ready` (and `Unbinding` → `Deleting` for scale-down). `Failed` is reachable from any active phase. `PermanentlyFailed` is reached after 3 failed attempts.
+
+**Retry behavior:** When a worker enters `Failed`, the controller deletes the failed BMI and creates a replacement, up to a maximum of 3 attempts per worker slot. The backoff strategy varies by failure type:
+
+| Failure type | Examples | Backoff | Rationale |
+|---|---|---|---|
+| Transient infrastructure | BMaaS API timeout, Ironic temporary error, host allocation contention | Short exponential: 30s, 60s, 120s | Likely to resolve quickly; fresh host allocation may succeed immediately |
+| Resource availability | No hosts available for the requested BareMetalInstanceType | Long exponential: 5m, 15m, 30m | Inventory needs time to free up; aggressive retry wastes API calls |
+| Agent registration timeout | Host booted but agent did not register within 30m | Long exponential: 5m, 15m, 30m | Root cause (bad image URL, broken InfraEnv, network) is unlikely to self-resolve; gives operator time to investigate before next attempt burns another host |
+
+The attempt count is tracked in-memory and rebuilt on restart from the ClusterOrder's Kubernetes events (counting `WorkerFailed` events per worker index). After 3 failed attempts, the worker slot enters `PermanentlyFailed`. The `WorkersFailed` condition reports which slots are retrying (with attempt number and next retry time) vs permanently failed, so tenants and operators can distinguish transient issues from persistent ones.
+
+**Remediation:** When the tenant scales down, the controller removes `PermanentlyFailed` workers first — they have no running node, no bound agent, and only a dead BMI to clean up. Healthy workers are only removed after all failed slots are cleared. This means a tenant can remediate by scaling down by the number of failed workers (clears the failed slots), then scaling back up (creates fresh slots with clean retry budgets). The cluster and its healthy workers stay running throughout.
+
+This satisfies the PRD requirement: "CaaS automatically handles provisioning retries and release of failed bare-metal resources, so that transient BMaaS failures do not leave orphaned infrastructure."
 
 #### InfraEnv Creation
 
@@ -369,23 +391,21 @@ No changes to authentication or authorization flows are required. The existing O
 
 Tenants interact only through the fulfillment-service API. They do not have K8s API access to the hub cluster — ClusterOrder, InfraEnv, and Agent CRs are not tenant-readable. The `Workers` references in ClusterOrder status are visible only to platform operators with hub cluster access.
 
-Discovery ignition containing pull secrets is stored as an OSAC Secret (OSAC-1567), encrypted at rest via the Vault backend. The BMI's `user_data` field contains the Secret reference, not the raw ignition content.
-
 The private API token (`OSAC_FULFILLMENT_TOKEN_FILE`) authenticates as `service-account-osac-controller`, an admin service account with unrestricted access to all API methods across all tenants. This is an existing platform-wide credential used by all osac-operator controllers (feedback, compute instance, networking). This design does not widen its scope — it adds BMI Create/Delete to a token that already has full admin access.
 
 ### Failure Handling and Recovery
 
 | Failure Mode | What Happens | Recovery | Tenant Observes |
 |---|---|---|---|
-| InfraEnv creation fails | Controller retries on next reconciliation cycle (controller-runtime requeue) | Automatic retry with exponential backoff | ClusterOrder stuck in `Progressing` with condition `InfraEnvNotReady` |
+| InfraEnv creation fails | Controller retries on next reconciliation cycle (controller-runtime requeue) | Automatic retry with exponential backoff | Cluster stuck in `PROGRESSING` with `WORKER_PROVISIONING_BLOCKED` condition |
 | InfraEnv ignition not generated | Controller polls InfraEnv status with 30s requeue | Automatic; investigate assisted-service if persistent | Same as above |
-| BMI creation fails (private API error) | Worker phase set to `Failed` | No automatic retry. Failure reported via ClusterOrder condition `WorkersFailed` | ClusterOrder condition `WorkersFailed` with message |
-| BMI provisioning fails (host allocation or Ironic error) | BMI enters `Failed` phase, worker phase set to `Failed` | No automatic retry. Failure reported via ClusterOrder condition `WorkersFailed` and event | ClusterOrder shows degraded worker count |
-| Agent does not register within timeout | Worker phase set to `Failed`, reason `AgentRegistrationTimeout` | No automatic retry. Operator investigates (check InfraEnv, image URL, BMI status) | ClusterOrder condition indicates degraded workers |
+| BMI creation fails (private API error) | Worker phase set to `Failed` | Controller deletes the failed BMI and retries (up to 3 attempts with exponential backoff). After 3 failures: `PermanentlyFailed` | Cluster shows `WORKER_PROVISIONING_FAILED` with attempt count |
+| BMI provisioning fails (host allocation or Ironic error) | BMI enters `Failed` phase, worker phase set to `Failed` | Controller deletes the failed BMI and retries (up to 3 attempts). Each attempt allocates a fresh host | Cluster shows degraded worker count during retries |
+| Agent does not register within timeout | Worker phase set to `Failed`, reason `AgentRegistrationTimeout` | Controller deletes the timed-out BMI and retries (up to 3 attempts). Operator investigates if retries exhaust | Cluster shows `WORKER_PROVISIONING_FAILED` |
 | MAC correlation finds no match | Agent remains uncorrelated | Controller logs a warning and continues watching. If all BMIs are correlated and extra agents exist, they are ignored | No direct tenant impact |
-| Agent binding to NodePool fails | Agent not installed as worker | assisted-service reports failure in Agent conditions; controller reflects in worker phase | ClusterOrder shows degraded worker count |
-| Scale-down: Agent unbinding times out | Agent stuck in `unbinding-pending-user-action` longer than 30 minutes | Controller logs warning, sets worker phase to `Failed`. Manual intervention required to investigate Ironic deprovision failure | Node count mismatch visible in ClusterOrder status |
-| BMI deletion fails | BMI stuck in `Deleting` (e.g., AAP deprovision job fails with `blockDeletionOnFailure: true`) | Controller retries delete periodically. Alerting notifies operators | Scale-down appears incomplete in ClusterOrder status |
+| Agent binding to NodePool fails | Agent not installed as worker | assisted-service reports failure in Agent conditions; controller reflects in worker phase | Cluster shows degraded worker count |
+| Scale-down: Agent unbinding times out | Agent stuck in `unbinding-pending-user-action` longer than 30 minutes | Controller logs warning, sets worker phase to `Failed`. Manual intervention required to investigate Ironic deprovision failure | Node count mismatch visible in Cluster status |
+| BMI deletion fails | BMI stuck in `Deleting` (e.g., AAP deprovision job fails with `blockDeletionOnFailure: true`) | Controller retries delete periodically. Alerting notifies operators | Scale-down appears incomplete in Cluster status |
 | Controller restart mid-reconciliation | Controller resumes from current state on restart | Idempotent reconciliation logic rebuilds in-memory state from CRD status and re-queries BMI/Agent state | Temporary stall, no data loss |
 
 ### RBAC / Tenancy
@@ -419,6 +439,7 @@ Per-ClusterOrder metrics would create unbounded label cardinality at scale. Metr
 | Agent registration timeout | Warning | `AgentRegistrationTimeout` | No Agent registered within the timeout window |
 | Worker provisioning failed | Warning | `WorkerFailed` | Worker resource entered `Failed` phase |
 | Worker deleted | Normal | `WorkerDeleted` | Controller deleted a worker resource during scale-down |
+| Ignition size warning | Warning | `DiscoveryIgnitionSizeWarning` | Fetched ignition exceeds 48KB (75% of 64KB limit) |
 
 ### Risks and Mitigations
 
@@ -542,8 +563,8 @@ Documentation updates required:
 
 ## Provenance
 
-Committed: commit @ design 0.7.1 - 782b906, workspace design/OSAC-2135 @ 8363973 (dirty)
+Committed: commit @ design 0.8.0 - a605aa5, workspace design/OSAC-2135 @ 9fd309d (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.7.1","ai_workflows":"782b906","source_repo":"8363973 (dirty)","source_repo_branch":"design/OSAC-2135","commits_behind_main":0,"commits_ahead_main":640,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.8.0","ai_workflows":"a605aa5","source_repo":"9fd309d (dirty)","source_repo_branch":"design/OSAC-2135","commits_behind_main":0,"commits_ahead_main":641,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
