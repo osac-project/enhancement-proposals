@@ -36,7 +36,7 @@ Introducing managed versions fixes those gaps. It gives admins a place to manage
 
 ### Non-Goals
 
-- Full upgrade orchestration, progress tracking, rollback, or channel-based upgrade selection (including channel metadata). [User]
+- Full upgrade orchestration, progress tracking, rollback, or channel-based upgrade selection (including channel metadata).
 - Automatically import or synchronize versions from ACM `ClusterImageSet` resources in `v0.2`.
 - Extend this design to VM image management; that remains separate work under `ComputeImage`.
 - Hub-projected ClusterVersion CRD, operator lifecycle watches, or AAP-side version resolution.
@@ -50,11 +50,10 @@ OSAC adds a new platform-global `ClusterVersion` resource in the fulfillment-ser
 - the release image URL (`spec.image`)
 - lifecycle state such as active, deprecated, or obsolete
 - whether it is enabled for new cluster creation and whether it is the system default version
-- an optional list of allowed target versions [User]
 
 The fulfillment-service is the sole owner of this data. At cluster creation time, the server validates the selected version. The cluster controller resolves the release image from the ClusterVersion when building the ClusterOrder — the Cluster object itself stores only the `version_name`, not the release image.
 
-The cluster API stops accepting raw `release_image` input and instead uses `version_name` as the selected version identifier. Basic validated version changes — where the caller explicitly sets a new `version_name` and the change is validated against `allowed_upgrades` — are in scope. [User]
+The cluster API stops accepting raw `release_image` input and instead uses `version_name` as the selected version identifier.
 
 ### Workflow Description
 
@@ -111,8 +110,6 @@ On the catalog-item path, `version_name` comes from the catalog item's field def
 | Referenced version is disabled or obsolete | Reject the request. | `InvalidArgument` |
 | No version can be resolved through input or defaults | Reject the request. | `InvalidArgument` |
 | A referenced version is still in use during deletion | Reject the deletion until references are removed. [PRD: FR-11] | `FailedPrecondition` |
-| `version_name` changed to a version not in `allowed_upgrades`, or target is disabled/obsolete | Reject the update. Same admission checks as cluster creation. [User] | `InvalidArgument` |
-| `allowed_upgrades.version_names` references a non-existent or deleted version on create, or a newly added entry references a non-existent, deleted, disabled, or obsolete version on update | Reject the create or update. | `InvalidArgument` |
 | Two concurrent requests try to set different defaults | Allow one winner and reject the other update. | `AlreadyExists` |
 
 ### API Extensions
@@ -172,18 +169,6 @@ message ClusterVersionSpec {
 
   string version = 6;
   // Stable version identifier (e.g., "4.17.0", "4.17.0-rc.1").
-
-  ClusterVersionAllowedUpgrades allowed_upgrades = 7;
-  // Constrains which versions clusters on this version may upgrade to.
-  // Message absent: no path constraint (target must still be enabled and not obsolete).
-  // Message present with empty version_names: no valid targets — version change is rejected.
-  // Message present with version_names: only listed versions are accepted.
-}
-
-message ClusterVersionAllowedUpgrades {
-  repeated string version_names = 1;
-  // ClusterVersion names (metadata.name). Must reference existing, non-deleted ClusterVersions.
-  // When a target version is deleted, it is automatically removed.
 }
 
 enum ClusterVersionState {
@@ -220,9 +205,6 @@ message ClusterVersionStatus {}
     "state": "DEPRECATED",
     "deprecation": {
       "deprecationTimestamp": "2026-06-15T00:00:00Z"
-    },
-    "allowedUpgrades": {
-      "versionNames": ["4-17-1", "4-18-0"]
     }
   },
   "status": {}
@@ -276,19 +258,11 @@ All state transitions are allowed. [PRD: FR-13] Timestamps are system-managed: s
 - If a default version transitions to `OBSOLETE` or is disabled (`enabled=false`), the server clears `is_default` as part of the same change.
 
 **Lifecycle:**
-- Obsolete or disabled versions cannot be used for new clusters or as version-change targets. `enabled` is admission policy, not lifecycle state — changing it does not affect existing clusters.
+- Obsolete or disabled versions cannot be used for new clusters. `enabled` is admission policy, not lifecycle state — changing it does not affect existing clusters.
 
 **References and delete protection:**
 - Versions referenced by active clusters, templates, or catalog item field definitions cannot be deleted. [PRD: FR-11]
 - `ClusterTemplate` create and update validate `spec_defaults.version_name` in the server layer; database triggers are the race-safety backstop.
-
-**Cluster version-change validation:**
-- When `allowed_upgrades` is set on the source version, cluster updates that change `version_name` are validated against the list. The target version must pass the same admission checks as cluster creation (exists, enabled, not obsolete). When `allowed_upgrades` is not set, any version change is allowed but the target must still pass those checks. [User]
-
-**Upgrade target management:**
-- `allowed_upgrades.version_names` entries must reference existing, non-deleted ClusterVersions. On create, the server validates that all entries are also enabled and non-obsolete. On update, only newly added entries are validated against enabled and non-obsolete. A database trigger enforces the existence constraint as a race-safety backstop for concurrent deletions.
-- When a target version is soft-deleted, it is automatically removed from all other versions' `allowed_upgrades` lists within the same transaction. Disabling or marking a version obsolete does not remove it — the entry stays and becomes available again when the target is re-enabled or returned to a non-obsolete state.
-- If deletion cleanup removes all entries, the empty `allowed_upgrades` message is preserved.
 
 #### Database considerations
 
@@ -312,13 +286,7 @@ All state transitions are allowed. [PRD: FR-13] Timestamps are system-managed: s
 - **Inbound (resource → version):** fires before INSERT or UPDATE (only active rows: `WHEN new.deletion_timestamp = 'epoch'`). On INSERT, or when the reference changes on UPDATE, validates that the referenced ClusterVersion exists, is enabled, and is not obsolete using `SELECT ... FOR SHARE` on the referenced row. Raises SQLSTATE `Z0002` (`ErrReference`). Three source tables, same validation logic:
   - `clusters` and `cluster_templates` — scalar field `data->'spec'->>'version_name'`.
   - `cluster_catalog_items` — loops over `data->'field_definitions'`, filters entries with `path = 'version_name'`, and validates each entry's `default` value.
-- **Inbound (version → version via allowed_upgrades):** fires before INSERT or UPDATE on `cluster_versions` (only active rows). On INSERT, or when `allowed_upgrades` changes on UPDATE, loops over `version_names` and validates each entry against an existing, non-deleted ClusterVersion using `SELECT ... FOR SHARE`. Raises SQLSTATE `Z0002` (`ErrReference`).
-
 Inbound triggers use `FOR SHARE` on the referenced row to serialize against concurrent deletes and lifecycle changes, following the established pattern across all existing reference triggers.
-
-*Server-side cleanup (Go layer):*
-
-- **Upgrade target cleanup:** when a ClusterVersion is soft-deleted, the server removes its `metadata.name` from all other active versions' `allowed_upgrades.version_names` arrays within the same transaction. The cleanup UPDATE increments `version` on each affected row to preserve optimistic concurrency. The private server's Delete method runs this after the DAO operation, sharing the same transaction via [`database.TxFromContext(ctx)`](https://github.com/osac-project/fulfillment-service/blob/e5c4482dbbb9e508f7df912b86f7a5a1e5900607/internal/database/database_context.go#L46).
 
 **Performance.** A JSONB index on `data->'spec'->>'version_name'` in the `clusters` table keeps the outbound trigger's reference scan efficient. The trigger also scans `cluster_templates` and `cluster_catalog_items` field definitions; template and catalog item volume is low enough that separate indexes are not warranted.
 
@@ -413,7 +381,7 @@ Not needed for `v0.2`. A single `spec.image` is sufficient for the current `mult
 
 The test strategy focuses on validating the version model in the fulfillment-service:
 
-- **Unit tests:** version validation, default selection, lifecycle-state handling, image resolution, version-change validation, and template default checks.
+- **Unit tests:** version validation, default selection, lifecycle-state handling, image resolution, and template default checks.
 - **Integration tests:** end-to-end flow from version creation through cluster creation and reconciliation, including delete protection, default fallback, and release-image population on the `ClusterOrder`.
 - **E2E tests:** admin version management plus tenant cluster creation using managed versions.
 
