@@ -127,7 +127,7 @@ A Tenant User increases `node_sets[].size` for a bare-metal node set. The fulfil
 
 **Step-by-step:**
 
-1. The controller computes `desired - current` where `current` counts workers in any phase except `Deleting`. Workers in `Failed` phase count toward `current` — they are not automatically retried.
+1. The controller computes `desired - current` where `current` counts only workers in active phases (`Provisioning`, `WaitingForAgent`, `Binding`, `Ready`). Workers in `Failed` phase do not count toward capacity — the controller creates replacements to reach the desired count. Failed worker entries remain in `status.workers` for diagnostics but are cleaned up (BMI deleted) before the replacement is created.
 2. The controller re-reads the InfraEnv's `status.bootArtifacts.discoveryIgnitionURL` to fetch fresh ignition. The InfraEnv persists from initial provisioning; if it was deleted (e.g., manual cleanup), the `ensureInfraEnv` phase recreates it.
 3. The controller resolves the RHCOS DiskImage from the NodePool's current release image (not the ClusterOrder's original). This ensures workers added after a cluster upgrade use a compatible boot image.
 4. For each new worker, the controller follows provisioning steps 4-9 from the initial flow.
@@ -153,7 +153,7 @@ sequenceDiagram
     CO->>CO: Match unbound Agent to BMI via MAC
     CO->>BMaaS: Delete BareMetalInstance
     BMaaS->>BMaaS: Host cleanup (disk wipe, network reset)
-    CO->>CO: Remove BMI from status.workers
+    CO->>CO: Remove worker from status.workers (after BMI CR gone)
 ```
 
 This diagram shows the scale-down flow. CAPI handles node drain and agent unbinding automatically. The controller reacts to the agent reaching an unbound state and then cleans up the BMI.
@@ -168,7 +168,7 @@ This diagram shows the scale-down flow. CAPI handles node drain and agent unbind
 6. The controller watches for Agents transitioning to any `*-unbound` terminal state (`discovering-unbound`, `known-unbound`, `disconnected-unbound`, `insufficient-unbound`, `disabled-unbound`).
 7. The controller matches the unbound Agent back to a BMI via MAC address.
 8. The controller calls `BareMetalInstances.Delete` on the private API. BMaaS handles full host cleanup (disk wipe, network reset) before returning the host to inventory. CaaS does not independently verify cleanup completion — this is a trust boundary between CaaS and BMaaS. If BMaaS cleanup fails, the host must not be reallocated; this guarantee is BMaaS's responsibility.
-9. The controller removes the entry from `status.workers`.
+9. The controller retains the worker entry in `status.workers` until the BMI CR no longer exists on the hub cluster (confirming terminal deletion). This prevents orphaned hosts — if `Delete` succeeds but cleanup stalls, the controller still has the reference to retry or alert.
 
 #### Cluster Deletion
 
@@ -324,13 +324,18 @@ The `BareMetalInstances.Get`, `Update`, and `Delete` methods on the public API a
 
 Cloud Provider Admins who need to debug CaaS-managed workers (ssh, console, restart — per PRD user story) use the private API, which returns all BMIs regardless of the `managed-by` label.
 
-The public API rejects `Create` and `Update` requests that set `osac.openshift.io/managed-by` to a reserved value (`caas`). This prevents tenants from hiding their own resources by self-applying the label, which would break audit trail integrity.
+The public API rejects `Create` and `Update` requests that set the `osac.openshift.io/managed-by` label key to any value. This key is reserved for system use. This matches the `List` filter contract (which excludes any resource with this key, regardless of value) and prevents tenants from hiding their own resources by self-applying the label.
 
 #### MAC Address Correlation
 
-Agent-to-BMI matching uses MAC addresses. When a BMI reaches `Running` state, its status includes the allocated host's MAC address (exact field path TBD — depends on OSAC-2308/OSAC-3254, which add inventory metadata to BareMetalInstance status; the field does not exist in the current proto). When an Agent registers, its inventory includes NIC MAC addresses at `status.inventory.interfaces[].macAddress`. The controller matches by finding the Agent whose inventory contains a MAC matching a BMI's status MAC.
+Agent-to-BMI matching uses MAC addresses scoped to the cluster's namespace and ClusterOrder. When a BMI reaches `Running` state, its status includes the allocated host's MAC address (exact field path TBD — depends on OSAC-2308/OSAC-3254, which add inventory metadata to BareMetalInstance status; the field does not exist in the current proto). When an Agent registers, its inventory includes NIC MAC addresses at `status.inventory.interfaces[].macAddress`.
 
-The controller maintains an in-memory index of pending (uncorrelated) BMIs and their MACs. On each Agent watch event, it checks for a match. If no match is found within a configurable timeout (default: 30 minutes), the controller sets the worker phase to `Failed` with reason `AgentRegistrationTimeout`.
+The correlation algorithm requires a unique match across three dimensions before binding:
+1. **Namespace:** The Agent must be in the same namespace as the ClusterOrder's cluster
+2. **Ownership:** The candidate BMI must carry the `osac.openshift.io/cluster-order` label matching the current ClusterOrder
+3. **MAC match:** The Agent's inventory MAC must match the BMI's status MAC
+
+If zero candidates match, the controller continues watching. If multiple candidates match (should not happen — MACs are unique per host), the controller logs an error and does not bind, preventing ambiguous correlation. If no match is found within a configurable timeout (default: 30 minutes), the controller sets the worker phase to `Failed` with reason `AgentRegistrationTimeout`.
 
 #### Minimum MCE Version
 
@@ -512,7 +517,7 @@ The visibility filtering (label-based exclusion in public `List`) requires the f
 
 **Disabling the feature:**
 - Set the cluster template to exclude bare-metal resource classes. Existing clusters with bare-metal workers continue running — the controller does not deprovision workers unless instructed (scale-down or delete).
-- To force-remove CaaS BMIs: delete them via the private API and remove the corresponding entries from `status.workers[]` on the ClusterOrder. The workers are removed from the cluster but hosts must be manually cleaned.
+- To force-remove CaaS BMIs: delete them via the private API. The controller removes `status.workers[]` entries automatically once the BMI CRs are gone. If entries are stuck, patch the ClusterOrder status to remove them manually. Hosts must be manually cleaned if BMaaS deprovision failed.
 
 **Recovery:**
 - The controller is designed for idempotent reconciliation. Restarting the osac-operator pod causes the controller to rebuild state from the ClusterOrder status, re-query BMI and Agent CRs, and resume any pending operations. No manual consistency repair is needed.
@@ -530,6 +535,8 @@ Documentation updates required:
 
 ## Provenance
 
-Authored: draft @ design 0.7.1 - b8b3f86, workspace fix/containerfile-podman-wrapper @ 38af260
+Committed: commit @ design 0.7.1 - 782b906, workspace design/OSAC-2135 @ 385d2b4 (dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"38af260","source_repo_branch":"fix/containerfile-podman-wrapper","commits_behind_main":0,"commits_ahead_main":324,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.7.1","ai_workflows":"782b906","source_repo":"385d2b4 (dirty)","source_repo_branch":"design/OSAC-2135","commits_behind_main":0,"commits_ahead_main":639,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
