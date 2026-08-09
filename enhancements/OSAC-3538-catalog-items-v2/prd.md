@@ -13,8 +13,8 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 ## In Scope
 
 - Catalog items become an overlay on existing resource creation — fields not mentioned in the catalog item behave as if no catalog item exists.
-- Spec fields on each catalog item type are structured, typed fields with a per-field behavior (locked or editable with a default).
-- Image is mandatory and always locked on a catalog item — tenants cannot change the image during provisioning. The catalog item owner can update the image (e.g., to bump versions for CVE fixes).
+- Spec fields on each catalog item type are structured, typed fields with a per-field behavior (locked or editable with a default). Only the subset of spec fields relevant to catalog governance are exposed — fields like network attachments are not governable through catalog items. The design will enumerate the exact fields per resource type. Template parameters are governed via a key-value map.
+- For ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, image is mandatory and always locked — tenants cannot change the image during provisioning. The catalog item owner can update the image (e.g., to bump versions for CVE fixes). ClusterCatalogItem does not have an image equivalent.
 - Per-field type customization: fields can use richer types than the underlying resource spec (e.g., instance type as an enum with curated options, image as a mandatory reference selector).
 - Template parameters are governed with the same locked/editable behavior as spec fields, validated against the referenced template's parameter definitions.
 - The system prevents deletion of resources (images, instance types) referenced by catalog items. Deletion blocking is the immediate behavior; a deprecation/obsolescence model may replace or complement this when the lifecycle feature (see Out of Scope) is implemented.
@@ -54,7 +54,7 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create organization-scoped catalog items using the same field governance model as global items, so that I can tailor offerings for my organization.
+- As a Tenant Admin, I want to create, update, unpublish, and delete organization-scoped catalog items using the same field governance model as global items, so that I can tailor offerings for my organization.
 
 ### Tenant User
 
@@ -76,6 +76,6 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 ## Provenance
 
 Authored: respond @ prd 0.7.1 - b8b3f86, workspace feat/osac-taxonomy-presentation @ d22bfa1 (4 behind origin/main)
-Phases: draft, respond
+Phases: draft, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":4,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":4,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
