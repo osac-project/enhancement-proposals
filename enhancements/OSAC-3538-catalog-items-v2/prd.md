@@ -38,9 +38,9 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 
 - As a Cloud Provider Admin, I want to create a catalog item by selecting which resource fields are locked vs. editable using a structured form that shows the actual resource fields — not freeform path inputs — so that I cannot accidentally reference invalid fields.
 
-- As a Cloud Provider Admin, I want every catalog item to require an image that is locked during provisioning, so that each catalog item represents a concrete offering (e.g., "RHEL 10 Small VM") and tenants cannot change the image when provisioning.
+- As a Cloud Provider Admin, I want VM and bare metal catalog items to require an image that is locked during provisioning, so that each catalog item represents a concrete offering (e.g., "RHEL 10 Small VM") and tenants cannot change the image when provisioning.
 
-- As a Cloud Provider Admin, I want to update the image on an existing catalog item (e.g., to apply CVE fixes) without recreating it, so that I can maintain offerings over time.
+- As a Cloud Provider Admin, I want to update the image on an existing VM or bare metal catalog item (e.g., to apply CVE fixes) without recreating it, so that I can maintain offerings over time.
 
 - As a Cloud Provider Admin, I want editable fields to support per-field type customization (e.g., offering a curated list of instance types rather than accepting any string) so that tenants have guardrails without losing flexibility.
 
