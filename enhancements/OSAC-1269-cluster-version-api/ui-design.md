@@ -15,6 +15,13 @@ This design specifies the `osac-ui` implementation for `ClusterVersion` (OSAC-12
 
 ## 2.1 Goals
 
+**User-facing goals, by persona:**
+
+- **Tenant User:** When creating a cluster, pick an OpenShift version from a list of supported versions instead of pasting an internal release-image URL from memory or documentation. If the chosen version is deprecated, see a clear warning at selection time rather than discovering it later. When viewing a cluster (in the list or on its detail page), see its OpenShift version and whether that version is still active, deprecated, or obsolete — without needing to cross-reference a separate catalog.
+- **Cloud Provider Admin:** No change to this persona's UI experience — per PRD FR-9, managing the version catalog itself (creating versions, retiring them, setting the default) is a CLI/API workflow in v0.2, not a UI one. This is called out explicitly because earlier drafts of this design did include admin UI for this; it was removed following a PRD revision (`enhancement-proposals` PR #191, see §2.2).
+
+**Implementation-approach goals** (how the above gets built, for the engineers implementing it):
+
 - Follow the existing hooks-layer conventions (`useApiFetch` + `useApiQuery` + `apiQueryKey`) established in `libs/ui-components/src/api/v1/networking.ts` and `instance-types.ts` for `ClusterVersion` API access. [Codebase: `docs/api-query-arch.md`]
 - Reuse the existing client-side cross-resource join pattern (`useVmDetailsDisplay.ts`) for resolving and displaying a cluster's version and lifecycle state. [Codebase: `libs/ui-components/src/components/vm/DetailsPage/useVmDetailsDisplay.ts`]
 - Batch-fetch `ClusterVersion` data for the cluster list table instead of issuing one fetch per row. [Codebase: `libs/ui-components/src/components/Cluster/ClustersTable.tsx`]
@@ -29,9 +36,32 @@ This design specifies the `osac-ui` implementation for `ClusterVersion` (OSAC-12
 
 # 3. Motivation / Background
 
-Today, `ClusterConfigurationStep.tsx` renders `spec.releaseImage` as a plain-text `InputField`, requiring the user to paste an exact OCI pullspec with no validation until the server rejects it during provisioning. `ClusterConfigurationCard.tsx` echoes the same raw string back on the cluster detail page. Neither surface resolves, validates, or contextualizes the value in any way.
+Today, a Tenant User creating a cluster must type or paste an exact OpenShift release-image URL (e.g. `quay.io/openshift-release-dev/ocp-release:4.17.0-multi`) into a plain text field, with no validation until the server rejects it during provisioning — there's no way to browse what versions exist, and a typo or stale URL isn't caught until much later in the flow. The same raw, unhelpful string is echoed back verbatim on the cluster's detail page afterward, with no indication of whether that version is still current, deprecated, or long obsolete. In implementation terms: `ClusterConfigurationStep.tsx` renders `spec.releaseImage` as a plain-text `InputField`, and `ClusterConfigurationCard.tsx` echoes the same raw string on the cluster detail page — neither surface resolves, validates, or contextualizes the value in any way.
 
 `ClusterVersion` replaces this raw string with a managed reference (`version_name`) that the fulfillment-service already validates, resolves, and tracks through a lifecycle (active/deprecated/obsolete) [Codebase: `design.md`]. The UI's job is twofold: replace the wizard's free-text field with a version picker sourced from the catalog; and, everywhere a cluster's version is displayed, resolve `version_name` to its descriptive metadata and *current* lifecycle state, since the cluster object stores only a name reference and lifecycle state can change independently of the cluster (FR-6). Populating and maintaining the catalog itself is a Cloud Provider Admin task performed via CLI/API — per PRD FR-9, `osac-ui` has no admin surface for it in v0.2.
+
+### What this looks like
+
+The wizard's configuration step changes from a free-text field to a dropdown, with a warning shown only when the user picks a deprecated version:
+
+```text
+Before:  Release image  [ quay.io/openshift-release-dev/ocp-release:4.17.0-multi_______ ]
+                          (free text — no validation, no way to browse options)
+
+After:   Version        [ 4.17.0                                              ▾ ]
+                          ⚠ This version is deprecated and will be removed in a future release.
+```
+
+The cluster list and detail pages gain a resolved version string plus a colored lifecycle badge, in place of the old raw image string:
+
+```text
+Before (cluster detail):  Release image:  quay.io/openshift-release-dev/ocp-release:4.17.0-multi
+
+After  (cluster detail):  Version:        4.17.0   [Deprecated]
+After  (cluster list):    ... | Version: 4.17.0 | Lifecycle: [Deprecated] | ...
+```
+
+These are plain-text sketches of the interaction, not visual mockups — the actual PatternFly components (`SelectField`, `Alert`, `Label`) are specified in §4.1.
 
 # 4. Design
 
@@ -158,8 +188,8 @@ No open questions remain. The two previously open in this section are both resol
 ## Provenance
 
 Authored: draft @ design 0.4.1 - 96de078, workspace fix/proxy-any-wrapper-type-resolution @ afbc45d (2 behind origin/main)
-Final: respond @ design 0.8.0 - a605aa5, workspace main @ 4d7ae6c
+Final: respond @ design 0.8.0 - 7efcedb, workspace main @ 4d7ae6c
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"a605aa5","source_repo":"4d7ae6c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4d7ae6c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
