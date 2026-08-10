@@ -134,7 +134,28 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 
 ## UX Alignment
 
-No `@temp-api` file exists at `osac-ux/libs/ui-components/src/api/v1/baremetal-instance.ts`. Once OSAC-2540 ships and `pnpm gen-types` runs, the UI migration for BMaaS will mirror the ComputeInstance migration: replace the inline image fields with a `disk_image` reference picker. No additional UI alignment is needed here beyond what OSAC-2540 specifies for the DiskImage picker component.
+`@temp-api` file exists at `osac-ux/libs/ui-components/src/api/v1/baremetal-instance.ts`. It defines `useCreateBareMetalInstance` with a hardcoded `spec` shape that does not yet include a `diskImage` field. Two updates are needed when this design lands:
+
+1. **`@osac/types` (auto):** Running `pnpm gen-types` picks up the new proto `disk_image` field automatically — no manual edit required.
+2. **`useCreateBareMetalInstance` (manual):** The hardcoded `mutationFn` body type must be updated to add `diskImage?: string` to `spec`, so the creation form can pass the selected DiskImage ID.
+
+**Field mapping:**
+
+| Proto field | TypeScript field | Direction |
+|-------------|-----------------|-----------|
+| `spec.disk_image` | `spec.diskImage` | proto → TS (camelCase) |
+
+Beyond this, the UI migration mirrors the ComputeInstance flow: replace the inline image fields with a `diskImage` reference picker using the DiskImage selector component from OSAC-2540.
+
+### Documentation
+
+This is a breaking public API change: `BareMetalInstanceSpec.image` is removed and replaced by `disk_image`. The following documentation updates are **in scope** for this feature:
+
+- **REST API reference** — update `BareMetalInstanceSpec` field descriptions; mark `image` as removed (reserved), document `disk_image`.
+- **CLI help text** — `osac create baremetalinstance` currently accepts `--image` and `--image-source-type` flags. These must be replaced by `--disk-image <id>` before GA.
+- **Migration notes** — upgrade/downgrade guidance for existing `BareMetalInstanceSpec.image` callers is documented in the [Upgrade / Downgrade Strategy](#upgrade--downgrade-strategy) section.
+
+Deferred to GA per [Graduation Criteria](#graduation-criteria): full user-facing documentation and release notes.
 
 ### Implementation Details/Notes/Constraints
 
