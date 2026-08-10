@@ -12,7 +12,6 @@ see-also:
   - "/enhancements/OSAC-2540-disk-image"
   - "/enhancements/OSAC-1201-baremetal-instance-types"
   - "/enhancements/OSAC-1330-type-safe-resource-references"
-  - "/enhancements/OSAC-1567-secret-management"
 replaces:
   - N/A
 superseded-by:
@@ -23,7 +22,7 @@ superseded-by:
 
 ## Summary
 
-This design adds on-demand bare-metal worker node provisioning to CaaS by having the osac-operator ClusterOrder controller create BareMetalInstances via the fulfillment-service private gRPC API. Each instance references a pre-registered RHCOS DiskImage and a Secret containing discovery ignition from the shared platform-level InfraEnv, causing the host to register as an assisted-service Agent and join the HyperShift-managed cluster as a worker node. The existing BareMetalPool-based static pre-boot pool is removed. See [PRD](prd.md) for detailed requirements.
+This design adds on-demand bare-metal worker node provisioning to CaaS by having the osac-operator ClusterOrder controller create BareMetalInstances via the fulfillment-service private gRPC API. Each instance references a pre-registered RHCOS DiskImage and carries discovery ignition inline from the shared platform-level InfraEnv, causing the host to register as an assisted-service Agent and join the HyperShift-managed cluster as a worker node. The existing BareMetalPool-based static pre-boot pool is removed. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -52,7 +51,7 @@ The new approach eliminates the pool by provisioning workers on-demand. When a C
 The ClusterOrder controller in osac-operator gains a new reconciliation phase for bare-metal worker management. When a ClusterOrder's `nodeRequests` reference bare-metal resource classes, the controller:
 
 1. Ensures a shared `InfraEnv` CR exists on the hub cluster to generate discovery ignition (one per platform, not per cluster).
-2. Stores the InfraEnv's discovery ignition as a Secret via `Secrets.Create` on the private API, then creates `BareMetalInstance` objects referencing the RHCOS DiskImage and the ignition Secret.
+2. Fetches discovery ignition from the InfraEnv and creates `BareMetalInstance` objects with the ignition passed inline as `user_data`, referencing the RHCOS DiskImage.
 3. Correlates registered Agents to BMIs via MAC address, binds them to the cluster's ClusterDeployment, and labels them for NodePool selection.
 
 No new CRDs are introduced. The design extends the ClusterOrder CRD status with a `workers` field to track CaaS-managed worker resources. BareMetalInstances created by CaaS are assigned to the builtin `system` tenant, making them invisible to tenant APIs via the existing tenancy logic.
@@ -115,15 +114,14 @@ The diagram shows the end-to-end provisioning flow. The controller waits for eac
 **Step-by-step:**
 
 1. The ClusterOrder controller detects `nodeRequests` with bare-metal resource classes by checking the resource class against BareMetalInstanceType definitions.
-2. After AAP creates the HostedCluster and the ClusterDeployment CR exists, the controller ensures the shared platform-level `InfraEnv` CR exists (see InfraEnv Creation). The InfraEnv has no `clusterRef` — agents register as unbound and the controller explicitly binds them to the correct cluster in step 9.
+2. After AAP creates the HostedCluster and the ClusterDeployment CR exists, the controller ensures the shared platform-level `InfraEnv` CR exists (see InfraEnv Creation). The InfraEnv has no `clusterRef` — agents register as unbound and the controller explicitly binds them to the correct cluster in step 8.
 3. The controller reads the InfraEnv's `status.bootArtifacts.discoveryIgnitionURL` and fetches the discovery ignition content. The ignition is architecture-neutral (the `assisted-installer-agent` image is a multi-arch manifest), so the same InfraEnv serves hosts of any architecture.
-4. The controller creates a Secret via `Secrets.Create` on the private API, storing the discovery ignition content. The Secret is encrypted at rest via the Vault backend (OSAC-1567). One Secret is created per cluster for lifecycle management (deleted when the cluster is decommissioned), even though the ignition content is identical across clusters since it comes from the shared InfraEnv.
-5. For each bare-metal worker requested, the controller calls `BareMetalInstances.Create` on the private API with: `spec.catalog_item` resolved from the resource class, `spec.image` set to the resolved RHCOS DiskImage ID (see RHCOS DiskImage Resolution), `spec.user_data` referencing the ignition Secret, `spec.network_attachments` built from the Cluster's `ClusterNetworkAttachment` (subnet + security groups) and the node set's HostType (fabric interface), and `metadata.tenant = "system"` (see System Tenant Isolation). The network attachment mapping is a pass-through: the controller reads the Cluster's `ClusterNetworkAttachment` for the subnet and security group references, resolves the fabric interface name from the node set's HostType definition (first interface with role `fabric`), and constructs a `BareMetalNetworkAttachment` with `primary: true`. BMaaS handles the physical networking — moving the host to the tenant subnet VLAN and assigning an IP via fabric DHCP — as part of BMI provisioning (dependency: OSAC-1437). If the host fails to join the tenant network, the agent will not register on the expected subnet, and the existing `AgentRegistrationTimeout` handles this failure mode. API and ingress VIPs are provisioned by the existing AAP template (MetalLB LoadBalancer Services) and are not managed by this controller.
-6. The controller updates ClusterOrder status with the BMI IDs in `workers[]`.
-7. BMaaS allocates a host, writes the qcow2 to disk via Ironic, and boots with the discovery ignition. The host registers as an Agent with assisted-service.
-8. The controller watches Agent CRs in the cluster namespace. When a new Agent appears, the controller matches its inventory MAC address against BMI status MAC addresses (`status.host.mac_address`, dependency OSAC-2308/OSAC-3254).
-9. Once correlated, the controller sets the Agent's `clusterDeploymentName` to the cluster's ClusterDeployment and applies the `agentBareMetal` role label so the NodePool's `agentLabelSelector` selects it. This requires the osac-operator to modify `agent-install.openshift.io/v1beta1` Agent resources — a cross-API-group coupling. This is unavoidable: the assisted-service Agent API does not provide an auto-bind mechanism for late-binding agents, so an external controller must set `clusterDeploymentName` and apply labels. The osac-operator's RBAC must include `patch` on `agents` in the `agent-install.openshift.io` API group.
-10. HyperShift installs the Agent as a worker node. The controller monitors NodePool `.status.replicas` to confirm convergence.
+4. For each bare-metal worker requested, the controller calls `BareMetalInstances.Create` on the private API with: `spec.catalog_item` resolved from the resource class, `spec.image` set to the resolved RHCOS DiskImage ID (see RHCOS DiskImage Resolution), `spec.user_data` set to the fetched ignition content inline (the `user_data` field accepts raw first-boot data up to 64KB; the PoC measured 15KB), `spec.network_attachments` built from the Cluster's `ClusterNetworkAttachment` (subnet + security groups) and the node set's HostType (fabric interface), and `metadata.tenant = "system"` (see System Tenant Isolation). The network attachment mapping is a pass-through: the controller reads the Cluster's `ClusterNetworkAttachment` for the subnet and security group references, resolves the fabric interface name from the node set's HostType definition (first interface with role `fabric`), and constructs a `BareMetalNetworkAttachment` with `primary: true`. BMaaS handles the physical networking — moving the host to the tenant subnet VLAN and assigning an IP via fabric DHCP — as part of BMI provisioning (dependency: OSAC-1437). If the host fails to join the tenant network, the agent will not register on the expected subnet, and the existing `AgentRegistrationTimeout` handles this failure mode. API and ingress VIPs are provisioned by the existing AAP template (MetalLB LoadBalancer Services) and are not managed by this controller.
+5. The controller updates ClusterOrder status with the BMI references in `workers[]`.
+6. BMaaS allocates a host, writes the qcow2 to disk via Ironic, and boots with the discovery ignition. The host registers as an Agent with assisted-service.
+7. The controller watches Agent CRs in the cluster namespace. When a new Agent appears, the controller matches its inventory MAC address against BMI status MAC addresses (`status.host.mac_address`, dependency OSAC-2308/OSAC-3254).
+8. Once correlated, the controller sets the Agent's `clusterDeploymentName` to the cluster's ClusterDeployment and applies the `agentBareMetal` role label so the NodePool's `agentLabelSelector` selects it. This requires the osac-operator to modify `agent-install.openshift.io/v1beta1` Agent resources — a cross-API-group coupling. This is unavoidable: the assisted-service Agent API does not provide an auto-bind mechanism for late-binding agents, so an external controller must set `clusterDeploymentName` and apply labels. The osac-operator's RBAC must include `patch` on `agents` in the `agent-install.openshift.io` API group.
+9. HyperShift installs the Agent as a worker node. The controller monitors NodePool `.status.replicas` to confirm convergence.
 
 #### Scale-Up
 
@@ -134,7 +132,7 @@ A Tenant User increases `node_sets[].size` for a bare-metal node set. The fulfil
 1. The controller computes `desired - current` where `current` is `status.currentWorkers` (workers in active phases: `Provisioning`, `WaitingForAgent`, `Binding`, `Ready`). Workers in `Failed` phase do not count toward capacity — new workers are created to fill the gap once their retry backoff expires.
 2. The controller re-reads the shared InfraEnv's `status.bootArtifacts.discoveryIgnitionURL` to fetch fresh ignition.
 3. The controller resolves the RHCOS DiskImage from the NodePool's current release image (not the ClusterOrder's original). This ensures workers added after a cluster upgrade use a compatible boot image.
-4. For each new worker, the controller follows provisioning steps 4-10 from the initial flow (the ignition Secret from step 4 is reused — one per cluster, not per worker).
+4. For each new worker, the controller follows provisioning steps 4-9 from the initial flow (the ignition content is re-fetched in step 2 above).
 5. Partial success is reported: if 3 of 5 new workers succeed and 2 fail, the ClusterOrder status shows 3 additional `Ready` workers and 2 `Failed`. The tenant sees the cluster with the successfully added workers; the failed slots are visible via ClusterOrder conditions and events.
 
 #### Scale-Down
@@ -265,7 +263,7 @@ Example: a 5-worker cluster where 3 workers are ready and 2 are retrying:
 status:
   phase: Progressing
   desiredWorkers: 5
-  currentWorkers: 5
+  currentWorkers: 3
   readyWorkers: 3
   conditions:
     - type: WorkersFailed
@@ -312,7 +310,7 @@ status:
 
 The `workers[]` list always contains all worker references regardless of their individual state. The `WorkersFailed` condition provides the aggregate summary. The ClusterOrder remains in `Progressing` phase (not `Failed`) because 3 workers are operational. Per-worker detail (which slot failed, why, when the next retry is) is visible directly in the status.
 
-The controller tracks worker lifecycle through phases: `Provisioning` → `WaitingForAgent` → `Binding` → `Ready` (and `Unbinding` → `Deleting` for scale-down). `Failed` is reachable from any active phase.
+The controller tracks worker lifecycle through phases: `Provisioning` → `WaitingForAgent` → `Binding` → `Ready` (and `Unbinding` → `Deleting` for scale-down). `Failed` is reachable only from provisioning phases (`Provisioning`, `WaitingForAgent`, `Binding`) and triggers automatic retry. Teardown issues (e.g., agent unbinding timeout, BMI deletion failure) keep the worker in `Unbinding` or `Deleting` with error details in `lastFailureReason` — they do not transition to `Failed` and do not trigger replacement, since the intent is removal, not reprovisioning.
 
 **Retry behavior:** The API is declarative — the controller retries indefinitely until the desired state is reached. There is no `PermanentlyFailed` state. When a worker enters `Failed`, the controller deletes the failed BMI and creates a replacement with escalating backoff:
 
@@ -355,7 +353,7 @@ Agent-to-cluster isolation is enforced by the MAC correlation algorithm (see MAC
 
 The controller resolves the RHCOS boot image via a pre-registered DiskImage resource (dependency: OSAC-2540 DiskImage, OSAC-1270 BMI DiskImage integration). The Cloud Infrastructure Admin registers RHCOS qcow2 images as provider-global DiskImages with guest OS family (`linux`) and architecture (`amd64`), and applies a CaaS-specific label `osac.openshift.io/ocp-version: "4.22"` to enable version-based lookup. This label is a CaaS convention — the DiskImage resource itself (OSAC-2540) has no OCP version field, since version-based lookup is a CaaS-specific need. If richer metadata is needed (e.g., multiple image variants per version, automated registration), a dedicated `ClusterDiskImage` resource could wrap DiskImage with CaaS-specific fields. Labeling is sufficient for this design.
 
-The controller reads `NodePool.spec.release.image`, extracts the OCP major.minor version (e.g., `4.22` from `ocp-release:4.22.5-x86_64`), and resolves the matching DiskImage by querying for provider-global DiskImages with the `osac.openshift.io/ocp-version` label matching the target version and the correct architecture.
+The controller reads `NodePool.spec.release.image`, extracts the OCP major.minor version (e.g., `4.22` from `ocp-release:4.22.5-x86_64`), and resolves the worker architecture from the node set's `BareMetalInstanceType` (which defines the HostType and its CPU architecture). It then queries for provider-global DiskImages matching both the `osac.openshift.io/ocp-version` label and the resolved architecture. This design targets `amd64` only; other architectures require Cloud Infrastructure Admin to register the corresponding RHCOS DiskImages.
 
 Using the NodePool's current release image rather than the ClusterOrder's original ensures scale-up works correctly after cluster upgrades. A cluster created at OCP 4.18 and later upgraded to 4.22 would use a 4.22 boot image for new workers. Using the original 4.18 image could cause agent compatibility issues — the assisted-installer agent in an older RHCOS may not be compatible with a newer cluster's API or ignition format.
 
@@ -375,7 +373,7 @@ For each worker, the controller calls `BareMetalInstances.Create` on the private
 message BareMetalInstanceSpec {
   string catalog_item = ...;                                // resolved from nodeRequest.resourceClass → BareMetalInstanceCatalogItem
   optional BareMetalInstanceImage image = ...;              // RHCOS DiskImage reference (see DiskImage Resolution)
-  optional string user_data = ...;                          // Secret reference containing discovery ignition
+  optional string user_data = ...;                          // inline discovery ignition content (max 64KB)
   repeated BareMetalNetworkAttachment network_attachments = ...;
   // ... other existing fields (ssh_public_key, run_strategy, template_parameters, etc.) omitted
 }
@@ -391,6 +389,8 @@ The controller sets the following metadata fields on the created BMI:
 - `name`: `"<cluster-order-name>-worker-<index>"`
 - `labels["osac.openshift.io/cluster-order"]`: `"<order-id>"` — links BMI to parent ClusterOrder
 - `annotations["osac.openshift.io/owner-reference"]`: `"ClusterOrder/<order-id>"`
+
+**Idempotency on lost responses:** If `BareMetalInstances.Create` succeeds but the response or status update is lost, the controller must not create a duplicate BMI on the next reconciliation. Before calling `Create` for a worker slot, the controller lists BMIs in the `system` tenant filtered by `osac.openshift.io/cluster-order` label and checks for an existing BMI matching the expected worker name. If found, it skips creation and adds the existing BMI to `status.workers`. This relies on the private API's read-after-write consistency (PostgreSQL, no caching layer). Alternatively, a unique constraint on `(name, tenant)` in the fulfillment-service would allow the controller to handle `AlreadyExists` responses directly — this would be a stronger guarantee but requires a fulfillment-service schema change outside the scope of this design.
 
 #### System Tenant Isolation
 
@@ -438,7 +438,7 @@ All four phases are handled within the ClusterOrder controller rather than split
 
 CaaS-managed BMIs are created under the builtin `system` tenant via the private API. The `system` tenant is excluded from `DetermineVisibleTenants`, so these BMIs are invisible to all regular users without any additional filtering. The private API bypasses tenant-scoped OPA policies because it operates with system-level credentials. Ownership is traceable via the `osac.openshift.io/owner-reference` annotation linking each BMI to its parent ClusterOrder (which belongs to the real tenant).
 
-The discovery ignition contains the InfraEnv's pull secret and the assisted-service endpoint URL (both platform-level, not cluster-specific). It is stored as an OSAC Secret (OSAC-1567) encrypted at rest via the Vault backend, and referenced from the BMI's `user_data` field. The `user_data` field is immutable (enforced by the proto `IMMUTABLE` field behavior annotation). The ignition comes from the shared platform-level InfraEnv and is not cluster-scoped — agent-to-cluster binding is enforced by the MAC correlation algorithm, not by the ignition content. The Secret is deleted when the cluster is decommissioned (owned by the ClusterOrder lifecycle).
+The discovery ignition contains the InfraEnv's pull secret and the assisted-service endpoint URL (both platform-level, not cluster-specific). It is passed inline as `user_data` on each BMI (max 64KB; PoC measured 15KB). The `user_data` field is immutable (enforced by the proto `IMMUTABLE` field behavior annotation). The ignition comes from the shared platform-level InfraEnv and is not cluster-scoped — agent-to-cluster binding is enforced by the MAC correlation algorithm, not by the ignition content.
 
 No changes to authentication or authorization flows are required. The existing OPA policies enforce tenant isolation for all public API access. The osac-operator authenticates to the private API using a token file mounted from a Kubernetes Secret (`OSAC_FULFILLMENT_TOKEN_FILE`), following the same pattern used by the existing feedback controllers for Signal RPCs.
 
@@ -457,13 +457,13 @@ The private API token (`OSAC_FULFILLMENT_TOKEN_FILE`) authenticates as `service-
 | Agent does not register within timeout | Worker phase set to `Failed`, reason `AgentRegistrationTimeout` | Controller deletes the timed-out BMI and retries with escalating backoff (capped at 30m) | Cluster shows `WORKER_PROVISIONING_FAILED` |
 | MAC correlation finds no match | Agent remains uncorrelated | Controller logs a warning and continues watching. If all BMIs are correlated and extra agents exist, they are ignored | No direct tenant impact |
 | Agent binding to NodePool fails | Agent not installed as worker | assisted-service reports failure in Agent conditions; controller reflects in worker phase | Cluster shows degraded worker count |
-| Scale-down: Agent unbinding times out | Agent stuck in `unbinding-pending-user-action` longer than 30 minutes | Controller logs warning, sets worker phase to `Failed`. Manual intervention required to investigate Ironic deprovision failure | Node count mismatch visible in Cluster status |
+| Scale-down: Agent unbinding times out | Agent stuck in `unbinding-pending-user-action` longer than 30 minutes | Worker remains in `Unbinding` phase with `lastFailureReason: AgentUnbindingTimeout`. Controller retries periodically. Manual intervention required to investigate Ironic deprovision failure. No replacement is triggered | Node count mismatch visible in Cluster status |
 | BMI deletion fails | BMI stuck in `Deleting` (e.g., AAP deprovision job fails with `blockDeletionOnFailure: true`) | Controller retries delete periodically. Alerting notifies operators | Scale-down appears incomplete in Cluster status |
 | Controller restart mid-reconciliation | Controller resumes from current state on restart | Idempotent reconciliation logic rebuilds in-memory state from CRD status and re-queries BMI/Agent state | Temporary stall, no data loss |
 
 ### RBAC / Tenancy
 
-No new RBAC roles are introduced. The osac-operator's service account already has permissions to create CRs in cluster namespaces and call the private API.
+The osac-operator's ClusterRole must be extended with `get`, `list`, `watch`, and `patch` on `agents` in the `agent-install.openshift.io` API group. This is required for MAC correlation (watch/list), cluster binding (patch `clusterDeploymentName`), and NodePool label application (patch labels). The existing service account permissions for creating CRs in cluster namespaces and calling the private API are unchanged.
 
 CaaS-managed BMIs carry `metadata.tenant = "system"` (the builtin system tenant). The existing tenancy logic makes them invisible to all regular users — no label-based filtering is needed. The `osac.openshift.io/cluster-order` label links BMIs to their parent ClusterOrder, enabling Cloud Provider Admin queries via the private API.
 
@@ -582,7 +582,7 @@ The ClusterOrder CRD gains a new status field (`workers`). On downgrade, the old
 
 ## Version Skew Strategy
 
-The osac-operator (controller) and fulfillment-service (private API) must be upgraded together or the operator first. The controller calls `Secrets.Create` and `BareMetalInstances.Create` with existing fields. The `source_type: "disk_image"` value is introduced by the DiskImage integration (OSAC-1270), a listed dependency — the fulfillment-service must have OSAC-1270 implemented before CaaS bare-metal provisioning is enabled, so there is no version skew scenario for this value.
+The osac-operator (controller) and fulfillment-service (private API) must be upgraded together or the operator first. The controller calls `BareMetalInstances.Create` with existing fields. The `source_type: "disk_image"` value is introduced by the DiskImage integration (OSAC-1270), a listed dependency — the fulfillment-service must have OSAC-1270 implemented before CaaS bare-metal provisioning is enabled, so there is no version skew scenario for this value.
 
 CaaS-managed BMIs are assigned to the builtin `system` tenant, which already exists in the fulfillment-service database (migration 48). No fulfillment-service changes are required for tenant isolation — the existing tenancy logic excludes the `system` tenant from regular user queries. There is no version skew risk for visibility.
 
