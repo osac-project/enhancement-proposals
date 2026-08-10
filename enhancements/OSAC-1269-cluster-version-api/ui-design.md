@@ -9,51 +9,49 @@
 
 # 1. Overview
 
-This design specifies the `osac-ui` implementation for `ClusterVersion` (OSAC-1269): a managed catalog of OpenShift versions that replaces raw `release_image` input across the cluster-creation wizard, catalog item field definitions, and cluster list/detail views. It covers three UI surfaces: (1) an admin catalog management screen for creating, editing, and transitioning the lifecycle state of `ClusterVersion` entries; (2) version selection in the cluster-creation wizard, replacing the free-text release-image field; (3) version and lifecycle-state display on cluster list and detail views via a client-side join against the `ClusterVersion` catalog. The backend API and data model — the fulfillment-service `ClusterVersions` service, `ClusterSpec.version_name`, and the public/private visibility split for `spec.image` — are an already-finalized contract [Codebase: enhancement-proposals `design.md`]; this document addresses only how `osac-ui` consumes and surfaces them. See the [PRD](./prd.md) for the full product requirements.
+This design specifies the `osac-ui` implementation for `ClusterVersion` (OSAC-1269): a managed catalog of OpenShift versions that replaces raw `release_image` input across the cluster-creation wizard, catalog item field definitions, and cluster list/detail views. It covers two UI surfaces: (1) version selection in the cluster-creation wizard, replacing the free-text release-image field; (2) version and lifecycle-state display on cluster list and detail views via a client-side join against the `ClusterVersion` catalog. Per the PRD's FR-9 (revised in `enhancement-proposals` PR #191), `ClusterVersion` catalog management (create, delete, lifecycle transitions) is CLI/API-only in v0.2 — `osac-ui` has no admin surface for it. The backend API and data model — the fulfillment-service `ClusterVersions` service and `ClusterSpec.version_name` — are an already-finalized contract [Codebase: enhancement-proposals `design.md`]; this document addresses only how `osac-ui` consumes and surfaces them. See the [PRD](./prd.md) for the full product requirements.
 
 # 2. Goals and Non-Goals
 
 ## 2.1 Goals
 
-- Follow the existing hooks-layer conventions (`useApiFetch` + `useApiQuery`/`useMutation` + `apiQueryKey`, public/private route split) established in `libs/ui-components/src/api/v1/networking.ts`, `instance-types.ts`, and `private/cluster-catalog-item.ts` for all `ClusterVersion` API access. [Codebase: `docs/api-query-arch.md`]
+- Follow the existing hooks-layer conventions (`useApiFetch` + `useApiQuery` + `apiQueryKey`) established in `libs/ui-components/src/api/v1/networking.ts` and `instance-types.ts` for `ClusterVersion` API access. [Codebase: `docs/api-query-arch.md`]
 - Reuse the existing client-side cross-resource join pattern (`useVmDetailsDisplay.ts`) for resolving and displaying a cluster's version and lifecycle state. [Codebase: `libs/ui-components/src/components/vm/DetailsPage/useVmDetailsDisplay.ts`]
 - Batch-fetch `ClusterVersion` data for the cluster list table instead of issuing one fetch per row. [Codebase: `libs/ui-components/src/components/Cluster/ClustersTable.tsx`]
-- Route `spec.image` access exclusively through the private API surface, matching the CLI's public/private table column split. [PRD: §"Data exposure"], [Codebase: `design.md` "Table rendering"]
 
 ## 2.2 Non-Goals
 
 - ACM `ClusterImageSet` auto-sync UI — versions remain admin-entered in v0.2. [PRD: §2.2 Non-Goals]
 - A generic, backend-driven "field type" rendering system for catalog field definitions. Version selection remains a hardcoded wizard-step widget, consistent with how `instance_type` is implemented today — the `FieldDefinition` proto has no type discriminator to drive one. [Codebase: `catalogProvision/catalogFieldDefinition.ts`]
 - CLI implementation — covered by the linked fulfillment-service design, not this document.
+- **`ClusterVersion` catalog management UI** (create, delete, lifecycle state transitions, set-default) — per PRD FR-9 (revised in `enhancement-proposals` PR #191), this is CLI/API-only in v0.2; "the interaction model is expected to change when versions become system-populated (OSAC-1415)." `osac-ui` has no admin surface for `ClusterVersion` at all. [PRD: FR-9] [User]
+- **UI for changing an existing cluster's version after creation.** `allowed_upgrades` and the associated version-change validation were removed from the backend data model entirely in PR #191 (not deferred — deleted). There is no version-change API surface for `osac-ui` to build against. Resolves the prior Open Question 8.1. [Codebase: `enhancement-proposals` `design.md`, PR #191] [User]
 
 # 3. Motivation / Background
 
 Today, `ClusterConfigurationStep.tsx` renders `spec.releaseImage` as a plain-text `InputField`, requiring the user to paste an exact OCI pullspec with no validation until the server rejects it during provisioning. `ClusterConfigurationCard.tsx` echoes the same raw string back on the cluster detail page. Neither surface resolves, validates, or contextualizes the value in any way.
 
-`ClusterVersion` replaces this raw string with a managed reference (`version_name`) that the fulfillment-service already validates, resolves, and tracks through a lifecycle (active/deprecated/obsolete) [Codebase: `design.md`]. The UI's job is threefold: give admins a way to populate and maintain that catalog (which has no existing precedent in this codebase — the structurally closest resource, `InstanceType`, is read-only from the UI); replace the wizard's free-text field with a version picker sourced from the catalog; and, everywhere a cluster's version is displayed, resolve `version_name` to its descriptive metadata and *current* lifecycle state, since the cluster object stores only a name reference and lifecycle state can change independently of the cluster (FR-6).
+`ClusterVersion` replaces this raw string with a managed reference (`version_name`) that the fulfillment-service already validates, resolves, and tracks through a lifecycle (active/deprecated/obsolete) [Codebase: `design.md`]. The UI's job is twofold: replace the wizard's free-text field with a version picker sourced from the catalog; and, everywhere a cluster's version is displayed, resolve `version_name` to its descriptive metadata and *current* lifecycle state, since the cluster object stores only a name reference and lifecycle state can change independently of the cluster (FR-6). Populating and maintaining the catalog itself is a Cloud Provider Admin task performed via CLI/API — per PRD FR-9, `osac-ui` has no admin surface for it in v0.2.
 
 # 4. Design
 
 ## 4.1 Architecture
 
-Three UI surfaces share two new hook modules — one public, one private — mirroring the existing `ClusterCatalogItems` split (`libs/ui-components/src/api/v1/cluster-catalog-item.ts` vs. `private/cluster-catalog-item.ts`):
+Both UI surfaces share a single new, read-only hook module:
 
-- **`libs/ui-components/src/api/v1/cluster-versions.ts`** (public) — read-only: `useClusterVersions(params)`, `useClusterVersion(id)`. Used by tenant-facing surfaces (wizard picker, cluster list/detail join). Backed by `@osac/types`' public `ClusterVersions` service, which never returns `spec.image` and hides disabled/obsolete entries from `List` unless explicitly filtered [Codebase: `design.md` "Public `ClusterVersions/List` hides disabled and obsolete..."].
-- **`libs/ui-components/src/api/v1/private/cluster-versions.ts`** (private) — full CRUD + lifecycle actions: `usePrivateClusterVersions(params)`, `usePrivateClusterVersion(id)`, `useCreateClusterVersion()`, `useUpdateClusterVersion()`, `useDeleteClusterVersion()`, `useSetClusterVersionLifecycleState()`. Used exclusively by the admin catalog management screen. Backed by `@osac/types/private`'s `ClusterVersions` service, which includes `spec.image`.
+- **`libs/ui-components/src/api/v1/cluster-versions.ts`** (public) — `useClusterVersions(params)`, `useClusterVersion(id)`. Used by both tenant-facing surfaces (wizard picker, cluster list/detail join). Backed by `@osac/types`' public `ClusterVersions` service, which never returns `spec.image` and hides disabled/obsolete entries from `List` unless explicitly filtered [Codebase: `design.md` "Public `ClusterVersions/List` hides disabled and obsolete..."].
 
-The split is per-field, not per-persona: `networking.ts`'s `VirtualNetwork`/`SecurityGroup` CRUD mutations use the *public* API because those resources have no private-only field [Codebase: `libs/ui-components/src/api/v1/networking.ts`]. `ClusterVersion`'s admin surface uses the *private* API specifically because `spec.image` is private-only and the admin form must collect and display it (create) and the admin table displays an IMAGE column, matching the private CLI table [Codebase: `design.md` "ClusterVersion table: ... private adds IMAGE"].
+There is no private hook module for this resource in `osac-ui`. Per PRD FR-9 (revised in PR #191), `ClusterVersion` catalog management is CLI/API-only — `osac-ui` never needs `Create`/`Update`/`Delete`/lifecycle mutations, and therefore never needs `spec.image` (private-only) or `@osac/types/private`'s `ClusterVersions` service at all. This is a simpler shape than the `ClusterCatalogItems` public/private split (`cluster-catalog-item.ts` vs. `private/cluster-catalog-item.ts`), which exists specifically because *that* resource has an admin-managed UI counterpart — `ClusterVersion` does not.
 
 ```mermaid
 flowchart LR
     Wizard[ClusterConfigurationStep] -->|useClusterVersions active filter| PublicHook[cluster-versions.ts public]
-    ClusterList[ClustersTable] -->|batched useClusterVersions all-states filter| PublicHook
+    ClusterList[ClustersTable] -->|batched useClusterVersions name filter| PublicHook
     ClusterDetail[ClusterConfigurationCard] -->|useClusterVersion by name| PublicHook
-    AdminPage[ClusterVersion admin page] -->|CRUD + lifecycle mutations| PrivateHook[cluster-versions.ts private]
     PublicHook -->|Connect client, public ClusterVersions| API[fulfillment-service]
-    PrivateHook -->|Connect client, private ClusterVersions| API
 ```
 
-This diagram shows that no component talks to a Connect client directly — every UI surface routes through one of the two hook modules, and both ultimately reach the same fulfillment-service `ClusterVersions` service through different proto visibility scopes. The reader's takeaway: adding a new consumer of version data never requires a new API integration, only a new hook call against an existing module.
+This diagram shows that no component talks to a Connect client directly — every UI surface routes through the one hook module, which reaches the fulfillment-service `ClusterVersions` service's public API. The reader's takeaway: adding a new consumer of version data never requires a new API integration, only a new hook call against the existing module.
 
 **Wizard (tenant-facing).** `ClusterConfigurationStep.tsx` replaces the `spec.releaseImage` `InputField` with a `SelectField name="spec.versionName"`, fed by `useClusterVersions({ filter: CLUSTER_VERSION_ACTIVE_LIST_FILTER })` — mirroring `VmConfigurationStep.tsx`'s `instanceType` field exactly [Codebase: `wizard/adapters/computeInstance/VmConfigurationStep.tsx`]. `fields.ts` renames `CLUSTER_RELEASE_IMAGE_WIRE_PATH` (`'release_image'`) to `CLUSTER_VERSION_NAME_WIRE_PATH` (`'version_name'`) and the form field from `releaseImage` to `versionName`; `schemas.ts`, `payload.ts`, `applyCatalogDefaults.ts`, and `clusterAdapter.ts` rename their `releaseImage`/`spec.releaseImage` references accordingly. `getCatalogFieldOverlay('version_name', definitions, t('Version'))` still supplies label/editable/default overlay from the catalog item's field definitions, matching FR-10 and today's `release_image` overlay usage.
 
@@ -63,16 +61,7 @@ Options are built with a new `formatClusterVersionOptionLabel` helper (`libs/ui-
 
 **Cluster detail (`ClusterConfigurationCard.tsx`).** The line that currently renders `displayValue(cluster.spec?.releaseImage)` is replaced with `useClusterVersion(cluster.spec?.versionName)`, rendering the version string plus `ClusterVersionStateLabel`, with a `Skeleton` while loading — the exact pattern already used in the same file for `cluster.spec?.catalogItem` via `useClusterCatalogItem`. A single `Get`-by-name call resolves regardless of the version's lifecycle state (FR-2's "a specific version can be viewed regardless of its state"), so no all-states filter is needed here, unlike the list table's batched `List` call.
 
-**Admin catalog management (new).** A new nav entry, "Cluster versions", is added under `sectionId: 'nav-administration'` in `shellNav.ts`, alongside but distinct from "Catalog management" — `ClusterVersion` is a primitive reference resource, not a provisioning template, so it does not belong inside `CatalogManagementListPage`'s tabs. [User]
-
-The list page follows `ClustersTable.tsx`'s plain PatternFly `Table` convention (no generic column-definition abstraction exists in this codebase) fed by `usePrivateClusterVersions()`, with columns NAME, VERSION, STATE (`ClusterVersionStateLabel`), ENABLED, DEFAULT, IMAGE, and a row actions kebab — directly matching the private CLI table's column set [Codebase: `design.md` "ClusterVersion table"]. Row actions:
-
-- **Edit** — opens a form for `enabled` and `is_default` only; `version` and `image` render as read-only text, enforcing FR-14's immutability at the UI layer (in addition to the server-side trigger and validation).
-- **Deprecate / Obsolete / Reactivate** — calls `useSetClusterVersionLifecycleState()`, a mutation wrapping the same `update` RPC as Edit but scoped to `spec.state` only, kept as a separate hook so lifecycle transitions are a distinct, auditable action from general field edits. Available actions are computed from the current state per the backend's state machine (e.g., an `OBSOLETE` entry offers "Reactivate" and "Deprecate", not "Obsolete") [Codebase: `design.md` lifecycle `stateDiagram-v2`]. Action naming matches the convention established for the same three actions in the `OSAC-46` (instance types) UI design, per reviewer discussion. [User]
-- **Set as default** — calls `useUpdateClusterVersion()` with `is_default: true`; disabled (with a tooltip) when the entry's state is `OBSOLETE` or `enabled` is `false`, matching the backend invariant that obsolete/disabled versions cannot be default. A confirmation dialog warns that this replaces the current default.
-- **Delete** — calls `useDeleteClusterVersion()`, but is only enabled when the entry's `state` is `OBSOLETE` (disabled, with a tooltip explaining why, for `ACTIVE`/`DEPRECATED` entries) [User]. This keeps the UI's primary retirement path as the lifecycle sequence (Deprecate → Obsolete, optionally paired with disabling `enabled`) rather than encouraging routine hard deletes, while still surfacing delete as a cleanup action once a version has already been fully retired. No client-side pre-check for in-use references beyond the state gate; the server's FR-11 error ("cannot delete version '4.17.0': in use by cluster 'cluster-abc'") is surfaced verbatim via the existing form/toast error-display convention.
-
-**Create** is a single-step form/modal (not the multi-step wizard component, since there is nothing to configure beyond the entry itself): version (semver-format text input), **name** (`metadata.name` — text input, live-defaulted to the server's own slugification of the version as it's typed, e.g. `4.17.0` → `4-17-0`, editable before submit), release image URL, enabled (checkbox, default checked). The name field exists because `metadata.name` is the identifier every other surface references (`spec.version_name`, template defaults, the CLI's `--version` resolution) — leaving it fully server-generated with no admin visibility risks an unpredictable name, especially on collision (the server appends a random hex suffix). The entry is always created in `ACTIVE` state; admins use the "Deprecate"/"Obsolete" row actions after creation to transition it, keeping the create form focused on the three immutable, one-time-entry fields plus `enabled`. [User]
+There is no admin catalog management UI for `ClusterVersion` in `osac-ui` — per PRD FR-9 (revised in PR #191), catalog management (create, delete, lifecycle transitions, set-default) is CLI/API-only in v0.2. Everything about the admin list page, row actions (Edit/Deprecate/Obsolete/Reactivate/Set-as-default/Delete), and the create form that appeared in earlier drafts of this design has been removed — see §5 for why it isn't relocated elsewhere either.
 
 **Lifecycle state label.** A new `ClusterVersionStateLabel` component, co-located under `libs/ui-components/src/components/Cluster/` alongside `ClusterStatusLabel.tsx`, maps `ClusterVersionState` to a PatternFly `Label`: `ACTIVE` → green, `DEPRECATED` → orange (per UX, not gold/amber), `OBSOLETE` → grey. [User]
 
@@ -85,30 +74,14 @@ No schema changes originate in `osac-ui` — `ClusterVersion` is defined and own
 
 ## 4.3 API Changes
 
-No new backend API — this section covers the new `osac-ui`-internal hook surface wrapping the already-specified `ClusterVersions` service [Codebase: enhancement-proposals `design.md`]. New `ApiRoute` entries in `libs/ui-components/src/api/types.ts`: `'v1/cluster_versions'` (public) and `'v1/private/cluster_versions'` (private), following the existing `v1/cluster_catalog_items` / `v1/private/cluster_catalog_items` pairing.
-
-`ClusterVersionsUpdateRequest` carries a `google.protobuf.FieldMask update_mask` — `Update` is a partial-update RPC, not a full-object replace. `useUpdateClusterVersion()` and `useSetClusterVersionLifecycleState()` must derive `update_mask` from the fields actually being sent using `buildUpdateMaskPaths()` (`libs/ui-components/src/api/v1/update-mask.ts`), the same utility `compute-instance.ts` and `baremetal-instance.ts` already use for their own partial updates. Omitting `update_mask` — or worse, sending the full object without one — would risk depending on server-side default-merge behavior for `version`/`image` instead of an explicit, verifiable guarantee that those immutable fields are never touched.
+No new backend API — this section covers the new `osac-ui`-internal hook surface wrapping the already-specified `ClusterVersions` service [Codebase: enhancement-proposals `design.md`]. One new `ApiRoute` entry in `libs/ui-components/src/api/types.ts`: `'v1/cluster_versions'` (public only — no private route, per §4.1).
 
 | Hook | Module | RPC | Notes |
 |---|---|---|---|
 | `useClusterVersions(params)` | public | `List` | `select: data.items`; used with `CLUSTER_VERSION_ACTIVE_LIST_FILTER` (wizard) or `buildClusterVersionNamesFilter(names)` (cluster table join — filters by the referenced clusters' `metadata.name` values, not by lifecycle state) |
 | `useClusterVersion(id)` | public | `Get` | `select: data.object`; used by cluster detail join |
-| `usePrivateClusterVersions(params)` | private | `List` | admin list page; no default state filter needed (private `List` does not hide obsolete/disabled) |
-| `usePrivateClusterVersion(id)` | private | `Get` | admin edit-form prefill |
-| `useCreateClusterVersion()` | private | `Create` | submits `metadata.name`, `spec.version`, `spec.image`, `spec.enabled` — `metadata.name` is populated from the form's (editable, live-defaulted) name field, not left for the server to auto-generate |
-| `useUpdateClusterVersion()` | private | `Update` | submits only `spec.enabled` / `spec.isDefault` plus a matching `update_mask`; `version`/`image` are never included in the payload or the mask |
-| `useSetClusterVersionLifecycleState()` | private | `Update` | submits only `spec.state` plus a matching `update_mask` |
-| `useDeleteClusterVersion()` | private | `Delete` | — |
 
-Example — admin creates a version:
-
-```json
-// Request (useCreateClusterVersion)
-{ "object": { "metadata": { "name": "4-18-0" }, "spec": { "version": "4.18.0", "image": "quay.io/openshift-release-dev/ocp-release:4.18.0-multi", "enabled": true } } }
-
-// Response
-{ "object": { "id": "uuid", "metadata": { "name": "4-18-0" }, "spec": { "version": "4.18.0", "image": "quay.io/openshift-release-dev/ocp-release:4.18.0-multi", "enabled": true, "state": "ACTIVE" }, "status": {} } }
-```
+`osac-ui` has no mutation hooks for `ClusterVersion` — `Create`/`Update`/`Delete`/lifecycle-state transitions are CLI/API-only per PRD FR-9, so there's no `useCreateClusterVersion()`/`useUpdateClusterVersion()`/`useDeleteClusterVersion()`/`useSetClusterVersionLifecycleState()` in this design, and no `ClusterVersionsUpdateRequest`/`update_mask` concern for `osac-ui` to account for.
 
 Example — wizard lists selectable versions:
 
@@ -137,9 +110,7 @@ Impact is minimal and bounded by existing patterns. The cluster list table's bat
 
 ## 4.5 Security Considerations
 
-This design introduces the first UI-side use of the private/public visibility split for a field-sensitive resource beyond catalog items. The critical rule is structural: `spec.image` must never be requested by any hook imported from `@osac/types` (public) — only from `@osac/types/private`. Enforcement is by code review convention (matching how `usePrivateClusterCatalogItems` is already isolated in `api/v1/private/`), since there is no automated lint rule distinguishing public from private route usage today (see Open Question 8.2).
-
-Write access (create/update/delete/lifecycle transitions) is restricted to Cloud Provider Admins via the existing OPA-based authorization already enforced server-side [Codebase: `design.md` RBAC/Tenancy]; the UI does not duplicate this check beyond hiding the admin nav entry from non-admin users, consistent with how other admin-only pages are gated today.
+`osac-ui` only ever calls the public `ClusterVersions` API (`List`/`Get`) — it never imports `@osac/types/private` for this resource, since it has no admin surface that would need `spec.image` or write access. `spec.image` is therefore structurally unreachable from any `osac-ui` code path, with no code-review convention or lint rule needed to enforce it (unlike `ClusterCatalogItems`, where a public/private split genuinely exists because that resource does have an admin-facing UI counterpart). Write access to `ClusterVersion` (create/update/delete/lifecycle transitions) is CLI/API-only per PRD FR-9, enforced server-side via OPA — not a concern for this design at all.
 
 ## 4.6 Failure Handling and Recovery
 
@@ -148,22 +119,18 @@ Write access (create/update/delete/lifecycle transitions) is restricted to Cloud
 | Wizard: selected version becomes obsolete/deleted between load and submit | `CreateCluster` rejects with `InvalidArgument`; the wizard surfaces the server error via its existing submission-error handling and the user reselects a version. |
 | Wizard: `ClusterVersions/List` call fails or is slow | `SelectField` shows its existing loading state (`isLoading`); on failure, the field shows no options and the wizard's existing field-level error display applies — no new error UI. |
 | Cluster detail/list: referenced version was deleted (rare — delete is blocked while referenced, but can occur if reference cleanup and version deletion race, or for legacy pre-migration clusters per the PRD's Assumptions) | Falls back to displaying the raw `version_name` with no lifecycle label, mirroring the existing `ClusterConfigurationCard` fallback for an unresolved `catalogItem`. |
-| Admin: delete rejected (in use) | Server's `FailedPrecondition` error, including the referencing resource name (FR-11), is shown verbatim in the existing toast/form-error convention. |
-| Admin: concurrent default-set race | Server returns `AlreadyExists` to the losing request; the UI surfaces this as a submission error and the admin retries after refreshing. |
 
 ## 4.7 RBAC / Tenancy
 
-`ClusterVersion` is a platform-global, non-tenant-scoped resource [Codebase: `design.md` RBAC/Tenancy — `"shared"` tenant]. All authenticated users can read it (public API); create/update/delete are Cloud Provider Admin-only, enforced server-side via OPA. The admin catalog management nav entry and route are gated the same way existing admin-only pages are gated in this codebase — no new RBAC mechanism is introduced.
+`ClusterVersion` is a platform-global, non-tenant-scoped resource [Codebase: `design.md` RBAC/Tenancy — `"shared"` tenant]. All authenticated users can read it via the public API. Create/update/delete/lifecycle transitions are Cloud Provider Admin-only per PRD FR-9, enforced server-side via OPA — but that's a CLI/API concern, not an `osac-ui` one: there's no admin route or nav entry for `osac-ui` to gate.
 
 ## 4.8 Extensibility / Future-Proofing
 
-The public/private hook split generalizes to any future field that needs admin-only visibility without a new pattern. The wizard's hardcoded-widget approach (no generic field-type registry) means a future field with similar "pick from a managed catalog" needs (e.g., a future `ComputeImage` catalog for VMaaS, noted as a PRD non-goal here) would follow the same recipe as `instanceType`/`versionName`: a dedicated hook, a dedicated `SelectField`, and an overlay call for label/editable/default — not a new abstraction. `allowed_upgrades` and any future version-change UI are deliberately left for a later design (see Open Questions) rather than partially built here, since building UI for a capability with no confirmed consumer risks premature, unused surface area.
+The wizard's hardcoded-widget approach (no generic field-type registry) means a future field with similar "pick from a managed catalog" needs (e.g., a future `ComputeImage` catalog for VMaaS, noted as a PRD non-goal here) would follow the same recipe as `instanceType`/`versionName`: a dedicated hook, a dedicated `SelectField`, and an overlay call for label/editable/default — not a new abstraction. `allowed_upgrades` was removed from the backend data model entirely in PR #191, not deferred — if OSAC-1415 introduces a version-change or upgrade-graph capability later, that will need its own design, informed by whatever API shape ships at that time; nothing in this design should be read as a placeholder for it. Resolves the prior Open Question 8.1.
 
 # 5. Alternatives Considered
 
 **Generic field-type-driven form rendering** (a `field_definitions`-declared type enum that picks a widget automatically, rather than hardcoding `SelectField` for `version_name`). Rejected: the `FieldDefinition` proto has no type discriminator today, and introducing one would require a coordinated fulfillment-service proto change out of scope for this UI design; the hardcoded-widget approach is also what `instance_type` already does, so it introduces no new inconsistency.
-
-**Placing ClusterVersion admin management inside the existing `CatalogManagementListPage` tabs** (as a fourth tab alongside Clusters/VMs/Bare Metal). Rejected: those tabs manage catalog *items* (provisioning templates), a conceptually different resource kind from a primitive reference catalog; conflating them would make the tab's contents inconsistent (item cards with publish/scope badges vs. a plain CRUD table) and confuse the "what am I managing" mental model for admins. A dedicated nav entry keeps the resource kinds visually distinct while still living under the same Administration section, satisfying NFR-1's "familiar location" without a false structural equivalence. [User]
 
 **Per-row version fetch in `ClustersTable.tsx`** instead of a batched list + lookup map. Rejected: with N clusters, this issues N `Get` calls per table render; TanStack Query's cache would dedupe repeated calls for the same version across rows but still issues one request per distinct version referenced on first render, and doesn't scale as cleanly as a single `List` call scoped to exactly the referenced names. (This is distinct from the small, bounded `Get` fallback described in §4.1 for names the `List` call's filter doesn't surface — that fallback fires for at most the handful of hidden-by-default entries, not once per cluster.)
 
@@ -181,27 +148,18 @@ The wizard's field rename (`releaseImage` → `versionName`) and the removal of 
 
 # 8. Open Questions
 
-## 8.1 Does this design need to include any UI for changing an existing cluster's version?
+No open questions remain. The two previously open in this section are both resolved by `enhancement-proposals` PR #191 (revised PRD/BE design):
 
-The fulfillment-service design already validates version-change against `allowed_upgrades` as an in-scope API capability, distinct from full upgrade orchestration (owned by OSAC-1415) [Codebase: `design.md` Proposal — "Basic validated version changes... are in scope"]. The PRD's UI requirement (FR-9) only mentions version selection during cluster *creation*. This design currently includes no "change version" action on the cluster detail page and no `allowed_upgrades` management in the admin create/edit form. If a UI consumer for version-change is expected before OSAC-1415 ships, this design needs an additional section.
-
-- **Owner:** OSAC-1269/OSAC-1415 authors (Ilya Skornyakov / CaaS team)
-- **Impact:** §4.1 (Cluster detail architecture), §4.3 (would add an `allowed_upgrades` field to the admin create/edit form and a new mutation), §2.2 (Non-Goals would need to explicitly state this is deferred, if confirmed out of scope)
-
-## 8.2 Should a lint rule or module boundary enforce that `spec.image` never reaches a component via the public hook path?
-
-§4.5 notes this is currently enforced only by convention (file-path separation of `api/v1/` vs. `api/v1/private/`), matching existing practice for catalog items. No automated safeguard exists.
-
-- **Owner:** osac-ui platform/infra owner
-- **Impact:** §4.5 (Security Considerations) — would add a build-time or lint-time check if required
+- *Does this design need UI for changing an existing cluster's version?* — **No.** `allowed_upgrades` was removed from the backend data model entirely (not deferred), and PRD FR-9 explicitly scopes `osac-ui` to wizard selection + lifecycle display only. See §2.2 Non-Goals and §4.8.
+- *Should a lint rule enforce the `spec.image` public/private boundary?* — **Moot.** `osac-ui` has no private `ClusterVersions` hook at all now (§4.1, §4.5), so there's no boundary to enforce.
 
 ---
 
 ## Provenance
 
 Authored: draft @ design 0.4.1 - 96de078, workspace fix/proxy-any-wrapper-type-resolution @ afbc45d (2 behind origin/main)
-Final: respond @ design 0.7.1 - b8b3f86, workspace main @ 752f695 (dirty)
+Final: revise @ design 0.8.0 - a605aa5, workspace main @ 4d7ae6c
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"752f695 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"a605aa5","source_repo":"4d7ae6c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
