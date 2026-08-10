@@ -3,7 +3,7 @@ title: multi-fabric-east-west-networking
 authors:
   - vromanso@redhat.com
 creation-date: 2026-07-14
-last-updated: 2026-08-06
+last-updated: 2026-08-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1382
 prd:
@@ -441,6 +441,18 @@ That matches **Model B** and is the right default when:
 **Honest benefit:** one extensible isolation concept that does not bake in "VPC owns every fabric forever."
 
 If the project decides independent lifecycle and non-VPC-scoped fabrics are *not* near-term requirements, Model B is simpler and better aligned with industry packaging—and should be chosen deliberately, not by accident.
+
+### Why not tie isolation exclusively to VirtualNetwork?
+
+Production AI clusters use **non-uniform fabric membership**:
+
+- **NVIDIA DGX SuperPOD** separates Multi-Node NVLink, compute InfiniBand, storage, and management into distinct physical fabrics with completely different server memberships and topologies. Storage nodes participate in storage/in-band networks but do not exist on the NVLink domain; compute IB and NVLink groupings are not identical to "every server in the tenant VPC." ([NVIDIA DGX SuperPOD Reference Architecture — Network Fabrics](https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/network-fabrics.html))
+
+- **NVIDIA NICo** treats NVLink logical partitions as independent of VPC ownership: a default partition on a VPC is optional, and the same partition may be associated with multiple VPCs — "no exclusivity between VPCs." ([NVIDIA NICo — NVLink Partitioning](https://docs.nvidia.com/infra-controller/documentation/operations-day-2/nv-link-partitioning))
+
+**Dual-writer risk with shared storage under Model B.** If ServerCluster is a child of a single VirtualNetwork, sharing one set of storage hosts across two VNs requires two child objects (`storage-a` under VN A, `storage-b` under VN B) reconciling the same physical endpoints. Two parent-child resources driving the same bare-metal switch ports from different parent objects creates a split-brain reconciliation race in the Kubernetes operator. A top-level FabricDomain with optional `virtual_networks: [vn-a, vn-b]` avoids object duplication entirely.
+
+Phase 1 can still require a 1:1 VirtualNetwork association for the Netris Ethernet path — operators get a VPC-centric workflow — while the schema remains valid for non-uniform membership and shared domains later.
 
 ### Recommendation: Model A (FabricDomain)
 
