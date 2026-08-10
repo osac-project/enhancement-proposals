@@ -152,7 +152,7 @@ Beyond this, the UI migration mirrors the ComputeInstance flow: replace the inli
 This is a breaking public API change: `BareMetalInstanceSpec.image` is removed and replaced by `disk_image`. The following documentation updates are **in scope** for this feature:
 
 - **REST API reference** — update `BareMetalInstanceSpec` field descriptions; mark `image` as removed (reserved), document `disk_image`.
-- **CLI help text** — `osac create baremetalinstance` currently accepts `--image` and `--image-source-type` flags. These must be replaced by `--disk-image <id>` before GA.
+- **CLI help text** — `osac create baremetalinstance` currently accepts `--image` and `--image-source-type` flags. These must be replaced by `--disk-image <id>`.
 - **Migration notes** — upgrade/downgrade guidance for existing `BareMetalInstanceSpec.image` callers is documented in the [Upgrade / Downgrade Strategy](#upgrade--downgrade-strategy) section.
 
 Deferred to GA per [Graduation Criteria](#graduation-criteria): full user-facing documentation and release notes.
