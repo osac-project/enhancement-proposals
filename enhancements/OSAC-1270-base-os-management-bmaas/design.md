@@ -439,9 +439,6 @@ No new observability changes. Existing monitoring mechanisms apply:
 **Risk: CatalogItem deletion protection relies on text search of JSONB.** `bare_metal_instance_catalog_items` stores DiskImage IDs in opaque `google.protobuf.Value` field_definition defaults. A substring match of the serialized JSONB is used, same as in OSAC-2540 for ComputeInstanceCatalogItems.
 
 *Mitigation:* UUID-format IDs make false-positive substring matches negligible. False positives prevent deletion (safe direction). If this becomes a performance concern at scale, a materialized reference-count table can be introduced in a follow-up migration, as described in OSAC-2540's Risks section.
-
-**Risk: Trigger replacement couples OSAC-1270 to OSAC-2540's internal structure.** Dropping and recreating `check_disk_image_not_in_use` means the OSAC-1270 migration must remain consistent with OSAC-2540's trigger. All JSONB keys are snake_case (enforced by `UseProtoNames: true` in the DAO). Any future change to this convention must also update this trigger.
-
 **Risk: OSAC-2540 migration number conflicts.** OSAC-1270's migration must come after OSAC-2540's DiskImage table migration. If both branches are in development simultaneously and migration numbers collide, one must be renumbered.
 
 *Mitigation:* Coordinate migration number allocation between OSAC-2540 and OSAC-1270 during implementation. OSAC-2540 must merge first.
