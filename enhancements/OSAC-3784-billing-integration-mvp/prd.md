@@ -15,7 +15,7 @@ Terms are aligned with [FOCUS](https://focus.finops.org/) (FinOps Open Cost and 
 | Billing account | A container for resources and/or services that are billed together in an invoice (FOCUS). In OSAC, each tenant maps to one billing account in the billing provider. |
 | Billing period | The time window that an organization receives an invoice for, inclusive of the start date and exclusive of the end date (FOCUS). In OSAC, billing periods are fixed calendar months. |
 | Billing provider | The external billing system that OSAC integrates with to manage pricing, cost calculation, and invoicing. Maps to the FOCUS concepts of invoice issuer and data generator. In OSAC: Monetize360 (M360) or Red Hat Cost Management (Koku). |
-| Billing provider adapter | The pluggable integration component that connects OSAC's usage data pipeline to a billing provider. Each OSAC deployment configures one active adapter. |
+| Billing provider adapter | The integration that connects OSAC usage data to a billing provider. Each OSAC deployment configures one active adapter. |
 | Charge | A line item representing a cost incurred for resource or service usage within a billing period. Corresponds to a row in a FOCUS cost and usage dataset. |
 | Draft invoice | An invoice for a billing period that has not been finalized or issued. Corresponds to an invoice in a FOCUS open billing period. Cloud Provider Admins review and export draft invoices before submitting them to external payment systems. |
 | FOCUS | [FinOps Open Cost and Usage Specification](https://focus.finops.org/) — an open-source specification that defines requirements for billing data. |
@@ -37,7 +37,7 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 - **VMaaS and CaaS billing** — billing models and charge calculation for the two services with existing metering (OSAC-985 milestone 0.3). Billing for other services (MaaS, BMaaS, Storage, Networking) activates via separate Features as their respective metering becomes available.
 - **Tenant-to-billing-account lifecycle** — creating a tenant in OSAC creates a corresponding billing account in the billing provider; deleting a tenant deactivates the billing account.
 - **API, CLI, and UI surfaces** — billing capabilities (cost views, invoice listing, pricing plan management) are accessible via the fulfillment-service gRPC/REST API, the `osac` CLI, and the OSAC web console. UI implementation may be phased across milestones.
-- **Billing RBAC** — billing operations require specific authorization. Provider cost data and pricing management are restricted to provider-level roles. Tenant cost and invoice data is scoped to the tenant's own billing account.
+- **Billing RBAC** — billing operations require specific authorization. Tenant cost and invoice data is scoped to the tenant's own billing account.
 
 ## Out of Scope
 
@@ -65,7 +65,7 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 - As a Cloud Provider Admin, I want to view draft invoices per tenant for a billing period showing charges itemized by service and resource type, so that I can review charges before exporting them to my payment system.
 
-- As a Cloud Provider Admin, I want billing operations (pricing plan management, invoice review) restricted to users with billing-specific permissions, so that only authorized personnel can modify pricing or access financial data. Billing RBAC supports separation of duties where required — for example, pricing plan creation and invoice approval can be assigned to separate roles.
+- As a Cloud Provider Admin, I want billing operations (pricing plan management, invoice review) restricted to users with billing-specific permissions, so that only authorized personnel can modify pricing or access financial data.
 
 - As a Cloud Provider Admin, I want all billing-related administrative actions (pricing plan changes, plan-to-tenant assignments, invoice generation) to produce audit log entries, so that I can satisfy compliance and regulatory audit requirements.
 
@@ -75,7 +75,7 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 - As a Cloud Infrastructure Admin, I want to switch the billing provider adapter (e.g., from M360 to RH Cost Management) via configuration, so that provider migrations do not require code changes or redeployment of OSAC core services.
 
-- As a Cloud Infrastructure Admin, I want to monitor the health of the billing integration through standard OSAC observability (Prometheus metrics for sync lag, error rate, and queue depth; structured logs for sync failures and adapter lifecycle events), so that I can detect and resolve billing pipeline issues before they affect invoice accuracy.
+- As a Cloud Infrastructure Admin, I want to monitor the health of the billing integration through standard OSAC observability, so that I can detect and resolve billing pipeline issues before they affect invoice accuracy.
 
 ### Tenant Admin
 
