@@ -3,7 +3,7 @@ title: catalog-items-v2-field-governance
 authors:
   - etabak@redhat.com
 creation-date: 2026-08-09
-last-updated: 2026-08-09
+last-updated: 2026-08-11
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3538
 prd:
