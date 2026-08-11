@@ -26,7 +26,7 @@ superseded-by: N/A
 
 ## Summary
 
-This design extends `BareMetalInstance` status with physical network interface MAC addresses sourced from the bare metal inventory backend at allocation time and propagated to the fulfillment-service API and CLI. See [PRD](prd.md) for detailed requirements.
+This design extends `BareMetalInstance` status with physical network interface MAC addresses (`status.hardware.nics`) sourced from the bare metal inventory backend at allocation time. The primary driver is CaaS cluster installation: the Assisted Installer agent identifies itself by boot MAC address, and without that MAC on the `BareMetalInstance`, CaaS cannot programmatically correlate the agent to the provisioned host. The design enforces at host selection time that only hosts with discoverable NIC data are allocated, so `Running` state reliably implies `status.hardware.nics` is populated — no separate poll needed. Both the Metal3 and OpenStack/Ironic inventory backends are supported. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -233,6 +233,8 @@ No deviations from known anti-patterns.
 #### Metal3 backend — `GetHostNICs` implementation
 
 **File:** `osac/bare-metal-fulfillment-operator/internal/inventory/metal3.go`
+
+Metal3's `FindFreeHost` requires no code change to enforce the NIC data availability guarantee. It already filters for `Status.Provisioning.State == Available` and `Status.OperationalStatus == OK`, and Metal3 only moves a `BareMetalHost` to `Available` after hardware inspection succeeds — inspection is what populates `Status.HardwareDetails.NIC`. A host without NIC data cannot reach `Available`, so it is never returned by `FindFreeHost`.
 
 The `inventoryHostID` for Metal3 is formatted as `namespace/name` (parsed by `ParseHostID`). The implementation fetches the `BareMetalHost` via the k8s client and extracts NIC data:
 
@@ -566,6 +568,6 @@ None.
 ## Provenance
 
 Authored: respond @ design 0.8.0 - 7efcedb, workspace main @ a4b128a
-Phases: draft, respond, respond, respond, respond, respond
+Phases: draft, respond, respond, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"a4b128a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"a4b128a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
