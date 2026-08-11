@@ -17,7 +17,7 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 - For ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, image is mandatory and always locked — tenants cannot change the image during provisioning or on updates. ClusterCatalogItem governs version instead of image; version is editable because tenants need to upgrade clusters after provisioning.
 - The catalog item owner can update the value of any governed field (locked or editable); changes only affect new provisioning — existing resources retain the values they were created with.
 - A field's behavior cannot be tightened after catalog item creation (editable or absent to locked) — this would break existing resources where tenants have already set values for that field. Relaxing governance (locked to editable/absent) is allowed.
-- Per-field type customization: fields can use richer types than the underlying resource spec (e.g., instance type as an enum with curated options, image as a mandatory reference selector).
+- Per-field type customization: fields can use richer types than the underlying resource spec (e.g., image as a mandatory reference selector).
 - Template parameters are governed with the same locked/editable behavior as spec fields, validated against the referenced template's parameter definitions.
 - The system prevents deletion of resources (images, instance types) referenced by catalog items. Deletion blocking is the immediate behavior; a deprecation/obsolescence model may replace or complement this when the lifecycle feature (see Out of Scope) is implemented.
 - Cloud Provider Admins can assign catalog items to specific tenants and control visibility via publish/unpublish.
@@ -44,7 +44,7 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 
 - As a Cloud Provider Admin, I want to update the image on an existing VM or bare metal catalog item (e.g., to apply CVE fixes) without recreating it, so that I can maintain offerings over time. Changes only affect new provisioning.
 
-- As a Cloud Provider Admin, I want editable fields to support per-field type customization (e.g., offering a curated list of instance types rather than accepting any string) so that tenants have guardrails without losing flexibility.
+- As a Cloud Provider Admin, I want editable fields to use typed inputs rather than freeform strings, so that tenants have guardrails without losing flexibility.
 
 - As a Cloud Provider Admin, I want the system to prevent deletion of resources (images, instance types) that are referenced by a catalog item, so that published offerings do not silently break.
 
@@ -84,4 +84,4 @@ Final: respond @ prd 0.8.0 - 7efcedb, workspace feat/osac-taxonomy-presentation 
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":61,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":61,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
