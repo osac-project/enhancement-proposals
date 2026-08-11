@@ -19,7 +19,7 @@ superseded-by: N/A
 
 ## Summary
 
-This design extends `BareMetalInstance` status with physical network interface MAC addresses (boot interface and all inventory-reported physical NICs) sourced from the bare metal inventory backend at allocation time and propagated to the fulfillment-service API and CLI. See [PRD](prd.md) for detailed requirements.
+This design extends `BareMetalInstance` status with physical network interface MAC addresses sourced from the bare metal inventory backend at allocation time and propagated to the fulfillment-service API and CLI. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -33,7 +33,7 @@ MAC addresses are hardware-level identifiers. They do not change after a host is
 
 ### Goals
 
-- Extend `BareMetalInstanceStatus` (CRD and proto) with a `networkInterfaces` field listing MAC addresses fetched from the inventory backend at allocation time.
+- Extend `BareMetalInstanceStatus` (CRD and proto) with a `NetworkInterfaceMACs` field listing MAC addresses fetched from the inventory backend at allocation time.
 - Implement `GetHostNICs` on both Metal3 and OpenStack inventory client backends following existing patterns.
 - Propagate NIC metadata from the CRD to the fulfillment-service API through the existing controller reconciler path.
 - Surface NIC metadata in the `osac` CLI `describe baremetalinstance` command.
@@ -70,12 +70,12 @@ sequenceDiagram
     C->>Inv: FindFreeHost / AssignHost
     Inv-->>C: Host (InventoryHostID assigned)
     C->>Inv: GetHostNICs(inventoryHostID)
-    Inv-->>C: []HostNIC{MAC, BootInterface}
-    C->>CRD: Status.NetworkInterfaces = NICs
+    Inv-->>C: []string (MACs)
+    C->>CRD: Status.NetworkInterfaceMACs = macs
     C->>CRD: Status.Phase = Ready
     Note over C,CRD: Status updated via r.Status().Update()
     FS->>CRD: Watch / reconcile
-    FS->>FS: syncStatus() propagates NetworkInterfaces
+    FS->>FS: syncStatus() propagates NetworkInterfaceMACs
     FS->>FS: Update BareMetalInstance record (private gRPC)
 ```
 
@@ -83,9 +83,9 @@ The sequence above shows `GetHostNICs` called once immediately after allocation.
 
 **Error flow — NIC data temporarily unavailable:**
 
-If `GetHostNICs` returns an error (inventory API unreachable, hardware inspection not yet complete), the controller logs a warning, emits a Kubernetes Warning event, and proceeds to set `Status.Phase = Ready` with an empty `NetworkInterfaces` slice. The controller does not requeue explicitly for this case; the normal controller-runtime backoff requeue will retry. On the next successful reconcile cycle, if `NetworkInterfaces` is still empty and the host is allocated, `GetHostNICs` is called again.
+If `GetHostNICs` returns an error (inventory API unreachable) or returns nil (Metal3 hardware inspection not yet complete), the controller logs a warning, optionally emits a Kubernetes Warning event on error, proceeds to set `Status.Phase = Ready` with an empty `NetworkInterfaceMACs` slice, and requeues after `ManagementRecheckIntervalDuration`. On the next reconcile cycle, if `NetworkInterfaceMACs` is still empty, `GetHostNICs` is called again.
 
-**Idempotency:** If `Status.NetworkInterfaces` is already populated (non-empty), the controller skips `GetHostNICs` — MACs are immutable post-allocation.
+**Idempotency:** If `Status.NetworkInterfaceMACs` is already populated (non-empty), the controller skips `GetHostNICs` — MACs are immutable post-allocation.
 
 **Consumer read path:**
 
@@ -158,12 +158,12 @@ Field 5 is free in both public and private `BareMetalInstanceStatus`. No new mes
 
 #### 4. Operational impact
 
-- If the `bare-metal-fulfillment-operator` is restarted mid-reconciliation after allocation but before `GetHostNICs` completes, the controller restarts reconciliation from the beginning. Since `NetworkInterfaces` is empty, it retries `GetHostNICs` — idempotent.
+- If the `bare-metal-fulfillment-operator` is restarted mid-reconciliation after allocation but before `GetHostNICs` completes, the controller restarts reconciliation from the beginning. Since `NetworkInterfaceMACs` is empty, it retries `GetHostNICs` — idempotent.
 - If the fulfillment-service controller is down, the CRD status update succeeds independently; NIC fields are propagated on the next reconcile cycle when the controller resumes.
 
 ## UX Alignment
 
-The `@temp-api` file for `BareMetalInstance` in osac-ux (`libs/types/src/osac/public/v1/baremetal_instance_type_pb.ts`) is generated from the public proto and does not currently contain NIC fields. After this EP ships and `pnpm gen-types` is run, the generated types will include `networkInterfaces: BareMetalNICStatus[]`. No UI work is in scope for this EP — the UI epic is explicitly deferred.
+The `@temp-api` file for `BareMetalInstance` in osac-ux (`libs/types/src/osac/public/v1/baremetal_instance_type_pb.ts`) is generated from the public proto and does not currently contain NIC fields. After this EP ships and `pnpm gen-types` is run, the generated types will include `networkInterfaceMacs: string[]`. No UI work is in scope for this EP — the UI epic is explicitly deferred.
 
 | UI field (`@temp-api` TypeScript) | Proto field (this EP) | Notes |
 |---|---|---|
@@ -253,19 +253,23 @@ func (c *OpenStackClient) getHostNICs(ctx context.Context, inventoryHostID strin
 if len(bareMetalInstance.Status.NetworkInterfaceMACs) == 0 {
     macs, err := r.InventoryClient.GetHostNICs(ctx, bareMetalInstance.Spec.ExternalHostID)
     if err != nil {
-        log.Error(err, "failed to fetch NIC metadata from inventory; will retry on next reconcile",
+        log.Error(err, "failed to fetch NIC metadata from inventory; will retry",
             "hostID", bareMetalInstance.Spec.ExternalHostID)
         r.Recorder.Eventf(bareMetalInstance, corev1.EventTypeWarning, "NICMetadataUnavailable",
             "Failed to fetch NIC metadata from inventory: %v", err)
-        // Do not block Ready — proceed with empty NetworkInterfaceMACs.
-    } else {
+    }
+    if len(macs) > 0 {
         bareMetalInstance.Status.NetworkInterfaceMACs = macs
+    } else {
+        // NIC data not yet available (inspection pending or error) — set Ready and requeue.
+        bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseReady
+        return ctrl.Result{RequeueAfter: r.ManagementRecheckIntervalDuration}, nil
     }
 }
 bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseReady
 ```
 
-The `Recorder` field (`record.EventRecorder`) is already used by controller-runtime controllers; it needs to be injected during `SetupWithManager`. The `corev1.EventTypeWarning` event with reason `NICMetadataUnavailable` is emitted only on error, not on empty results.
+The `Recorder` field (`record.EventRecorder`) is already used by controller-runtime controllers; it needs to be injected during `SetupWithManager`. The `corev1.EventTypeWarning` event with reason `NICMetadataUnavailable` is emitted only on backend errors. When `GetHostNICs` returns nil (Metal3 inspection not complete), the controller silently requeues without emitting an event.
 
 #### fulfillment-service controller reconciler — status propagation
 
@@ -309,15 +313,14 @@ No new OPA policies, RBAC roles, or authorization logic are required. The metada
 
 MAC addresses could theoretically aid network reconnaissance. The existing tenant isolation ensures they are only visible to authorized parties.
 
-Input validation: MAC addresses written to `BareMetalInstanceStatus.NetworkInterfaces` originate from the inventory backend (trusted source, not user-controlled). The CRD field uses a `+kubebuilder:validation:Pattern` annotation for structural validation; no additional sanitization is needed.
+Input validation: MAC addresses written to `BareMetalInstanceStatus.NetworkInterfaceMACs` originate from the inventory backend (trusted source, not user-controlled). No additional sanitization is needed.
 
 ### Failure Handling and Recovery
 
 | Failure | System behavior | User observes |
 |---|---|---|
-| `GetHostNICs` returns error (inventory API down) | Warning event emitted; `NetworkInterfaces` left empty; instance set to `Ready` | Instance is `Ready`; boot MAC shows `N/A` in CLI; Warning event visible via `kubectl describe` |
-| `GetHostNICs` returns empty list (inspection not complete) | `NetworkInterfaces` left empty; instance set to `Ready`; next reconcile retries | Same as above |
-| Metal3 `HardwareDetails` is nil | `GetHostNICs` returns `nil, nil`; treated as empty list | Same as above |
+| `GetHostNICs` returns error (inventory API down) | Warning event emitted; `NetworkInterfaceMACs` left empty; instance set to `Ready`; requeues after `ManagementRecheckIntervalDuration` | Instance is `Ready`; CLI shows `N/A`; Warning event visible via `kubectl describe` |
+| `GetHostNICs` returns nil (Metal3 inspection not complete) | `NetworkInterfaceMACs` left empty; instance set to `Ready`; requeues after `ManagementRecheckIntervalDuration` | Instance is `Ready`; CLI shows `N/A`; no error event |
 | fulfillment-service controller restarts mid-propagation | On resume, `syncStatus` re-reads CRD and propagates NIC fields | No inconsistency; propagation is idempotent |
 | BareMetalInstance deleted before NIC fetch completes | Deletion path does not call `GetHostNICs` | No impact |
 | NIC fetch succeeds but CRD status update fails | controller-runtime returns error; reconcile retries from scratch; NIC fetch runs again | Transient delay; eventual consistency |
@@ -344,13 +347,13 @@ One new Kubernetes event is introduced:
 
 No new Prometheus metrics are added. The existing reconcile error counter (standard controller-runtime metric) covers `GetHostNICs` failures when the controller returns an error. NIC metadata fetch failures do not increment the error counter because the controller does not return an error — it continues to `Ready` with empty NIC data and emits the event instead.
 
-Operators can detect hosts with missing NIC metadata by querying `BareMetalInstance` objects where `status.networkInterfaces` is empty and `status.phase == Ready`.
+Operators can detect hosts with missing NIC metadata by querying `BareMetalInstance` objects where `status.networkInterfaceMACs` is empty and `status.phase == Ready`.
 
 ### Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
-| Metal3 hardware inspection completes after allocation | `GetHostNICs` returns an empty list; the instance enters `Ready` with no NIC data. On the next reconcile event (triggered by a spec or status change on the `BareMetalInstance`), if `NetworkInterfaces` is still empty, `GetHostNICs` is called again and succeeds. This is a transient gap. |
+| Metal3 hardware inspection completes after allocation | `GetHostNICs` returns nil; the instance enters `Ready` with no NIC data and requeues after `ManagementRecheckIntervalDuration`. On the next reconcile, if `NetworkInterfaceMACs` is still empty, `GetHostNICs` is called again. The gap closes automatically once inspection completes. |
 | Interface extension breaks existing test mocks | Adding `GetHostNICs` to `Client` breaks all existing mock implementations. Mitigation: the implementation PR must update all mock usages in one pass. The CI `make test` target will fail if any mock is incomplete. |
 
 ### Drawbacks
@@ -383,50 +386,37 @@ The controller could re-fetch NIC data on every reconcile cycle or on a fixed in
 
 **Rejected:** MAC addresses are hardware identifiers burned into NIC firmware. They do not change after allocation. One-time fetch is sufficient and avoids unnecessary inventory API load.
 
-## Open Questions
-
-### 1. `GetHostNICs` retry behavior for Metal3 inspection lag
-
-**Owner:** BMaaS engineering team
-
-**Impact:** Section "Failure Handling and Recovery" — specifically the Metal3 empty-list case.
-
-When Metal3 hardware inspection has not completed at the time of allocation, `GetHostNICs` returns an empty list and the instance enters `Ready` with no NIC data. The next call to `GetHostNICs` is triggered only when the controller reconciles the instance again (on a spec or annotation change, or a periodic requeue). If no such event occurs, the NIC metadata gap persists.
-
-Should the controller requeue with a short interval (e.g., 30 seconds) when `NetworkInterfaces` is empty and the instance is in `Ready` state, until NIC data is available? This would close the gap at the cost of additional reconcile cycles. The current design does not do this.
-
-
 ## Test Plan
 
 ### Unit Tests
 
 **bare-metal-fulfillment-operator:**
-- `GetHostNICs` (Metal3): returns correct MAC list when `BareMetalHost.Status.HardwareDetails.NIC` is populated; correctly marks boot NIC via `BootMACAddress` match; returns empty list when `HardwareDetails` is nil; MAC addresses are lowercased.
-- `GetHostNICs` (OpenStack): returns correct MAC list from mocked port list; marks boot interface via `IsBootInterface`; applies auth-retry pattern on `401` error; returns empty list when port list is empty.
-- Controller `reconcileManagement`: NIC fetch is skipped when `NetworkInterfaces` is already populated; instance enters `Ready` with empty NIC data when `GetHostNICs` returns error; Warning event is emitted on error; no panic on nil Recorder.
-- fulfillment-service `syncStatus`: proto `network_interfaces` is populated when CRD `NetworkInterfaces` is non-empty; proto field is empty when CRD field is empty.
-- CLI `renderBareMetalInstance`: boot MAC displayed when present; "N/A" displayed when `NetworkInterfaces` is empty; other MACs listed correctly.
+- `GetHostNICs` (Metal3): returns correct MAC list when `BareMetalHost.Status.HardwareDetails.NIC` is populated; returns nil when `HardwareDetails` is nil; MAC addresses are lowercased.
+- `GetHostNICs` (OpenStack): returns correct MAC list from mocked port list; applies auth-retry pattern on `401` error; returns empty list when port list is empty.
+- Controller `reconcileManagement`: NIC fetch is skipped when `NetworkInterfaceMACs` is already populated; instance enters `Ready` and requeues when `GetHostNICs` returns nil; Warning event is emitted on backend error; no panic on nil Recorder.
+- fulfillment-service `syncStatus`: proto `network_interface_macs` is populated when CRD `NetworkInterfaceMACs` is non-empty; proto field is empty when CRD field is empty.
+- CLI `renderBareMetalInstance`: MAC list displayed when present; "N/A" displayed when `NetworkInterfaceMACs` is empty.
 
 **Interface mock:** Regenerate `Client` mock after interface change; update all mock construction sites to expect `GetHostNICs` or use `AnyTimes` where the test is not exercising NIC fetch.
 
 ### Integration Tests
 
 **bare-metal-fulfillment-operator (envtest):**
-- Create a `BareMetalHost` with `HardwareDetails.NIC` populated; create a `BareMetalInstance` and run the controller to completion; assert `Status.NetworkInterfaces` matches the BMH NIC list with the correct boot interface marked.
-- Same as above with `HardwareDetails` nil at allocation time; assert `Status.NetworkInterfaces` is empty and instance is `Ready`.
-- Simulate `GetHostNICs` error (mock returns error); assert instance enters `Ready` with empty `NetworkInterfaces` and a Warning event is emitted.
+- Create a `BareMetalHost` with `HardwareDetails.NIC` populated; create a `BareMetalInstance` and run the controller to completion; assert `Status.NetworkInterfaceMACs` matches the BMH NIC list.
+- Same as above with `HardwareDetails` nil at allocation time; assert `Status.NetworkInterfaceMACs` is empty, instance is `Ready`, and a requeue is scheduled.
+- Simulate `GetHostNICs` backend error (mock returns error); assert instance enters `Ready` with empty `NetworkInterfaceMACs` and a `NICMetadataUnavailable` Warning event is emitted.
 
 **fulfillment-service (kind cluster / integration tests):**
-- Create a `BareMetalInstance` CR with `Status.NetworkInterfaces` pre-populated; run the fulfillment-service controller reconciler; assert that `BareMetalInstance.status.network_interfaces` in the fulfillment-service database matches the CRD status.
+- Create a `BareMetalInstance` CR with `Status.NetworkInterfaceMACs` pre-populated; run the fulfillment-service controller reconciler; assert that `BareMetalInstance.status.network_interface_macs` in the fulfillment-service database matches the CRD status.
 
 ### E2E Tests
 
 **osac-test-infra (pytest):**
-- Provision a `BareMetalInstance` against a Metal3 backend with known host hardware details; poll until `state = RUNNING`; assert `GET /api/fulfillment/v1/baremetal_instances/{id}` returns `status.network_interfaces` with at least one entry where `boot_interface = true` and `mac_address` matches the known host boot MAC.
-- Assert that a Tenant User cannot read `status.network_interfaces` for a `BareMetalInstance` belonging to a different tenant (403 response).
-- Assert that a Cloud Infrastructure Admin can read `status.network_interfaces` for any tenant's `BareMetalInstance`.
-- Negative: provision a `BareMetalInstance` where the inventory backend returns no port/NIC data; assert `status.network_interfaces` is empty and `GET` returns 200 (not an error).
-- CLI: run `osac describe baremetalinstance <name>` and assert "Boot MAC:" line is present; assert it shows "N/A" when NIC data is absent.
+- Provision a `BareMetalInstance` against a Metal3 backend with known host hardware details; poll until `state = RUNNING`; assert `GET /api/fulfillment/v1/baremetal_instances/{id}` returns `status.network_interface_macs` as a non-empty list containing the known host MAC addresses.
+- Assert that a Tenant User cannot read `status.network_interface_macs` for a `BareMetalInstance` belonging to a different tenant (403 response).
+- Assert that a Cloud Infrastructure Admin can read `status.network_interface_macs` for any tenant's `BareMetalInstance`.
+- Negative: provision a `BareMetalInstance` where the inventory backend returns no port/NIC data; assert `status.network_interface_macs` is empty and `GET` returns 200 (not an error).
+- CLI: run `osac describe baremetalinstance <name>` and assert "MAC Addresses:" line is present; assert it shows "N/A" when NIC data is absent.
 
 ## Graduation Criteria
 
@@ -435,30 +425,30 @@ Graduation criteria will be defined when targeting a release. Expected stages: D
 ## Upgrade / Downgrade Strategy
 
 This EP adds optional status fields to `BareMetalInstance` (CRD and proto). No migration is required:
-- Existing `BareMetalInstance` resources will have `networkInterfaces: []` on upgrade; the controller populates the field on the next reconcile cycle that reaches the Ready state check.
-- Downgrading the operator removes the `NetworkInterfaces` field from the CRD schema; the Kubernetes API server drops unknown fields from stored objects on the next write, which is safe.
+- Existing `BareMetalInstance` resources will have `networkInterfaceMACs: []` on upgrade; the controller populates the field on the next reconcile cycle that reaches the Ready state check.
+- Downgrading the operator removes the `NetworkInterfaceMACs` field from the CRD schema; the Kubernetes API server drops unknown fields from stored objects on the next write, which is safe.
 - Downgrading the fulfillment-service drops the proto fields from API responses; existing stored data is not affected (JSON serialization ignores unknown fields in newer DB rows).
 
 ## Version Skew Strategy
 
-The `NetworkInterfaces` field is additive. During a rolling upgrade where some fulfillment-service instances are on the new version and some are on the old:
-- Old fulfillment-service instances ignore `network_interfaces` in proto responses (unknown field, dropped).
-- New fulfillment-service instances return `network_interfaces` to clients that support it; old clients ignore the field.
+The `NetworkInterfaceMACs` field is additive. During a rolling upgrade where some fulfillment-service instances are on the new version and some are on the old:
+- Old fulfillment-service instances ignore `network_interface_macs` in proto responses (unknown field, dropped).
+- New fulfillment-service instances return `network_interface_macs` to clients that support it; old clients ignore the field.
 
-The operator and fulfillment-service are upgraded independently. An updated operator may write `NetworkInterfaces` to the CRD before the fulfillment-service is updated to propagate them — this is safe; the new proto field is simply not yet surfaced in the API until the fulfillment-service is also updated.
+The operator and fulfillment-service are upgraded independently. An updated operator may write `NetworkInterfaceMACs` to the CRD before the fulfillment-service is updated to propagate them — this is safe; the new proto field is simply not yet surfaced in the API until the fulfillment-service is also updated.
 
 ## Support Procedures
 
-**Detecting missing NIC metadata:** Query `BareMetalInstance` objects with `status.phase = Ready` and empty `status.networkInterfaces` using the fulfillment-service API filter: `state = 'BARE_METAL_INSTANCE_STATE_RUNNING' AND network_interfaces = []`. Alternatively, check for `NICMetadataUnavailable` Warning events on `BareMetalInstance` objects in the hub cluster.
+**Detecting missing NIC metadata:** Query `BareMetalInstance` objects where `state = RUNNING` and `network_interface_macs` is empty via the fulfillment-service API. Alternatively, check for `NICMetadataUnavailable` Warning events on `BareMetalInstance` objects in the hub cluster.
 
 **Root causes for empty NIC metadata:**
-- Metal3: hardware inspection (`BareMetalHost.Status.HardwareDetails`) not yet complete. Check `kubectl describe baremetalhost <name> -n <namespace>` for inspection status.
+- Metal3: hardware inspection (`BareMetalHost.Status.HardwareDetails`) not yet complete. Check `kubectl describe baremetalhost <name> -n <namespace>` for inspection status. The controller requeues automatically and populates once inspection finishes.
 - OpenStack/Ironic: no ports registered for the node. Check `openstack baremetal port list --node <uuid>`.
-- Inventory API unreachable at allocation time: check operator logs for `NICMetadataUnavailable` events.
+- Inventory API unreachable: check operator logs for `NICMetadataUnavailable` events.
 
-**Disabling NIC fetch:** There is no feature flag. To disable NIC population, the `GetHostNICs` implementation can be stubbed to return `nil, nil` in a custom build, or the `if len(bareMetalInstance.Status.NetworkInterfaces) == 0` guard can be changed to always skip.
+**Disabling NIC fetch:** There is no feature flag. To disable NIC population, the `GetHostNICs` implementation can be stubbed to return `nil, nil` in a custom build, or the `if len(bareMetalInstance.Status.NetworkInterfaceMACs) == 0` guard can be changed to always skip.
 
-**Consistency on re-enable:** Since NIC data is immutable once written, re-enabling after a disable has no consistency risk. Instances that missed their NIC fetch window remain with empty `NetworkInterfaces` until the next reconcile event triggers a retry.
+**Consistency on re-enable:** Since NIC data is immutable once written, re-enabling after a disable has no consistency risk. Instances that missed their NIC fetch window will have it populated on the next reconcile cycle.
 
 ## Infrastructure Needed
 
@@ -468,6 +458,7 @@ None.
 
 ## Provenance
 
-Authored: draft @ design 0.8.0 - 7efcedb, workspace main @ a4b128a
+Authored: respond @ design 0.8.0 - 7efcedb, workspace main @ a4b128a
+Phases: draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"a4b128a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"a4b128a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
