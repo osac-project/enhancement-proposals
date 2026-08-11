@@ -8,12 +8,12 @@
 
 ## Glossary
 
-Terms are aligned with [FOCUS](https://focus.finops.org/) (FinOps Open Cost and Usage Specification) where applicable. [User]
+Terms are aligned with [FOCUS](https://focus.finops.org/) (FinOps Open Cost and Usage Specification) where applicable.
 
 | Term | Definition |
 |------|------------|
 | Billing account | A container for resources and/or services that are billed together in an invoice (FOCUS). In OSAC, each tenant maps to one billing account in the billing provider. |
-| Billing period | The time window that an organization receives an invoice for, inclusive of the start date and exclusive of the end date (FOCUS). In OSAC, billing periods are fixed calendar months. [Clarify: R1.Q1] |
+| Billing period | The time window that an organization receives an invoice for, inclusive of the start date and exclusive of the end date (FOCUS). In OSAC, billing periods are fixed calendar months. |
 | Billing provider | The external billing system that OSAC integrates with to manage pricing, cost calculation, and invoicing. Maps to the FOCUS concepts of invoice issuer and data generator. In OSAC: Monetize360 (M360) or Red Hat Cost Management (Koku). |
 | Billing provider adapter | The pluggable integration component that connects OSAC's usage data pipeline to a billing provider. Each OSAC deployment configures one active adapter. |
 | Charge | A line item representing a cost incurred for resource or service usage within a billing period. Corresponds to a row in a FOCUS cost and usage dataset. |
@@ -45,12 +45,12 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 - **Quota enforcement and budget alerts** — tracked separately as OSAC-998.
 - **Workload-level metering** — OSAC meters resources it provisions, not workloads running inside tenant clusters.
 - **Billing provider UI** — the billing provider's own administration interface; this PRD covers OSAC-side surfaces only.
-- **Real-time cost streaming** — OSAC-side push/streaming mechanisms (WebSocket, SSE). Tenants query billing costs on demand; the billing system processes metering events in near-real-time, but OSAC does not push cost updates. [Clarify: R1.Q5]
+- **Real-time cost streaming** — OSAC-side push/streaming mechanisms (WebSocket, SSE). Tenants query billing costs on demand; the billing system processes metering events in near-real-time, but OSAC does not push cost updates.
 - **Multi-provider per deployment** — each OSAC deployment configures one billing provider. Per-tenant provider selection is deferred.
 - **Bulk billing operations** — batch pricing plan assignment, bulk recalculation, and bulk invoice export are deferred.
 - **Ad-hoc credits, refunds, and adjustments** — managed within the billing provider's own interface.
 - **Billing data residency** — per-tenant billing data residency by region is enforced by the billing provider, not by OSAC.
-- **Catalog item pricing enrichment** — enriching catalog items with live prices from the billing system is a separate Feature (OSAC-3793). [Clarify: R1.Q4]
+- **Catalog item pricing enrichment** — enriching catalog items with live prices from the billing system is a separate Feature (OSAC-3793).
 - **Billing for services beyond VMaaS and CaaS** — MaaS (OSAC-3794), BMaaS (OSAC-3795), Storage (OSAC-3796), and Networking (OSAC-3797) billing activate via separate Features as metering lands.
 
 ## User Stories
@@ -61,13 +61,13 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 - As a Cloud Provider Admin, I want to create pricing plans with rate cards that define per-unit prices per resource type, so that I can set different rates for different tenants based on their service agreements and hardware classes.
 
-- As a Cloud Provider Admin, I want to assign pricing plans to tenants, so that each tenant's usage is charged according to their agreed terms. A default plan applies to tenants without a specific assignment. When a plan's rates change, affected tenants' future charges reflect the updated rates. [Clarify: R1.Q3]
+- As a Cloud Provider Admin, I want to assign pricing plans to tenants, so that each tenant's usage is charged according to their agreed terms. A default plan applies to tenants without a specific assignment. When a plan's rates change, affected tenants' future charges reflect the updated rates.
 
 - As a Cloud Provider Admin, I want to view draft invoices per tenant for a billing period showing charges itemized by service and resource type, so that I can review charges before exporting them to my payment system.
 
-- As a Cloud Provider Admin, I want billing operations (pricing plan management, invoice review, cost model configuration) restricted to users with billing-specific permissions, so that only authorized personnel can modify pricing or access financial data. Billing RBAC supports separation of duties where required — for example, pricing plan creation and invoice approval can be assigned to separate roles.
+- As a Cloud Provider Admin, I want billing operations (pricing plan management, invoice review) restricted to users with billing-specific permissions, so that only authorized personnel can modify pricing or access financial data. Billing RBAC supports separation of duties where required — for example, pricing plan creation and invoice approval can be assigned to separate roles.
 
-- As a Cloud Provider Admin, I want all billing-related administrative actions (pricing plan changes, plan-to-tenant assignments, invoice generation, cost model modifications) to produce audit log entries, so that I can satisfy compliance and regulatory audit requirements.
+- As a Cloud Provider Admin, I want all billing-related administrative actions (pricing plan changes, plan-to-tenant assignments, invoice generation) to produce audit log entries, so that I can satisfy compliance and regulatory audit requirements.
 
 ### Cloud Infrastructure Admin
 
@@ -81,13 +81,13 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 - As a Tenant Admin, I want to view my organization's accumulated costs for the current and past billing periods, broken down by service type (VMaaS, CaaS) and resource, so that I can manage my organization's cloud spending.
 
-- As a Tenant Admin, I want to view costs aggregated by Project (including nested Projects), so that I can attribute spending to teams and departments within my organization. [Clarify: R1.Q2]
+- As a Tenant Admin, I want to view costs aggregated by Project (including nested Projects), so that I can attribute spending to teams and departments within my organization.
 
 - As a Tenant Admin, I want to view past invoices and itemized charge breakdowns for my organization, so that I can reconcile charges with my internal budgets and respond to billing inquiries from my users.
 
 ### Tenant User
 
-- As a Tenant User, I want to view the estimated cost of my currently running resources, so that I can understand my consumption footprint. Estimated cost reflects charges calculated by the billing system from metering events processed in near-real-time. [Clarify: R1.Q5]
+- As a Tenant User, I want to view the estimated cost of my currently running resources, so that I can understand my consumption footprint. Estimated cost reflects charges calculated by the billing system from metering events processed in near-real-time.
 
 - As a Tenant User, I want to view my tenant's cost history over time, so that I can spot trends and understand what drives my spending.
 
@@ -103,7 +103,7 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 - Billing system unavailability does not block tenant provisioning or resource lifecycle operations. Tenant creation succeeds and the corresponding billing account is created when the billing system becomes available; usage data is delivered when connectivity is restored.
 
-- The billing system processes metering events in near-real-time. Tenants querying their estimated costs see charges derived from recently processed usage data. [Clarify: R1.Q5]
+- The billing system processes metering events in near-real-time. Tenants querying their estimated costs see charges derived from recently processed usage data.
 
 - OSAC deployments are expected to support up to hundreds of tenants with thousands of active resources generating usage data per billing period.
 
@@ -139,8 +139,8 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 ## Provenance
 
-Committed: commit @ prd 0.8.0 - 7efcedb, workspace prd/OSAC-3784 @ 975a5e0 (2 behind origin/main, dirty)
+Committed: commit @ prd 0.8.0 - 7efcedb, workspace prd/OSAC-3784 @ 5bd0b36 (2 behind origin/main, dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"975a5e0 (dirty)","source_repo_branch":"prd/OSAC-3784","commits_behind_main":2,"commits_ahead_main":1,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"5bd0b36 (dirty)","source_repo_branch":"prd/OSAC-3784","commits_behind_main":2,"commits_ahead_main":2,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
