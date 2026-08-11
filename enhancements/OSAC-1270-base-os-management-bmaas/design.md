@@ -150,7 +150,7 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 
 Beyond this, the UI migration mirrors the ComputeInstance flow: replace the inline image fields with a `diskImage` reference picker using the DiskImage selector component from OSAC-2540.
 
-**UI scope and timeline:** The UI work required by this design (updating `useCreateBareMetalInstance` and adding the DiskImage picker to the BareMetalInstance creation form) is **in scope for Dev Preview**. The `@osac/types` update (automatic via `pnpm gen-types`) lands with the backend; the form change requires the OSAC-2540 DiskImage selector component as a prerequisite and is tracked as a UI story within this milestone.
+**UI scope and timeline:** The UI work required by this design (updating `useCreateBareMetalInstance` and adding the DiskImage picker to the BareMetalInstance creation form) is **in scope for Dev Preview** and tracked as part of this feature. The `@osac/types` update (automatic via `pnpm gen-types`) lands with the backend; the form change requires the OSAC-2540 DiskImage selector component as a prerequisite.
 
 ### Documentation
 
