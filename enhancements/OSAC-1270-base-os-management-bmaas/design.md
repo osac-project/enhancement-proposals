@@ -33,11 +33,11 @@ The integration point is narrow: the bare-metal provisioning stack already accep
 
 ### Goals
 
-- Reuse the DiskImage resource, API, lifecycle, and two-tier visibility model from OSAC-2540 without modification.
-- Keep the bare-metal-fulfillment-operator CRD unchanged — DiskImage resolution stays in the fulfillment-service reconciler.
-- Replace `BareMetalInstanceSpec.image` with `disk_image` and remove `BareMetalInstanceImage` message entirely.
-- Extend DiskImage deletion protection to `bare_metal_instances` and `bare_metal_instance_catalog_items` via database triggers.
-- DiskImage defaults for BareMetalInstance creation come from `BareMetalInstanceCatalogItem.field_definitions`, reusing the existing field definition mechanism without schema changes.
+- Tenants select a provisioning image from a governed catalog when creating a BareMetalInstance, instead of supplying arbitrary OCI URLs.
+- Cloud Provider Admins and Tenant Admins publish, version, and deprecate OS images independently of BareMetalInstance provisioning, with lifecycle visibility to tenants.
+- Creating a BareMetalInstance with a deprecated image produces a warning; creating with an obsolete image is rejected — tenants receive actionable feedback rather than silent failures.
+- Deleting a DiskImage that is still referenced by active BareMetalInstances or CatalogItems is blocked at the database level.
+- CatalogItem operators can set a default OS image for a BareMetalInstance catalog entry, so tenants can provision without needing to select an image explicitly.
 
 ### Non-Goals
 
