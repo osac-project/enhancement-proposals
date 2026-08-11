@@ -150,6 +150,8 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 
 Beyond this, the UI migration mirrors the ComputeInstance flow: replace the inline image fields with a `diskImage` reference picker using the DiskImage selector component from OSAC-2540.
 
+**UI scope and timeline:** The UI work required by this design (updating `useCreateBareMetalInstance` and adding the DiskImage picker to the BareMetalInstance creation form) is **deferred** — it is not in scope for the Dev Preview milestone. It will be tracked as a follow-up UI story once the backend API lands and OSAC-2540's DiskImage selector component is available. The `@osac/types` update (automatic via `pnpm gen-types`) can land with the backend; the form change requires the OSAC-2540 UI component as a prerequisite.
+
 ### Documentation
 
 This is a breaking public API change: `BareMetalInstanceSpec.image` is removed and replaced by `disk_image`. The following documentation updates are **in scope** for this feature:
@@ -269,6 +271,16 @@ if diskImageID := t.bareMetalInstance.GetSpec().GetDiskImage(); diskImageID != "
 The `function` struct gains a `diskImagesClient privatev1.DiskImagesClient` field, initialized via `privatev1.NewDiskImagesClient(b.connection)` in `FunctionBuilder.Build()`.
 
 `guest_os_family` is not extracted or passed — the AAP provisioning roles do not use it for bare-metal provisioning. [Codebase: `osac/osac-aap/collections/ansible_collections/osac/templates/roles/bm_host_provisioning/tasks/build_bmh_patch.yaml`]
+
+#### CLI: Flag Replacement
+
+`osac create baremetalinstance` currently accepts `--image` and `--image-source-type` flags that map to the removed `BareMetalInstanceSpec.image` fields. These are replaced by a single `--disk-image <id>` flag following the existing kubectl-style pattern used by other resource commands. [Codebase: `osac/fulfillment-service/internal/cmd/cli/`]
+
+The implementation follows the same pattern as `osac create computeinstance --disk-image` added by OSAC-2540:
+- Remove the `--image` and `--image-source-type` flags from the `create baremetalinstance` command builder.
+- Add `--disk-image` (type `string`, required) that sets `spec.disk_image` on the request.
+- Update `osac edit baremetalinstance` to omit the `image` field (immutability is enforced server-side; the CLI should not expose it as editable).
+- Update command help text and `--help` output.
 
 #### Database Migration
 
