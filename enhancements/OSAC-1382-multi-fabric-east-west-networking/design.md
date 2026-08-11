@@ -136,14 +136,22 @@ VirtualNetwork   # existing — N-S / IP isolation boundary
 6. **No new VPC resource** in this design. Today's VirtualNetwork is the
    VPC-like object for Netris binding.
 
-### API sketch (fulfillment-service)
+### API Extensions (fulfillment-service)
 
 ```protobuf
+// Standard OSAC object shape
+message FabricDomain {
+  string id = 1;
+  Metadata metadata = 2;
+  FabricDomainSpec spec = 3;
+  FabricDomainStatus status = 4;
+}
+
 message FabricDomainSpec {
   string type = 1;                       // ethernet_ew | infiniband_ew | nvlink
   repeated string servers = 2;           // hostnames
-  string network_class = 3;              // required
-  repeated string virtual_networks = 4;  // Phase 1: exactly one
+  string network_class = 3;              // required; immutable after creation
+  repeated string virtual_networks = 4;  // Phase 1: exactly one; immutable after creation
 }
 
 message FabricDomainStatus {
@@ -152,6 +160,17 @@ message FabricDomainStatus {
   string vpc_id = 3;                     // resolved Netris VPC ID from associated VN
 }
 
+// gRPC service
+service FabricDomains {
+  rpc CreateFabricDomain(CreateFabricDomainRequest) returns (FabricDomain);
+  rpc GetFabricDomain(GetFabricDomainRequest) returns (FabricDomain);
+  rpc ListFabricDomains(ListFabricDomainsRequest) returns (ListFabricDomainsResponse);
+  rpc UpdateFabricDomain(UpdateFabricDomainRequest) returns (FabricDomain);
+  rpc DeleteFabricDomain(DeleteFabricDomainRequest) returns (FabricDomain);
+  rpc SignalFabricDomain(SignalFabricDomainRequest) returns (FabricDomain);
+}
+
+// NetworkClass extensions (existing resource, new fields)
 message NetworkClassCapabilities {
   // existing: supports_ipv4, supports_ipv6, …
   bool supports_east_west_ethernet = 5;
@@ -179,6 +198,10 @@ message NVLinkEastWestConfig {
   string endpoint = 2;     // optional for direct backends
 }
 ```
+
+**Immutability:** `type`, `network_class`, and `virtual_networks` are immutable
+after creation. Changing them requires delete + re-create. `servers` is mutable
+(resize).
 
 **Validation (Phase 1)**
 
@@ -718,8 +741,12 @@ name pulls Netris-specific and "child of VPC/VN" connotations.
 
 1. Final resource name: FabricDomain vs IsolationDomain.
 2. Phase 2: when to allow zero or multiple VirtualNetwork associations.
-3. Typed `EastWestConfig` messages vs generic `map<string,string>` parameters.
-4. Status fields to echo for debug (resolved template_id, VPC id, VNet names).
+3. Status fields to echo for debug (resolved template_id, VPC id, VNet names).
+
+**Resolved:** Typed `EastWestConfig` messages are used (not generic
+`map<string,string>`). OSAC conventions prefer typed structures over maps in
+CRDs for validation, documentation, and schema evolution. The proto sketch
+above reflects this decision.
 
 ---
 
