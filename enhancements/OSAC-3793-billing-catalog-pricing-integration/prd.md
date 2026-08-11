@@ -13,8 +13,8 @@ Catalog items (ComputeInstanceCatalogItem, ClusterCatalogItem, BareMetalInstance
 ## In Scope
 
 - **Assigned catalog items display per-unit price** from the tenant's active pricing plan. Pricing is shown only for catalog items assigned/available to the requesting user's context (tenant/project). Prices reflect the tenant's plan-specific rates, not a single base rate.
-- **Graceful degradation** — when the billing system is unavailable, catalog items render without pricing rather than failing. Tenants can still browse and provision; they just don't see prices.
-- **API, CLI, and UI surfaces** — pricing is visible on catalog items across all three surfaces. The UI shows formatted prices (e.g., "$0.26/hr" for a 4-core, 8 GiB VM).
+- **Graceful degradation** — when pricing data is unavailable (billing system unreachable or missing rate data), catalog items render without pricing rather than failing. Tenants can still browse and provision; they just don't see prices.
+- **API, CLI, and UI surfaces** — pricing is visible on catalog items across all three surfaces. The UI shows formatted prices (e.g., "$0.26/hr" for a Small VM instance type).
 - **All catalog item types** — ComputeInstanceCatalogItem, ClusterCatalogItem, and BareMetalInstanceCatalogItem.
 - **Visibility alignment with catalog assignment** — pricing follows the same hierarchical visibility model as catalog items (global → tenant → project).
 
@@ -32,7 +32,7 @@ Catalog items (ComputeInstanceCatalogItem, ClusterCatalogItem, BareMetalInstance
 
 ### Tenant Admin / Tenant User
 
-- As a Tenant Admin or Tenant User, I want to see the price of a catalog item available to my context (e.g., "$0.26/hr" for a VM template) before provisioning a resource, so that I can make cost-informed decisions about approved offerings.
+- As a Tenant Admin or Tenant User, I want to see the price of a catalog item available to my context (e.g., "$0.26/hr" for a Small instance type) before provisioning a resource, so that I can make cost-informed decisions about approved offerings.
 
 ## Assumptions
 
@@ -41,6 +41,10 @@ Catalog items (ComputeInstanceCatalogItem, ClusterCatalogItem, BareMetalInstance
 - OSAC-3538 (Catalog Items v2) is operational — catalog items use the new structured field model, and the legacy field_definitions approach has been replaced. This PRD assumes the v2 field governance model throughout.
 
 - OSAC-2474 (Catalog Item Assignment) is operational — the hierarchical assignment model (global → tenant → project) determines catalog item visibility, and pricing respects this same visibility model.
+
+- Pricing rates are tenant-scoped and applied uniformly across all projects within the tenant. All users within a tenant see the same pricing regardless of project assignment.
+
+- The billing system has configured rates for all resources available through catalog items. Catalog items without corresponding billing rates display gracefully without pricing.
 
 - Catalog items exist for the services being priced. The billing integration does not create catalog items but relies on their existence and assignment.
 
@@ -55,16 +59,6 @@ Catalog items (ComputeInstanceCatalogItem, ClusterCatalogItem, BareMetalInstance
 - **OSAC-3784 — Billing Integration MVP:** Provides the billing provider adapter and pricing plan infrastructure. Must be operational before catalog pricing can query the billing system for prices.
 
 - **OSAC Catalog (OSAC-1531, OSAC-2452):** Catalog items must exist for the services being priced.
-
-## Open Questions
-
-Questions for reviewers to resolve during PR review. Once answered, the resolution will be incorporated into the relevant section above and the entry removed.
-
-### 1. Implementation sequencing with OSAC-2474
-
-- **Owner:** Product team, Engineering team
-- **Impact:** Dependencies, delivery timeline
-- **Question:** Should catalog pricing respect assignment visibility from day one, or should it initially work independently and be aligned later? This affects whether OSAC-2474 is a hard blocker or parallel development is possible.
 
 ---
 
