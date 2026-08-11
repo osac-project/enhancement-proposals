@@ -379,7 +379,7 @@ CREATE TRIGGER check_bare_metal_instance_disk_image_ref
 
 The `FOR SHARE` lock on `disk_images` prevents a concurrent soft-delete from succeeding between the trigger's existence check and the BareMetalInstance row commit — matching the bidirectional locking pattern from OSAC-2540. [Codebase: `osac/fulfillment-service/internal/database/migrations/56_add_instance_type_ref_triggers.up.sql`]
 
-Note on the JSONB key for `disk_image` in `bare_metal_instances`: the trigger uses `data->'spec'->>'disk_image'` (snake_case), consistent with how `instance_type` is accessed in the existing instance type trigger (`data->'spec'->>'instance_type'`). The compute_instances checks above use camelCase (`diskImage`, `specDefaults`) as specified in OSAC-2540 — implementors must verify both against actual JSONB storage before applying. [Codebase: `osac/fulfillment-service/internal/database/migrations/56_add_instance_type_ref_triggers.up.sql`]
+JSONB key casing per resource: `bare_metal_instances` stores `disk_image` as snake_case (`data->'spec'->>'disk_image'`), consistent with the existing `instance_type` trigger pattern. `compute_instances` and `compute_instance_templates` store `disk_image` as camelCase (`data->'spec'->>'diskImage'`, `data->'specDefaults'->>'diskImage'`) as specified and confirmed by OSAC-2540's design. The trigger SQL above reflects both. [Codebase: `osac/fulfillment-service/internal/database/migrations/56_add_instance_type_ref_triggers.up.sql`]
 
 ### Security Considerations
 
@@ -440,9 +440,7 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 *Mitigation:* UUID-format IDs make false-positive substring matches negligible. False positives prevent deletion (safe direction). If this becomes a performance concern at scale, a materialized reference-count table can be introduced in a follow-up migration, as described in OSAC-2540's Risks section.
 
-**Risk: JSONB key case mismatch.** The trigger uses `data->'spec'->>'disk_image'` (snake_case) based on the existing `instance_type` trigger pattern, but OSAC-2540 uses camelCase (`diskImage`) for compute resources. If the actual JSONB key differs, the trigger will not protect bare-metal instances.
-
-*Mitigation:* Verify the actual JSONB key by inspecting a persisted `bare_metal_instances` row or the DAO serialization code before merging the migration. Adjust the trigger SQL accordingly. A failing integration test that creates a BareMetalInstance and then attempts to delete its DiskImage will catch this before merge.
+**Risk: Trigger replacement couples OSAC-1270 to OSAC-2540's internal structure.** Dropping and recreating `check_disk_image_not_in_use` means the OSAC-1270 migration must remain consistent with OSAC-2540's trigger. JSONB key casing is confirmed by OSAC-2540's design: compute resources use camelCase (`diskImage`), bare-metal resources use snake_case (`disk_image`). Any future change to either convention must also update this trigger.
 
 **Risk: OSAC-2540 migration number conflicts.** OSAC-1270's migration must come after OSAC-2540's DiskImage table migration. If both branches are in development simultaneously and migration numbers collide, one must be renumbered.
 
@@ -509,7 +507,7 @@ Instead of dropping and recreating `check_disk_image_not_in_use`, add a separate
 - **Deletion protection — BareMetalInstance:** create a DiskImage referenced by an active BareMetalInstance; attempt deletion; verify `FailedPrecondition`. Delete the BareMetalInstance; retry deletion; verify success.
 - **Deletion protection — BareMetalInstanceCatalogItem:** create a DiskImage referenced in a CatalogItem's `field_definitions`; attempt deletion; verify `FailedPrecondition`.
 - **Deletion protection — compute regression:** create a DiskImage referenced by an active ComputeInstance and a ComputeInstanceTemplate; attempt deletion for each; verify `FailedPrecondition`. Confirms the extended trigger still enforces OSAC-2540's compute protections after the trigger function is replaced.
-- **JSONB key verification:** each deletion-protection test above implicitly verifies the JSONB key path used in the trigger (`diskImage` for compute, `disk_image` for bare-metal). Implementors must confirm the actual persisted key by inspecting a row before running these tests — adjust trigger SQL if casing differs.
+- **JSONB key casing regression:** each deletion-protection test above verifies the trigger's JSONB key paths (`diskImage` for compute, `disk_image` for bare-metal) as confirmed by OSAC-2540's design.
 - **Write-side TOCTOU — BareMetalInstance:** concurrently attempt to create a BareMetalInstance and soft-delete its referenced DiskImage in separate transactions; verify at most one succeeds — either the instance is created with the DiskImage intact, or the deletion wins and the instance creation fails.
 - **Write-side TOCTOU — BareMetalInstanceCatalogItem:** concurrently attempt to create a CatalogItem with a `spec.disk_image` field_definitions entry and soft-delete the referenced DiskImage; verify the application-level `FOR SHARE` lock prevents the race.
 - **CatalogItem default applied end-to-end:** create a CatalogItem with a default `disk_image`; create a BareMetalInstance without specifying `disk_image`; verify the DiskImage is resolved and `imageURL` is correct in the resulting CRD.
