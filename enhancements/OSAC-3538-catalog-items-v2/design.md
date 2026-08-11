@@ -223,10 +223,10 @@ The tenant selects `m1.medium`, enters an SSH key, and submits.
 
 The admin creates a "Production OCP 4.18" catalog item with:
 - Template: "ocp-standard-template"
-- Release image: locked to "quay.io/openshift-release-dev/ocp-release:4.18.3"
+- Release image: editable, single allowed value (controls version at creation, expandable for upgrades)
 - Node sets: two node sets with per-property governance
   - "workers": host_type locked to "m5.2xlarge", size editable with default 3 and min 2 / max 10
-  - "infra": host_type locked to "m5.xlarge", size locked to 3
+  - "infra": host_type locked to "m5.xlarge", size editable with default 3 and min 3 / max 3 (effectively fixed but mutable by admin later)
 - SSH public key: editable, no default
 - Network: locked to `{pod_cidr: "10.128.0.0/14", service_cidr: "172.30.0.0/16"}`
 - Template parameters: `cluster_logging` editable with default `true`
@@ -241,7 +241,10 @@ The admin creates a "Production OCP 4.18" catalog item with:
     "tenant": "tenant-acme",
     "fields": {
       "release_image": {
-        "locked": {"value": "quay.io/openshift-release-dev/ocp-release:4.18.3"}
+        "editable": {
+          "default": "quay.io/openshift-release-dev/ocp-release:4.18.3",
+          "allowed_values": ["quay.io/openshift-release-dev/ocp-release:4.18.3"]
+        }
       },
       "node_sets": {
         "workers": {
@@ -250,7 +253,7 @@ The admin creates a "Production OCP 4.18" catalog item with:
         },
         "infra": {
           "host_type": {"locked": {"value": "m5.xlarge"}},
-          "size": {"locked": {"value": 3}}
+          "size": {"editable": {"default": 3, "min": 3, "max": 3}}
         }
       },
       "ssh_public_key": {"editable": {}},
@@ -271,11 +274,11 @@ UI rendering:
 
 | Field | UI Rendering | Value |
 |-------|-------------|-------|
-| Release image | Read-only | OCP 4.18.3 |
+| Release image | Dropdown: OCP 4.18.3 (single option) | Pre-selected: OCP 4.18.3 |
 | Node set "workers" host_type | Read-only | m5.2xlarge |
 | Node set "workers" size | Number input (min: 2, max: 10) | Pre-filled: 3 |
 | Node set "infra" host_type | Read-only | m5.xlarge |
-| Node set "infra" size | Read-only | 3 |
+| Node set "infra" size | Number input (min: 3, max: 3) | Pre-filled: 3 |
 | SSH public key | Text input | (empty) |
 | Network | Read-only | Pod CIDR: 10.128.0.0/14, Service CIDR: 172.30.0.0/16 |
 | Pull secret | Text input (ungoverned) | (empty) |
@@ -287,11 +290,11 @@ The tenant sets worker size to 5, enters an SSH key and pull secret, and submits
 1. Look up catalog item, validate access.
 2. Copy template reference to spec.
 3. Apply governance:
-   - `release_image`: set to locked value. Reject if tenant provided.
+   - `release_image`: editable with single allowed value. Tenant must use "quay.io/.../4.18.3" (only option). Validated against allowed_values.
    - `node_sets.workers.host_type`: set to "m5.2xlarge". Reject if tenant tried to change.
    - `node_sets.workers.size`: tenant sent 5, within range [2, 10] - accepted.
    - `node_sets.infra.host_type`: set to "m5.xlarge".
-   - `node_sets.infra.size`: set to 3. Reject if tenant tried to change.
+   - `node_sets.infra.size`: tenant sent 3, within range [3, 3] - accepted.
    - `ssh_public_key`: editable, tenant provided - accepted.
    - `network`: set to locked value.
    - `pull_secret`: ungoverned, pass through.
@@ -419,7 +422,7 @@ message GovernedBoolField {
 }
 
 message LockedBoolField {
-  bool value = 1;
+  optional bool value = 1;  // optional: distinguish "locked to false" from "not set"
 }
 
 message EditableBoolField {
@@ -435,7 +438,7 @@ message GovernedInt32Field {
 }
 
 message LockedInt32Field {
-  int32 value = 1;
+  optional int32 value = 1;  // optional: distinguish "locked to 0" from "not set"
 }
 
 message EditableInt32Field {
@@ -635,6 +638,17 @@ This design choice keeps the admin UX simple (no "locked/editable" toggle for a 
 
 The admin can update the image on an existing catalog item via the Update API (e.g., to bump versions for CVE fixes). This does not affect already-provisioned resources - only new resources created from the catalog item get the updated image.
 
+#### Catalog Item Update Governance Constraints
+
+When an admin updates a catalog item, the server validates that governance is not tightened on existing fields:
+
+- **Editable or absent to locked**: rejected. Existing resources may have tenant-set values for that field; locking it would retroactively invalidate those resources on their next update.
+- **Locked to editable or absent**: allowed (relaxing governance).
+- **Changing locked value**: allowed (only affects new provisioning).
+- **Changing editable constraints** (allowed_values, min/max, default): allowed. Existing resources retain their current values; constraints apply to future updates.
+
+The server compares the existing catalog item's governance with the update request and rejects any transition that would tighten field governance.
+
 #### Per-Field Lockability Validation
 
 Certain fields require day-2 mutation and must not be locked on a catalog item. The server rejects catalog item creation (or update) that attempts to lock these fields with `InvalidArgument` ("field X cannot be locked - use editable with allowed_values to constrain it").
@@ -659,8 +673,15 @@ When `allowed_values` is empty, the field accepts any value (subject to the fiel
 
 New database referential integrity triggers prevent deletion of resources referenced by catalog items:
 
-1. **Image references**: prevent deletion of images referenced by `fields.image` on ComputeInstanceCatalogItem or BareMetalInstanceCatalogItem.
-2. **InstanceType references**: prevent deletion of instance types referenced by `fields.instance_type.locked.value` or `fields.instance_type.editable.allowed_values` on ComputeInstanceCatalogItem.
+**ComputeInstanceCatalogItem:**
+1. **Image references**: prevent deletion of images referenced by `fields.image`.
+2. **InstanceType references**: prevent deletion of instance types referenced by `fields.instance_type.locked.value` or `fields.instance_type.editable.allowed_values`.
+
+**ClusterCatalogItem:**
+3. **ClusterVersion / release image references**: prevent deletion of cluster versions referenced by `fields.release_image.editable.allowed_values`. Since `release_image` cannot be locked (per-field lockability), only the editable allowed_values path needs protection.
+
+**BareMetalInstanceCatalogItem:**
+4. **Image references**: prevent deletion of images referenced by `fields.image`.
 
 These triggers follow the existing pattern in migration 59 (SQLSTATE Z0002/Z0003 for referential integrity violations). [Codebase: internal/database/migrations/000059]
 
@@ -860,6 +881,9 @@ The current design allows the catalog item to define node set entries (e.g., "wo
 - Curated options: allowed_values validation, empty allowed_values accepts any value.
 - Int32 range constraints: min/max validation on editable int32 fields (e.g., node set size).
 - Error messages: each validation failure produces a specific, actionable error message.
+- Update-time governance: locked field rejected on update, editable field constraints validated on update, resource without catalog item skips governance on update.
+- Per-field lockability: catalog item creation with locked release_image rejected, locked node_sets.*.size rejected, editable with allowed_values accepted.
+- Catalog item update governance constraints: editable-to-locked transition rejected, locked-to-editable transition accepted, locked value change accepted.
 
 ### Integration Tests
 
