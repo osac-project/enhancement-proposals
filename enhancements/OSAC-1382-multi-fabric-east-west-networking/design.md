@@ -104,7 +104,7 @@ FabricDomain
   servers: [hostname, …]
   network_class: <ref>           # resolves backend + parameters
   virtual_networks: [vn]         # Phase 1: exactly one (required)
-  status: phase, backend_id, message, …
+  status: conditions, backend_id, vpc_id
 
 NetworkClass
   capabilities:
@@ -147,9 +147,9 @@ message FabricDomainSpec {
 }
 
 message FabricDomainStatus {
-  FabricDomainPhase phase = 1;
+  repeated Condition conditions = 1;     // Ready, Provisioning (standard OSAC conditions)
   string backend_id = 2;                 // e.g. Netris Server Cluster ID
-  string message = 3;
+  string vpc_id = 3;                     // resolved Netris VPC ID from associated VN
 }
 
 message NetworkClassCapabilities {
@@ -182,11 +182,15 @@ message NVLinkEastWestConfig {
 
 **Validation (Phase 1)**
 
-- `type` must match a capability on the referenced NetworkClass.
-- `servers` non-empty.
-- For `ethernet_ew`, NetworkClass must have `east_west_config.ethernet_ew.template_id`.
-- `virtual_networks` length == 1; VN must exist and be same-tenant.
-- Type `infiniband_ew` / `nvlink` rejected until Phase 2/3.
+| Rule | Check | gRPC error |
+|------|-------|------------|
+| FD-VAL-01 | `type` must match a capability on the referenced NetworkClass | `INVALID_ARGUMENT`: "type does not match NetworkClass capability" |
+| FD-VAL-02 | `servers` non-empty | `INVALID_ARGUMENT`: "servers list must not be empty" |
+| FD-VAL-03 | `network_class` must reference an existing NetworkClass | `NOT_FOUND`: "NetworkClass not found" |
+| FD-VAL-04 | For `ethernet_ew`, NetworkClass must have `east_west_config.ethernet_ew.template_id` | `FAILED_PRECONDITION`: "NetworkClass missing template_id for ethernet_ew" |
+| FD-VAL-05 | `virtual_networks` length == 1 | `INVALID_ARGUMENT`: "exactly one VirtualNetwork required in Phase 1" |
+| FD-VAL-06 | Referenced VN must exist and be same-tenant | `NOT_FOUND` / `PERMISSION_DENIED` |
+| FD-VAL-07 | Type `infiniband_ew` / `nvlink` rejected until Phase 2/3 | `UNIMPLEMENTED`: "type not yet supported" |
 
 ### Why Phase 1 requires VirtualNetwork (1:1)
 
@@ -351,15 +355,15 @@ backends later.
 
 ### Phase 1 behavior (Ethernet / Netris)
 
-1. Admin configures NetworkClass with `supports_east_west_ethernet` and
-   `east_west_config.ethernet_ew.template_id`.
-2. Tenant/admin has VirtualNetwork (N-S).
-3. Admin creates FabricDomain (`type=ethernet_ew`, `servers`, `network_class`,
-   `virtual_networks: [that VN]`).
+1. **Cloud Infrastructure Admin** configures NetworkClass with
+   `supports_east_west_ethernet` and `east_west_config.ethernet_ew.template_id`.
+2. **Tenant Admin** (or Cloud Infrastructure Admin) has VirtualNetwork (N-S).
+3. **Cloud Infrastructure Admin** creates FabricDomain (`type=ethernet_ew`,
+   `servers`, `network_class`, `virtual_networks: [that VN]`).
 4. Operator resolves template from NetworkClass; resolves VN → Netris VPC id.
 5. Create Netris Server Cluster **in that VPC**.
 6. Netris applies template (EW L3VPN, NS, OOB V-Nets, port mapping).
-7. Status: Ready + `backend_id` = Server Cluster ID.
+7. Condition `Ready=True` + `backend_id` = Server Cluster ID.
 
 **Validated (zeus12, netris-lab, `ew_fabric_enable`):** VPC first → Server Cluster
 in existing VPC → OSAC Subnet. Four VNets coexisted with distinct VXLAN IDs; no
@@ -415,7 +419,7 @@ sequenceDiagram
   AAP->>Netris: POST server-cluster in VPC
   Netris-->>AAP: Active (EW/NS/OOB VNets)
   AAP-->>Op: success
-  Op->>Op: status Ready + backend_id
+  Op->>Op: condition Ready=True + backend_id
 ```
 
 ---
@@ -428,9 +432,109 @@ sequenceDiagram
   template from NC; VN → VPC id.
 - **osac-aap:** Existing create/delete server_cluster tasks (PR #447);
   capability `supports_east_west_ethernet`.
+- **osac-installer:** New FabricDomain CRD registration; NetworkClass Helm
+  values extended with `east_west_config`; RBAC rules for the new resource.
 - **Scoping:** Follow existing OSAC networking resource conventions
   (cluster/tenant scoped as established for VirtualNetwork); examples in this
   doc are illustrative.
+- **Documentation:** API reference auto-generated from proto. Admin guide for
+  NetworkClass EW configuration deferred to Tech Preview.
+- **UI:** FabricDomain is managed via CLI/API only in Phase 1. Admin views
+  deferred to a future UI enhancement.
+
+### Security Considerations
+
+FabricDomain inherits the existing OSAC multi-tenant security model:
+
+- **Tenant isolation:** Enforced via `osac.openshift.io/tenant` annotation on
+  every FabricDomain. OPA policies prevent cross-tenant access — a tenant
+  cannot read, modify, or delete another tenant's FabricDomain.
+- **Input validation:** All spec fields are validated at the fulfillment-service
+  layer (see Validation table). Server hostnames are accepted as strings; Phase 1
+  trusts the Cloud Infrastructure Admin for server eligibility. Server inventory
+  validation is deferred to Phase 2.
+- **Backend credentials:** Netris API credentials are configured on the AAP
+  execution environment, not on the FabricDomain or NetworkClass. No secrets
+  are stored on the FabricDomain resource.
+- **No new authentication/authorization surface:** FabricDomain uses the same
+  gRPC interceptor chain and OPA policy engine as existing networking resources.
+
+### Failure Handling and Recovery
+
+| Failure mode | What happens | Recovery | User observes |
+|--------------|--------------|----------|---------------|
+| **Netris API unreachable** | AAP job fails to POST server-cluster | AAP retries per job template retry policy; operator re-queues reconciliation | Condition `Ready=False`, Reason=`ProvisioningFailed`, message includes AAP error |
+| **Netris Server Cluster activation timeout** | Server Cluster stays in "Provisioning" > 5 min | Operator polls status; after configurable timeout sets condition with timeout reason | Condition `Ready=False`, Reason=`ActivationTimeout` |
+| **Invalid template_id on NetworkClass** | Netris rejects the create request (400) | AAP job fails fast; operator surfaces the error | Condition `Ready=False`, Reason=`InvalidTemplate` |
+| **VN deleted while FabricDomain references it** | Validation prevents VN deletion if FabricDomains reference it (finalizer on VN) | Admin must delete FabricDomain first, then VN | VN deletion blocked with error message |
+| **Operator restart mid-reconciliation** | Controller re-reads FabricDomain CR on startup | Idempotent: if Server Cluster already exists in Netris (matched by `backend_id`), operator syncs status; if not, re-creates | Temporary condition staleness until re-reconciliation completes |
+| **Duplicate server across FabricDomains** | Phase 1 does not validate server overlap | Netris may reject or accept depending on template; admin is trusted | If Netris rejects: Condition `Ready=False`; if accepted: both domains provision |
+
+**Idempotency:** Create and delete operations use `backend_id` (Netris Server
+Cluster ID) persisted in status. Retries target the same backend resource.
+The AAP `create_server_cluster` role is idempotent — it checks for an existing
+cluster by name before creating.
+
+### RBAC / Tenancy
+
+| Persona | FabricDomain | NetworkClass EW config |
+|---------|-------------|------------------------|
+| **Cloud Infrastructure Admin** | Create, read, update, delete | Configure `east_west_config` and capabilities |
+| **Cloud Provider Admin** | Read (audit/troubleshoot) | Read |
+| **Tenant Admin** | Read own tenant's FabricDomains | Read (discover available capabilities) |
+| **Tenant User** | No direct access | No direct access |
+
+**Tenant isolation metadata:**
+
+- `osac.openshift.io/tenant`: Set on every FabricDomain. OPA policies filter
+  by this annotation — tenants see only their own FabricDomains.
+- `osac.openshift.io/owner-reference`: Not applicable. FabricDomain is a
+  top-level resource associated with (not owned by) VirtualNetwork. The
+  association is a spec reference, not an ownership hierarchy. Deleting a
+  FabricDomain does not cascade to the VN; deleting a VN is blocked by a
+  finalizer if FabricDomains reference it.
+
+### Observability and Monitoring
+
+| Type | Name | Description |
+|------|------|-------------|
+| **Gauge** | `osac_fabric_domains_total{type, tenant}` | Total FabricDomains by type and tenant |
+| **Histogram** | `osac_fabric_domain_provisioning_duration_seconds{type}` | Time from creation to `Ready=True` |
+| **Counter** | `osac_fabric_domain_provisioning_failures_total{type, reason}` | Provisioning failures by type and reason |
+| **Event** | `FabricDomainProvisioned` (Normal) | Emitted when condition transitions to `Ready=True` |
+| **Event** | `FabricDomainProvisioningFailed` (Warning) | Emitted on provisioning failure with reason |
+| **Event** | `FabricDomainDeleted` (Normal) | Emitted when Server Cluster is successfully deleted |
+
+**Alert threshold:** `osac_fabric_domain_provisioning_duration_seconds` p99 > 5
+minutes indicates Netris API or data-plane convergence issues.
+
+### Risks and Mitigations
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| **Fabric manager API changes** | Netris API breaking changes could block provisioning | Pin `netris.controller` collection version in AAP; abstract via NetworkClass so backend swap does not change the OSAC API |
+| **Server Cluster activation latency** | Data plane convergence takes ~3 min after API reports "Active" | Document expected latency; operator treats `Ready=True` as control-plane ready; data-plane readiness is a future health-check enhancement |
+| **Server overlap across domains** | Two FabricDomains with overlapping servers could cause switch port conflicts | Phase 1: admin-trusted (documented limitation). Phase 2: add server overlap validation at the fulfillment-service layer |
+| **Template misconfiguration** | Wrong `template_id` on NetworkClass applies incorrect NIC mapping | Validation ensures template_id is non-empty; Netris rejects invalid IDs. Template correctness is infra admin responsibility |
+| **`supports_east_west_ethernet` capability rename** | AAP metadata and operator may disagree during rolling upgrade | Additive change: new capability field; old `supports_east_west` retained as deprecated alias during transition. See Version Skew Strategy |
+
+### Drawbacks
+
+Adding FabricDomain introduces a new top-level resource with its own CRD,
+database table, gRPC service, controller, CLI commands, and AAP playbooks.
+This increases the OSAC API surface and maintenance burden.
+
+The alternative — extending VirtualNetwork with east-west bindings — would
+avoid this new resource entirely for Phase 1 Ethernet. However, as documented
+in the Alternatives section, that approach couples EW lifecycle to IP-plane
+objects and creates architectural debt when non-VPC fabrics (InfiniBand PKeys,
+NVLink partitions) are added in Phase 2/3. The new resource cost is justified
+by the multi-backend roadmap.
+
+FabricDomain may initially feel redundant in a pure Netris deployment where
+"VPC is the boundary." The Phase 1 requirement of exactly one VN per
+FabricDomain mitigates user confusion — the operational experience is
+equivalent to "create a Server Cluster in a VPC" with an additional resource.
 
 ## Phase 1 limitations
 
@@ -442,13 +546,49 @@ sequenceDiagram
 - Bare-metal only; no SR-IOV/VM EW.
 - IB/NVLink types reserved in API, not implemented.
 
-## Test plan (Phase 1)
+## Test Plan
 
-- Unit: validation rules; capability checks; template resolution; VN required.
-- Integration: NC with east_west_config → FabricDomain CR → status.
-- E2E (netris-lab): FabricDomain → Server Cluster in VN VPC → isolation →
-  resize servers → delete.
-- Coexistence: VPC → Server Cluster → OSAC Subnet (already validated on zeus12).
+### Unit Tests
+
+- FD-VAL-01: reject FabricDomain when `type` does not match NetworkClass
+  capability → `INVALID_ARGUMENT`.
+- FD-VAL-02: reject FabricDomain with empty `servers` list → `INVALID_ARGUMENT`.
+- FD-VAL-03: reject FabricDomain when `network_class` references non-existent
+  NetworkClass → `NOT_FOUND`.
+- FD-VAL-04: reject `ethernet_ew` when NetworkClass is missing `template_id`
+  → `FAILED_PRECONDITION`.
+- FD-VAL-05: reject FabricDomain with zero or >1 `virtual_networks` in Phase 1
+  → `INVALID_ARGUMENT`.
+- FD-VAL-06: reject FabricDomain when referenced VN belongs to a different
+  tenant → `PERMISSION_DENIED`.
+- FD-VAL-07: reject `infiniband_ew` and `nvlink` types → `UNIMPLEMENTED`.
+- Template resolution: operator resolves `template_id` from NetworkClass
+  `east_west_config.ethernet_ew` correctly.
+- Condition transitions: `Ready=False` (Reason=Provisioning) → `Ready=True`
+  on success; `Ready=False` (Reason=ProvisioningFailed) on failure.
+- Resize: updating `servers` list triggers re-reconciliation; `type` and
+  `network_class` are immutable after creation.
+
+### Integration Tests
+
+- Create NetworkClass with `east_west_config` → create FabricDomain CR →
+  verify condition transitions to `Ready=True` and `backend_id` is populated.
+- Delete FabricDomain → verify Server Cluster cleanup and condition removal.
+- Re-provision after failure: simulate AAP job failure → verify operator
+  re-queues and re-attempts provisioning.
+- VN deletion blocked: attempt to delete VN while FabricDomain references it →
+  verify finalizer prevents deletion.
+
+### E2E Tests
+
+- Full lifecycle on netris-lab: create NetworkClass → create VN → create
+  FabricDomain → verify Netris Server Cluster exists in VPC → verify EW
+  isolation (same-tenant ping succeeds, cross-tenant blocked) → resize
+  servers → delete FabricDomain → verify cleanup.
+- VNet coexistence: create VPC → Server Cluster → OSAC Subnet → verify
+  distinct VXLAN IDs, no conflicts (already validated on zeus12).
+- Error path: create FabricDomain with invalid `template_id` on NetworkClass →
+  verify `Ready=False` condition with `InvalidTemplate` reason.
 
 ---
 
@@ -504,6 +644,63 @@ multi-fabric clarity; risks leaking `template_id` into every binding.
 **Rejected by PRD.** Manual multi-fabric isolation does not scale.
 
 ---
+
+## Graduation Criteria
+
+| Stage | Criteria |
+|-------|----------|
+| **Dev Preview** | FabricDomain CRUD operations pass unit and integration tests. Condition-based lifecycle verified. NetworkClass `east_west_config` validated. |
+| **Tech Preview** | Full lifecycle E2E on netris-lab: create → isolation verified → resize → delete. VNet coexistence with OSAC Subnets confirmed. Error paths tested (invalid template, missing VN, AAP timeout). No regressions in existing networking tests. |
+| **GA** | Production deployment with ≥2 tenants using FabricDomain for ≥30 days. Support procedures validated. Admin documentation published. No manual fabric-manager intervention required for standard operations. |
+
+## Upgrade / Downgrade Strategy
+
+FabricDomain is a new resource type with no existing instances to migrate.
+
+- **Upgrade:** Installing the new CRD and controller is additive. Existing
+  VirtualNetwork and Subnet resources are unaffected. NetworkClass gains new
+  optional fields (`east_west_config`, `supports_east_west_ethernet`); existing
+  NetworkClasses without these fields continue to work for N-S networking.
+- **Downgrade:** Requires deleting all FabricDomain instances before removing
+  the CRD. The operator must be scaled down before CRD removal to avoid
+  reconciliation errors. VirtualNetwork and Subnet resources are unaffected
+  by downgrade.
+
+## Version Skew Strategy
+
+| Component pair | Skew scenario | Behavior |
+|---------------|---------------|----------|
+| **fulfillment-service ahead of osac-operator** | FS accepts FabricDomain creates; operator CRD not yet installed | FS persists the resource in the database; CR creation fails. Condition `Ready=False`, Reason=`CRDNotInstalled`. Resolves when operator is upgraded. |
+| **osac-operator ahead of fulfillment-service** | Operator has CRD but FS does not have the FabricDomain service | No FabricDomains can be created via API. No impact on existing resources. |
+| **osac-aap capability rename** | Old AAP has `supports_east_west`; new FS/operator expects `supports_east_west_ethernet` | Additive: new capability field is added alongside the old one. The `find_template_roles.py` pydantic model accepts both during the transition window. Old field deprecated after one release cycle. |
+
+## Support Procedures
+
+**Detecting failures:**
+
+- Check FabricDomain conditions: `osac get fabricdomains` — look for
+  `Ready=False` with Reason and Message fields.
+- Check operator logs for `FabricDomain` reconciliation errors.
+- Check AAP job logs for `osac-create-server-cluster` /
+  `osac-delete-server-cluster` failures.
+- Monitor `osac_fabric_domain_provisioning_failures_total` metric.
+
+**Disabling the feature:**
+
+- Scale down the FabricDomain controller in osac-operator. Existing
+  FabricDomains remain in their last-known state; no new provisioning or
+  deletion occurs. VirtualNetwork and Subnet operations are unaffected.
+- Re-enabling: scale the controller back up. It re-reconciles all
+  FabricDomain CRs from their current state. Idempotent operations ensure
+  consistency.
+
+**Recovery:**
+
+- If a FabricDomain is stuck in `Ready=False`: check the condition message,
+  fix the underlying issue (Netris connectivity, template_id, VN existence),
+  and the operator will re-reconcile automatically.
+- If the Netris Server Cluster was manually deleted: delete and re-create the
+  FabricDomain to re-provision.
 
 ## Naming
 
