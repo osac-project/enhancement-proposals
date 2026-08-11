@@ -121,8 +121,11 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 `BareMetalInstanceTemplateSpecDefaults` (public and private):
 - Field 1 (`image`, type `BareMetalInstanceImage`) — removed, field number reserved. No replacement: DiskImage defaults are carried on `BareMetalInstanceCatalogItem.field_definitions`.
 
-`BareMetalInstancesCreateResponse` (public):
-- Field 2 (`warnings`, type `repeated string`) — added. Carries non-fatal notices, matching the `ComputeInstancesCreateResponse` pattern.
+`BareMetalInstancesCreateResponse` (public and private):
+- Field 2 (`warnings`, type `repeated string`) — added. Carries non-fatal notices, matching the `ComputeInstancesCreateResponse` pattern. `PrivateBareMetalInstancesServer.Create()` populates warnings on the private response; the public server propagates them to the public response.
+
+`BareMetalInstanceCatalogItemsCreateResponse` and `BareMetalInstanceCatalogItemsUpdateResponse` (public and private):
+- Field `warnings` (`repeated string`) — added. Carries non-fatal notices when `field_definitions` reference a DEPRECATED DiskImage. Populated by `validateFieldDefinitionsDiskImage()` and propagated from private to public server in the same pattern.
 
 `BareMetalInstanceImage` message — removed from both public and private type protos.
 
@@ -181,11 +184,23 @@ message BareMetalInstanceSpec {
 
 // BareMetalInstanceImage message removed entirely.
 
+// public and private:
 message BareMetalInstancesCreateResponse {
   BareMetalInstance object = 1;
 
   // Non-fatal notices, e.g. when disk_image is DEPRECATED.
   repeated string warnings = 2;
+}
+
+// public and private catalog-item responses:
+message BareMetalInstanceCatalogItemsCreateResponse {
+  BareMetalInstanceCatalogItem object = 1;
+  repeated string warnings = 2;  // non-fatal notices when disk_image in field_definitions is DEPRECATED
+}
+
+message BareMetalInstanceCatalogItemsUpdateResponse {
+  BareMetalInstanceCatalogItem object = 1;
+  repeated string warnings = 2;  // non-fatal notices when disk_image in field_definitions is DEPRECATED
 }
 ```
 
@@ -219,10 +234,12 @@ Both changes must be duplicated for the public (`proto/public/osac/public/v1/`) 
 
 `PrivateBareMetalInstanceCatalogItemsServer.Create()` and `Update()` gain a `validateFieldDefinitionsDiskImage()` call, following the pattern from `PrivateComputeInstanceCatalogItemsServer`. The function scans `field_definitions` for entries targeting `spec.disk_image`, extracts the default value, and validates:
 
-1. The referenced DiskImage exists.
+1. The referenced DiskImage exists — fetched with `FOR SHARE` within the same transaction as the catalog-item insert/update, holding the lock until commit. This prevents a concurrent DiskImage deletion from succeeding between the existence check and the catalog-item commit (TOCTOU protection).
 2. The DiskImage is visible to the CatalogItem's tenant (global or same tenant).
 3. The DiskImage lifecycle is not `DISK_IMAGE_LIFECYCLE_OBSOLETE`.
-4. If `DISK_IMAGE_LIFECYCLE_DEPRECATED`, the validation returns a warning.
+4. If `DISK_IMAGE_LIFECYCLE_DEPRECATED`, the validation appends a warning. Warnings are returned in `BareMetalInstanceCatalogItemsCreateResponse.warnings` / `BareMetalInstanceCatalogItemsUpdateResponse.warnings`.
+
+A database trigger for catalog-item write protection is impractical: `field_definitions` stores values as opaque `google.protobuf.Value` JSONB, and DiskImage IDs cannot be reliably extracted without knowing the serialization format. The application-level `FOR SHARE` approach provides equivalent TOCTOU protection within the transaction.
 
 [Codebase: `osac/fulfillment-service/internal/servers/private_baremetal_instance_catalog_items_server.go`]
 
@@ -491,6 +508,10 @@ Instead of dropping and recreating `check_disk_image_not_in_use`, add a separate
 - **BareMetalInstance lifecycle with DiskImage:** create a DiskImage, create a BareMetalInstance referencing it, verify the CRD's `templateParameters` JSON contains the correct `imageURL`.
 - **Deletion protection — BareMetalInstance:** create a DiskImage referenced by an active BareMetalInstance; attempt deletion; verify `FailedPrecondition`. Delete the BareMetalInstance; retry deletion; verify success.
 - **Deletion protection — BareMetalInstanceCatalogItem:** create a DiskImage referenced in a CatalogItem's `field_definitions`; attempt deletion; verify `FailedPrecondition`.
+- **Deletion protection — compute regression:** create a DiskImage referenced by an active ComputeInstance and a ComputeInstanceTemplate; attempt deletion for each; verify `FailedPrecondition`. Confirms the extended trigger still enforces OSAC-2540's compute protections after the trigger function is replaced.
+- **JSONB key verification:** each deletion-protection test above implicitly verifies the JSONB key path used in the trigger (`diskImage` for compute, `disk_image` for bare-metal). Implementors must confirm the actual persisted key by inspecting a row before running these tests — adjust trigger SQL if casing differs.
+- **Write-side TOCTOU — BareMetalInstance:** concurrently attempt to create a BareMetalInstance and soft-delete its referenced DiskImage in separate transactions; verify at most one succeeds — either the instance is created with the DiskImage intact, or the deletion wins and the instance creation fails.
+- **Write-side TOCTOU — BareMetalInstanceCatalogItem:** concurrently attempt to create a CatalogItem with a `spec.disk_image` field_definitions entry and soft-delete the referenced DiskImage; verify the application-level `FOR SHARE` lock prevents the race.
 - **CatalogItem default applied end-to-end:** create a CatalogItem with a default `disk_image`; create a BareMetalInstance without specifying `disk_image`; verify the DiskImage is resolved and `imageURL` is correct in the resulting CRD.
 - **Tenant isolation:** create a tenant-scoped DiskImage in Tenant A; attempt to create a BareMetalInstance in Tenant B referencing it; verify rejection.
 
@@ -510,18 +531,26 @@ Graduation criteria will be defined when targeting a release. Expected stages: D
 
 ## Upgrade / Downgrade Strategy
 
-This is a breaking API change (removal of `BareMetalInstanceSpec.image`). OSAC does not currently support in-place upgrades. Downgrade requires:
-1. Deleting all BareMetalInstances (or migrating them back to use `image`).
-2. Reverting the database migration (removing triggers and index).
-3. Reverting the proto and server changes before redeploying the prior service binary.
+This is a breaking API change (removal of `BareMetalInstanceSpec.image`). OSAC does not currently support in-place upgrades.
 
-Existing BareMetalInstances in the database at upgrade time have no `disk_image` reference. These instances remain reconcileable — the reconciler only injects `imageURL` if `disk_image` is set, and existing provisioned hosts are already running.
+**Upgrade prerequisites:**
+- Any BareMetalInstances with `spec.image` set but no `spec.disk_image` must be resolved before upgrade: delete and recreate them using a DiskImage reference, or confirm they are in a terminal state (RUNNING or FAILED) where `imageURL` is no longer needed by the reconciler. Pending instances with only `spec.image` will fail reconciliation after upgrade — the new reconciler only injects `imageURL` when `disk_image` is set.
+- Any `BareMetalInstanceCatalogItem.field_definitions` carrying `spec.image` defaults must be updated to use `spec.disk_image` before upgrade; the `image` field is not recognized after upgrade.
+
+**Downgrade steps:**
+1. Delete all BareMetalInstances created with `spec.disk_image` (these cannot be represented in the prior schema).
+2. Revert the database migration: the down migration must recreate OSAC-2540's original `check_disk_image_not_in_use` function (covering only compute resources) and trigger before removing the BMaaS additions — removing the trigger entirely is incorrect, as compute resource deletion protection must remain. Then drop `check_bare_metal_instance_disk_image_ref` and the `bare_metal_instances_disk_image` index.
+3. Redeploy the prior service binary (reverts proto and server changes).
+
+Existing provisioned BareMetalInstances (already RUNNING) at upgrade time have no `disk_image` reference. These instances are unaffected — running hosts do not require re-reconciliation and the reconciler only injects `imageURL` when `disk_image` is set.
 
 ## Version Skew Strategy
 
 `disk_image` is an API-only reference with no CRD field. Version skew between fulfillment-service versions is handled by standard proto backward compatibility rules (reserved field numbers, no reuse). The bare-metal-fulfillment-operator is unaffected because the CRD is unchanged.
 
-If the fulfillment-service is upgraded before all clients stop using the `image` field, those clients will receive `InvalidArgument` because `image` is reserved. OSAC does not support mixed-version deployments.
+Reserving field 7 prevents schema reuse but does not cause a wire error. Old clients that still send `image` (field 7) have it arrive at the new server as an unknown wire field — silently discarded by the proto3 runtime. The server returns `InvalidArgument` only when `disk_image` (field 10) is absent from the decoded request (application-level validation, not proto-level). A client sending only `image` without `disk_image` therefore receives `InvalidArgument: "spec.disk_image is required"`.
+
+OSAC does not support mixed-version deployments. Compatibility test: an old client sending `image` without `disk_image` to a new server must receive `InvalidArgument`; a new client sending `disk_image` must succeed.
 
 ## Support Procedures
 
@@ -534,7 +563,7 @@ If the fulfillment-service is upgraded before all clients stop using the `image`
 
 *Cause:* Active BareMetalInstances or CatalogItems reference the DiskImage.
 *Resolution:* List referencing BareMetalInstances:
-```
+```shell
 osac baremetal-instances list --filter 'this.spec.disk_image == "<id>"'
 ```
 Delete or reprovision them, then retry deletion.
