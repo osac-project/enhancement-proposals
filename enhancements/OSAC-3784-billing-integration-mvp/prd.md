@@ -17,7 +17,6 @@ Terms are aligned with [FOCUS](https://focus.finops.org/) (FinOps Open Cost and 
 | Billing provider | The external billing system that OSAC integrates with to manage pricing, cost calculation, and invoicing. Maps to the FOCUS concepts of invoice issuer and data generator. In OSAC: Monetize360 (M360) or Red Hat Cost Management (Koku). |
 | Billing provider adapter | The pluggable integration component that connects OSAC's usage data pipeline to a billing provider. Each OSAC deployment configures one active adapter. |
 | Charge | A line item representing a cost incurred for resource or service usage within a billing period. Corresponds to a row in a FOCUS cost and usage dataset. |
-| Cost model | A pricing perspective that determines which prices apply. OSAC supports a provider cost model (actual infrastructure costs, visible only to provider users) and a consumer cost model (tenant-facing charges). |
 | Draft invoice | An invoice for a billing period that has not been finalized or issued. Corresponds to an invoice in a FOCUS open billing period. Cloud Provider Admins review and export draft invoices before submitting them to external payment systems. |
 | FOCUS | [FinOps Open Cost and Usage Specification](https://focus.finops.org/) — an open-source specification that defines requirements for billing data. |
 | Meter | A named aggregation that turns events into a measurable quantity (e.g., total VM uptime grouped by tenant). Defined in the metering PRD (OSAC-985). |
@@ -60,11 +59,7 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 - As a Cloud Provider Admin, I want to configure a billing provider adapter for my OSAC deployment, so that usage data flows automatically to my chosen billing system (M360 or RH Cost Management) without custom integration work.
 
-- As a Cloud Provider Admin, I want to define a provider cost model that reflects my actual infrastructure costs, so that I can track margins and make pricing decisions. This cost model is visible only to provider-level users.
-
-- As a Cloud Provider Admin, I want to define a consumer cost model with tenant-facing prices, so that tenants see the charges I set rather than my internal costs.
-
-- As a Cloud Provider Admin, I want to create pricing plans with rate cards that define per-unit prices per resource type, so that I can offer differentiated pricing across hardware classes and service types.
+- As a Cloud Provider Admin, I want to create pricing plans with rate cards that define per-unit prices per resource type, so that I can set different rates for different tenants based on their service agreements and hardware classes.
 
 - As a Cloud Provider Admin, I want to assign pricing plans to tenants, so that each tenant's usage is charged according to their agreed terms. A default plan applies to tenants without a specific assignment. When a plan's rates change, affected tenants' future charges reflect the updated rates. [Clarify: R1.Q3]
 
@@ -144,6 +139,8 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 ## Provenance
 
-Authored: draft @ prd 0.8.0 - a605aa5, workspace feat/add-osac-metering-documentation @ 514565f
+Committed: commit @ prd 0.8.0 - 7efcedb, workspace prd/OSAC-3784 @ 975a5e0 (2 behind origin/main, dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"a605aa5","source_repo":"514565f","source_repo_branch":"feat/add-osac-metering-documentation","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"975a5e0 (dirty)","source_repo_branch":"prd/OSAC-3784","commits_behind_main":2,"commits_ahead_main":1,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
