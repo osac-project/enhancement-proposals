@@ -638,12 +638,58 @@ VirtualNetwork
 Independent create/delete of a *child* relative to the parent VN is possible
 (like Subnet), but that does not fix ownership, sharing, or non-IP semantics.
 
-### 2. New top-level VPC parent of VirtualNetwork + ServerCluster
+### 2. ServerCluster as top-level peer of VirtualNetwork (uniform isolation)
+
+```text
+VirtualNetwork   (N-S / IP isolation — existing)
+ServerCluster    (EW fabric isolation — new, top-level peer)
+  type: multi | ethernet_ew | …
+  servers: [hostname, …]
+  network_class: <ref>
+  virtual_networks: [vn]
+```
+
+**Considered but not adopted as the primary model.**
+
+This variant treats ServerCluster as a top-level resource (not a child of VN)
+that drives **all** fabrics for a given server group in one object. For the
+common uniform case (same 20 servers on Ethernet EW, IB, and NVLink), a single
+ServerCluster avoids server-list drift and provides atomic resize.
+
+**Pros:**
+
+- One object per server group — simpler for uniform deployments.
+- Atomic resize: add/remove a server once, all fabrics follow.
+- Matches Netris's Server Cluster model directly (one API call provisions
+  Ethernet + IB + NVLink via template).
+
+**Cons:**
+
+- Couples fabric lifecycles. NVLink partitions for training jobs are often
+  ephemeral (created per-job, released after hours), while Ethernet EW is
+  persistent tenant infrastructure. One object forces both lifecycles together.
+- Non-uniform membership requires multiple ServerClusters with different
+  server lists — the same pattern as multiple FabricDomains, but with a name
+  that implies Netris-specific semantics.
+- The name "ServerCluster" carries Netris connotations; FabricDomain is
+  backend-neutral.
+
+**Why FabricDomain was chosen:** FabricDomain handles both uniform and
+non-uniform cases. For uniform deployments, a Phase 2/3 `type: multi` (or
+equivalent) achieves single-object atomic resize with the same schema. For
+non-uniform deployments (SuperPOD-style: storage off NVLink, different NVLink
+partition sizes per job), separate FabricDomains per fabric type are the
+natural model. The NetworkClass already has per-fabric config
+(`ethernet_ew`, `infiniband_ew`, `nvlink`), so the operator knows which
+backends to call for each domain type — or for all of them under a `multi`
+type.
+
+### 3. New top-level VPC parent of VirtualNetwork + FabricDomain
 
 ```text
 VPC
   ├── VirtualNetwork
-  ├── ServerCluster
+  ├── FabricDomain (or ServerCluster)
   └── …
 ```
 
@@ -657,12 +703,12 @@ VPC
   If a VPC parent is added later, FabricDomain can associate with it the same
   way it associates with VirtualNetwork.
 
-### 3. fabric_bindings on VirtualNetwork or Subnet
+### 4. fabric_bindings on VirtualNetwork or Subnet
 
 **Rejected earlier.** Couples EW lifecycle to address-plane objects; weak
 multi-fabric clarity; risks leaking `template_id` into every binding.
 
-### 4. Do nothing
+### 5. Do nothing
 
 **Rejected by PRD.** Manual multi-fabric isolation does not scale.
 
