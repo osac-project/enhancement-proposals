@@ -12,10 +12,12 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 
 ## In Scope
 
-- Catalog items become an overlay on existing resource creation — fields not mentioned in the catalog item behave as if no catalog item exists.
+- Catalog items become an overlay on resource creation and updates — fields not mentioned in the catalog item behave as if no catalog item exists.
 - Spec fields on each catalog item type are structured, typed fields with a per-field behavior (locked or editable with a default). Only the subset of spec fields relevant to catalog governance are exposed — fields like network attachments are not governable through catalog items. The design will enumerate the exact fields per resource type. Template parameters are governed via a key-value map.
-- For ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, image is mandatory and always locked — tenants cannot change the image during provisioning. The catalog item owner can update the image (e.g., to bump versions for CVE fixes). ClusterCatalogItem does not have an image equivalent.
-- Per-field type customization: fields can use richer types than the underlying resource spec (e.g., instance type as an enum with curated options, image as a mandatory reference selector).
+- For ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, image is mandatory and always locked — tenants cannot choose a different image when creating a resource, and the locked image value is enforced if the tenant updates the resource after provisioning. ClusterCatalogItem governs version instead of image; version is editable because tenants need to upgrade provisioned clusters to newer versions.
+- The catalog item owner can update the value of any governed field (locked or editable); changes only affect new provisioning — existing resources retain the values they were created with.
+- A field's behavior cannot be tightened after catalog item creation (editable or absent to locked) — this would break existing resources where tenants have already set values for that field. Relaxing governance (locked to editable/absent) is allowed.
+- Per-field type customization: fields can use richer types than the underlying resource spec (e.g., image as a mandatory reference selector).
 - Template parameters are governed with the same locked/editable behavior as spec fields, validated against the referenced template's parameter definitions.
 - The system prevents deletion of resources (images, instance types) referenced by catalog items. Deletion blocking is the immediate behavior; a deprecation/obsolescence model may replace or complement this when the lifecycle feature (see Out of Scope) is implemented.
 - Cloud Provider Admins can assign catalog items to specific tenants and control visibility via publish/unpublish.
@@ -23,10 +25,10 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 
 ## Out of Scope
 
+- Constraints on editable fields (allowed values, min/max ranges) — separate feature; the behavior model must be extensible to support composable constraints alongside locked/editable.
 - Hidden field behavior (admin sets value, tenant cannot see the field) — separate feature; the behavior model must be extensible to support it.
 - Lifecycle management and versioning (draft/active/deprecated/retired states, version pinning) — separate feature; the design must be extensible to support this.
 - Multi-resource composition (catalog items that bundle multiple resources with dependency ordering) — will likely use a different mechanism, not catalog items.
-- Post-provisioning governance (restricting what a tenant can modify on a resource after provisioning) — separate feature.
 - Cost metadata, metering/usage tracking, discoverability metadata (categories, tags) — separate features. Note: billing requirements may constrain which fields must be locked; those constraints will be captured in the design when the billing feature is specified.
 - Budget enforcement, approval workflows — separate features.
 - Catalog item override mechanism for tenant admins (OSAC-2539) — separate feature, but this redesign should be override-friendly.
@@ -40,15 +42,17 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 
 - As a Cloud Provider Admin, I want VM and bare metal catalog items to require an image that is locked during provisioning, so that each catalog item represents a concrete offering (e.g., "RHEL 10 Small VM") and tenants cannot change the image when provisioning.
 
-- As a Cloud Provider Admin, I want to update the image on an existing VM or bare metal catalog item (e.g., to apply CVE fixes) without recreating it, so that I can maintain offerings over time.
+- As a Cloud Provider Admin, I want to update the image on an existing VM or bare metal catalog item (e.g., to apply CVE fixes) without recreating it, so that I can maintain offerings over time. Changes only affect new provisioning.
 
-- As a Cloud Provider Admin, I want editable fields to support per-field type customization (e.g., offering a curated list of instance types rather than accepting any string) so that tenants have guardrails without losing flexibility.
+- As a Cloud Provider Admin, I want editable fields to use typed inputs rather than freeform strings, so that tenants have guardrails without losing flexibility.
 
 - As a Cloud Provider Admin, I want the system to prevent deletion of resources (images, instance types) that are referenced by a catalog item, so that published offerings do not silently break.
 
 - As a Cloud Provider Admin, I want to govern template parameters on a catalog item with the same locked/editable behavior as spec fields, so that I can control which template parameters a tenant can override.
 
-- As a Cloud Provider Admin, I want fields not mentioned in the catalog item to behave normally during provisioning (as if no catalog item exists), so that the catalog item is an overlay rather than a complete contract.
+- As a Cloud Provider Admin, I want locked fields to remain enforced after provisioning — tenants cannot modify locked values on an existing resource — so that the guardrails I set on the catalog item persist throughout the resource lifecycle.
+
+- As a Cloud Provider Admin, I want fields not mentioned in the catalog item to behave normally during provisioning and updates (as if no catalog item exists), so that the catalog item is an overlay rather than a complete contract.
 
 - As a Cloud Provider Admin, I want to assign a catalog item to a specific tenant and control its visibility via publish/unpublish, so that I can target offerings to the right audience.
 
@@ -75,7 +79,9 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 
 ## Provenance
 
-Authored: respond @ prd 0.7.1 - b8b3f86, workspace feat/osac-taxonomy-presentation @ d22bfa1 (4 behind origin/main)
-Phases: draft, respond, respond
+Authored: draft @ prd 0.7.1 - b8b3f86, workspace feat/osac-taxonomy-presentation @ d22bfa1 (4 behind origin/main)
+Final: respond @ prd 0.8.0 - 7efcedb, workspace feat/osac-taxonomy-presentation @ d22bfa1 (61 behind origin/main)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.7.1","ai_workflows":"b8b3f86","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":4,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":61,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
