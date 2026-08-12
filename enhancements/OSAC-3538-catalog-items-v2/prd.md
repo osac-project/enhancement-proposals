@@ -14,7 +14,7 @@ OSAC catalog items let Cloud Provider Admins create curated offerings by locking
 
 - Catalog items become an overlay on resource creation and updates — fields not mentioned in the catalog item behave as if no catalog item exists.
 - Spec fields on each catalog item type are structured, typed fields with a per-field behavior (locked or editable with a default). Only the subset of spec fields relevant to catalog governance are exposed — fields like network attachments are not governable through catalog items. The design will enumerate the exact fields per resource type. Template parameters are governed via a key-value map.
-- For ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, image is mandatory and always locked — tenants cannot change the image during provisioning or on updates. ClusterCatalogItem governs version instead of image; version is editable because tenants need to upgrade clusters after provisioning.
+- For ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, image is mandatory and always locked — tenants cannot choose a different image when creating a resource, and the locked image value is enforced if the tenant updates the resource after provisioning. ClusterCatalogItem governs version instead of image; version is editable because tenants need to upgrade provisioned clusters to newer versions.
 - The catalog item owner can update the value of any governed field (locked or editable); changes only affect new provisioning — existing resources retain the values they were created with.
 - A field's behavior cannot be tightened after catalog item creation (editable or absent to locked) — this would break existing resources where tenants have already set values for that field. Relaxing governance (locked to editable/absent) is allowed.
 - Per-field type customization: fields can use richer types than the underlying resource spec (e.g., image as a mandatory reference selector).
@@ -84,4 +84,4 @@ Final: respond @ prd 0.8.0 - 7efcedb, workspace feat/osac-taxonomy-presentation 
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":61,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":61,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
