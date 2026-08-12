@@ -1,9 +1,9 @@
 ---
-title: metadata-display-name
+title: metadata-title-description
 authors:
   - ushkalim@redhat.com
 creation-date: 2026-08-02
-last-updated: 2026-08-04
+last-updated: 2026-08-12
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2921
 prd:
@@ -16,16 +16,37 @@ superseded-by:
   - N/A
 ---
 
-# Add Standardized display_name and description Fields to Resource Metadata
+# Add Standardized title and description Fields to Resource Metadata
 
 ## Summary
 
-This design adds optional `display_name` and `description` fields to the
+This design adds optional `title` and `description` fields to the
 shared `Metadata` message in fulfillment-service, persists them as first-class
 database columns on every object table, implements List `order` support (today
 hardcoded to `id`), and removes per-resource `title`/`description` fields from
 the twelve object types that currently define them — with a one-shot data
 migration. See [PRD](prd.md) for detailed requirements.
+
+### Revision (2026-08-12)
+
+Per design review on the implementation PR
+([osac#263](https://github.com/osac-project/osac/pull/263)):
+
+1. Rename Metadata friendly label from `display_name` to **`title`** to match
+   existing per-type fields (e.g. ClusterTemplate) and simplify migration.
+2. `description` is **Markdown** — clients that display it **must** render
+   Markdown (with sanitization), not optionally.
+3. **Internationalization:** this enhancement keeps a single canonical
+   `title` / `description` (same model as today's per-type fields). Proto
+   field numbers **13** and **14** are reserved for future
+   `localized_titles` / `localized_descriptions` maps so i18n can be added
+   without another Metadata reshape. Full locale UX is a follow-up EP.
+
+Implementation note: OSAC-3643 landed `display_name` on public/private
+Metadata before this revision; follow-up implementation work must rename
+that field to `title` (proto + SQL column + DAO) before further client
+binding.
+
 
 ## Motivation
 
@@ -40,7 +61,7 @@ Two complementary naming features apply:
 
 - **OSAC-1061** makes `metadata.name` mandatory, unique, and immutable (DNS
   identity).
-- **This enhancement** adds mutable, non-unique `metadata.display_name` and
+- **This enhancement** adds mutable, non-unique `metadata.title` and
   `metadata.description` for natural-language labeling, and consolidates the
   existing per-type fields onto Metadata. [Locked: D1, D2, D4]
 
@@ -51,12 +72,12 @@ changes, not proto-only edits.
 
 ### Goals
 
-- Extend shared public and private `Metadata` with optional `display_name`
-  (max 63) and `description` (max 256), validated via buf.validate. [Locked: D5, D7, D8]
+- Extend shared public and private `Metadata` with optional `title`
+  (max 63) and Markdown `description` (max 256), validated via buf.validate. [Locked: D5, D7, D8]
 - Persist both fields as columns on all object and archive tables and wire
   them through GenericDAO create/update/list/makeMetadata and FilterTranslator.
 - Implement List `order` plumbing end-to-end so clients can sort by
-  `metadata.display_name` (and `metadata.name`, `id`). [Locked: D6]
+  `metadata.title` (and `metadata.name`, `id`). [Locked: D6]
 - Remove resource-level `title`/`description` from all twelve affected types
   in one release, migrating existing values into Metadata. [Locked: D1, D4]
 - Update CLI table definitions, List docs, E2E helpers, and generated
@@ -64,15 +85,18 @@ changes, not proto-only edits.
 
 ### Non-Goals
 
-- Mandating how UI/CLI present `display_name` versus `metadata.name` when
+- Mandating how UI/CLI present `title` versus `metadata.name` when
   unset — display behavior remains a client decision. [Locked: D9]
 - Changing TemplateParameter `title`/`description`, HostType interface
   `description`, or FieldDefinition `display_name`. [Locked: D3]
 - Aligning public/private Metadata field number divergence for existing
   fields (`name` is 4 public / 6 private). Tracked as a follow-up outside
   this enhancement.
-- Server-side encryption or content sanitization of `description` beyond
-  length validation. Descriptions remain opaque stored strings; safe
+- Full multi-locale Metadata in this enhancement — single canonical
+  `title` / `description` only; field numbers 13–14 reserved for future
+  localized maps (see Alternatives and Revision note).
+- Server-side encryption or Markdown sanitization of `description` beyond
+  length validation. Descriptions are stored as Markdown strings; safe
   rendering is a **client** responsibility (see Security Considerations).
   UI/CLI hardening beyond the policy stated here is tracked as a follow-up.
 
@@ -80,10 +104,10 @@ changes, not proto-only edits.
 
 Add two fields to `osac.public.v1.Metadata` and `osac.private.v1.Metadata`.
 Every object that embeds Metadata inherits them automatically. Persist the
-values in new `display_name` and `description` columns. Extend FilterTranslator
-so CEL filters can use `this.metadata.display_name`. Implement the documented
+values in new `title` and `description` columns. Extend FilterTranslator
+so CEL filters can use `this.metadata.title`. Implement the documented
 but currently ignored List `order` parameter so sorting by
-`metadata.display_name` works.
+`metadata.title` works.
 
 Remove `title`/`description` (or `description` alone for InstanceType) from
 the twelve types listed below, reserve the old proto field numbers and names,
@@ -93,9 +117,9 @@ release.
 ```mermaid
 flowchart LR
   Client["API / CLI / UI"] --> FS["fulfillment-service"]
-  FS --> Proto["Metadata proto\ndisplay_name, description"]
+  FS --> Proto["Metadata proto\ntitle, description"]
   FS --> DAO["GenericDAO"]
-  DAO --> Cols["SQL columns\ndisplay_name, description"]
+  DAO --> Cols["SQL columns\ntitle, description"]
   DAO --> JSON["data jsonb\n(spec / flat fields)"]
   Migrate["One-shot migration"] --> Cols
   Migrate --> JSON
@@ -112,8 +136,8 @@ JSON paths.
 |-------|------|
 | `id` | System-assigned unique identifier |
 | `metadata.name` | DNS-label name (OSAC-1061: mandatory, unique, immutable) |
-| `metadata.display_name` | Optional mutable non-unique friendly label (max 63) |
-| `metadata.description` | Optional mutable opaque string (max 256) |
+| `metadata.title` | Optional mutable non-unique friendly label (max 63); replaces per-type `title` |
+| `metadata.description` | Optional mutable Markdown string (max 256); replaces per-type `description` |
 
 ### Workflow Description
 
@@ -121,31 +145,31 @@ JSON paths.
 Infrastructure Admin — any persona that creates or updates objects via
 gRPC, REST, or CLI (`osac`).
 
-#### Create with display_name
+#### Create with title
 
 Starting state: authenticated caller with create permission on a type
 (e.g. ComputeInstance).
 
 1. Caller submits Create with `metadata.name` (DNS-label) and optional
-   `metadata.display_name` / `metadata.description`.
+   `metadata.title` / `metadata.description`.
 2. Protovalidate rejects values exceeding max length (`InvalidArgument`
    with field violations).
-3. GenericDAO writes `display_name` and `description` columns (empty
+3. GenericDAO writes `title` and `description` columns (empty
    string when omitted) and returns the created object.
 
 #### Update and clear
 
 1. Caller submits Update with `update_mask` including
-   `metadata.display_name` and/or `metadata.description`.
+   `metadata.title` and/or `metadata.description`.
 2. Setting a field to `""` clears it (same convention as clearing other
    plain Metadata strings).
 3. Omitting a field from `update_mask` leaves the stored value unchanged.
 
 #### List filter and sort
 
-1. Filter: `this.metadata.display_name == 'Dell PowerEdge XE9680'`
+1. Filter: `this.metadata.title == 'Dell PowerEdge XE9680'`
    (case-sensitive CEL → SQL, same as other string filters).
-2. Order: `metadata.display_name asc` or `metadata.display_name desc`.
+2. Order: `metadata.title asc` or `metadata.title desc`.
    Empty values sort as empty strings (first under ASC).
 3. Unsupported order fields return `InvalidArgument`.
 
@@ -168,8 +192,8 @@ existing object messages (public and private).
 
 | Message | Change |
 |---------|--------|
-| `osac.public.v1.Metadata` | Add `display_name = 11`, `description = 12` |
-| `osac.private.v1.Metadata` | Add `display_name = 11`, `description = 12` |
+| `osac.public.v1.Metadata` | Add `title = 11`, `description = 12` |
+| `osac.private.v1.Metadata` | Add `title = 11`, `description = 12` |
 
 **Removed fields (reserve numbers and names):**
 
@@ -197,25 +221,25 @@ fails on missing columns (standard migration gating).
 
 ## UX Alignment
 
-Display behavior (whether to show `display_name`, `name`, or both) is not
+Display behavior (whether to show `title`, `name`, or both) is not
 mandated by the PRD [Locked: D9]. This section maps @temp-api field
 locations to the new Metadata fields so UI work can proceed once the API
 ships.
 
 | UI / @temp-api location | Current field | Target field | Notes |
 |-------------------------|---------------|--------------|-------|
-| `project.ts` `CreateProjectBody.spec.title` | `spec.title` | `metadata.display_name` | Required in UI create body today → becomes optional Metadata |
+| `project.ts` `CreateProjectBody.spec.title` | `spec.title` | `metadata.title` | Required in UI create body today → becomes optional `metadata.title` |
 | `project.ts` `CreateProjectBody.spec.description` | `spec.description` | `metadata.description` | |
-| `networking.ts` NetworkClass `title` / `description` | top-level | `metadata.display_name` / `metadata.description` | |
-| `identity-provider.ts` `spec.title` | `spec.title` | `metadata.display_name` | |
+| `networking.ts` NetworkClass `title` / `description` | top-level | `metadata.title` / `metadata.description` | |
+| `identity-provider.ts` `spec.title` | `spec.title` | `metadata.title` | |
 | `storage-tier.ts` `metadata.description` | already on metadata | `metadata.description` | Aligns with this design |
-| `storage-tier.ts` `spec.displayName` | `spec.displayName` | `metadata.display_name` | **Deviation:** UI placed friendly name on spec; backend standard is Metadata — UI should move to `metadata.display_name` |
-| Catalog / template pages (when bound to live API) | flat `title` | `metadata.display_name` | Same consolidation as NetworkClass |
+| `storage-tier.ts` `spec.displayName` | `spec.displayName` | `metadata.title` | **Deviation:** UI placed friendly name on spec; backend standard is Metadata — UI should move to `metadata.title` |
+| Catalog / template pages (when bound to live API) | flat `title` | `metadata.title` | Same consolidation as NetworkClass |
 | FieldDefinition `display_name` | N/A | unchanged | Different concept (catalog field labels) |
 
 **Justification for StorageTier deviation:** Backend Metadata is the
 canonical home for friendly naming across all types. Moving StorageTier
-UI to `metadata.display_name` avoids a second naming convention.
+UI to `metadata.title` avoids a second naming convention.
 
 ## Implementation Details/Notes/Constraints
 
@@ -225,17 +249,24 @@ Public and private Metadata gain identical fields and docs
 [Codebase: fulfillment-service/docs/API.md]:
 
 ```protobuf
-// Human-friendly display name. Optional, not unique, mutable.
-// Not constrained to DNS-label format.
-string display_name = 11 [(buf.validate.field).string = {
+// Human-friendly short title. Optional, not unique, mutable.
+// Not constrained to DNS-label format. Same role as today's per-type
+// `title` fields (e.g. ClusterTemplate.title).
+string title = 11 [(buf.validate.field).string = {
   max_len: 63
 }];
 
-// Optional human-friendly description. Opaque string; clients may
-// treat content as Markdown. Not unique, mutable.
+// Human-friendly long description in Markdown. Optional, not unique,
+// mutable. Clients that display this field MUST render it as Markdown
+// (with safe sanitization — see Security Considerations).
 string description = 12 [(buf.validate.field).string = {
   max_len: 256
 }];
+
+// Reserved for future internationalization (locale → string maps).
+// Canonical/default locale content remains in `title` / `description`.
+reserved 13, 14;
+reserved "localized_titles", "localized_descriptions";
 ```
 
 Empty string means unset. No pattern constraint. Length uses protovalidate
@@ -257,28 +288,28 @@ For every object table and its archive table that uses the GenericDAO column
 layout:
 
 ```sql
-alter table <table> add column display_name text not null default '';
+alter table <table> add column title text not null default '';
 alter table <table> add column description text not null default '';
 ```
 
 Optional index for filter/sort hot paths (same rationale as `*_by_name`):
 
 ```sql
-create index <table>_by_display_name on <table> (display_name);
+create index <table>_by_title on <table> (title);
 ```
 
 **Data backfill** (same migration, before clients rely on removal):
 
 | Source path in `data` | Destination column |
 |----------------------|--------------------|
-| `title` (flat) | `display_name` |
-| `spec.title` | `display_name` |
+| `title` (flat) | `title` (Metadata column) |
+| `spec.title` | `title` (Metadata column) |
 | `description` (flat) | `description` |
 | `spec.description` | `description` |
 
 Rules:
 
-- Prefer `title` / `spec.title` for `display_name` when present.
+- Copy `title` / `spec.title` into the Metadata `title` column when present.
 - Copy description from the corresponding path; if longer than 256 Unicode
   code points, truncate to 256.
 - After copy, delete **only the explicit migrated path for that resource
@@ -299,7 +330,7 @@ Pattern reference: `13_add_name.up.sql`, `16_add_labels.up.sql`,
 
 ### GenericDAO
 
-Extend `metadataIface` with `GetDisplayName`/`SetDisplayName` and
+Extend `metadataIface` with `GetTitle`/`SetTitle` and
 `GetDescription`/`SetDescription`. Update create, update, list scan,
 and `makeMetadata` to read/write the new columns. Extend the list SELECT
 column list accordingly
@@ -307,7 +338,7 @@ column list accordingly
 
 ### FilterTranslator
 
-Add `display_name` (and `description` if ordered/filtered) to
+Add `title` (and `description` if ordered/filtered) to
 `translateSelectThisMdField` alongside `name`, mapping to the SQL column
 [Codebase: fulfillment-service/internal/database/dao/filter_translator.go].
 
@@ -325,14 +356,14 @@ This enhancement:
 2. Parses `order` as SQL-like tokens (`field [asc|desc]`, comma-separated),
    matching API.md examples.
 3. Allows an explicit allowlist: `id`, `metadata.name` → `name`,
-   `metadata.display_name` → `display_name` (and the bare column forms
-   `name`, `display_name` if that matches existing filter identifier
+   `metadata.title` → `title` (and the bare column forms
+   `name`, `title` if that matches existing filter identifier
    style). Reject anything else with `InvalidArgument`.
 4. Defaults to `id asc` when `order` is empty (preserves current behavior).
 5. When the request specifies a non-`id` primary order (for example
-   `metadata.display_name asc`), append `id asc` as an implicit secondary
+   `metadata.title asc`), append `id asc` as an implicit secondary
    sort key unless `id` is already present in the order expression. This
-   keeps offset/limit pagination stable when `display_name` values are
+   keeps offset/limit pagination stable when `title` values are
    duplicated.
 
 ### Server and test updates
@@ -348,7 +379,7 @@ This enhancement:
 Update CEL column expressions in
 `fulfillment-service/internal/rendering/tables/` that reference
 `this.title`, `this.spec.title`, or `this.spec.description` to
-`this.metadata.display_name` / `this.metadata.description` (including
+`this.metadata.title` / `this.metadata.description` (including
 public and private Role, Project, IdentityProvider, InstanceType,
 NetworkClass, templates, and catalog items).
 
@@ -376,23 +407,22 @@ user-controlled strings — same trust model as annotations and existing
 per-type descriptions. The API validates length only and does not sanitize,
 transform, or execute description content.
 
-**Client safe rendering (required):** Treat `metadata.description` (and any
-future Markdown presentation of it) as untrusted user input. UI and CLI
-clients that render descriptions as Markdown or HTML **must** encode or
-sanitize before display (for example HTML-escape plain text, or run a
-Markdown renderer with a strict allowlist that strips scripts and unsafe
-URLs). Do not pass raw description strings into `innerHTML`, shell
-expansion, or other execution contexts. Broader UI hardening beyond this
-policy is tracked as a follow-up outside the server cutover.
+**Client Markdown rendering (required):** `metadata.description` **is**
+Markdown. UI and CLI clients that display the field **must** render it as
+Markdown and **must** treat the content as untrusted user input: sanitize
+before display (strict allowlist Markdown renderer that strips scripts and
+unsafe URLs; never pass raw strings into `innerHTML`, shell expansion, or
+other execution contexts). Broader UI hardening beyond this policy is
+tracked as a follow-up outside the server cutover.
 
 ### Failure Handling and Recovery
 
 | Failure | Behavior | Recovery |
 |---------|----------|----------|
 | Migration fails mid-flight | Transaction rollback (standard goose/migration runner) | Fix SQL and re-run; columns not partially applied |
-| Create/Update with overlong display_name/description | `InvalidArgument` field violation | Client shortens value |
+| Create/Update with overlong title/description | `InvalidArgument` field violation | Client shortens value |
 | List with unsupported `order` field | `InvalidArgument` | Client uses allowlisted fields |
-| Filter on `metadata.display_name` before FilterTranslator update | Translation error | Deploy DAO change with proto |
+| Filter on `metadata.title` before FilterTranslator update | Translation error | Deploy DAO change with proto |
 | Old client sends removed `title` | Field ignored or rejected by new stubs | Client upgrade |
 
 Create/Update/List remain idempotent under retry for the same payload.
@@ -400,7 +430,7 @@ No controller reconciliation is involved.
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes required. `display_name` and `description`
+No RBAC or tenancy changes required. `title` and `description`
 inherit the parent object's tenant/project visibility and existing OPA
 policies. Platform-defined objects (NetworkClass, HostType, catalog items,
 templates) remain visible under current platform rules.
@@ -418,10 +448,10 @@ observed via normal migration runner logs.
 | Breaking API for twelve types | One release with reserved fields; coordinate E2E and UI; changelog callout |
 | Truncation of Project descriptions > 256 | Truncate at migration; emit per-type count warning (no content); document in release notes |
 | Accidental deletion of nested title/description | Path-specific JSON cleanup only; tests assert excluded nested fields remain |
-| Unstable List pages when display_name duplicates | Implicit secondary `id asc` on ordered lists |
+| Unstable List pages when title duplicates | Implicit secondary `id asc` on ordered lists |
 | XSS if clients render description as HTML/Markdown | Client encode/sanitize requirement in Security Considerations; UI follow-up |
 | Wide migration (many tables) | Follow established add-column migration pattern; test on representative tables in integration suite |
-| List `order` allowlist too narrow | Start with `id`, `name`, `display_name`; expand later without schema change |
+| List `order` allowlist too narrow | Start with `id`, `name`, `title`; expand later without schema change |
 | Confusion with FieldDefinition.display_name | Document distinction in API.md and this design |
 
 ### Drawbacks
@@ -434,10 +464,30 @@ observed via normal migration runner logs.
   but is required because sort is documented yet not implemented today.
 
 These are justified by locked PRD decisions (full removal, filter/sort by
-display_name) and by avoiding a prolonged dual-field period that the PR
+title) and by avoiding a prolonged dual-field period that the PR
 review explicitly rejected. [Locked: D1, D4, D6]
 
 ## Alternatives (Not Implemented)
+
+### Name Metadata field `display_name` instead of `title`
+
+**Pros:** Avoids collision in prose with removed per-type `title` fields;
+matches some UI @temp-api `displayName` naming.
+**Cons:** Diverges from long-standing ClusterTemplate / NetworkClass /
+catalog `title` fields; forces rename during migration instead of a
+straight copy into Metadata.
+**Rejection:** Implementation review (osac#263) preferred preserving
+`title` + Markdown `description`. Design revised 2026-08-12.
+
+### Full i18n maps on Metadata in this enhancement
+
+**Pros:** Avoids retrofitting locale support later.
+**Cons:** Needs UX for locale selection/editing; existing twelve types are
+single-locale strings; blocks consolidation on a larger design.
+**Rejection:** Reserve field numbers 13–14 for `localized_titles` /
+`localized_descriptions`; ship canonical `title` / `description` now;
+follow-up EP for locale UX and map semantics.
+
 
 ### Keep flat-shape title/description; only migrate spec-based types
 
@@ -446,7 +496,7 @@ review explicitly rejected. [Locked: D1, D4, D6]
 review. [Locked: D1, D4]
 **Rejection:** Locked decision.
 
-### Store display_name/description only inside data JSON
+### Store title/description only inside data JSON
 
 **Pros:** Avoids altering every table.
 **Cons:** Breaks Metadata column model; FilterTranslator Metadata path
@@ -454,9 +504,9 @@ expects columns; inconsistent with `name`/`labels`.
 **Rejection:** Violates GenericDAO Metadata persistence pattern
 [Codebase: fulfillment-service/internal/database/dao/generic_dao.go].
 
-### Backend auto-populate display_name from metadata.name
+### Backend auto-populate title from metadata.name
 
-**Pros:** Clients always see a non-empty display_name.
+**Pros:** Clients always see a non-empty title.
 **Cons:** Confuses users on edit (field appears set without user action);
 PRD deferred display behavior to clients. [Locked: D9]
 **Rejection:** Clarification and PR review consensus against backend fill.
@@ -479,13 +529,13 @@ notes and emit migration-time warnings with per-type truncated counts.
 
 ### Unit (Ginkgo — `internal/`)
 
-- Protovalidate accepts display_name length 0–63 and description 0–256;
+- Protovalidate accepts title length 0–63 and description 0–256;
   rejects longer values.
-- GenericDAO Create/Update/Get round-trips display_name and description,
+- GenericDAO Create/Update/Get round-trips title and description,
   including clear-to-empty via update_mask.
-- FilterTranslator translates `this.metadata.display_name == 'x'`.
-- List order parses `metadata.display_name desc` and rejects unknown fields.
-- List order with `metadata.display_name` appends secondary `id asc` when
+- FilterTranslator translates `this.metadata.title == 'x'`.
+- List order parses `metadata.title desc` and rejects unknown fields.
+- List order with `metadata.title` appends secondary `id asc` when
   `id` is not already present.
 - Server tests for the twelve types create/update without title fields and
   assert Metadata values.
@@ -501,19 +551,19 @@ notes and emit migration-time warnings with per-type truncated counts.
 ### Integration (`ginkgo run it`)
 
 - Create Project / NetworkClass / ComputeInstanceCatalogItem with
-  display_name; List with filter and order; Update clear; Get confirms
+  title; List with filter and order; Update clear; Get confirms
   empty string.
-- List with duplicate `display_name` values and `order=metadata.display_name`
+- List with duplicate `title` values and `order=metadata.title`
   returns stable pages across offset/limit (no duplicates/skips).
 
 ### E2E (osac-test-infra pytest)
 
-- Catalog item lifecycle tests use `metadata.display_name` instead of
+- Catalog item lifecycle tests use `metadata.title` instead of
   `title`.
 - BMaaS template fixtures stop passing top-level `title` for resource-level
   fields (TemplateParameter / FieldDefinition display_name unchanged).
 - Representative create/list/filter for a tenant resource (e.g.
-  ComputeInstance) with display_name set.
+  ComputeInstance) with title set.
 
 ### Client / UI (follow-up)
 
@@ -529,10 +579,10 @@ Stages: Dev Preview → Tech Preview → GA.
 
 - Unit and integration suites above pass in CI, including migration backfill,
   excluded nested JSON paths, truncation warnings, and stable ordered List
-  pagination with duplicate `display_name`.
+  pagination with duplicate `title`.
 - E2E catalog-item and representative tenant create/list/filter paths pass
   against a cluster running the migrated schema.
-- API.md / CLI help document `metadata.display_name` and `metadata.description`,
+- API.md / CLI help document `metadata.title` and `metadata.description`,
   and release notes call out the breaking field removals and truncation
   behavior.
 - Client safe-rendering policy is documented for UI/CLI consumers.
@@ -559,11 +609,11 @@ deployment feedback and completion of UI/CLI hardening follow-ups.
 
 ## Version Skew Strategy
 
-- **Old client → new server:** Create/Update without Metadata display
+- **Old client → new server:** Create/Update without Metadata title
   fields succeed (empty columns). Clients sending removed `title` fields
   no longer persist them.
 - **New client → old server:** New Metadata field numbers are ignored if
-  the server predates the change; clients should not rely on display_name
+  the server predates the change; clients should not rely on title
   until the server version includes this enhancement.
 - **osac-operator:** Must not deploy a regenerated API that assumes
   removed Title fields against an old fulfillment-service; follow
@@ -600,5 +650,6 @@ None.
 
 Authored: respond @ design 0.4.2 - 75ae801, workspace main @ 3cb3621
 Phases: draft, respond
+Revised: 2026-08-12 — `display_name` → `title`, Markdown required, i18n reserved fields (osac#263)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.2","ai_workflows":"75ae801","source_repo":"3cb3621","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.2","ai_workflows":"75ae801","source_repo":"3cb3621","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","revise"],"authoring_modes":["skill"],"context_changed":true} -->
