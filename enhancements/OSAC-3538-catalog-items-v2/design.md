@@ -3,13 +3,16 @@ title: catalog-items-v2-field-governance
 authors:
   - etabak@redhat.com
 creation-date: 2026-08-09
-last-updated: 2026-08-11
+last-updated: 2026-08-12
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3538
 prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-1002-catalog-items"
+  - "https://redhat.atlassian.net/browse/OSAC-2921 (metadata migration: display_name/description)"
+  - "https://redhat.atlassian.net/browse/OSAC-3937 (constraints on editable fields)"
+  - "https://redhat.atlassian.net/browse/OSAC-3943 (catalog item lifecycle management)"
 replaces:
   - N/A
 superseded-by:
@@ -20,7 +23,11 @@ superseded-by:
 
 ## Summary
 
-This design replaces the generic `FieldDefinition` model (freeform dot-notation paths, `editable` bool, JSON Schema validation) with strongly-typed proto fields per catalog item type, each with a `oneof`-based behavior discriminator (`locked`/`editable`). Template parameter governance is separated from spec field governance and uses a generic typed wrapper validated at runtime against the referenced template's parameter definitions. See [PRD](prd.md) for detailed requirements.
+This design replaces the generic `FieldDefinition` model (freeform dot-notation paths, `editable` bool, JSON Schema validation) with strongly-typed proto fields per catalog item type, each with a `oneof`-based behavior discriminator (`locked`/`editable`). Template parameter governance is separated from spec field governance and uses a generic typed wrapper validated at runtime against the referenced template's parameter definitions. 
+
+Constraints on editable fields (allowed values, min/max ranges) are deferred to OSAC-3937. The v1 behavior model supports only locked (admin-set immutable value) and editable (tenant-set with optional default). The exact field list per catalog item type is TBD pending alignment meeting (Ygal, Avishay, Michael) - fields requiring day-2 mutability are excluded from the proto to prevent accidental misconfiguration.
+
+See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -39,22 +46,24 @@ This design replaces the generic model with strongly-typed proto fields that mak
 - Replace `repeated FieldDefinition` with per-catalog-item-type proto fields that make invalid field references impossible at compile time. [Locked: D1]
 - Use a `oneof` discriminated union for field behavior (locked/editable) that is extensible to future behaviors (e.g., hidden) without breaking existing clients. [Locked: D6]
 - Separate template parameter governance from spec field governance, with template parameters validated at runtime against the template's parameter definitions. [Locked: D3]
-- Enforce governance on both resource creation and update. Locked fields are immutable throughout the resource lifecycle; editable field constraints are validated on updates. [Locked: D7]
-- Prevent admins from locking fields that require day-2 mutation (e.g., cluster version, node set size). The server rejects such configurations at catalog item creation time.
-- Support per-field type customization (e.g., curated allowed values for instance_type).
+- Enforce governance on both resource creation and update. Locked fields are immutable throughout the resource lifecycle. [Locked: D7]
+- Prevent admins from including fields that require day-2 mutation (e.g., cluster version, node set size) in the governed field proto at all - compile-time prevention via field exclusion rather than runtime validation.
+- Support per-field type customization (e.g., typed reference selectors for instance_type).
 
 ### Non-Goals
 
+- Constraints on editable fields (allowed values, min/max ranges) - deferred to OSAC-3937. The `oneof` model is extensible to support composable constraints.
 - Hidden field behavior (admin sets value, tenant cannot see the field). The `oneof` model is extensible to support this.
-- Lifecycle management and versioning (draft/active/deprecated/retired states).
+- Lifecycle management and versioning (draft/active/deprecated/retired states) - tracked in OSAC-3943.
 - Multi-resource composition (catalog items bundling multiple resources).
 - Catalog item override mechanism for tenant admins (OSAC-2539).
+- Governance of cluster `version` field: excluded from v1 ClusterCatalogItemFields due to day-2 mutability requirement (tenants must upgrade clusters). The version field references ClusterVersion `spec.version` (semver string like "4.17.0"). Future constraint support (OSAC-3937) may enable version governance with allowed upgrade paths.
 
 ## Proposal
 
-Each catalog item type gets its own typed spec message listing the governable fields for that resource type. Each governable field is wrapped in a typed governance message containing a `oneof behavior` with `locked` and `editable` variants. Locked carries the admin's fixed value; editable carries an optional default and optional constraints (e.g., allowed values). Fields not present on the catalog item are ungoverned - tenants set them freely, as if no catalog item exists. [Locked: D2]
+Each catalog item type gets its own typed spec message listing the governable fields for that resource type. Each governable field is wrapped in a typed governance message containing a `oneof behavior` with `locked` and `editable` variants. Locked carries the admin's fixed value; editable carries an optional default. Constraints on editable fields (allowed values, min/max ranges) are deferred to OSAC-3937 and removed from v1. Fields not present on the catalog item are ungoverned - tenants set them freely, as if no catalog item exists. [Locked: D2]
 
-Image is a required field on ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, always implicitly locked. ClusterCatalogItem does not have an image equivalent.
+Image is a required field on ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, always implicitly locked. ClusterCatalogItem governs `version` (a reference to ClusterVersion `spec.version`) instead of image; version is excluded from the proto's governed fields because it requires day-2 mutability for cluster upgrades. Fields requiring day-2 mutation are excluded from the proto to prevent accidental misconfiguration - compile-time prevention rather than runtime validation.
 
 Template parameters are governed via `map<string, GovernedTemplateParameter>`, where each entry wraps a `google.protobuf.Any` value with the same locked/editable oneof. Type correctness is validated at runtime against the referenced template's parameter definitions, since template parameter types are not known at compile time.
 
@@ -219,44 +228,26 @@ The tenant selects `m1.medium`, enters an SSH key, and submits.
 
 #### Example: Cluster Provisioning Flow
 
+**NOTE:** This example is a PLACEHOLDER pending alignment on which fields to include in ClusterCatalogItemFields. The v1 proto will exclude `version` (day-2 mutability for upgrades) and `node_sets.*.size` (day-2 mutability for scaling). Constraints (allowed_values, min/max) are out of v1 scope (OSAC-3937).
+
 **Step 1: Admin creates a ClusterCatalogItem.**
 
-The admin creates a "Production OCP 4.18" catalog item with:
+The admin creates a "Production OpenShift Standard" catalog item with:
 - Template: "ocp-standard-template"
-- Release image: editable, single allowed value (controls version at creation, expandable for upgrades)
-- Node sets: two node sets with per-property governance
-  - "workers": host_type locked to "m5.2xlarge", size editable with default 3 and min 2 / max 10
-  - "infra": host_type locked to "m5.xlarge", size editable with default 3 and min 3 / max 3 (effectively fixed but mutable by admin later)
-- SSH public key: editable, no default
 - Network: locked to `{pod_cidr: "10.128.0.0/14", service_cidr: "172.30.0.0/16"}`
 - Template parameters: `cluster_logging` editable with default `true`
 
 ```json
 {
   "object": {
-    "metadata": {"name": "prod-ocp-418"},
-    "title": "Production OCP 4.18",
+    "metadata": {
+      "name": "prod-ocp-standard",
+      "display_name": "Production OpenShift Standard"
+    },
     "template": "ocp-standard-template",
     "published": true,
     "tenant": "tenant-acme",
     "fields": {
-      "release_image": {
-        "editable": {
-          "default": "quay.io/openshift-release-dev/ocp-release:4.18.3",
-          "allowed_values": ["quay.io/openshift-release-dev/ocp-release:4.18.3"]
-        }
-      },
-      "node_sets": {
-        "workers": {
-          "host_type": {"locked": {"value": "m5.2xlarge"}},
-          "size": {"editable": {"default": 3, "min": 2, "max": 10}}
-        },
-        "infra": {
-          "host_type": {"locked": {"value": "m5.xlarge"}},
-          "size": {"editable": {"default": 3, "min": 3, "max": 3}}
-        }
-      },
-      "ssh_public_key": {"editable": {}},
       "network": {
         "locked": {"value": {"pod_cidr": "10.128.0.0/14", "service_cidr": "172.30.0.0/16"}}
       }
@@ -274,29 +265,22 @@ UI rendering:
 
 | Field | UI Rendering | Value |
 |-------|-------------|-------|
-| Release image | Dropdown: OCP 4.18.3 (single option) | Pre-selected: OCP 4.18.3 |
-| Node set "workers" host_type | Read-only | m5.2xlarge |
-| Node set "workers" size | Number input (min: 2, max: 10) | Pre-filled: 3 |
-| Node set "infra" host_type | Read-only | m5.xlarge |
-| Node set "infra" size | Number input (min: 3, max: 3) | Pre-filled: 3 |
-| SSH public key | Text input | (empty) |
-| Network | Read-only | Pod CIDR: 10.128.0.0/14, Service CIDR: 172.30.0.0/16 |
+| Version | Dropdown (ungoverned, from ClusterVersion catalog) | (tenant selects) |
+| Node sets | Editable (ungoverned) | (tenant configures) |
+| SSH public key | Text input (ungoverned) | (empty) |
 | Pull secret | Text input (ungoverned) | (empty) |
+| Network | Read-only | Pod CIDR: 10.128.0.0/14, Service CIDR: 172.30.0.0/16 |
 | cluster_logging | Checkbox (editable param) | Pre-checked: true |
 
-The tenant sets worker size to 5, enters an SSH key and pull secret, and submits.
+The tenant selects version, configures node sets, enters SSH key and pull secret, and submits.
 
 **Server processing:**
 1. Look up catalog item, validate access.
 2. Copy template reference to spec.
 3. Apply governance:
-   - `release_image`: editable with single allowed value. Tenant must use "quay.io/.../4.18.3" (only option). Validated against allowed_values.
-   - `node_sets.workers.host_type`: set to "m5.2xlarge". Reject if tenant tried to change.
-   - `node_sets.workers.size`: tenant sent 5, within range [2, 10] - accepted.
-   - `node_sets.infra.host_type`: set to "m5.xlarge".
-   - `node_sets.infra.size`: tenant sent 3, within range [3, 3] - accepted.
-   - `ssh_public_key`: editable, tenant provided - accepted.
-   - `network`: set to locked value.
+   - `network`: set to locked value. Reject if tenant tried to change.
+   - `cluster_logging`: editable param with default `true`. Tenant can override.
+   - `version`, `node_sets`, `ssh_public_key`, `pull_secret`: ungoverned, pass through tenant values.
    - `pull_secret`: ungoverned, pass through.
 4. Apply template parameter governance.
 5. Fetch template, apply remaining defaults.
@@ -410,7 +394,6 @@ message LockedStringField {
 
 message EditableStringField {
   optional string default = 1;
-  repeated string allowed_values = 2;
 }
 
 // Bool fields (is_windows, auto_external_ip_attachment)
@@ -443,8 +426,6 @@ message LockedInt32Field {
 
 message EditableInt32Field {
   optional int32 default = 1;
-  optional int32 min = 2;
-  optional int32 max = 3;
 }
 
 // Disk fields (ComputeInstanceDisk)
@@ -551,18 +532,16 @@ message ComputeInstanceCatalogItemFields {
 
 // ClusterCatalogItem - new fields message
 message ClusterCatalogItemFields {
-  optional GovernedStringField release_image = 1;
-  // Per-node-set governance with per-property control
-  map<string, GovernedClusterNodeSet> node_sets = 2;
-  optional GovernedStringField ssh_public_key = 3;
-  optional GovernedStringField pull_secret = 4;
-  optional GovernedNetworkField network = 5;
-}
-
-// Per-property governance for individual node sets
-message GovernedClusterNodeSet {
-  optional GovernedStringField host_type = 1;
-  optional GovernedInt32Field size = 2;
+  // NOTE: version (ClusterVersion spec.version reference) and node_sets are EXCLUDED from governed fields.
+  // version: requires day-2 mutability for cluster upgrades - tenants must be able to update it.
+  // node_sets.*.size: requires day-2 mutability for scaling - tenants must be able to scale node sets.
+  // Field selection is compile-time prevention: if a field shouldn't be lockable, don't include it in the proto.
+  // The exact field list is TBD pending alignment meeting (Ygal, Avishay, Michael).
+  
+  optional GovernedNetworkField network = 1;
+  
+  // Candidates for inclusion (TBD): ssh_public_key, pull_secret, node_sets.*.host_type
+  // Bat-Zion feedback: ssh_public_key and pull_secret should NOT be governed (remove from final proto)
 }
 
 // BareMetalInstanceCatalogItem - new fields message
@@ -644,41 +623,39 @@ When an admin updates a catalog item, the server validates that governance is no
 
 - **Editable or absent to locked**: rejected. Existing resources may have tenant-set values for that field; locking it would retroactively invalidate those resources on their next update.
 - **Locked to editable or absent**: allowed (relaxing governance).
-- **Changing locked value**: allowed (only affects new provisioning).
-- **Changing editable constraints** (allowed_values, min/max, default): allowed. Existing resources retain their current values; constraints apply to future updates.
+- **Changing locked value**: allowed. The admin can update locked field values (e.g., bump image for CVE fixes). Changes only affect new provisioning; existing resources retain the values they were created with and continue to enforce those original locked values on updates.
+- **Changing editable default**: allowed. Existing resources are unaffected; new resources get the new default if the tenant omits the field.
 
 The server compares the existing catalog item's governance with the update request and rejects any transition that would tighten field governance.
 
-#### Per-Field Lockability Validation
+**Note**: Constraints on editable fields (allowed_values, min/max) are out of v1 scope (OSAC-3937).
 
-Certain fields require day-2 mutation and must not be locked on a catalog item. The server rejects catalog item creation (or update) that attempts to lock these fields with `InvalidArgument` ("field X cannot be locked - use editable with allowed_values to constrain it").
+#### Field Selection and Day-2 Mutability
 
-Fields that cannot be locked:
-- **ClusterCatalogItem**: `release_image` (locking prevents cluster upgrades), `node_sets.*.size` (locking prevents scaling)
+Fields requiring day-2 mutation (cluster version for upgrades, node set size for scaling) are **excluded from the governed field proto entirely** - compile-time prevention rather than runtime validation. The ClusterCatalogItemFields proto does not include `version` or `node_sets.*.size` fields, making it impossible to accidentally lock them.
 
-The admin achieves equivalent control over these fields using editable with constrained allowed values. For example, to control the cluster version at creation, the admin sets `release_image` as editable with `allowed_values: ["quay.io/.../4.18.3"]`. When it's time to allow upgrades, the admin updates the catalog item to expand the allowed values list. This gives the admin full control over which values are permitted while preserving the tenant's ability to perform day-2 operations.
+The exact field list per catalog item type is TBD pending alignment meeting between Ygal, Avishay, and Michael (to be scheduled by Ygal). The principle: if a field operationally requires day-2 mutability, don't expose it as governable. This is a one-time design decision per field, encoded in the proto schema.
 
-Since the proto schema is strongly-typed with a known set of fields per catalog item type, the set of non-lockable fields is small and maintained at compile time.
+**Example field exclusions:**
+- **ClusterCatalogItem**: `version` (excluded - locking would prevent cluster upgrades), `node_sets.*.size` (excluded - locking would prevent scaling)
+- Per Bat-Zion's review feedback: `ssh_public_key` and `pull_secret` should also be excluded (not governable)
 
-#### Curated Options (allowed_values)
+#### Constraints on Editable Fields (Out of v1 Scope)
 
-The `allowed_values` field on `EditableStringField` supports curated options for reference fields like `instance_type`. When `allowed_values` is set:
-- The server validates that the tenant's value is in the allowed list during resource creation.
-- The server validates that every value in `allowed_values` references a valid, non-deleted resource during catalog item creation and update.
-- If an InstanceType in `allowed_values` is DEPRECATED, the catalog item operation returns a warning. If OBSOLETE, it returns an error.
+Allowed values, min/max ranges, and other constraints on editable fields are **deferred to OSAC-3937**. The v1 `EditableStringField` and `EditableInt32Field` messages contain only an optional `default` field - no `allowed_values`, `min`, or `max`.
 
-When `allowed_values` is empty, the field accepts any value (subject to the field's own validation rules on the resource).
+The behavior model uses `oneof` for extensibility: future constraint support can add new editable variants (e.g., `EditableStringFieldWithConstraints`) without breaking existing clients that only know about the unconstrained variant.
 
 #### Referential Integrity
 
-New database referential integrity triggers prevent deletion of resources referenced by catalog items:
+New database referential integrity triggers prevent deletion of resources referenced by catalog items. Since constraints (allowed_values) are out of v1 scope, only locked field values require integrity protection.
 
 **ComputeInstanceCatalogItem:**
-1. **Image references**: prevent deletion of images referenced by `fields.image`.
-2. **InstanceType references**: prevent deletion of instance types referenced by `fields.instance_type.locked.value` or `fields.instance_type.editable.allowed_values`.
+1. **Image references**: prevent deletion of images referenced by `fields.image` (always locked, mandatory).
+2. **InstanceType references**: prevent deletion of instance types referenced by `fields.instance_type.locked.value` (if the field is locked).
 
 **ClusterCatalogItem:**
-3. **ClusterVersion / release image references**: prevent deletion of cluster versions referenced by `fields.release_image.editable.allowed_values`. Since `release_image` cannot be locked (per-field lockability), only the editable allowed_values path needs protection.
+3. **No referential integrity in v1**: version field is excluded from governed fields (day-2 mutability requirement). Constraints feature (OSAC-3937) will add integrity for allowed_values when editable fields gain constraint support.
 
 **BareMetalInstanceCatalogItem:**
 4. **Image references**: prevent deletion of images referenced by `fields.image`.
@@ -871,19 +848,15 @@ The current design allows the catalog item to define node set entries (e.g., "wo
 
 ### Unit Tests
 
-- Governance application: locked field rejects tenant value, editable field accepts value in allowed_values, editable field rejects value outside allowed_values, editable field applies default when tenant omits value.
+- Governance application: locked field rejects tenant value, editable field applies default when tenant omits value, editable field accepts tenant value when provided.
 - Governance application for each primitive type: string, bool, int32, disk, disk list, network, run strategy enum.
 - Template parameter governance: locked parameter applies value, editable parameter validates type against template definition, unknown parameter key rejected.
 - Image mandatory: ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem reject creation without image.
 - Overlay semantics: ungoverned fields pass through without modification.
-- Node set governance: per-property governance within named node sets, ungoverned node sets pass through, mixed governed/ungoverned node sets.
-- Referential integrity validation: catalog item creation with non-existent image rejected, catalog item creation with OBSOLETE instance type rejected, DEPRECATED instance type returns warning.
-- Curated options: allowed_values validation, empty allowed_values accepts any value.
-- Int32 range constraints: min/max validation on editable int32 fields (e.g., node set size).
+- Referential integrity validation: catalog item creation with non-existent image rejected, deletion of image referenced by catalog item rejected.
 - Error messages: each validation failure produces a specific, actionable error message.
-- Update-time governance: locked field rejected on update, editable field constraints validated on update, resource without catalog item skips governance on update.
-- Per-field lockability: catalog item creation with locked release_image rejected, locked node_sets.*.size rejected, editable with allowed_values accepted.
-- Catalog item update governance constraints: editable-to-locked transition rejected, locked-to-editable transition accepted, locked value change accepted.
+- Update-time governance: locked field rejected on update, resource without catalog item skips governance on update.
+- Catalog item update governance constraints: editable-to-locked transition rejected, locked-to-editable transition accepted, locked value change accepted (new resources get new value, existing resources retain original).
 
 ### Integration Tests
 
