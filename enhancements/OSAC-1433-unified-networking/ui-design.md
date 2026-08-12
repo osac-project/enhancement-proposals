@@ -6,7 +6,7 @@ creation-date: 2026-08-12
 last-updated: 2026-08-12
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2632
-  - https://redhat.atlassian.net/browse/OSAC-1433  
+  - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "N/A — extends the accepted backend design, see below"
 see-also:
   - "/enhancements/OSAC-1433-unified-networking/design.md"
