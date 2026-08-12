@@ -131,7 +131,7 @@ A Tenant User increases `node_sets[].size` for a bare-metal node set. The fulfil
 
 1. The controller computes `desired - current` where `current` is `status.currentWorkers` (workers in active phases: `Provisioning`, `WaitingForAgent`, `Binding`, `Ready`). Workers in `Failed` phase do not count toward capacity — new workers are created to fill the gap once their retry backoff expires.
 2. The controller re-reads the InfraEnv's `status.bootArtifacts.discoveryIgnitionURL` to fetch fresh ignition. The InfraEnv persists from initial provisioning; if it was deleted (e.g., manual cleanup), the `ensureInfraEnv` phase recreates it.
-3. The controller resolves the RHCOS DiskImage using the cluster's current ClusterVersion (see RHCOS DiskImage Resolution). Note: until cluster upgrades are implemented, this is always the creation-time version. Once upgrades land, the Cluster's ClusterVersion reference will be updated by the upgrade flow, and this step will automatically resolve the upgraded version's DiskImage — this is why the design reads the current reference rather than caching the creation-time version.
+3. The controller resolves the RHCOS DiskImage from the cluster's current ClusterVersion's `disk_image` reference (see RHCOS DiskImage Resolution).
 4. For each new worker, the controller follows provisioning steps 4-9 from the initial flow (the ignition content is re-fetched in step 2 above).
 5. Partial success is reported: if 3 of 5 new workers succeed and 2 fail, the ClusterOrder status shows 3 additional `Ready` workers and 2 `Failed`. The tenant sees the cluster with the successfully added workers; the failed slots are visible via ClusterOrder conditions and events.
 
@@ -150,7 +150,7 @@ sequenceDiagram
 
     HCP->>HCP: CAPI selects Machine, drains node
     HCP->>AS: AgentMachine unbinds Agent
-    AS-->>CO: Agent enters unbinding-pending-user-action
+    AS-->>CO: Agent reaches unbound/terminal state
 
     CO->>CO: Match unbound Agent to BMI via MAC
     CO->>BMaaS: Delete BareMetalInstance
@@ -164,16 +164,16 @@ This diagram shows the scale-down flow. CAPI handles node drain and agent unbind
 
 1. The controller computes the excess worker count (current minus desired).
 2. The controller removes `Failed` workers first — deletes their dead BMIs and removes their `status.workers` entries. If more removals are needed after clearing all failed slots, the controller decreases NodePool `.spec.replicas` by the remaining excess.
-3. CAPI's MachineDeployment controller manages MachineSets, which select Machines for deletion. CaaS does not control the selection order.
-4. CAPI drains each selected node, then the AgentMachine controller unbinds the Agent (clears `ClusterDeploymentName`). Since workers are post-installation, the Agent transitions to `unbinding-pending-user-action` and remains there — CAPA considers its job done at this point.
+3. CAPI's MachineDeployment controller manages MachineSets, which select Machines for deletion. CaaS delegates Machine selection order to CAPI's default behavior (random) — no preference for newest-first or oldest-first. This is a deliberate design choice: bare-metal workers are fungible, and controlling selection order would require CAPI-level configuration (e.g., `MachineDeployment.spec.strategy`) that is not needed for this use case.
+4. CAPI drains each selected node, then the AgentMachine controller unbinds the Agent (clears `ClusterDeploymentName`). With the assisted image service disabled (see deployment prerequisites), reclaim is not attempted and the Agent transitions directly to `unbinding-pending-user-action`. CAPA removes its hook/finalizer at this point.
 5. The controller watches for Agents entering `unbinding-pending-user-action` and matches them back to BMIs via MAC address.
-6. The controller deletes the Agent CR. CAPA does not delete the Agent — it only clears `ClusterDeploymentName` and removes its own hook/finalizer. Without a BMH to drive the Agent back to discovery, the Agent CR would remain in `unbinding-pending-user-action` indefinitely. CaaS owns this cleanup.
+6. The controller deletes the Agent CR. CAPA does not delete the Agent — it only clears `ClusterDeploymentName` and removes its own hook/finalizer. CaaS owns the Agent CR cleanup because the host will be deprovisioned by BMaaS.
 7. The controller calls `BareMetalInstances.Delete` on the private API. BMaaS handles full host cleanup before returning the host to inventory. CaaS does not independently verify cleanup completion — this is a trust boundary between CaaS and BMaaS. If BMaaS cleanup fails, the host must not be reallocated; this guarantee is BMaaS's responsibility.
 8. The controller retains the worker entry in `status.workers` in `Deleting` phase until the BMI deletion is confirmed. This prevents orphaned hosts — if `Delete` succeeds but cleanup stalls, the controller still has the reference to retry or alert.
 
 #### Cluster Deletion
 
-On ClusterOrder deletion, the controller runs the scale-down flow for all remaining workers (steps 2-8) before allowing the AAP deprovision job to destroy the HostedCluster. The InfraEnv CR is cleaned up automatically by Kubernetes garbage collection via its ownerReference to the ClusterOrder — no explicit deletion is needed. The ClusterOrder's finalizer prevents premature deletion, ensuring all BMIs are cleaned up before the ClusterOrder (and its owned InfraEnv) are removed.
+On ClusterOrder deletion, the worker reconciler does not need to explicitly orchestrate scale-down. Deleting the HostedCluster cascades through HyperShift (deletes all NodePools) → CAPI (drains nodes, deletes Machines) → CAPA (unbinds Agents). The worker reconciler reacts to Agents becoming unbound and cleans up BMIs and Agent CRs through the normal scale-down watch (steps 5-8). The ClusterOrder's finalizer holds until all `status.workers[]` entries are cleaned up. The InfraEnv CR is garbage collected via its ownerReference to the ClusterOrder.
 
 ### API Extensions
 
@@ -357,25 +357,34 @@ The discovery ignition is architecture-neutral (the `assisted-installer-agent` i
 
 #### RHCOS DiskImage Resolution
 
-The controller resolves the RHCOS boot image via a pre-registered DiskImage resource (dependency: OSAC-2540 DiskImage, OSAC-1270 BMI DiskImage integration). The controller reads `ClusterVersion.spec.version` (a structured semver field, e.g., `"4.22.0"`), extracts the major.minor version, and resolves the worker architecture from the node set's HostType. It then queries for provider-global DiskImages matching both the `osac.openshift.io/ocp-version` label and the resolved architecture.
+The controller resolves the RHCOS boot image via a `DiskImageReference` on the `ClusterVersion` resource (dependency: OSAC-2540 DiskImage, OSAC-1270 BMI DiskImage integration, OSAC-1330 type-safe references). The private `ClusterVersionSpec` gains a new field:
 
-The `osac.openshift.io/ocp-version` label is a CaaS convention — the DiskImage resource itself (OSAC-2540) has no OCP version field, since version-based lookup is a CaaS-specific need. The controller reads the cluster's **current** ClusterVersion reference, not the creation-time version. After a cluster upgrade (e.g., 4.20 → 4.22), the Cluster's ClusterVersion reference is updated by the upgrade flow, and subsequent scale-up operations resolve the 4.22 DiskImage.
+```protobuf
+message ClusterVersionSpec {
+    // ... existing fields (image, version, enabled, is_default, state, deprecation) ...
+    DiskImageReference disk_image = 7;
+}
+```
+
+The controller reads the cluster's current ClusterVersion, follows the `disk_image` reference to get the DiskImage ID, and passes it as `spec.image.source_ref` on the BMI. No label-based lookup, no ambiguity — each ClusterVersion references exactly one DiskImage. The typed reference (per OSAC-1330) provides reference validation at ClusterVersion creation time and deletion protection (the DiskImage cannot be deleted while referenced by an active ClusterVersion).
+
+The controller reads the cluster's **current** ClusterVersion reference, not the creation-time version. Note: until cluster upgrades are implemented, this is always the creation-time version. Once upgrades land, the Cluster's ClusterVersion reference will be updated by the upgrade flow — this is the most reasonable assumption but should be treated as a dependency since cluster upgrades are still at the PRD stage.
 
 The boot image is ephemeral — it exists only to run the discovery agent. The assisted-installer writes the correct RHCOS version (pinned to the release image) to disk during installation. Any Z stream within the same minor version is acceptable for the boot image.
 
-If no matching DiskImage is found for the target OCP version, the controller sets the ClusterOrder condition `RHCOSImageNotFound` and does not proceed with BMI creation. If multiple DiskImages match the same version and architecture, the controller sets `RHCOSImageAmbiguous` and does not proceed — the Cloud Infrastructure Admin must ensure exactly one DiskImage exists per OCP version + architecture combination.
+If the `disk_image` reference is not set on the ClusterVersion, the controller sets the ClusterOrder condition `RHCOSImageNotFound` and does not proceed with BMI creation. If the underlying image is unreachable or the download fails during provisioning, the BMI enters `Failed` phase. The failure is reported via ClusterOrder conditions.
 
-If the underlying image referenced by the DiskImage is unreachable or the download fails during provisioning, the BMI enters `Failed` phase. The failure is reported via ClusterOrder conditions.
-
-**Current limitation — manual DiskImage registration:** In this version, the Cloud Infrastructure Admin must manually register RHCOS images as provider-global DiskImages. For each supported OCP version:
+**Current limitation — manual DiskImage registration and linking:** In this version, the Cloud Infrastructure Admin must manually register RHCOS images and link them to ClusterVersions. For each supported OCP version:
 
 1. Download the RHCOS qcow2 image for the target OCP version and architecture
 2. Repackage the qcow2 as an OCI artifact
 3. Push the OCI artifact to a container registry accessible to BMaaS
 4. Register a DiskImage via the fulfillment-service API with `source_ref` pointing to the pushed OCI artifact
-5. Apply the `osac.openshift.io/ocp-version` label with the major.minor version (e.g., `"4.22"`)
+5. Update the ClusterVersion to set the `disk_image` reference to the registered DiskImage (e.g., `osac update clusterversion 4.22.0 --disk-image <disk-image-id>`)
 
-**Future automation path:** The DiskImage-based resolution stays the same — the controller always resolves DiskImages by version label. What changes is how DiskImages are populated. The OCP release image (`ClusterVersion.spec.image`) contains the RHCOS image reference as a component (`rhel-coreos`). A future utility could introspect registered ClusterVersions, extract the RHCOS image reference from each release payload, and automatically create the DiskImage with the extracted reference as `source_ref` and the correct version label. This removes the manual coupling — no need to separately download a qcow2, repackage it as OCI, and register it with the right version label. Adding a new ClusterVersion would automatically produce the matching DiskImage.
+The CLI must support setting the `disk_image` reference on ClusterVersion — this requires extending the `osac create/update clusterversion` commands with a `--disk-image` flag.
+
+**Future automation path:** The OCP release image (`ClusterVersion.spec.image`) contains the RHCOS image reference as a component (`rhel-coreos`). A future utility could introspect registered ClusterVersions, extract the RHCOS image reference from each release payload, and automatically create the DiskImage and set the `disk_image` reference on the ClusterVersion. This removes the manual coupling — adding a new ClusterVersion would automatically produce and link the matching DiskImage. Note: directly using the RHCOS OCI image from the release payload as the DiskImage `source_ref` is not possible today because OCP BMO does not support this image format (planned for OCP 5.1). Until then, the qcow2 repackaging step remains necessary.
 
 #### BMI Creation via Private API
 
@@ -410,7 +419,18 @@ The controller sets the following metadata fields on the created BMI:
 
 `BareMetalInstances.Create` requires a `spec.catalog_item` reference (`BareMetalInstanceCatalogItem`). The current `resourceClass` on `ClusterOrder.nodeRequests[]` carries a HostType name (e.g., `"fc430"`), which does not map directly to a CatalogItem — the resolution chain is HostType → Template → CatalogItem, and it is ambiguous (multiple Templates can reference the same HostType, multiple CatalogItems can reference the same Template).
 
-To avoid this ambiguity, the ClusterTemplate must carry the CatalogItem reference for CaaS node sets. This is a small addition to the ClusterTemplate metadata (`meta/osac.yaml`): a `catalog_item` field per node request entry, set by the Cloud Infrastructure Admin when defining the template. The controller reads the CatalogItem reference from the template parameters rather than reverse-looking it up from the HostType.
+To avoid this ambiguity, the ClusterTemplate must carry the CatalogItem reference for CaaS node sets. This is a small addition to the ClusterTemplate metadata (`meta/osac.yaml`): a `catalog_item` field per node request entry, set by the Cloud Infrastructure Admin when defining the template:
+
+```yaml
+# ocp-small/meta/osac.yaml
+title: OpenShift Small Cluster
+default_node_request:
+  - resourceClass: fc430
+    catalogItem: bm-standard      # new field — BareMetalInstanceCatalogItem name
+    numberOfNodes: 2
+```
+
+The controller reads the CatalogItem reference from the template parameters rather than reverse-looking it up from the HostType. The `catalogItem` field is passed through to the ClusterOrder as a template parameter (alongside the existing `resourceClass`), making it available to the `BareMetalWorkerReconciler` without changes to the `NodeRequest` CRD type.
 
 Changing `resourceClass` itself to reference a CatalogItem instead of a HostType is a broader change that affects the entire stack (fulfillment-service, osac-operator, AAP roles, bare-metal-fulfillment-operator) and is out of scope for this design.
 
@@ -437,9 +457,15 @@ The correlation algorithm requires a unique match across three dimensions before
 
 If zero candidates match, the controller continues watching. If multiple candidates match (should not happen — MACs are unique per host), the controller logs an error and does not bind, preventing ambiguous correlation. If no match is found within a configurable timeout (default: 30 minutes), the controller sets the worker phase to `Failed` with reason `AgentRegistrationTimeout`.
 
+After the first successful MAC match, the controller labels the Agent with `osac.openshift.io/worker-name` pointing to the worker slot name (e.g., `bm-cluster-a-worker-0`). Subsequent reconciliations and scale-down lookups use this label instead of re-doing MAC correlation — the same pattern CAPA uses with the `agentMachineRef` label.
+
 #### Minimum MCE Version
 
 The MGMT-24903 fix (persistent-boot day-2 installs) is merged to assisted-service master ([PR #10717](https://github.com/openshift/assisted-service/pull/10717), 2026-07-29) and assisted-installer-agent master ([PR #1568](https://github.com/openshift/assisted-installer-agent/pull/1568), 2026-07-30). The fix ships in MCE 5.0. Without it, workers fail to install because `osImageURL` is stripped from the ignition config. The controller does not implement a workaround — MCE >= 5.0 is a deployment prerequisite.
+
+#### Assisted Image Service
+
+The assisted image service must be **disabled** for CaaS deployments. CaaS does not use ISO-based discovery — hosts boot from a RHCOS DiskImage with inline ignition, not from an assisted-service ISO. If the image service is deployed, assisted-service will attempt to reclaim Agents during scale-down (rebooting the host back into the discovery ISO), which conflicts with CaaS's flow where BMaaS owns host lifecycle and the controller deletes the BMI directly. Disabling the image service ensures Agents transition directly to `unbinding-pending-user-action` on unbind, allowing CaaS to clean up the Agent CR and the BMI without interference.
 
 #### Controller Reconciliation Structure
 
@@ -527,7 +553,7 @@ Per-ClusterOrder metrics would create unbounded label cardinality at scale. Metr
 |---|---|---|
 | MAC address dependency (OSAC-2308/OSAC-3254) not delivered before this feature | Agent-to-BMI correlation impossible; entire feature blocked | Feature gated on this dependency. No partial implementation without MAC correlation. |
 | DiskImage dependency (OSAC-2540/OSAC-1270) not delivered before this feature | Controller cannot resolve RHCOS boot image via DiskImage; BMI creation blocked | Feature gated on this dependency. Cloud Infrastructure Admin must register RHCOS DiskImages before CaaS bare-metal provisioning is enabled. |
-| RHCOS DiskImage not registered for target OCP version | Controller cannot resolve boot image; BMI creation blocked with `RHCOSImageNotFound` condition | Cloud Infrastructure Admin must register DiskImages for each supported OCP version before enabling CaaS provisioning. Alert on `RHCOSImageNotFound` condition. |
+| RHCOS DiskImage not linked to ClusterVersion | Controller cannot resolve boot image; BMI creation blocked with `RHCOSImageNotFound` condition | Cloud Infrastructure Admin must register DiskImages and link them to ClusterVersions via `--disk-image` before enabling CaaS provisioning. Reference validation catches this at ClusterVersion creation time. |
 | BMaaS deprovision failure leaves hosts in limbo during scale-down | Hosts are not cleaned up; potential data leakage if reassigned | Controller sets a 30-minute timeout for unbinding. Operators alerted via `WorkerFailed` event. Manual intervention documented in support procedures. |
 | Discovery ignition exceeds `bareMetalInstanceUserDataMaxBytes` (64KB) | BMI creation rejected | PoC measured 15KB. The controller emits a `DiscoveryIgnitionSizeWarning` event when the fetched ignition exceeds 48KB (75% of the 64KB limit), giving operators advance notice before BMI creation starts failing. |
 | Concurrent scale operations on multiple clusters exhaust host inventory | Multiple ClusterOrders compete for limited hosts; some fail | BMI creation fails, worker enters `Failed` phase. ClusterOrder status reflects partial provisioning. Inventory sizing is the admin's responsibility. |
@@ -635,8 +661,8 @@ CaaS-managed BMIs are assigned to the builtin `system` tenant, which already exi
 No new infrastructure. The feature uses existing components: osac-operator deployment, fulfillment-service private API, assisted-service, HyperShift, and BMaaS hosts.
 
 Documentation updates required:
-- Cloud Infrastructure Admin guide: DiskImage registration procedure for RHCOS qcow2 images per OCP version.
-- Installation prerequisites: minimum MCE version requirement (assisted-service 5.0.0+ for MGMT-24903 fix).
+- Cloud Infrastructure Admin guide: DiskImage registration procedure and ClusterVersion linking.
+- Installation prerequisites: minimum MCE version requirement (assisted-service 5.0.0+ for MGMT-24903 fix), assisted image service must be disabled.
 - Migration guide: BareMetalPool removal procedure, AAP job queue drain during upgrade, post-upgrade re-trigger of mid-provisioning clusters.
 
 ---
