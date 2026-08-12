@@ -7,7 +7,7 @@ last-updated: 2026-08-12
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2632
   - https://redhat.atlassian.net/browse/OSAC-1433
-prd: "N/A — extends the accepted backend design, see below"
+prd: "prd.md"
 see-also:
   - "/enhancements/OSAC-1433-unified-networking/design.md"
 replaces:
@@ -58,19 +58,29 @@ One NAT Gateway per VirtualNetwork (`design.md`, Resolved Question 4).
 
 - **VirtualNetworksListPage table:** a **NAT Gateway** column showing the attached NAT
   Gateway's external IP address and status (`NatGatewayStatusLabel`) when present, or an
-  empty-state dash when not. Row action: **Attach NAT Gateway** — opens a modal to select
-  an available External IP
-  (`useExternalIPs({ filter: 'this.status.state == EXTERNAL_IP_STATE_ALLOCATED && this.status.attached == false' })`
-  — only unattached allocated IPs, per the ownership rule in `design.md` that an
-  ExternalIP serves either a NATGateway or an ExternalIPAttachment, not both) and create
-  the NAT Gateway for that row's VirtualNetwork via `useCreateNatGateway()`.
+  empty-state dash when not. Row action depends on state:
+  - **No NAT Gateway:** **Attach NAT Gateway** — opens a modal to select an available
+    External IP
+    (`useExternalIPs({ filter: 'this.status.state == EXTERNAL_IP_STATE_ALLOCATED && this.status.attached == false' })`
+    — only unattached allocated IPs, per the ownership rule in `design.md` that an
+    ExternalIP serves either a NATGateway or an ExternalIPAttachment, not both) and creates
+    the NAT Gateway for that row's VirtualNetwork via `useCreateNatGateway()`.
+  - **NAT Gateway attached:** **Detach** — confirmation modal, calls
+    `useDeleteNatGateway()`.
 - **VirtualNetworkDetailPage:** a **NAT Gateway** field showing the same external IP +
-  status. When empty, an **Edit** button appears next to the field, opening the same
-  attach modal as the list page's row action, scoped to this VirtualNetwork.
+  status, with the same state-dependent action next to it: **Attach NAT Gateway** when
+  empty (same attach modal as the list page's row action, scoped to this VirtualNetwork),
+  or **Detach** when a NAT Gateway exists.
 
-Fetched via `useNatGatewayForVirtualNetwork(vnId)` (`NatGateways.List`, filtered
-`this.spec.virtual_network.id == "<vnId>"`, first result) for both the table row and the
-detail page field.
+**Fetching:** the list page fetches NAT Gateways once (`NatGateways.List`, unfiltered) and
+indexes the results by `spec.virtual_network.id` for row rendering, avoiding an N+1 request
+per row. The detail page uses `useNatGatewayForVirtualNetwork(vnId)` (`NatGateways.List`,
+filtered `this.spec.virtual_network.id == "<vnId>"`, first result).
+
+`NATGatewaySpec.external_ip` is immutable server-side, and `NatGateways.Update` only covers
+metadata (labels/annotations) — changing a VirtualNetwork's NAT Gateway to a different
+External IP is Detach (delete) followed by Attach (create) with the new External IP, not an
+in-place edit.
 
 #### External IP Management
 
@@ -85,6 +95,7 @@ detail page field.
 | Scenario | UI behavior |
 |---|---|
 | NAT Gateway attach: selected ExternalIP already consumed | Server rejection shown as a form-level error in the attach modal. |
+| NAT Gateway detach fails | Server error shown in the confirmation modal; row's Detach stays available for retry. |
 | External IP create: pool exhausted | Server's `RESOURCE_EXHAUSTED`/`FAILED_PRECONDITION` shown as a form-level error. |
 | External IP delete fails | Server error shown inline; row's Delete stays available for retry. |
 | Pool create: invalid/overlapping CIDR | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
@@ -99,9 +110,11 @@ detail page field.
   exports so tenant-facing hooks can import `NATGateway`/`NATGateways` from `@osac/types`
   (this is a hand-maintained barrel, not a `pnpm gen-types` output).
 - **Tenant hooks** (`api/v1/networking.ts`, `api/v1/external-ip.ts`):
-  `useNatGatewayForVirtualNetwork`, `useCreateNatGateway`, `useExternalIPs`,
-  `useCreateExternalIP`, `useDeleteExternalIP`. Add `'v1/nat_gateways'` to the `ApiRoute`
-  union (`'v1/external_ips'` already exists there).
+  `useNatGateways` (unfiltered, for the VirtualNetwork list page),
+  `useNatGatewayForVirtualNetwork` (filtered, for the detail page), `useCreateNatGateway`,
+  `useDeleteNatGateway`, `useExternalIPs`, `useCreateExternalIP`, `useDeleteExternalIP`.
+  Add `'v1/nat_gateways'` to the `ApiRoute` union (`'v1/external_ips'` already exists
+  there).
 - **Admin hooks** (new `api/v1/private/external-ip-pools.ts`, following
   `storage-backends.ts`'s shape): `usePrivateExternalIPPools`, `usePrivateExternalIPPool`,
   `useCreateExternalIPPool`, `useUpdateExternalIPPool` (name-only, `lock=true`),
@@ -117,8 +130,9 @@ detail page field.
 
 ## Provenance
 
-Committed: commit @ design 0.3.0 - 1e226e0 (dirty), workspace design/OSAC-2632-ui @ 7b09375
+Authored: commit @ design 0.3.0 - 1e226e0 (dirty), workspace design/OSAC-2632-ui @ 7b09375
+Final: respond @ design 0.3.0 - 1e226e0 (dirty), workspace design/OSAC-2632-ui @ 18a72cb (dirty)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between commit and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0 (dirty)","source_repo":"7b09375","source_repo_branch":"design/OSAC-2632-ui","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0 (dirty)","source_repo":"18a72cb (dirty)","source_repo_branch":"design/OSAC-2632-ui","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["commit","respond"],"authoring_modes":["skill"],"context_changed":true} -->
