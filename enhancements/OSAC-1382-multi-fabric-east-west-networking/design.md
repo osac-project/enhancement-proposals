@@ -447,7 +447,45 @@ sequenceDiagram
 
 ---
 
-## Implementation notes
+## Implementation Details
+
+### Database schema (fulfillment-service)
+
+New `fabric_domains` table:
+
+```sql
+CREATE TABLE fabric_domains (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT NOT NULL,
+    tenant_id   UUID NOT NULL REFERENCES tenants(id),
+    type        TEXT NOT NULL,              -- 'ethernet_ew', 'infiniband_ew', 'nvlink'
+    servers     TEXT[] NOT NULL,            -- hostnames
+    network_class_id UUID NOT NULL REFERENCES network_classes(id),
+    backend_id  TEXT,                       -- Netris Server Cluster ID (set after provisioning)
+    vpc_id      TEXT,                       -- resolved Netris VPC ID
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at  TIMESTAMPTZ                -- soft delete
+);
+
+CREATE TABLE fabric_domain_virtual_networks (
+    fabric_domain_id    UUID NOT NULL REFERENCES fabric_domains(id) ON DELETE CASCADE,
+    virtual_network_id  UUID NOT NULL REFERENCES virtual_networks(id),
+    PRIMARY KEY (fabric_domain_id, virtual_network_id)
+);
+
+CREATE INDEX idx_fabric_domains_tenant ON fabric_domains(tenant_id);
+CREATE INDEX idx_fabric_domains_network_class ON fabric_domains(network_class_id);
+```
+
+The join table `fabric_domain_virtual_networks` supports the Phase 1 exactly-one
+constraint via application-level validation (FD-VAL-05) while keeping the schema
+ready for Phase 2+ multi-VN association.
+
+NetworkClass gains `east_west_config` (JSONB) alongside existing columns — no
+migration of existing rows required (nullable column, additive).
+
+### Affected components
 
 - **fulfillment-service:** FabricDomain CRUD + validation; NetworkClass
   `east_west_config` + capabilities.
@@ -793,6 +831,10 @@ name pulls Netris-specific and "child of VPC/VN" connotations.
 `map<string,string>`). OSAC conventions prefer typed structures over maps in
 CRDs for validation, documentation, and schema evolution. The proto sketch
 above reflects this decision.
+
+## Infrastructure Needed
+
+None. E2E testing uses the existing netris-lab on zeus12 (already provisioned).
 
 ---
 
