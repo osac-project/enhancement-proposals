@@ -52,7 +52,7 @@ MAC addresses are hardware-level identifiers. They do not change after a host is
 - Ongoing periodic re-synchronization of MAC addresses (they do not change post-allocation).
 - UI visualization of NIC metadata (deferred to a subsequent UI epic).
 - Exposing full hardware specifications in status (covered by `BareMetalInstanceType`).
-- Adding a `osac get baremetalinstances` list command (does not yet exist; tracked separately).
+- Showing MAC addresses in `osac get baremetalinstances` list output (available via `osac describe baremetalinstance` only).
 
 ## Proposal
 
