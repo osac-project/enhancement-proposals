@@ -114,7 +114,7 @@ Network Interfaces:
   aa:bb:cc:dd:ee:03
 ```
 
-A `Running` instance always has NICs populated. The `N/A` display applies only to instances still in `Progressing` (NIC fetch pending).
+A `Running` instance provisioned by this EP's controller version has NICs populated. Pre-existing Running instances may have `hardware: null` until their next reconcile after upgrade. The `N/A` display applies to instances still in `Progressing` (NIC fetch pending) or not yet backfilled.
 
 ### API Extensions
 
@@ -136,8 +136,10 @@ type Client interface {
         labels map[string]string) (*Host, error)
     UnassignHost(ctx context.Context, inventoryHostID string, labels []string) error
     // GetHostNICs returns the physical network interfaces for the allocated host.
-    // FindFreeHost guarantees NIC data exists before allocation, so an empty
-    // result here indicates a transient backend error, not missing inventory data.
+    // When operators ensure hardware inspection is enabled (see Metal3 inspection
+    // constraint), FindFreeHost guarantees NIC data exists before allocation.
+    // An empty result therefore indicates either a transient backend error or a
+    // host whose inspection has not yet completed.
     // Returns an error only on backend failures.
     GetHostNICs(ctx context.Context, inventoryHostID string) ([]HostNIC, error)
 }
@@ -192,6 +194,7 @@ Both protos receive identical additions:
 // Additional fields may be added in future milestones without breaking API compatibility.
 message BareMetalNICStatus {
   // Hardware MAC address of this interface (e.g. "aa:bb:cc:dd:ee:ff").
+  // Values are always lowercased.
   string mac = 1;
 }
 
@@ -302,7 +305,7 @@ func countPorts(ctx context.Context, client *gophercloud.ServiceClient, nodeUUID
 }
 ```
 
-This adds one `ports.List` call per candidate node during allocation. The cost is bounded by the number of candidates evaluated before a suitable host is found and is incurred only once per `BareMetalInstance` lifecycle.
+This adds one `ports.List` call per candidate node during allocation. The cost is bounded by the number of candidates evaluated before a suitable host is found and is incurred only once per `BareMetalInstance` lifecycle. For very large inventories, caching port counts across the candidate scan could reduce Ironic API calls, but is deferred until profiling indicates it is needed.
 
 #### OpenStack/Ironic backend — `GetHostNICs` implementation
 
@@ -383,6 +386,8 @@ Returning a non-nil error keeps the instance in `Progressing` and triggers contr
 #### fulfillment-service controller reconciler — status propagation
 
 **File:** `osac/fulfillment-service/internal/controllers/baremetalinstance/baremetalinstance_reconciler_function.go`
+
+`BareMetalInstance` status — including the new `hardware` field — is stored as a serialized proto blob in PostgreSQL. Adding new optional proto fields to an existing blob is backward-compatible; no schema migration is required.
 
 In `syncStatus(object *bmfov1alpha1.BareMetalInstance)`, after the existing status mapping:
 
@@ -536,7 +541,7 @@ The controller could re-fetch NIC data on every reconcile cycle or on a fixed in
 
 **osac-test-infra (pytest):**
 - Provision a `BareMetalInstance` against a Metal3 backend with known host hardware details; poll until `state = RUNNING`; assert `GET /api/fulfillment/v1/baremetal_instances/{id}` returns `status.hardware.nics` as a non-empty list containing the known host MAC addresses.
-- Assert that a `Running` instance always has `status.hardware.nics` populated (invariant check).
+- Assert that a newly provisioned `Running` instance always has `status.hardware.nics` populated.
 - Assert that a Tenant User cannot read `status.hardware` for a `BareMetalInstance` belonging to a different tenant (403 response).
 - Assert that a Cloud Infrastructure Admin can read `status.hardware` for any tenant's `BareMetalInstance`.
 - CLI: run `osac describe baremetalinstance <name>` and assert "Network Interfaces:" section is present with at least one MAC address.
@@ -547,7 +552,7 @@ The controller could re-fetch NIC data on every reconcile cycle or on a fixed in
 
 **Tech Preview:** Both Metal3 and OpenStack/Ironic backends validated in E2E. Error paths tested (transient inventory failure stays `Progressing`, OpenStack portless node not allocated). Tenant isolation E2E (403 for cross-tenant) passes. CLI `describe` output validated.
 
-**GA:** CaaS boot-MAC correlation validated end-to-end against a real Metal3 backend. `Running` → `status.hardware.nics` populated invariant held across upgrade scenarios.
+**GA:** CaaS boot-MAC correlation validated end-to-end against a real Metal3 backend. `Running` → `status.hardware.nics` populated invariant holds for instances provisioned by the new controller version.
 
 ## Upgrade / Downgrade Strategy
 
@@ -581,8 +586,8 @@ None.
 ## Provenance
 
 Authored: draft @ design 0.8.0 - 7efcedb, workspace main @ a4b128a
-Final: respond @ design 0.8.0 - 7efcedb, workspace main @ d451015
+Final: respond @ design 0.8.0 - 7efcedb, workspace main @ 4120194
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d451015","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
