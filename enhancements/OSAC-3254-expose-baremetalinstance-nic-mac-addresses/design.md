@@ -187,7 +187,7 @@ After modifying the types file, run `make manifests generate && make helm-crds` 
 
 **Files:** `osac/fulfillment-service/proto/public/osac/public/v1/baremetal_instance_type.proto` and `osac/fulfillment-service/proto/private/osac/private/v1/baremetal_instance_type.proto`
 
-Both protos receive identical additions:
+Both protos receive the same new message types:
 
 ```protobuf
 // Describes one physical network interface as reported by the inventory backend.
@@ -206,14 +206,23 @@ message BareMetalHardware {
 }
 ```
 
-Added to `BareMetalInstanceStatus`:
+Added to `BareMetalInstanceStatus` — **field numbers differ between public and private protos:**
+
+**Public proto** — field 4 is `network_attachment_statuses`; field 5 is free:
 ```protobuf
 // Hardware details populated from the inventory backend at allocation time.
 // Absent if the inventory backend has not yet provided data.
 optional BareMetalHardware hardware = 5;
 ```
 
-Field 5 is free in both public and private `BareMetalInstanceStatus`. Run `buf lint && buf generate` after changes.
+**Private proto** — field 4 is `hub`, field 5 is `network_attachment_statuses`; field 6 is free:
+```protobuf
+// Hardware details populated from the inventory backend at allocation time.
+// Absent if the inventory backend has not yet provided data.
+optional BareMetalHardware hardware = 6;
+```
+
+Run `buf lint && buf generate` after changes.
 
 #### 4. Operational impact
 
@@ -280,9 +289,11 @@ The check is inserted per candidate node inside `findFreeHost`, after the existi
 // Skip nodes with no ports — NIC data would not be available.
 portCount, err := countPorts(ctx, c.client, node.UUID)
 if err != nil {
-    continue // backend error counting ports — skip candidate
+    log.FromContext(ctx).V(1).Info("skipping candidate: error counting ports", "node", node.UUID, "err", err)
+    continue
 }
 if portCount == 0 {
+    log.FromContext(ctx).V(1).Info("skipping candidate: no ports registered", "node", node.UUID)
     continue
 }
 ```
@@ -557,7 +568,7 @@ The controller could re-fetch NIC data on every reconcile cycle or on a fixed in
 ## Upgrade / Downgrade Strategy
 
 This EP adds optional status fields to `BareMetalInstance` (CRD and proto). No migration is required:
-- Existing `Running` `BareMetalInstance` resources will have `hardware: null` after upgrade until their next reconcile. The controller will attempt `GetHostNICs` on the next reconcile event (e.g., spec change, annotation update, or operator restart) and populate `Hardware` if the inventory backend returns NIC data. Until then, MAC addresses are absent from the API response and CLI output; this is expected post-upgrade behavior and does not affect provisioning state.
+- Existing `Running` `BareMetalInstance` resources will have `hardware: null` after upgrade until their next reconcile. The controller will attempt `GetHostNICs` on the next reconcile event (e.g., spec change, annotation update, or operator restart) and populate `Hardware` if the inventory backend returns NIC data. Until then, MAC addresses are absent from the API response and CLI output; this is expected post-upgrade behavior and does not affect provisioning state. To trigger immediate backfill for all existing instances, restart the operator pod — controller-runtime re-enqueues all watched resources on startup.
 - Downgrading the operator removes the `Hardware` field from the CRD schema; the Kubernetes API server drops unknown fields from stored objects on the next write, which is safe.
 - Downgrading the fulfillment-service drops the proto fields from API responses; existing stored data is not affected (JSON serialization ignores unknown fields in newer DB rows).
 
@@ -575,6 +586,8 @@ The operator and fulfillment-service are upgraded independently. An updated oper
 
 **OpenStack node never allocated:** If an OpenStack node is never selected by `FindFreeHost`, verify it has ports registered: `openstack baremetal port list --node <uuid>`. Nodes without ports are excluded from allocation.
 
+**Auditing inspection-disabled Metal3 hosts:** To identify hosts in the inventory pool with inspection disabled before they cause a `NICMetadataUnavailable` condition, run: `kubectl get baremetalhosts -A -o json | jq '.items[] | select(.metadata.annotations["baremetal.metal3.io/inspection-disabled"] == "true") | .metadata.name'`. Any results should have the annotation removed and inspection triggered before those hosts are eligible for allocation.
+
 **Disabling NIC fetch:** NIC fetch is a required gate for the `Ready` phase. There is no supported mechanism to disable it without also preventing instances from reaching `Ready`.
 
 ## Infrastructure Needed
@@ -590,4 +603,4 @@ Final: respond @ design 0.8.0 - 7efcedb, workspace main @ 4120194
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
