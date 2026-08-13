@@ -102,9 +102,9 @@ without redesign.
 FabricDomain
   type: ethernet_ew | infiniband_ew | nvlink | …
   servers: [hostname, …]
-  network_class: <ref>           # resolves backend + parameters
   virtual_networks: [vn]         # Phase 1: exactly one (required)
   status: conditions, backend_id, vpc_id
+  # NetworkClass inherited from the associated VirtualNetwork
 
 NetworkClass
   capabilities:
@@ -147,17 +147,31 @@ message FabricDomain {
   FabricDomainStatus status = 4;
 }
 
+enum FabricDomainType {
+  FABRIC_DOMAIN_TYPE_UNSPECIFIED = 0;
+  ETHERNET_EW = 1;
+  INFINIBAND_EW = 2;               // Phase 2
+  NVLINK = 3;                      // Phase 3
+}
+
 message FabricDomainSpec {
-  string type = 1;                       // ethernet_ew | infiniband_ew | nvlink
-  repeated string servers = 2;           // hostnames
-  string network_class = 3;              // required; immutable after creation
-  repeated string virtual_networks = 4;  // Phase 1: exactly one; immutable after creation
+  FabricDomainType type = 1;             // immutable after creation
+  repeated string servers = 2;           // hostnames (mutable — resize)
+  repeated string virtual_networks = 3;  // Phase 1: exactly one; immutable after creation
+  // NetworkClass is inherited from the associated VirtualNetwork
 }
 
 message FabricDomainStatus {
   repeated Condition conditions = 1;     // Ready, Provisioning (standard OSAC conditions)
   string backend_id = 2;                 // e.g. Netris Server Cluster ID
   string vpc_id = 3;                     // resolved Netris VPC ID from associated VN
+  repeated FabricDomainMemberStatus members = 4;
+}
+
+message FabricDomainMemberStatus {
+  string server = 1;                     // hostname
+  FabricDomainMemberState state = 2;     // PENDING, ACTIVE, FAILED
+  string message = 3;                    // failure reason if applicable
 }
 
 // gRPC service
@@ -199,21 +213,19 @@ message NVLinkEastWestConfig {
 }
 ```
 
-**Immutability:** `type`, `network_class`, and `virtual_networks` are immutable
-after creation. Changing them requires delete + re-create. `servers` is mutable
-(resize).
+**Immutability:** `type` and `virtual_networks` are immutable after creation.
+Changing them requires delete + re-create. `servers` is mutable (resize).
 
 **Validation (Phase 1)**
 
 | Rule | Check | gRPC error |
 |------|-------|------------|
-| FD-VAL-01 | `type` must match a capability on the referenced NetworkClass | `INVALID_ARGUMENT`: "type does not match NetworkClass capability" |
+| FD-VAL-01 | `type` must be a valid `FabricDomainType` enum value and match a capability on the VN's NetworkClass | `INVALID_ARGUMENT`: "type does not match NetworkClass capability" |
 | FD-VAL-02 | `servers` non-empty | `INVALID_ARGUMENT`: "servers list must not be empty" |
-| FD-VAL-03 | `network_class` must reference an existing NetworkClass | `NOT_FOUND`: "NetworkClass not found" |
-| FD-VAL-04 | For `ethernet_ew`, NetworkClass must have `east_west_config.ethernet_ew.template_id` | `FAILED_PRECONDITION`: "NetworkClass missing template_id for ethernet_ew" |
-| FD-VAL-05 | `virtual_networks` length == 1 | `INVALID_ARGUMENT`: "exactly one VirtualNetwork required in Phase 1" |
-| FD-VAL-06 | Referenced VN must exist and be same-tenant | `NOT_FOUND` / `PERMISSION_DENIED` |
-| FD-VAL-07 | Type `infiniband_ew` / `nvlink` rejected until Phase 2/3 | `UNIMPLEMENTED`: "type not yet supported" |
+| FD-VAL-03 | `virtual_networks` length == 1 | `INVALID_ARGUMENT`: "exactly one VirtualNetwork required in Phase 1" |
+| FD-VAL-04 | Referenced VN must exist and be same-tenant | `NOT_FOUND` / `PERMISSION_DENIED` |
+| FD-VAL-05 | VN's NetworkClass must have `east_west_config.ethernet_ew.template_id` for `ETHERNET_EW` | `FAILED_PRECONDITION`: "NetworkClass missing template_id for ethernet_ew" |
+| FD-VAL-06 | Type `INFINIBAND_EW` / `NVLINK` rejected until Phase 2/3 | `UNIMPLEMENTED`: "type not yet supported" |
 
 ### Why Phase 1 requires VirtualNetwork (1:1)
 
@@ -243,6 +255,14 @@ Phase 1 does **not** put NIC names on FabricDomain. The template owns Ethernet
 NIC mapping. Creating a FabricDomain drives a Server Cluster whose template
 typically programs **both** EW and NS (and OOB) V-Nets — FabricDomain expresses
 the EW isolation **intent**; it does not mean "EW-only interfaces."
+
+**Template V-Net vs OSAC Subnet coexistence:** The Server Cluster Template
+creates auto-managed V-Nets (EW L3VPN, NS L2VPN, OOB). OSAC Subnets create
+additional OSAC-managed V-Nets in the same VPC. Both coexist — each gets a
+distinct VXLAN ID, no conflicts. Servers use the template-created NS V-Net for
+fabric-level N-S reachability and OSAC Subnet V-Nets for tenant-managed IP
+segments. This was validated on zeus12: four V-Nets (2 template + 1 OSAC Subnet
++ 1 default) coexisted with unique VXLAN IDs.
 
 ### GPU vs storage traffic separation
 
@@ -299,7 +319,6 @@ metadata:
   name: tenant-a-gpu-ew
 spec:
   type: ethernet_ew
-  network_class: spectrum-x-ai
   servers:
     - hgx-01
     - hgx-02
@@ -381,9 +400,10 @@ backends later.
 1. **Cloud Infrastructure Admin** configures NetworkClass with
    `supports_east_west_ethernet` and `east_west_config.ethernet_ew.template_id`.
 2. **Tenant Admin** (or Cloud Infrastructure Admin) has VirtualNetwork (N-S).
-3. **Cloud Infrastructure Admin** creates FabricDomain (`type=ethernet_ew`,
-   `servers`, `network_class`, `virtual_networks: [that VN]`).
-4. Operator resolves template from NetworkClass; resolves VN → Netris VPC id.
+3. **Cloud Infrastructure Admin** creates FabricDomain (`type=ETHERNET_EW`,
+   `servers`, `virtual_networks: [that VN]`).
+4. Operator resolves NetworkClass from VN; resolves template from NC;
+   resolves VN → Netris VPC id.
 5. Create Netris Server Cluster **in that VPC**.
 6. Netris applies template (EW L3VPN, NS, OOB V-Nets, port mapping).
 7. Condition `Ready=True` + `backend_id` = Server Cluster ID.
@@ -435,7 +455,7 @@ sequenceDiagram
   participant AAP
   participant Netris
 
-  Admin->>FS: Create FabricDomain (ethernet_ew, servers, NC, VN)
+  Admin->>FS: Create FabricDomain (ethernet_ew, servers, VN)
   FS->>FS: Validate capability + template_id + exactly one VN
   FS->>Op: FabricDomain CR
   Op->>AAP: osac-create-server-cluster (template, VPC from VN)
@@ -460,7 +480,6 @@ CREATE TABLE fabric_domains (
     tenant_id   UUID NOT NULL REFERENCES tenants(id),
     type        TEXT NOT NULL,              -- 'ethernet_ew', 'infiniband_ew', 'nvlink'
     servers     TEXT[] NOT NULL,            -- hostnames
-    network_class_id UUID NOT NULL REFERENCES network_classes(id),
     backend_id  TEXT,                       -- Netris Server Cluster ID (set after provisioning)
     vpc_id      TEXT,                       -- resolved Netris VPC ID
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -475,7 +494,6 @@ CREATE TABLE fabric_domain_virtual_networks (
 );
 
 CREATE INDEX idx_fabric_domains_tenant ON fabric_domains(tenant_id);
-CREATE INDEX idx_fabric_domains_network_class ON fabric_domains(network_class_id);
 ```
 
 The join table `fabric_domain_virtual_networks` supports the Phase 1 exactly-one
@@ -502,6 +520,22 @@ migration of existing rows required (nullable column, additive).
   NetworkClass EW configuration deferred to Tech Preview.
 - **UI:** FabricDomain is managed via CLI/API only in Phase 1. Admin views
   deferred to a future UI enhancement.
+
+### CLI commands (Phase 1)
+
+```bash
+osac create fabricdomain --type ethernet_ew \
+  --servers hgx-01,hgx-02,hgx-03,hgx-04 \
+  --virtual-network tenant-a-vn \
+  --name tenant-a-gpu-ew
+
+osac get fabricdomains
+osac describe fabricdomain tenant-a-gpu-ew
+osac edit fabricdomain tenant-a-gpu-ew         # resize: update servers list
+osac delete fabricdomain tenant-a-gpu-ew
+```
+
+Per CLI UX guidelines: non-interactive, scriptable, no k8s knowledge required.
 
 ### Security Considerations
 
@@ -611,24 +645,24 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
 
 ### Unit Tests
 
-- FD-VAL-01: reject FabricDomain when `type` does not match NetworkClass
+- FD-VAL-01: reject FabricDomain when `type` does not match VN's NetworkClass
   capability → `INVALID_ARGUMENT`.
 - FD-VAL-02: reject FabricDomain with empty `servers` list → `INVALID_ARGUMENT`.
-- FD-VAL-03: reject FabricDomain when `network_class` references non-existent
-  NetworkClass → `NOT_FOUND`.
-- FD-VAL-04: reject `ethernet_ew` when NetworkClass is missing `template_id`
-  → `FAILED_PRECONDITION`.
-- FD-VAL-05: reject FabricDomain with zero or >1 `virtual_networks` in Phase 1
+- FD-VAL-03: reject FabricDomain with zero or >1 `virtual_networks` in Phase 1
   → `INVALID_ARGUMENT`.
-- FD-VAL-06: reject FabricDomain when referenced VN belongs to a different
+- FD-VAL-04: reject FabricDomain when referenced VN belongs to a different
   tenant → `PERMISSION_DENIED`.
-- FD-VAL-07: reject `infiniband_ew` and `nvlink` types → `UNIMPLEMENTED`.
-- Template resolution: operator resolves `template_id` from NetworkClass
-  `east_west_config.ethernet_ew` correctly.
+- FD-VAL-05: reject `ETHERNET_EW` when VN's NetworkClass is missing
+  `template_id` → `FAILED_PRECONDITION`.
+- FD-VAL-06: reject `INFINIBAND_EW` and `NVLINK` types → `UNIMPLEMENTED`.
+- Template resolution: operator resolves NetworkClass from VN, then
+  `template_id` from `east_west_config.ethernet_ew`.
 - Condition transitions: `Ready=False` (Reason=Provisioning) → `Ready=True`
   on success; `Ready=False` (Reason=ProvisioningFailed) on failure.
+- Per-member status: all members report `ACTIVE` on success; failed members
+  report `FAILED` with message.
 - Resize: updating `servers` list triggers re-reconciliation; `type` and
-  `network_class` are immutable after creation.
+  `virtual_networks` are immutable after creation.
 
 ### Integration Tests
 
@@ -809,28 +843,24 @@ FabricDomain is a new resource type with no existing instances to migrate.
 - If the Netris Server Cluster was manually deleted: delete and re-create the
   FabricDomain to re-provision.
 
-## Naming
+## Open questions
 
-**FabricDomain** is used in this design. Alternatives such as
-`IsolationDomain` are acceptable if the project prefers clearer "isolation"
-wording. The architectural decision is first-class EW isolation + required VN
-in Phase 1—not the final string name.
+1. Phase 2: when to allow zero or multiple VirtualNetwork associations.
+2. Status fields to echo for debug (resolved template_id, VPC id, VNet names).
+3. Phase 2: reserve `fabric_domain` field on BareMetalInstance/ClusterOrder
+   specs for scheduling awareness and membership validation.
 
-Avoid OSAC API name **ServerCluster** unless adopting alternative (1); that
-name pulls Netris-specific and "child of VPC/VN" connotations.
+**Resolved:**
 
----
-
-## Open questions (narrow)
-
-1. Final resource name: FabricDomain vs IsolationDomain.
-2. Phase 2: when to allow zero or multiple VirtualNetwork associations.
-3. Status fields to echo for debug (resolved template_id, VPC id, VNet names).
-
-**Resolved:** Typed `EastWestConfig` messages are used (not generic
-`map<string,string>`). OSAC conventions prefer typed structures over maps in
-CRDs for validation, documentation, and schema evolution. The proto sketch
-above reflects this decision.
+- **Resource name:** FabricDomain. "Domain" implies isolation boundary
+  (broadcast domain, routing domain); "fabric" scopes it to the physical
+  interconnect layer. Decided before merge per reviewer recommendation.
+- **Typed `EastWestConfig` messages** (not generic `map<string,string>`). OSAC
+  conventions prefer typed structures over maps in CRDs for validation,
+  documentation, and schema evolution.
+- **`network_class` removed from FabricDomainSpec.** OSAC deployments have one
+  NetworkClass; FabricDomain inherits it from the associated VirtualNetwork.
+  Avoids redundancy and NC mismatch between VN and FD.
 
 ## Infrastructure Needed
 
