@@ -21,9 +21,14 @@ superseded-by:
 Extends the accepted backend design in [design.md](design.md) with the remaining `osac-ui`
 work for OSAC-1433 (tracked as [OSAC-2632](https://redhat.atlassian.net/browse/OSAC-2632)):
 Cloud Provider Admin management of **ExternalIPPool**, a tenant-facing **NAT Gateway**
-field on VirtualNetwork, and tenant-facing **External IP** management. VirtualNetwork,
-Subnet, and SecurityGroup management (OSAC-1898, OSAC-1899) are otherwise unchanged by
-this design.
+field on VirtualNetwork, and tenant-facing **External IP** management. Existing
+VirtualNetwork management (shipped under
+[OSAC-1898](https://redhat.atlassian.net/browse/OSAC-1898), per the
+[OSAC-1425](https://redhat.atlassian.net/browse/OSAC-1425) PRD) is summarized below for
+context, since the NAT Gateway field extends its list and detail pages — it is otherwise
+unchanged by this design. Subnet and SecurityGroup management
+([OSAC-1899](https://redhat.atlassian.net/browse/OSAC-1899)) are unchanged and not
+covered here.
 
 ## Proposal
 
@@ -52,11 +57,23 @@ Pure consumer of the existing private `ExternalIPPools` service
 
 ### Tenant User and Admin
 
+#### Virtual Network Management (existing, for context)
+
+- **List page** (`VirtualNetworksPage`) at `/networking/virtual-networks`. Columns:
+  **Name**, **IPv4 CIDR**, **Subnets count**, **Status** (`VirtualNetworkStatusLabel`).
+- **Create form:** modal (`VirtualNetworkCreateModal`) with **Name**, **IPv4 CIDR**,
+  optional **IPv6 CIDR** — NetworkClass is assigned automatically, not exposed to
+  tenants. Via `useCreateVirtualNetwork()`.
+- **Detail page** (`VirtualNetworkDetailPage`) at `/networking/virtual-networks/:id`,
+  with tabs for **Subnets**, **Security Groups**, **Details**.
+- **Delete:** header action, `useDeleteVirtualNetwork()`; blocked if the VN has subnets
+  or security groups.
+
 #### NAT Gateway Field in Virtual Network
 
 One NAT Gateway per VirtualNetwork (`design.md`, Resolved Question 4).
 
-- **VirtualNetworksListPage table:** a **NAT Gateway** column showing the attached NAT
+- **VirtualNetworksPage table:** a **NAT Gateway** column showing the attached NAT
   Gateway's external IP address and status (`NatGatewayStatusLabel`) when present, or an
   empty-state dash when not. Row action depends on state:
   - **No NAT Gateway:** **Attach NAT Gateway** — opens a modal to select an available
