@@ -11,8 +11,10 @@ prd:
 see-also:
   - "/enhancements/OSAC-1002-catalog-items"
   - "https://redhat.atlassian.net/browse/OSAC-2921 (metadata migration: display_name/description)"
+  - "https://redhat.atlassian.net/browse/OSAC-2540 (is_windows removal)"
   - "https://redhat.atlassian.net/browse/OSAC-3937 (constraints on editable fields)"
   - "https://redhat.atlassian.net/browse/OSAC-3943 (catalog item lifecycle management)"
+  - "https://github.com/osac-project/osac/pull/85 (typed resource references)"
 replaces:
   - N/A
 superseded-by:
@@ -35,7 +37,7 @@ The current catalog item field governance model uses a `repeated FieldDefinition
 
 1. **No compile-time field validation.** The `path` field accepts arbitrary strings like `spec.instane_type` (typo) or `spec.nonexistent_field`. Invalid paths are caught only at runtime - during resource creation when `applyFieldDefinitions` serializes the spec to JSON and walks the path. With typed proto fields, invalid references are impossible because the proto compiler won't generate them. [Codebase: internal/servers/catalog_item_validation.go]
 
-2. **No per-field type customization.** Every field's default is a `google.protobuf.Value` and its validation is a JSON Schema string. There is no way to express "instance_type accepts one of these three values" using a typed proto field - it requires hand-authoring a JSON Schema with an `enum` constraint.
+2. **No per-field type customization.** Every field's default is a `google.protobuf.Value` and its validation is a JSON Schema string. There is no way to express field-level type safety - for example, a `GovernedStringField` for `instance_type` vs. a `GovernedResourceReferenceField` that wraps an `InstanceTypeReference` - using a single generic schema. Type-specific governance requires hand-authoring a JSON Schema per field.
 
 3. **No referential integrity for governed values.** A catalog item can lock `image` to a specific image reference, but nothing prevents that image from being deleted. The existing referential integrity triggers (migration 59) protect the resource-to-catalog-item direction (can't delete a catalog item while resources reference it, can't create a resource referencing a non-existent catalog item), but not the catalog-item-to-image or catalog-item-to-instance-type direction. [Codebase: internal/database/migrations/59_add_catalog_item_ref_triggers.up.sql]
 
@@ -66,6 +68,10 @@ Each catalog item type gets its own typed spec message listing the governable fi
 Image is a required field on ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, always implicitly locked. ClusterCatalogItem governs `version` (a reference to ClusterVersion `spec.version`) instead of image; version is excluded from the proto's governed fields because it requires day-2 mutability for cluster upgrades. Fields requiring day-2 mutation are excluded from the proto to prevent accidental misconfiguration - compile-time prevention rather than runtime validation.
 
 Template parameters are governed via `map<string, GovernedTemplateParameter>`, where each entry wraps a `google.protobuf.Any` value with the same locked/editable oneof. Type correctness is validated at runtime against the referenced template's parameter definitions, since template parameter types are not known at compile time.
+
+**Terminology note:** "Locked" means the tenant cannot set or change the field's value during resource creation or update. However, governance itself is not immutable - the admin can relax governance (locked to editable or absent) on the catalog item, and can update locked field values (e.g., bump image for CVE fixes). Changes to the catalog item affect only new provisioning; existing resources retain the values they were created with. See "Catalog Item Update Governance Constraints" for the full rules.
+
+**Ungoverned field discoverability:** Fields not present on the catalog item's `fields` message are ungoverned - tenants set them freely. The UI handles this naturally (it renders all spec fields from the resource proto, marking governed ones as locked/editable). For CLI/API users, ungoverned required fields are discoverable from the resource proto schema or template spec, but not from the catalog item itself. The `osac describe catalog-item` command should display both governed fields (with their governance) and a list of ungoverned required fields (derived from the resource proto) to close this gap.
 
 The three catalog item types (ComputeInstanceCatalogItem, ClusterCatalogItem, BareMetalInstanceCatalogItem) remain separate types. [Locked: D5]
 
@@ -157,7 +163,7 @@ The admin creates a "RHEL 10 Small VM" catalog item with:
     "fields": {
       "image": {"source_type": "pvc", "source_ref": "rhel-10-2026q3"},
       "instance_type": {
-        "editable": {"default": "m1.small"}
+        "editable": {"default": {"name": "m1.small"}}
       },
       "ssh_public_key": {"editable": {}},
       "boot_disk": {"locked": {"value": {"size_gib": 50}}},
@@ -182,7 +188,7 @@ The tenant's UI fetches the catalog item and template, then renders:
 | Field | UI Rendering | Value |
 |-------|-------------|-------|
 | Image | Read-only | RHEL 10 2026-Q3 (source: rhel-10-2026q3) |
-| Instance type | Text input (editable) | Pre-filled: m1.small |
+| Instance type | Dropdown/text (editable) | Pre-filled: m1.small |
 | SSH public key | Text input | (empty) |
 | Boot disk | Read-only | 50 GiB |
 | Run strategy | Text input | Pre-filled: Always |
@@ -199,7 +205,7 @@ The tenant selects `m1.medium`, enters an SSH key, and submits.
     "metadata": {"name": "my-dev-vm"},
     "spec": {
       "catalog_item": "rhel-10-small-vm",
-      "instance_type": "m1.medium",
+      "instance_type": {"name": "m1.medium"},
       "ssh_public_key": "ssh-ed25519 AAAA...",
       "user_data": "#cloud-config\npackages:\n  - vim"
     }
@@ -222,7 +228,7 @@ The tenant selects `m1.medium`, enters an SSH key, and submits.
    - `disk_format`: locked, set to "qcow2".
    - `enable_monitoring`: editable, tenant did not provide, apply default `true`.
 5. Fetch template "rhel-base-template", apply remaining spec defaults (fields not covered by governance or tenant input).
-6. Validate instance type "m1.medium" exists and is not OBSOLETE.
+6. Validate instance type reference "m1.medium" exists and is not OBSOLETE.
 7. Create the compute instance.
 
 **Response includes the full spec with all governed values visible**, so the tenant can see exactly what was provisioned.
@@ -286,6 +292,8 @@ The tenant selects version, configures node sets, enters SSH key and pull secret
 5. Fetch template, apply remaining defaults.
 6. Create the cluster.
 
+**Day-1 only governance:** Catalog item governance applies only at resource creation and update time. For clusters, this means the catalog item governs which version the cluster is initially provisioned with (if version were governed - currently excluded from v1), but does not restrict which versions the tenant can upgrade to after provisioning. Cluster upgrades are a day-2 operation outside catalog item governance scope. This is one reason version is excluded from v1 governed fields.
+
 #### Example: BareMetalInstance Provisioning Flow
 
 **Step 1: Admin creates a BareMetalInstanceCatalogItem.**
@@ -328,7 +336,7 @@ UI rendering:
 |-------|-------------|-------|
 | Image | Read-only | RHEL 10 (http source) |
 | SSH public key | Text input | (empty) |
-| Run strategy | Dropdown: Always, Halted | Pre-selected: Always |
+| Run strategy | Text input (editable) | Pre-filled: Always |
 | Auto external IP | Read-only | Enabled |
 | User data | Text input (ungoverned) | (empty) |
 
@@ -366,7 +374,7 @@ The UI changes required:
 |---|---|---|
 | `field_definitions` | Removed | Replaced by typed `fields` message |
 | N/A | `fields.image` | New: always-locked image on VM/BM |
-| N/A | `fields.instance_type` | New: governed string (locked or editable with default) |
+| N/A | `fields.instance_type` | New: governed InstanceTypeReference (locked or editable with default) |
 | N/A | `template_parameters` | New: map of governed template params |
 | `title` / `description` | `metadata.display_name` / `metadata.description` | OSAC-2921 metadata migration |
 
@@ -379,7 +387,7 @@ The governance model uses typed wrapper messages per primitive type. Each wrappe
 **Governance wrapper messages** (in `field_governance_type.proto`):
 
 ```protobuf
-// String fields (ssh_public_key, run_strategy, pull_secret, release_image, user_data)
+// String fields (ssh_public_key, run_strategy, pull_secret, user_data)
 message GovernedStringField {
   oneof behavior {
     LockedStringField locked = 1;
@@ -475,6 +483,23 @@ message EditableNetworkField {
   optional ClusterNetwork default = 1;
 }
 
+// Resource reference fields (wraps typed reference messages from osac#85)
+// Used for instance_type and similar resource references.
+message GovernedInstanceTypeReferenceField {
+  oneof behavior {
+    LockedInstanceTypeReferenceField locked = 1;
+    EditableInstanceTypeReferenceField editable = 2;
+  }
+}
+
+message LockedInstanceTypeReferenceField {
+  InstanceTypeReference value = 1;
+}
+
+message EditableInstanceTypeReferenceField {
+  optional InstanceTypeReference default = 1;
+}
+
 // BareMetalInstanceRunStrategy enum field
 message GovernedBareMetalRunStrategyField {
   oneof behavior {
@@ -516,15 +541,19 @@ The `oneof` pattern ensures that when a new behavior variant (e.g., `HiddenStrin
 // ComputeInstanceCatalogItem - new fields message
 message ComputeInstanceCatalogItemFields {
   // Mandatory, always locked. Server rejects if not set.
+  // ComputeInstanceImage is an existing proto type with source_type and source_ref fields.
   ComputeInstanceImage image = 1;
 
   // Optional governed fields. Absence means ungoverned.
-  optional GovernedStringField instance_type = 2;
+  // Uses InstanceTypeReference (osac#85 typed reference with id, name, project, shared).
+  optional GovernedInstanceTypeReferenceField instance_type = 2;
+  // ssh_public_key inclusion is TBD (Bat-Zion: should not be governed; pending field selection meeting).
   optional GovernedStringField ssh_public_key = 3;
   optional GovernedDiskField boot_disk = 4;
   optional GovernedDiskListField additional_disks = 5;
   optional GovernedStringField run_strategy = 6;
   optional GovernedStringField user_data = 7;
+  // is_windows: subject to removal per OSAC-2540. If OSAC-2540 lands first, omit from this proto.
   optional GovernedBoolField is_windows = 8;
 }
 
@@ -545,6 +574,7 @@ message ClusterCatalogItemFields {
 // BareMetalInstanceCatalogItem - new fields message
 message BareMetalInstanceCatalogItemFields {
   // Mandatory, always locked. Server rejects if not set.
+  // BareMetalInstanceImage is an existing proto type with source_type and source_ref fields.
   BareMetalInstanceImage image = 1;
 
   optional GovernedStringField ssh_public_key = 2;
@@ -593,11 +623,17 @@ The UI resolves template parameter types by fetching the template (`GetComputeIn
 
 #### Image: Mandatory and Always Locked
 
-On ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, `image` is a required field that is implicitly locked. It is not wrapped in a governance `oneof` because there is no behavior choice - the admin always provides the image value, and the tenant always gets that value during provisioning.
+On ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, `image` is a required field. It uses a plain `ComputeInstanceImage`/`BareMetalInstanceImage` message (not wrapped in a governance `oneof`) because there is no governance behavior choice for the tenant - image is always locked.
 
-This design choice keeps the admin UX simple (no "locked/editable" toggle for a field that can only be locked) while preserving extensibility (if image ever becomes optionally editable, wrap it in a GovernedImageField).
+**Why image is locked:** The image defines the base operating system and software stack. Allowing tenants to choose arbitrary images would bypass the admin's curation intent - catalog items exist to offer pre-approved, tested configurations. Tenants who need different images can use direct provisioning (without a catalog item) or request a new catalog item. Note that tenants can still update software within the VM after provisioning (e.g., `dnf upgrade`); the image lock governs only the initial provisioning image.
 
-The admin can update the image on an existing catalog item via the Update API (e.g., to bump versions for CVE fixes). This does not affect already-provisioned resources - only new resources created from the catalog item get the updated image.
+**Two levels of mutability:**
+- **Catalog item level (admin):** The admin can update the image on an existing catalog item via the Update API (e.g., to bump to a patched image for CVE fixes). This is a catalog item management operation, not a governance change.
+- **Resource level (tenant):** The tenant cannot set or change the image during resource creation or update. The server applies the catalog item's image value and rejects any tenant-provided image value.
+
+Changes to the catalog item's image affect only new resources created from it. Already-provisioned resources retain the image they were created with.
+
+This design keeps the admin UX simple (no "locked/editable" toggle for a field that can only be locked) while preserving extensibility (if image ever becomes optionally editable, wrap it in a `GovernedImageField`).
 
 #### Catalog Item Update Governance Constraints
 
@@ -634,7 +670,7 @@ New database referential integrity triggers prevent deletion of resources refere
 
 **ComputeInstanceCatalogItem:**
 1. **Image references**: prevent deletion of images referenced by `fields.image` (always locked, mandatory).
-2. **InstanceType references**: prevent deletion of instance types referenced by `fields.instance_type.locked.value` (if the field is locked).
+2. **InstanceType references**: prevent deletion of instance types referenced by `fields.instance_type.locked.value` (an `InstanceTypeReference`, if the field is locked).
 
 **ClusterCatalogItem:**
 3. **No referential integrity in v1**: version field is excluded from governed fields (day-2 mutability requirement). Constraints feature (OSAC-3937) will add integrity for allowed_values when editable fields gain constraint support.
@@ -658,7 +694,7 @@ The current `applyFieldDefinitions` function (JSON-path-based, ~100 lines) is re
 **During Update:**
 1. Look up the resource's catalog item from the `catalog_item` field (immutable on the resource).
 2. For each governed field on the catalog item:
-   - If `locked`: reject the update if the tenant is changing this field's value (`InvalidArgument`: "field X is locked by catalog item").
+   - If `locked`: reject the update if the tenant's submitted value differs from the resource's current stored value (`InvalidArgument`: "field X is locked by catalog item"). The catalog item determines *whether* the field is locked, but the comparison is against the resource's stored value, not the catalog item's current locked value (which the admin may have updated since provisioning).
    - If `editable`: accept the new value. (Constraint validation will be added when OSAC-3937 introduces allowed_values/min/max.)
 3. For ungoverned fields: allow changes without governance checks.
 
@@ -829,7 +865,7 @@ Key decisions needed:
 ### Unit Tests
 
 - Governance application: locked field rejects tenant value, editable field applies default when tenant omits value, editable field accepts tenant value when provided.
-- Governance application for each primitive type: string, bool, int32, disk, disk list, network, run strategy enum.
+- Governance application for each primitive type: string, bool, int32, disk, disk list, network, run strategy enum, resource reference (InstanceTypeReference).
 - Template parameter governance: locked parameter applies value, editable parameter validates type against template definition, unknown parameter key rejected.
 - Image mandatory: ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem reject creation without image.
 - Overlay semantics: ungoverned fields pass through without modification.
@@ -854,7 +890,19 @@ Key decisions needed:
 
 ## Graduation Criteria
 
-Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview -> Tech Preview -> GA based on production deployment feedback.
+### Dev Preview
+
+- All three catalog item types (ComputeInstance, Cluster, BareMetalInstance) support CRUD with the new typed governance proto.
+- Governance enforcement validated: locked fields rejected on create and update, editable defaults applied, ungoverned fields pass through.
+- Referential integrity triggers prevent deletion of images and instance types referenced by catalog items.
+- Template parameter governance validates keys and types against template definitions.
+- Integration tests cover end-to-end provisioning from catalog items with governance enforcement.
+- No regressions in existing catalog item tests.
+- `osac describe catalog-item` displays governed and ungoverned required fields.
+
+### Tech Preview / GA
+
+Graduation criteria for Tech Preview and GA will be defined when targeting a release, based on Dev Preview deployment feedback.
 
 ## Upgrade / Downgrade Strategy
 
