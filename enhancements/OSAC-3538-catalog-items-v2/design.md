@@ -87,9 +87,9 @@ sequenceDiagram
     API-->>UI: Templates with parameter definitions and spec defaults
     Admin->>UI: Select template
     UI->>UI: Render governable fields with template context
-    Admin->>UI: Set governance per field (lock values, set editable defaults/constraints)
+    Admin->>UI: Set governance per field (lock values, set editable defaults)
     Admin->>UI: Set template parameter governance
-    Admin->>UI: Set title, description, tenant assignment, published
+    Admin->>UI: Set display name, description, tenant assignment, published
     UI->>API: CreateComputeInstanceCatalogItem
     API->>API: Validate governed field values (image exists, instance types exist)
     API->>API: Validate template parameter governance (keys match template, types match)
@@ -116,19 +116,19 @@ sequenceDiagram
     UI->>API: GetComputeInstanceTemplate (public API)
     API-->>UI: Template with parameter definitions + spec defaults
     UI->>UI: Merge governance + template context, render form
-    Note over UI: Locked fields: read-only display<br/>Editable fields: pre-filled with defaults, constrained<br/>Ungoverned fields: normal inputs<br/>Template params: locked read-only, editable with defaults
+    Note over UI: Locked fields: read-only display<br/>Editable fields: pre-filled with defaults<br/>Ungoverned fields: normal inputs<br/>Template params: locked read-only, editable with defaults
     Tenant->>UI: Fill in editable and ungoverned fields
     UI->>API: CreateComputeInstance (with catalog_item ref)
     API->>API: Look up catalog item, validate access
     API->>API: Copy template reference to spec
-    API->>API: Apply governance (lock values, validate editable constraints)
+    API->>API: Apply governance (lock values, apply editable defaults)
     API->>API: Fetch template, apply spec defaults
     API->>API: Validate instance type, network refs
     API->>DB: Store compute instance
     API-->>UI: Created compute instance (with governed values visible)
 ```
 
-The server enforces governance on both resource creation and update. During creation, locked values are applied and tenant-provided values for locked fields are rejected. During update, the server looks up the resource's catalog item and rejects changes to locked fields. Editable field constraints (allowed_values, min/max) are validated on both create and update.
+The server enforces governance on both resource creation and update. During creation, locked values are applied and tenant-provided values for locked fields are rejected. Editable fields accept tenant values or apply defaults. During update, the server looks up the resource's catalog item and rejects changes to locked fields.
 
 #### Example: ComputeInstance Provisioning Flow
 
@@ -137,7 +137,7 @@ The server enforces governance on both resource creation and update. During crea
 The admin creates a "RHEL 10 Small VM" catalog item with:
 - Template: "rhel-base-template"
 - Image: locked to `{source_type: "pvc", source_ref: "rhel-10-2026q3"}`
-- Instance type: editable, allowed values `["m1.small", "m1.medium"]`, default `"m1.small"`
+- Instance type: editable, default `"m1.small"`
 - SSH public key: editable, no default
 - Boot disk: locked to `{size_gib: 50}`
 - Run strategy: editable, default `"Always"`
@@ -146,16 +146,18 @@ The admin creates a "RHEL 10 Small VM" catalog item with:
 ```json
 {
   "object": {
-    "metadata": {"name": "rhel-10-small-vm"},
-    "title": "RHEL 10 Small VM",
-    "description": "Standard RHEL 10 VM with small instance types",
+    "metadata": {
+      "name": "rhel-10-small-vm",
+      "display_name": "RHEL 10 Small VM",
+      "description": "Standard RHEL 10 VM with small instance types"
+    },
     "template": "rhel-base-template",
     "published": true,
     "tenant": "tenant-acme",
     "fields": {
       "image": {"source_type": "pvc", "source_ref": "rhel-10-2026q3"},
       "instance_type": {
-        "editable": {"default": "m1.small", "allowed_values": ["m1.small", "m1.medium"]}
+        "editable": {"default": "m1.small"}
       },
       "ssh_public_key": {"editable": {}},
       "boot_disk": {"locked": {"value": {"size_gib": 50}}},
@@ -171,8 +173,7 @@ The admin creates a "RHEL 10 Small VM" catalog item with:
 
 **Server validation during catalog item creation:**
 1. `image.source_ref` "rhel-10-2026q3" references a valid, non-deleted image (referential integrity).
-2. `instance_type.editable.allowed_values` - each value references a valid InstanceType resource. If any is OBSOLETE, the request is rejected. If DEPRECATED, a warning is returned.
-3. `template_parameters` keys ("disk_format", "enable_monitoring") match parameters defined on "rhel-base-template". Value types match the template's parameter type definitions.
+2. `template_parameters` keys ("disk_format", "enable_monitoring") match parameters defined on "rhel-base-template". Value types match the template's parameter type definitions.
 
 **Step 2: Tenant provisions a VM.**
 
@@ -181,7 +182,7 @@ The tenant's UI fetches the catalog item and template, then renders:
 | Field | UI Rendering | Value |
 |-------|-------------|-------|
 | Image | Read-only | RHEL 10 2026-Q3 (source: rhel-10-2026q3) |
-| Instance type | Dropdown: m1.small, m1.medium | Pre-selected: m1.small |
+| Instance type | Text input (editable) | Pre-filled: m1.small |
 | SSH public key | Text input | (empty) |
 | Boot disk | Read-only | 50 GiB |
 | Run strategy | Text input | Pre-filled: Always |
@@ -211,7 +212,7 @@ The tenant selects `m1.medium`, enters an SSH key, and submits.
 2. Copy template reference "rhel-base-template" to `spec.template`.
 3. Apply governance:
    - `image`: set to `{source_type: "pvc", source_ref: "rhel-10-2026q3"}`. If the tenant included image in the request, reject with InvalidArgument.
-   - `instance_type`: tenant sent "m1.medium", which is in `allowed_values` - accepted.
+   - `instance_type`: editable, tenant sent "m1.medium" - accepted.
    - `ssh_public_key`: editable with no default, tenant provided a value - accepted.
    - `boot_disk`: set to `{size_gib: 50}`. If the tenant included boot_disk, reject.
    - `run_strategy`: editable with default "Always", tenant did not provide - apply default.
@@ -281,7 +282,6 @@ The tenant selects version, configures node sets, enters SSH key and pull secret
    - `network`: set to locked value. Reject if tenant tried to change.
    - `cluster_logging`: editable param with default `true`. Tenant can override.
    - `version`, `node_sets`, `ssh_public_key`, `pull_secret`: ungoverned, pass through tenant values.
-   - `pull_secret`: ungoverned, pass through.
 4. Apply template parameter governance.
 5. Fetch template, apply remaining defaults.
 6. Create the cluster.
@@ -294,14 +294,16 @@ The admin creates a "RHEL 10 Bare Metal" catalog item with:
 - Template: "bm-rhel-template"
 - Image: locked to `{source_type: "http", source_ref: "https://images.example.com/rhel-10.qcow2"}`
 - SSH public key: editable, no default
-- Run strategy: editable, allowed values `[ALWAYS, HALTED]`, default `ALWAYS`
+- Run strategy: editable, default `ALWAYS`
 - Auto external IP attachment: locked to `true`
 
 ```json
 {
   "object": {
-    "metadata": {"name": "rhel-10-bare-metal"},
-    "title": "RHEL 10 Bare Metal",
+    "metadata": {
+      "name": "rhel-10-bare-metal",
+      "display_name": "RHEL 10 Bare Metal"
+    },
     "template": "bm-rhel-template",
     "published": true,
     "fields": {
@@ -309,11 +311,7 @@ The admin creates a "RHEL 10 Bare Metal" catalog item with:
       "ssh_public_key": {"editable": {}},
       "run_strategy": {
         "editable": {
-          "default": "BARE_METAL_INSTANCE_RUN_STRATEGY_ALWAYS",
-          "allowed_values": [
-            "BARE_METAL_INSTANCE_RUN_STRATEGY_ALWAYS",
-            "BARE_METAL_INSTANCE_RUN_STRATEGY_HALTED"
-          ]
+          "default": "BARE_METAL_INSTANCE_RUN_STRATEGY_ALWAYS"
         }
       },
       "auto_external_ip_attachment": {"locked": {"value": true}}
@@ -368,8 +366,9 @@ The UI changes required:
 |---|---|---|
 | `field_definitions` | Removed | Replaced by typed `fields` message |
 | N/A | `fields.image` | New: always-locked image on VM/BM |
-| N/A | `fields.instance_type` | New: governed string with allowed_values |
+| N/A | `fields.instance_type` | New: governed string (locked or editable with default) |
 | N/A | `template_parameters` | New: map of governed template params |
+| `title` / `description` | `metadata.display_name` / `metadata.description` | OSAC-2921 metadata migration |
 
 ### Implementation Details/Notes/Constraints
 
@@ -490,7 +489,6 @@ message LockedBareMetalRunStrategyField {
 
 message EditableBareMetalRunStrategyField {
   optional BareMetalInstanceRunStrategy default = 1;
-  repeated BareMetalInstanceRunStrategy allowed_values = 2;
 }
 
 // Template parameters (generic, validated at runtime)
@@ -562,40 +560,24 @@ message BareMetalInstanceCatalogItemFields {
 // buf:lint:ignore OSAC_OBJECT_SHAPE
 message ComputeInstanceCatalogItem {
   string id = 1;
-  Metadata metadata = 2;
-  string title = 3;
-  string description = 4;
-  string template = 5;
-  bool published = 6;
-  string tenant = 7;                                              // private only
-  ComputeInstanceCatalogItemFields fields = 8;                    // replaces repeated FieldDefinition
-  map<string, GovernedTemplateParameter> template_parameters = 9; // new
+  Metadata metadata = 2;                                          // display_name, description via OSAC-2921
+  string template = 3;
+  bool published = 4;
+  string tenant = 5;                                              // private only
+  ComputeInstanceCatalogItemFields fields = 6;                    // replaces repeated FieldDefinition
+  map<string, GovernedTemplateParameter> template_parameters = 7; // new
 }
 ```
 
 The flat object shape (no spec/status) is retained. The API design guidelines explicitly permit this for objects representing static configuration or catalog data. [Codebase: docs/API.md]
 
-#### Node Set Governance
+#### Node Set Governance (TBD)
 
-Cluster node sets use per-property governance within each named node set. This maps directly to the current v1 dot-notation approach (`node_sets.workers.size`) but with compile-time type safety.
+Node set governance is TBD pending the field selection alignment meeting (Ygal, Avishay, Michael). The key design question is which node set properties, if any, should be governable.
 
-The `GovernedClusterNodeSet` message governs individual properties of a single node set entry. Each property is independently optional - if `host_type` is governed but `size` is not, the tenant can set `size` freely but not `host_type`.
+`node_sets.*.size` is excluded from governance because tenants must be able to scale node sets (day-2 mutability). `node_sets.*.host_type` is a candidate for governance (locking a host type is operationally safe - tenants don't need to change it after provisioning), but this is subject to the field selection decision.
 
-The catalog item's `node_sets` map defines which node sets exist and their governance. Node sets not present in the catalog item's map are ungoverned - the tenant can define them freely in the provisioning request. If a node set IS present in the catalog item, its governed properties are enforced and its ungoverned properties are free.
-
-**Example:**
-```json
-{
-  "node_sets": {
-    "workers": {
-      "host_type": {"locked": {"value": "m5.2xlarge"}},
-      "size": {"editable": {"default": 3, "min": 2, "max": 10}}
-    }
-  }
-}
-```
-
-This means: the "workers" node set has a locked host_type and editable size. The tenant can add other node sets (e.g., "gpu") freely, since they are not mentioned in the catalog item.
+If node set governance is included, the pattern would use per-property governance within each named node set via a `GovernedClusterNodeSet` message. Node sets not present in the catalog item's map would be ungoverned - the tenant defines them freely.
 
 #### Template Parameter Governance
 
@@ -669,7 +651,7 @@ The current `applyFieldDefinitions` function (JSON-path-based, ~100 lines) is re
 **During Create:**
 1. For each governed field on the catalog item:
    - If `locked`: set the locked value on the resource spec. If the tenant provided a value for this field, reject with `InvalidArgument` ("field X is locked by catalog item").
-   - If `editable`: if the tenant provided a value, validate it against constraints (e.g., check `allowed_values`). If the tenant did not provide a value and a `default` is set, apply the default. If no default and the field is not required on the resource, leave unset.
+   - If `editable`: if the tenant provided a value, accept it. If the tenant did not provide a value and a `default` is set, apply the default. If no default and the field is not required on the resource, leave unset.
 2. For ungoverned fields: pass through the tenant's value (or leave unset) without modification.
 3. For template parameters: same locked/editable logic, with type validation against the template's parameter definitions.
 
@@ -677,7 +659,7 @@ The current `applyFieldDefinitions` function (JSON-path-based, ~100 lines) is re
 1. Look up the resource's catalog item from the `catalog_item` field (immutable on the resource).
 2. For each governed field on the catalog item:
    - If `locked`: reject the update if the tenant is changing this field's value (`InvalidArgument`: "field X is locked by catalog item").
-   - If `editable`: validate the new value against constraints (allowed_values, min/max). If the tenant is not changing this field, no validation needed.
+   - If `editable`: accept the new value. (Constraint validation will be added when OSAC-3937 introduces allowed_values/min/max.)
 3. For ungoverned fields: allow changes without governance checks.
 
 The `catalogItem` interface changes from:
@@ -718,24 +700,17 @@ The `oneof` pattern for field behavior improves security over the current `bool 
 
 **Catalog item creation with invalid references:**
 - Image reference points to non-existent or deleted image: `InvalidArgument` with message identifying the image.
-- Instance type in `allowed_values` is OBSOLETE: `InvalidArgument`. If DEPRECATED: success with warning.
 - Template parameter key not defined on template: `InvalidArgument` with message identifying the unknown parameter.
 - Template parameter value type mismatch: `InvalidArgument` with expected vs. actual type.
-
-**Catalog item creation with non-lockable field:**
-- Admin locks a field that requires day-2 mutation (e.g., `release_image`, `node_sets.*.size`): `InvalidArgument` ("field X cannot be locked - use editable with allowed_values to constrain it").
 
 **Resource creation with catalog item governance:**
 - Catalog item not found or not published: `NotFound` or `PermissionDenied` (existing behavior, unchanged).
 - Tenant provides value for locked field: `InvalidArgument` ("field X is locked by catalog item Y").
-- Tenant provides value outside `allowed_values`: `InvalidArgument` ("field X value Z is not in allowed values [A, B, C]").
-- Tenant provides value outside `min`/`max` range: `InvalidArgument` ("field X value Z is outside range [min, max]").
 - Editable field with no default and no tenant value, but field is required on resource: `InvalidArgument` ("field X is required").
 - Referenced image deleted after catalog item creation (integrity trigger bypassed somehow): resource creation fails at template application or provisioning stage with a descriptive error.
 
 **Resource update with catalog item governance:**
 - Tenant changes a locked field: `InvalidArgument` ("field X is locked by catalog item Y").
-- Tenant changes an editable field to a value outside `allowed_values` or `min`/`max` range: `InvalidArgument` with constraint details.
 - Resource has no catalog item (created without one): no governance checks on update.
 
 **Recovery:**
@@ -761,7 +736,7 @@ No new observability changes. Existing monitoring mechanisms apply. The governan
 |------|--------|------------|
 | Message type proliferation: each primitive type needs Governed/Locked/Editable wrapper messages | Proto file complexity, maintenance burden | The wrapper pattern is mechanical and consistent. Code generation or shared test helpers reduce the per-type cost. The alternative (generic Value wrapper) loses compile-time type safety, which is the primary motivation. |
 | Node set governance complexity: per-property governance within a map field is a novel pattern in OSAC | Implementation complexity, edge cases around ungoverned node sets vs. governed node sets | The GovernedClusterNodeSet message is small (two fields). Testing covers: fully governed node set, partially governed, ungoverned node sets alongside governed ones. |
-| Admin accidentally locks a day-2 field | Cluster upgrades or scaling blocked for all resources provisioned from that catalog item | Server rejects locking fields that require day-2 mutation at catalog item creation time. Admin uses editable + allowed_values instead. |
+| Admin accidentally locks a day-2 field | Cluster upgrades or scaling blocked for all resources provisioned from that catalog item | Day-2 fields (version, node_set size) are excluded from the governed fields proto entirely - compile-time prevention makes it impossible to lock them. |
 
 ### Drawbacks
 
@@ -837,12 +812,17 @@ message FieldDefinition {
 
 ## Open Questions
 
-### 1. Should the catalog item define which node sets must exist, or only govern properties of node sets the tenant creates?
+### 1. Which fields should be included in each catalog item type's governed fields proto?
 
-The current design allows the catalog item to define node set entries (e.g., "workers", "infra") with per-property governance. An alternative is for the catalog item to only govern properties of node sets that the tenant or template defines, without dictating which node sets exist.
+The exact field list per catalog item type is TBD pending alignment meeting between Ygal, Avishay, and Michael (to be scheduled by Ygal). The principle is compile-time prevention: fields requiring day-2 mutability are excluded from the proto entirely, making it impossible to accidentally lock them.
 
-**Owner:** Product team
-**Impact:** Affects the semantics of the `node_sets` map on ClusterCatalogItemFields and the provisioning flow for clusters.
+Key decisions needed:
+- **ClusterCatalogItem**: Which fields beyond `network` should be governable? Should `ssh_public_key`, `pull_secret`, or `node_sets.*.host_type` be included? Bat-Zion's feedback: exclude `ssh_public_key` and `pull_secret`.
+- **ComputeInstanceCatalogItem / BareMetalInstanceCatalogItem**: Is the current field list correct, or should some fields be excluded?
+- **Node set governance**: If any node set properties are governable (e.g., `host_type`), should the catalog item define which node sets must exist, or only govern properties of node sets the tenant creates?
+
+**Owner:** Product team (Ygal, Avishay, Michael)
+**Impact:** Determines the final proto schema for all three catalog item types.
 
 ## Test Plan
 
@@ -870,7 +850,7 @@ The current design allows the catalog item to define node set entries (e.g., "wo
 
 - Full provisioning flow: admin creates catalog item, tenant provisions resource, verify governed values in the created resource.
 - Catalog item update: admin updates image on catalog item, new provisioning uses updated image, existing resources unchanged.
-- Curated options: tenant selects from allowed instance types, UI renders dropdown, invalid selection rejected.
+- Update-time governance: tenant attempts to modify locked field on existing resource, verify rejection.
 
 ## Graduation Criteria
 
