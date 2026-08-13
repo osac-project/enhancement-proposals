@@ -219,9 +219,9 @@ Field 5 is free in both public and private `BareMetalInstanceStatus`. Run `buf l
 
 ## UX Alignment
 
-The `@temp-api` file for `BareMetalInstance` in osac-ux (`libs/types/src/osac/public/v1/baremetal_instance_type_pb.ts`) is generated from the public proto and does not currently contain NIC fields. After this EP ships and `pnpm gen-types` is run, the generated types will include `hardware: { nics: { mac: string }[] }`. A separate osac-ux implementation task is required to display these fields in the BareMetalInstance detail view (surfacing the NIC table alongside existing instance metadata).
+The proto-generated TypeScript types for `BareMetalInstance` live in `osac-ui/libs/types/src/osac/public/v1/baremetal_instance_type_pb.ts`. This file is generated from the public proto and does not currently contain NIC fields. After this EP ships and types are regenerated, they will include `hardware: { nics: { mac: string }[] }`. A separate osac-ui implementation task is required to display these fields in the BareMetalInstance detail view (surfacing the NIC table alongside existing instance metadata).
 
-| UI field (`@temp-api` TypeScript) | Proto field (this EP) | Notes |
+| UI field (TypeScript) | Proto field (this EP) | Notes |
 |---|---|---|
 | `status.hardware.nics[].mac` | `status.hardware.nics[].mac` | Direct mapping |
 
