@@ -137,7 +137,7 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 
 ## UX Alignment
 
-`@temp-api` file exists at `osac-ux/libs/ui-components/src/api/v1/baremetal-instance.ts`. It defines `useCreateBareMetalInstance` with a hardcoded `spec` shape that does not yet include a `diskImage` field. Two updates are needed when this design lands:
+`@temp-api` file exists at `osac-ui/libs/ui-components/src/api/v1/baremetal-instance.ts`. It defines `useCreateBareMetalInstance` with a hardcoded `spec` shape that does not yet include a `diskImage` field. Two updates are needed when this design lands:
 
 1. **`@osac/types` (auto):** Running `pnpm gen-types` picks up the new proto `disk_image` field automatically — no manual edit required.
 2. **`useCreateBareMetalInstance` (manual):** The hardcoded `mutationFn` body type must be updated to add `diskImage?: string` to `spec`, so the creation form can pass the selected DiskImage ID.
