@@ -116,82 +116,29 @@ Network Interfaces:
 
 A `Running` instance provisioned by this EP's controller version has NICs populated. Pre-existing Running instances may have `hardware: null` until their next reconcile after upgrade. The `N/A` display applies to instances still in `Progressing` (NIC fetch pending) or not yet backfilled.
 
-### API Extensions
+### API Changes
 
-#### 1. Inventory client interface — new `GetHostNICs` method
+**Inventory client interface:** A new `GetHostNICs` method is added, returning a list of lowercased MAC addresses for an allocated host. Existing methods are unchanged.
 
-**Package:** `osac/bare-metal-fulfillment-operator/internal/inventory/client.go`
+**BareMetalInstance CRD status:** Two new types — `BareMetalNICStatus` (a MAC address) and `BareMetalHardware` (a list of NICs) — are added. `BareMetalHardware` is modeled after Metal3's hardware details structure to allow compatible future extensions (CPU, RAM, storage). The CRD status gains an optional `hardware` field, absent until the inventory backend provides data.
 
-A `GetHostNICs` method is added to the inventory `Client` interface. It takes a host identifier and returns a list of NIC MAC addresses (lowercased). An empty result means either a transient backend error or a host without completed hardware inspection. Existing interface methods are unchanged.
+**BareMetalInstance proto (public and private):** Both protos gain `BareMetalNICStatus`, `BareMetalHardware`, and an optional `hardware` field on `BareMetalInstanceStatus`. Field numbering differs between the protos due to the private proto having an additional existing field.
 
-#### 2. `BareMetalInstanceStatus` CRD type — new fields
+**CLI:** `osac describe baremetalinstance` gains a "Network Interfaces" section showing MAC addresses, or "N/A" when unavailable.
 
-**File:** `osac/bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_types.go`
-
-Two new types are added: `BareMetalNICStatus` (a validated MAC address) and `BareMetalHardware` (a list of `BareMetalNICStatus` entries), modeled after Metal3's `HardwareDetails` to allow compatible future extensions (CPU, RAM, storage). `BareMetalInstanceStatus` gains an optional `hardware` field that is absent until the inventory backend provides data. Run `make manifests generate && make helm-crds` after changes.
-
-#### 3. `BareMetalInstanceStatus` proto — new message and fields
-
-**Files:** `osac/fulfillment-service/proto/public/osac/public/v1/baremetal_instance_type.proto` and `osac/fulfillment-service/proto/private/osac/private/v1/baremetal_instance_type.proto`
-
-Both protos gain the same two new message types (`BareMetalNICStatus` and `BareMetalHardware`) and an optional `hardware` field on `BareMetalInstanceStatus`. Note that existing fields differ between the two protos (the private proto has an additional `hub` field), so the next free field number is 5 in the public proto and 6 in the private proto. Run `buf lint && buf generate` after changes.
-
-#### 4. Operational impact
-
-- If the operator is restarted mid-reconciliation before NIC fetch completes, the controller retries on the next reconcile — idempotent because the hardware field is still absent.
-- If the fulfillment-service controller is down when the CRD status is updated, NIC fields are propagated on the next reconcile cycle when the controller resumes.
+**Operational:** All changes are additive and optional; no schema migration is required. NIC fetch is idempotent — if the operator restarts before it completes, the next reconcile retries it.
 
 ## UX Alignment
 
-The proto-generated TypeScript types for `BareMetalInstance` live in `osac-ui/libs/types/src/osac/public/v1/baremetal_instance_type_pb.ts`. This file is generated from the public proto and does not currently contain NIC fields. After this EP ships and types are regenerated, they will include `hardware: { nics: { mac: string }[] }`. A separate osac-ui implementation task is required to display these fields in the BareMetalInstance detail view (surfacing the NIC table alongside existing instance metadata).
+The osac-ui TypeScript types are generated from the public proto. After this EP ships and types are regenerated, `status.hardware.nics` will be available to the UI. A separate osac-ui implementation task is required to display NICs in the BareMetalInstance detail view; that task depends on this EP's API changes landing first.
 
-| UI field (TypeScript) | Proto field (this EP) | Notes |
-|---|---|---|
-| `status.hardware.nics[].mac` | `status.hardware.nics[].mac` | Direct mapping |
+### Backend Constraints
 
-No deviations from known anti-patterns. The UI implementation task depends on this EP's API changes landing first.
+**Metal3:** `FindFreeHost` requires no change — Metal3 only marks a host `Available` after hardware inspection succeeds, so NIC data is implicitly guaranteed. The `baremetal.metal3.io/inspection-disabled: true` annotation bypasses this guarantee: hosts with inspection disabled can reach `Available` without NIC data and will stay in `Progressing` with `NICMetadataUnavailable` until inspection is re-enabled and completed. Operators must ensure inspection is enabled for all hosts in the inventory pool.
 
-### Implementation Notes
+**OpenStack/Ironic:** No equivalent inspection gate exists, so host selection is extended to skip nodes with no registered ports. This adds one Ironic API call per candidate evaluated, incurred once per instance lifecycle.
 
-#### Metal3 backend
-
-**File:** `osac/bare-metal-fulfillment-operator/internal/inventory/metal3.go`
-
-Metal3 requires no change to `FindFreeHost` — it already only returns hosts in `Available` state, which Metal3 gates behind successful hardware inspection. NIC data is therefore guaranteed to exist for any host `FindFreeHost` returns.
-
-`GetHostNICs` reads the `BareMetalHost` resource from the Kubernetes API and extracts MAC addresses from the hardware inspection results. If inspection data is absent, an empty result is returned and the controller sets the `NICMetadataUnavailable` condition.
-
-**Inspection constraint:** The `baremetal.metal3.io/inspection-disabled: true` annotation allows a host to reach `Available` without inspection data. Operators must ensure inspection is enabled for all hosts in the inventory pool. Hosts with inspection disabled will stay in `Progressing` with `NICMetadataUnavailable` until inspection completes.
-
-#### OpenStack/Ironic backend
-
-**File:** `osac/bare-metal-fulfillment-operator/internal/inventory/openstack.go`
-
-OpenStack has no hardware-inspection state gate equivalent to Metal3, so `FindFreeHost` is extended with an explicit ports check: nodes with no registered ports are skipped (logged separately from nodes that fail the ports API call). One lightweight Ironic API call is made per candidate, bounded by how many candidates are evaluated before a suitable host is found, and incurred only once per instance lifecycle.
-
-`GetHostNICs` retrieves port records for the node from the Ironic API and collects their MAC addresses. The existing auth-retry pattern (reconnect and retry on authentication errors) applies.
-
-#### Bare-metal-fulfillment-operator controller
-
-**File:** `osac/bare-metal-fulfillment-operator/internal/controller/baremetalinstance_controller.go`
-
-NIC fetch is inserted as a required step before the instance can transition to `Ready`, guarded so it runs only once per instance. On a backend error, the controller sets `Ready=False, Reason=NICMetadataUnavailable` and requeues. On an empty result, the same condition is set with a message indicating missing inspection data. On success, the NIC data is written to the CRD status and the transition to `Ready` proceeds.
-
-#### fulfillment-service status propagation
-
-**File:** `osac/fulfillment-service/internal/controllers/baremetalinstance/baremetalinstance_reconciler_function.go`
-
-`BareMetalInstance` status is stored as a serialized proto blob in PostgreSQL. Adding optional proto fields is backward-compatible; no schema migration is required. The status reconciler propagates the `hardware` field from CRD status to the fulfillment-service record, and explicitly clears it when the CRD field is absent.
-
-#### CLI — describe command
-
-**File:** `osac/fulfillment-service/internal/cmd/cli/describe/baremetalinstance/describe_baremetalinstance_cmd.go`
-
-The describe command is extended with a "Network Interfaces" section listing MAC addresses, or "N/A" when no data is available.
-
-#### Documentation and mock update
-
-API documentation is auto-generated from the proto — no manual docs changes needed. The inventory client mock must be regenerated after the interface change; all tests using the mock must be updated in the same PR.
+**Mock update:** The inventory client mock must be regenerated after the interface change; all tests using the mock must be updated in the same PR.
 
 ### Security Considerations
 
@@ -350,4 +297,4 @@ Final: revise @ design 0.8.0 - 7efcedb, workspace main @ 4120194
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
