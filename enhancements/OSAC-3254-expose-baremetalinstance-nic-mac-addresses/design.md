@@ -134,7 +134,7 @@ The osac-ui TypeScript types are generated from the public proto. After this EP 
 
 ### Backend Constraints
 
-**Metal3:** `FindFreeHost` requires no change — Metal3 only marks a host `Available` after hardware inspection succeeds, so NIC data is implicitly guaranteed. The `inspect.metal3.io: disabled` annotation bypasses this guarantee: hosts with inspection disabled can reach `Available` without NIC data and will stay in `Progressing` with `NICMetadataUnavailable` until inspection is re-enabled and completed. Operators must ensure inspection is enabled for all hosts in the inventory pool.
+**Metal3:** `FindFreeHost` requires no change — Metal3 only marks a host `Available` after hardware inspection succeeds, so NIC data is implicitly guaranteed for inspected hosts. Whether the `inspect.metal3.io: disabled` annotation also suppresses MAC address population is an open question (see Open Questions).
 
 **OpenStack/Ironic:** No equivalent inspection gate exists, so host selection is extended to skip nodes with no registered ports. This adds one Ironic API call per candidate evaluated, incurred once per instance lifecycle.
 
@@ -276,13 +276,17 @@ The operator and fulfillment-service are upgraded independently. An updated oper
 
 ## Support Procedures
 
-**Instance stuck in Progressing:** If a `BareMetalInstance` stays in `Progressing` after allocation, check the `Ready` condition on the object in the hub cluster (`kubectl describe baremetalinstance <name> -n <namespace>`). A `Ready=False, Reason=NICMetadataUnavailable` condition indicates either a transient inventory backend error or missing hardware inspection data. Check the condition message, operator logs, and inventory connectivity. If using Metal3, verify that hardware inspection is enabled for the host (no `inspect.metal3.io: disabled` annotation).
+**Instance stuck in Progressing:** If a `BareMetalInstance` stays in `Progressing` after allocation, check the `Ready` condition on the object in the hub cluster (`kubectl describe baremetalinstance <name> -n <namespace>`). A `Ready=False, Reason=NICMetadataUnavailable` condition indicates either a transient inventory backend error or missing hardware inspection data. Check the condition message, operator logs, and inventory connectivity. If using Metal3, check operator logs and inventory connectivity.
 
 **OpenStack node never allocated:** If an OpenStack node is never selected by `FindFreeHost`, verify it has ports registered: `openstack baremetal port list --node <uuid>`. Nodes without ports are excluded from allocation.
 
-**Auditing inspection-disabled Metal3 hosts:** To identify hosts in the inventory pool with inspection disabled before they cause a `NICMetadataUnavailable` condition, run: `kubectl get baremetalhosts -A -o json | jq '.items[] | select(.metadata.annotations["inspect.metal3.io"] == "disabled") | .metadata.name'`. Any results should have the annotation removed and inspection triggered before those hosts are eligible for allocation.
-
 **Disabling NIC fetch:** NIC fetch is a required gate for the `Ready` phase. There is no supported mechanism to disable it without also preventing instances from reaching `Ready`.
+
+## Open Questions
+
+**Q1 — Metal3 inspection-disabled and MAC availability:** The `inspect.metal3.io: disabled` annotation skips hardware inspection on a `BareMetalHost`. It is unclear whether MAC addresses are still populated via another path (e.g., pre-provisioned hardware details) or whether they are absent entirely. If absent, hosts with this annotation would stay in `Progressing` with `NICMetadataUnavailable`. If present, no special handling is needed. This must be verified before implementation.
+
+**Impact:** Determines whether the design needs an explicit gate in `FindFreeHost` to exclude inspection-disabled hosts, or whether the existing empty-result handling is sufficient.
 
 ## Infrastructure Needed
 
@@ -297,4 +301,4 @@ Final: revise @ design 0.8.0 - 7efcedb, workspace main @ 4120194
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
