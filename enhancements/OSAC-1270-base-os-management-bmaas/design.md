@@ -115,17 +115,17 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 **Modified gRPC messages:**
 
 `BareMetalInstanceSpec` (public and private):
-- Field 7 (`image`, type `BareMetalInstanceImage`) — removed, field number reserved.
-- Field 10 (`disk_image`, type `string`, `IMMUTABLE`) — added. References a DiskImage by ID.
+- `image` (`BareMetalInstanceImage`) — removed, field name reserved.
+- `disk_image` (`string`, `IMMUTABLE`) — added. References a DiskImage by ID.
 
 `BareMetalInstanceTemplateSpecDefaults` (public and private):
-- Field 1 (`image`, type `BareMetalInstanceImage`) — removed, field number reserved. No replacement: DiskImage defaults are carried on `BareMetalInstanceCatalogItem.field_definitions`.
+- `image` (`BareMetalInstanceImage`) — removed, field name reserved. No replacement: DiskImage defaults are carried on `BareMetalInstanceCatalogItem.field_definitions`.
 
 `BareMetalInstancesCreateResponse` (public and private):
-- Field 2 (`warnings`, type `repeated string`) — added. Carries non-fatal notices, matching the `ComputeInstancesCreateResponse` pattern. `PrivateBareMetalInstancesServer.Create()` populates warnings on the private response; the public server propagates them to the public response.
+- `warnings` (`repeated string`) — added. Carries non-fatal notices, matching the `ComputeInstancesCreateResponse` pattern.
 
 `BareMetalInstanceCatalogItemsCreateResponse` and `BareMetalInstanceCatalogItemsUpdateResponse` (public and private):
-- Field `warnings` (`repeated string`) — added. Carries non-fatal notices when `field_definitions` reference a DEPRECATED DiskImage. Populated by `validateFieldDefinitionsDiskImage()` and propagated from private to public server in the same pattern.
+- `warnings` (`repeated string`) — added. Carries non-fatal notices when `field_definitions` reference a DEPRECATED DiskImage.
 
 `BareMetalInstanceImage` message — removed from both public and private type protos.
 
@@ -170,39 +170,33 @@ Deferred to GA per [Graduation Criteria](#graduation-criteria): full user-facing
 // baremetal_instance_type.proto — modified fields only
 
 message BareMetalInstanceSpec {
-  // ... fields 1-6 unchanged ...
+  // existing fields unchanged ...
 
-  // Field 7 (image) removed.
-  reserved 7;
-  reserved "image";
-
-  // ... fields 8-9 unchanged (network_attachments, auto_external_ip_attachment) ...
+  reserved "image";  // image field removed
 
   // Reference to a DiskImage. Required for provisioning.
-  // The reconciler resolves source_ref at reconciliation time and injects it
-  // as imageURL in the template parameters.
-  optional string disk_image = 10 [(google.api.field_behavior) = IMMUTABLE];
+  optional string disk_image [(google.api.field_behavior) = IMMUTABLE];
 }
 
 // BareMetalInstanceImage message removed entirely.
 
 // public and private:
 message BareMetalInstancesCreateResponse {
-  BareMetalInstance object = 1;
+  BareMetalInstance object;
 
   // Non-fatal notices, e.g. when disk_image is DEPRECATED.
-  repeated string warnings = 2;
+  repeated string warnings;
 }
 
 // public and private catalog-item responses:
 message BareMetalInstanceCatalogItemsCreateResponse {
-  BareMetalInstanceCatalogItem object = 1;
-  repeated string warnings = 2;  // non-fatal notices when disk_image in field_definitions is DEPRECATED
+  BareMetalInstanceCatalogItem object;
+  repeated string warnings;  // non-fatal notices when disk_image in field_definitions is DEPRECATED
 }
 
 message BareMetalInstanceCatalogItemsUpdateResponse {
-  BareMetalInstanceCatalogItem object = 1;
-  repeated string warnings = 2;  // non-fatal notices when disk_image in field_definitions is DEPRECATED
+  BareMetalInstanceCatalogItem object;
+  repeated string warnings;  // non-fatal notices when disk_image in field_definitions is DEPRECATED
 }
 ```
 
@@ -210,188 +204,11 @@ message BareMetalInstanceCatalogItemsUpdateResponse {
 // baremetal_instance_template_type.proto — modified fields only
 
 message BareMetalInstanceTemplateSpecDefaults {
-  // Field 1 (image) removed. No DiskImage field on templates.
-  reserved 1;
-  reserved "image";
+  reserved "image";  // image field removed, no DiskImage field on templates
 }
 ```
 
 Both changes must be duplicated for the public (`proto/public/osac/public/v1/`) and private (`proto/private/osac/private/v1/`) APIs, following the OSAC convention.
-
-#### Server: BareMetalInstance Create Handler
-
-`PrivateBareMetalInstancesServer.Create()` gains a DiskImage validation step between `validateAndApplyCatalogItem()` and `validateSpec()`:
-
-1. If `spec.disk_image` is empty after `applyFieldDefinitions()`, return `InvalidArgument`: `"spec.disk_image is required"`.
-2. Fetch the DiskImage via `diskImagesDao.Get()`. On `ErrNotFound`, return `NotFound`.
-3. Validate tenant visibility: the DiskImage must have an empty `metadata.tenant` (global) or match the caller's tenant. Return `PermissionDenied` on violation.
-4. Validate `spec.lifecycle != DISK_IMAGE_LIFECYCLE_OBSOLETE`. Return `FailedPrecondition` on violation.
-5. If `spec.lifecycle == DISK_IMAGE_LIFECYCLE_DEPRECATED`, append `"disk image '<id>' is deprecated"` to `response.warnings`.
-
-`PrivateBareMetalInstancesServer` gains a `diskImagesDao *dao.GenericDAO[*privatev1.DiskImage]` field, initialized in `Build()` following the same pattern as `catalogItemsDao`.
-
-`validateBareMetalInstanceImage()` and its call in `validateSpec()` are removed. `applyBareMetalInstanceSpecDefaults()` is simplified by removing image merging — the function body becomes a no-op (or is removed entirely if no other defaults remain). `validateImmutability()` drops the `spec.image` check and adds `spec.disk_image` as an immutable field.
-
-#### Server: BareMetalInstanceCatalogItem Validation
-
-`PrivateBareMetalInstanceCatalogItemsServer.Create()` and `Update()` gain a `validateFieldDefinitionsDiskImage()` call, following the pattern from `PrivateComputeInstanceCatalogItemsServer`. The function scans `field_definitions` for entries targeting `spec.disk_image`, extracts the default value, and validates:
-
-1. The referenced DiskImage exists — fetched with `FOR SHARE` within the same transaction as the catalog-item insert/update, holding the lock until commit. This prevents a concurrent DiskImage deletion from succeeding between the existence check and the catalog-item commit (TOCTOU protection).
-2. The DiskImage is visible to the CatalogItem's tenant (global or same tenant).
-3. The DiskImage lifecycle is not `DISK_IMAGE_LIFECYCLE_OBSOLETE`.
-4. If `DISK_IMAGE_LIFECYCLE_DEPRECATED`, the validation appends a warning. Warnings are returned in `BareMetalInstanceCatalogItemsCreateResponse.warnings` / `BareMetalInstanceCatalogItemsUpdateResponse.warnings`.
-
-A database trigger for catalog-item write protection is impractical: `field_definitions` stores values as opaque `google.protobuf.Value` JSONB, and DiskImage IDs cannot be reliably extracted without knowing the serialization format. The application-level `FOR SHARE` approach provides equivalent TOCTOU protection within the transaction.
-
-[Codebase: `osac/fulfillment-service/internal/servers/private_baremetal_instance_catalog_items_server.go`]
-
-#### Reconciler: DiskImage Resolution
-
-`mutateBMI()` in `baremetalinstance_reconciler_function.go` replaces the current image injection block:
-
-**Current:**
-```go
-if t.bareMetalInstance.GetSpec().HasImage() {
-    params["imageURL"] = t.bareMetalInstance.GetSpec().GetImage().GetSourceRef()
-}
-```
-
-**New:**
-```go
-if diskImageID := t.bareMetalInstance.GetSpec().GetDiskImage(); diskImageID != "" {
-    resp, err := t.r.diskImagesClient.Get(ctx,
-        privatev1.DiskImagesGetRequest_builder{Id: diskImageID}.Build())
-    if err != nil {
-        return fmt.Errorf("failed to fetch disk image %q: %w", diskImageID, err)
-    }
-    params["imageURL"] = resp.GetObject().GetSpec().GetSourceRef()
-}
-```
-
-The `function` struct gains a `diskImagesClient privatev1.DiskImagesClient` field, initialized via `privatev1.NewDiskImagesClient(b.connection)` in `FunctionBuilder.Build()`.
-
-`guest_os_family` is not extracted or passed — the AAP provisioning roles do not use it for bare-metal provisioning. [Codebase: `osac/osac-aap/collections/ansible_collections/osac/templates/roles/bm_host_provisioning/tasks/build_bmh_patch.yaml`]
-
-#### CLI: Flag Replacement
-
-`osac create baremetalinstance` currently accepts `--image` and `--image-source-type` flags that map to the removed `BareMetalInstanceSpec.image` fields. These are replaced by a single `--disk-image <id>` flag following the existing kubectl-style pattern used by other resource commands. [Codebase: `osac/fulfillment-service/internal/cmd/cli/`]
-
-The implementation follows the same pattern as `osac create computeinstance --disk-image` added by OSAC-2540:
-- Remove the `--image` and `--image-source-type` flags from the `create baremetalinstance` command builder.
-- Add `--disk-image` (type `string`, required) that sets `spec.disk_image` on the request.
-- Update `osac edit baremetalinstance` to omit the `image` field (immutability is enforced server-side; the CLI should not expose it as editable).
-- Update command help text and `--help` output.
-
-#### Database Migration
-
-A new migration extends DiskImage deletion protection to bare-metal resources. This migration must run after OSAC-2540's DiskImage table migration.
-
-**Index on `bare_metal_instances`:**
-
-```sql
-CREATE INDEX bare_metal_instances_disk_image ON bare_metal_instances ((data->'spec'->>'disk_image'))
-  WHERE data->'spec'->>'disk_image' IS NOT NULL;
-```
-
-**Extended `check_disk_image_not_in_use` trigger:**
-
-The existing trigger function (from OSAC-2540) is replaced with an extended version that also queries `bare_metal_instances` and `bare_metal_instance_catalog_items`:
-
-```sql
-DROP TRIGGER check_disk_image_not_in_use ON disk_images;
-DROP FUNCTION check_disk_image_not_in_use;
-
-CREATE FUNCTION check_disk_image_not_in_use() RETURNS trigger AS $$
-DECLARE
-  ref_id text;
-BEGIN
-  -- Check compute_instances
-  SELECT id INTO ref_id FROM compute_instances
-    WHERE deletion_timestamp = 'epoch' AND data->'spec'->>'disk_image' = OLD.id LIMIT 1;
-  IF ref_id IS NOT NULL THEN
-    RAISE EXCEPTION USING errcode = 'Z0003',
-      message = format('cannot delete disk image ''%s'': in use by compute instance ''%s''', OLD.id, ref_id);
-  END IF;
-
-  -- Check compute_instance_templates
-  SELECT id INTO ref_id FROM compute_instance_templates
-    WHERE deletion_timestamp = 'epoch' AND data->'spec_defaults'->>'disk_image' = OLD.id LIMIT 1;
-  IF ref_id IS NOT NULL THEN
-    RAISE EXCEPTION USING errcode = 'Z0003',
-      message = format('cannot delete disk image ''%s'': in use by compute instance template ''%s''', OLD.id, ref_id);
-  END IF;
-
-  -- Check compute_instance_catalog_items (text search — opaque field_definitions)
-  SELECT id INTO ref_id FROM compute_instance_catalog_items
-    WHERE deletion_timestamp = 'epoch' AND data::text LIKE '%' || OLD.id || '%' LIMIT 1;
-  IF ref_id IS NOT NULL THEN
-    RAISE EXCEPTION USING errcode = 'Z0003',
-      message = format('cannot delete disk image ''%s'': in use by compute instance catalog item ''%s''', OLD.id, ref_id);
-  END IF;
-
-  -- Check bare_metal_instances
-  SELECT id INTO ref_id FROM bare_metal_instances
-    WHERE deletion_timestamp = 'epoch' AND data->'spec'->>'disk_image' = OLD.id LIMIT 1;
-  IF ref_id IS NOT NULL THEN
-    RAISE EXCEPTION USING errcode = 'Z0003',
-      message = format('cannot delete disk image ''%s'': in use by bare metal instance ''%s''', OLD.id, ref_id);
-  END IF;
-
-  -- Check bare_metal_instance_catalog_items (text search — opaque field_definitions)
-  SELECT id INTO ref_id FROM bare_metal_instance_catalog_items
-    WHERE deletion_timestamp = 'epoch' AND data::text LIKE '%' || OLD.id || '%' LIMIT 1;
-  IF ref_id IS NOT NULL THEN
-    RAISE EXCEPTION USING errcode = 'Z0003',
-      message = format('cannot delete disk image ''%s'': in use by bare metal instance catalog item ''%s''', OLD.id, ref_id);
-  END IF;
-
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER check_disk_image_not_in_use
-  BEFORE UPDATE ON disk_images
-  FOR EACH ROW
-  WHEN (OLD.deletion_timestamp = 'epoch' AND NEW.deletion_timestamp != 'epoch')
-  EXECUTE FUNCTION check_disk_image_not_in_use();
-```
-
-**BEFORE INSERT OR UPDATE trigger on `bare_metal_instances`:**
-
-```sql
-CREATE FUNCTION check_bare_metal_instance_disk_image_ref() RETURNS trigger AS $$
-DECLARE
-  di_id text;
-  found_id text;
-BEGIN
-  di_id := NEW.data->'spec'->>'disk_image';
-  IF coalesce(di_id, '') = '' THEN
-    RETURN NEW;
-  END IF;
-
-  SELECT id INTO found_id FROM disk_images
-    WHERE id = di_id AND deletion_timestamp = 'epoch'
-    FOR SHARE;
-
-  IF found_id IS NULL THEN
-    RAISE EXCEPTION USING errcode = 'Z0002',
-      message = format('disk image ''%s'' does not exist or has been deleted', di_id);
-  END IF;
-
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER check_bare_metal_instance_disk_image_ref
-  BEFORE INSERT OR UPDATE ON bare_metal_instances
-  FOR EACH ROW
-  WHEN (NEW.deletion_timestamp = 'epoch')
-  EXECUTE FUNCTION check_bare_metal_instance_disk_image_ref();
-```
-
-The `FOR SHARE` lock on `disk_images` prevents a concurrent soft-delete from succeeding between the trigger's existence check and the BareMetalInstance row commit — matching the bidirectional locking pattern from OSAC-2540. [Codebase: `osac/fulfillment-service/internal/database/migrations/56_add_instance_type_ref_triggers.up.sql`]
-
-JSONB key casing: the DAO uses `protojson.MarshalOptions{UseProtoNames: true}` (`internal/database/dao/generic_dao.go`), which serializes all proto fields using their proto names (snake_case). All resources therefore use snake_case keys: `data->'spec'->>'disk_image'` for `compute_instances` and `bare_metal_instances`; `data->'spec_defaults'->>'disk_image'` for `compute_instance_templates`. Note: OSAC-2540's design document shows camelCase (`diskImage`, `specDefaults`) in its trigger SQL — those paths are incorrect and must be fixed in the OSAC-2540 implementation. [Codebase: `osac/fulfillment-service/internal/database/migrations/56_add_instance_type_ref_triggers.up.sql`]
 
 ### Security Considerations
 
