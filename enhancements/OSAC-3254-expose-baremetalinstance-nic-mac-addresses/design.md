@@ -116,29 +116,44 @@ Network Interfaces:
 
 A `Running` instance provisioned by this EP's controller version has NICs populated. Pre-existing Running instances may have `hardware: null` until their next reconcile after upgrade. The `N/A` display applies to instances still in `Progressing` (NIC fetch pending) or not yet backfilled.
 
-### API Changes
+### API Extensions
 
 **Inventory client interface:** A new `GetHostNICs` method is added, returning a list of lowercased MAC addresses for an allocated host. Existing methods are unchanged.
 
 **BareMetalInstance CRD status:** Two new types — `BareMetalNICStatus` (a MAC address) and `BareMetalHardware` (a list of NICs) — are added. `BareMetalHardware` is modeled after Metal3's hardware details structure to allow compatible future extensions (CPU, RAM, storage). The CRD status gains an optional `hardware` field, absent until the inventory backend provides data.
 
-**BareMetalInstance proto (public and private):** Both protos gain `BareMetalNICStatus`, `BareMetalHardware`, and an optional `hardware` field on `BareMetalInstanceStatus`. Field numbering differs between the protos due to the private proto having an additional existing field.
+**BareMetalInstance proto (public and private):** Both protos gain `BareMetalNICStatus`, `BareMetalHardware`, and an optional `hardware` field on `BareMetalInstanceStatus`. Field numbers must be assigned at implementation time based on the current proto state (the private proto has one additional existing field relative to the public proto, so the next available number differs). The schema is identical in both:
+
+```protobuf
+message BareMetalNICStatus {
+  // Hardware MAC address, lowercased (e.g. "aa:bb:cc:dd:ee:ff").
+  string mac = N;
+}
+
+message BareMetalHardware {
+  // Physical network interfaces reported by the inventory backend.
+  repeated BareMetalNICStatus nics = N;
+}
+
+// Added to BareMetalInstanceStatus in both public and private protos:
+optional BareMetalHardware hardware = N;
+```
 
 **CLI:** `osac describe baremetalinstance` gains a "Network Interfaces" section showing MAC addresses, or "N/A" when unavailable.
 
 **Operational:** All changes are additive and optional; no schema migration is required. NIC fetch is idempotent — if the operator restarts before it completes, the next reconcile retries it.
 
-## UX Alignment
-
-The osac-ui TypeScript types are generated from the public proto. After this EP ships and types are regenerated, `status.hardware.nics` will be available to the UI. A separate osac-ui implementation task is required to display NICs in the BareMetalInstance detail view; that task depends on this EP's API changes landing first.
-
-### Backend Constraints
+### Implementation Details/Notes/Constraints
 
 **Metal3:** `FindFreeHost` requires no change — Metal3 only marks a host `Available` after hardware inspection succeeds, so NIC data is implicitly guaranteed for inspected hosts. Whether the `inspect.metal3.io: disabled` annotation also suppresses MAC address population is an open question (see Open Questions).
 
 **OpenStack/Ironic:** No equivalent inspection gate exists, so host selection is extended to skip nodes with no registered ports. This adds one Ironic API call per candidate evaluated, incurred once per instance lifecycle.
 
 **Mock update:** The inventory client mock must be regenerated after the interface change; all tests using the mock must be updated in the same PR.
+
+## UX Alignment
+
+The osac-ui TypeScript types are generated from the public proto. After this EP ships and types are regenerated, `status.hardware.nics` will be available to the UI. A separate osac-ui implementation task is required to display NICs in the BareMetalInstance detail view; that task depends on this EP's API changes landing first.
 
 ### Security Considerations
 
@@ -301,4 +316,4 @@ Final: revise @ design 0.8.0 - 7efcedb, workspace main @ 4120194
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
