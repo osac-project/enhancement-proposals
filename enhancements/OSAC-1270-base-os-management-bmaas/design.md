@@ -49,7 +49,7 @@ The integration point is narrow: the bare-metal provisioning stack already accep
 
 ## Proposal
 
-`BareMetalInstanceSpec.disk_image` replaces the inline `image` field as a reference to a DiskImage by ID. At creation time, the server resolves the DiskImage reference (from the user or from the CatalogItem's `field_definitions`), validates it against the DiskImage lifecycle and visibility rules, and persists the BareMetalInstance. The reconciler then fetches the DiskImage's `source_ref` and injects it as `params["imageURL"]` — the same JSON template parameter the AAP provisioning roles already consume. This keeps the operator CRD and all downstream provisioning code unchanged.
+`BareMetalInstanceSpec.disk_image` replaces the inline `image` field as a reference to a DiskImage by ID. At creation time, the server resolves the DiskImage reference (from the user or from the CatalogItem's `field_definitions`), validates it against the DiskImage lifecycle and visibility rules, and persists the BareMetalInstance. The reconciler then fetches the DiskImage's `source_ref` and injects it as `params["imageURL"]` — the same JSON template parameter the AAP provisioning roles already consume. `imageSourceType`, previously injected alongside `imageURL` from the inline `spec.image.source_type`, is dropped: DiskImage abstracts the source type, and AAP provisioning templates do not consume `imageSourceType` for bare-metal provisioning. This keeps the operator CRD and all downstream provisioning code unchanged.
 
 Deletion protection is extended by updating the `check_disk_image_not_in_use` database trigger (introduced by OSAC-2540) to also query `bare_metal_instances` and `bare_metal_instance_catalog_items`. A complementary BEFORE INSERT OR UPDATE trigger on `bare_metal_instances` validates inbound `disk_image` references with `FOR SHARE` locking, matching the TOCTOU protection pattern from OSAC-2540.
 
@@ -100,7 +100,7 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 6. Server validates lifecycle is not `DISK_IMAGE_LIFECYCLE_OBSOLETE`. Returns `FailedPrecondition` with message: `"cannot create bare metal instance: disk image is obsolete"`.
 7. If lifecycle is `DISK_IMAGE_LIFECYCLE_DEPRECATED`, a warning is appended to `BareMetalInstancesCreateResponse.warnings`: `"disk image '<id>' is deprecated"`.
 8. Server persists the BareMetalInstance with the `disk_image` reference.
-9. The reconciler fetches the DiskImage's `spec.source_ref` and injects it as `params["imageURL"]` in the JSON template parameters written to `BareMetalInstanceSpec.templateParameters` on the CRD.
+9. The reconciler fetches the DiskImage's `spec.source_ref` and injects it as `params["imageURL"]` in the JSON template parameters written to `BareMetalInstanceSpec.templateParameters` on the CRD. `imageSourceType` is not injected — it is removed from the template parameters entirely.
 10. The operator passes `templateParameters` to the AAP provisioning role, which reads `template_params.imageURL` to set the boot image.
 
 #### Deleting a DiskImage referenced by a BareMetalInstance
