@@ -22,16 +22,22 @@ superseded-by:
 
 ## Summary
 
-This design extends CaaS to provision OpenShift clusters with KubeVirt VM-based worker nodes. A new `ocp_kubevirt` AAP template delegates to the existing `ocp_small` base template and uses the hook mechanism (`hosted_cluster_modify_definition_hook`, `nodepool_modify_definitions_hook`) to replace the Agent platform with KubeVirt, inject VM sizing parameters, and attach worker VMs to a tenant-owned subnet via a Secondary Layer2 CUDN. The fulfillment-service proto already has `network_attachment` on `ClusterSpec`; the ClusterOrder CRD gains a `NetworkAttachments` field to carry this through to AAP. No new CRDs or controllers are introduced. See [PRD](prd.md) for detailed requirements.
+This design introduces a VM-backed cluster offering as a distinct catalog item alongside the existing bare-metal offering. CaaS exposes two cluster catalog items: **BM** (`ocp_small`, Agent platform) for bare-metal workers and **VM** (`ocp_kubevirt`, KubeVirt platform) for VM-based workers. A tenant selects the VM catalog item at cluster creation time, which sets `platform.type: KubeVirt` immutably on the HostedCluster.
+
+The `ocp_kubevirt` AAP template reuses the HostedCluster lifecycle from `ocp_small` via hooks (`hosted_cluster_modify_definition_hook`, `nodepool_modify_definitions_hook`) as an implementation detail -- hooks avoid duplicating the complex HostedCluster/NodePool lifecycle logic. The template injects KubeVirt platform configuration, VM sizing parameters, and tenant subnet attachment via a Secondary Layer2 CUDN. The fulfillment-service proto already has `network_attachment` on `ClusterSpec`; the ClusterOrder CRD gains a `NetworkAttachments` field to carry this through to AAP. No new CRDs or controllers are introduced. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
 CaaS today requires bare-metal worker nodes, limiting adoption to environments with dedicated physical hardware. VM-based workers remove this constraint by running worker nodes as KubeVirt VMs on the management cluster's existing virtualization infrastructure. This improves density (multiple VM clusters per physical host), enables rapid provisioning (minutes vs. hours for bare-metal), and makes CaaS accessible to teams without hardware allocations.
 
-The HyperShift project already supports a KubeVirt platform type alongside Agent (bare-metal). This design leverages that support by creating a derived AAP template that swaps the platform type and injects KubeVirt-specific configuration, keeping the provisioning pipeline largely unchanged. The hook-based template composition model means the existing `ocp_small` base template, which handles HostedCluster and NodePool lifecycle, is reused without modification.
+HyperShift supports two platform types: Agent (bare-metal) and KubeVirt (VM). These are fundamentally different install planes with different lifecycle characteristics, so OSAC exposes them as two separate catalog items rather than hiding the distinction behind a single template. A tenant chooses "give me a VM-backed cluster" or "give me a bare-metal cluster" -- both are valid offerings.
+
+The `ocp_kubevirt` template reuses the HostedCluster/NodePool lifecycle from `ocp_small` via hooks as an implementation detail. This avoids duplicating the complex lifecycle logic (namespace creation, RBAC, NodePool management, status tracking) while keeping the two offerings distinct at the catalog and API level.
 
 ### Goals
 
+- Expose VM workers as a distinct catalog item (template) so tenants explicitly choose a VM-backed cluster, not a hidden backend mode of the bare-metal template.
+- Keep workers platform-managed: HyperShift/CAPK owns VM lifecycle via NodePools. No tenant-visible ComputeInstances are created for CaaS workers.
 - Reuse the existing AAP template hook mechanism (`hosted_cluster_modify_definition_hook`, `nodepool_modify_definitions_hook`) to compose KubeVirt behavior on top of the `ocp_small` base template, avoiding duplication of HostedCluster/NodePool lifecycle logic.
 - Carry tenant network attachment from the fulfillment-service API through the ClusterOrder CRD to the AAP template without requiring changes to the operator's reconciliation logic.
 - Support the same scaling workflow (add/remove workers via `nodeRequests` update) that bare-metal CaaS uses, with no KubeVirt-specific scaling path.
@@ -41,13 +47,18 @@ The HyperShift project already supports a KubeVirt platform type alongside Agent
 
 - GPU/accelerator passthrough for VM workers -- handled by OSAC-1373, composable with KubeVirt templates via NodePool `hostDevices` once delivered. [Locked: D1]
 - Mixed bare-metal and KubeVirt workers in a single cluster -- HyperShift enforces platform consistency per HostedCluster; all NodePools must share the same `platform.type`.
+- Agent-based join for VM workers -- CAPK is the VM install plane. Discovery-boot and Agent registration add unnecessary complexity to VMs (see Alternatives).
+- ComputeInstance (or ComputeInstancePool) as CaaS workers -- wrong abstraction layer (tenant-managed VMs vs. platform-managed workers) and technical incompatibilities (namespace, networking, boot mechanism; see Alternatives).
+- Single platform-agnostic template for both BM and VM -- `platform.type` is immutable per HostedCluster, and the two offerings have different infrastructure, networking, and lifecycle characteristics.
 - Multi-interface networking and east-west traffic for VM workers -- deferred to OSAC-1382. [Locked: D7]
 - Autoscaling based on workload utilization.
 - Live migration, snapshotting, or cloning of worker VMs. [Locked: D5]
 
 ## Proposal
 
-A new AAP template role (`ocp_kubevirt`) derives from `ocp_small` using the existing hook and step-override mechanism. The template:
+> **CaaS VM workers are a separate catalog item on HyperShift KubeVirt/CAPK. They are not Agent-joined ComputeInstances and not a hidden mode of the bare-metal catalog item.**
+
+A new AAP template role (`ocp_kubevirt`) implements the VM cluster catalog item. It derives from `ocp_small` using the existing hook and step-override mechanism to reuse HostedCluster lifecycle logic without duplicating it. The template:
 
 1. Sets `hosted_cluster_modify_definition_hook` to replace `platform.type: Agent` with `platform.type: KubeVirt` and configure `baseDomainPassthrough: true` on the HostedCluster definition.
 2. Sets `nodepool_modify_definitions_hook` to replace the Agent platform block with KubeVirt-specific fields (compute cores/memory, root volume, `additionalNetworks` for tenant subnet attachment).
@@ -116,6 +127,14 @@ Scaling uses the same workflow as bare-metal CaaS. The Tenant Admin calls `Clust
 #### Cluster Deletion
 
 The Tenant Admin calls `Clusters.Delete`. The fulfillment-service marks the Cluster for deletion, the Cluster controller triggers ClusterOrder deletion, and the operator dispatches an AAP deprovision job. The `ocp_kubevirt` template's delete pipeline runs: the `hosted_cluster` delete step removes the HostedCluster and NodePools (HyperShift deletes the VMs), and the `pre_delete_hook` or CUDN cleanup step removes the Secondary CUDN. The `cluster_infra` and `external_access` delete steps are noops. The ClusterOrder finalizer prevents premature deletion until AAP confirms cleanup.
+
+### Catalog and UX Model
+
+The catalog item determines the install plane and `platform.type`. BM clusters use `ocp_small` (Agent platform); VM clusters use `ocp_kubevirt` (KubeVirt platform). This follows the same pattern as other capability-shaped templates (e.g., GPU / AI-MaaS offerings) -- distinct catalog entries for distinct infrastructure.
+
+Within a catalog item, `resourceClass` selects shape (VM size, storage profile), not the BM-vs-VM distinction. A tenant does not toggle between bare-metal and VM on a single HostedCluster -- they pick the offering that matches their need.
+
+From the tenant perspective: "give me a VM-backed cluster" and "give me a bare-metal cluster" are both first-class choices. Neither is hidden behind the other.
 
 ### API Extensions
 
@@ -368,13 +387,15 @@ When OSAC-1373 delivers `AcceleratorRequest` on `NodeRequest`, the `modify_nodep
 
 #### Networking Evolution
 
+Phase 1 provides tenant subnet attachment (north-south) via Secondary Layer2 CUDN. This does NOT require ComputeInstance Primary UDN -- CaaS VM workers use Secondary `additionalNetworks` on the NodePool, which is a fundamentally different network model from ComputeInstance's Primary UDN.
+
 | Phase | Mechanism | Status | Jira |
 |---|---|---|---|
 | Phase 1 | Secondary Layer2 CUDN + namespace labeling | This design | OSAC-1589 |
 | Phase 2 | Unified networking dispatcher + OVN-k8s EVPN k8s manager | In progress | OSAC-1433, OSAC-1717 |
 | Phase 3 | Multi-interface east-west + SR-IOV for VMs | Design merged (EP #179), bare-metal only in Phase 1 | OSAC-1382 |
 
-In Phase 2, the CUDN creation step is replaced by a call to the unified networking dispatcher, which selects the appropriate k8s manager (OVN-k8s EVPN) to bridge VMs to the physical fabric. The `additionalNetworks` reference on the NodePool remains the same -- only the mechanism that creates the NAD changes.
+Target architecture for Phase 2: `network_attachment` on ClusterSpec flows to the unified dispatcher, which selects the appropriate k8s manager (OVN-k8s EVPN) to create a NAD in the HostedCluster namespace. The NodePool's `additionalNetworks` reference remains the same -- only the mechanism that creates the NAD changes. The path is: `network_attachment` -> dispatcher -> k8s manager -> NAD in HC namespace -> CAPK `additionalNetworks`.
 
 In Phase 3, KubeVirt workers gain multi-interface support via SR-IOV passthrough on NodePools. The `networkAttachments` list (already supporting up to 8 entries) maps to multiple `additionalNetworks` entries. East-west traffic (GPU-to-GPU, L3VPN) requires a FabricDomain mechanism to reference VM workers -- this is deferred to OSAC-1382. [Locked: D6, D7]
 
@@ -436,13 +457,52 @@ The KubeVirt template adds no new Prometheus metrics, Kubernetes events, or stru
 
 ### Drawbacks
 
-The hook-based template composition requires understanding the base template's internal variable names (`hosted_cluster_definition`, `nodepool_definitions`) to write correct hooks. These variables are not a formal API -- they are implementation details of the `ocp_small` template and `hosted_cluster` service role. If the base template refactors these variables, the KubeVirt hooks break. The alternative (a standalone template that duplicates the HostedCluster/NodePool lifecycle) avoids this coupling but duplicates significant logic and drifts when the base template evolves. The hook approach is preferred because the HostedCluster/NodePool lifecycle is complex (namespace creation, RBAC, NodePool management, status tracking) and maintaining two copies increases the risk of divergence.
+**Catalog split:** BM and VM are separate offerings, not one abstract cluster type. Tenants must choose upfront. This is intentional (HyperShift `platform.type` is immutable, and the two offerings have different infrastructure characteristics), but it means a tenant cannot convert an existing bare-metal cluster to VM or vice versa.
 
-The Secondary CUDN approach for tenant networking is an interim solution. It works but does not integrate with the fabric manager or provide the same level of control (ACLs, IP allocation, metering) that the unified networking architecture will offer. Templates deployed with Secondary CUDN will need to be migrated when the unified networking dispatcher (OSAC-1433) is ready. The migration path is: replace the CUDN creation step with a dispatcher call, keeping the NAD reference on NodePools unchanged.
+**No mixed workers:** A single HostedCluster cannot mix bare-metal and KubeVirt workers. HyperShift enforces `platform.type` consistency across all NodePools. If mixed workers are needed in the future, it would require either upstream HyperShift changes or a federation approach across two HostedClusters.
+
+**Hook coupling to `ocp_small` internals:** The hook-based template composition requires understanding the base template's internal variable names (`hosted_cluster_definition`, `nodepool_definitions`) to write correct hooks. These variables are not a formal API -- they are implementation details of the `ocp_small` template and `hosted_cluster` service role. If the base template refactors these variables, the KubeVirt hooks break. The alternative (a standalone template that duplicates the HostedCluster/NodePool lifecycle) avoids this coupling but duplicates significant logic and drifts when the base template evolves. The hook approach is preferred because the HostedCluster/NodePool lifecycle is complex (namespace creation, RBAC, NodePool management, status tracking) and maintaining two copies increases the risk of divergence.
+
+**Phase 1 networking is interim:** The Secondary CUDN approach works but does not integrate with the fabric manager or provide the same level of control (ACLs, IP allocation, metering) that the unified networking architecture will offer. Templates deployed with Secondary CUDN will need to be migrated when the unified networking dispatcher (OSAC-1433) is ready. The migration path is: replace the CUDN creation step with a dispatcher call, keeping the NAD reference on NodePools unchanged.
 
 ## Alternatives (Not Implemented)
 
-### ComputeInstance for VM Workers
+### Agent Platform for VM Workers
+
+Boot VMs, run assisted discovery, and join them as Agents so everything stays on `platform.type: Agent`. This would avoid a separate template by making VMs look like bare-metal to HyperShift.
+
+**Rejected:**
+- **Ongoing assisted cost on every add/replace:** each VM scale-up requires InfraEnv creation, discovery boot, Agent registration, correlation, bind/unbind -- the full assisted-installer pipeline designed for unknown hardware.
+- **Multi-resource invariant for scale/repair:** CI Running + Agent registered + Agent bound + NodePool healthy all fail independently, creating a fragile state machine for an operation that CAPK handles atomically.
+- **Loses the speed advantage of VMs:** discovery-join is the slow path for unknown hardware. VM workers can boot in minutes via CAPK; forcing them through Agent discovery negates the density and speed benefits.
+- **Does not avoid the fork:** it just hides the BM/VM distinction by making VMs as complex as bare-metal, without the simplicity gains of CAPK.
+
+### ComputeInstance + CAPK
+
+Create ComputeInstances for worker VMs and have CAPK adopt them.
+
+**Rejected -- four technical incompatibilities:**
+- **Namespace mismatch:** ComputeInstance places VMs in the subnet namespace (Primary UDN networking). CAPK requires VMs in the HostedCluster namespace. CAPK cannot manage cross-namespace VMs.
+- **Network model:** ComputeInstance uses Primary UDN; CAPK uses Secondary `additionalNetworks`. These are fundamentally different OVN network types.
+- **Boot mechanism:** ComputeInstance uses cloud-init/sysprep; HyperShift workers require ignition. The boot payload is incompatible.
+- **Dual ownership:** Ansible-managed ComputeInstance lifecycle vs. CAPK-managed VM lifecycle creates competing controllers for the same VMs.
+
+### ComputeInstance + Agent (No CAPK)
+
+Create ComputeInstances, boot them with discovery images, and join them as Agents -- bypassing CAPK entirely.
+
+**Rejected:** Clears the CAPK namespace issue but retains:
+- **Dual inventory:** CI state + Agent state + NodePool state must all be consistent. Every scale/repair operation requires coordinating across three resource types.
+- **Special-case networking and boot config:** CIs use Primary UDN and cloud-init; CaaS workers need ignition and Secondary network attachment. The "stock CI" is not actually reusable without significant per-operation customization.
+- **Permanent coupling:** every scale, repair, and replace operation requires the full assisted-installer pipeline, not just a NodePool replica change.
+
+### ComputeInstancePool / VMPool for CaaS
+
+A future VMaaS concept where one object manages N tenant VMs.
+
+**Rejected for CaaS (valid for VMaaS):** A pool abstraction is the right direction for VMaaS workloads but does not replace NodePool + CAPK for CaaS. A pool sitting beside CAPK either competes for VM ownership (dual controller) or sits in front of Agent (inheriting all the Agent-join costs above). CaaS workers are not tenant VMs -- they are platform-managed nodes owned by HyperShift.
+
+### ComputeInstance for VM Workers (Abstraction Mismatch)
 
 Create KubeVirt VMs as ComputeInstances and have them join the cluster as workers. **Rejected:** ComputeInstance is tenant-managed -- tenants see, control, and directly interact with each VM (start, stop, delete, console). CaaS workers are platform-managed -- HyperShift manages VM lifecycle via NodePools, and tenants should not see or act on the underlying VMs. The unified networking EP explicitly lists ComputeInstance, Cluster, and BaremetalInstance as three separate first-class types. Using ComputeInstance for CaaS workers would require either bypassing HyperShift's NodePool management (losing scaling, health checking, rolling updates) or creating a parallel reconciliation path that fights with HyperShift for VM ownership.
 
@@ -544,7 +604,9 @@ Documentation updates required:
 
 ## Provenance
 
-Authored: revise @ design 0.7.1 - 782b906, workspace main @ 10b5059
-Phases: draft, revise, revise
+Authored: draft @ design 0.7.1 - 782b906, workspace main @ 10b5059
+Final: revise @ design 0.8.0 - 7efcedb, workspace main @ d53fe8e
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.7.1","ai_workflows":"782b906","source_repo":"10b5059","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d53fe8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
