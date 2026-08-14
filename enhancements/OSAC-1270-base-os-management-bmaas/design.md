@@ -172,7 +172,8 @@ Deferred to GA per [Graduation Criteria](#graduation-criteria): full user-facing
 message BareMetalInstanceSpec {
   // existing fields unchanged ...
 
-  reserved "image";  // image field removed
+  reserved 7;        // field number of the removed image field — must not be reused
+  reserved "image";
 
   // Reference to a DiskImage. Required for provisioning.
   optional string disk_image [(google.api.field_behavior) = IMMUTABLE];
@@ -204,7 +205,8 @@ message BareMetalInstanceCatalogItemsUpdateResponse {
 // baremetal_instance_template_type.proto — modified fields only
 
 message BareMetalInstanceTemplateSpecDefaults {
-  reserved "image";  // image field removed, no DiskImage field on templates
+  reserved 1;        // field number of the removed image field — must not be reused
+  reserved "image";  // no DiskImage field on templates
 }
 ```
 
@@ -372,7 +374,7 @@ Existing provisioned BareMetalInstances (already RUNNING) at upgrade time have n
 
 `disk_image` is an API-only reference with no CRD field. Version skew between fulfillment-service versions is handled by standard proto backward compatibility rules (reserved field numbers, no reuse). The bare-metal-fulfillment-operator is unaffected because the CRD is unchanged.
 
-Reserving field 7 prevents schema reuse but does not cause a wire error. Old clients that still send `image` (field 7) have it arrive at the new server as an unknown wire field — silently discarded by the proto3 runtime. The server returns `InvalidArgument` only when `disk_image` (field 10) is absent from the decoded request (application-level validation, not proto-level). A client sending only `image` without `disk_image` therefore receives `InvalidArgument: "spec.disk_image is required"`.
+Reserving field 7 prevents schema reuse but does not cause a wire error. Old clients that still send `image` (field 7) have it arrive at the new server as an unknown wire field — silently discarded by the proto3 runtime. The server returns `InvalidArgument` only when `disk_image` is absent from the decoded request (application-level validation, not proto-level). A client sending only `image` without `disk_image` therefore receives `InvalidArgument: "spec.disk_image is required"`.
 
 OSAC does not support mixed-version deployments. Compatibility test: an old client sending `image` without `disk_image` to a new server must receive `InvalidArgument`; a new client sending `disk_image` must succeed.
 
