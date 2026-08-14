@@ -286,7 +286,7 @@ The operator and fulfillment-service are upgraded independently. An updated oper
 
 **Q1 — Metal3 inspection-disabled and MAC availability:** The `inspect.metal3.io: disabled` annotation skips hardware inspection on a `BareMetalHost`. It is unclear whether MAC addresses are still populated via another path (e.g., pre-provisioned hardware details) or whether they are absent entirely. If absent, hosts with this annotation would stay in `Progressing` with `NICMetadataUnavailable`. If present, no special handling is needed. This must be verified before implementation.
 
-**Impact:** Determines whether the design needs an explicit gate in `FindFreeHost` to exclude inspection-disabled hosts, or whether the existing empty-result handling is sufficient. Either way, the behavior and any operator requirement around inspection must be explicitly documented in the design before merge.
+**Impact:** Determines whether the design needs an explicit gate in `FindFreeHost` to exclude inspection-disabled hosts, or whether the existing empty-result handling is sufficient. Either way, the behavior and any operator requirement around inspection must be documented in the OSAC admin documentation.
 
 ## Infrastructure Needed
 
@@ -301,4 +301,4 @@ Final: revise @ design 0.8.0 - 7efcedb, workspace main @ 4120194
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
