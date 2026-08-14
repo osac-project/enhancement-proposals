@@ -145,7 +145,7 @@ optional BareMetalHardware hardware = N;
 
 ### Implementation Details/Notes/Constraints
 
-**Metal3:** `FindFreeHost` requires no change — Metal3 only marks a host `Available` after hardware inspection succeeds, so NIC data is implicitly guaranteed for inspected hosts. Whether the `inspect.metal3.io: disabled` annotation also suppresses MAC address population is an open question (see Open Questions).
+**Metal3:** `FindFreeHost` requires no change — Metal3 only marks a host `Available` after hardware inspection succeeds, so NIC data is implicitly guaranteed for inspected hosts. Hosts with the `inspect.metal3.io: disabled` annotation can reach `Available` without MAC addresses populated; such hosts will stay in `Progressing` with `NICMetadataUnavailable` until inspection is re-enabled and completed. This requirement must be documented in the OSAC admin documentation.
 
 **OpenStack/Ironic:** No equivalent inspection gate exists, so host selection is extended to skip nodes with no registered ports. This adds one Ironic API call per candidate evaluated, incurred once per instance lifecycle.
 
@@ -297,12 +297,6 @@ The operator and fulfillment-service are upgraded independently. An updated oper
 
 **Disabling NIC fetch:** NIC fetch is a required gate for the `Ready` phase. There is no supported mechanism to disable it without also preventing instances from reaching `Ready`.
 
-## Open Questions
-
-**Q1 — Metal3 inspection-disabled and MAC availability:** The `inspect.metal3.io: disabled` annotation skips hardware inspection on a `BareMetalHost`. It is unclear whether MAC addresses are still populated via another path (e.g., pre-provisioned hardware details) or whether they are absent entirely. If absent, hosts with this annotation would stay in `Progressing` with `NICMetadataUnavailable`. If present, no special handling is needed. This must be verified before implementation.
-
-**Impact:** Determines whether the design needs an explicit gate in `FindFreeHost` to exclude inspection-disabled hosts, or whether the existing empty-result handling is sufficient. Either way, the behavior and any operator requirement around inspection must be documented in the OSAC admin documentation.
-
 ## Infrastructure Needed
 
 None.
@@ -316,4 +310,4 @@ Final: revise @ design 0.8.0 - 7efcedb, workspace main @ 4120194
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
