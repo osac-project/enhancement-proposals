@@ -118,116 +118,28 @@ A `Running` instance provisioned by this EP's controller version has NICs popula
 
 ### API Extensions
 
-#### 1. `inventory.Client` interface — new `GetHostNICs` method
+#### 1. Inventory client interface — new `GetHostNICs` method
 
 **Package:** `osac/bare-metal-fulfillment-operator/internal/inventory/client.go`
 
-```go
-// HostNIC describes one physical network interface from the inventory backend.
-// Additional fields (Name, SpeedGbps, etc.) may be added in future without
-// breaking the interface contract.
-type HostNIC struct {
-    MAC string
-}
-
-type Client interface {
-    FindFreeHost(ctx context.Context, matchExpressions map[string]string) (*Host, error)
-    AssignHost(ctx context.Context, inventoryHostID string, bareMetalInstanceID string,
-        labels map[string]string) (*Host, error)
-    UnassignHost(ctx context.Context, inventoryHostID string, labels []string) error
-    // GetHostNICs returns the physical network interfaces for the allocated host.
-    // When operators ensure hardware inspection is enabled (see Metal3 inspection
-    // constraint), FindFreeHost guarantees NIC data exists before allocation.
-    // An empty result therefore indicates either a transient backend error or a
-    // host whose inspection has not yet completed.
-    // Returns an error only on backend failures.
-    GetHostNICs(ctx context.Context, inventoryHostID string) ([]HostNIC, error)
-}
-```
-
-The existing in-memory locking client (`inventory.TryLock` / `inventory.Unlock`) is not relevant to `GetHostNICs` — it protects allocation racing, not status reads.
+A `GetHostNICs` method is added to the inventory `Client` interface. It takes a host identifier and returns a list of NIC MAC addresses (lowercased). An empty result means either a transient backend error or a host without completed hardware inspection. Existing interface methods are unchanged.
 
 #### 2. `BareMetalInstanceStatus` CRD type — new fields
 
 **File:** `osac/bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_types.go`
 
-Two new types and one new field added:
-
-```go
-// BareMetalNICStatus describes one physical network interface as reported by
-// the inventory backend. Additional fields may be added in future milestones.
-type BareMetalNICStatus struct {
-    // MAC is the hardware MAC address of this interface.
-    // +kubebuilder:validation:Required
-    // +kubebuilder:validation:Pattern=`^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$`
-    MAC string `json:"mac"`
-}
-
-// BareMetalHardware holds inventory-reported hardware metadata for
-// a BareMetalInstance. Modeled after Metal3's HardwareDetails to allow
-// compatible future extensions (CPU, memory, storage, etc.).
-type BareMetalHardware struct {
-    // NICs lists the physical network interfaces discovered from the inventory backend.
-    // +kubebuilder:validation:Optional
-    NICs []BareMetalNICStatus `json:"nics,omitempty"`
-}
-```
-
-Added to `BareMetalInstanceStatus`:
-```go
-// Hardware holds inventory-reported hardware metadata populated at
-// allocation time. Nil if the inventory backend has not yet provided data.
-// +kubebuilder:validation:Optional
-Hardware *BareMetalHardware `json:"hardware,omitempty"`
-```
-
-After modifying the types file, run `make manifests generate && make helm-crds` per the operator's `AGENTS.md`.
+Two new types are added: `BareMetalNICStatus` (a validated MAC address) and `BareMetalHardware` (a list of `BareMetalNICStatus` entries), modeled after Metal3's `HardwareDetails` to allow compatible future extensions (CPU, RAM, storage). `BareMetalInstanceStatus` gains an optional `hardware` field that is absent until the inventory backend provides data. Run `make manifests generate && make helm-crds` after changes.
 
 #### 3. `BareMetalInstanceStatus` proto — new message and fields
 
 **Files:** `osac/fulfillment-service/proto/public/osac/public/v1/baremetal_instance_type.proto` and `osac/fulfillment-service/proto/private/osac/private/v1/baremetal_instance_type.proto`
 
-Both protos receive the same new message types:
-
-```protobuf
-// Describes one physical network interface as reported by the inventory backend.
-// Additional fields may be added in future milestones without breaking API compatibility.
-message BareMetalNICStatus {
-  // Hardware MAC address of this interface (e.g. "aa:bb:cc:dd:ee:ff").
-  // Values are always lowercased.
-  string mac = 1;
-}
-
-// Holds inventory-reported hardware metadata for a BareMetalInstance.
-// Modeled after Metal3's HardwareDetails to allow compatible future extensions.
-message BareMetalHardware {
-  // Physical network interfaces discovered from the inventory backend.
-  repeated BareMetalNICStatus nics = 1;
-}
-```
-
-Added to `BareMetalInstanceStatus` — **field numbers differ between public and private protos:**
-
-**Public proto** — field 4 is `network_attachment_statuses`; field 5 is free:
-```protobuf
-// Hardware details populated from the inventory backend at allocation time.
-// Absent if the inventory backend has not yet provided data.
-optional BareMetalHardware hardware = 5;
-```
-
-**Private proto** — field 4 is `hub`, field 5 is `network_attachment_statuses`; field 6 is free:
-```protobuf
-// Hardware details populated from the inventory backend at allocation time.
-// Absent if the inventory backend has not yet provided data.
-optional BareMetalHardware hardware = 6;
-```
-
-Run `buf lint && buf generate` after changes.
+Both protos gain the same two new message types (`BareMetalNICStatus` and `BareMetalHardware`) and an optional `hardware` field on `BareMetalInstanceStatus`. Note that existing fields differ between the two protos (the private proto has an additional `hub` field), so the next free field number is 5 in the public proto and 6 in the private proto. Run `buf lint && buf generate` after changes.
 
 #### 4. Operational impact
 
-- If the `bare-metal-fulfillment-operator` is restarted mid-reconciliation after allocation but before `GetHostNICs` completes, the controller restarts reconciliation from the beginning. Since `Hardware` is nil, it retries `GetHostNICs` — idempotent.
-- If the fulfillment-service controller is down, the CRD status update succeeds independently; NIC fields are propagated on the next reconcile cycle when the controller resumes.
+- If the operator is restarted mid-reconciliation before NIC fetch completes, the controller retries on the next reconcile — idempotent because the hardware field is still absent.
+- If the fulfillment-service controller is down when the CRD status is updated, NIC fields are propagated on the next reconcile cycle when the controller resumes.
 
 ## UX Alignment
 
@@ -239,212 +151,47 @@ The proto-generated TypeScript types for `BareMetalInstance` live in `osac-ui/li
 
 No deviations from known anti-patterns. The UI implementation task depends on this EP's API changes landing first.
 
-### Implementation Details/Notes/Constraints
+### Implementation Notes
 
-#### Metal3 backend — `GetHostNICs` implementation
+#### Metal3 backend
 
 **File:** `osac/bare-metal-fulfillment-operator/internal/inventory/metal3.go`
 
-Metal3's `FindFreeHost` requires no code change to enforce the NIC data availability guarantee. It already filters for `Status.Provisioning.State == Available` and `Status.OperationalStatus == OK`, and Metal3 only moves a `BareMetalHost` to `Available` after hardware inspection succeeds — inspection is what populates `Status.HardwareDetails.NIC`. A host without NIC data cannot reach `Available`, so it is never returned by `FindFreeHost`.
+Metal3 requires no change to `FindFreeHost` — it already only returns hosts in `Available` state, which Metal3 gates behind successful hardware inspection. NIC data is therefore guaranteed to exist for any host `FindFreeHost` returns.
 
-The `inventoryHostID` for Metal3 is formatted as `namespace/name` (parsed by `ParseHostID`). The implementation fetches the `BareMetalHost` via the k8s client and extracts NIC data:
+`GetHostNICs` reads the `BareMetalHost` resource from the Kubernetes API and extracts MAC addresses from the hardware inspection results. If inspection data is absent, an empty result is returned and the controller sets the `NICMetadataUnavailable` condition.
 
-```go
-func (m *Metal3Client) GetHostNICs(ctx context.Context, inventoryHostID string) ([]HostNIC, error) {
-    namespace, name, err := ParseHostID(inventoryHostID)
-    if err != nil {
-        return nil, err
-    }
-    bmh := &metal3api.BareMetalHost{}
-    if err := m.client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, bmh); err != nil {
-        return nil, fmt.Errorf("failed to get BareMetalHost %s: %w", inventoryHostID, err)
-    }
-    // HardwareDetails is nil until Metal3 hardware inspection completes.
-    if bmh.Status.HardwareDetails == nil { // Metal3 Go field; JSON path is status.hardware
-        return nil, nil
-    }
-    nics := make([]HostNIC, 0, len(bmh.Status.HardwareDetails.NIC))
-    for _, nic := range bmh.Status.HardwareDetails.NIC {
-        nics = append(nics, HostNIC{MAC: strings.ToLower(nic.MAC)})
-    }
-    return nics, nil
-}
-```
+**Inspection constraint:** The `baremetal.metal3.io/inspection-disabled: true` annotation allows a host to reach `Available` without inspection data. Operators must ensure inspection is enabled for all hosts in the inventory pool. Hosts with inspection disabled will stay in `Progressing` with `NICMetadataUnavailable` until inspection completes.
 
-`BareMetalHost.Status.HardwareDetails` is of type `*hardwaredata.HardwareDetails` (from `github.com/metal3-io/baremetal-operator/apis`), with JSON tag `hardware`. The `NIC` field is `[]hardwaredata.NIC` where each entry has `MAC string`.
-
-If `HardwareDetails` is nil (inspection not yet done), `GetHostNICs` returns `nil, nil` — the controller treats this as no NIC data, sets the `NICMetadataUnavailable` Ready condition, and retries on the next reconcile.
-
-**Metal3 inspection constraint:** Hardware inspection can be disabled on a `BareMetalHost` via the `baremetal.metal3.io/inspection-disabled: true` annotation. A host with inspection disabled can reach `Available` state without `HardwareDetails` populated, meaning `GetHostNICs` will return `nil, nil`. Operators must ensure Metal3 hardware inspection is enabled for all hosts in the inventory pool. Hosts with inspection disabled will stay in `Progressing` with the `NICMetadataUnavailable` condition set until inspection is re-enabled and completed.
-
-#### OpenStack/Ironic backend — `FindFreeHost` ports gate
+#### OpenStack/Ironic backend
 
 **File:** `osac/bare-metal-fulfillment-operator/internal/inventory/openstack.go`
 
-Metal3's `FindFreeHost` implicitly guarantees NIC data by only returning hosts in `Available` state, which requires successful hardware inspection. OpenStack/Ironic has no equivalent state gate, so an explicit ports check is added: a node with no ports registered is skipped during host selection.
+OpenStack has no hardware-inspection state gate equivalent to Metal3, so `FindFreeHost` is extended with an explicit ports check: nodes with no registered ports are skipped (logged separately from nodes that fail the ports API call). One lightweight Ironic API call is made per candidate, bounded by how many candidates are evaluated before a suitable host is found, and incurred only once per instance lifecycle.
 
-The check is inserted per candidate node inside `findFreeHost`, after the existing label/managedBy filters:
+`GetHostNICs` retrieves port records for the node from the Ironic API and collects their MAC addresses. The existing auth-retry pattern (reconnect and retry on authentication errors) applies.
 
-```go
-// Skip nodes with no ports — NIC data would not be available.
-portCount, err := countPorts(ctx, c.client, node.UUID)
-if err != nil {
-    log.FromContext(ctx).V(1).Info("skipping candidate: error counting ports", "node", node.UUID, "err", err)
-    continue
-}
-if portCount == 0 {
-    log.FromContext(ctx).V(1).Info("skipping candidate: no ports registered", "node", node.UUID)
-    continue
-}
-```
-
-`countPorts` uses `ports.List` (not `ports.ListDetail`) to minimize payload:
-
-```go
-func countPorts(ctx context.Context, client *gophercloud.ServiceClient, nodeUUID string) (int, error) {
-    var count int
-    err := ports.List(client, ports.ListOpts{NodeUUID: nodeUUID}).
-        EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
-            portList, err := ports.ExtractPorts(page)
-            if err != nil {
-                return false, err
-            }
-            count += len(portList)
-            return true, nil
-        })
-    return count, err
-}
-```
-
-This adds one `ports.List` call per candidate node during allocation. The cost is bounded by the number of candidates evaluated before a suitable host is found and is incurred only once per `BareMetalInstance` lifecycle. For very large inventories, caching port counts across the candidate scan could reduce Ironic API calls, but is deferred until profiling indicates it is needed.
-
-#### OpenStack/Ironic backend — `GetHostNICs` implementation
-
-**File:** `osac/bare-metal-fulfillment-operator/internal/inventory/openstack.go`
-
-The `inventoryHostID` for OpenStack is the Ironic node UUID. Ironic exposes physical ports (one per physical NIC) via the `ports` sub-resource. The gophercloud v2 `openstack/baremetal/v1/ports` package provides `ListDetail` which returns `Port` objects with `Address` (MAC).
-
-The implementation follows the same auth-retry pattern used by `FindFreeHost` and `AssignHost`:
-
-```go
-func (c *OpenStackClient) GetHostNICs(ctx context.Context, inventoryHostID string) ([]HostNIC, error) {
-    nics, err := c.getHostNICs(ctx, inventoryHostID)
-    if err != nil && isAuthError(err) {
-        if reconnErr := c.reconnect(ctx); reconnErr != nil {
-            return nil, fmt.Errorf("get host NICs %s: reconnect failed: %w", inventoryHostID, reconnErr)
-        }
-        nics, err = c.getHostNICs(ctx, inventoryHostID)
-    }
-    return nics, err
-}
-
-func (c *OpenStackClient) getHostNICs(ctx context.Context, inventoryHostID string) ([]HostNIC, error) {
-    var nics []HostNIC
-    err := ports.ListDetail(c.client, ports.ListOpts{NodeUUID: inventoryHostID}).
-        EachPage(ctx, func(_ context.Context, page pagination.Page) (bool, error) {
-            portList, err := ports.ExtractPorts(page)
-            if err != nil {
-                return false, err
-            }
-            for _, p := range portList {
-                nics = append(nics, HostNIC{MAC: strings.ToLower(p.Address)})
-            }
-            return true, nil
-        })
-    return nics, err
-}
-```
-
-#### Controller reconcile integration
+#### Bare-metal-fulfillment-operator controller
 
 **File:** `osac/bare-metal-fulfillment-operator/internal/controller/baremetalinstance_controller.go`
 
-`GetHostNICs` is called within `reconcileManagement`, after provisioning and power reconciliation complete successfully but before setting `Status.Phase = Ready`. It is guarded so it only runs once:
+NIC fetch is inserted as a required step before the instance can transition to `Ready`, guarded so it runs only once per instance. On a backend error, the controller sets `Ready=False, Reason=NICMetadataUnavailable` and requeues. On an empty result, the same condition is set with a message indicating missing inspection data. On success, the NIC data is written to the CRD status and the transition to `Ready` proceeds.
 
-```go
-// In reconcileManagement, before setting Phase=Ready:
-if bareMetalInstance.Status.Hardware == nil || len(bareMetalInstance.Status.Hardware.NICs) == 0 {
-    nics, err := r.InventoryClient.GetHostNICs(ctx, bareMetalInstance.Spec.ExternalHostID)
-    if err != nil {
-        meta.SetStatusCondition(&bareMetalInstance.Status.Conditions, metav1.Condition{
-            Type:    "Ready",
-            Status:  metav1.ConditionFalse,
-            Reason:  "NICMetadataUnavailable",
-            Message: fmt.Sprintf("Failed to fetch NIC metadata from inventory: %v", err),
-        })
-        return ctrl.Result{}, fmt.Errorf("get NIC metadata for %s: %w", bareMetalInstance.Spec.ExternalHostID, err)
-    }
-    if len(nics) == 0 {
-        meta.SetStatusCondition(&bareMetalInstance.Status.Conditions, metav1.Condition{
-            Type:    "Ready",
-            Status:  metav1.ConditionFalse,
-            Reason:  "NICMetadataUnavailable",
-            Message: fmt.Sprintf("Inventory returned no NIC data for host %s; host may require hardware inspection", bareMetalInstance.Spec.ExternalHostID),
-        })
-        return ctrl.Result{}, fmt.Errorf("no NIC data returned from inventory for host %s", bareMetalInstance.Spec.ExternalHostID)
-    }
-    crdNICs := make([]v1alpha1.BareMetalNICStatus, len(nics))
-    for i, n := range nics {
-        crdNICs[i] = v1alpha1.BareMetalNICStatus{MAC: n.MAC}
-    }
-    bareMetalInstance.Status.Hardware = &v1alpha1.BareMetalHardware{NICs: crdNICs}
-}
-bareMetalInstance.Status.Phase = v1alpha1.BareMetalInstancePhaseReady
-```
-
-Returning a non-nil error keeps the instance in `Progressing` and triggers controller-runtime's standard backoff requeue. The `Recorder` field (`record.EventRecorder`) is injected during `SetupWithManager`.
-
-#### fulfillment-service controller reconciler — status propagation
+#### fulfillment-service status propagation
 
 **File:** `osac/fulfillment-service/internal/controllers/baremetalinstance/baremetalinstance_reconciler_function.go`
 
-`BareMetalInstance` status — including the new `hardware` field — is stored as a serialized proto blob in PostgreSQL. Adding new optional proto fields to an existing blob is backward-compatible; no schema migration is required.
-
-In `syncStatus(object *bmfov1alpha1.BareMetalInstance)`, after the existing status mapping:
-
-```go
-// Propagate NIC metadata from CRD status to proto status.
-if object.Status.Hardware != nil {
-    protoNICs := make([]*privatev1.BareMetalNICStatus, len(object.Status.Hardware.NICs))
-    for i, nic := range object.Status.Hardware.NICs {
-        protoNICs[i] = privatev1.BareMetalNICStatus_builder{Mac: nic.MAC}.Build()
-    }
-    t.bareMetalInstance.GetStatus().SetHardware(
-        privatev1.BareMetalHardware_builder{Nics: protoNICs}.Build(),
-    )
-} else {
-    t.bareMetalInstance.GetStatus().SetHardware(nil)
-}
-```
+`BareMetalInstance` status is stored as a serialized proto blob in PostgreSQL. Adding optional proto fields is backward-compatible; no schema migration is required. The status reconciler propagates the `hardware` field from CRD status to the fulfillment-service record, and explicitly clears it when the CRD field is absent.
 
 #### CLI — describe command
 
 **File:** `osac/fulfillment-service/internal/cmd/cli/describe/baremetalinstance/describe_baremetalinstance_cmd.go`
 
-`renderBareMetalInstance` is extended to add a Physical Interfaces section below the existing fields:
+The describe command is extended with a "Network Interfaces" section listing MAC addresses, or "N/A" when no data is available.
 
-```go
-nics := bmi.GetStatus().GetHardware().GetNics()
-if len(nics) == 0 {
-    fmt.Fprintf(writer, "\nNetwork Interfaces:\tN/A\n")
-} else {
-    fmt.Fprintf(writer, "\nNetwork Interfaces:\n")
-    fmt.Fprintf(writer, "  MAC\n")
-    for _, nic := range nics {
-        fmt.Fprintf(writer, "  %s\n", nic.GetMac())
-    }
-}
-```
+#### Documentation and mock update
 
-#### Documentation
-
-The public API reference for `BareMetalInstance` is auto-generated from the proto definition via `buf generate` — no manual documentation changes are needed for the new `status.hardware.nics` field. The `osac describe baremetalinstance` CLI help text requires no update since the new section is rendered inline. No architecture docs or user guides need updating for this status-only addition.
-
-#### Test mock update
-
-**File:** `osac/bare-metal-fulfillment-operator/internal/inventory/` — mock generated by `go.uber.org/mock`
-
-The `Client` interface mock must be regenerated after adding `GetHostNICs`. All existing tests that construct a mock `Client` need a `EXPECT().GetHostNICs(...)` call or the mock must use `AnyTimes()` / `Return(nil, nil)` defaults. The implementation PR must update all affected test files.
+API documentation is auto-generated from the proto — no manual docs changes needed. The inventory client mock must be regenerated after the interface change; all tests using the mock must be updated in the same PR.
 
 ### Security Considerations
 
@@ -454,7 +201,7 @@ No new OPA policies, RBAC roles, or authorization logic are required. The metada
 
 MAC addresses could theoretically aid network reconnaissance. The existing tenant isolation ensures they are only visible to authorized parties.
 
-Input validation: MAC addresses written to `BareMetalInstanceStatus.Hardware.NIC` originate from the inventory backend (trusted source, not user-controlled). The CRD field uses a `+kubebuilder:validation:Pattern` annotation on `BareMetalNICStatus.MAC`; no additional sanitization is needed.
+MAC addresses originate from the inventory backend (trusted source, not user-controlled) and are validated at the CRD level; no additional sanitization is needed.
 
 ### Failure Handling and Recovery
 
@@ -463,9 +210,9 @@ Input validation: MAC addresses written to `BareMetalInstanceStatus.Hardware.NIC
 | `GetHostNICs` returns error (inventory API transiently down) | `Ready=False, Reason=NICMetadataUnavailable, Message=<error>` condition set; controller returns error; instance stays `Progressing`; standard backoff requeue | Instance stays `Progressing`; condition visible via `kubectl describe` or API |
 | `GetHostNICs` returns empty NIC list (inspection incomplete or disabled) | `Ready=False, Reason=NICMetadataUnavailable, Message="Inventory returned no NIC data..."` condition set; controller returns error; instance stays `Progressing` | Instance stays `Progressing`; condition message identifies the cause |
 | OpenStack node with no ports (misconfigured inventory) | `FindFreeHost` skips the node; it is never allocated | No `BareMetalInstance` assigned to that host; allocation retries other candidates |
-| fulfillment-service controller restarts mid-propagation | On resume, `syncStatus` re-reads CRD and propagates NIC fields | No inconsistency; propagation is idempotent |
-| BareMetalInstance deleted before NIC fetch completes | Deletion path does not call `GetHostNICs` | No impact |
-| NIC fetch succeeds but CRD status update fails | controller-runtime returns error; reconcile retries; idempotency guard skips re-fetch | Transient delay; eventual consistency |
+| fulfillment-service controller restarts mid-propagation | On resume, the reconciler re-reads CRD and propagates NIC fields | No inconsistency; propagation is idempotent |
+| BareMetalInstance deleted before NIC fetch completes | Deletion path skips NIC fetch | No impact |
+| NIC fetch succeeds but CRD status update fails | Controller returns error; reconcile retries; idempotency guard skips re-fetch | Transient delay; eventual consistency |
 
 ### RBAC / Tenancy
 
@@ -475,7 +222,7 @@ No new resources are introduced. NIC metadata is part of `BareMetalInstanceStatu
 - OPA policies enforce that Tenant Users can only read `BareMetalInstance` objects for their own tenant.
 - Cloud Provider Admin and Cloud Infrastructure Admin have cross-tenant read access.
 
-No changes to OPA policies, `osac.openshift.io/tenant` annotations, or RBAC roles are required. [Codebase: `osac/fulfillment-service/internal/servers/baremetal_instances_server.go`]
+No changes to OPA policies, `osac.openshift.io/tenant` annotations, or RBAC roles are required.
 
 ### Observability and Monitoring
 
@@ -530,23 +277,23 @@ The controller could re-fetch NIC data on every reconcile cycle or on a fixed in
 ### Unit Tests
 
 **bare-metal-fulfillment-operator:**
-- `GetHostNICs` (Metal3): returns correct `[]HostNIC` when `BareMetalHost.Status.HardwareDetails.NIC` is populated; MAC addresses are lowercased.
-- `GetHostNICs` (OpenStack): returns correct `[]HostNIC` from mocked port list; applies auth-retry pattern on `401` error.
-- OpenStack `FindFreeHost`: skips nodes where `countPorts` returns 0; includes nodes with ports; propagates backend error as skip (not fatal).
-- Controller `reconcileManagement`: NIC fetch is skipped when `Hardware` is already non-nil and contains at least one NIC (idempotency); `Ready=False, Reason=NICMetadataUnavailable` condition is set when `GetHostNICs` returns an error; same condition with a distinct message is set when `GetHostNICs` returns an empty list.
-- fulfillment-service `syncStatus`: proto `hardware.nics` is populated when CRD `Hardware.NICs` is non-empty; proto field is absent when CRD `Hardware` is nil.
-- CLI `renderBareMetalInstance`: NIC table displayed when `Hardware.NICs` is non-empty; "N/A" displayed when nil.
+- NIC fetch (Metal3): returns correct MAC list from hardware inspection data; MACs are lowercased.
+- NIC fetch (OpenStack): returns correct MAC list from port records; auth-retry applies on authentication errors.
+- OpenStack host selection: nodes with no ports are skipped; port API errors are treated as a skip; nodes with ports are included.
+- Controller NIC gate: fetch is skipped when hardware data is already present (idempotency); `Ready=False, Reason=NICMetadataUnavailable` condition is set on backend errors; same condition with a distinct message on empty results.
+- fulfillment-service status propagation: `status.hardware.nics` is populated when CRD hardware data is present; field is cleared when absent.
+- CLI describe: NIC table displayed when data is present; "N/A" when absent.
 
-**Interface mock:** Regenerate `Client` mock after interface change; update all mock construction sites to expect `GetHostNICs` or use `AnyTimes` where the test is not exercising NIC fetch.
+**Interface mock:** Regenerate the inventory client mock after the interface change; update all test usages in the same PR.
 
 ### Integration Tests
 
 **bare-metal-fulfillment-operator (envtest):**
-- Create a `BareMetalHost` with `HardwareDetails.NIC` populated; create a `BareMetalInstance` and run the controller to completion; assert `Status.Hardware.NICs` matches the BMH NIC list with correct MAC values.
-- Simulate `GetHostNICs` backend error (mock returns error); assert instance stays `Progressing`, controller returns error, and `NICMetadataUnavailable` Warning event is emitted.
+- Provision a `BareMetalHost` with inspection data; run the controller to completion; assert `status.hardware.nics` matches the host's NIC list with correct MAC values.
+- Simulate a backend error; assert the instance stays `Progressing` with `NICMetadataUnavailable` condition set.
 
 **fulfillment-service (kind cluster / integration tests):**
-- Create a `BareMetalInstance` CR with `Status.Hardware.NIC` pre-populated; run the fulfillment-service controller reconciler; assert that `BareMetalInstance.status.hardware.nics` in the fulfillment-service database matches the CRD status.
+- Pre-populate a `BareMetalInstance` CRD with hardware data; run the fulfillment-service reconciler; assert `status.hardware.nics` in the fulfillment-service database matches the CRD.
 
 ### E2E Tests
 
@@ -599,8 +346,8 @@ None.
 ## Provenance
 
 Authored: draft @ design 0.8.0 - 7efcedb, workspace main @ a4b128a
-Final: respond @ design 0.8.0 - 7efcedb, workspace main @ 4120194
+Final: revise @ design 0.8.0 - 7efcedb, workspace main @ 4120194
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4120194","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond","revise","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
