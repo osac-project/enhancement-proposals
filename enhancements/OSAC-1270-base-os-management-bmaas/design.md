@@ -137,18 +137,15 @@ The diagram shows the two-phase flow: the API validates the DiskImage reference 
 
 ## UX Alignment
 
-`@temp-api` file exists at `osac-ui/libs/ui-components/src/api/v1/baremetal-instance.ts`. It defines `useCreateBareMetalInstance` with a hardcoded `spec` shape that does not yet include a `diskImage` field. Two updates are needed when this design lands:
+`osac-ui/libs/ui-components/src/api/v1/baremetal-instance.ts` defines `useCreateBareMetalInstance`. Its `mutationFn` accepts `MessageInitShape<typeof BareMetalInstanceSchema>` — a generated type from `@osac/types` — so no manual type change is needed in the hook itself. Running `pnpm gen-types` after the proto change automatically includes `disk_image` in `BareMetalInstanceSchema`.
 
-1. **`@osac/types` (auto):** Running `pnpm gen-types` picks up the new proto `disk_image` field automatically — no manual edit required.
-2. **`useCreateBareMetalInstance` (manual):** The hardcoded `mutationFn` body type must be updated to add `diskImage?: string` to `spec`, so the creation form can pass the selected DiskImage ID.
+The required UI work is in the form component that calls `useCreateBareMetalInstance`: replace the inline `image` fields (`--image`, `--image-source-type`) with a `diskImage` reference picker using the DiskImage selector component from OSAC-2540.
 
 **Field mapping:**
 
 | Proto field | TypeScript field | Direction |
 |-------------|-----------------|-----------|
 | `spec.disk_image` | `spec.diskImage` | proto → TS (camelCase) |
-
-Beyond this, the UI migration mirrors the ComputeInstance flow: replace the inline image fields with a `diskImage` reference picker using the DiskImage selector component from OSAC-2540.
 
 **UI scope and timeline:** The UI work required by this design (updating `useCreateBareMetalInstance` and adding the DiskImage picker to the BareMetalInstance creation form) is **in scope for Dev Preview** and tracked as part of this feature. The `@osac/types` update (automatic via `pnpm gen-types`) lands with the backend; the form change requires the OSAC-2540 DiskImage selector component as a prerequisite.
 
