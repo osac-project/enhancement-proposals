@@ -475,12 +475,13 @@ stateDiagram-v2
   "cluster_template": "ocp-ci-small",
   "release_image": "quay.io/openshift-release-dev/ocp-release:4.17.0-x86_64",
   "component": "worker",
+  "node_set": "gpu-h100",
   "host_type": "ci-worker",
   "node_count": 3
 }
 ```
 
-Control plane uses `"component": "control_plane"`, `"host_type": "_control_plane"`, `"node_count": 1`.
+Control plane uses `"component": "control_plane"`, `"node_set": "_control_plane"`, `"host_type": "_control_plane"`, `"node_count": 1`.
 
 **MaaS `billing_dimensions`:**
 
