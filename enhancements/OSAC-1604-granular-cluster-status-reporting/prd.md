@@ -20,7 +20,7 @@ Today the status a user sees mirrors only the broad lifecycle phase; it does not
 - Deletion progress visibility - tenants can see that deletion is proceeding and track its progress
 - CLI `describe` output that shows health signals, provisioning progress, API URL, console URL, and node set status
 - UI status display for cluster provisioning and lifecycle, covering both tenant and provider admin views [Clarify: D3]
-- Observability signals emitted at key provisioning transitions, so provider admins can build monitoring dashboards and alerts
+- Monitoring signals - such as metrics and provisioning-transition events - that provider admins can consume to build dashboards and alerts
 - CaaS clusters only [Clarify: D2]
 
 ## Out of Scope
@@ -70,10 +70,11 @@ Today the status a user sees mirrors only the broad lifecycle phase; it does not
 - `osac describe cluster <id>` shows the cluster's health signals, current provisioning stage, API URL, console URL, and node set status without requiring raw YAML.
 - The web console shows the same provisioning stage, health signals, and lifecycle status that are available via the API and CLI.
 - Granular status is available for CaaS clusters; VMaaS and BMaaS are unchanged.
+- When a provisioning stage cannot be determined (e.g., the underlying signal is temporarily unavailable), the cluster surfaces an explicit "stage unknown" state rather than a stale or misleading stage.
 
 ## Non-Functional Requirements
 
-- **Freshness:** the status shown reflects the cluster's actual state within a bounded, documented time, so users are not misled by stale status. (The specific bound is defined in the design EP.)
+- **Freshness:** the status shown reflects the cluster's actual state within a bounded, documented time - on the order of seconds, not minutes - so users are not misled by stale status. (The exact bound is defined in the design EP.)
 - **Consistency:** the API, CLI, and UI report the same status for the same cluster at a given point in time.
 - **No regression:** adding granular status does not degrade the latency or reliability of existing cluster status behavior.
 
