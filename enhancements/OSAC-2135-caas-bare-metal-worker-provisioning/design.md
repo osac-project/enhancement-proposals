@@ -128,7 +128,7 @@ This design replaces `HostType` with `BareMetalInstanceType` and the static agen
      --description "Standard bare-metal node: 64-core x86_64, 512 GiB RAM, 100GbE fabric"
    ```
 
-   Cloud Infrastructure Admins must also label inventory hosts to match — via the backend's native mechanism (Metal3 BareMetalHost labels, OpenStack Ironic node metadata). OSAC does not validate label consistency at type-creation time.
+   Cloud Infrastructure Admins must also label inventory hosts to match — via whatever host-labeling mechanism the BMaaS backend exposes. This is a BMaaS/backend concern; CaaS does not assume a specific backend and OSAC does not validate label consistency at type-creation time.
 
 4. **Ensure the assisted image service is disabled** (deployment prerequisite — see Assisted Image Service section).
 
@@ -285,7 +285,7 @@ This diagram shows the scale-down flow. CAPI handles node drain and agent unbind
 
 #### Cluster Deletion
 
-On ClusterOrder deletion, the worker reconciler does not need to explicitly orchestrate scale-down. Deleting the HostedCluster cascades through HyperShift (deletes all NodePools) → CAPI (drains nodes, deletes Machines) → CAPA (unbinds Agents). The worker reconciler reacts to Agents entering `unbinding-pending-user-action` and cleans up Agent CRs and BMIs through the normal scale-down watch (steps 5-8). The ClusterOrder's finalizer holds until all `status.workers[]` entries are cleaned up. The InfraEnv CR is garbage collected via its ownerReference to the ClusterOrder.
+On ClusterOrder deletion, deleting the HostedCluster cascades through HyperShift (deletes all NodePools) → CAPI (drains nodes, deletes Machines) → CAPA (unbinds Agents), which cleans up the Kubernetes-side objects and the Agent CRs. The cascade does **not** delete the BMIs — the fulfillment-service BareMetalInstances are unknown to HyperShift. The ClusterOrder finalizer therefore actively deletes every BMI listed in `status.workers[]` via `BareMetalInstances.Delete`, rather than reacting to per-Agent unbind events as the scale-down flow does. The finalizer holds until all `status.workers[]` entries are confirmed deleted. The InfraEnv CR is garbage collected via its ownerReference to the ClusterOrder.
 
 ### API Extensions
 
@@ -559,7 +559,9 @@ message BareMetalInstanceImage {
 }
 ```
 
-The system-owned catalog item is a deployment prerequisite — created during OSAC installation with unlocked parameters so the CaaS controller can set image, user_data, and network_attachments freely. The `BareMetalInstanceType` referenced in the `ClusterNodeSet` determines which host hardware profile is allocated by BMaaS.
+The system-owned catalog item is created automatically, not by an admin. Because CaaS bare-metal provisioning is only usable once (a) CaaS is deployed, (b) a BMaaS backend is integrated, and (c) at least one `BareMetalInstanceType` is registered, the catalog item is seeded by the same automation that enables the CaaS-on-bare-metal integration — not by the base OSAC install (which may run without BMaaS). Concretely, the osac-installer creates it as a `system`-tenant `BareMetalInstanceCatalogItem` with all provisioning parameters unlocked when the bare-metal integration is enabled; the CaaS controller then reconciles against it (creating it if missing) so a fresh deployment is self-healing rather than dependent on install ordering. The item carries unlocked parameters so the controller can set image, user_data, and network_attachments freely. The `BareMetalInstanceType` referenced in the `ClusterNodeSet` — not this catalog item — determines which host hardware profile BMaaS allocates.
+
+Open item: whether the seed lives in the installer chart or is reconciled entirely by the controller is an implementation choice; either way the contract is that no human creates this item, and it does not exist until a `BareMetalInstanceType` is available to reference.
 
 **gRPC call behavior:** This controller is the first in osac-operator to call `Create` and `Delete` on the fulfillment-service private API (existing controllers only call `Signal`). All gRPC calls use a context deadline of 30 seconds. On persistent failure (3 consecutive errors), the controller sets a `FulfillmentServiceUnavailable` condition on the ClusterOrder and backs off to 5-minute requeue intervals. The controller-runtime requeue provides the retry loop; the deadline prevents a hung fulfillment-service from blocking the controller goroutine.
 
