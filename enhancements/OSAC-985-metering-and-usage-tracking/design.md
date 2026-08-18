@@ -188,17 +188,18 @@ sequenceDiagram
 
     U->>GW: inference request
     GW->>GW: route to model provider
-    GW-->>U: inference response
     GW->>K: inference.tokens.used CloudEvent → osac.metering.inference.raw
+    K-->>GW: publish acknowledged
+    GW-->>U: inference response
     MC->>K: consume from osac.metering.inference.raw
     MC->>MC: validate tenant (organization_id → tenant_id)
     MC->>KP: osac.inference.usage.v1 (enriched with tenant_id)
     KP->>K: publish → osac.metering.inference
 ```
 
-MaaS usage data must be queryable within 60 seconds of inference completion [PRD: CAP-13].
+MaaS usage data must be queryable within 60 seconds of inference completion [PRD: CAP-13]. The IPP plugin publishes synchronously to `osac.metering.inference.raw` before returning the ext-proc response (sub-millisecond local broker write). The MaaS Kafka Consumer's poll interval (default 100ms) plus validation and canonical publish adds single-digit seconds end-to-end — well within the 60-second SLA.
 
-**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The MaaS Kafka Consumer maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` are permanently rejected and their offset committed. Rejected events increment `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}` and are logged at ERROR level with structured identifiers only.
+**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The MaaS Kafka Consumer maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` are permanently rejected and their offset committed. Rejected events increment `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}` (alert: > 0 for 5m) and are logged at ERROR level with structured identifiers only (`event_id`, `source`, `type`, `organization_id`, error reason). Full event payloads are never written to application logs — they may contain sensitive inference data. If forensic investigation requires the full payload, operators can retrieve the raw event from the `osac.metering.inference.raw` topic (30-day retention) using the `event_id` for correlation.
 
 **MaaS delivery resilience:** MaaS inference events have no fulfillment resource to reconcile against — unlike VMaaS/CaaS, lost events are unrecoverable. The IPP plugin publishes directly to Kafka, providing durable at-least-once delivery. This eliminates the data loss window and response-path latency coupling that an HTTP ingest endpoint would introduce.
 
