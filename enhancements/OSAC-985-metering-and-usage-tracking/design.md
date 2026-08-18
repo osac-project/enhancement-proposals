@@ -56,7 +56,7 @@ The design introduces four components:
 3. **Provider Adapter framework** (Go) — a shared framework for building billing provider adapters, handling Kafka consumption, retry, DLQ, and idempotency
 4. **Provider Adapters** — one active per deployment, selected via Helm values; initial adapters for Cost Management and Monetize360
 
-The Metering Service contains four subsystems: Watch Consumer (snapshot → lifecycle transition conversion), Heartbeat Generator (60-second periodic usage records), Reconciliation Loop (hourly State Projection vs fulfillment List API comparison), and MaaS HTTP Ingest (inference event reception).
+The Metering Service contains four subsystems: Watch Consumer (snapshot → lifecycle transition conversion), Heartbeat Generator (60-second periodic usage records), Reconciliation Loop (hourly State Projection vs fulfillment List API comparison), and MaaS Kafka Consumer (inference event ingestion from a raw Kafka topic).
 
 ```mermaid
 flowchart TD
@@ -72,10 +72,11 @@ flowchart TD
         RL[Reconciliation Loop\nhourly]
         HG[Heartbeat Generator\n60s tick]
         SP[(State Projection\nPostgreSQL)]
-        MH[MaaS HTTP Ingest]
+        MH[MaaS Kafka Consumer]
     end
 
-    AG -->|inference.tokens.used CloudEvent| MH
+    AG -->|inference.tokens.used CloudEvent| KF
+    KF -->|osac.metering.inference.raw| MH
     FS -->|OBJECT_CREATED/UPDATED/DELETED| WC
     FS -->|List APIs| RL
     WC --> SP
@@ -91,7 +92,7 @@ flowchart TD
     PA -->|provider-specific protocol| EP
 ```
 
-The Metering Service consumes the fulfillment-service private Watch stream — the natural integration boundary, since all resource lifecycle state changes already flow through it — and produces canonical CloudEvents to Kafka. The Watch stream delivers resource snapshots, not transition records — the Watch Consumer enriches these into lifecycle transitions by maintaining the State Projection. The AI Gateway IPP plugin delivers per-request inference events via the HTTP ingest endpoint.
+The Metering Service consumes the fulfillment-service private Watch stream — the natural integration boundary, since all resource lifecycle state changes already flow through it — and produces canonical CloudEvents to Kafka. The Watch stream delivers resource snapshots, not transition records — the Watch Consumer enriches these into lifecycle transitions by maintaining the State Projection. The AI Gateway IPP plugin publishes raw inference CloudEvents directly to the `osac.metering.inference.raw` Kafka topic; the MaaS Kafka Consumer validates, enriches, and republishes them to the canonical `osac.metering.inference` topic.
 
 ### Workflow Description
 
@@ -181,25 +182,25 @@ MaaS has no fulfillment resource and no state machine. One event is emitted per 
 sequenceDiagram
     participant U as Tenant User
     participant GW as AI Gateway
-    participant MH as MaaS HTTP Ingest
-    participant KP as Kafka Publisher
     participant K as Kafka
+    participant MC as MaaS Kafka Consumer
+    participant KP as Kafka Publisher
 
     U->>GW: inference request
     GW->>GW: route to model provider
     GW-->>U: inference response
-    GW->>MH: POST /ingest/inference (inference.tokens.used CloudEvent)
-    MH->>MH: read organization_id from event data
-    MH->>KP: osac.inference.usage.v1 (enriched with tenant_id)
+    GW->>K: inference.tokens.used CloudEvent → osac.metering.inference.raw
+    MC->>K: consume from osac.metering.inference.raw
+    MC->>MC: validate tenant (organization_id → tenant_id)
+    MC->>KP: osac.inference.usage.v1 (enriched with tenant_id)
     KP->>K: publish → osac.metering.inference
-    MH-->>GW: 202 Accepted
 ```
 
-MaaS usage data must be queryable within 60 seconds of inference completion [PRD: CAP-13]. The Metering Service publishes to Kafka synchronously before returning HTTP 202.
+MaaS usage data must be queryable within 60 seconds of inference completion [PRD: CAP-13].
 
-**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The Metering Service maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` are rejected with HTTP 422 and not published to Kafka (the DLQ is reserved for adapter-side delivery failures). Rejected events increment `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}` (alert: > 0 for 5m) and are logged at ERROR level with structured identifiers only (`event_id`, `source`, `type`, `organization_id`, error reason) and a SHA-256 payload hash for correlation. Full event payloads are never written to application logs — they may contain sensitive inference data. If forensic investigation requires the full payload, operators can enable debug-level logging via a runtime flag, which routes rejected events to a separate log stream with restricted access.
+**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The MaaS Kafka Consumer maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` are permanently rejected and their offset committed. Rejected events increment `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}` and are logged at ERROR level with structured identifiers only.
 
-**MaaS delivery resilience:** MaaS inference events have no fulfillment resource to reconcile against — unlike VMaaS/CaaS, lost events are unrecoverable. The current AI Gateway IPP plugin (`external-metering`) has no retry logic — if the HTTP POST to `/ingest/inference` fails, the error is logged and the event is lost. Additionally, the metering report blocks the ext-proc response pipeline, so Metering Service latency directly adds to inference response time. Any Metering Service downtime (restart, network partition) causes permanent MaaS event loss at the current plugin implementation. This will be resolved by raising a requirement for the IPP plugin to support publishing directly to Kafka, eliminating the HTTP hop, the data loss window, and the response-path latency coupling.
+**MaaS delivery resilience:** MaaS inference events have no fulfillment resource to reconcile against — unlike VMaaS/CaaS, lost events are unrecoverable. The IPP plugin publishes directly to Kafka, providing durable at-least-once delivery. This eliminates the data loss window and response-path latency coupling that an HTTP ingest endpoint would introduce.
 
 **MaaS streaming dependency:** Streaming inference mode requires the `stream-usage-enforcer` plugin in the PayloadProcessorConfig chain to inject `stream_options.include_usage=true`. Without it, OpenAI-compatible providers return no usage data in streaming responses, and the `external-metering` plugin silently reports zero tokens. Deployments must include this plugin for accurate MaaS metering.
 
@@ -259,7 +260,6 @@ The Metering Service introduces no CRDs, webhooks, or aggregated API servers. It
 
 | Endpoint | Method | Purpose | Authentication |
 |----------|--------|---------|----------------|
-| `/ingest/inference` | POST | Receives `inference.tokens.used` CloudEvents from AI Gateway IPP plugin | Kubernetes SA JWT or mTLS |
 | `/healthz` | GET | Liveness probe | None |
 | `/readyz` | GET | Readiness probe (Watch stream connected, Kafka producer ready) | None |
 | `/metrics` | GET | Prometheus metrics | None |
