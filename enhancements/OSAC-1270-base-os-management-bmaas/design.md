@@ -29,7 +29,7 @@ This design integrates the DiskImage resource (defined in [OSAC-2540](https://re
 
 OSAC-2540 solves this problem for VMaaS by introducing the DiskImage resource — a governed image catalog with lifecycle management (available → deprecated → obsolete), two-tier visibility (global + tenant-scoped), and deletion protection. This design extends that solution to BMaaS.
 
-The integration point is narrow: the bare-metal provisioning stack already accepts images as a `imageURL` JSON template parameter, so DiskImage is resolved in the fulfillment-service reconciler before the BareMetalInstance CRD is written. The bare-metal-fulfillment-operator and osac-aap provisioning templates require no changes.
+The integration point is narrow: the bare-metal provisioning stack already accepts images as a `imageURL` JSON template parameter, so DiskImage is resolved in the fulfillment-service reconciler before the BareMetalInstance CRD is written. The bare-metal-fulfillment-operator CRD is unchanged. The osac-aap provisioning templates currently carry a hardcoded default `imageURL` value; that default must be removed as part of this feature — after this change, `imageURL` is always injected by the reconciler from the required `disk_image` reference, and the template must not supply its own fallback.
 
 ### Goals
 
@@ -37,19 +37,20 @@ The integration point is narrow: the bare-metal provisioning stack already accep
 - Cloud Provider Admins and Tenant Admins publish, version, and deprecate OS images independently of BareMetalInstance provisioning, with lifecycle visibility to tenants.
 - Creating a BareMetalInstance with a deprecated image produces a warning; creating with an obsolete image is rejected — tenants receive actionable feedback rather than silent failures.
 - Deleting a DiskImage that is still referenced by active BareMetalInstances or CatalogItems is blocked at the database level.
-- CatalogItem operators can set a default OS image for a BareMetalInstance catalog entry, so tenants can provision without needing to select an image explicitly.
+- CatalogItem operators can set a default OS image for a BareMetalInstance catalog entry via `field_definitions`, so tenants can provision without needing to select an image explicitly. This is the only mechanism for supplying a default — there is no system-level default image, and the current AAP default is being removed.
 
 ### Non-Goals
 
 - Custom OS image upload by tenants.
 - In-place OS upgrade or OS configuration management beyond initial boot.
-- Adding a `disk_image` field to `BareMetalInstanceTemplate` — defaults are carried on the CatalogItem.
+- Adding a `disk_image` field to `BareMetalInstanceTemplate` — templates carry no default; defaults are carried only on the CatalogItem.
+- A system-level or Ansible-provided default disk image — `disk_image` must always be supplied explicitly by the user or defaulted by the CatalogItem; if neither provides it, creation fails.
 - Exposing `guest_os_family` to the BMaaS provisioning path — AAP templates consume only `imageURL`.
 - Any changes to the DiskImage resource itself (its API, lifecycle, or visibility rules are fixed by OSAC-2540).
 
 ## Proposal
 
-`BareMetalInstanceSpec.disk_image` replaces the inline `image` field as a reference to a DiskImage by ID. At creation time, the server resolves the DiskImage reference (from the user or from the CatalogItem's `field_definitions`), validates it against the DiskImage lifecycle and visibility rules, and persists the BareMetalInstance. The reconciler then fetches the DiskImage's `source_ref` and injects it as `params["imageURL"]` — the same JSON template parameter the AAP provisioning roles already consume. `imageSourceType`, previously injected alongside `imageURL` from the inline `spec.image.source_type`, is dropped: DiskImage abstracts the source type, and AAP provisioning templates do not consume `imageSourceType` for bare-metal provisioning. This keeps the operator CRD and all downstream provisioning code unchanged.
+`BareMetalInstanceSpec.disk_image` replaces the inline `image` field as a reference to a DiskImage by ID. `disk_image` is required: creation fails with `InvalidArgument` if neither the user nor the CatalogItem's `field_definitions` supplies a value. At creation time, the server resolves the DiskImage reference, validates it against the DiskImage lifecycle and visibility rules, and persists the BareMetalInstance. The reconciler then fetches the DiskImage's `source_ref` and injects it as `params["imageURL"]` — the same JSON template parameter the AAP provisioning roles already consume. `imageSourceType`, previously injected alongside `imageURL` from the inline `spec.image.source_type`, is dropped: DiskImage abstracts the source type, and AAP provisioning templates do not consume `imageSourceType` for bare-metal provisioning. This keeps the operator CRD and all downstream provisioning code unchanged.
 
 Deletion protection is extended by updating the `check_disk_image_not_in_use` database trigger (introduced by OSAC-2540) to also query `bare_metal_instances` and `bare_metal_instance_catalog_items`. A complementary BEFORE INSERT OR UPDATE trigger on `bare_metal_instances` validates inbound `disk_image` references with `FOR SHARE` locking, matching the TOCTOU protection pattern from OSAC-2540.
 
@@ -74,8 +75,8 @@ sequenceDiagram
 
     User->>API: Create BareMetalInstance (disk_image=<id> or omitted)
     API->>DB: Get CatalogItem → applyFieldDefinitions
-    Note over API: disk_image default applied if not provided
-    API->>API: Validate disk_image is set
+    Note over API: CatalogItem default applied if user did not set disk_image
+    API->>API: Validate disk_image is set (InvalidArgument if still missing)
     API->>DB: Get DiskImage by ID (FOR SHARE)
     API->>API: Validate lifecycle ≠ OBSOLETE, tenant visibility
     API->>DB: Persist BareMetalInstance (disk_image ref)
@@ -160,6 +161,10 @@ This is a breaking public API change: `BareMetalInstanceSpec.image` is removed a
 Deferred to GA per [Graduation Criteria](#graduation-criteria): full user-facing documentation and release notes.
 
 ### Implementation Details/Notes/Constraints
+
+#### osac-aap Template Change
+
+The osac-aap bare-metal provisioning role currently sets a hardcoded default `imageURL` value. This default must be removed so that `imageURL` is always required in the template context — guaranteed to be present because the fulfillment-service reconciler injects it from the DiskImage `source_ref`. Leaving the default in place would mask misconfiguration (e.g., a reconciler bug that fails to inject `imageURL`) by silently provisioning the wrong image. The template change is in `osac/osac-aap` and must land in the same PR as the fulfillment-service changes.
 
 #### Proto Schema Changes
 
