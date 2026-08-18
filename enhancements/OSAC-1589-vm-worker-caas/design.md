@@ -36,7 +36,7 @@ The `ocp_kubevirt` template reuses the HostedCluster/NodePool lifecycle from `oc
 
 ### Goals
 
-- Expose VM workers as a distinct catalog item (template) so tenants explicitly choose a VM-backed cluster, not a hidden backend mode of the bare-metal template.
+- Expose VM workers as a distinct catalog item backed by a dedicated template (`ocp_kubevirt`) so tenants explicitly choose a VM-backed cluster, not a hidden backend mode of the bare-metal offering.
 - Keep workers platform-managed: HyperShift/CAPK owns VM lifecycle via NodePools. No tenant-visible ComputeInstances are created for CaaS workers.
 - Reuse the existing AAP template hook mechanism (`hosted_cluster_modify_definition_hook`, `nodepool_modify_definitions_hook`) to compose KubeVirt behavior on top of the `ocp_small` base template, avoiding duplication of HostedCluster/NodePool lifecycle logic.
 - Carry tenant network attachment from the fulfillment-service API through the ClusterOrder CRD to the AAP template without requiring changes to the operator's reconciliation logic.
@@ -52,7 +52,7 @@ The `ocp_kubevirt` template reuses the HostedCluster/NodePool lifecycle from `oc
 - Single platform-agnostic template for both BM and VM -- `platform.type` is immutable per HostedCluster, and the two offerings have different infrastructure, networking, and lifecycle characteristics.
 - Multi-interface networking and east-west traffic for VM workers -- deferred to OSAC-1382. [Locked: D7]
 - Autoscaling based on workload utilization.
-- Live migration, snapshotting, or cloning of worker VMs. [Locked: D5]
+- Live migration validation and snapshotting/cloning tooling for worker VMs — KubeVirt live migration is handled by the platform automatically; this design does not add or test migration-specific workflows. [Locked: D5]
 
 ## Proposal
 
@@ -132,7 +132,7 @@ The Tenant Admin calls `Clusters.Delete`. The fulfillment-service marks the Clus
 
 The catalog item determines the install plane and `platform.type`. BM clusters use `ocp_small` (Agent platform); VM clusters use `ocp_kubevirt` (KubeVirt platform). This follows the same pattern as other capability-shaped templates (e.g., GPU / AI-MaaS offerings) -- distinct catalog entries for distinct infrastructure.
 
-Within a catalog item, `resourceClass` selects shape (VM size, storage profile), not the BM-vs-VM distinction. A tenant does not toggle between bare-metal and VM on a single HostedCluster -- they pick the offering that matches their need.
+Within a catalog item, `resourceClass` selects shape (VM size, storage profile), not the BM-vs-VM distinction. `resourceClass` on `NodeRequest` maps to VM sizing parameters (vCPU, memory, root volume) in the template, serving the same role as cloud instance types. No separate instance-type resource is needed for CaaS workers. A tenant does not toggle between bare-metal and VM on a single HostedCluster -- they pick the offering that matches their need.
 
 From the tenant perspective: "give me a VM-backed cluster" and "give me a bare-metal cluster" are both first-class choices. Neither is hidden behind the other.
 
@@ -387,7 +387,7 @@ When OSAC-1373 delivers `AcceleratorRequest` on `NodeRequest`, the `modify_nodep
 
 #### Networking Evolution
 
-Phase 1 provides tenant subnet attachment (north-south) via Secondary Layer2 CUDN. This does NOT require ComputeInstance Primary UDN -- CaaS VM workers use Secondary `additionalNetworks` on the NodePool, which is a fundamentally different network model from ComputeInstance's Primary UDN.
+Phase 1 provides tenant subnet attachment (north-south) via Secondary Layer2 CUDN. The networking API is unified: both ComputeInstance and CaaS workers attach to a Subnet via `networkAttachments`. The backend implementation differs because the VM serves a different purpose. A ComputeInstance is the workload itself — it belongs on the tenant network as its primary identity (Primary UDN, placed in the subnet namespace). A CaaS worker is a cluster node — it needs the pod network for control-plane communication alongside the tenant network for workload traffic (Secondary UDN, placed in the HostedCluster namespace). This is a correct architectural difference, not a gap: using Primary UDN for CaaS workers would break pod-network connectivity to the hosted control plane.
 
 | Phase | Mechanism | Status | Jira |
 |---|---|---|---|
@@ -398,6 +398,12 @@ Phase 1 provides tenant subnet attachment (north-south) via Secondary Layer2 CUD
 Target architecture for Phase 2: `network_attachment` on ClusterSpec flows to the unified dispatcher, which selects the appropriate k8s manager (OVN-k8s EVPN) to create a NAD in the HostedCluster namespace. The NodePool's `additionalNetworks` reference remains the same -- only the mechanism that creates the NAD changes. The path is: `network_attachment` -> dispatcher -> k8s manager -> NAD in HC namespace -> CAPK `additionalNetworks`.
 
 In Phase 3, KubeVirt workers gain multi-interface support via SR-IOV passthrough on NodePools. The `networkAttachments` list (already supporting up to 8 entries) maps to multiple `additionalNetworks` entries. East-west traffic (GPU-to-GPU, L3VPN) requires a FabricDomain mechanism to reference VM workers -- this is deferred to OSAC-1382. [Locked: D6, D7]
+
+#### Metering
+
+CaaS worker metering follows the same pattern as ROSA: meter at the cluster/NodePool layer, not per individual VM. OSAC's metering pipeline (`osac-metering`) currently maps only ComputeInstance events. A new `clusterOrderMapper` is needed to read from the Cluster/ClusterOrder Watch stream and emit billing events with dimensions such as `template_id`, `node_set_count`, `resource_class`, and `duration`. The billing formula is: `node_set × resourceClass × time`, derived from ClusterOrder status — no ComputeInstance involvement is required.
+
+This matches industry practice: ROSA bills per-vCPU at the cluster layer, not per-EC2-instance. The compute primitive (EC2 for ROSA, KubeVirt VM for OSAC) is an infrastructure detail, not a billing entity.
 
 #### Base Template Rename
 
@@ -443,6 +449,8 @@ No new observability changes. Existing monitoring mechanisms apply:
 - HostedCluster and NodePool conditions are standard HyperShift observability.
 - KubeVirt VM metrics (CPU, memory, disk) are exposed by the existing KubeVirt monitoring stack.
 
+KubeVirt exposes per-VM metrics (CPU, memory, disk I/O) via the existing monitoring stack, readable from both the VirtualMachineInstance and the guest cluster's node-level metrics. No additional instrumentation is needed for CaaS workers beyond what the platform already provides.
+
 The KubeVirt template adds no new Prometheus metrics, Kubernetes events, or structured log events beyond what the base `ocp_small` template and HyperShift already produce.
 
 ### Risks and Mitigations
@@ -452,7 +460,6 @@ The KubeVirt template adds no new Prometheus metrics, Kubernetes events, or stru
 | MCE `routeSelector` interference | MCE adds a `routeSelector` to the IngressController that excludes HyperShift routes, breaking API server access for KubeVirt HostedClusters | Remove the `routeSelector` from the IngressController or configure the `hypershift-local-hosting` component not to manage it. Documented in the deployment runbook. |
 | CUDN CIDR conflicts | If the Subnet CIDR overlaps with the management cluster's pod or service CIDR, OVN routing breaks | The Subnet CIDR is validated at Subnet creation time by the fulfillment-service. The CUDN uses the same CIDR -- no additional validation is needed at the template level. |
 | Multus namespace isolation changes in future OCP versions | If OCP relaxes namespace isolation for NADs, the namespace labeling step becomes unnecessary but harmless | The labeling step is idempotent and does not break if namespace isolation is relaxed. No mitigation needed. |
-| HyperShift KubeVirt platform maturity | KubeVirt platform is GA in HyperShift as of OCP 4.14, but edge cases (specific storage backends, network configurations) may surface | Test with the target storage class and network configuration. File upstream issues for edge cases. |
 | Template parameter validation | Invalid VM sizing parameters (0 cores, negative memory) reach AAP unchecked | AAP template should validate parameters before creating NodePools. Invalid parameters cause the AAP job to fail with a descriptive error, which the operator surfaces as a ClusterOrder condition. |
 
 ### Drawbacks
@@ -472,9 +479,9 @@ The KubeVirt template adds no new Prometheus metrics, Kubernetes events, or stru
 Boot VMs, run assisted discovery, and join them as Agents so everything stays on `platform.type: Agent`. This would avoid a separate template by making VMs look like bare-metal to HyperShift.
 
 **Rejected:**
-- **Ongoing assisted cost on every add/replace:** each VM scale-up requires InfraEnv creation, discovery boot, Agent registration, correlation, bind/unbind -- the full assisted-installer pipeline designed for unknown hardware.
+- **Ongoing assisted cost on every add/replace:** each VM scale-up requires discovery boot, Agent registration, correlation, and bind/unbind. An InfraEnv would already exist on the Agent platform, but the per-VM overhead of discovery-boot and Agent registration remains on every scale operation. Assisted-installer was designed for environments without existing infrastructure integration (bare-metal, VMware); OSAC already has infrastructure integration via CAPK, making the assisted path unnecessary indirection.
 - **Multi-resource invariant for scale/repair:** CI Running + Agent registered + Agent bound + NodePool healthy all fail independently, creating a fragile state machine for an operation that CAPK handles atomically.
-- **Loses the speed advantage of VMs:** discovery-join is the slow path for unknown hardware. VM workers can boot in minutes via CAPK; forcing them through Agent discovery negates the density and speed benefits.
+- **Loses the boot speed advantage of VMs:** discovery-join adds minutes of overhead per VM. VM workers can boot directly via CAPK; forcing them through Agent discovery negates the provisioning speed benefits that motivated this feature.
 - **Does not avoid the fork:** it just hides the BM/VM distinction by making VMs as complex as bare-metal, without the simplicity gains of CAPK.
 
 ### ComputeInstance + CAPK
@@ -505,6 +512,8 @@ A future VMaaS concept where one object manages N tenant VMs.
 ### ComputeInstance for VM Workers (Abstraction Mismatch)
 
 Create KubeVirt VMs as ComputeInstances and have them join the cluster as workers. **Rejected:** ComputeInstance is tenant-managed -- tenants see, control, and directly interact with each VM (start, stop, delete, console). CaaS workers are platform-managed -- HyperShift manages VM lifecycle via NodePools, and tenants should not see or act on the underlying VMs. The unified networking EP explicitly lists ComputeInstance, Cluster, and BaremetalInstance as three separate first-class types. Using ComputeInstance for CaaS workers would require either bypassing HyperShift's NodePool management (losing scaling, health checking, rolling updates) or creating a parallel reconciliation path that fights with HyperShift for VM ownership.
+
+This design follows the same pattern as ROSA HCP on AWS: CAPA creates EC2 instances directly from the NodePool spec — there is no separate "compute instance" resource between CAPA and the VM. In OSAC, CAPK is the equivalent of CAPA. Both create VMs directly from the NodePool spec in a single hop. EC2 instances backing ROSA workers are not the customer's general-purpose VMs — they are cluster capacity owned by the control plane. Similarly, KubeVirt VMs backing OSAC CaaS workers are not tenant ComputeInstances — they are cluster capacity managed by HyperShift. If OSAC needs metering, instance types, or observability for CaaS workers, those should be added to the NodePool/CAPK path (matching ROSA), not by routing through ComputeInstance (adding a layer ROSA does not have).
 
 ### Standalone KubeVirt Template (No Hook Delegation)
 
@@ -599,14 +608,3 @@ Documentation updates required:
 - Tenant Admin guide: ordering a VM-backed cluster with network attachment.
 - Deployment prerequisites: KubeVirt (CNV), MCE/HyperShift with KubeVirt platform support, OVN-Kubernetes with CUDN support, storage class for VM root volumes.
 - MCE routeSelector workaround (removal or hypershift-local-hosting configuration).
-
----
-
-## Provenance
-
-Authored: draft @ design 0.7.1 - 782b906, workspace main @ 10b5059
-Final: revise @ design 0.8.0 - 7efcedb, workspace main @ d53fe8e
-
-> Context changed between draft and revise.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d53fe8e","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
