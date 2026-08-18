@@ -21,7 +21,7 @@ superseded-by:
 
 ## Summary
 
-This design covers the web console (osac-ux) work that lets a user choose a
+This design covers the web console (osac-ui) work that lets a user choose a
 **storage tier** for each disk when creating a virtual machine (ComputeInstance).
 A storage tier is a named class of storage — for example "Balanced",
 "Performance", or "Capacity" — defined by the cloud provider administrator. Today
@@ -142,7 +142,7 @@ Failure Handling.
 ```mermaid
 sequenceDiagram
     participant U as Tenant User
-    participant W as Create Wizard (osac-ux)
+    participant W as Create Wizard (osac-ui)
     participant ST as StorageTier API
     participant FS as Fulfillment Service
 
@@ -197,7 +197,7 @@ string — this *resolves* the string-union anti-pattern rather than introducing
 one. No sub-resource actions, K8s-internal fields, one-time secrets, or RHOAI
 operator fields are introduced.
 
-After the backend ships and `pnpm gen-types` runs in osac-ux, the migration
+After the backend ships and `pnpm gen-types` runs in osac-ui, the migration
 diff should be limited to renaming `storageClass`→`storageTier` and dropping the
 enum maps.
 
@@ -239,7 +239,7 @@ storage tier, and a kebab (Edit / Delete).
 > above describe everything the user sees and does.
 
 Per-file changes in
-`osac-ux/libs/ui-components/src/components/catalogProvision/wizard/adapters/computeInstance`
+`osac-ui/libs/ui-components/src/components/catalogProvision/wizard/adapters/computeInstance`
 and `.../api/v1`:
 
 **1. `api/v1/compute-instance-disk.ts` (`@temp-api`).** Replace
@@ -252,7 +252,7 @@ views.
 `Select`) reused by boot disk and the modal:
 
 - Source: `useStorageTiers()` → filter `status.available === true`.
-  [Codebase: osac-ux/.../api/v1/storage-tier.ts]
+  [Codebase: osac-ui/.../api/v1/storage-tier.ts]
 - Option value = `metadata.name` (proto `storage_tier`); label =
   `spec.displayName || metadata.name`; subtitle = tier description; first tier
   tagged `(default)`; default selection = first available tier.
@@ -287,7 +287,7 @@ wizard and move all disk UI into it:
   instance type, user data, run strategy, Windows flag, dynamic fields.
 - Scope note: `WIZARD_STEP_IDS` / `CatalogProvisionWizard` back only
   `VmCreatePage`, so this step is ComputeInstance-only; no other kind's wizard is
-  affected. [Codebase: osac-ux/.../CatalogProvisionWizard.tsx]
+  affected. [Codebase: osac-ui/.../CatalogProvisionWizard.tsx]
 
 **5. Add disk modal component (new).** PatternFly `Modal`, title "Add disk" /
 "Edit disk", with the size input and the shared tier picker; footer Add/Save
@@ -310,7 +310,7 @@ Number(...), storageTier }` (omit `storageTier` when empty). Additional disks:
 map to `{ sizeGib, storageTier }`, preserving the existing size-truthiness
 filter. No `compute-instance-wire.ts` change — `serializeSpecRecordToWire`
 converts `storageTier`→`storage_tier` and omits empties.
-[Codebase: osac-ux/.../api/v1/compute-instance-wire.ts]
+[Codebase: osac-ui/.../api/v1/compute-instance-wire.ts]
 
 **8. `computeInstance/applyCatalogDefaults.ts`.** Add an overlay for
 `spec.boot_disk.storage_tier` and seed `spec.bootDisk.storageTier`. When the
@@ -483,7 +483,7 @@ list; the Review step shows a Storage section with per-disk tiers; server
 
 ### E2E Tests
 
-Cypress (`osac-ux/apps/e2e/cypress/e2e/flows`): create a ComputeInstance
+Cypress (`osac-ui/apps/e2e/cypress/e2e/flows`): create a ComputeInstance
 selecting different tiers for boot and an additional disk; submit and verify the
 request payload carries per-disk `storage_tier`; error path submitting a
 nonexistent tier surfaces a legible message.
@@ -530,10 +530,10 @@ None.
 ## Provenance
 
 Authored: commit @ design 0.8.0 - 7efcedb, workspace design/OSAC-1710 @ e7ea5f9
-Final: respond @ design 0.8.0 - 7efcedb, workspace design/OSAC-1710 @ 74b7185 (dirty)
+Final: respond @ design 0.8.0 - 7efcedb, workspace design/OSAC-1710 @ f08ba8e (dirty)
 
 > Context changed between commit and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"74b7185 (dirty)","source_repo_branch":"design/OSAC-1710","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["commit","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"f08ba8e (dirty)","source_repo_branch":"design/OSAC-1710","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["commit","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
