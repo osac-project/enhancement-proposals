@@ -515,12 +515,12 @@ All event types carry a `schema_version` field and the CloudEvents `type` includ
 |-------|------------|---------------|------------|-----------|-------------|
 | `osac.metering.lifecycle` | `osac.resource.{created,started,updated,suspended,resumed,deleted}.v1` | `osacresourceid` | 24 | 30 days | 3 |
 | `osac.metering.heartbeat` | `osac.resource.heartbeat.v1` | `osacresourceid` | 24 | 30 days | 3 |
-| `osac.metering.inference.raw` | `inference.tokens.used` (raw CloudEvents from IPP plugin) | `osactenant` | 3 | 30 days | 3 |
-| `osac.metering.inference` | `osac.inference.usage.v1` (enriched by MaaS Kafka Consumer) | `osactenant` | 12 | 30 days | 3 |
+| `osac.metering.inference.raw` | `inference.tokens.used` (raw CloudEvents from IPP plugin) | `osacresourceid` | 3 | 30 days | 3 |
+| `osac.metering.inference` | `osac.inference.usage.v1` (enriched by MaaS Kafka Consumer) | `osacresourceid` | 12 | 30 days | 3 |
 | `osac.metering.corrections` | `osac.resource.correction.v1` | `osacresourceid` | 6 | 30 days | 3 |
 | `osac.metering.dlq` | All failed events | original topic | 6 | 90 days | 3 |
 
-Partition counts: `lifecycle` and `heartbeat` at 24 support up to 24 parallel consumers and distribute load at 10K+ active resources. `inference` at 12 is tenant-partitioned; `inference.raw` at 3 matches the MaaS Kafka Consumer's single consumer group. `corrections` at 6 reflects low volume. DLQ has 90-day retention for investigation.
+Partition counts: `lifecycle` and `heartbeat` at 24 support up to 24 parallel consumers and distribute load at 10K+ active resources. `inference` and `inference.raw` are partitioned by `osacresourceid` (raw CloudEvent `id` for MaaS); `inference.raw` at 3 matches the MaaS Kafka Consumer's single consumer group. `corrections` at 6 reflects low volume. DLQ has 90-day retention for investigation.
 
 Each adapter uses a single consumer group across all consumed topics. Consumer groups are independent — a new adapter gets its own group and can start at any offset.
 
