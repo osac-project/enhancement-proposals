@@ -54,7 +54,7 @@ MAC addresses are hardware-level identifiers. They do not change after a host is
 
 ## Proposal
 
-The feature extends `FindFreeHost` on both inventory backends to only return hosts that have NIC data available, then adds a `GetHostNICs` method to fetch those NICs after allocation. If `GetHostNICs` returns an error or empty NIC list, the instance stays in `Progressing` with a `Ready=False, Reason=NICMetadataUnavailable` condition and retries via controller-runtime's standard backoff. The fulfillment-service's existing controller reconciler function propagates the new status fields to the fulfillment-service database via the private gRPC API. New message types and fields are added to both the public and private proto `BareMetalInstanceStatus` messages. The `osac describe baremetalinstance` command renders a NIC table. MAC addresses are also accessible via the OSAC web console.
+The feature extends `FindFreeHost` on both inventory backends to only return hosts that have NIC data available, then adds a `GetHostNICs` method to fetch those NICs after allocation. Because `FindFreeHost` guarantees NIC data exists for any selected host, an empty NIC list from `GetHostNICs` is not a valid operational state. If `GetHostNICs` returns a transient error, the instance stays in `Progressing` with a `Ready=False, Reason=NICMetadataUnavailable` condition and retries via controller-runtime's standard backoff. The fulfillment-service's existing controller reconciler function propagates the new status fields to the fulfillment-service database via the private gRPC API. New message types and fields are added to both the public and private proto `BareMetalInstanceStatus` messages. The `osac describe baremetalinstance` command renders a NIC table. MAC addresses are also accessible via the OSAC web console.
 
 ### Workflow Description
 
@@ -87,7 +87,7 @@ The sequence above shows `GetHostNICs` called once immediately after allocation.
 
 **Error flow — transient backend failure or missing NIC data:**
 
-If `GetHostNICs` returns an error or an empty NIC list, the controller sets `Ready=False, Reason=NICMetadataUnavailable` on the instance and returns an error, keeping the instance in `Progressing`. controller-runtime's standard backoff requeue retries automatically. Because `FindFreeHost` already guarantees NIC data exists on the backend for the error case, that failure is transient and resolves when the backend recovers. An empty NIC list indicates the inventory backend lacks hardware inspection data for the host (see Metal3 inspection constraint).
+If `GetHostNICs` returns a transient error, the controller sets `Ready=False, Reason=NICMetadataUnavailable` on the instance and returns an error, keeping the instance in `Progressing`. controller-runtime's standard backoff requeue retries automatically. `FindFreeHost` guarantees NIC data exists on the backend for any selected host, so a transient error resolves when the backend recovers. An empty NIC list is not a reachable operational state — both backends now filter out hosts without inventory data in `FindFreeHost`.
 
 **Idempotency:** If `Status.Hardware` is non-nil and contains at least one NIC, the controller skips `GetHostNICs` — MACs are immutable post-allocation. This avoids redundant inventory calls on re-reconciles of already-Running instances.
 
@@ -145,7 +145,7 @@ optional BareMetalHardware hardware = N;
 
 ### Implementation Details/Notes/Constraints
 
-**Metal3:** `FindFreeHost` requires no change — Metal3 only marks a host `Available` after hardware inspection succeeds, so NIC data is implicitly guaranteed for inspected hosts. Hosts with the `inspect.metal3.io: disabled` annotation can reach `Available` without MAC addresses populated; such hosts will stay in `Progressing` with `NICMetadataUnavailable` until inspection is re-enabled and completed. This requirement must be documented in the OSAC admin documentation.
+**Metal3:** `FindFreeHost` is extended to skip hosts with the `inspect.metal3.io: disabled` annotation or with no hardware inventory data populated. This mirrors the OpenStack port-check approach and ensures any selected host has NIC data available. The additional check is a single field read on the `BareMetalHost` object already fetched during selection — no extra API call is needed.
 
 **OpenStack/Ironic:** No equivalent inspection gate exists, so host selection is extended to skip nodes with no registered ports. This adds one Ironic API call per candidate evaluated, incurred once per instance lifecycle.
 
@@ -170,7 +170,7 @@ MAC addresses originate from the inventory backend (trusted source, not user-con
 | Failure | System behavior | User observes |
 |---|---|---|
 | `GetHostNICs` returns error (inventory API transiently down) | `Ready=False, Reason=NICMetadataUnavailable, Message=<error>` condition set; controller returns error; instance stays `Progressing`; standard backoff requeue | Instance stays `Progressing`; condition visible via `kubectl describe` or API |
-| `GetHostNICs` returns empty NIC list (inspection incomplete or disabled) | `Ready=False, Reason=NICMetadataUnavailable, Message="Inventory returned no NIC data..."` condition set; controller returns error; instance stays `Progressing` | Instance stays `Progressing`; condition message identifies the cause |
+| Metal3 host with inspection disabled or no hardware data | `FindFreeHost` skips the host; it is never allocated | No `BareMetalInstance` assigned to that host; allocation retries other candidates |
 | OpenStack node with no ports (misconfigured inventory) | `FindFreeHost` skips the node; it is never allocated | No `BareMetalInstance` assigned to that host; allocation retries other candidates |
 | fulfillment-service controller restarts mid-propagation | On resume, the reconciler re-reads CRD and propagates NIC fields | No inconsistency; propagation is idempotent |
 | BareMetalInstance deleted before NIC fetch completes | Deletion path skips NIC fetch | No impact |
@@ -192,7 +192,7 @@ One new `BareMetalInstance` status condition is introduced:
 
 | Condition Type | Status | Reason | When |
 |---|---|---|---|
-| `Ready` | `False` | `NICMetadataUnavailable` | `GetHostNICs` returns a non-nil error or an empty NIC list |
+| `Ready` | `False` | `NICMetadataUnavailable` | `GetHostNICs` returns a non-nil error (transient inventory backend failure) |
 
 No new Prometheus metrics are added. `GetHostNICs` failures cause the controller to return an error, incrementing the standard controller-runtime reconcile error counter. The `Ready=False, Reason=NICMetadataUnavailable` condition gives operators a persistent, structured signal queryable via `kubectl describe` or the API without relying on event scraping.
 
@@ -200,6 +200,7 @@ No new Prometheus metrics are added. `GetHostNICs` failures cause the controller
 
 | Risk | Mitigation |
 |---|---|
+| Metal3 `FindFreeHost` inspection check cost | Hardware inventory data is already fetched as part of `BareMetalHost` retrieval — the check is a field read on an already-fetched object. No extra API call is needed. |
 | OpenStack `FindFreeHost` port-check cost | One extra `ports.List` call per candidate node during allocation. Bounded by number of candidates evaluated; incurred only once per instance lifecycle. Acceptable given allocation already involves network I/O. |
 | Inventory backend transiently unreachable during `GetHostNICs` | Controller stays in `Progressing` and retries via standard backoff. Resolves automatically when backend recovers. |
 | Interface extension breaks existing test mocks | Adding `GetHostNICs` to `Client` breaks all existing mock implementations. Mitigation: the implementation PR must update all mock usages in one pass. The CI `make test` target will fail if any mock is incomplete. |
@@ -241,8 +242,9 @@ The controller could re-fetch NIC data on every reconcile cycle or on a fixed in
 **bare-metal-fulfillment-operator:**
 - NIC fetch (Metal3): returns correct MAC list from hardware inspection data; MACs are lowercased.
 - NIC fetch (OpenStack): returns correct MAC list from port records; auth-retry applies on authentication errors.
+- Metal3 host selection: hosts with inspection disabled or without hardware inventory data are skipped; hosts with NIC data are included.
 - OpenStack host selection: nodes with no ports are skipped; port API errors are treated as a skip; nodes with ports are included.
-- Controller NIC gate: fetch is skipped when hardware data is already present (idempotency); `Ready=False, Reason=NICMetadataUnavailable` condition is set on backend errors; same condition with a distinct message on empty results.
+- Controller NIC gate: fetch is skipped when hardware data is already present (idempotency); `Ready=False, Reason=NICMetadataUnavailable` condition is set on backend API errors.
 - fulfillment-service status propagation: `status.hardware.nics` is populated when CRD hardware data is present; field is cleared when absent.
 - CLI describe: NIC table displayed when data is present; "N/A" when absent.
 
@@ -291,11 +293,11 @@ The operator and fulfillment-service are upgraded independently. An updated oper
 
 ## Support Procedures
 
-**Instance stuck in Progressing:** If a `BareMetalInstance` stays in `Progressing` after allocation, check the `Ready` condition on the object in the hub cluster (`kubectl describe baremetalinstance <name> -n <namespace>`). A `Ready=False, Reason=NICMetadataUnavailable` condition indicates either a transient inventory backend error or missing hardware inspection data. Check the condition message, operator logs, and inventory connectivity. If using Metal3, check operator logs and inventory connectivity.
+**Instance stuck in Progressing:** If a `BareMetalInstance` stays in `Progressing` after allocation, check the `Ready` condition on the object in the hub cluster (`kubectl describe baremetalinstance <name> -n <namespace>`). A `Ready=False, Reason=NICMetadataUnavailable` condition indicates a transient inventory backend error. Check the condition message, operator logs, and inventory connectivity.
+
+**Metal3 host never allocated:** If a Metal3 host is never selected by `FindFreeHost`, verify hardware inspection has completed and NIC data is populated (`kubectl get baremetalhost <name> -o jsonpath='{.status.hardware}'`). Hosts with `inspect.metal3.io: disabled` annotation or without hardware inventory data are excluded from allocation.
 
 **OpenStack node never allocated:** If an OpenStack node is never selected by `FindFreeHost`, verify it has ports registered: `openstack baremetal port list --node <uuid>`. Nodes without ports are excluded from allocation.
-
-**Disabling NIC fetch:** NIC fetch is a required gate for the `Ready` phase. There is no supported mechanism to disable it without also preventing instances from reaching `Ready`.
 
 ## Infrastructure Needed
 
