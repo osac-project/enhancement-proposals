@@ -122,11 +122,17 @@ Storage → Networking → Review.
 
 **Additional disk tier (pop-up):**
 
-1. The user clicks "Add disk". A pop-up opens with a size box (default 30 GiB)
-   and the required tier picker (defaulting to the first available tier).
-2. The user sets size and tier. "Add" stays disabled until the size is at least
+1. If the chosen catalog item defines additional-disk defaults, the list is
+   pre-filled with those disks — each with its own size **and** tier. The user
+   can accept them as-is, change the size and/or tier of any row, or delete all
+   rows. An empty list means "no additional disks", and none are created (an
+   explicit opt-out).
+2. To add a disk, the user clicks "Add disk". A pop-up opens with a size box
+   (default 30 GiB) and the required tier picker (defaulting to the first
+   available tier).
+3. The user sets size and tier. "Add" stays disabled until the size is at least
    1 and a tier is selected.
-3. On save, the disk is added to the list, showing its size and tier. Listed
+4. On save, the disk is added to the list, showing its size and tier. Listed
    disks can be edited (reopens the pop-up) or removed.
 
 **Submit:** the create request carries a tier for each disk. The server does the
@@ -443,16 +449,7 @@ tier's name and description, as the read-only tenant tiers page does?
 - **Owner:** UX
 - **Impact:** how each tier option is rendered (§Implementation 2).
 
-### 3. How additional-disk defaults from the catalog are applied
-
-Confirm the wizard pre-fills the whole additional-disks list from the catalog
-default when a catalog item is chosen, while still letting the user clear it to
-mean "no additional disks".
-
-- **Owner:** Frontend WG (aligned with [design.md §3])
-- **Impact:** catalog default handling (§Implementation 8).
-
-### 4. Does the shared types package also need the tier field?
+### 3. Does the shared types package also need the tier field?
 
 Besides the console's temporary disk type, the shared types package may also
 need the tier field added.
@@ -532,8 +529,11 @@ None.
 
 ## Provenance
 
-Committed: commit @ design 0.8.0 - 7efcedb, workspace design/OSAC-1710 @ e7ea5f9
+Authored: commit @ design 0.8.0 - 7efcedb, workspace design/OSAC-1710 @ e7ea5f9
+Final: respond @ design 0.8.0 - 7efcedb, workspace design/OSAC-1710 @ 74b7185 (dirty)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between commit and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"e7ea5f9","source_repo_branch":"design/OSAC-1710","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"74b7185 (dirty)","source_repo_branch":"design/OSAC-1710","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["commit","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
