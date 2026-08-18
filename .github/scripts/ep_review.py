@@ -194,8 +194,11 @@ def main():
         work_dir = Path(f"workdir-{skill_name}")
         if work_dir.exists():
             shutil.rmtree(work_dir)
+        # Tolerate cross-repo symlinks whose targets are absent in CI rather
+        # than aborting the whole copy.
         shutil.copytree(SKILLS_PATH, work_dir,
-                        ignore=shutil.ignore_patterns('.git'))
+                        ignore=shutil.ignore_patterns('.git'),
+                        ignore_dangling_symlinks=True)
         exclude_own_slug_from_reference_library(work_dir, files)
 
         print(f"\nRunning {skill_name}...")
