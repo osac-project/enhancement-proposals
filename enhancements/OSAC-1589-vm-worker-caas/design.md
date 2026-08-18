@@ -37,6 +37,7 @@ The `ocp_kubevirt` template reuses the HostedCluster/NodePool lifecycle from `oc
 ### Goals
 
 - Expose VM workers as a distinct catalog item backed by a dedicated template (`ocp_kubevirt`) so tenants explicitly choose a VM-backed cluster, not a hidden backend mode of the bare-metal offering.
+- Share capacity vocabulary (`resourceClass` / size profiles), tenant network identity (Subnet attachment), and cluster-layer metering with the rest of the platform. Worker lifecycle stays on NodePool + CAPK, not ComputeInstance.
 - Keep workers platform-managed: HyperShift/CAPK owns VM lifecycle via NodePools. No tenant-visible ComputeInstances are created for CaaS workers.
 - Reuse the existing AAP template hook mechanism (`hosted_cluster_modify_definition_hook`, `nodepool_modify_definitions_hook`) to compose KubeVirt behavior on top of the `ocp_small` base template, avoiding duplication of HostedCluster/NodePool lifecycle logic.
 - Carry tenant network attachment from the fulfillment-service API through the ClusterOrder CRD to the AAP template without requiring changes to the operator's reconciliation logic.
@@ -49,6 +50,7 @@ The `ocp_kubevirt` template reuses the HostedCluster/NodePool lifecycle from `oc
 - Mixed bare-metal and KubeVirt workers in a single cluster -- HyperShift enforces platform consistency per HostedCluster; all NodePools must share the same `platform.type`.
 - Agent-based join for VM workers -- CAPK is the VM install plane. Discovery-boot and Agent registration add unnecessary complexity to VMs (see Alternatives).
 - ComputeInstance (or ComputeInstancePool) as CaaS workers -- wrong abstraction layer (tenant-managed VMs vs. platform-managed workers) and technical incompatibilities (namespace, networking, boot mechanism; see Alternatives).
+- Single tenant API object for both VMaaS VMs and CaaS workers. Goal is shared catalog and commercial dimensions across both, not a single lifecycle object.
 - Single platform-agnostic template for both BM and VM -- `platform.type` is immutable per HostedCluster, and the two offerings have different infrastructure, networking, and lifecycle characteristics.
 - Multi-interface networking and east-west traffic for VM workers -- deferred to OSAC-1382. [Locked: D7]
 - Autoscaling based on workload utilization.
@@ -135,6 +137,20 @@ The catalog item determines the install plane and `platform.type`. BM clusters u
 Within a catalog item, `resourceClass` selects shape (VM size, storage profile), not the BM-vs-VM distinction. `resourceClass` on `NodeRequest` maps to VM sizing parameters (vCPU, memory, root volume) in the template, serving the same role as cloud instance types. No separate instance-type resource is needed for CaaS workers. A tenant does not toggle between bare-metal and VM on a single HostedCluster -- they pick the offering that matches their need.
 
 From the tenant perspective: "give me a VM-backed cluster" and "give me a bare-metal cluster" are both first-class choices. Neither is hidden behind the other.
+
+### Shared Catalog, Network Identity, and Metering
+
+This design intentionally shares the tenant-facing capacity model with the rest of OSAC without making workers ComputeInstances.
+
+| Surface | Shared with the platform | Not shared |
+|---------|--------------------------|------------|
+| **Catalog / instance shape** | Same `resourceClass` definitions back VMaaS sizes and CaaS NodePool templates — one vocabulary of shapes | ComputeInstance create API |
+| **Network identity** | Cluster attaches to a Subnet via `networkAttachments` — same Subnet resource used by VMaaS | ComputeInstance Primary UDN / subnet-namespace placement (workers use Secondary UDN in the HostedCluster namespace because a worker is a node, not a tenant app VM) |
+| **Billing** | Worker capacity metered at the cluster layer: `node_set × resourceClass × time`, matching ROSA's cluster-level worker metering | Billing each worker as a VMaaS ComputeInstance |
+| **Status UX** | Cluster desired/ready worker count | "My VMs" list |
+| **Ops inventory** | BMI (metal) or CAPK VirtualMachine (KubeVirt) for platform operators | Tenant-visible ComputeInstance list |
+
+ComputeInstance is not required for shared catalog, billing, or network identity. Those attach to `resourceClass` and cluster metering. CI-as-worker is only required if the platform wants worker **lifecycle** to be the VMaaS API — which conflicts with platform-managed workers and CAPK ownership.
 
 ### API Extensions
 
@@ -514,6 +530,8 @@ A future VMaaS concept where one object manages N tenant VMs.
 Create KubeVirt VMs as ComputeInstances and have them join the cluster as workers. **Rejected:** ComputeInstance is tenant-managed -- tenants see, control, and directly interact with each VM (start, stop, delete, console). CaaS workers are platform-managed -- HyperShift manages VM lifecycle via NodePools, and tenants should not see or act on the underlying VMs. The unified networking EP explicitly lists ComputeInstance, Cluster, and BaremetalInstance as three separate first-class types. Using ComputeInstance for CaaS workers would require either bypassing HyperShift's NodePool management (losing scaling, health checking, rolling updates) or creating a parallel reconciliation path that fights with HyperShift for VM ownership.
 
 This design follows the same pattern as ROSA HCP on AWS: CAPA creates EC2 instances directly from the NodePool spec — there is no separate "compute instance" resource between CAPA and the VM. In OSAC, CAPK is the equivalent of CAPA. Both create VMs directly from the NodePool spec in a single hop. EC2 instances backing ROSA workers are not the customer's general-purpose VMs — they are cluster capacity owned by the control plane. Similarly, KubeVirt VMs backing OSAC CaaS workers are not tenant ComputeInstances — they are cluster capacity managed by HyperShift. If OSAC needs metering, instance types, or observability for CaaS workers, those should be added to the NodePool/CAPK path (matching ROSA), not by routing through ComputeInstance (adding a layer ROSA does not have).
+
+**"Unified UX" does not require CI-as-worker.** The surfaces people associate with unified UX — shared sizing vocabulary, network identity, billing shape — are delivered by `resourceClass`, `networkAttachments`, and cluster-layer metering (see "Shared Catalog, Network Identity, and Metering" above). CI-as-worker is only required if the platform wants worker lifecycle to be the VMaaS API. That either exposes cluster nodes as tenant VMs (violating platform-managed workers) or requires building invisible "system CIs" that cannot be started, stopped, consoled, or listed — which is new work that reimplements CAPK without reusing ComputeInstance's actual UX.
 
 ### Standalone KubeVirt Template (No Hook Delegation)
 
