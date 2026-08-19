@@ -634,11 +634,18 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
 ## Phase 1 limitations
 
 - VirtualNetwork association required (exactly one); zero or many deferred.
+- **Membership is static.** Admin provides explicit hostnames at create time.
+  Phase 2 should support inventory-driven membership (label selectors on
+  BareMetalInstance CRs or similar) so domains can be created before concrete
+  hosts are assigned.
 - No server eligibility validation (admin trusted on hostnames).
 - NIC mapping only via Netris template.
 - `template_id` is Netris-specific (scoped to NetworkClass).
 - Templates pre-created by infra; OSAC does not manage template lifecycle.
-- Bare-metal only; no SR-IOV/VM EW.
+- **Bare-metal only; no SR-IOV/VM EW.** FabricDomain membership is
+  host/device-scoped. Virtual machines do not appear as FabricDomain members;
+  they attach to SR-IOV VFs or GPUs on hosts that are already in the domain.
+  VM east-west is a separate follow-on design.
 - IB/NVLink types reserved in API, not implemented.
 
 ## Test Plan
