@@ -1,0 +1,144 @@
+name: Test Plan Review
+
+on:
+  push:
+    branches:
+      - 'test-plan/**'
+    paths:
+      - '**/TestPlan.md'
+      - '**/testplan.md'
+
+  issue_comment:
+    types: [created]
+
+jobs:
+  resolve-pr:
+    if: >-
+      github.event_name == 'push'
+      || (github.event_name == 'issue_comment'
+          && github.event.issue.pull_request
+          && (contains(github.event.comment.body, '/test-plan-score')
+              || contains(github.event.comment.body, '/test-plan-respond'))
+          && contains(fromJSON('["MEMBER","COLLABORATOR","OWNER"]'),
+                      github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    outputs:
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      base_ref: ${{ steps.resolve.outputs.base_ref }}
+      mode: ${{ steps.resolve.outputs.mode }}
+    steps:
+      - name: Validate slash command
+        if: github.event_name == 'issue_comment'
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          if echo "$COMMENT_BODY" | grep -qP '(?m)^\s*/test-plan-(score|respond)'; then
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Slash command not found as line-starting command"
+            exit 1
+          fi
+
+      - name: Acknowledge comment
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+            -f content=eyes --silent
+
+      - name: Resolve PR context
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            BRANCH="${GITHUB_REF#refs/heads/}"
+            PR_JSON=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --json number,headRefOid,baseRefName --jq '.[0]')
+            if [[ -z "$PR_JSON" || "$PR_JSON" == "null" ]]; then
+              echo "::error::No PR found for branch $BRANCH"
+              exit 1
+            fi
+            echo "pr_number=$(echo "$PR_JSON" | jq -r .number)" >> "$GITHUB_OUTPUT"
+            echo "head_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            echo "base_ref=$(echo "$PR_JSON" | jq -r .baseRefName)" >> "$GITHUB_OUTPUT"
+            echo "mode=score" >> "$GITHUB_OUTPUT"
+
+          elif [[ "${{ github.event_name }}" == "issue_comment" ]]; then
+            PR_JSON=$(gh pr view "$EVENT_ISSUE_NUMBER" --repo "${{ github.repository }}" --json number,headRefOid,baseRefName)
+            echo "pr_number=$EVENT_ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$(echo "$PR_JSON" | jq -r .headRefOid)" >> "$GITHUB_OUTPUT"
+            echo "base_ref=$(echo "$PR_JSON" | jq -r .baseRefName)" >> "$GITHUB_OUTPUT"
+
+            if echo "$COMMENT_BODY" | grep -q '/test-plan-respond'; then
+              echo "mode=respond" >> "$GITHUB_OUTPUT"
+            else
+              echo "mode=score" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+  review:
+    needs: resolve-pr
+    runs-on: ubuntu-latest
+    concurrency:
+      group: tp-review-${{ needs.resolve-pr.outputs.pr_number }}
+      cancel-in-progress: true
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ needs.resolve-pr.outputs.base_ref }}
+          fetch-depth: 0
+
+      - name: Fetch PR branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
+        run: |
+          gh pr checkout "$PR_NUMBER" --repo "${{ github.repository }}"
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r .github/scripts/requirements.txt
+
+      - name: Clone test plan skills
+        run: git clone --depth 1 https://github.com/osac-project/osac-ai-skills /opt/test-plan-skills
+
+      - name: Set up GCP credentials
+        run: echo "$GCP_SA_KEY" | base64 -d > /tmp/gcp-sa-key.json
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Run test plan review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-sa-key.json
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
+          CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
+          TP_SHADOW: ${{ vars.TP_SHADOW || 'false' }}
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
+          PR_HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
+          MODE: ${{ needs.resolve-pr.outputs.mode }}
+        run: python .github/scripts/tp_review.py
+
+      - name: Upload OTEL metrics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v4
+        with:
+          name: tp-review-otel-pr${{ needs.resolve-pr.outputs.pr_number }}-run${{ github.run_id }}
+          path: workdir-*/_run/claude-otel.jsonl
+          retention-days: 90
+          if-no-files-found: ignore
