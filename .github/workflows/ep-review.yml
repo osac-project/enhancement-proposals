@@ -98,8 +98,31 @@ jobs:
       - name: Install dependencies
         run: pip install -r .github/scripts/requirements.txt
 
-      - name: Clone workspace
-        run: git clone --depth 1 https://github.com/osac-project/osac-workspace /opt/skills
+      - name: Clone skills
+        run: |
+          git clone --depth 1 https://github.com/osac-project/osac-ai-skills /opt/skills
+          for s in prd-review design-review; do
+            if [[ ! -f "/opt/skills/skills/$s/SKILL.md" ]]; then
+              echo "::error::skills/$s/SKILL.md missing from osac-ai-skills"
+              exit 1
+            fi
+          done
+
+      - name: Stage reference docs for skill lookups
+        # Optional grounding the skills read if present; these live in
+        # osac/docs, not the skills repo. Best-effort: a missing doc must
+        # not fail the review.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /opt/skills/reference
+          for f in ARCHITECTURE CONVENTIONS; do
+            if ! gh api "repos/osac-project/osac/contents/docs/${f}.md" \
+                 --jq '.content' | base64 -d > "/opt/skills/reference/${f}.md"; then
+              echo "::warning::optional reference doc ${f}.md unavailable, continuing"
+              rm -f "/opt/skills/reference/${f}.md"
+            fi
+          done
 
       - name: Stage enhancement-proposals content for skill lookups
         # Reuses the repo already checked out by the first step above (at
