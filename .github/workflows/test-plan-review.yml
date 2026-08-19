@@ -128,7 +128,7 @@ jobs:
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-sa-key.json
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
           CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
-          TP_SHADOW: ${{ vars.TP_SHADOW || 'false' }}
+          TP_SHADOW: ${{ vars.TP_SHADOW || 'true' }}
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
           PR_HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
           MODE: ${{ needs.resolve-pr.outputs.mode }}
