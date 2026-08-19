@@ -87,7 +87,7 @@ class TestPlanHooks:
             "api", f"repos/{self.repo}/issues/{pr_number}/comments",
             "--jq",
             f'[.[] | select(.user.login == "{self.bot_login}") '
-            f'| select(.body | contains("Test Plan Review:"))][0].body // empty'
+            f'| select(.body | contains("Test Plan Review:"))][-1].body // empty'
         ]).strip()
         if existing and head and head[:8] in existing:
             return f"Already scored at SHA {head[:8]}"
@@ -402,8 +402,11 @@ class TestPlanHooks:
         verdict_path = Path(work_dir) / "verdict.json"
         if not verdict_path.exists():
             return None, ["verdict.json not found"]
-        with open(verdict_path) as f:
-            verdict = json.load(f)
+        try:
+            with open(verdict_path) as f:
+                verdict = json.load(f)
+        except (json.JSONDecodeError, ValueError) as e:
+            return None, [f"verdict.json is malformed: {e}"]
 
         errors = []
         scores = verdict.get("scores", {})
@@ -625,16 +628,14 @@ class TestPlanHooks:
         os.unlink(comment_file)
 
         self._gh(["pr", "edit", pr_number, "--repo", self.repo,
-                   "--add-label", self.scored_label], check=True)
+                   "--add-label", self.scored_label])
 
         if verdict_str == "Ready":
             self._gh(["pr", "edit", pr_number, "--repo", self.repo,
-                       "--add-label", "test-plan-human-sign-off"],
-                      check=True)
+                       "--add-label", "test-plan-human-sign-off"])
         elif verdict_str == "Rework":
             self._gh(["pr", "edit", pr_number, "--repo", self.repo,
-                       "--add-label", "test-plan-rubric-fail"],
-                      check=True)
+                       "--add-label", "test-plan-rubric-fail"])
 
         print(f"  [{ticket_key}] Score: {total}/10 ({verdict_str})")
 
