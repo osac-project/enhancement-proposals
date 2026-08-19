@@ -26,7 +26,7 @@ OSAC provisions and manages three classes of cloud services — VMaaS (VMs), Caa
 
 The critical architectural insight is the separation between **metering** (what happened, when, to which resource, for how long) and **billing** (how much to charge). The Metering Service owns the former permanently. The provider adapter owns the translation. This separation means the metering record is authoritative and audit-grade regardless of which billing system is active or temporarily unavailable.
 
-The design unifies two event sources — the fulfillment-service Watch stream (VMaaS/CaaS lifecycle events) and the AI Gateway HTTP ingest (MaaS inference events) — into a single Kafka-backed pipeline. Adapters consume from Kafka in a pull model that decouples OSAC from provider-specific protocols and availability requirements.
+The design unifies two event sources — the fulfillment-service Watch stream (VMaaS/CaaS lifecycle events) and the AI Gateway IPP plugin publishing to Kafka (MaaS inference events) — into a single Kafka-backed pipeline. Adapters consume from Kafka in a pull model that decouples OSAC from provider-specific protocols and availability requirements.
 
 ### Goals
 
@@ -56,7 +56,7 @@ The design introduces four components:
 3. **Provider Adapter framework** (Go) — a shared framework for building billing provider adapters, handling Kafka consumption, retry, DLQ, and idempotency
 4. **Provider Adapters** — one active per deployment, selected via Helm values; initial adapters for Cost Management and Monetize360
 
-The Metering Service contains four subsystems: Watch Consumer (snapshot → lifecycle transition conversion), Heartbeat Generator (60-second periodic usage records), Reconciliation Loop (hourly State Projection vs fulfillment List API comparison), and MaaS HTTP Ingest (inference event reception).
+The Metering Service contains four subsystems: Watch Consumer (snapshot → lifecycle transition conversion), Heartbeat Generator (60-second periodic usage records), Reconciliation Loop (hourly State Projection vs fulfillment List API comparison), and MaaS Kafka Consumer (inference event ingestion from a raw Kafka topic).
 
 ```mermaid
 flowchart TD
@@ -72,10 +72,11 @@ flowchart TD
         RL[Reconciliation Loop\nhourly]
         HG[Heartbeat Generator\n60s tick]
         SP[(State Projection\nPostgreSQL)]
-        MH[MaaS HTTP Ingest]
+        MH[MaaS Kafka Consumer]
     end
 
-    AG -->|inference.tokens.used CloudEvent| MH
+    AG -->|inference.tokens.used CloudEvent| KF
+    KF -->|osac.metering.inference.raw| MH
     FS -->|OBJECT_CREATED/UPDATED/DELETED| WC
     FS -->|List APIs| RL
     WC --> SP
@@ -91,7 +92,7 @@ flowchart TD
     PA -->|provider-specific protocol| EP
 ```
 
-The Metering Service consumes the fulfillment-service private Watch stream — the natural integration boundary, since all resource lifecycle state changes already flow through it — and produces canonical CloudEvents to Kafka. The Watch stream delivers resource snapshots, not transition records — the Watch Consumer enriches these into lifecycle transitions by maintaining the State Projection. The AI Gateway IPP plugin delivers per-request inference events via the HTTP ingest endpoint.
+The Metering Service consumes the fulfillment-service private Watch stream — the natural integration boundary, since all resource lifecycle state changes already flow through it — and produces canonical CloudEvents to Kafka. The Watch stream delivers resource snapshots, not transition records — the Watch Consumer enriches these into lifecycle transitions by maintaining the State Projection. The AI Gateway IPP plugin publishes raw inference CloudEvents directly to the `osac.metering.inference.raw` Kafka topic; the MaaS Kafka Consumer validates, enriches, and republishes them to the canonical `osac.metering.inference` topic.
 
 ### Workflow Description
 
@@ -181,25 +182,26 @@ MaaS has no fulfillment resource and no state machine. One event is emitted per 
 sequenceDiagram
     participant U as Tenant User
     participant GW as AI Gateway
-    participant MH as MaaS HTTP Ingest
-    participant KP as Kafka Publisher
     participant K as Kafka
+    participant MC as MaaS Kafka Consumer
+    participant KP as Kafka Publisher
 
     U->>GW: inference request
     GW->>GW: route to model provider
+    GW->>K: inference.tokens.used CloudEvent → osac.metering.inference.raw
+    K-->>GW: publish acknowledged
     GW-->>U: inference response
-    GW->>MH: POST /ingest/inference (inference.tokens.used CloudEvent)
-    MH->>MH: read organization_id from event data
-    MH->>KP: osac.inference.usage.v1 (enriched with tenant_id)
+    MC->>K: consume from osac.metering.inference.raw
+    MC->>MC: validate tenant (organization_id → tenant_id)
+    MC->>KP: osac.inference.usage.v1 (enriched with tenant_id)
     KP->>K: publish → osac.metering.inference
-    MH-->>GW: 202 Accepted
 ```
 
-MaaS usage data must be queryable within 60 seconds of inference completion [PRD: CAP-13]. The Metering Service publishes to Kafka synchronously before returning HTTP 202.
+MaaS usage data must be queryable within 60 seconds of inference completion [PRD: CAP-13]. The IPP plugin publishes synchronously to `osac.metering.inference.raw` before returning the ext-proc response (sub-millisecond local broker write). The MaaS Kafka Consumer's poll interval (default 100ms) plus validation and canonical publish adds single-digit seconds end-to-end — well within the 60-second SLA.
 
-**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The Metering Service maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` are rejected with HTTP 422 and not published to Kafka (the DLQ is reserved for adapter-side delivery failures). Rejected events increment `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}` (alert: > 0 for 5m) and are logged at ERROR level with structured identifiers only (`event_id`, `source`, `type`, `organization_id`, error reason) and a SHA-256 payload hash for correlation. Full event payloads are never written to application logs — they may contain sensitive inference data. If forensic investigation requires the full payload, operators can enable debug-level logging via a runtime flag, which routes rejected events to a separate log stream with restricted access.
+**Tenant attribution:** The AI Gateway's external-metering plugin includes `organization_id` and `cost_center` in the `inference.tokens.used` CloudEvent data ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386)), sourced from `x-maas-organization-id` and `x-maas-cost-center` headers injected by Authorino from the MaaSSubscription's TokenMetadata. The MaaS Kafka Consumer maps `organization_id` to `tenant_id` for billing attribution. Events without a resolved `organization_id` are permanently rejected and their offset committed. Rejected events increment `osac_metering_inference_ingest_errors_total{error_type="tenant_resolution_failed"}` (alert: > 0 for 5m) and are logged at ERROR level with structured identifiers only (`event_id`, `source`, `type`, `organization_id`, error reason). Full event payloads are never written to application logs — they may contain sensitive inference data. If forensic investigation requires the full payload, operators can retrieve the raw event from the `osac.metering.inference.raw` topic (30-day retention) using the `event_id` for correlation.
 
-**MaaS delivery resilience:** MaaS inference events have no fulfillment resource to reconcile against — unlike VMaaS/CaaS, lost events are unrecoverable. The current AI Gateway IPP plugin (`external-metering`) has no retry logic — if the HTTP POST to `/ingest/inference` fails, the error is logged and the event is lost. Additionally, the metering report blocks the ext-proc response pipeline, so Metering Service latency directly adds to inference response time. Any Metering Service downtime (restart, network partition) causes permanent MaaS event loss at the current plugin implementation. This will be resolved by raising a requirement for the IPP plugin to support publishing directly to Kafka, eliminating the HTTP hop, the data loss window, and the response-path latency coupling.
+**MaaS delivery resilience:** MaaS inference events have no fulfillment resource to reconcile against — unlike VMaaS/CaaS, lost events are unrecoverable. The IPP plugin publishes directly to Kafka, providing durable at-least-once delivery. This eliminates the data loss window and response-path latency coupling that an HTTP ingest endpoint would introduce.
 
 **MaaS streaming dependency:** Streaming inference mode requires the `stream-usage-enforcer` plugin in the PayloadProcessorConfig chain to inject `stream_options.include_usage=true`. Without it, OpenAI-compatible providers return no usage data in streaming responses, and the `external-metering` plugin silently reports zero tokens. Deployments must include this plugin for accurate MaaS metering.
 
@@ -259,7 +261,6 @@ The Metering Service introduces no CRDs, webhooks, or aggregated API servers. It
 
 | Endpoint | Method | Purpose | Authentication |
 |----------|--------|---------|----------------|
-| `/ingest/inference` | POST | Receives `inference.tokens.used` CloudEvents from AI Gateway IPP plugin | Kubernetes SA JWT or mTLS |
 | `/healthz` | GET | Liveness probe | None |
 | `/readyz` | GET | Readiness probe (Watch stream connected, Kafka producer ready) | None |
 | `/metrics` | GET | Prometheus metrics | None |
@@ -514,11 +515,12 @@ All event types carry a `schema_version` field and the CloudEvents `type` includ
 |-------|------------|---------------|------------|-----------|-------------|
 | `osac.metering.lifecycle` | `osac.resource.{created,started,updated,suspended,resumed,deleted}.v1` | `osacresourceid` | 24 | 30 days | 3 |
 | `osac.metering.heartbeat` | `osac.resource.heartbeat.v1` | `osacresourceid` | 24 | 30 days | 3 |
-| `osac.metering.inference` | `osac.inference.usage.v1` | `osactenant` | 12 | 30 days | 3 |
+| `osac.metering.inference.raw` | `inference.tokens.used` (raw CloudEvents from IPP plugin) | `osacresourceid` | 3 | 30 days | 3 |
+| `osac.metering.inference` | `osac.inference.usage.v1` (enriched by MaaS Kafka Consumer) | `osacresourceid` | 12 | 30 days | 3 |
 | `osac.metering.corrections` | `osac.resource.correction.v1` | `osacresourceid` | 6 | 30 days | 3 |
 | `osac.metering.dlq` | All failed events | original topic | 6 | 90 days | 3 |
 
-Partition counts: `lifecycle` and `heartbeat` at 24 support up to 24 parallel consumers and distribute load at 10K+ active resources. `inference` at 12 is tenant-partitioned. `corrections` at 6 reflects low volume. DLQ has 90-day retention for investigation.
+Partition counts: `lifecycle` and `heartbeat` at 24 support up to 24 parallel consumers and distribute load at 10K+ active resources. `inference` and `inference.raw` are partitioned by `osacresourceid` (raw CloudEvent `id` for MaaS); `inference.raw` at 3 matches the MaaS Kafka Consumer's single consumer group. `corrections` at 6 reflects low volume. DLQ has 90-day retention for investigation.
 
 Each adapter uses a single consumer group across all consumed topics. Consumer groups are independent — a new adapter gets its own group and can start at any offset.
 
@@ -593,7 +595,8 @@ At-least-once delivery is enforced at every hop:
 |----|-----------|
 | Watch stream → Watch Consumer | gRPC reconnect with exponential backoff; startup reconciliation fills gaps |
 | Watch Consumer → Kafka | `acks=all`, `enable.idempotence=true` |
-| MaaS HTTP Ingest → Kafka | Synchronous Kafka publish before HTTP 202; AI Gateway retries on non-2xx |
+| IPP plugin → `osac.metering.inference.raw` | Kafka producer `acks=all` with built-in retry; durable at-least-once delivery |
+| `osac.metering.inference.raw` → MaaS Kafka Consumer → `osac.metering.inference` | Consumer offset committed only after successful enriched publish; transient failures cause redelivery |
 | Kafka → Adapter | Consumer offset committed only after successful `Flush()` |
 | Adapter → Billing Provider | Exponential backoff (max 10 attempts, ~13.5 min); DLQ after exhaustion |
 
@@ -601,7 +604,7 @@ At-least-once delivery is enforced at every hop:
 
 - **Watch Consumer (upsert-first):** Updates the State Projection before publishing to Kafka. If a crash occurs between upsert and publish, the lifecycle event is lost from Kafka — but the heartbeat generator (every 60 seconds) provides continuous usage confirmation for billable resources, so the maximum billing gap is one heartbeat interval. The exact transition timestamp is lost but the billing interval is not. Reconciliation provides further catch-up for state mismatches on restart.
 - **Reconciliation Loop (publish-first):** Publishes corrections to Kafka before updating the State Projection. Reconciliation is the last line of defense — a lost correction has no further catch-up mechanism. If a crash occurs between publish and upsert, the next reconciliation cycle detects the same mismatch and emits a duplicate correction. Duplicate corrections are acceptable: the adapter's idempotency key (CloudEvent `id`) rejects exact replays, and semantically redundant corrections (different `id`, same state) are harmless because the adapter applies the correction to an already-correct billing record.
-- **MaaS HTTP Ingest:** Publishes directly to Kafka without updating the State Projection, so crash safety is inherent — Kafka `acks=all` confirms durability before the HTTP 202 response.
+- **MaaS Kafka Consumer (consume-enrich-publish):** Consumes from `osac.metering.inference.raw`, validates and enriches, then publishes to `osac.metering.inference`. Offsets are committed only after a successful enriched publish. If the consumer crashes between consume and publish, the uncommitted message is redelivered on restart. No State Projection is involved — crash safety relies on Kafka's at-least-once delivery and the adapter's CloudEvent `id` deduplication.
 
 A transactional outbox pattern is not justified for the single-replica deployment model, where the crash window between two sequential in-process operations is narrow and the component-specific ordering strategies above provide adequate recovery.
 
@@ -674,11 +677,11 @@ This satisfies the high-availability goal [PRD: D-2] because the Metering Servic
 | DLQ ACL | Adapters: WRITE to `osac.metering.dlq` |
 | Admin ACL | No adapter has topic management ACL |
 
-**MaaS HTTP Ingest:** Accepts requests only from the AI Gateway. When co-located on the same cluster, authenticated via Kubernetes SA JWT with `sub` claim validated against the configured AI Gateway ServiceAccount. When the AI Gateway is on a separate cluster, the endpoint is exposed via Route/Ingress and authenticated via mTLS client certificate matching the AI Gateway's identity. Requests from unrecognized callers are rejected with HTTP 403.
+**MaaS Kafka raw topic:** The IPP plugin publishes raw inference CloudEvents to `osac.metering.inference.raw`. The Kafka user ACL restricts WRITE access to the AI Gateway's Kafka identity (SASL principal). The MaaS Kafka Consumer has READ access to the raw topic and WRITE access to the canonical `osac.metering.inference` topic. No HTTP endpoint is exposed for MaaS inference ingestion.
 
 **Audit Log:** All `osac.resource.correction.v1` events are written to a dedicated append-only audit log in addition to Kafka, recording: original event ID, correction reason, before/after state, timestamp, and triggering system. Retained for the data residency period (minimum 1 year).
 
-**Input Validation:** The MaaS HTTP Ingest endpoint validates CloudEvent structure, required fields (`specversion`, `type`, `source`), and data payload schema before publishing. Malformed events are rejected with HTTP 400, not forwarded to Kafka. Request body size is bounded (configurable, default 64 KiB) to prevent memory exhaustion.
+**Input Validation:** The MaaS Kafka Consumer validates CloudEvent structure, required fields (`organization_id`, `model`, `time`), and data payload schema before publishing to the canonical topic. Malformed events are permanently rejected (offset committed, not redelivered) and counted via `osac_metering_inference_ingest_errors_total`. Full event payloads are never written to application logs — they may contain sensitive inference data.
 
 **Platform Security Baseline:** The Metering Service inherits the OSAC platform security posture: FIPS-validated cryptography (RHEL Go Toolset FIPS mode) for all TLS operations, encrypted StorageClasses for Kafka and PostgreSQL persistent volumes, and Kubernetes NetworkPolicies restricting traffic between Metering Service, Kafka, PostgreSQL, and adapter pods.
 
@@ -700,8 +703,8 @@ This satisfies the high-availability goal [PRD: D-2] because the Metering Servic
 
 **Tenant Isolation:** Every metering event carries `tenant_id` via `osactenant` CloudEvent extension and `data.tenant_id`. The Metering Service enforces:
 - Watch Consumer derives `tenant_id` from the fulfillment resource's `osac.openshift.io/tenant` annotation
-- MaaS HTTP Ingest derives `tenant_id` from the inference event's `organization_id` field
-- No event is published to Kafka without a resolved `tenant_id`; unresolvable events are rejected at the ingest boundary (HTTP 422) and flagged via `osac_metering_inference_ingest_errors_total`
+- MaaS Kafka Consumer derives `tenant_id` from the inference event's `organization_id` field
+- No event is published to the canonical Kafka topic without a resolved `tenant_id`; unresolvable events are permanently rejected and flagged via `osac_metering_inference_ingest_errors_total`
 
 **Data Isolation:** The State Projection indexes by `tenant_id`; all queries are tenant-scoped. No event routing or aggregation crosses tenant boundaries within the Metering Service.
 
@@ -815,7 +818,7 @@ Using Ginkgo/Gomega:
 - **Watch Consumer enrichment:** verify `previous_state`, `current_state`, `duration_seconds`, and `billing_dimensions` are computed correctly from State Projection lookup
 - **Heartbeat Generator:** verify billable resource query returns only `is_billable=true` resources; verify heartbeat event emission at 60s interval; verify heartbeat stops when resource becomes non-billable
 - **Reconciliation Loop:** verify detection of missing resources (missed_creation), state drift (state_drift), stale heartbeats (> 120s), and orphaned resources (missed_deletion); verify correction event generation with correct reason codes
-- **MaaS HTTP Ingest:** verify tenant_id resolution from `organization_id` field; verify rejection when `organization_id` is missing; verify CloudEvent schema validation rejects malformed events; verify synchronous Kafka publish before HTTP 202
+- **MaaS Kafka Consumer:** verify tenant_id resolution from `organization_id` field; verify permanent rejection when `organization_id` is missing; verify CloudEvent schema validation rejects malformed events; verify enriched event is published to `osac.metering.inference` with correct billing dimensions; verify offset is committed only after successful publish
 - **Provider Adapter framework:** verify retry with exponential backoff (1s, 2s, 4s, ...); verify DLQ routing after max attempts; verify dedup cache suppresses duplicate CloudEvent IDs; verify out-of-order events (`transition_time` earlier than last recorded for same `resource_id`) are routed to correction handling
 
 ### Integration Tests
@@ -825,7 +828,7 @@ Using Kind cluster + Kafka (via testcontainers or embedded) + PostgreSQL:
 - **End-to-end lifecycle:** create a ComputeInstance via fulfillment → verify Watch Consumer produces `created.v1` and `started.v1` on Kafka `osac.metering.lifecycle` topic → update to STOPPED → verify `suspended.v1` with correct `duration_seconds`
 - **Heartbeat generation:** create a billable resource → verify heartbeat events appear on `osac.metering.heartbeat` at ~60s intervals
 - **Reconciliation gap detection:** three scenarios: (a) `missed_creation` — create a resource directly in fulfillment DB (bypassing Watch stream) → run reconciliation → verify `correction.v1` with `reason=missed_creation`; (b) `state_drift` — update resource state in fulfillment without Watch event → run reconciliation → verify `correction.v1` with `reason=state_drift`; (c) `missed_deletion` — delete resource from fulfillment while it remains in State Projection → run reconciliation → verify `correction.v1` with `reason=missed_deletion`
-- **MaaS ingest:** POST an `inference.tokens.used` CloudEvent to `/ingest/inference` → verify event appears on `osac.metering.inference` with resolved `tenant_id`
+- **MaaS ingest:** produce an `inference.tokens.used` CloudEvent to `osac.metering.inference.raw` → verify MaaS Kafka Consumer enriches and publishes to `osac.metering.inference` with resolved `tenant_id`
 - **Watch stream disconnect:** simulate Watch stream disconnect (kill fulfillment-service gRPC connection) while resources are billable → verify Watch Consumer reconnects, heartbeats continue from State Projection, and reconciliation catches any missed lifecycle events
 - **Adapter integration:** produce events to Kafka → verify adapter's `Submit()` is called with correctly translated events → verify offset commit after successful `Flush()` → verify DLQ on repeated failure
 
@@ -857,7 +860,7 @@ Using pytest / osac-test-infra against a deployed OSAC installation:
 ### Tech Preview
 
 - CaaS lifecycle events with per-component billing (control plane + worker node sets)
-- MaaS HTTP ingest with tenant resolution and Kafka publication
+- MaaS Kafka Consumer with tenant resolution and enriched publication to `osac.metering.inference`
 - `stream-usage-enforcer` plugin deployed in PayloadProcessorConfig; validated by E2E test confirming nonzero token counts for streaming inference requests
 - Full reconciliation loop (state drift, stale heartbeat, correction events)
 - DLQ handling and replay tooling
@@ -873,7 +876,7 @@ Using pytest / osac-test-infra against a deployed OSAC installation:
 - Provider migration replay validated end-to-end
 - Performance benchmarks at 10K+ concurrent billable resources
 - Support procedures and operational runbook documented
-- Installation guide and API reference for the HTTP ingest endpoint published
+- Installation guide and Kafka topic configuration reference published
 - MaaS production billing requires Authorino auth-side wiring complete — `organization_id` injected from MaaSSubscription TokenMetadata, not client-asserted ([opendatahub-io/ai-gateway-payload-processing#386](https://github.com/opendatahub-io/ai-gateway-payload-processing/pull/386))
 
 ## Upgrade / Downgrade Strategy
