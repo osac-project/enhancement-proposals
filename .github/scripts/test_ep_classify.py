@@ -671,6 +671,28 @@ class SyntheticFailSafeTests(unittest.TestCase):
         }]
         self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
 
+    def test_same_label_retarget_to_external_url_is_substantive(self):
+        # Security regression (Tommy's remaining nit on PR #218): a markdown
+        # link's target was previously "always safe to change" even when the
+        # label stayed identical, so a same-label retarget to an arbitrary
+        # external URL classified LOGISTICS_ONLY unconditionally. The target
+        # isn't rendered as visible text, but it's still where a reader ends
+        # up navigating to — an external retarget must be SUBSTANTIVE.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 1,
+            "changes": 2,
+            "patch": (
+                "@@ -6,2 +6,2 @@ prd:\n"
+                " | Date | 2026-01-01 |\n"
+                "-| PRD | [README.md](/enhancements/OSAC-1-a/README.md) |\n"
+                "+| PRD | [README.md](https://evil.example/phishing) |\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
 
 if __name__ == "__main__":
     unittest.main()

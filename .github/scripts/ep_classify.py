@@ -9,11 +9,13 @@ three safe shapes:
   2. A change confined entirely to an explicit allow-listed YAML frontmatter field
      (e.g. tracking-link, last-updated).
   3. A same-line link-target/path substitution — the only characters that differ
-     between the old and new line sit inside a markdown link *target* (always
-     free to change — it is never rendered as visible text), a bare
-     "/enhancements/..." path (quote-, backtick-, or end-of-line-terminated, or
-     ending in a known doc extension — the real shapes observed in EP content),
-     or a markdown link *label* whose new value is provably the mechanical
+     between the old and new line sit inside a markdown link *target* (never
+     rendered as visible text, but still restricted to a narrow set of
+     repo-local shapes when it actually changes — see "Target restriction"
+     below), a bare "/enhancements/..." path (quote-, backtick-, or
+     end-of-line-terminated, or ending in a known doc extension — the real
+     shapes observed in EP content), or a markdown link *label* whose new value
+     is provably the mechanical
      result of an actual same-PR rename AND is one of the narrow set of
      canonical EP doc basenames (see "Label provenance" below); everything else
      on the line, including any other label change, is byte-identical. A
@@ -74,13 +76,30 @@ Label provenance:
   quote/backtick/extension/EOL anchors below — that bounding, not rename
   provenance, is what makes it safe.
 
+Target restriction:
+  Not requiring rename-pair provenance for a markdown-link target does NOT mean
+  a target is free to become anything — a reviewer found that a same-label
+  retarget to an arbitrary external URL classified LOGISTICS_ONLY
+  unconditionally, since the target was previously treated as "always safe to
+  change." The target isn't *rendered* as visible text, but it IS still where a
+  reader ends up navigating to, so an external retarget is its own
+  attacker-controlled-destination risk, independent of the label.
+  `_target_is_repo_local` now requires, whenever a markdown-link target
+  actually changes, that BOTH the old and new target are one of: a bare
+  "/enhancements/..." path, a GitHub blob URL for this exact repo, or a
+  relative repo path (no URI scheme, not some other absolute path) — the exact
+  shapes #174 needs (see above), nothing broader. An unchanged target is never
+  re-validated by this check, so an already-external target sitting untouched
+  elsewhere in the line (e.g. a `[applyFieldDefinitions()]` link to a different
+  repo, present unchanged in #174) is unaffected.
+
 Bare URL removal:
   A prior version of this category accepted a bare `https?://\\S+` shape as
   automatically safe. That's removed entirely: `\\S+` is unbounded, so attacker
   text appended immediately after a legitimate URL with no separator rides along
   as part of the "safe" match. No real golden fixture (#168/#172/#173/#174) ever
   needs this shape — every `https://` occurrence in real EP content sits either
-  inside a markdown-link target (already unconditionally safe, see above) or
+  inside a markdown-link target (governed by "Target restriction" above) or
   inside the allow-listed `tracking-link` frontmatter field (category 2, which
   bypasses this category entirely). A bare URL appearing anywhere else is
   SUBSTANTIVE — fail-safe by omission.
@@ -208,6 +227,42 @@ def _resolve_target_path(target):
     return None
 
 
+# Matches a leading URI scheme ("https:", "mailto:", "javascript:", "data:",
+# ...) so a retarget to any of them is rejected below, without having to
+# enumerate every scheme by name.
+EXTERNAL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*:")
+
+
+def _target_is_repo_local(target):
+    """True if a markdown-link target is one of the narrow, repository-local
+    shapes a retarget is ever allowed to land on: a bare "/enhancements/..."
+    path, a GitHub blob URL for this exact repo, or a relative repo path (no
+    URI scheme, not some other absolute path). A same-label retarget to an
+    arbitrary external URL used to classify LOGISTICS_ONLY unconditionally —
+    the target was "always safe to change" since it isn't rendered as visible
+    text — but the target IS still what a reader ends up navigating to, so an
+    external retarget is its own attacker-controlled-destination risk
+    independent of the label. Real PR #174 evidence (see module docstring's
+    "Label provenance" section) needs both a "/enhancements/..." bare path,
+    this-repo blob URLs, and relative repo paths of varying depth (e.g.
+    "../../../enhancement-proposals/enhancements/catalog-items/README.md" ->
+    "../OSAC-1002-catalog-items/README.md") — hence accepting any scheme-free,
+    non-"/enhancements/"-absolute path as "relative", rather than trying to
+    resolve/normalize the relative depth, which #174 itself doesn't do
+    consistently (see that section's discussion of the OSAC-1269 case).
+    """
+    if GITHUB_BLOB_URL_RE.match(target):
+        return True
+    if target.startswith("/enhancements/"):
+        return True
+    if target.startswith("/"):
+        # Some other absolute path (or a protocol-relative "//host/path"
+        # URL, which also starts with "/") — not one of the recognized
+        # repo-local shapes.
+        return False
+    return not EXTERNAL_SCHEME_RE.match(target)
+
+
 def _label_change_is_provable(old_target, new_target, new_label, rename_map):
     """True if new_label is provably the mechanical result of an actual
     same-PR rename: the old/new targets resolve to a real (previous_filename,
@@ -256,10 +311,26 @@ def _is_path_substitution(old_line, new_line, rename_map):
             # proven, which is impossible when the other side has none to
             # compare against, so this is unconditionally unsafe.
             return False
+
+        old_target, new_target = old_m.group("target"), new_m.group("target")
+        if old_target != new_target:
+            # A retarget must land within the narrow repo-local shapes
+            # (see _target_is_repo_local) regardless of whether the label
+            # also changed — a same-label retarget to an arbitrary external
+            # URL used to be waved through unconditionally, since the target
+            # was previously treated as "always safe to change" (it isn't
+            # rendered as visible text, but it IS still where a reader ends
+            # up navigating to).
+            if not (
+                _target_is_repo_local(old_target)
+                and _target_is_repo_local(new_target)
+            ):
+                return False
+
         if old_label == new_label:
             continue
         if not _label_change_is_provable(
-            old_m.group("target"), new_m.group("target"), new_label, rename_map
+            old_target, new_target, new_label, rename_map
         ):
             return False
 
