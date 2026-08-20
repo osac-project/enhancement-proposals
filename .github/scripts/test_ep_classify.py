@@ -162,6 +162,73 @@ class SyntheticFailSafeTests(unittest.TestCase):
         }]
         self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
 
+    def test_copied_into_reviewable_basename_with_narrow_safe_patch_is_substantive(self):
+        # Security regression (the IMPORTANT finding this test guards):
+        # GitHub's `pulls/*/files` status enum includes "copied" in addition
+        # to "added"/"renamed" — a file copied to a first-seen reviewable
+        # path, even with the SAME basename as its copy source and even with
+        # a patch that would otherwise pass the narrow "safe" hunk checks
+        # (here, an allow-listed tracking-link edit), must still be forced
+        # SUBSTANTIVE. Unlike a rename, a copy's source path still exists
+        # too — this is a genuinely new, never-reviewed identity at the
+        # destination, not a relocation of an already-reviewed one.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/README.md",
+            "previous_filename": "enhancements/OSAC-1-b/README.md",
+            "status": "copied",
+            "additions": 1,
+            "deletions": 1,
+            "changes": 2,
+            "patch": (
+                "@@ -3,2 +3,2 @@ authors:\n"
+                " creation-date: 2026-01-01\n"
+                "-tracking-link:\n"
+                "+tracking-link:\n"
+                "+  - https://redhat.atlassian.net/browse/OSAC-1-a\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_changed_status_into_reviewable_basename_is_substantive(self):
+        # Security regression: "changed" is another GitHub-documented status
+        # (distinct from "modified") that this guard must not silently trust
+        # just because it isn't "added"/"copied"/"renamed" by name.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "previous_filename": "enhancements/OSAC-1-a/design.md",
+            "status": "changed",
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_unchanged_status_into_reviewable_basename_is_substantive(self):
+        # Security regression: "unchanged" is the remaining documented status
+        # this guard must also fail closed on rather than silently allow.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/prd.md",
+            "status": "unchanged",
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_removed_reviewable_basename_is_substantive(self):
+        # Security regression: deleting a reviewable EP document is itself a
+        # substantive action ("removed" is not identity-preserving), not a
+        # logistics-only sweep.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "removed",
+            "additions": 0,
+            "deletions": 40,
+            "changes": 40,
+            "patch": "@@ -1,3 +0,0 @@\n-title: Example\n-authors: [alice]\n-status: accepted\n",
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
     def test_rename_into_design_md_forced_substantive_however_small(self):
         files = [{
             "filename": "enhancements/OSAC-1-a/design.md",

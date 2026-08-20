@@ -102,26 +102,29 @@ led to this split.
 
 import re
 
+import ep_paths
+
 LOGISTICS_ONLY = "LOGISTICS_ONLY"
 SUBSTANTIVE = "SUBSTANTIVE"
 
-CANONICAL_FILENAMES = frozenset({"prd.md", "design.md"})
+# Phase A's narrower "Feature-identity" concept (imported, not duplicated, so
+# the two can never silently drift) — README.md legacy EPs never participate
+# in Feature-key derivation, and that must stay true.
+CANONICAL_FILENAMES = ep_paths.CANONICAL_FILENAMES
 
 # Every EP document basename that requires a full AI review before it can be
 # introduced or repointed at new content — the current canonical pair
 # (prd.md/design.md) PLUS the legacy README.md format. Deliberately broader
-# than CANONICAL_FILENAMES above: CANONICAL_FILENAMES (mirroring
-# ep_paths.CANONICAL_FILENAMES) is Phase A's narrower "Feature-identity"
-# concept — README.md legacy EPs never participate in Feature-key derivation,
-# and that must stay true. REVIEWABLE_EP_BASENAMES is Phase B's separate
-# concept: "does this file's *content* need eyes on it," which README.md
-# clearly does too (see AGENTS.md's ep-review workflow, which dispatches a
-# review for `enhancements/**/README.md` exactly like design.md). Using
-# CANONICAL_FILENAMES for the guards below let a PR rename an arbitrary,
-# never-reviewed file straight to README.md with zero content diff and still
-# classify LOGISTICS_ONLY — a security re-review finding, since that's the
-# exact "previously non-canonical file becomes reviewable for the first time"
-# attack already blocked for prd.md/design.md, just missing README.md's case.
+# than CANONICAL_FILENAMES above, which must stay narrower (see its comment).
+# REVIEWABLE_EP_BASENAMES is Phase B's separate concept: "does this file's
+# *content* need eyes on it," which README.md clearly does too (see AGENTS.md's
+# ep-review workflow, which dispatches a review for `enhancements/**/README.md`
+# exactly like design.md). Using CANONICAL_FILENAMES for the guards below let a
+# PR rename an arbitrary, never-reviewed file straight to README.md with zero
+# content diff and still classify LOGISTICS_ONLY — a security re-review
+# finding, since that's the exact "previously non-canonical file becomes
+# reviewable for the first time" attack already blocked for prd.md/design.md,
+# just missing README.md's case.
 REVIEWABLE_EP_BASENAMES = CANONICAL_FILENAMES | {"readme.md"}
 
 # Top-level YAML frontmatter keys used by the EP templates (guidelines/design_template.md
@@ -350,25 +353,51 @@ def _build_rename_map(files):
     }
 
 
-def _file_is_logistics_only(f, rename_map):
-    basename = _basename(f["filename"])
-    status = f.get("status")
+# GitHub's documented `pulls/*/files` status enum: "added", "removed",
+# "modified", "renamed", "copied", "changed", "unchanged". Of these, only
+# "modified" is guaranteed to mean "an in-place edit of content that already
+# lived, under this same identity, at this same path" — every other status
+# either introduces this path for the first time (added, copied), moves
+# content to it from elsewhere (renamed), or is a rare/ambiguous status
+# (changed, unchanged, removed) not worth trusting by default. The one
+# deliberate exception is a "renamed" that preserves the same basename — the
+# real PR #174 shape, where an already-reviewed document merely changes
+# directory; its *identity* (what kind of reviewable document it is) carries
+# over, so it isn't a "first time seeing this identity" event.
+#
+# A security review found that special-casing only "added" and "renamed" left
+# "copied" (which can introduce a first-seen reviewable path with a narrow,
+# otherwise-safe-looking patch, e.g. only a tracking-link edit) as an
+# unguarded bypass. Structuring this as "identity-preserving statuses are the
+# only exemption" (rather than "these two statuses are the only ones we force
+# SUBSTANTIVE for") closes that whole class at once, including any status this
+# enum might grow in the future — a status this code doesn't yet recognize
+# fails closed to "not identity-preserving" automatically.
+_IDENTITY_PRESERVING_STATUSES = frozenset({"modified"})
 
-    if status == "added" and basename in REVIEWABLE_EP_BASENAMES:
+
+def _introduces_new_reviewable_identity(f):
+    """True if this file-status transition can introduce a first-seen
+    reviewable EP document path — i.e. content under a REVIEWABLE_EP_BASENAMES
+    identity that this exact path hasn't already had review applied to."""
+    basename = _basename(f["filename"])
+    if basename not in REVIEWABLE_EP_BASENAMES:
         return False
 
-    if status == "renamed" and basename in REVIEWABLE_EP_BASENAMES:
-        previous_basename = _basename(f.get("previous_filename"))
-        if previous_basename != basename:
-            # A rename that turns a previously non-reviewable (or
-            # differently-reviewable) file into prd.md/design.md/README.md
-            # brings it into EP-review scope for the first time under this
-            # identity — never safe to skip, exactly like a brand-new
-            # reviewable doc, regardless of how small the accompanying
-            # content diff is.
-            return False
+    status = f.get("status")
+    if status in _IDENTITY_PRESERVING_STATUSES:
+        return False
+    if status == "renamed" and _basename(f.get("previous_filename")) == basename:
+        return False
+    return True
+
+
+def _file_is_logistics_only(f, rename_map):
+    if _introduces_new_reviewable_identity(f):
+        return False
 
     patch = f.get("patch")
+    status = f.get("status")
     if not patch:
         # A pure rename with zero content change omits `patch` entirely (and
         # reports changes == 0). Anything else missing a patch — a truncated
