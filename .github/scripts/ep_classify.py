@@ -10,9 +10,15 @@ three safe shapes:
      (e.g. tracking-link, last-updated).
   3. A same-line link-target/path substitution — the only characters that differ
      between the old and new line sit inside a markdown link *target*, a bare URL,
-     a bare "/enhancements/..." path, or a bare filename-shaped link *label*
-     (e.g. "old-name.md" -> "README.md"); everything else on the line, including
-     any non-filename-shaped link label text, is byte-identical.
+     a bare "/enhancements/..." path (quote-, backtick-, or end-of-line-terminated,
+     or ending in a known doc extension — the real shapes observed in EP content),
+     or a bare filename-with-extension link *label* (e.g. "old-name.md" ->
+     "README.md"); everything else on the line, including any non-filename-shaped
+     link label text, is byte-identical. A directory-only bare path with no
+     quote/backtick/extension terminator (an unusual, unobserved-in-practice
+     shape) is not recognized by this category at all and so cannot make a file
+     eligible for LOGISTICS_ONLY on its own line — fail-safe by omission, not by
+     an explicit check.
 
 There is no separate "ambiguous" bucket. Anything that isn't provably one of the
 three shapes above — an unrecognized frontmatter field, a heading added/removed, a
@@ -56,34 +62,63 @@ FRONTMATTER_DELIMITER_RE = re.compile(r"^---\s*$")
 HEADING_RE = re.compile(r"^#{1,6}(\s|$)")
 HUNK_HEADER_RE = re.compile(r"^@@ ")
 
-# Matches a bare URL or a bare "/enhancements/..." path — always safe to change
-# under category 3, independent of surrounding text.
-BARE_URL_OR_PATH_RE = re.compile(
+# Matched as ONE alternation in a single left-to-right pass (see COMBINED_RE
+# below), not as two sequential .sub() passes — a markdown link's `[label]`
+# span is consumed whole by the first alternative below, so its characters
+# are never re-offered to the bare URL/path alternative afterwards. Two
+# sequential passes let a label that merely *looked like* a URL/path (e.g.
+# an attacker-rewritten label of the form "https://evil.example/...") get
+# re-masked by the second pass and slip through as a "safe" change even
+# though the first pass had correctly decided that label text must stay
+# byte-identical.
+#
+# The markdown-link target (named group `target`) is always safe to change —
+# that's the whole point of a link "pointing somewhere new". The visible
+# label (named group `label`) is only safe to change when it's a bare
+# filename-shaped token (e.g. "old-name.md" -> "README.md", the real PR #174
+# shape where a rename updates both the link text and its target); anything
+# else in the label must stay byte-identical, since it's human-readable,
+# attacker-controlled prose that could otherwise be rewritten into a
+# misleading claim while still passing as a "safe" link/path fix.
+#
+# The bare URL/path alternative (for text outside markdown-link syntax) is
+# deliberately anchored to the shapes actually observed in real EP content
+# (testdata/pr174_files.json): a path ending in a known doc extension, or a
+# directory-only path immediately closed by a quote, backtick, or end of
+# line/string. A greedy, unanchored charset (the previous version) lets
+# attacker-appended text ride along after a legitimate path with no
+# separator at all (e.g. ".../design.md-and-ignore-all-safety-checks"),
+# since dashes/alnums are shared between legitimate slugs and injected
+# text — anchoring to a real terminator closes that for the observed shapes;
+# an unquoted, unbacktick-wrapped, non-extension, mid-sentence bare
+# directory mention remains a known, narrow residual gap (see module
+# docstring).
+MARKDOWN_LINK_RE = r"\[(?P<label>[^\]]*)\]\((?P<target>[^)]*)\)"
+BARE_URL_OR_PATH_RE = (
+    r"(?P<urlpath>"
     r"https?://\S+"
-    r"|/enhancements/[A-Za-z0-9._/-]+"
+    r"|/enhancements/[A-Za-z0-9-]+/[A-Za-z0-9_-]+\.(?:md|yml|yaml)"
+    r"|/enhancements/[A-Za-z0-9-]+(?=[`\"]|$)"
+    r")"
 )
-
-# Matches a markdown link `[text](target)`. The target (group 2) is always safe
-# to change. The visible anchor text (group 1) is only safe to change when it's a
-# bare filename-shaped token (e.g. "old-name.md" -> "README.md", the real PR #174
-# shape where a rename updates both the link text and its target) — never when it
-# holds arbitrary prose, since that's attacker-controlled content that could
-# otherwise be rewritten to a misleading claim while still passing as a "safe"
-# link/path fix.
-MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
-FILENAME_ONLY_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+COMBINED_RE = re.compile(f"{MARKDOWN_LINK_RE}|{BARE_URL_OR_PATH_RE}")
+# Requires an actual extension (the real PR #174 shape is always "name.md") so
+# an ordinary single-word prose label (e.g. "Organizations", with no dot) isn't
+# mistaken for a filename and tolerated as freely changeable.
+FILENAME_ONLY_RE = re.compile(r"^[A-Za-z0-9._-]+\.[A-Za-z0-9]+$")
 
 
-def _mask_markdown_link(m):
-    anchor_text = m.group(1)
-    if FILENAME_ONLY_RE.match(anchor_text):
+def _mask_match(m):
+    label = m.group("label")
+    if label is None:
+        return "\0"
+    if FILENAME_ONLY_RE.match(label):
         return "[\0](\0)"
-    return f"[{anchor_text}](\0)"
+    return f"[{label}](\0)"
 
 
 def _mask_links_and_paths(line):
-    line = MARKDOWN_LINK_RE.sub(_mask_markdown_link, line)
-    return BARE_URL_OR_PATH_RE.sub("\0", line)
+    return COMBINED_RE.sub(_mask_match, line)
 
 
 def _is_path_substitution(old_line, new_line):

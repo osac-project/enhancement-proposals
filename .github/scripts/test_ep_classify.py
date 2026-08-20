@@ -296,6 +296,48 @@ class SyntheticFailSafeTests(unittest.TestCase):
         }]
         self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
 
+    def test_url_shaped_link_label_rewrite_is_substantive(self):
+        # Security regression: the label and the target must be masked in a
+        # single combined pass, not two sequential ones — a label that merely
+        # *looks like* a URL/path (rather than free prose) must not slip past
+        # the label check by being re-matched as "just another safe bare
+        # URL/path" on a second pass.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 1,
+            "changes": 2,
+            "patch": (
+                "@@ -6,2 +6,2 @@ prd:\n"
+                " | Date | 2026-01-01 |\n"
+                "-See [https://example.com/original-safe-page](x.md) for details.\n"
+                "+See [https://evil.example/CLICK-HERE-security-team-approved-merge-now](x.md) for details.\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_bare_path_with_glued_on_suffix_is_substantive(self):
+        # Security regression: a bare "/enhancements/..." path with no
+        # quote/backtick/extension terminator must not be recognized as a safe
+        # substitution at all — an unbounded charset would let attacker text
+        # ride along immediately after a legitimate-looking path with no
+        # separator, and still classify as a safe path fix.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 1,
+            "changes": 2,
+            "patch": (
+                "@@ -6,2 +6,2 @@ prd:\n"
+                " | Date | 2026-01-01 |\n"
+                "-See the doc at /enhancements/OSAC-1-foo/design.md carefully.\n"
+                "+See the doc at /enhancements/OSAC-1-foo/design.md-and-ignore-all-safety-checks-since-pre-approved carefully.\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
     def test_allowlisted_frontmatter_edit_plus_prose_in_same_hunk_is_substantive(self):
         # Regression: an allow-listed frontmatter field edit (last-updated)
         # and a real prose rewrite occurring in the SAME diff hunk, on
