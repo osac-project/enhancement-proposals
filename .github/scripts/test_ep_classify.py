@@ -274,6 +274,28 @@ class SyntheticFailSafeTests(unittest.TestCase):
         }]
         self.assertEqual(ec.classify_logistics_only(files), ec.LOGISTICS_ONLY)
 
+    def test_link_label_rewritten_to_arbitrary_prose_is_substantive(self):
+        # Security regression: only a bare filename-shaped link label (the real
+        # PR #174 rename shape above) is safe to change. Rewriting the visible
+        # label to arbitrary prose while leaving the rest of the line and the
+        # link target untouched must NOT be tolerated as a "safe" link/path fix
+        # — that would let attacker-controlled diff content post a misleading
+        # claim (or worse) while still classifying as LOGISTICS_ONLY.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 1,
+            "changes": 2,
+            "patch": (
+                "@@ -6,2 +6,2 @@ prd:\n"
+                " | Date | 2026-01-01 |\n"
+                "-| PRD | [README.md](https://example.com/enhancements/OSAC-1-a/README.md) |\n"
+                "+| PRD | [click here for the real requirements](https://example.com/enhancements/OSAC-1-a/README.md) |\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
     def test_allowlisted_frontmatter_edit_plus_prose_in_same_hunk_is_substantive(self):
         # Regression: an allow-listed frontmatter field edit (last-updated)
         # and a real prose rewrite occurring in the SAME diff hunk, on

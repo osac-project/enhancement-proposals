@@ -9,8 +9,10 @@ three safe shapes:
   2. A change confined entirely to an explicit allow-listed YAML frontmatter field
      (e.g. tracking-link, last-updated).
   3. A same-line link-target/path substitution — the only characters that differ
-     between the old and new line sit inside a markdown link, a bare URL, or a bare
-     "/enhancements/..." path; everything else on the line is byte-identical.
+     between the old and new line sit inside a markdown link *target*, a bare URL,
+     a bare "/enhancements/..." path, or a bare filename-shaped link *label*
+     (e.g. "old-name.md" -> "README.md"); everything else on the line, including
+     any non-filename-shaped link label text, is byte-identical.
 
 There is no separate "ambiguous" bucket. Anything that isn't provably one of the
 three shapes above — an unrecognized frontmatter field, a heading added/removed, a
@@ -54,17 +56,34 @@ FRONTMATTER_DELIMITER_RE = re.compile(r"^---\s*$")
 HEADING_RE = re.compile(r"^#{1,6}(\s|$)")
 HUNK_HEADER_RE = re.compile(r"^@@ ")
 
-# Matches the parts of a line that are allowed to change under category 3: a full
-# markdown link `[text](target)`, a bare URL, or a bare "/enhancements/..." path.
-LINK_OR_PATH_RE = re.compile(
-    r"\[[^\]]*\]\([^)]*\)"
-    r"|https?://\S+"
+# Matches a bare URL or a bare "/enhancements/..." path — always safe to change
+# under category 3, independent of surrounding text.
+BARE_URL_OR_PATH_RE = re.compile(
+    r"https?://\S+"
     r"|/enhancements/[A-Za-z0-9._/-]+"
 )
 
+# Matches a markdown link `[text](target)`. The target (group 2) is always safe
+# to change. The visible anchor text (group 1) is only safe to change when it's a
+# bare filename-shaped token (e.g. "old-name.md" -> "README.md", the real PR #174
+# shape where a rename updates both the link text and its target) — never when it
+# holds arbitrary prose, since that's attacker-controlled content that could
+# otherwise be rewritten to a misleading claim while still passing as a "safe"
+# link/path fix.
+MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]*)\)")
+FILENAME_ONLY_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _mask_markdown_link(m):
+    anchor_text = m.group(1)
+    if FILENAME_ONLY_RE.match(anchor_text):
+        return "[\0](\0)"
+    return f"[{anchor_text}](\0)"
+
 
 def _mask_links_and_paths(line):
-    return LINK_OR_PATH_RE.sub("\0", line)
+    line = MARKDOWN_LINK_RE.sub(_mask_markdown_link, line)
+    return BARE_URL_OR_PATH_RE.sub("\0", line)
 
 
 def _is_path_substitution(old_line, new_line):
