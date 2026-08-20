@@ -1,7 +1,10 @@
+import json
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import ep_review as er
 
@@ -194,6 +197,80 @@ class BuildTicketBaseTests(unittest.TestCase):
         self.assertIsNone(ticket["jira_key"])
         self.assertFalse(ticket["jira_key_ambiguous"])
         self.assertEqual(len(ticket["structure_violations"]), 1)
+
+
+class SkipLogisticsGatingTests(unittest.TestCase):
+    """EP_REVIEW_SKIP_LOGISTICS gates whether a LOGISTICS_ONLY verdict can
+    actually suppress run_review() — Phase B ships default-off (burn-in)."""
+
+    LOGISTICS_FILES = [{
+        "filename": "enhancements/OSAC-1-a/README.md",
+        "status": "modified",
+        "additions": 1,
+        "deletions": 1,
+        "changes": 2,
+        "previous_filename": None,
+        "patch": (
+            "@@ -3,2 +3,2 @@ authors:\n"
+            " creation-date: 2026-01-01\n"
+            "-last-updated: 2026-01-01\n"
+            "+last-updated: 2026-01-02\n"
+        ),
+    }]
+
+    SUBSTANTIVE_FILES = [{
+        "filename": "enhancements/OSAC-1-a/design.md",
+        "status": "added",
+        "additions": 10,
+        "deletions": 0,
+        "changes": 10,
+        "previous_filename": None,
+    }]
+
+    PR_JSON = json.dumps({
+        "number": 999,
+        "title": "OSAC-1: housekeeping",
+        "body": "",
+        "author": {"login": "someone"},
+        "labels": [],
+        "headRefOid": "deadbeef",
+    })
+
+    def setUp(self):
+        env = {
+            "PR_NUMBER": "999",
+            "PR_HEAD_SHA": "deadbeef",
+            "EP_REVIEW_SHADOW": "true",
+        }
+        self._env_patch = mock.patch.dict(os.environ, env, clear=False)
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        self.addCleanup(os.environ.pop, "EP_REVIEW_SKIP_LOGISTICS", None)
+
+    def _run_main(self, files, skip_logistics):
+        os.environ["EP_REVIEW_SKIP_LOGISTICS"] = "true" if skip_logistics else "false"
+        with mock.patch.object(er, "gh", return_value=self.PR_JSON) as mock_gh, \
+             mock.patch.object(er, "get_changed_files", return_value=files), \
+             mock.patch.object(er, "EPHooks") as mock_hooks_cls, \
+             mock.patch.object(er, "run_review") as mock_run_review, \
+             mock.patch("shutil.copytree"):
+            er.main()
+        return mock_hooks_cls.return_value, mock_run_review, mock_gh
+
+    def test_flag_off_runs_full_review_even_for_logistics_only(self):
+        hooks, run_review, _ = self._run_main(self.LOGISTICS_FILES, skip_logistics=False)
+        run_review.assert_called_once()
+        hooks.apply_logistics_comment.assert_not_called()
+
+    def test_flag_on_skips_full_review_for_logistics_only(self):
+        hooks, run_review, _ = self._run_main(self.LOGISTICS_FILES, skip_logistics=True)
+        run_review.assert_not_called()
+        hooks.apply_logistics_comment.assert_called_once()
+
+    def test_flag_on_still_runs_full_review_for_substantive(self):
+        hooks, run_review, _ = self._run_main(self.SUBSTANTIVE_FILES, skip_logistics=True)
+        run_review.assert_called_once()
+        hooks.apply_logistics_comment.assert_not_called()
 
 
 if __name__ == "__main__":

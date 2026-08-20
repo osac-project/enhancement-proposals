@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import ep_classify
 import ep_paths
 from ep_hooks import EPHooks
 from ep_skill_config import build_skill_config
@@ -38,9 +39,31 @@ def gh(args):
 
 
 def get_changed_files(pr_number):
+    """Return the full per-file detail (filename, status, previous_filename,
+    patch, additions, deletions, changes) for every file changed in the PR —
+    the raw shape the GitHub "pulls/*/files" API already returns, just no
+    longer narrowed to filenames only. ep_classify.classify_logistics_only
+    needs status/patch; Phase A's filename-only consumers (detect_skills,
+    ep_paths, pr_enhancement_slugs) get a `[f["filename"] for f in files]`
+    view instead — see filenames_only() below.
+
+    Emitting one JSON object per line (rather than a single array) lets
+    --paginate's multiple pages concatenate safely without needing --slurp.
+    """
     raw = gh(["api", f"repos/{REPO}/pulls/{pr_number}/files",
-              "--paginate", "--jq", ".[].filename"])
-    return [f for f in raw.splitlines() if f.strip()]
+              "--paginate", "--jq",
+              ".[] | {filename, status, previous_filename, patch, "
+              "additions, deletions, changes}"])
+    files = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line:
+            files.append(json.loads(line))
+    return files
+
+
+def filenames_only(files):
+    return [f["filename"] for f in files]
 
 
 def detect_skills(files):
@@ -160,6 +183,7 @@ def main():
     pr_number = os.environ.get("PR_NUMBER")
     head_sha = os.environ.get("PR_HEAD_SHA", "")
     shadow = os.environ.get("EP_REVIEW_SHADOW", "true").lower() == "true"
+    skip_logistics = os.environ.get("EP_REVIEW_SKIP_LOGISTICS", "false").lower() == "true"
 
     if not pr_number:
         print("PR_NUMBER not set", file=sys.stderr)
@@ -175,13 +199,22 @@ def main():
         print("No files changed")
         return
 
-    skills = detect_skills(files)
+    filenames = filenames_only(files)
+
+    skills = detect_skills(filenames)
     if not skills:
         print("No reviewable docs found in changed files — skipping")
         return
 
     print(f"Detected: {', '.join(s[0] for s in skills)} "
-          f"(from {', '.join(f for f in files if f.lower().endswith('.md'))})")
+          f"(from {', '.join(f for f in filenames if f.lower().endswith('.md'))})")
+
+    logistics_verdict = ep_classify.classify_logistics_only(files)
+    if skip_logistics:
+        print(f"Logistics classification: {logistics_verdict}")
+    else:
+        print(f"Logistics classification: {logistics_verdict} "
+              "(EP_REVIEW_SKIP_LOGISTICS is off — full review still runs)")
 
     pr_raw = gh(["pr", "view", str(pr_number), "--repo", REPO,
                   "--json", "number,title,body,author,labels,headRefOid"])
@@ -203,10 +236,16 @@ def main():
         reviewed_label="rfe-creator-auto-reviewed",
     )
 
-    ticket_base = build_ticket_base(pr, head_sha, pr_number, files)
+    ticket_base = build_ticket_base(pr, head_sha, pr_number, filenames)
 
     for skill_name, skill_path in skills:
         ticket_key = f"EP-{pr_number}"
+
+        if skip_logistics and logistics_verdict == ep_classify.LOGISTICS_ONLY:
+            print(f"\n[{skill_name}] LOGISTICS_ONLY — skipping full review")
+            hooks.apply_logistics_comment(ticket_key, ticket_base, skill_name)
+            continue
+
         work_dir = Path(f"workdir-{skill_name}")
         if work_dir.exists():
             shutil.rmtree(work_dir)
@@ -215,7 +254,7 @@ def main():
         shutil.copytree(SKILLS_PATH, work_dir,
                         ignore=shutil.ignore_patterns('.git'),
                         ignore_dangling_symlinks=True)
-        exclude_own_slug_from_reference_library(work_dir, files)
+        exclude_own_slug_from_reference_library(work_dir, filenames)
 
         print(f"\nRunning {skill_name}...")
         try:
