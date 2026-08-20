@@ -118,13 +118,28 @@ class EPHooks:
     # ── Prompt builder ──
 
     def build_prompt(self, ticket_key, mode, skill_name, **kw):
+        ticket = kw.get("ticket") or {}
         if skill_name == "prd-review":
-            return self._prd_prompt()
-        return self._design_prompt()
+            return self._prd_prompt(ticket)
+        return self._design_prompt(ticket)
 
-    def _prd_prompt(self):
+    @staticmethod
+    def _feature_context_block(ticket):
+        jira_key = ticket.get("jira_key")
+        ambiguous = ticket.get("jira_key_ambiguous", False)
+        if jira_key and not ambiguous:
+            key_line = f"Jira Feature key: {jira_key}"
+        else:
+            key_line = "Jira Feature key: could not be determined"
+        return (
+            "Feature context (derived by the harness from the EP directory "
+            f"path): {key_line}\n\n"
+        )
+
+    def _prd_prompt(self, ticket):
         return (
             PROMPT_INJECTION_BOUNDARY +
+            self._feature_context_block(ticket) +
             "Review the document in .context/pr-diff.txt using the review criteria "
             "in .context/skill-prompt.md.\n\n"
             "Apply the review dimensions from skill-prompt.md, then map your assessment "
@@ -159,9 +174,10 @@ class EPHooks:
             "}"
         )
 
-    def _design_prompt(self):
+    def _design_prompt(self, ticket):
         return (
             PROMPT_INJECTION_BOUNDARY +
+            self._feature_context_block(ticket) +
             "Review the design document in .context/pr-diff.txt using the review criteria "
             "in .context/skill-prompt.md.\n\n"
             "Apply the review dimensions from skill-prompt.md, then map your assessment "
@@ -253,7 +269,16 @@ class EPHooks:
             print(f"  [{ticket_key}] No verdict — skipping")
             return
 
-        head_sha = (kw.get("ticket") or {}).get("headRefOid", "")
+        ticket = kw.get("ticket") or {}
+        head_sha = ticket.get("headRefOid", "")
+        jira_key = ticket.get("jira_key")
+        jira_key_ambiguous = ticket.get("jira_key_ambiguous", False)
+        structure_violations = ticket.get("structure_violations", [])
+        feature_line = (
+            f"**Feature:** {jira_key}"
+            if jira_key and not jira_key_ambiguous
+            else "**Feature:** could not be determined"
+        )
 
         scores = verdict.get("scores", {})
         for k in scores:
@@ -276,6 +301,7 @@ class EPHooks:
             f"<!-- sha:{head_sha[:8]} -->" if head_sha else "",
             "",
             f"**Score: {total}/{max_total}** | **Verdict: {pass_fail}**",
+            feature_line,
             "",
             "| Criterion | Score | Notes |",
             "|-----------|-------|-------|",
@@ -305,6 +331,14 @@ class EPHooks:
                     lines.append(f"{i}. {self._sanitize_text(item)}")
             else:
                 lines.append("None.")
+
+        lines.append("")
+        lines.append(f"### Structural notes ({len(structure_violations)})")
+        if structure_violations:
+            for i, violation in enumerate(structure_violations, 1):
+                lines.append(f"{i}. {self._sanitize_text(violation)}")
+        else:
+            lines.append("None.")
 
         cost_summary = verdict.get("_cost_summary")
         if cost_summary:

@@ -57,7 +57,7 @@ class PRDPromptTests(unittest.TestCase):
 
     def setUp(self):
         self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
-        self.prompt = self.hooks._prd_prompt()
+        self.prompt = self.hooks._prd_prompt({})
 
     def test_prompt_contains_all_prd_keys(self):
         for key in PRD_KEYS:
@@ -83,7 +83,7 @@ class DesignPromptTests(unittest.TestCase):
 
     def setUp(self):
         self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
-        self.prompt = self.hooks._design_prompt()
+        self.prompt = self.hooks._design_prompt({})
 
     def test_prompt_contains_all_design_keys(self):
         for key in DESIGN_KEYS:
@@ -314,7 +314,7 @@ class DesignPromptThresholdTests(unittest.TestCase):
 
     def setUp(self):
         self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
-        self.prompt = self.hooks._design_prompt()
+        self.prompt = self.hooks._design_prompt({})
 
     def test_prompt_pass_threshold(self):
         self.assertIn("total >= 5", self.prompt)
@@ -373,6 +373,132 @@ class CriterionNoteTruncationTests(unittest.TestCase):
     def test_sanitize_text_default_limit_unchanged(self):
         """Unrelated _sanitize_text call sites (e.g. findings items) keep the 500 default."""
         self.assertEqual(len(self.hooks._sanitize_text("x" * 600)), 500)
+
+
+class FeatureContextBlockTests(unittest.TestCase):
+    """Both prompts must surface the harness-derived Jira key as trusted
+    context, and never fall back to ticket title/body as a key source."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+
+    def test_prd_prompt_includes_key_when_present(self):
+        prompt = self.hooks._prd_prompt({"jira_key": "OSAC-1589"})
+        self.assertIn("Jira Feature key: OSAC-1589", prompt)
+
+    def test_design_prompt_includes_key_when_present(self):
+        prompt = self.hooks._design_prompt({"jira_key": "OSAC-2872"})
+        self.assertIn("Jira Feature key: OSAC-2872", prompt)
+
+    def test_prompt_says_could_not_be_determined_when_absent(self):
+        prompt = self.hooks._prd_prompt({"jira_key": None})
+        self.assertIn("Jira Feature key: could not be determined", prompt)
+
+    def test_prompt_says_could_not_be_determined_when_ambiguous(self):
+        prompt = self.hooks._prd_prompt(
+            {"jira_key": None, "jira_key_ambiguous": True}
+        )
+        self.assertIn("Jira Feature key: could not be determined", prompt)
+
+    def test_prompt_missing_ticket_fields_defaults_to_undetermined(self):
+        prompt = self.hooks._design_prompt({})
+        self.assertIn("Jira Feature key: could not be determined", prompt)
+
+    def test_prompt_never_echoes_title_or_body_as_key_source(self):
+        ticket = {
+            "jira_key": None,
+            "jira_key_ambiguous": False,
+            "title": "OSAC-9999: unrelated title mentioning a Jira key",
+            "body": "See OSAC-8888 for context",
+        }
+        prd_prompt = self.hooks._prd_prompt(ticket)
+        design_prompt = self.hooks._design_prompt(ticket)
+        for prompt in (prd_prompt, design_prompt):
+            self.assertNotIn("OSAC-9999", prompt)
+            self.assertNotIn("OSAC-8888", prompt)
+            self.assertIn("Jira Feature key: could not be determined", prompt)
+
+    def test_build_prompt_threads_ticket_through(self):
+        prompt = self.hooks.build_prompt(
+            "EP-1", "resolve", "prd-review", ticket={"jira_key": "OSAC-42"}
+        )
+        self.assertIn("Jira Feature key: OSAC-42", prompt)
+
+
+class ApplyLabelsFeatureContextTests(unittest.TestCase):
+    """apply_labels() must render the Feature line and Structural notes
+    section, sourced from the ticket dict's harness-derived fields."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=False)
+        self.verdict = {
+            "verdict": "pass",
+            "scores": {
+                "feasibility": 2, "testability": 2,
+                "scope": 2, "architecture": 2,
+            },
+            "total": 8,
+            "criterionNotes": {},
+            "summary": "Good design",
+            "feedback": "No issues",
+            "findings": {"critical": [], "important": [], "suggestions": []},
+        }
+
+    def _comment(self, ticket):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        captured = {}
+
+        def fake_gh(args, check=False):
+            if "comment" in args and "--body-file" in args:
+                captured["body"] = Path(args[args.index("--body-file") + 1]).read_text()
+            return ""
+
+        with patch.object(self.hooks, "_gh", side_effect=fake_gh):
+            self.hooks.apply_labels(
+                "EP-1", self.verdict, "resolve", "/tmp", ticket=ticket,
+            )
+        return captured["body"]
+
+    def test_feature_line_with_key(self):
+        output = self._comment({
+            "headRefOid": "abc12345", "jira_key": "OSAC-1589",
+            "jira_key_ambiguous": False, "structure_violations": [],
+        })
+        self.assertIn("**Feature:** OSAC-1589", output)
+
+    def test_feature_line_could_not_be_determined(self):
+        output = self._comment({
+            "headRefOid": "abc12345", "jira_key": None,
+            "jira_key_ambiguous": False, "structure_violations": [],
+        })
+        self.assertIn("**Feature:** could not be determined", output)
+
+    def test_feature_line_ambiguous_treated_as_undetermined(self):
+        output = self._comment({
+            "headRefOid": "abc12345", "jira_key": None,
+            "jira_key_ambiguous": True, "structure_violations": [],
+        })
+        self.assertIn("**Feature:** could not be determined", output)
+
+    def test_structural_notes_lists_violations(self):
+        output = self._comment({
+            "headRefOid": "abc12345", "jira_key": "OSAC-1589",
+            "jira_key_ambiguous": False,
+            "structure_violations": [
+                "enhancements/vm-worker-nodes/prd.md: directory doesn't match the required format",
+            ],
+        })
+        self.assertIn("### Structural notes (1)", output)
+        self.assertIn("doesn't match the required format", output)
+
+    def test_structural_notes_none_when_empty(self):
+        output = self._comment({
+            "headRefOid": "abc12345", "jira_key": "OSAC-1589",
+            "jira_key_ambiguous": False, "structure_violations": [],
+        })
+        self.assertIn("### Structural notes (0)", output)
 
 
 if __name__ == "__main__":

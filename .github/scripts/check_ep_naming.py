@@ -30,11 +30,11 @@ elsewhere in the repo.
 """
 
 import os
-import re
 import subprocess
 import sys
 
-NAME_RE = re.compile(r"^OSAC-[1-9][0-9]*-[a-z0-9]+(?:-[a-z0-9]+)*$")
+from ep_paths import NAME_RE, top_level_enhancement_dir
+
 CHECKED_FILENAMES = frozenset({"prd.md", "design.md"})
 
 BASE_SHA_ENV_VAR = "PRE_COMMIT_PR_BASE_SHA"
@@ -55,16 +55,6 @@ def ref_exists(ref: str) -> bool:
         ["git", "cat-file", "-e", ref], capture_output=True, check=False
     )
     return result.returncode == 0
-
-
-def top_level_enhancement_dir(path: str) -> str | None:
-    prefix = "enhancements/"
-    if not path.startswith(prefix):
-        return None
-    rest = path[len(prefix):]
-    if "/" not in rest:
-        return None
-    return rest.split("/", 1)[0]
 
 
 def resolve_live_base_ref(live_base_ref: str | None) -> str | None:
