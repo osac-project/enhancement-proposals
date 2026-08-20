@@ -25,10 +25,9 @@ superseded-by:
 
 ## Summary
 
-This enhancement describes the technical design for the OSAC unified
-networking architecture. For the problem statement, gaps analysis, and
-requirements, see the companion
-[Requirements Document (PRD)](prd.md).
+This document describes the technical design for the OSAC unified
+networking architecture. For the problem statement and requirements,
+see the companion [Requirements Document (PRD)](prd.md).
 
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a
 pod. Pod networking is managed by OVN-Kubernetes, meaning VMs live inside an
@@ -80,10 +79,11 @@ OSAC networking is handled by two managers:
 
 - **K8s Manager** (optional) — handles everything needed to make VMs part of
   the fabric: creates the K8s overlay (e.g., CUDN with LocalNet) and bridges
-  it to the fabric segment. Also creates MetalLB IPAddressPool CRs at subnet
-  creation time for CaaS VIP allocation. Needed for deployments that host
-  both VMs and BMs and require multi-tenancy across all. Once VMs are on the fabric, the fabric manager handles them
-  identically to bare-metal servers.
+  it to the fabric segment. Needed for deployments that host VMs — once VMs
+  are on the fabric, the fabric manager handles them identically to
+  bare-metal servers. MetalLB IPAddressPool CRs for CaaS VIP allocation are
+  created by the Subnet controller at subnet creation time (gated on
+  `NetworkClass.spec.vip_prefix_length`), independent of the k8sManager.
 
 #### Why Two Managers?
 
@@ -266,7 +266,7 @@ Forwarding) instances to route between the OVN overlay and the fabric. Each
 tenant VN maps to a VRF on the host, which peers with the fabric via BGP.
 VMs are reachable from the fabric via L3 routing through the VRF. See the
 [CUDN with VRF-lite setup guide](/docs/networking/setup-bpg-vrf-lite) for
-a working lab example.
+a working example.
 
 **DPU-based bridging.** SmartNICs (DPUs) offload the OVN-to-fabric bridging
 to hardware. The DPU handles packet encapsulation/decapsulation between OVN
@@ -359,15 +359,14 @@ manager handles ExternalIP allocation — one pool serves all resource types.
 
 This section shows how the unified networking API works from the tenant's
 perspective. The flows are the same regardless of which fabric manager or
-K8s manager the provider has deployed. Annotations mark what is **new** or
-**changed** compared to the current design.
+K8s manager the provider has deployed.
 
 #### Provider Setup
 
 1. Provider deploys hosting cluster(s) and fabric controller
-2. Provider creates NetworkClass for the deployment (**new** — provider-only,
+2. Provider creates NetworkClass for the deployment (provider-only,
    tenants never see it)
-3. Provider creates ExternalIPPool (**renamed** from PublicIPPool):
+3. Provider creates ExternalIPPool:
 
 ```bash
 osac admin create externalippool \
@@ -501,10 +500,10 @@ all resources equally — there is no VM-vs-BM distinction.
 #### External Access (Same for All Resource Types)
 
 Since all resources are on the fabric, external access operations are
-uniform. There is no VM-vs-BM distinction (**changed** — the current design
-has separate K8s-side steps for VMs).
+uniform. There is no VM-vs-BM distinction — the fabric manager handles
+DNAT and SNAT identically for all resource types.
 
-**Allocate ExternalIP:** (**renamed** from PublicIP)
+**Allocate ExternalIP:**
 
 ```bash
 osac create externalip --pool external-pool-1 --name my-ip
@@ -623,7 +622,7 @@ precondition checks and requeue:
 |-------------|----------------------|---------------------|
 | ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to assigned IP; operator writes to CR status |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC (from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to assigned IP; operator writes to CR status |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
@@ -634,7 +633,7 @@ targets.
 *IP discovery — DHCP-based host networking:*
 
 All host-side IP assignment uses DHCP. The fabric's DHCP server (managed
-by the fabric manager as part of the V-Net infrastructure) assigns IPs
+by the fabric manager as part of the network segment infrastructure) assigns IPs
 to hosts when they boot on the subnet. OSAC does not pre-allocate IPs
 or configure host-side networking — DHCP handles IP address, gateway,
 prefix, and DNS automatically.
@@ -650,27 +649,47 @@ IP discovery mechanism per service type:
 |---------|-----------------|-------------------|-------------|
 | VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
 | CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to DHCP-assigned IP (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC — from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to the DHCP-assigned IP, falling back to server name for named fabric servers (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
-The fabric manager's `create_network_attachment` role is switch-side
-only — it adds the host's port to the V-Net. The role is generic: it
-first checks if the port is already on a V-Net (e.g., a parking
-network for CaaS pre-booted agents) — if so, removes it — then adds
-the port to the target V-Net. This handles both BMaaS (server not on
-any V-Net) and CaaS (agent moving from parking to tenant V-Net) with
-the same role. The role is idempotent: if the port is already on the
-target V-Net, the role is a no-op. The role only removes and re-adds
-the port when the current V-Net differs from the target. Once on the
-V-Net, the host receives an IP from the fabric's DHCP server
-automatically. On deletion, `delete_network_attachment` removes the
-port from the tenant V-Net and returns it to the parking network
-(CaaS) or leaves it detached (BMaaS).
+The fabric manager's `move_network_attachment` role is switch-side
+only — it moves a host's fabric port from one network segment to another
+(`from_vnet_name` → `to_vnet_name`, either side optional). Attach and
+detach are the **same primitive**: on provision the port moves from a
+**provisioning network** to the tenant subnet's network segment; on deletion it
+moves back to the provisioning network. The role operates purely against the
+fabric (no Subnet CR lookup) and is keyed on plain segment names, so the caller
+resolves a `subnetRef` → tenant segment name and supplies the provisioning
+network name from configuration. Detach is a no-op if the port is not on the
+named segment, so re-runs and unexpected states are safe.
+
+One role handles both BMaaS (fabric NIC on the provisioning network while the
+server is idle so it has internet during metal3 inspection) and CaaS (agent
+moving from a provisioning network to the tenant network). The **timing** of the
+move differs per service:
+
+- **BMaaS:** Move happens **POST-provisioning** (provision on the provisioning
+  network → move to tenant network → reboot so the OS re-DHCPs on the tenant
+  network). This achieves isolation-until-ready: the tenant cannot reach the
+  server during imaging/first-boot.
+- **CaaS:** Move happens **BEFORE provisioning** (agents are pre-booted on the
+  provisioning network, so the port is moved to the tenant network before cluster
+  creation begins; no in-deploy switch needed).
+
+Once on the tenant network, the host receives an IP from the fabric's DHCP server
+automatically. A single AAP job template serves both directions, deriving onboard
+(provisioning network → tenant) vs. offboard (tenant → provisioning network) from
+the resource's `deletionTimestamp`. See [BMaaS — Provisioning Network and Port
+Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#provisioning-network-and-port-moves).
 
 IP discovery for BMaaS is a separate dispatcher call. After
 `reconcileProvisioning` completes and the host has received a DHCP
 lease, the operator dispatches `query_dhcp_lease` — this role queries
 the fabric manager's DHCP lease API for the subnet and matches the
 server's port MAC address to find the corresponding DHCP-assigned IP.
+Bare-metal hosts are not named fabric servers, so the lease is matched
+by NIC MAC, which the operator supplies from the host's
+`osac.openshift.io/interface-macs` BareMetalHost annotation; named
+fabric servers such as CaaS agents fall back to matching by server name.
 
 *NATGateway controller preconditions:*
 
@@ -689,10 +708,10 @@ address.
 
 *Auto-provisioned resource labeling:*
 
-All auto-provisioned resources receive the label
-`osac.openshift.io/auto-provisioned: "true"`. Auto-provisioned
+All auto-created resources receive the label
+`osac.openshift.io/auto-created: "true"`. Auto-provisioned
 ExternalIPs also receive a parent-resource label
-`osac.openshift.io/auto-provisioned-for: <resource-id>` so that the
+`osac.openshift.io/auto-created-for: <resource-id>` so that the
 cleanup logic can find orphaned ExternalIPs directly, even if the
 intermediate ExternalIPAttachment has already been deleted.
 
@@ -701,13 +720,13 @@ intermediate ExternalIPAttachment has already been deleted.
 The parent resource's finalizer uses a phased requeue approach to
 ensure correct ordering:
 
-1. Query ExternalIPAttachments labeled `auto-provisioned` targeting
+1. Query ExternalIPAttachments labeled `auto-created` targeting
    this resource. Issue delete for each. Requeue.
 2. On next reconcile: check if all ExternalIPAttachments are fully
    deleted (including their own finalizers completing the DNAT rule
    removal). If not, requeue.
 3. Once all ExternalIPAttachments are gone: query ExternalIPs labeled
-   `auto-provisioned-for: <this-resource>`. Issue delete for each.
+   `auto-created-for: <this-resource>`. Issue delete for each.
    Requeue.
 4. On next reconcile: check if all ExternalIPs are fully deleted. If
    not, requeue.
@@ -716,7 +735,7 @@ ensure correct ordering:
 
 If cleanup fails permanently (after N retries): finalizer is removed,
 parent resource deleted, orphaned resources left in cluster. Orphaned
-resources are identifiable by the `auto-provisioned-for` label.
+resources are identifiable by the `auto-created-for` label.
 
 **Enable outbound NAT (SNAT):**
 
@@ -974,7 +993,7 @@ message BareMetalInstanceStatus {
 }
 ```
 
-IP discovered after DHCP assignment on the tenant V-Net. After
+IP discovered after DHCP assignment on the tenant network. After
 `reconcileProvisioning` completes, the operator dispatches
 `query_dhcp_lease` to the fabric manager's DHCP lease API, matching
 the server's port MAC address to find the assigned IP (see
@@ -1076,7 +1095,7 @@ attachment determines:
 
 **IP assignment:** All resource types receive IPs via DHCP. For VMs,
 OVN provides DHCP on the CUDN overlay. For BM servers and CaaS agents,
-the fabric's DHCP server assigns IPs on the V-Net. The provisioning
+the fabric's DHCP server assigns IPs on the network segment. The provisioning
 template does NOT configure host-side networking (no static IP, gateway,
 or DNS configuration) — DHCP handles it automatically.
 
@@ -1117,11 +1136,15 @@ template roles create DNS records. A DNS API is a separate enhancement.
 
 #### BM-Only Deployments
 
-If a NetworkClass has no k8sManager, the deployment does not support VMs or CaaS
-clusters. ComputeInstance creation is rejected if the target NetworkClass
-has no k8sManager — there is no K8s overlay to place the VM on. Cluster
-creation is also rejected — without a k8sManager, there is no MetalLB
-IPAddressPool for VIP allocation on the hosting cluster.
+If a NetworkClass has no k8sManager, the deployment does not support VMs.
+ComputeInstance creation is rejected if the target NetworkClass has no
+k8sManager — there is no K8s overlay to place the VM on.
+
+CaaS clusters work without a k8sManager. MetalLB IPAddressPool creation
+is handled by the Subnet controller (gated on
+`NetworkClass.spec.vip_prefix_length`), not by the k8sManager. BM-only
+CaaS deployments provision clusters with fabric-level networking and
+MetalLB VIP allocation without requiring a K8s overlay.
 
 #### CIDR Overlap
 
@@ -1142,10 +1165,10 @@ VirtualNetwork at creation time.
 
 This design requires K8s-to-fabric connectivity in every deployment that
 hosts VMs. The k8sManager must bridge the OVN overlay to the physical
-fabric for VMs to participate. It is also required for CaaS clusters, where
-it creates MetalLB IPAddressPool CRs at subnet creation time for API and
-ingress VIP allocation. In BM-only deployments without CaaS, the
-k8sManager is not needed and the design reduces to fabric-manager-only.
+fabric for VMs to participate. In deployments without VMs (BM-only, with
+or without CaaS), the k8sManager is not needed and the design reduces to
+fabric-manager-only. MetalLB IPAddressPool creation for CaaS VIP
+allocation is handled by the Subnet controller, not the k8sManager.
 
 The trade-off is justified by infrastructure-agnostic subnets: any resource
 type on any subnet, uniform security enforcement via the fabric, and no

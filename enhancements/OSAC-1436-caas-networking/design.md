@@ -18,41 +18,21 @@ superseded-by:
 
 # CaaS Networking — Cluster Networking via OSAC Networking API
 
-This enhancement extends the unified networking API to support CaaS-specific requirements: tenant-controlled cluster node networking via VirtualNetwork + Subnet attachments, BM-based node sets with fabric interface resolution, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
+CaaS networking provides tenant-controlled cluster node networking via VirtualNetwork + Subnet attachments, BM-based node sets with fabric interface resolution, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
 
 ## Summary
 
-This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
+This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how CaaS consumes that architecture.
 
-Cluster provisioning currently uses inline networking logic in the CaaS template — all VLAN creation, SNAT, DNAT, IP allocation, DNS, and MetalLB configuration happens in step collections with zero tenant control. This enhancement moves networking lifecycle to the OSAC Networking API, enables tenants to place clusters on shared or isolated VirtualNetworks, and introduces a VIP feedback loop for cluster API/ingress endpoints to enable auto-provisioned external access. See [PRD](prd.md) for detailed requirements.
+Cluster provisioning uses the OSAC Networking API for all networking lifecycle — tenants place clusters on their VirtualNetworks via `network_attachment`, the operator handles agent selection and port moves, and a VIP feedback loop enables auto-provisioned external access for cluster API and ingress endpoints. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-Cluster provisioning today follows this flow:
-
-1. Tenant creates Cluster with template + node_sets + pull_secret (no networking parameters)
-2. fulfillment-service creates ClusterOrder CR
-3. osac-operator ClusterOrder controller triggers AAP workflow
-4. AAP workflow calls the CaaS template which dispatches to `{{ network_steps_collection }}.cluster_infra` and `{{ network_steps_collection }}.external_access`:
-   - **Netris**: selects agents, creates server cluster, allocates NAT IP, creates SNAT/DNAT, DNS, MetalLB
-   - **agentless_net**: allocates VLAN, configures switch ports, creates L3 router namespace, SNAT, DNAT, DNS, MetalLB
-
-### What Already Works
-
-- HyperShift HostedCluster + NodePool creation works
-- ClusterOrder CR exists with spec/status fields
-- AAP workflow integration (`osac-create-hosted-cluster-workflow`) works
-- Step collections (`netris.steps`, `agentless_net.steps`) provision working networking
-
-### What's Missing
-
-- CaaS template does ALL networking — none goes through the OSAC Networking API
-- Tenants have no control over which VirtualNetwork or Subnet their cluster nodes use
-- Tenants cannot place two clusters in the same VN or isolate them in separate VNs
-- `network_steps_collection` env var selects the ENTIRE networking backend deployment-wide
-- Step collections duplicate functionality that should be in the networking API
-- No VIP feedback loop (cluster VIPs are provisioned in the template but not synced to fulfillment-service)
-- No auto external access (tenant must manually create ExternalIP + ExternalIPAttachment for API/ingress)
+Clusters require tenant-controlled networking to enable:
+- Placing clusters on shared or isolated VirtualNetworks
+- Automatic agent port configuration (provisioning network → tenant network) during cluster creation
+- VIP feedback loop for cluster API/ingress endpoints to enable DNAT via ExternalIPAttachment
+- Auto external access (ExternalIP + ExternalIPAttachment) for single-call cluster provisioning with inbound connectivity
 
 ### Goals
 
@@ -65,18 +45,23 @@ Cluster provisioning today follows this flow:
 
 ### Agent Pool Model
 
-The current assumption is that **pre-booted Assisted Installer agents** are ready in a pool, waiting to be assigned to clusters. These agents sit on a **parking network** — a fabric-manager-managed V-Net that provides basic connectivity (DHCP, PXE, management access) while agents are idle. The parking network V-Net ID is a **deployment-level configuration** (e.g., AAP group_var `parking_vnet_id`), not a per-cluster or per-tenant parameter.
+**Pre-booted Assisted Installer agents** are ready in a pool, waiting to be assigned to clusters. These agents sit on a **provisioning network** — a fabric-manager-managed network segment that provides basic connectivity (DHCP, PXE, management access) while agents are idle. The provisioning network segment name is a **deployment-level configuration** (an AAP group_var, mirroring BMaaS's `netris_bm_provisioning_vnet`), not a per-cluster or per-tenant parameter.
 
 When an agent is selected for a cluster:
-1. The agent's port is **moved from the parking network to the tenant's subnet V-Net** (via `create_network_attachment`)
+1. The agent's port is **moved from the provisioning network to the tenant's subnet network segment** (via the generic `move_network_attachment` role — `from_vnet_name` = provisioning, `to_vnet_name` = tenant)
 2. The agent receives a new IP from the tenant subnet's DHCP server
-3. After cluster deletion, the agent's port is **returned to the parking network** (via `delete_network_attachment`)
+3. After cluster deletion, the agent's port is **returned to the provisioning network** (the reverse move — `from_vnet_name` = tenant, `to_vnet_name` = provisioning)
 
-This differs from BMaaS, where servers start with no network attachment and are placed directly on the tenant V-Net. For CaaS, the `create_network_attachment` role must handle the transition: check if the port is already on a network (parking V-Net), remove it, then add to the target V-Net. The `delete_network_attachment` role reverses this: remove from tenant V-Net, return to parking V-Net.
+**Generic role behavior:** The `move_network_attachment` role is keyed on plain network segment names — it detaches the port from `from_vnet_name` (if set), then attaches it to `to_vnet_name` (if set). Detach is a no-op when the port is not on the named segment, so re-runs and unexpected states are safe. This one role serves both CaaS and BMaaS, but the **timing** differs:
 
-**Generic role behavior:** The `create_network_attachment` role works identically for both CaaS and BMaaS by always checking if the given port is already part of a V-Net. If yes, remove it first. Then add to the target V-Net. This means:
-- **CaaS:** agent on parking V-Net → remove from parking → add to tenant V-Net
-- **BMaaS:** server not on any V-Net → nothing to remove → add to tenant V-Net
+- **CaaS:** Move happens **BEFORE provisioning** (agents are pre-booted on the
+  provisioning network, so the port is moved to the tenant network before cluster
+  creation begins; no in-deploy switch needed). Agent on provisioning network →
+  detach provisioning network → attach tenant network → cluster provisioning.
+- **BMaaS:** Move happens **POST-provisioning** (provision on the provisioning
+  network → move to tenant network → reboot so the OS re-DHCPs on the tenant
+  network). This achieves isolation-until-ready for bare-metal servers; CaaS does
+  not require this since agents are pre-booted and idle until assigned.
 
 **Future consideration:** The agent pool model may evolve toward on-demand agent booting during cluster provisioning (no pre-booted pool). The design should accommodate this by not assuming agents are pre-existing — the `reconcileAgentSelection` step abstracts agent discovery, and the networking flow works regardless of whether the agent was pre-booted or just provisioned.
 
@@ -137,21 +122,21 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
     - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
-    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-provisioned: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
+    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-created: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with enriched `network_attachment` in spec
 
 6. **osac-operator ClusterOrder controller:**
     - Creates namespace, ServiceAccount, RoleBindings (same as today)
 
-    **a. `reconcileAgentSelection` (NEW — replaces template-side agent selection):**
+    **a. `reconcileAgentSelection`:**
     - For each node_set: selects suitable agents from inventory based on `host_type`, availability, and labels
     - Labels and reserves selected agents for this cluster
     - Stores selected agent references on ClusterOrder status
 
-    **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
-    - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `subnet_ref`. The role checks if the port is already on a V-Net (parking network) — if so, removes it first — then adds the port to the tenant's subnet V-Net. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
-    - **Per-agent IP discovery:** After switch port configuration moves agent ports to the tenant V-Net, agents receive new IPs from the tenant subnet's DHCP server. The Assisted Installer Agent CR reports network status including the assigned IP in `status.inventory.interfaces[].ipv4Addresses[]`. The operator watches for this field to be updated after the port move and populates `AgentStatus.IPAddress` on the ClusterOrder status. The feedback controller then syncs these IPs to the fulfillment-service. If the Agent CR does not report an IP within a configurable timeout (default: 5 minutes after port move), the operator sets a `NetworkingIPDiscoveryTimeout` condition on the ClusterOrder and requeues, preventing indefinite blocking.
+    **b. `reconcileNetworking` (runs after agent selection, before provisioning):**
+    - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.move_network_attachment` passing `host_name` (agent's fabric server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `from_vnet_name` (the provisioning network) and `to_vnet_name` (the tenant's subnet network segment, resolved from `subnet_ref`). The move playbook waits for the target network segment to reach active state (fabric converged) before returning success. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
+    - **Per-agent IP discovery:** After switch port configuration moves agent ports to the tenant network, agents receive new IPs from the tenant subnet's DHCP server. The Assisted Installer Agent CR reports network status including the assigned IP in `status.inventory.interfaces[].ipv4Addresses[]`. The operator watches for this field to be updated after the port move and populates `AgentStatus.IPAddress` on the ClusterOrder status. The feedback controller then syncs these IPs to the fulfillment-service. If the Agent CR does not report an IP within a configurable timeout (default: 5 minutes after port move), the operator sets a `NetworkingIPDiscoveryTimeout` condition on the ClusterOrder and requeues, preventing indefinite blocking.
     - Network attachments must be Ready before provisioning proceeds
 
     **c. Triggers AAP workflow** (same as today, but template is simpler):
@@ -209,7 +194,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 12. **Delete Cluster:**
-    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-provisioned-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
+    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-created-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
@@ -218,7 +203,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Deletes HyperShift HostedCluster + NodePools
       - DNS cleanup
       - No switch port cleanup — template doesn't handle networking
-    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `delete_network_attachment` per BM node (passing host_name, logical_interface_name from the agent's node set definition, subnet_ref, and `parking_vnet_id` from deployment configuration). The role removes the port from the tenant's subnet V-Net and **returns it to the parking network** — the agent is back in the idle pool. See [Agent Pool Model](#agent-pool-model).
+    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `move_network_attachment` per BM node (passing host_name, logical_interface_name from the agent's node set definition, `from_vnet_name` = the tenant's subnet network segment resolved from subnet_ref, and `to_vnet_name` = the provisioning network name from deployment configuration). The role removes the port from the tenant's subnet segment and **returns it to the provisioning network** — the agent is back in the idle pool. See [Agent Pool Model](#agent-pool-model).
     - ClusterOrder controller `reconcileAgentCleanup` (delete): removes operator-set reservation labels from agents, making them available for future clusters.
     - Removes ClusterOrder finalizer
 
@@ -227,7 +212,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Delete NATGateway → fabric manager removes SNAT rule
     - Delete ExternalIPs → fabric manager releases IPs
     - Delete SecurityGroup → fabric manager removes ACL rules
-    - Delete Subnet → dispatcher calls both managers: fabric manager removes V-Net segment, k8s_manager removes CUDN overlay + MetalLB IPAddressPool from hosting clusters
+    - Delete Subnet → dispatcher calls both managers: fabric manager removes network segment, k8s_manager removes CUDN overlay + MetalLB IPAddressPool from hosting clusters
     - Delete VirtualNetwork → fabric manager removes tenant segment
 
 ### HostType and Interface Resolution
@@ -260,7 +245,7 @@ The tenant provides a single `ClusterNetworkAttachment` with `subnet` only — n
     {name: "mgmt-0", role: "management"}]
    ```
 3. fulfillment-service picks the first interface with role `fabric` → `data-0`, stores as `fabric_interface` on the node set definition
-4. Operator calls `create_network_attachment` with `interface=data-0` per node
+4. Operator calls `move_network_attachment` with `interface=data-0` per node (provisioning → tenant network)
 
 For v0.2: **CaaS supports BM node sets only.** VM-based cluster node sets are architecturally possible (the HostType BM-vs-VM discriminator and CUDN overlay support it) but are deferred — the HyperShift ↔ CUDN integration for VM worker nodes is not in scope.
 
@@ -290,7 +275,7 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 
 - `ClusterNetworkAttachment` proto message on ClusterSpec
 - `api_endpoint` / `ingress_endpoint` status fields on Cluster and ClusterOrder
-- Operator handles agent selection and network attachment (dispatcher calls `create_network_attachment` / `delete_network_attachment` for BM nodes before/after provisioning)
+- Operator handles agent selection and network attachment (dispatcher calls `move_network_attachment` for BM nodes before/after provisioning — provisioning → tenant on create, tenant → provisioning on delete)
 - Template provisions MetalLB VIPs and writes them to ClusterOrder status
 - VIP feedback loop: ClusterOrder → fulfillment-service → Cluster → ExternalIPAttachment controller
 - ExternalIPAttachment Pending → Ready lifecycle for cluster targets
@@ -360,7 +345,7 @@ type NodeSetStatus struct {
 
 type AgentStatus struct {
     AgentName string `json:"agentName"`           // Agent CR name (for NodePool targeting)
-    HostName  string `json:"hostName"`            // Netris server name (for dispatcher)
+    HostName  string `json:"hostName"`            // fabric server name (for dispatcher)
     SubnetRef string `json:"subnetRef,omitempty"`
     IPAddress string `json:"ipAddress,omitempty"` // Discovered by operator's reconcileNetworking: watches Agent CR network status after DHCP assignment, populates here; feedback controller syncs to fulfillment-service
 }
@@ -405,12 +390,12 @@ Migration adds to clusters table:
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs/IPs appear |
 | osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiEndpoint`/`ingressEndpoint` (MetalLB-allocated, template-discovered) from status, create DNAT via fabric_manager |
 | AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents), provision MetalLB VIPs, write VIPs to ClusterOrder status, host-side networking handled by DHCP — no agent selection logic |
-| fabric_manager (Ansible role) | create_network_attachment (V-Net port attachment), delete_network_attachment (V-Net port removal), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
+| fabric_manager (Ansible role) | move_network_attachment (generic port move: detach from/attach to, used for both provisioning → tenant and tenant → provisioning), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
 
 #### Auto-Provisioned Resource Lifecycle
 
-- Labeled `osac.openshift.io/auto-provisioned: "true"`
+- Labeled `osac.openshift.io/auto-created: "true"`
 - Parent resource finalizer deletes in order: ExternalIPAttachment → ExternalIP
 - On permanent cleanup failure: finalizer removed, parent deleted, orphaned resources left for manual cleanup
 
@@ -447,7 +432,7 @@ This feature inherits the existing security model:
 No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Cluster to auto-created resources
 - OPA policies enforce tenant-scoped list/get/update/delete
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
+- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
 
@@ -517,11 +502,11 @@ Instead of implementing VIP feedback loop, require tenants to manually create Ex
 
 ### ~~1. How does the operator select agents?~~ — Resolved
 
-Resolved: The operator queries Agent CRs directly via K8s API — selects by host_type label match and availability, labels selected agents with `osac.openshift.io/cluster-order: <name>` to reserve them. This is the current approach but may evolve as the agent management model changes.
+Resolved: The operator queries Agent CRs directly via K8s API — selects by host_type label match and availability, labels selected agents with `osac.openshift.io/cluster-order: <name>` to reserve them. This may evolve as the agent management model changes.
 
 ### ~~2. NMState NNCP configuration~~ — Resolved
 
-Resolved: DHCP handles host-side networking for CaaS agents. NMState NNCP configuration is no longer needed — agents receive their IP, gateway, and DNS from the fabric's DHCP server when they boot on the V-Net. The template does not configure static networking.
+Resolved: DHCP handles host-side networking for CaaS agents. NMState NNCP configuration is no longer needed — agents receive their IP, gateway, and DNS from the fabric's DHCP server when they boot on the network segment. The template does not configure static networking.
 
 ### ~~3. MetalLB IP pools~~ — Resolved
 
@@ -626,7 +611,7 @@ If `N+1` upgrade fails or cluster is misbehaving:
 Acceptable downgrade steps:
 - Delete Clusters using new field
 - Re-create using old flow (no network_attachment field)
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-provisioned: "true"`)
+- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`)
 
 ## Version Skew Strategy
 
@@ -665,7 +650,7 @@ kubectl describe cluster <name> -n <namespace>
 
 ### Symptom: Auto-provisioned ExternalIP not cleaned up after Cluster deletion
 
-**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-provisioned: "true"` with no parent
+**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-created: "true"` with no parent
 
 **Cause:** Finalizer cleanup failed permanently
 
@@ -700,7 +685,7 @@ Consequences:
 
 - AAP execution environment with `osac.templates.ocp_4_17_small` role updated (remove cluster_infra/external_access, add MetalLB VIP provisioning)
 - k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
-- fabric_manager Ansible role with `create_network_attachment` / `delete_network_attachment` (OSAC-2081)
+- fabric_manager Ansible role with the generic `move_network_attachment` primitive (OSAC-2081); a provisioned provisioning network segment for the idle agent pool
 - Integration test environment with CUDN or EVPN fabric
 - HostType test data with NetworkInterface fields
 
@@ -726,7 +711,7 @@ Consequences:
 | Cluster provisioning flow (operator side) | OSAC-2049 | New |
 | CLI --network-attachment for Cluster | OSAC-2076 | New |
 | Integration test | OSAC-2078 | New |
-| Fabric manager create/delete_network_attachment role | OSAC-2081 (Netris BM) | New |
+| Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | New |
 | HostType: add NetworkInterface fields (name, role, description) | Not tracked | **GAP** |
 | Remove cluster_infra / external_access step collection dispatch | Not tracked | **GAP** |
 | Remove NETWORK_STEPS_COLLECTION dependency | Not tracked | **GAP** |

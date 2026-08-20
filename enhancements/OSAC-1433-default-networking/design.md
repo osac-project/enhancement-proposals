@@ -20,33 +20,15 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-This enhancement provides default networking resources (including dual-stack subnets and NATGateway) at tenant onboarding, optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion.
+Default networking provides automatic resource provisioning at tenant onboarding (including dual-stack subnets and NATGateway), optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion.
 
 ## Summary
 
-This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system automatically provisions a default VirtualNetwork, IPv4 Subnet, IPv6 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration (dual-stack). Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
+This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system provisions a default VirtualNetwork, IPv4 Subnet, IPv6 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration (dual-stack). Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-Creating a reachable resource in OSAC requires 6+ sequential API calls: VirtualNetwork, Subnet, SecurityGroup, the resource itself, ExternalIP, and ExternalIPAttachment. Every tenant must understand the full networking resource model before provisioning their first VM, cluster, or bare-metal server. This friction slows onboarding, increases the chance of misconfiguration, and makes OSAC harder to adopt compared to platforms where a single create command produces a reachable instance.
-
-### What Already Works
-
-- Tenant controller exists and reconciles Tenant resources
-- VirtualNetwork, Subnet, SecurityGroup CRDs and controllers are implemented
-- ExternalIP and ExternalIPAttachment provisioning works end-to-end
-- NATGateway resource is implemented (OSAC-1676)
-- NetworkClass resource exists with defaults configuration
-- Resource creation with explicit network_attachments works for all three resource types
-
-### What's Missing
-
-- No default networking resources at tenant onboarding
-- No default CIDR or SecurityGroup rules configuration on NetworkClass
-- network_attachments field is required — no defaults applied when omitted
-- No auto ExternalIP allocation mode
-- No auto-cleanup of auto-provisioned resources on parent deletion
-- No tenant READY condition gating on default networking readiness
+A reachable resource in OSAC requires networking resources: VirtualNetwork, Subnet, SecurityGroup, the resource itself, ExternalIP, and ExternalIPAttachment. Default networking eliminates this friction — a single create command produces a reachable instance by leveraging tenant defaults provisioned at onboarding.
 
 ### Goals
 
@@ -54,7 +36,7 @@ Creating a reachable resource in OSAC requires 6+ sequential API calls: VirtualN
 - Default networking resources (VN, IPv4 Subnet, IPv6 Subnet, SG, NATGateway) provisioned at tenant onboarding (dual-stack)
 - Optional network_attachments field on all resource types
 - Auto ExternalIP mode for inbound connectivity
-- Auto-cleanup of auto-provisioned resources on deletion
+- Auto-cleanup of auto-created resources on deletion
 - Tenant-scoped default resources (visible, editable, lifecycle-managed by tenant)
 
 ### Non-Goals
@@ -66,7 +48,7 @@ Creating a reachable resource in OSAC requires 6+ sequential API calls: VirtualN
 
 ## Proposal
 
-This enhancement adds three main capabilities: default networking (including NATGateway) at tenant onboarding, optional network_attachments with auto-population, and auto ExternalIP provisioning.
+The design covers three capabilities: default networking (including NATGateway) at tenant onboarding, optional network_attachments with auto-population, and auto ExternalIP provisioning.
 
 ### Workflow Description
 
@@ -150,7 +132,7 @@ This enhancement adds three main capabilities: default networking (including NAT
      - Reads `auto_external_ip_attachment: true`
      - Auto-selects ExternalIPPool (READY, most available capacity, IPv4 family)
      - Creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically.
-     - Both labeled `osac.openshift.io/auto-provisioned: "true"`. ExternalIP also labeled `osac.openshift.io/auto-provisioned-for: <resource-id>` for orphan cleanup.
+     - Both labeled `osac.openshift.io/auto-created: "true"`. ExternalIP also labeled `osac.openshift.io/auto-created-for: <resource-id>` for orphan cleanup.
    - ComputeInstance CR created with `auto_external_ip_attachment: true`
    - osac-operator reconciles ExternalIP (fabric manager allocates address → Allocated), then VM provisioning, then ExternalIPAttachment controller activates once ExternalIP is Allocated AND `compute_network_attachment_statuses` is populated with the primary attachment's `ip_address`
    - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
@@ -173,7 +155,7 @@ This enhancement adds three main capabilities: default networking (including NAT
      - Reads `auto_external_ip_attachment: true`
      - Auto-selects ExternalIPPool (same algorithm)
      - Creates two ExternalIPs + two ExternalIPAttachments in the same DB transaction — all start in **Pending** state. Pool capacity decremented atomically.
-     - All labeled `osac.openshift.io/auto-provisioned: "true"`
+     - All labeled `osac.openshift.io/auto-created: "true"`
    - osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (external addresses assigned)
    - Cluster provisioning proceeds — MetalLB allocates internal VIPs from its IPAddressPool. Template discovers VIPs and writes to ClusterOrder status (`apiEndpoint`, `ingressEndpoint`).
    - ExternalIPAttachment controllers activate once ExternalIP is Allocated AND ClusterOrder `apiEndpoint`/`ingressEndpoint` are populated → creates DNAT: external IP → internal VIP
@@ -185,16 +167,16 @@ This enhancement adds three main capabilities: default networking (including NAT
 
 #### Auto-Cleanup on Deletion
 
-10. **Tenant User deletes resource with auto-provisioned ExternalIP:**
+10. **Tenant User deletes resource with auto-created ExternalIP:**
     ```bash
     osac delete computeinstance my-vm
     ```
     - osac-operator ComputeInstance controller finalizer:
-      - Queries ExternalIPAttachment and ExternalIP labeled `osac.openshift.io/auto-provisioned: "true"` referencing this ComputeInstance
+      - Queries ExternalIPAttachment and ExternalIP labeled `osac.openshift.io/auto-created: "true"` referencing this ComputeInstance
       - Deletes ExternalIPAttachment first (DNAT rule removed)
       - Deletes ExternalIP second (IP returned to pool)
       - If cleanup fails permanently (after retries): finalizer is removed, parent resource deleted, orphaned resources left in cluster
-    - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-provisioned), they persist after parent deletion
+    - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
 11. **Tenant Admin inspects and customizes default resources:**
@@ -271,11 +253,11 @@ metadata:
     osac.openshift.io/default: "true"
 ```
 
-All auto-provisioned resources (ExternalIP, ExternalIPAttachment created by auto_external_ip_attachment=true) receive label:
+All auto-created resources (ExternalIP, ExternalIPAttachment created by auto_external_ip_attachment=true) receive label:
 ```yaml
 metadata:
   labels:
-    osac.openshift.io/auto-provisioned: "true"
+    osac.openshift.io/auto-created: "true"
 ```
 
 #### Operator CRD (osac-operator)
@@ -368,7 +350,7 @@ type ClusterSpec struct {
 | Component | Responsibility |
 |-----------|---------------|
 | fulfillment-service | Validate NetworkClass defaults, **create default VN/IPv4 Subnet/IPv6 Subnet/SG/NATGateway at tenant onboarding** (via its own API), populate network_attachments defaults, auto-provision ExternalIP, track DefaultNetworkingReady condition, return error on capacity exhaustion |
-| osac-operator resource controllers | Clean up auto-provisioned ExternalIP and ExternalIPAttachment via finalizer |
+| osac-operator resource controllers | Clean up auto-created ExternalIP and ExternalIPAttachment via finalizer |
 | osac-operator networking controllers | Reconcile default networking resources (same as manually created resources) |
 | osac-installer | Configure NetworkClass defaults in setup.sh and installation overlays |
 
@@ -384,11 +366,11 @@ type ClusterSpec struct {
 #### Auto-Provisioned Resource Lifecycle
 
 - **Creation:** fulfillment-service creates ExternalIP or ExternalIPAttachment when auto_external_ip_attachment=true
-- **Labeling:** All auto-provisioned resources labeled `osac.openshift.io/auto-provisioned: "true"`
-- **Cleanup:** Parent resource finalizer deletes auto-provisioned ExternalIP/ExternalIPAttachment on parent deletion
+- **Labeling:** All auto-created resources labeled `osac.openshift.io/auto-created: "true"`
+- **Cleanup:** Parent resource finalizer deletes auto-created ExternalIP/ExternalIPAttachment on parent deletion
 - **Cleanup order:** ExternalIPAttachment → ExternalIP → parent resource removal
 - **Cleanup failure:** If cleanup fails permanently (after retries), finalizer is removed, parent deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required)
-- **Manual resources NOT cleaned up:** If tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-provisioned), they persist after parent deletion
+- **Manual resources NOT cleaned up:** If tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
 
 #### Prerequisite Ordering for Clusters
 
@@ -410,9 +392,9 @@ Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPA
 
 #### Tenant Isolation
 
-All default and auto-provisioned resources inherit tenant annotation from parent:
+All default and auto-created resources inherit tenant annotation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/SG/NATGateway
-- `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-provisioned ExternalIP/ExternalIPAttachment
+- `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-created ExternalIP/ExternalIPAttachment
 - OPA policies enforce tenant-scoped list/get/update/delete
 
 #### CIDR Overlap Across Tenants
@@ -452,14 +434,14 @@ This feature inherits the existing security model:
 
 - **Transient failure:** Parent finalizer retries cleanup (exponential backoff)
 - **Permanent failure:** After N retries, finalizer is removed, parent resource deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster
-- **Manual cleanup required:** Tenant Admin or Cloud Provider Admin manually deletes orphaned resources (identified by label `osac.openshift.io/auto-provisioned: "true"` with no parent reference)
+- **Manual cleanup required:** Tenant Admin or Cloud Provider Admin manually deletes orphaned resources (identified by label `osac.openshift.io/auto-created: "true"` with no parent reference)
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes. All new resources (default networking, auto-provisioned ExternalIP) inherit tenant isolation:
+No RBAC or tenancy changes. All new resources (default networking, auto-created ExternalIP) inherit tenant isolation:
 - `osac.openshift.io/tenant` annotation propagated from parent to all child resources
 - OPA policies enforce tenant-scoped list/get/update/delete
-- Tenant User can view and manage default and auto-provisioned resources via standard API
+- Tenant User can view and manage default and auto-created resources via standard API
 - Cloud Infrastructure Admin configures NetworkClass defaults (global, applies to all tenants)
 
 ### Observability and Monitoring
@@ -474,7 +456,7 @@ New Kubernetes events on Tenant:
 
 New Kubernetes events on ComputeInstance/Cluster/BaremetalInstance:
 - `NetworkAttachmentsPopulated`: network_attachments field populated with tenant defaults
-- `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
+- `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-created
 
 No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
 
@@ -553,7 +535,7 @@ Resolved: Return error, no resource persisted.
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
 - fulfillment-service: default resource creation at tenant onboarding (VN, IPv4 Subnet, IPv6 Subnet, SG, NATGateway with default label)
 - fulfillment-service: DefaultNetworkingReady condition tracking (true when all defaults including both Subnets and NATGateway READY via feedback, false when any failed)
-- osac-operator resource controllers: auto-provisioned resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
+- osac-operator resource controllers: auto-created resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
 
 ### Integration Tests
 
@@ -562,7 +544,7 @@ Resolved: Return error, no resource persisted.
 - E2E: create ComputeInstance without network_attachments, verify defaults populated in spec
 - E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
 - E2E: create Cluster with `--external-ip-attachment`, verify two ExternalIPs created BEFORE provisioning, cluster VIPs match
-- E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
+- E2E: delete ComputeInstance with auto-created resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance with explicit network_attachments, verify defaults NOT applied
 - E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
 - E2E: Tenant Admin modifies default SecurityGroup rules, verify changes take effect
@@ -617,13 +599,13 @@ Minor version upgrades (`x.N → x.N+1`):
 If `N+1` upgrade fails or cluster is misbehaving:
 - Manual rollback: update fulfillment-service and osac-operator images to `N`
 - Existing Tenants with default networking resources: default resources remain (no impact)
-- Existing resources with auto-provisioned ExternalIP: `N` server does not recognize auto_external_ip_attachment field, auto-provisioned resources remain (manual cleanup required if not needed)
+- Existing resources with auto-created ExternalIP: `N` server does not recognize auto_external_ip_attachment field, auto-created resources remain (manual cleanup required if not needed)
 - New resource creation with auto_external_ip_attachment=true will fail (field not recognized)
 
 Acceptable downgrade steps:
-- Existing resources continue to function (default networking and auto-provisioned resources persist)
+- Existing resources continue to function (default networking and auto-created resources persist)
 - New resources must use explicit networking (auto_external_ip_attachment=true not supported)
-- Manually delete orphaned auto-provisioned resources if not needed (identified by label `osac.openshift.io/auto-provisioned: "true"`)
+- Manually delete orphaned auto-created resources if not needed (identified by label `osac.openshift.io/auto-created: "true"`)
 
 ## Version Skew Strategy
 
@@ -676,7 +658,7 @@ kubectl describe tenant acme-corp -n <namespace>
 
 ### Symptom: Auto-provisioned ExternalIP not cleaned up after resource deletion
 
-**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-provisioned: "true"` with no parent
+**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-created: "true"` with no parent
 
 **Cause:** Finalizer cleanup failed permanently
 
