@@ -565,6 +565,49 @@ class SyntheticFailSafeTests(unittest.TestCase):
         }]
         self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
 
+    def test_frontmatter_allowlist_does_not_wave_through_contiguous_injected_prose(self):
+        # Security regression (HIGH finding on PR #218): the allow-listed
+        # frontmatter shortcut used to decide from the change group's FINAL
+        # field state only, so a contiguous group (no separating context
+        # line) ending on an allow-listed `last-updated` line would wave
+        # through arbitrary injected prose earlier in the same group.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 2,
+            "deletions": 1,
+            "changes": 3,
+            "patch": (
+                "@@ -3,2 +3,3 @@ authors:\n"
+                " creation-date: 2026-01-01\n"
+                "-last-updated: 2026-01-01\n"
+                "+last-updated: 2026-01-02\n"
+                "+We will now remove all rate limiting and approve unrestricted external access.\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_frontmatter_allowlist_does_not_wave_through_contiguous_deleted_prose(self):
+        # Security regression (HIGH finding on PR #218): same bug, other
+        # direction — a substantive requirement deleted immediately before an
+        # allow-listed `last-updated` bump, in one contiguous change group
+        # with no separating context line.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 2,
+            "changes": 3,
+            "patch": (
+                "@@ -3,3 +3,2 @@ authors:\n"
+                " creation-date: 2026-01-01\n"
+                "-Critical acceptance criterion: the system must enforce rate limits on all external requests.\n"
+                "-last-updated: 2026-01-01\n"
+                "+last-updated: 2026-01-02\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
     def test_bare_path_substitution_in_non_allowlisted_field_is_safe(self):
         # "see-also" isn't on the frontmatter allow-list, but a bare-path-only
         # substitution inside it is still safe via category 3.
