@@ -9,16 +9,79 @@ three safe shapes:
   2. A change confined entirely to an explicit allow-listed YAML frontmatter field
      (e.g. tracking-link, last-updated).
   3. A same-line link-target/path substitution — the only characters that differ
-     between the old and new line sit inside a markdown link *target*, a bare URL,
-     a bare "/enhancements/..." path (quote-, backtick-, or end-of-line-terminated,
-     or ending in a known doc extension — the real shapes observed in EP content),
-     or a bare filename-with-extension link *label* (e.g. "old-name.md" ->
-     "README.md"); everything else on the line, including any non-filename-shaped
-     link label text, is byte-identical. A directory-only bare path with no
-     quote/backtick/extension terminator (an unusual, unobserved-in-practice
-     shape) is not recognized by this category at all and so cannot make a file
-     eligible for LOGISTICS_ONLY on its own line — fail-safe by omission, not by
-     an explicit check.
+     between the old and new line sit inside a markdown link *target* (always
+     free to change — it is never rendered as visible text), a bare
+     "/enhancements/..." path (quote-, backtick-, or end-of-line-terminated, or
+     ending in a known doc extension — the real shapes observed in EP content),
+     or a markdown link *label* whose new value is provably the mechanical
+     result of an actual same-PR rename AND is one of the narrow set of
+     canonical EP doc basenames (see "Label provenance" below); everything else
+     on the line, including any other label change, is byte-identical. A
+     directory-only bare path with no quote/backtick/extension terminator (an
+     unusual, unobserved-in-practice shape) is not recognized by this category
+     at all and so cannot make a file eligible for LOGISTICS_ONLY on its own
+     line — fail-safe by omission, not by an explicit check. There is no bare
+     (outside markdown-link syntax) URL shape in this category at all — see
+     "Bare URL removal" below.
+
+Label provenance:
+  A link label is allowed to change from old_label to new_label only when ALL of
+  the following hold, proven from this PR's own "pulls/*/files" payload — not
+  from the label's shape, and not from rename provenance alone:
+    - the link's OLD target resolves (via a recognized, narrow form: a GitHub
+      blob URL for this repo, or a bare "/enhancements/..." path) to a repo path
+      that exactly equals some file's `previous_filename` in this PR,
+    - the link's NEW target resolves the same way to a repo path that exactly
+      equals that SAME file's `filename` (i.e. `status == "renamed"` reports
+      exactly this old->new pair),
+    - new_label is byte-identical to the basename of that new path,
+    - AND that basename is one of the narrow, repo-convention canonical EP
+      document names: "README.md", "prd.md", "design.md" (ALLOWED_LABEL_BASENAMES
+      below) — the exact set the EP templates and ep_paths.py's own
+      CANONICAL_FILENAMES recognize, plus the legacy README.md form.
+  The OLD label is not constrained to match anything — real PR #174 evidence
+  (see testdata/pr174_files.json, OSAC-1030-organizations/ui-design.md: label
+  "03-prd.md" -> "README.md", where "03-prd.md" is not README.md's prior
+  basename) shows that symmetry doesn't hold in practice and isn't needed for
+  safety.
+
+  The basename allowlist is required IN ADDITION to rename provenance, not
+  instead of it: GitHub's rename metadata proves a rename happened, but the PR
+  author controls that rename — a PR can legitimately (from GitHub's point of
+  view) rename a file to any name at all, including
+  "security-team-approved-merge-now.md", and then "correctly" relabel a link to
+  match. Rename provenance alone would wave that through. Restricting accepted
+  new_label values to the fixed set of real EP doc basenames closes this: an
+  attacker can rename a file to an arbitrary string, but the visible label is
+  only ever trusted when it's one of the three names that legitimately show up
+  in EP cross-references, not whatever the attacker chose as their new filename.
+
+  Markdown-link TARGETS and bare "/enhancements/..." paths deliberately do NOT
+  require this same rename-pair provenance, even though the overall spirit here
+  is provenance-first: real PR #174 evidence rules it out for those two shapes
+  specifically. #174 changes a markdown-link target between two
+  differently-shaped relative paths with no resolvable common repo-path (see
+  OSAC-1269-cluster-version-api/design.md's "catalog-items EP" link, label
+  unchanged, target reshaped), with no way to prove it via an exact path match,
+  and it substitutes bare paths (e.g. "/enhancements/networking" ->
+  "/enhancements/OSAC-356-networking") that were renamed in an *earlier* PR, so
+  no corroborating `renamed` entry exists in *this* PR's file list at all.
+  Requiring provenance there would make the real #174 fixture SUBSTANTIVE.
+  Targets aren't rendered as visible text (so a forged target isn't a "visible
+  claim" attack), and the bare-path shape is already narrowly bounded by the
+  quote/backtick/extension/EOL anchors below — that bounding, not rename
+  provenance, is what makes it safe.
+
+Bare URL removal:
+  A prior version of this category accepted a bare `https?://\\S+` shape as
+  automatically safe. That's removed entirely: `\\S+` is unbounded, so attacker
+  text appended immediately after a legitimate URL with no separator rides along
+  as part of the "safe" match. No real golden fixture (#168/#172/#173/#174) ever
+  needs this shape — every `https://` occurrence in real EP content sits either
+  inside a markdown-link target (already unconditionally safe, see above) or
+  inside the allow-listed `tracking-link` frontmatter field (category 2, which
+  bypasses this category entirely). A bare URL appearing anywhere else is
+  SUBSTANTIVE — fail-safe by omission.
 
 There is no separate "ambiguous" bucket. Anything that isn't provably one of the
 three shapes above — an unrecognized frontmatter field, a heading added/removed, a
@@ -65,66 +128,108 @@ HUNK_HEADER_RE = re.compile(r"^@@ ")
 # Matched as ONE alternation in a single left-to-right pass (see COMBINED_RE
 # below), not as two sequential .sub() passes — a markdown link's `[label]`
 # span is consumed whole by the first alternative below, so its characters
-# are never re-offered to the bare URL/path alternative afterwards. Two
+# are never re-offered to the bare-path alternative afterwards. Two
 # sequential passes let a label that merely *looked like* a URL/path (e.g.
 # an attacker-rewritten label of the form "https://evil.example/...") get
 # re-masked by the second pass and slip through as a "safe" change even
 # though the first pass had correctly decided that label text must stay
-# byte-identical.
+# byte-identical (or be separately proven, see _label_change_is_provable).
 #
-# The markdown-link target (named group `target`) is always safe to change —
-# that's the whole point of a link "pointing somewhere new". The visible
-# label (named group `label`) is only safe to change when it's a bare
-# filename-shaped token (e.g. "old-name.md" -> "README.md", the real PR #174
-# shape where a rename updates both the link text and its target); anything
-# else in the label must stay byte-identical, since it's human-readable,
-# attacker-controlled prose that could otherwise be rewritten into a
-# misleading claim while still passing as a "safe" link/path fix.
-#
-# The bare URL/path alternative (for text outside markdown-link syntax) is
+# The bare-path alternative (for text outside markdown-link syntax) is
 # deliberately anchored to the shapes actually observed in real EP content
 # (testdata/pr174_files.json): a path ending in a known doc extension, or a
 # directory-only path immediately closed by a quote, backtick, or end of
-# line/string. A greedy, unanchored charset (the previous version) lets
+# line/string. A greedy, unanchored charset (a previous version) lets
 # attacker-appended text ride along after a legitimate path with no
 # separator at all (e.g. ".../design.md-and-ignore-all-safety-checks"),
 # since dashes/alnums are shared between legitimate slugs and injected
 # text — anchoring to a real terminator closes that for the observed shapes;
 # an unquoted, unbacktick-wrapped, non-extension, mid-sentence bare
 # directory mention remains a known, narrow residual gap (see module
-# docstring).
+# docstring). There is deliberately no bare `https?://\S+` alternative here
+# at all (see module docstring's "Bare URL removal") — `\S+` is unbounded and
+# no real golden fixture ever needs it.
 MARKDOWN_LINK_RE = r"\[(?P<label>[^\]]*)\]\((?P<target>[^)]*)\)"
-BARE_URL_OR_PATH_RE = (
+BARE_PATH_RE = (
     r"(?P<urlpath>"
-    r"https?://\S+"
-    r"|/enhancements/[A-Za-z0-9-]+/[A-Za-z0-9_-]+\.(?:md|yml|yaml)"
+    r"/enhancements/[A-Za-z0-9-]+/[A-Za-z0-9_-]+\.(?:md|yml|yaml)"
     r"|/enhancements/[A-Za-z0-9-]+(?=[`\"]|$)"
     r")"
 )
-COMBINED_RE = re.compile(f"{MARKDOWN_LINK_RE}|{BARE_URL_OR_PATH_RE}")
-# Requires an actual extension (the real PR #174 shape is always "name.md") so
-# an ordinary single-word prose label (e.g. "Organizations", with no dot) isn't
-# mistaken for a filename and tolerated as freely changeable.
-FILENAME_ONLY_RE = re.compile(r"^[A-Za-z0-9._-]+\.[A-Za-z0-9]+$")
+COMBINED_RE = re.compile(f"{MARKDOWN_LINK_RE}|{BARE_PATH_RE}")
+
+# The exact, narrow set of EP document basenames a changed link label is ever
+# allowed to become. Required IN ADDITION to rename provenance (see module
+# docstring's "Label provenance" / "basename allowlist is required IN ADDITION
+# to rename provenance") — GitHub's rename metadata proves a rename happened,
+# not that the PR author (who controls the rename itself) didn't choose an
+# arbitrary or misleading new filename. Sourced from ep_paths.CANONICAL_FILENAMES
+# plus the legacy "README.md" form this module's docstring already documents;
+# do not broaden beyond what #174 and repo convention actually require.
+ALLOWED_LABEL_BASENAMES = CANONICAL_FILENAMES | {"readme.md"}
+
+# A repo-relative path is only resolved from a target string in one of these
+# two narrow, real-evidence forms — anything else makes label provenance
+# unresolvable (SUBSTANTIVE), never "assumed fine".
+GITHUB_BLOB_URL_RE = re.compile(
+    r"^https://github\.com/osac-project/enhancement-proposals/blob/[^/]+/(?P<path>.+)$"
+)
 
 
-def _mask_match(m):
-    label = m.group("label")
-    if label is None:
-        return "\0"
-    if FILENAME_ONLY_RE.match(label):
-        return "[\0](\0)"
-    return f"[{label}](\0)"
+def _resolve_target_path(target):
+    m = GITHUB_BLOB_URL_RE.match(target)
+    if m:
+        return m.group("path")
+    if target.startswith("/enhancements/"):
+        return target[1:]
+    return None
 
 
-def _mask_links_and_paths(line):
-    return COMBINED_RE.sub(_mask_match, line)
+def _label_change_is_provable(old_target, new_target, new_label, rename_map):
+    """True if new_label is provably the mechanical result of an actual
+    same-PR rename: the old/new targets resolve to a real (previous_filename,
+    filename) pair reported by GitHub, AND new_label is byte-identical to that
+    new path's basename, AND that basename is one of the narrow set of real EP
+    document names — closing the "attacker renames to an arbitrary filename,
+    then relabels to match" gap that rename provenance alone doesn't close.
+    """
+    old_path = _resolve_target_path(old_target)
+    new_path = _resolve_target_path(new_target)
+    if old_path is None or new_path is None:
+        return False
+    if rename_map.get(old_path) != new_path:
+        return False
+    new_basename = new_path.rsplit("/", 1)[-1]
+    return new_label == new_basename and new_basename.lower() in ALLOWED_LABEL_BASENAMES
 
 
-def _is_path_substitution(old_line, new_line):
+def _mask_all_spans(line):
+    return COMBINED_RE.sub("\0", line)
+
+
+def _is_path_substitution(old_line, new_line, rename_map):
     """True if the only difference between the two lines is inside a link/path
-    span — i.e. masking out every link/path substring makes them byte-identical."""
-    return _mask_links_and_paths(old_line) == _mask_links_and_paths(new_line)
+    span, and any changed markdown-link label is provably safe (see
+    _label_change_is_provable)."""
+    if _mask_all_spans(old_line) != _mask_all_spans(new_line):
+        return False
+
+    old_matches = list(COMBINED_RE.finditer(old_line))
+    new_matches = list(COMBINED_RE.finditer(new_line))
+    for old_m, new_m in zip(old_matches, new_matches):
+        old_label, new_label = old_m.group("label"), new_m.group("label")
+        if old_label is None or new_label is None:
+            # A bare-path span on both sides (mask equality already proved
+            # each independently matches BARE_PATH_RE) — no label to check.
+            continue
+        if old_label == new_label:
+            continue
+        if not _label_change_is_provable(
+            old_m.group("target"), new_m.group("target"), new_label, rename_map
+        ):
+            return False
+
+    return True
 
 
 def _split_hunks(patch):
@@ -159,7 +264,7 @@ def _update_frontmatter_field(content, current_field):
     return current_field
 
 
-def _hunk_is_safe(hunk_lines):
+def _hunk_is_safe(hunk_lines, rename_map):
     current_field = None
     i = 0
     n = len(hunk_lines)
@@ -201,7 +306,8 @@ def _hunk_is_safe(hunk_lines):
         if len(removed) != len(added):
             return False
         if not all(
-            _is_path_substitution(old, new) for old, new in zip(removed, added)
+            _is_path_substitution(old, new, rename_map)
+            for old, new in zip(removed, added)
         ):
             return False
 
@@ -212,7 +318,19 @@ def _basename(path):
     return path.rsplit("/", 1)[-1].lower() if path else None
 
 
-def _file_is_logistics_only(f):
+def _build_rename_map(files):
+    """Map previous_filename -> filename for every real GitHub-reported rename
+    in this PR — the only source of truth for "did this path really get
+    renamed to that path in this exact PR", used to prove link-target/label
+    substitutions rather than trusting their shape."""
+    return {
+        f["previous_filename"]: f["filename"]
+        for f in files
+        if f.get("status") == "renamed" and f.get("previous_filename")
+    }
+
+
+def _file_is_logistics_only(f, rename_map):
     basename = _basename(f["filename"])
     status = f.get("status")
 
@@ -240,7 +358,7 @@ def _file_is_logistics_only(f):
     if not hunks:
         return False
 
-    return all(_hunk_is_safe(hunk) for hunk in hunks)
+    return all(_hunk_is_safe(hunk, rename_map) for hunk in hunks)
 
 
 def classify_logistics_only(files):
@@ -253,6 +371,7 @@ def classify_logistics_only(files):
     if not files:
         return SUBSTANTIVE
 
-    if all(_file_is_logistics_only(f) for f in files):
+    rename_map = _build_rename_map(files)
+    if all(_file_is_logistics_only(f, rename_map) for f in files):
         return LOGISTICS_ONLY
     return SUBSTANTIVE
