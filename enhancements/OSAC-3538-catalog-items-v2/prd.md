@@ -2,86 +2,123 @@
 
 | Field       | Value   |
 |-------------|---------|
-| Author(s)   | Avishay Traeger |
+| Author(s)   | Avishay Traeger, Ilya Skornyakov |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-3538 |
 | Date        | 2026-08-06 |
 
 ## Problem Statement
 
-OSAC catalog items let Cloud Provider Admins create curated offerings by locking some resource fields and exposing others as editable. The current field governance model uses generic field definitions with freeform values, which limits the quality of the admin and tenant experience. Admins cannot express richer field semantics — for example, offering instance type as a curated list of options instead of a freeform string, presenting image as a dropdown selector, or making image mandatory on a catalog item (a catalog item with no image is an unusual offering). The generic model also prevents the system from enforcing referential integrity between catalog items and the resources they reference: an image or instance type referenced by a catalog item can be deleted without warning, silently breaking a published offering.
+OSAC Catalog Items let Cloud Provider Admins and Tenant Admins define curated offerings for virtual machines, clusters, and bare metal instances. An offering can fix some provisioning inputs while leaving others editable by the tenant — for example, fixing the instance type while letting the tenant choose an image.
+
+Catalog Items are a curation layer on top of Templates: a Template defines how a resource is provisioned, and a Catalog Item builds on a Template to present a governed offering.
+
+Today these rules are expressed through free-form field paths and generic values. Because the system does not know the meaning or type of each governed field, it cannot reliably validate governed values or present editable fields to tenants using field-appropriate inputs.
+
+Catalog Items also reference other OSAC objects. Today those objects can be deleted while a Catalog Item still references them, silently breaking an offering.
+
+A Catalog Item is meant to shape how a resource is provisioned, not to become an ongoing policy over that resource after it is created.
 
 ## In Scope
 
-- Catalog items become an overlay on resource creation and updates — fields not mentioned in the catalog item behave as if no catalog item exists.
-- Spec fields on each catalog item type are structured, typed fields with a per-field behavior (locked or editable with a default). Only the subset of spec fields relevant to catalog governance are exposed — fields like network attachments are not governable through catalog items. The design will enumerate the exact fields per resource type. Template parameters are governed via a key-value map.
-- For ComputeInstanceCatalogItem and BareMetalInstanceCatalogItem, image is mandatory and always locked — tenants cannot choose a different image when creating a resource, and the locked image value is enforced if the tenant updates the resource after provisioning. ClusterCatalogItem governs version instead of image; version is editable because tenants need to upgrade provisioned clusters to newer versions.
-- The catalog item owner can update the value of any governed field (locked or editable); changes only affect new provisioning — existing resources retain the values they were created with.
-- A field's behavior cannot be tightened after catalog item creation (editable or absent to locked) — this would break existing resources where tenants have already set values for that field. Relaxing governance (locked to editable/absent) is allowed.
-- Per-field type customization: fields can use richer types than the underlying resource spec (e.g., image as a mandatory reference selector).
-- Template parameters are governed with the same locked/editable behavior as spec fields, validated against the referenced template's parameter definitions.
-- The system prevents deletion of resources (images, instance types) referenced by catalog items. Deletion blocking is the immediate behavior; a deprecation/obsolescence model may replace or complement this when the lifecycle feature (see Out of Scope) is implemented.
-- Cloud Provider Admins can assign catalog items to specific tenants and control visibility via publish/unpublish.
-- Applies to all three catalog item types: ComputeInstanceCatalogItem, ClusterCatalogItem, and BareMetalInstanceCatalogItem.
+- Catalog Items govern a supported subset of resource fields during provisioning. Fields that a Catalog Item does not govern keep their normal creation behavior.
+
+- Each governed field is either **locked** or **editable**:
+
+  - **Locked:** the field uses the value defined by the Catalog Item. A tenant-supplied value for that field is rejected.
+  - **Editable:** the tenant may supply a value. If no value is supplied, the Catalog Item's default is used when one is defined; otherwise the field follows its normal resource creation behavior. If the field is required and no value can be resolved, provisioning is rejected.
+
+- Governed fields are configured using supported resource fields rather than free-form field paths and values. Values are validated as well-formed values for the selected field (for example, a real image or a valid numeric value), allowing editable fields to use field-appropriate tenant inputs. Admin-defined constraints such as allowed-value lists or numeric ranges are out of scope.
+
+- Cloud Provider Admins and Tenant Admins can update governed field values and behavior on Catalog Items within their respective scopes. Changes affect only future provisioning.
+
+- Template parameters can be governed with the same locked and editable behavior as resource fields. Parameter names and values that are invalid for the referenced Template's parameter definitions are rejected.
+
+- After creation, a resource does not depend on its Catalog Item remaining available. It follows the normal resource lifecycle, and later changes to the Catalog Item do not affect it.
+
+- Objects directly referenced by a Catalog Item, such as images, instance types, Templates, and ClusterVersions, cannot be deleted while the reference exists. This applies whether or not the Catalog Item is published.
+
+- Catalog Items are optional for API provisioning. All three resource types can be provisioned either from a Catalog Item or directly without one.
+
+- The initial UI provisioning flow remains Catalog Item-based.
+
+- Cloud Provider Admins can control whether a Catalog Item is published.
+
+- Tenant Admins can create, update, publish, unpublish, and delete Catalog Items scoped to their own organization, using the same locked and editable field behavior as global Catalog Items.
+
+- This redesign applies to:
+
+  - `ComputeInstanceCatalogItem`
+  - `ClusterCatalogItem`
+  - `BareMetalInstanceCatalogItem`
 
 ## Out of Scope
 
-- Constraints on editable fields (allowed values, min/max ranges) — separate feature; the behavior model must be extensible to support composable constraints alongside locked/editable.
-- Hidden field behavior (admin sets value, tenant cannot see the field) — separate feature; the behavior model must be extensible to support it.
-- Lifecycle management and versioning (draft/active/deprecated/retired states, version pinning) — separate feature; the design must be extensible to support this.
-- Multi-resource composition (catalog items that bundle multiple resources with dependency ordering) — will likely use a different mechanism, not catalog items.
-- Cost metadata, metering/usage tracking, discoverability metadata (categories, tags) — separate features. Note: billing requirements may constrain which fields must be locked; those constraints will be captured in the design when the billing feature is specified.
-- Budget enforcement, approval workflows — separate features.
-- Catalog item override mechanism for tenant admins (OSAC-2539) — separate feature, but this redesign should be override-friendly.
-- Tenant-provided images (bring-your-own-image workflow) — covered by a [separate proposal](https://github.com/osac-project/enhancement-proposals/pull/145); this PRD assumes tenants can reference both provider-supplied and tenant-provided images in catalog items.
+- Constraints on editable fields, such as allowed-value lists or numeric ranges.
+
+- Hidden fields whose values are set by an administrator but not visible to tenants.
+
+- Day-2 Catalog Item governance, or any Catalog-aware lifecycle management of resources after provisioning.
+
+- Catalog Item versioning and additional lifecycle states such as deprecated or retired.
+
+- Catalog Items that provision multiple resources as one composed offering.
+
+- Cost metadata, metering, usage tracking, categories, and tags.
+
+- Budget enforcement and approval workflows.
+
+- Tenant Admin override mechanisms covered by OSAC-2539.
+
+- Assigning Catalog Items to specific tenants. Tenant-level targeting needs broader architectural alignment and is deferred.
+
+- Creating tenant-provided images is covered by a separate proposal. Catalog Items may reference tenant-provided images once they are available.
+
+- Governance of nested or structured Template parameters.
+
+- Unifying the three Catalog Item types into a single `CatalogItem` type.
+
+- Migration of existing Catalog Items. OSAC is pre-GA, so existing Catalog Items can be recreated using the new model.
 
 ## User Stories
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to create a catalog item by selecting which resource fields are locked vs. editable using a structured form that shows the actual resource fields — not freeform path inputs — so that I cannot accidentally reference invalid fields.
+- As a Cloud Provider Admin, I want to define Catalog Items that prescribe input for only some fields, while allowing the remaining fields to retain their original behavior, so that I can affect only the fields I care about without having to redefine behavior for other fields.
 
-- As a Cloud Provider Admin, I want VM and bare metal catalog items to require an image that is locked during provisioning, so that each catalog item represents a concrete offering (e.g., "RHEL 10 Small VM") and tenants cannot change the image when provisioning.
+- As a Cloud Provider Admin, I want to lock supported fields such as the image or instance type, so that I can define concrete offerings whose fixed values tenants cannot change.
 
-- As a Cloud Provider Admin, I want to update the image on an existing VM or bare metal catalog item (e.g., to apply CVE fixes) without recreating it, so that I can maintain offerings over time. Changes only affect new provisioning.
+- As a Cloud Provider Admin, I want editable fields to support default values, so that I can provide recommended values while still allowing tenants to make their own choices.
 
-- As a Cloud Provider Admin, I want editable fields to use typed inputs rather than freeform strings, so that tenants have guardrails without losing flexibility.
+- As a Cloud Provider Admin, I want to configure Catalog Item fields using field-specific inputs instead of free-form paths and values, so that I can create valid offerings using the resource concepts I understand.
 
-- As a Cloud Provider Admin, I want the system to prevent deletion of resources (images, instance types) that are referenced by a catalog item, so that published offerings do not silently break.
+- As a Cloud Provider Admin, I want to update governed field values and behavior on an existing Catalog Item, so that I can maintain an offering without recreating it. Changes should apply only to future provisioning.
 
-- As a Cloud Provider Admin, I want to govern template parameters on a catalog item with the same locked/editable behavior as spec fields, so that I can control which template parameters a tenant can override.
+- As a Cloud Provider Admin, I want to govern Template parameters in the same way as resource fields, so that I can control which Template inputs tenants may change.
 
-- As a Cloud Provider Admin, I want locked fields to remain enforced after provisioning — tenants cannot modify locked values on an existing resource — so that the guardrails I set on the catalog item persist throughout the resource lifecycle.
+- As a Cloud Provider Admin, I want to be prevented from deleting an object that a Catalog Item still references, so that a published offering does not silently stop working.
 
-- As a Cloud Provider Admin, I want fields not mentioned in the catalog item to behave normally during provisioning and updates (as if no catalog item exists), so that the catalog item is an overlay rather than a complete contract.
-
-- As a Cloud Provider Admin, I want to assign a catalog item to a specific tenant and control its visibility via publish/unpublish, so that I can target offerings to the right audience.
+- As a Cloud Provider Admin, I want to control whether a Catalog Item is published, so that I can decide whether it is available for provisioning.
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create, update, unpublish, and delete organization-scoped catalog items using the same field governance model as global items, so that I can tailor offerings for my organization.
+- As a Tenant Admin, I want to create, update, and delete Catalog Items for my organization using the same locked and editable field behavior as global Catalog Items, so that I can tailor offerings for my users.
+
+- As a Tenant Admin, I want to publish and unpublish my organization's Catalog Items, so that I can control which offerings are available to my users.
 
 ### Tenant User
 
-- As a Tenant User, I want to see the full resource configuration when provisioning from a catalog item — locked values displayed as read-only, editable values pre-filled with defaults I can change, and ungoverned fields available as normal — so that I understand what I am getting.
+- As a Tenant User, I want to see the full resource configuration when provisioning from a Catalog Item, with locked values clearly identified, editable values showing any defaults, and ungoverned fields behaving normally, so that I understand what I can and cannot change.
+
+- As a Tenant User, I want editable fields presented as typed, field-appropriate inputs that reject invalid values, so that invalid configuration is caught before provisioning.
+
+- As a Tenant User, I want a resource created from a Catalog Item to follow the normal resource lifecycle after provisioning, so that I can manage it in the same way as a resource created without a Catalog Item.
+
+- As a Tenant User, I want to provision resources through the API without requiring a Catalog Item, so that I can use direct API workflows when a curated offering is not needed.
 
 ## Assumptions
 
-- The existing three per-resource-type catalog item types (ClusterCatalogItem, ComputeInstanceCatalogItem, BareMetalInstanceCatalogItem) are retained. Unifying them into a single CatalogItem type is not in scope for this redesign.
-- Template parameters remain simple scalar types (string, bool, int32, int64, float, double, etc.) and do not require governance of nested structures.
-- A catalog item reference remains mandatory for resource creation (existing behavior, unchanged by this feature).
-- OSAC is pre-GA; no migration of existing catalog items or API compatibility layer is required. Existing catalog items using the old field_definitions model will be recreated.
+- For this iteration, each resource type has a single applicable Template, so which Template to use is unambiguous. Discovering and selecting among multiple Templates is deferred to a later iteration.
 
 ## Dependencies
 
-- **UI team (osac-ux):** The UI creation flow and provisioning wizard both require updates to match the new API structure. The UI lead has accepted the approach and contributed to the design.
-
----
-
-## Provenance
-
-Authored: draft @ prd 0.7.1 - b8b3f86, workspace feat/osac-taxonomy-presentation @ d22bfa1 (4 behind origin/main)
-Final: respond @ prd 0.8.0 - 7efcedb, workspace feat/osac-taxonomy-presentation @ d22bfa1 (61 behind origin/main)
-
-> Context changed between draft and respond.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d22bfa1","source_repo_branch":"feat/osac-taxonomy-presentation","commits_behind_main":61,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+- **DiskImage (OSAC-2540):** Image fields can use this governance model only after the DiskImage resource is available. Other governed fields are not blocked on this dependency.
