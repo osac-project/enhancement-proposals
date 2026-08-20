@@ -25,15 +25,22 @@ def top_level_enhancement_dir(path: str) -> str | None:
 
 
 def derive_feature_key(files: list[str]) -> str | None:
-    """Return the single Jira Feature key found across all
-    enhancements/<KEY>-<slug>/... paths touched by the PR.
+    """Return the single Jira Feature key found across the canonical EP
+    documents (prd.md/design.md) touched by the PR.
 
-    Returns None if no enhancements/<KEY>-<slug>/ path is touched, or the
-    string "ambiguous" if two or more distinct keys are found. Never
-    guesses, never reads PR title/body — path-derived only.
+    Only prd.md/design.md paths are considered — an incidental drive-by
+    edit to another EP's non-canonical file (e.g. a repo-wide link fix
+    touching README.md) must not downgrade an otherwise-unambiguous key to
+    "ambiguous". Returns None if no canonical enhancements/<KEY>-<slug>/
+    doc is touched, or the string "ambiguous" if two or more distinct keys
+    are found across canonical docs. Never guesses, never reads PR
+    title/body — path-derived only.
     """
     keys = set()
     for f in files:
+        basename = f.rsplit("/", 1)[-1]
+        if basename.lower() not in CANONICAL_FILENAMES:
+            continue
         dir_name = top_level_enhancement_dir(f)
         if dir_name is None:
             continue
