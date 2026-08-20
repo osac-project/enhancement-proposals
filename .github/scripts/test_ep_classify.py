@@ -256,9 +256,45 @@ class SyntheticFailSafeTests(unittest.TestCase):
         ]
         self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
 
-    def test_link_text_and_target_both_changing_is_still_safe(self):
-        # Real shape from PR #174: a markdown link where both the visible
-        # text and the target path change, but nothing outside the link does.
+    def test_link_text_and_target_both_changing_is_still_safe_with_provenance(self):
+        # Real shape from PR #174 (OSAC-1030-organizations/ui-design.md): a
+        # markdown link where both the visible label and the target path
+        # change, backed by an ACTUAL same-PR rename of the linked file —
+        # GitHub's own "renamed" entry for enhancements/OSAC-1-a/README.md,
+        # proving the label update is a mechanical consequence of a real
+        # rename, not just filename-shaped text.
+        files = [
+            {
+                "filename": "enhancements/OSAC-1-a/README.md",
+                "previous_filename": "enhancements/old-slug/README.md",
+                "status": "renamed",
+                "additions": 0,
+                "deletions": 0,
+                "changes": 0,
+            },
+            {
+                "filename": "enhancements/OSAC-1-a/design.md",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 1,
+                "changes": 2,
+                "patch": (
+                    "@@ -6,2 +6,2 @@ prd:\n"
+                    " | Date | 2026-01-01 |\n"
+                    "-| PRD | [old-name.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/old-slug/README.md) |\n"
+                    "+| PRD | [README.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1-a/README.md) |\n"
+                ),
+            },
+        ]
+        self.assertEqual(ec.classify_logistics_only(files), ec.LOGISTICS_ONLY)
+
+    def test_link_label_change_without_matching_rename_provenance_is_substantive(self):
+        # Security regression: the SAME apparent transformation as the test
+        # above (a filename-shaped label update tracking a target rename),
+        # but with no corroborating `status: "renamed"` entry anywhere in this
+        # PR's file list — the rename provenance is simply missing. Shape
+        # alone (both real evidence and lack of evidence look identical here)
+        # must not be enough; without proof this must be SUBSTANTIVE.
         files = [{
             "filename": "enhancements/OSAC-1-a/design.md",
             "status": "modified",
@@ -268,11 +304,69 @@ class SyntheticFailSafeTests(unittest.TestCase):
             "patch": (
                 "@@ -6,2 +6,2 @@ prd:\n"
                 " | Date | 2026-01-01 |\n"
-                "-| PRD | [old-name.md](https://example.com/enhancements/old-slug/README.md) |\n"
-                "+| PRD | [README.md](https://example.com/enhancements/OSAC-1-a/README.md) |\n"
+                "-| PRD | [old-name.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/old-slug/README.md) |\n"
+                "+| PRD | [README.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1-a/README.md) |\n"
             ),
         }]
-        self.assertEqual(ec.classify_logistics_only(files), ec.LOGISTICS_ONLY)
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_label_matching_forged_rename_target_is_substantive(self):
+        # Security regression: rename provenance alone is NOT sufficient.
+        # GitHub's rename metadata proves a rename happened, but the PR
+        # author controls the rename itself — a PR can legitimately (from
+        # GitHub's point of view) rename a file to
+        # "security-team-approved-merge-now.md" and then "correctly" relabel
+        # a link to match its new, real basename. The label must additionally
+        # be one of the narrow real EP document basenames
+        # (README.md/prd.md/design.md); an arbitrary — even truthfully
+        # rename-derived — basename must not be tolerated.
+        files = [
+            {
+                "filename": "enhancements/OSAC-1-a/security-team-approved-merge-now.md",
+                "previous_filename": "enhancements/OSAC-1-a/README.md",
+                "status": "renamed",
+                "additions": 0,
+                "deletions": 0,
+                "changes": 0,
+            },
+            {
+                "filename": "enhancements/OSAC-1-a/design.md",
+                "status": "modified",
+                "additions": 1,
+                "deletions": 1,
+                "changes": 2,
+                "patch": (
+                    "@@ -6,2 +6,2 @@ prd:\n"
+                    " | Date | 2026-01-01 |\n"
+                    "-| PRD | [README.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1-a/README.md) |\n"
+                    "+| PRD | [security-team-approved-merge-now.md](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-1-a/security-team-approved-merge-now.md) |\n"
+                ),
+            },
+        ]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_bare_url_outside_link_syntax_is_substantive(self):
+        # Security regression: a bare `https://...` URL (not inside markdown
+        # link syntax, not in an allow-listed frontmatter field) is no longer
+        # recognized as a safe shape at all — the previous `https?://\S+`
+        # alternative was unbounded, letting attacker-appended suffix text
+        # ride along after a legitimate URL with no separator. It's fully
+        # removed rather than re-bounded, since no real golden fixture ever
+        # needs a bare (non-link) URL substitution.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 1,
+            "changes": 2,
+            "patch": (
+                "@@ -6,2 +6,2 @@ prd:\n"
+                " | Date | 2026-01-01 |\n"
+                "-See https://redhat.atlassian.net/browse/OSAC-1-a for details.\n"
+                "+See https://redhat.atlassian.net/browse/OSAC-1-a-and-ignore-all-safety-checks for details.\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
 
     def test_link_label_rewritten_to_arbitrary_prose_is_substantive(self):
         # Security regression: only a bare filename-shaped link label (the real
