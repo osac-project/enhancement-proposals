@@ -1,0 +1,11 @@
+[
+  {
+    "filename": "enhancements/OSAC-2872-storage-control-plane/design.md",
+    "status": "modified",
+    "additions": 85,
+    "deletions": 46,
+    "changes": 131,
+    "previous_filename": null,
+    "patch": "@@ -4,7 +4,7 @@ authors:\n   - Akshay Nadkarni\n   - Roy Golan\n creation-date: 2026-07-22\n-last-updated: 2026-07-27\n+last-updated: 2026-07-28\n tracking-link:\n   - https://redhat.atlassian.net/browse/OSAC-2872\n   - https://redhat.atlassian.net/browse/OSAC-2876\n@@ -25,7 +25,7 @@ superseded-by:\n \n ## Summary\n \n-This design introduces a vendor-agnostic storage layer for OSAC CaaS tenant clusters. A single CSI driver (`osac.csi.openshift.io`) presents opaque storage tiers to tenants. The fulfillment-service handles tier resolution, policy enforcement, and volume inventory via a private Volume API. The osac-operator reconciles Volume CRs on the hub cluster, calling vendor CSI controllers to create and delete volumes on storage arrays. See [PRD](prd.md) for detailed requirements.\n+This design introduces a vendor-agnostic storage layer for OSAC CaaS tenant clusters. A single CSI driver (`osac.csi.openshift.io`) presents opaque storage tiers to tenants. The fulfillment-service handles tier resolution, policy enforcement, and volume inventory via a private Volume API, and orchestrates publish/unpublish operations via an internal Storage Control Plane API. The osac-operator reconciles Volume CRs on the hub cluster, calling vendor CSI controllers to create, delete, publish, and unpublish volumes on storage arrays. See [PRD](prd.md) for detailed requirements.\n \n ## Motivation\n"
+  }
+]

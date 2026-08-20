@@ -377,6 +377,67 @@ class EPHooks:
 
         print(f"  [{ticket_key}] Score: {total}/{max_total} ({pass_fail})")
 
+    # ── Logistics-only comment (Phase B, gated behind EP_REVIEW_SKIP_LOGISTICS) ──
+
+    def apply_logistics_comment(self, ticket_key, ticket, skill_name, **kw):
+        """Post the minimal "skipped" comment for a PR ep_classify has
+        determined is LOGISTICS_ONLY, in place of a full rubric review.
+
+        Mirrors apply_labels' Feature/structural-notes rendering and reviewed
+        label so re-runs against the same SHA are still recognized as already
+        handled by check_pr_state.
+        """
+        pr_number = ticket_key.replace("EP-", "")
+        head_sha = ticket.get("headRefOid", "")
+        jira_key = ticket.get("jira_key")
+        jira_key_ambiguous = ticket.get("jira_key_ambiguous", False)
+        structure_violations = ticket.get("structure_violations", [])
+        feature_line = (
+            f"**Feature:** {jira_key}"
+            if jira_key and not jira_key_ambiguous
+            else "**Feature:** could not be determined"
+        )
+        marker = "AI Design Review:" if skill_name == "design-review" else "AI EP Review:"
+
+        lines = [
+            f"## {marker} Logistics-only change — full review skipped",
+            f"<!-- sha:{head_sha[:8]} -->" if head_sha else "",
+            "",
+            "This PR was classified as **logistics-only** (a rename, frontmatter "
+            "housekeeping, or link/path fix with no substantive content change) "
+            "and did not receive a full rubric review.",
+            feature_line,
+            "",
+            f"### Structural notes ({len(structure_violations)})",
+        ]
+        if structure_violations:
+            for i, violation in enumerate(structure_violations, 1):
+                lines.append(f"{i}. {self._sanitize_text(violation)}")
+        else:
+            lines.append("None.")
+
+        comment = "\n".join(lines)
+
+        if self.shadow:
+            print(f"  [{ticket_key}] SHADOW: would post logistics-only comment "
+                  f"({len(comment)} chars)")
+            return
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write(comment)
+            comment_file = f.name
+
+        self._gh(["pr", "comment", pr_number, "--repo", self.repo,
+                   "--body-file", comment_file],
+                  check=True)
+        print(f"  [{ticket_key}] Posted logistics-only comment")
+
+        os.unlink(comment_file)
+
+        self._gh(["pr", "edit", pr_number, "--repo", self.repo,
+                   "--add-label", self.reviewed_label],
+                  check=True)
+
     # ── Cost formatter ──
 
     @staticmethod

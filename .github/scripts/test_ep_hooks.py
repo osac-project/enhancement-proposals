@@ -501,5 +501,80 @@ class ApplyLabelsFeatureContextTests(unittest.TestCase):
         self.assertIn("### Structural notes (0)", output)
 
 
+class ApplyLogisticsCommentTests(unittest.TestCase):
+    """apply_logistics_comment() posts the minimal "skipped" comment for a
+    PR ep_classify has determined is LOGISTICS_ONLY (Phase B)."""
+
+    def setUp(self):
+        self.ticket = {
+            "headRefOid": "abc12345",
+            "jira_key": "OSAC-1589",
+            "jira_key_ambiguous": False,
+            "structure_violations": [],
+        }
+
+    def _comment(self, ticket=None, skill_name="design-review", shadow=False):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=shadow)
+        captured = {}
+
+        def fake_gh(args, check=False):
+            if "comment" in args and "--body-file" in args:
+                captured["body"] = Path(args[args.index("--body-file") + 1]).read_text()
+            if "--add-label" in args:
+                captured["label"] = args[args.index("--add-label") + 1]
+            return ""
+
+        with patch.object(hooks, "_gh", side_effect=fake_gh) as mock_gh:
+            hooks.apply_logistics_comment(
+                "EP-1", ticket or self.ticket, skill_name,
+            )
+        return captured, mock_gh
+
+    def test_marker_is_design_review_for_design_skill(self):
+        captured, _ = self._comment(skill_name="design-review")
+        self.assertIn("## AI Design Review: Logistics-only change", captured["body"])
+
+    def test_marker_is_ep_review_for_prd_skill(self):
+        captured, _ = self._comment(skill_name="prd-review")
+        self.assertIn("## AI EP Review: Logistics-only change", captured["body"])
+
+    def test_feature_line_rendered(self):
+        captured, _ = self._comment()
+        self.assertIn("**Feature:** OSAC-1589", captured["body"])
+
+    def test_feature_line_could_not_be_determined(self):
+        captured, _ = self._comment(ticket={
+            "headRefOid": "abc12345", "jira_key": None,
+            "jira_key_ambiguous": False, "structure_violations": [],
+        })
+        self.assertIn("**Feature:** could not be determined", captured["body"])
+
+    def test_structural_notes_rendered(self):
+        captured, _ = self._comment(ticket={
+            "headRefOid": "abc12345", "jira_key": "OSAC-1589",
+            "jira_key_ambiguous": False,
+            "structure_violations": ["some violation"],
+        })
+        self.assertIn("### Structural notes (1)", captured["body"])
+        self.assertIn("some violation", captured["body"])
+
+    def test_posts_comment_and_adds_reviewed_label(self):
+        captured, mock_gh = self._comment()
+        self.assertIn("body", captured)
+        self.assertEqual(captured.get("label"), "rfe-creator-auto-reviewed")
+        self.assertEqual(mock_gh.call_count, 2)
+
+    def test_shadow_mode_prints_only_no_gh_calls(self):
+        from unittest.mock import patch
+
+        hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=True)
+        with patch.object(hooks, "_gh") as mock_gh:
+            hooks.apply_logistics_comment("EP-1", self.ticket, "design-review")
+        mock_gh.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
