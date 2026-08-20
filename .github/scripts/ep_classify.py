@@ -316,14 +316,49 @@ def _hunk_is_safe(hunk_lines, rename_map):
         # accumulated so far, then updates that state itself — a field
         # established by this very group (e.g. `-tracking-link: ...` /
         # `+tracking-link:` in the same group) must still count.
+        #
+        # Every changed line must be INDIVIDUALLY, provably part of an
+        # allow-listed field — not just the group's final field state. A
+        # security review (PR #218) found that deciding from the final state
+        # alone lets arbitrary prose ride through: `_update_frontmatter_field`
+        # leaves the field unchanged for any line that isn't itself a
+        # recognized `key:` or the `---` delimiter, which is required to
+        # support real YAML continuations (`  - value`) but also silently
+        # "forgives" an unrelated, unindented prose line the same way — so a
+        # contiguous group like [`last-updated: ...`, injected prose] or
+        # [deleted prose, `last-updated: ...`] still ended on an allow-listed
+        # field and was waved through whole. `group_all_safe` is sticky
+        # (never reset back to True) so a later line re-establishing a valid
+        # key can't retroactively excuse an earlier unsafe line in the same
+        # group. A continuation line is only trusted when it's indented
+        # (real YAML list/wrapped-value shape) AND a field is already
+        # tracked; anything else breaks the chain to None, which can never
+        # be in ALLOWED_FRONTMATTER_FIELDS.
         group_field = current_field
+        group_all_safe = True
         for changed_line in removed + added:
             if HEADING_RE.match(changed_line):
                 return False
-            group_field = _update_frontmatter_field(changed_line, group_field)
+
+            m = FRONTMATTER_KEY_RE.match(changed_line)
+            if FRONTMATTER_DELIMITER_RE.match(changed_line):
+                group_field = None
+            elif m and m.group(1) in KNOWN_FRONTMATTER_FIELDS:
+                group_field = m.group(1)
+            elif changed_line[:1] in (" ", "\t") and group_field is not None:
+                pass  # a real YAML continuation of the currently tracked field
+            else:
+                # Unindented and neither a known-field key nor the
+                # delimiter — can't be trusted as belonging to any tracked
+                # field (this is exactly the shape of injected/deleted body
+                # prose in the reported finding).
+                group_field = None
+
+            if group_field is None or group_field not in ALLOWED_FRONTMATTER_FIELDS:
+                group_all_safe = False
         current_field = group_field
 
-        if current_field is not None and current_field in ALLOWED_FRONTMATTER_FIELDS:
+        if group_all_safe and current_field is not None and current_field in ALLOWED_FRONTMATTER_FIELDS:
             continue
 
         if len(removed) != len(added):
