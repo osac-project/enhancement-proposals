@@ -155,6 +155,12 @@ def run_review(hooks, skill_name, skill_path, ticket_key, ticket, work_dir):
             config_dir=Path("."),
             mode="resolve",
             ticket=ticket,
+            # agentic_ci.skill.run_skill only forwards its `ticket=` kwarg to
+            # pre_gates/context_writer/extension_config_writer — prompt_builder
+            # and label_applier only ever see **extra_kwargs. Pass ticket a
+            # second time under a plain kwarg name so it reaches those two
+            # hooks as well (see ep_hooks.build_prompt/apply_labels).
+            osac_ticket=ticket,
         )
 
         verdict_path = work_dir / "verdict.json"
@@ -242,6 +248,16 @@ def main():
         ticket_key = f"EP-{pr_number}"
 
         if skip_logistics and logistics_verdict == ep_classify.LOGISTICS_ONLY:
+            # apply_logistics_comment() is called directly, bypassing the
+            # pre_gates list run_review()/run_skill() uses for the full-review
+            # path — call the same same-SHA dedup check explicitly so a rerun
+            # against an unchanged head doesn't post a duplicate comment.
+            already_reviewed = hooks.check_pr_state(
+                ticket_key, ticket_base, mode="resolve", work_dir=Path("."),
+            )
+            if already_reviewed:
+                print(f"\n[{skill_name}] {already_reviewed} — skipping")
+                continue
             print(f"\n[{skill_name}] LOGISTICS_ONLY — skipping full review")
             hooks.apply_logistics_comment(ticket_key, ticket_base, skill_name)
             continue
