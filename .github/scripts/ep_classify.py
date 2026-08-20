@@ -50,6 +50,7 @@ KNOWN_FRONTMATTER_FIELDS = frozenset({
 ALLOWED_FRONTMATTER_FIELDS = frozenset({"tracking-link", "last-updated"})
 
 FRONTMATTER_KEY_RE = re.compile(r"^([a-z][a-z0-9-]*):")
+FRONTMATTER_DELIMITER_RE = re.compile(r"^---\s*$")
 HEADING_RE = re.compile(r"^#{1,6}(\s|$)")
 HUNK_HEADER_RE = re.compile(r"^@@ ")
 
@@ -87,6 +88,17 @@ def _split_hunks(patch):
 
 
 def _update_frontmatter_field(content, current_field):
+    """Track which frontmatter field a line belongs to, for lines like a
+    YAML list continuation (`  - value`) that don't repeat the `field:`
+    key themselves.
+
+    Crucially, this resets to None at a `---` delimiter line regardless of
+    what field was last seen — a field name from inside the frontmatter
+    block must never leak into (or past) that boundary and make unrelated
+    body content on the other side look like a safe frontmatter edit.
+    """
+    if FRONTMATTER_DELIMITER_RE.match(content):
+        return None
     m = FRONTMATTER_KEY_RE.match(content)
     if m and m.group(1) in KNOWN_FRONTMATTER_FIELDS:
         return m.group(1)
@@ -100,15 +112,12 @@ def _hunk_is_safe(hunk_lines):
     while i < n:
         line = hunk_lines[i]
         marker = line[:1]
-        content = line[1:]
-
-        if marker == " " or marker == "":
-            current_field = _update_frontmatter_field(content, current_field)
-            i += 1
-            continue
 
         if marker not in "+-":
-            # e.g. "\ No newline at end of file" — not a content change.
+            # A context line (leading space, or a wholly blank line with no
+            # marker at all), or e.g. "\ No newline at end of file" — not a
+            # content change, but still tracked for frontmatter-field state.
+            current_field = _update_frontmatter_field(line[1:], current_field)
             i += 1
             continue
 
@@ -121,12 +130,18 @@ def _hunk_is_safe(hunk_lines):
             added.append(hunk_lines[i][1:])
             i += 1
 
+        # Each change group is evaluated against the frontmatter-field state
+        # accumulated so far, then updates that state itself — a field
+        # established by this very group (e.g. `-tracking-link: ...` /
+        # `+tracking-link:` in the same group) must still count.
+        group_field = current_field
         for changed_line in removed + added:
             if HEADING_RE.match(changed_line):
                 return False
-            current_field = _update_frontmatter_field(changed_line, current_field)
+            group_field = _update_frontmatter_field(changed_line, group_field)
+        current_field = group_field
 
-        if current_field in ALLOWED_FRONTMATTER_FIELDS:
+        if current_field is not None and current_field in ALLOWED_FRONTMATTER_FIELDS:
             continue
 
         if len(removed) != len(added):
@@ -139,12 +154,26 @@ def _hunk_is_safe(hunk_lines):
     return True
 
 
+def _basename(path):
+    return path.rsplit("/", 1)[-1].lower() if path else None
+
+
 def _file_is_logistics_only(f):
-    basename = f["filename"].rsplit("/", 1)[-1].lower()
+    basename = _basename(f["filename"])
     status = f.get("status")
 
     if status == "added" and basename in CANONICAL_FILENAMES:
         return False
+
+    if status == "renamed" and basename in CANONICAL_FILENAMES:
+        previous_basename = _basename(f.get("previous_filename"))
+        if previous_basename != basename:
+            # A rename that turns a previously non-canonical (or
+            # differently-canonical) file into prd.md/design.md brings it
+            # into EP-review scope for the first time under this identity —
+            # never safe to skip, exactly like a brand-new canonical doc,
+            # regardless of how small the accompanying content diff is.
+            return False
 
     patch = f.get("patch")
     if not patch:

@@ -113,6 +113,45 @@ class SyntheticFailSafeTests(unittest.TestCase):
         }]
         self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
 
+    def test_rename_into_prd_md_forced_substantive_however_small(self):
+        # A rename that turns a previously non-canonical file into prd.md
+        # brings it into EP-review scope for the first time — status=="added"
+        # alone doesn't guard this, since GitHub reports it as "renamed".
+        files = [{
+            "filename": "enhancements/OSAC-1-a/prd.md",
+            "previous_filename": "enhancements/OSAC-1-a/notes.md",
+            "status": "renamed",
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_rename_into_design_md_forced_substantive_however_small(self):
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "previous_filename": "enhancements/OSAC-1-a/draft-notes.md",
+            "status": "renamed",
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_rename_keeping_canonical_basename_unaffected(self):
+        # A directory rename that keeps the same canonical basename (the
+        # real PR #174 shape) is not a "becoming canonical" event — it's
+        # still governed by the normal per-hunk safety check.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "previous_filename": "enhancements/old-slug/design.md",
+            "status": "renamed",
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.LOGISTICS_ONLY)
+
     def test_heading_added_forces_substantive(self):
         files = [{
             "filename": "enhancements/OSAC-1-a/design.md",
@@ -234,6 +273,37 @@ class SyntheticFailSafeTests(unittest.TestCase):
             ),
         }]
         self.assertEqual(ec.classify_logistics_only(files), ec.LOGISTICS_ONLY)
+
+    def test_allowlisted_frontmatter_edit_plus_prose_in_same_hunk_is_substantive(self):
+        # Regression: an allow-listed frontmatter field edit (last-updated)
+        # and a real prose rewrite occurring in the SAME diff hunk, on
+        # opposite sides of the closing `---` frontmatter delimiter. A
+        # frontmatter field seen before `---` must never leak past it and
+        # make the unrelated body-content change look like a safe
+        # frontmatter edit too.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 2,
+            "deletions": 2,
+            "changes": 4,
+            "patch": (
+                "@@ -1,10 +1,10 @@\n"
+                " ---\n"
+                " title: Example\n"
+                " authors: [alice]\n"
+                " creation-date: 2026-01-01\n"
+                "-last-updated: 2026-01-01\n"
+                "+last-updated: 2026-01-02\n"
+                " ---\n"
+                " \n"
+                "-This design keeps the legacy queue mechanism for backwards compatibility.\n"
+                "+This design replaces the legacy queue mechanism with an event bus entirely.\n"
+                " \n"
+                " More content follows here.\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
 
     def test_bare_path_substitution_in_non_allowlisted_field_is_safe(self):
         # "see-also" isn't on the frontmatter allow-list, but a bare-path-only

@@ -7,6 +7,13 @@ from pathlib import Path
 from unittest import mock
 
 import ep_review as er
+from ep_hooks import EPHooks
+
+try:
+    import agentic_ci.skill  # noqa: F401
+    HAVE_AGENTIC_CI = True
+except ImportError:
+    HAVE_AGENTIC_CI = False
 
 
 class PrEnhancementSlugsTests(unittest.TestCase):
@@ -247,13 +254,14 @@ class SkipLogisticsGatingTests(unittest.TestCase):
         self.addCleanup(self._env_patch.stop)
         self.addCleanup(os.environ.pop, "EP_REVIEW_SKIP_LOGISTICS", None)
 
-    def _run_main(self, files, skip_logistics):
+    def _run_main(self, files, skip_logistics, already_reviewed=None):
         os.environ["EP_REVIEW_SKIP_LOGISTICS"] = "true" if skip_logistics else "false"
         with mock.patch.object(er, "gh", return_value=self.PR_JSON) as mock_gh, \
              mock.patch.object(er, "get_changed_files", return_value=files), \
              mock.patch.object(er, "EPHooks") as mock_hooks_cls, \
              mock.patch.object(er, "run_review") as mock_run_review, \
              mock.patch("shutil.copytree"):
+            mock_hooks_cls.return_value.check_pr_state.return_value = already_reviewed
             er.main()
         return mock_hooks_cls.return_value, mock_run_review, mock_gh
 
@@ -267,10 +275,141 @@ class SkipLogisticsGatingTests(unittest.TestCase):
         run_review.assert_not_called()
         hooks.apply_logistics_comment.assert_called_once()
 
+    def test_flag_on_checks_same_sha_dedup_before_posting_logistics_comment(self):
+        # apply_logistics_comment() bypasses run_skill()'s pre_gates entirely
+        # (it's called directly, not through run_review()/run_skill()) — the
+        # same same-SHA dedup check_pr_state() provides for the full-review
+        # path must be applied explicitly on this path too.
+        hooks, run_review, _ = self._run_main(self.LOGISTICS_FILES, skip_logistics=True)
+        hooks.check_pr_state.assert_called_once()
+
+    def test_flag_on_skips_duplicate_logistics_comment_on_rerun(self):
+        hooks, run_review, _ = self._run_main(
+            self.LOGISTICS_FILES, skip_logistics=True,
+            already_reviewed="Already reviewed at SHA deadbeef",
+        )
+        run_review.assert_not_called()
+        hooks.apply_logistics_comment.assert_not_called()
+
     def test_flag_on_still_runs_full_review_for_substantive(self):
         hooks, run_review, _ = self._run_main(self.SUBSTANTIVE_FILES, skip_logistics=True)
         run_review.assert_called_once()
         hooks.apply_logistics_comment.assert_not_called()
+
+
+@unittest.skipUnless(
+    HAVE_AGENTIC_CI,
+    "agentic-ci not installed — cannot exercise the real run_skill seam",
+)
+class RunReviewRealSeamTests(unittest.TestCase):
+    """Regression test for a bug where hooks.build_prompt()/apply_labels()
+    passed unit tests in isolation (called directly with ticket=...) but
+    never actually received a ticket in production: agentic_ci.skill.
+    run_skill() only forwards its `ticket=` argument to pre_gates/
+    context_writer/extension_config_writer — prompt_builder and
+    label_applier only ever see **extra_kwargs, which excludes `ticket`
+    since it's a named parameter of run_skill(), not a passthrough kwarg.
+
+    This drives ep_review.run_review() through the *real* agentic_ci.skill.
+    run_skill(), with only the container execution faked out, to prove the
+    jira_key/structure_violations data actually reaches the rendered
+    prompt and posted comment through the real call convention — not just
+    through a direct hooks.build_prompt(ticket=...) call.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.work_dir = Path(self.tmp) / "workdir-prd-review"
+
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=True)
+        # write_pr_context() otherwise shells out to the real `gh` CLI.
+        mock.patch.object(self.hooks, "_gh", return_value="").start()
+        self.addCleanup(mock.patch.stopall)
+
+        self.captured = {}
+        real_build_prompt = self.hooks.build_prompt
+        real_apply_labels = self.hooks.apply_labels
+
+        def spy_build_prompt(*a, **kw):
+            self.captured["build_prompt_ticket"] = kw.get("ticket")
+            return real_build_prompt(*a, **kw)
+
+        def spy_apply_labels(*a, **kw):
+            self.captured["apply_labels_ticket"] = kw.get("ticket")
+            return real_apply_labels(*a, **kw)
+
+        self.hooks.build_prompt = spy_build_prompt
+        self.hooks.apply_labels = spy_apply_labels
+
+        def fake_container_runner(work_dir, prompt, output_file, **kwargs):
+            self.captured["prompt"] = prompt
+            verdict_path = kwargs.get("verdict_path") or (Path(work_dir) / "verdict.json")
+            Path(verdict_path).write_text(json.dumps({
+                "verdict": "pass",
+                "scores": {
+                    "what": 2, "why": 2, "user_facing_focus": 2,
+                    "right_sized": 2, "testability": 2,
+                },
+                "total": 10,
+            }))
+            return 0
+
+        real_build_skill_config = er.build_skill_config
+
+        def patched_build_skill_config(**kwargs):
+            config = real_build_skill_config(**kwargs)
+            config.container_runner = fake_container_runner
+            return config
+
+        mock.patch.object(
+            er, "build_skill_config", side_effect=patched_build_skill_config,
+        ).start()
+
+    def test_ticket_reaches_prompt_and_labels_through_real_run_skill(self):
+        ticket = {
+            "number": 168, "title": "t", "body": "b", "author": "x",
+            "headRefOid": "abc12345", "labels": [],
+            "jira_key": "OSAC-1589", "jira_key_ambiguous": False,
+            "structure_violations": [],
+        }
+
+        er.run_review(
+            self.hooks, "prd-review", "skills/prd-review/SKILL.md",
+            "EP-168", ticket, self.work_dir,
+        )
+
+        self.assertIsNotNone(self.captured.get("build_prompt_ticket"))
+        self.assertEqual(
+            self.captured["build_prompt_ticket"]["jira_key"], "OSAC-1589",
+        )
+        self.assertIn("Jira Feature key: OSAC-1589", self.captured["prompt"])
+
+        self.assertIsNotNone(self.captured.get("apply_labels_ticket"))
+        self.assertEqual(
+            self.captured["apply_labels_ticket"]["jira_key"], "OSAC-1589",
+        )
+
+    def test_no_key_renders_could_not_be_determined_through_real_run_skill(self):
+        ticket = {
+            "number": 168, "title": "t", "body": "b", "author": "x",
+            "headRefOid": "abc12345", "labels": [],
+            "jira_key": None, "jira_key_ambiguous": True,
+            "structure_violations": ["some violation"],
+        }
+
+        er.run_review(
+            self.hooks, "prd-review", "skills/prd-review/SKILL.md",
+            "EP-168", ticket, self.work_dir,
+        )
+
+        self.assertIn(
+            "Jira Feature key: could not be determined", self.captured["prompt"],
+        )
+        self.assertEqual(
+            self.captured["apply_labels_ticket"]["structure_violations"],
+            ["some violation"],
+        )
 
 
 if __name__ == "__main__":
