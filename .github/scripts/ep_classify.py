@@ -35,10 +35,12 @@ Label provenance:
       equals that SAME file's `filename` (i.e. `status == "renamed"` reports
       exactly this old->new pair),
     - new_label is byte-identical to the basename of that new path,
-    - AND that basename is one of the narrow, repo-convention canonical EP
-      document names: "README.md", "prd.md", "design.md" (ALLOWED_LABEL_BASENAMES
-      below) — the exact set the EP templates and ep_paths.py's own
-      CANONICAL_FILENAMES recognize, plus the legacy README.md form.
+    - AND that basename is one of the narrow, repo-convention reviewable EP
+      document names: "README.md", "prd.md", "design.md" (REVIEWABLE_EP_BASENAMES
+      below, reused as ALLOWED_LABEL_BASENAMES) — the same "this file's
+      content needs review" set used by the added/renamed-into-reviewable
+      guards in _file_is_logistics_only, deliberately broader than Phase A's
+      narrower CANONICAL_FILENAMES (see REVIEWABLE_EP_BASENAMES's own comment).
   The OLD label is not constrained to match anything — real PR #174 evidence
   (see testdata/pr174_files.json, OSAC-1030-organizations/ui-design.md: label
   "03-prd.md" -> "README.md", where "03-prd.md" is not README.md's prior
@@ -105,6 +107,23 @@ SUBSTANTIVE = "SUBSTANTIVE"
 
 CANONICAL_FILENAMES = frozenset({"prd.md", "design.md"})
 
+# Every EP document basename that requires a full AI review before it can be
+# introduced or repointed at new content — the current canonical pair
+# (prd.md/design.md) PLUS the legacy README.md format. Deliberately broader
+# than CANONICAL_FILENAMES above: CANONICAL_FILENAMES (mirroring
+# ep_paths.CANONICAL_FILENAMES) is Phase A's narrower "Feature-identity"
+# concept — README.md legacy EPs never participate in Feature-key derivation,
+# and that must stay true. REVIEWABLE_EP_BASENAMES is Phase B's separate
+# concept: "does this file's *content* need eyes on it," which README.md
+# clearly does too (see AGENTS.md's ep-review workflow, which dispatches a
+# review for `enhancements/**/README.md` exactly like design.md). Using
+# CANONICAL_FILENAMES for the guards below let a PR rename an arbitrary,
+# never-reviewed file straight to README.md with zero content diff and still
+# classify LOGISTICS_ONLY — a security re-review finding, since that's the
+# exact "previously non-canonical file becomes reviewable for the first time"
+# attack already blocked for prd.md/design.md, just missing README.md's case.
+REVIEWABLE_EP_BASENAMES = CANONICAL_FILENAMES | {"readme.md"}
+
 # Top-level YAML frontmatter keys used by the EP templates (guidelines/design_template.md
 # and legacy README.md EPs). Restricting to this known set (rather than matching any
 # "word:" at column 0) keeps a body-prose line that happens to start with "word:" from
@@ -163,10 +182,11 @@ COMBINED_RE = re.compile(f"{MARKDOWN_LINK_RE}|{BARE_PATH_RE}")
 # docstring's "Label provenance" / "basename allowlist is required IN ADDITION
 # to rename provenance") — GitHub's rename metadata proves a rename happened,
 # not that the PR author (who controls the rename itself) didn't choose an
-# arbitrary or misleading new filename. Sourced from ep_paths.CANONICAL_FILENAMES
-# plus the legacy "README.md" form this module's docstring already documents;
-# do not broaden beyond what #174 and repo convention actually require.
-ALLOWED_LABEL_BASENAMES = CANONICAL_FILENAMES | {"readme.md"}
+# arbitrary or misleading new filename. This is the same "content needs
+# review" concept as REVIEWABLE_EP_BASENAMES above (do not maintain a second,
+# independently-drifting copy of this set); do not broaden beyond what #174
+# and repo convention actually require.
+ALLOWED_LABEL_BASENAMES = REVIEWABLE_EP_BASENAMES
 
 # A repo-relative path is only resolved from a target string in one of these
 # two narrow, real-evidence forms — anything else makes label provenance
@@ -334,17 +354,18 @@ def _file_is_logistics_only(f, rename_map):
     basename = _basename(f["filename"])
     status = f.get("status")
 
-    if status == "added" and basename in CANONICAL_FILENAMES:
+    if status == "added" and basename in REVIEWABLE_EP_BASENAMES:
         return False
 
-    if status == "renamed" and basename in CANONICAL_FILENAMES:
+    if status == "renamed" and basename in REVIEWABLE_EP_BASENAMES:
         previous_basename = _basename(f.get("previous_filename"))
         if previous_basename != basename:
-            # A rename that turns a previously non-canonical (or
-            # differently-canonical) file into prd.md/design.md brings it
-            # into EP-review scope for the first time under this identity —
-            # never safe to skip, exactly like a brand-new canonical doc,
-            # regardless of how small the accompanying content diff is.
+            # A rename that turns a previously non-reviewable (or
+            # differently-reviewable) file into prd.md/design.md/README.md
+            # brings it into EP-review scope for the first time under this
+            # identity — never safe to skip, exactly like a brand-new
+            # reviewable doc, regardless of how small the accompanying
+            # content diff is.
             return False
 
     patch = f.get("patch")

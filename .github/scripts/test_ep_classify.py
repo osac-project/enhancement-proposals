@@ -127,6 +127,41 @@ class SyntheticFailSafeTests(unittest.TestCase):
         }]
         self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
 
+    def test_added_readme_md_forced_substantive_however_small(self):
+        # Security regression: README.md is a legacy-only EP format, but it
+        # is still a reviewable EP document (see AGENTS.md's ep-review
+        # workflow dispatch for `enhancements/**/README.md`) — a brand-new
+        # README.md must be forced SUBSTANTIVE exactly like a brand-new
+        # prd.md/design.md, however small its initial content.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/README.md",
+            "status": "added",
+            "additions": 2,
+            "deletions": 0,
+            "changes": 2,
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_rename_into_readme_md_forced_substantive_however_small(self):
+        # Security regression (the CRITICAL finding this test guards): a
+        # zero-content-diff rename that turns a previously non-reviewable file
+        # into README.md must be forced SUBSTANTIVE, exactly like the
+        # prd.md/design.md cases above. Before this fix, CANONICAL_FILENAMES
+        # (used by this guard) excluded "readme.md", so this exact shape — a
+        # pure rename with no patch, which the "no content change" fallback
+        # otherwise treats as safe — classified LOGISTICS_ONLY, letting
+        # never-reviewed content become a reviewable EP doc with zero AI
+        # review ever applied to it.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/README.md",
+            "previous_filename": "enhancements/OSAC-1-a/notes.md",
+            "status": "renamed",
+            "additions": 0,
+            "deletions": 0,
+            "changes": 0,
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
     def test_rename_into_design_md_forced_substantive_however_small(self):
         files = [{
             "filename": "enhancements/OSAC-1-a/design.md",
