@@ -241,10 +241,21 @@ def _is_path_substitution(old_line, new_line, rename_map):
     new_matches = list(COMBINED_RE.finditer(new_line))
     for old_m, new_m in zip(old_matches, new_matches):
         old_label, new_label = old_m.group("label"), new_m.group("label")
-        if old_label is None or new_label is None:
+        if old_label is None and new_label is None:
             # A bare-path span on both sides (mask equality already proved
             # each independently matches BARE_PATH_RE) — no label to check.
             continue
+        if old_label is None or new_label is None:
+            # Mixed span kinds: a bare path on one side, a markdown link on
+            # the other. Wrapping an existing bare path in `[label](...)`
+            # (or the reverse) injects an arbitrary visible label with no
+            # provenance check at all if this were treated like the
+            # both-bare-paths case above — the exact same "forged visible
+            # text" threat model the label-provenance rule exists for. Any
+            # side that IS a markdown link must have its label independently
+            # proven, which is impossible when the other side has none to
+            # compare against, so this is unconditionally unsafe.
+            return False
         if old_label == new_label:
             continue
         if not _label_change_is_provable(
