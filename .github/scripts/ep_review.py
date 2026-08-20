@@ -15,6 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import ep_paths
 from ep_hooks import EPHooks
 from ep_skill_config import build_skill_config
 
@@ -87,6 +88,29 @@ def exclude_own_slug_from_reference_library(work_dir, files):
         slug_dir = ref_root / slug
         if slug_dir.exists():
             shutil.rmtree(slug_dir)
+
+
+def build_ticket_base(pr, head_sha, pr_number, files):
+    """Build the base ticket dict shared by every skill run for this PR.
+
+    jira_key/jira_key_ambiguous/structure_violations are derived only from
+    the changed-file paths (ep_paths), never from pr title/body — see
+    OSAC-3416 design decision on Jira-key derivation.
+    """
+    feature_key_result = ep_paths.derive_feature_key(files)
+
+    return {
+        "number": int(pr_number),
+        "title": pr.get("title", ""),
+        "body": pr.get("body", ""),
+        "author": pr.get("author", {}).get("login", "unknown"),
+        "authorAssociation": "MEMBER",
+        "headRefOid": pr.get("headRefOid", head_sha),
+        "labels": [l.get("name", "") for l in pr.get("labels", [])],
+        "jira_key": feature_key_result if feature_key_result != "ambiguous" else None,
+        "jira_key_ambiguous": feature_key_result == "ambiguous",
+        "structure_violations": ep_paths.validate_ep_structure(files),
+    }
 
 
 def run_review(hooks, skill_name, skill_path, ticket_key, ticket, work_dir):
@@ -179,15 +203,7 @@ def main():
         reviewed_label="rfe-creator-auto-reviewed",
     )
 
-    ticket_base = {
-        "number": int(pr_number),
-        "title": pr.get("title", ""),
-        "body": pr.get("body", ""),
-        "author": pr.get("author", {}).get("login", "unknown"),
-        "authorAssociation": "MEMBER",
-        "headRefOid": pr.get("headRefOid", head_sha),
-        "labels": [l.get("name", "") for l in pr.get("labels", [])],
-    }
+    ticket_base = build_ticket_base(pr, head_sha, pr_number, files)
 
     for skill_name, skill_path in skills:
         ticket_key = f"EP-{pr_number}"
