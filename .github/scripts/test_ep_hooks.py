@@ -1,7 +1,9 @@
 import json
 import os
+import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 from ep_hooks import (
     DESIGN_DISPLAY,
@@ -317,6 +319,64 @@ class DesignPromptThresholdTests(unittest.TestCase):
     def test_prompt_pass_threshold(self):
         self.assertIn("total >= 5", self.prompt)
         self.assertIn("no zeros", self.prompt)
+
+
+class CriterionNoteTruncationTests(unittest.TestCase):
+    """Criterion notes in the PR comment must not be cut off at 500 chars (OSAC-2907)."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=False)
+
+    def _render_comment(self, note_text):
+        verdict = {
+            "verdict": "pass",
+            "scores": {
+                "feasibility": 2, "testability": 2,
+                "scope": 2, "architecture": 2,
+            },
+            "total": 8,
+            "criterionNotes": {
+                "feasibility": note_text, "testability": "",
+                "scope": "", "architecture": "",
+            },
+            "summary": "",
+            "feedback": "",
+            "findings": {"critical": [], "important": [], "suggestions": []},
+        }
+        captured = {}
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=120):
+            if "comment" in cmd and "--body-file" in cmd:
+                body_file = cmd[cmd.index("--body-file") + 1]
+                with open(body_file) as f:
+                    captured["body"] = f.read()
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with mock.patch("ep_hooks.subprocess.run", side_effect=fake_run):
+            self.hooks.apply_labels(
+                "EP-1", verdict, "resolve", "/tmp",
+                ticket={"headRefOid": "abc12345"},
+            )
+        return captured["body"]
+
+    def test_criterion_note_over_500_chars_not_truncated(self):
+        long_note = "x" * 700
+        body = self._render_comment(long_note)
+        self.assertIn(long_note, body)
+
+    def test_criterion_note_still_bounded_at_1000(self):
+        long_note = "x" * 5000
+        body = self._render_comment(long_note)
+        self.assertIn("x" * 1000, body)
+        self.assertNotIn("x" * 1001, body)
+
+    def test_sanitize_text_default_limit_unchanged(self):
+        """Unrelated _sanitize_text call sites (e.g. findings items) keep the 500 default."""
+        self.assertEqual(len(self.hooks._sanitize_text("x" * 600)), 500)
+
+
+if __name__ == "__main__":
+    unittest.main()
 
 
 if __name__ == "__main__":
