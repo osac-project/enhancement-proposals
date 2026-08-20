@@ -41,6 +41,30 @@ class DeriveFeatureKeyTests(unittest.TestCase):
         files = ["enhancements/stray-file.md"]
         self.assertIsNone(ep.derive_feature_key(files))
 
+    def test_canonical_doc_plus_unrelated_non_canonical_file_is_not_ambiguous(self):
+        # Incidental drive-by edit to another EP's non-canonical file (e.g.
+        # a repo-wide link fix touching README.md) must not downgrade the
+        # unambiguous key of the actual reviewed document.
+        files = [
+            "enhancements/OSAC-100-a/design.md",
+            "enhancements/OSAC-999-other/README.md",
+        ]
+        self.assertEqual(ep.derive_feature_key(files), "OSAC-100")
+
+    def test_two_canonical_docs_in_different_dirs_is_ambiguous(self):
+        files = [
+            "enhancements/OSAC-100-a/design.md",
+            "enhancements/OSAC-999-other/prd.md",
+        ]
+        self.assertEqual(ep.derive_feature_key(files), "ambiguous")
+
+    def test_no_canonical_doc_touched_returns_none(self):
+        files = [
+            "enhancements/OSAC-100-a/README.md",
+            "enhancements/OSAC-100-a/ui-design.md",
+        ]
+        self.assertIsNone(ep.derive_feature_key(files))
+
 
 class ValidateEpStructureTests(unittest.TestCase):
     def test_canonical_pair_no_violations(self):
