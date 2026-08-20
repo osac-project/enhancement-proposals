@@ -3,7 +3,7 @@ title: computeinstance-storage-tier-selection-ui
 authors:
   - Elay Aharoni
 creation-date: 2026-07-22
-last-updated: 2026-08-18
+last-updated: 2026-08-20
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1710
 prd:
@@ -29,10 +29,12 @@ the console only lets a user set a disk's *size*; this design adds a tier choice
 next to the size for both the boot disk and any additional disks.
 
 The user makes this choice in a new **Storage** step in the create wizard. The
-same tier picker is used in two places: shown directly on the page for the boot
-disk, and inside a small "Add disk" pop-up (modal) for additional disks. The list
-of available tiers comes from the existing StorageTier API, and the picker
-respects any defaults or locked values that a catalog item pre-configures.
+same tier picker is used for every disk, shown directly on the page: inline next
+to the boot disk size, and inline on each additional-disk row. Adding a disk
+appends a new row to the disks list, configured in place — matching the rest of
+the console's collection UX. The list of available tiers comes from the existing
+StorageTier API, and the picker respects any defaults or locked values that a
+catalog item pre-configures.
 
 This is the UI counterpart to the backend design in [design.md](design.md). See
 [PRD](prd.md) for the product requirements.
@@ -55,12 +57,11 @@ choice all the way through to the create request and the VM detail views.
 
 ### Goals
 
-- Use one tier picker for both the boot disk and additional disks, so the two
-  behave the same apart from where they appear. [User]
-- Match the existing VMaaS create-VM design for additional disks: an "Add disk"
-  pop-up with a searchable tier list. [Ref-UX]
-- Show the boot disk's tier picker directly on the page (no pop-up), since every
-  VM always has exactly one boot disk. [User]
+- Use one tier picker for every disk — boot and additional — all shown inline on
+  the page, so every disk is configured the same way. [User]
+- Add additional disks as inline rows in the disks list: clicking "Add disk"
+  appends a row configured in place (size + tier), no pop-up — aligning with the
+  rest of the console's collection UX. [User]
 - Send the tier the server expects (the tier's **name**) using the existing
   request-building code — no new plumbing. [Codebase: compute-instance-wire.ts]
 - Respect any tier defaults or locked values a catalog item defines, the same
@@ -90,12 +91,13 @@ parts:
    affects the VM create flow; the cluster, bare-metal, and MaaS wizards have
    their own separate steps and are untouched. [User]
 2. **One tier picker** — a searchable single-choice list of the tiers currently
-   available to the tenant, reused in both places below.
+   available to the tenant, reused inline on every disk below.
 3. **Boot disk** — the picker shown directly on the page, next to the boot disk
    size. If the chosen catalog item locks or pre-fills the tier, the picker shows
    that value accordingly.
-4. **Additional disks** — an "Add disk" / "Edit disk" pop-up (size + tier) that
-   builds a list of disks; each row records its size and tier.
+4. **Additional disks** — an inline disks list where "Add disk" appends a new
+   row; each row holds its own size and tier picker, configured in place, and can
+   be removed. No pop-up.
 
 On submit, the create request includes a tier for each disk. VM detail views
 display the tier after creation.
@@ -120,20 +122,20 @@ Storage → Networking → Review.
    value (with a lock indicator).
 3. Otherwise the user picks a tier from the searchable list.
 
-**Additional disk tier (pop-up):**
+**Additional disk tier (inline rows):**
 
 1. If the chosen catalog item defines additional-disk defaults, the list is
-   pre-filled with those disks — each with its own size **and** tier. The user
-   can accept them as-is, change the size and/or tier of any row, or delete all
-   rows. An empty list means "no additional disks", and none are created (an
-   explicit opt-out).
-2. To add a disk, the user clicks "Add disk". A pop-up opens with a size box
-   (default 30 GiB) and the required tier picker (defaulting to the first
-   available tier).
-3. The user sets size and tier. "Add" stays disabled until the size is at least
-   1 and a tier is selected.
-4. On save, the disk is added to the list, showing its size and tier. Listed
-   disks can be edited (reopens the pop-up) or removed.
+   pre-filled with those disks — each an inline row with its own size **and**
+   tier. The user can accept them as-is, change the size and/or tier of any row,
+   or delete all rows. An empty list means "no additional disks", and none are
+   created (an explicit opt-out).
+2. To add a disk, the user clicks "Add disk". A new row is appended to the list
+   with a size box (default 30 GiB) and the required tier picker (defaulting to
+   the first available tier).
+3. The user sets size and tier directly on the row. Each row validates in place:
+   size must be at least 1 and a tier must be selected.
+4. Any row can be removed. There is no separate save step — rows are part of the
+   step's form and are carried into the create request on submit.
 
 **Submit:** the create request carries a tier for each disk. The server does the
 authoritative validation; any rejection is shown to the user as described in
@@ -151,7 +153,7 @@ sequenceDiagram
     W->>ST: useStorageTiers() (list available tiers)
     ST-->>W: [Balanced(default), Performance, Capacity, ...]
     U->>W: Pick boot disk tier (inline, unless catalog-locked)
-    U->>W: Add disk -> modal -> size + tier -> Add
+    U->>W: Add disk -> inline row -> size + tier
     U->>W: Submit
     W->>FS: POST compute_instances (boot_disk.storage_tier, additional_disks[].storage_tier)
     FS-->>W: 200 OK | INVALID_ARGUMENT
@@ -159,8 +161,8 @@ sequenceDiagram
 ```
 
 The diagram shows the console reading the available tiers, applying any catalog
-defaults, collecting a tier for each disk (on the page for the boot disk, in the
-pop-up for additional disks), and submitting them. The console does not decide
+defaults, collecting a tier for each disk (inline for the boot disk and for each
+additional-disk row), and submitting them. The console does not decide
 what is valid — it reflects the catalog's defaults and locks, and leaves the
 final decision to the server.
 
@@ -206,10 +208,13 @@ enum maps.
 Source: `https://yfrimanm.github.io/openshift-origin-design/vmaas-create-vm-only.html`
 (interactive HTML mockup; markup + JS read directly). It implements tier
 selection **only for additional disks, via an "Add disk" modal**; the boot disk
-tier is hardcoded to `Balanced`. This design adopts the mockup's picker for both
-disks, using it **inline** for the boot disk (no modal).
+tier is hardcoded to `Balanced`. This design adopts the mockup's **tier picker**
+but not its modal interaction: the picker is used **inline** for every disk — the
+boot disk and each additional-disk row — because inline collection rows match the
+rest of the console's create UX. The modal is a divergence from the mockup; see
+Alternatives.
 
-Add disk modal (`#disk-overlay` / `#disk-modal`), title "Add disk" / "Edit disk":
+The tier picker (used inline on every disk row):
 
 - **Disk size (GiB)** — number input, `min=1`, `max=16384`, `step=1`, default
   `30`, required. Helper: *"Disk name will be `<vm-name>-diskN`."* (auto-named;
@@ -221,8 +226,6 @@ Add disk modal (`#disk-overlay` / `#disk-modal`), title "Add disk" / "Edit disk"
   shows a check. Helper: *"Storage tiers are defined by your cloud provider
   administrator."* Empty state: *"No storage tiers available. Contact your
   administrator."*
-- **Footer:** primary **Add** (**Save** in edit) — disabled until size ≥ 1 and a
-  tier is selected; link **Cancel**.
 
 Tier data source (mockup, mirrors real API): `GET /api/private/v1/storage_tiers`
 (`StorageTiers.List`), filtered to active tiers. Tier shape: `id`,
@@ -249,7 +252,7 @@ and `.../api/v1`:
 views.
 
 **2. Shared tier picker.** A searchable single-select (PatternFly typeahead
-`Select`) reused by boot disk and the modal:
+`Select`) reused inline by the boot disk and every additional-disk row:
 
 - Source: `useStorageTiers()` → filter `status.available === true`.
   [Codebase: osac-ui/.../api/v1/storage-tier.ts]
@@ -273,11 +276,12 @@ wizard and move all disk UI into it:
   `STEP_LABEL_KEYS.storage = 'catalogProvision.steps.storage.title'` and the
   i18n string ("Storage").
 - New `computeInstance/VmStorageStep.tsx`: owns the boot disk (size + inline
-  tier picker) and additional disks (list + Add disk modal). Boot disk: render
+  tier picker) and additional disks (inline row list). Boot disk: render
   the shared picker inline next to the size input; when the catalog overlay for
   `spec.boot_disk.storage_tier` is `editable: false`, render locked (read-only
   badge + lock icon, as the image field already does). Additional disks: a disks
-  list (size, tier, Edit/Delete) plus an "Add disk" button opening the modal.
+  list where each row is an editable size input + inline tier picker + a Delete
+  action, plus an "Add disk" button that appends a new empty row.
 - `CatalogProvisionWizard.tsx`: render the step — `{stepId === 'storage' ?
   <StorageStep catalogItem={catalogItem} /> : null}`.
 - `adapters/types.ts`: add `StorageStep` to `CatalogProvisionAdapter`;
@@ -289,11 +293,12 @@ wizard and move all disk UI into it:
   `VmCreatePage`, so this step is ComputeInstance-only; no other kind's wizard is
   affected. [Codebase: osac-ui/.../CatalogProvisionWizard.tsx]
 
-**5. Add disk modal component (new).** PatternFly `Modal`, title "Add disk" /
-"Edit disk", with the size input and the shared tier picker; footer Add/Save
-(disabled until size ≥ 1 and tier selected) and Cancel. On save, commit
-`{ sizeGib, storageTier }` to `spec.additionalDisks` (append or replace at edit
-index). Disk name/device are display-only and not persisted.
+**5. Additional-disk row component (new).** An inline row rendering the size
+input and the shared tier picker, plus a Delete action. "Add disk" appends
+`{ sizeGib: '30', storageTier: '' }` to `spec.additionalDisks`; each row edits
+its entry in place (Formik field array), and Delete removes it. No modal, no
+separate save step — rows are ordinary step fields validated inline. Disk
+name/device are display-only and not persisted.
 
 **6. `computeInstance/schemas.ts`.** Move boot/additional disk validation from
 the `configuration` step case to a new `storage` step case (Formik validates
@@ -301,9 +306,9 @@ only the active step's fields). `specBootDisk`: add `storageTier` via
 `mergeCatalogValidation` so a catalog-locked/defaulted tier is treated as
 satisfied; do not unconditionally `.required()` (a Template SpecDefault the UI
 cannot see may supply it — see Open Question 1). `specAdditionalDisks`: add
-`storageTier: yup.string().required('Storage tier is required')` as a backstop;
-the modal already enforces it at commit time. The `configuration` case drops
-`bootDisk`/`additionalDisks`.
+`storageTier: yup.string().required('Storage tier is required')` — with inline
+rows this is the primary per-row validation, surfaced on the row itself. The
+`configuration` case drops `bootDisk`/`additionalDisks`.
 
 **7. `computeInstance/payload.ts`.** Boot disk: `spec.bootDisk = { sizeGib:
 Number(...), storageTier }` (omit `storageTier` when empty). Additional disks:
@@ -391,30 +396,24 @@ no new metrics or events introduced by the UI.
 
 ### Drawbacks
 
-Two distinct interaction patterns for tiers (inline for boot, modal for
-additional) add UI surface and a small inconsistency versus a single uniform
-pattern. Justified because the boot disk is a single always-present disk where
-an inline control is faster, while additional disks are a variable-length
-collection better managed through an add/edit modal and list — matching the
-established VMaaS UX and the existing additional-NIC pattern.
+A growing additional-disks list with two inline controls per row (size + tier)
+takes more vertical space than a collapsed modal-and-summary list, and leaves
+less room for long tier descriptions on each row. Justified because inline rows
+keep every disk configured the same way as the boot disk and match the rest of
+the console's create UX, removing the extra click and the context switch a modal
+imposes — a small space cost for a consistent, faster flow.
 
 ## Alternatives (Not Implemented)
 
-### A tier picker on every additional-disk row (no pop-up)
+### An "Add disk" modal for additional disks
 
-Put a tier picker directly beside each additional-disk size box instead of a
-pop-up. Pros: fewer clicks; the same layout as the boot disk. Cons: differs from
-the existing VMaaS create-VM design; a growing list with two controls per row
-gets cluttered; no room for tier descriptions or search. Rejected: the reference
-design and the existing "add another network" pattern both use a pop-up plus a
-list. [Ref-UX] [User]
-
-### A pop-up for the boot disk too
-
-Use the "Add disk" pop-up for the boot disk as well, for one uniform pattern.
-Pros: a single component. Cons: every VM always has exactly one boot disk, so
-hiding its tier behind a pop-up adds a click for a choice every VM needs.
-Rejected per the explicit instruction to keep the boot disk on the page. [User]
+Configure each additional disk in an "Add disk" / "Edit disk" pop-up (size +
+tier) that commits to a summary list, as the VMaaS create-VM mockup does. Pros:
+matches the reference mockup; a compact summary list; room for long tier
+descriptions inside the modal. Cons: a different interaction from the inline boot
+disk; an extra click and a context switch to add or edit each disk; inconsistent
+with the rest of the console's inline collection UX. Rejected in favor of inline
+rows so every disk is configured the same way on the page. [User]
 
 ### A plain dropdown instead of a searchable list
 
@@ -476,10 +475,10 @@ need the tier field added.
 
 Component-level (React Testing Library): the wizard shows a Storage step between
 Configuration and Networking; `VmStorageStep` renders the inline boot tier
-picker and, for a catalog-locked field, the read-only locked state; the "Add
-disk" modal commits `{ sizeGib, storageTier }` rows and Edit/Delete mutate the
-list; the Review step shows a Storage section with per-disk tiers; server
-`INVALID_ARGUMENT` maps to the correct inline field error.
+picker and, for a catalog-locked field, the read-only locked state; "Add disk"
+appends an inline row and editing a row updates `{ sizeGib, storageTier }` while
+Delete removes it; the Review step shows a Storage section with per-disk tiers;
+server `INVALID_ARGUMENT` maps to the correct inline field error.
 
 ### E2E Tests
 
