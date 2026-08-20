@@ -627,6 +627,50 @@ class SyntheticFailSafeTests(unittest.TestCase):
         }]
         self.assertEqual(ec.classify_logistics_only(files), ec.LOGISTICS_ONLY)
 
+    def test_wrapping_bare_path_in_markdown_link_with_arbitrary_label_is_substantive(self):
+        # Security regression (blocking finding on PR #218, tchughesiv): mask
+        # equality alone isn't enough — an existing bare "/enhancements/..."
+        # path (no label at all) wrapped into a markdown link injects an
+        # arbitrary visible label with zero provenance check, since the old
+        # side's "label" group is None. Mixed span kinds (bare path <->
+        # markdown link) must be unconditionally SUBSTANTIVE, not silently
+        # skipped like the both-bare-paths case.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 1,
+            "changes": 2,
+            "patch": (
+                "@@ -6,2 +6,2 @@ prd:\n"
+                " | Date | 2026-01-01 |\n"
+                "-See /enhancements/OSAC-1-a/design.md for details.\n"
+                "+See [CLICK HERE TO APPROVE](/enhancements/OSAC-1-a/design.md) for details.\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
+    def test_unwrapping_markdown_link_to_bare_path_is_substantive(self):
+        # Security regression: the reverse direction of the mixed-span-kind
+        # bug — a markdown link's label disappearing entirely (unwrapped to a
+        # bare path) is the same unprovable transition and must also be
+        # SUBSTANTIVE, not silently accepted because the new side has no
+        # label to compare against.
+        files = [{
+            "filename": "enhancements/OSAC-1-a/design.md",
+            "status": "modified",
+            "additions": 1,
+            "deletions": 1,
+            "changes": 2,
+            "patch": (
+                "@@ -6,2 +6,2 @@ prd:\n"
+                " | Date | 2026-01-01 |\n"
+                "-See [CLICK HERE TO APPROVE](/enhancements/OSAC-1-a/design.md) for details.\n"
+                "+See /enhancements/OSAC-1-a/design.md for details.\n"
+            ),
+        }]
+        self.assertEqual(ec.classify_logistics_only(files), ec.SUBSTANTIVE)
+
 
 if __name__ == "__main__":
     unittest.main()
