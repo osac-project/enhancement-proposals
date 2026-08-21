@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import ep_classify
+import ep_paths
 from ep_hooks import EPHooks
 from ep_skill_config import build_skill_config
 
@@ -37,9 +39,31 @@ def gh(args):
 
 
 def get_changed_files(pr_number):
+    """Return the full per-file detail (filename, status, previous_filename,
+    patch, additions, deletions, changes) for every file changed in the PR —
+    the raw shape the GitHub "pulls/*/files" API already returns, just no
+    longer narrowed to filenames only. ep_classify.classify_logistics_only
+    needs status/patch; Phase A's filename-only consumers (detect_skills,
+    ep_paths, pr_enhancement_slugs) get a `[f["filename"] for f in files]`
+    view instead — see filenames_only() below.
+
+    Emitting one JSON object per line (rather than a single array) lets
+    --paginate's multiple pages concatenate safely without needing --slurp.
+    """
     raw = gh(["api", f"repos/{REPO}/pulls/{pr_number}/files",
-              "--paginate", "--jq", ".[].filename"])
-    return [f for f in raw.splitlines() if f.strip()]
+              "--paginate", "--jq",
+              ".[] | {filename, status, previous_filename, patch, "
+              "additions, deletions, changes}"])
+    files = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if line:
+            files.append(json.loads(line))
+    return files
+
+
+def filenames_only(files):
+    return [f["filename"] for f in files]
 
 
 def detect_skills(files):
@@ -89,6 +113,29 @@ def exclude_own_slug_from_reference_library(work_dir, files):
             shutil.rmtree(slug_dir)
 
 
+def build_ticket_base(pr, head_sha, pr_number, files):
+    """Build the base ticket dict shared by every skill run for this PR.
+
+    jira_key/jira_key_ambiguous/structure_violations are derived only from
+    the changed-file paths (ep_paths), never from pr title/body — see
+    OSAC-3416 design decision on Jira-key derivation.
+    """
+    feature_key_result = ep_paths.derive_feature_key(files)
+
+    return {
+        "number": int(pr_number),
+        "title": pr.get("title", ""),
+        "body": pr.get("body", ""),
+        "author": pr.get("author", {}).get("login", "unknown"),
+        "authorAssociation": "MEMBER",
+        "headRefOid": pr.get("headRefOid", head_sha),
+        "labels": [l.get("name", "") for l in pr.get("labels", [])],
+        "jira_key": feature_key_result if feature_key_result != "ambiguous" else None,
+        "jira_key_ambiguous": feature_key_result == "ambiguous",
+        "structure_violations": ep_paths.validate_ep_structure(files),
+    }
+
+
 def run_review(hooks, skill_name, skill_path, ticket_key, ticket, work_dir):
     ticket = {**ticket, "_skill_name": skill_name, "_skill_path": skill_path}
 
@@ -108,6 +155,12 @@ def run_review(hooks, skill_name, skill_path, ticket_key, ticket, work_dir):
             config_dir=Path("."),
             mode="resolve",
             ticket=ticket,
+            # agentic_ci.skill.run_skill only forwards its `ticket=` kwarg to
+            # pre_gates/context_writer/extension_config_writer — prompt_builder
+            # and label_applier only ever see **extra_kwargs. Pass ticket a
+            # second time under a plain kwarg name so it reaches those two
+            # hooks as well (see ep_hooks.build_prompt/apply_labels).
+            osac_ticket=ticket,
         )
 
         verdict_path = work_dir / "verdict.json"
@@ -136,6 +189,7 @@ def main():
     pr_number = os.environ.get("PR_NUMBER")
     head_sha = os.environ.get("PR_HEAD_SHA", "")
     shadow = os.environ.get("EP_REVIEW_SHADOW", "true").lower() == "true"
+    skip_logistics = os.environ.get("EP_REVIEW_SKIP_LOGISTICS", "false").lower() == "true"
 
     if not pr_number:
         print("PR_NUMBER not set", file=sys.stderr)
@@ -151,13 +205,22 @@ def main():
         print("No files changed")
         return
 
-    skills = detect_skills(files)
+    filenames = filenames_only(files)
+
+    skills = detect_skills(filenames)
     if not skills:
         print("No reviewable docs found in changed files — skipping")
         return
 
     print(f"Detected: {', '.join(s[0] for s in skills)} "
-          f"(from {', '.join(f for f in files if f.lower().endswith('.md'))})")
+          f"(from {', '.join(f for f in filenames if f.lower().endswith('.md'))})")
+
+    logistics_verdict = ep_classify.classify_logistics_only(files)
+    if skip_logistics:
+        print(f"Logistics classification: {logistics_verdict}")
+    else:
+        print(f"Logistics classification: {logistics_verdict} "
+              "(EP_REVIEW_SKIP_LOGISTICS is off — full review still runs)")
 
     pr_raw = gh(["pr", "view", str(pr_number), "--repo", REPO,
                   "--json", "number,title,body,author,labels,headRefOid"])
@@ -179,18 +242,26 @@ def main():
         reviewed_label="rfe-creator-auto-reviewed",
     )
 
-    ticket_base = {
-        "number": int(pr_number),
-        "title": pr.get("title", ""),
-        "body": pr.get("body", ""),
-        "author": pr.get("author", {}).get("login", "unknown"),
-        "authorAssociation": "MEMBER",
-        "headRefOid": pr.get("headRefOid", head_sha),
-        "labels": [l.get("name", "") for l in pr.get("labels", [])],
-    }
+    ticket_base = build_ticket_base(pr, head_sha, pr_number, filenames)
 
     for skill_name, skill_path in skills:
         ticket_key = f"EP-{pr_number}"
+
+        if skip_logistics and logistics_verdict == ep_classify.LOGISTICS_ONLY:
+            # apply_logistics_comment() is called directly, bypassing the
+            # pre_gates list run_review()/run_skill() uses for the full-review
+            # path — call the same same-SHA dedup check explicitly so a rerun
+            # against an unchanged head doesn't post a duplicate comment.
+            already_reviewed = hooks.check_pr_state(
+                ticket_key, ticket_base, mode="resolve", work_dir=Path("."),
+            )
+            if already_reviewed:
+                print(f"\n[{skill_name}] {already_reviewed} — skipping")
+                continue
+            print(f"\n[{skill_name}] LOGISTICS_ONLY — skipping full review")
+            hooks.apply_logistics_comment(ticket_key, ticket_base, skill_name)
+            continue
+
         work_dir = Path(f"workdir-{skill_name}")
         if work_dir.exists():
             shutil.rmtree(work_dir)
@@ -199,7 +270,7 @@ def main():
         shutil.copytree(SKILLS_PATH, work_dir,
                         ignore=shutil.ignore_patterns('.git'),
                         ignore_dangling_symlinks=True)
-        exclude_own_slug_from_reference_library(work_dir, files)
+        exclude_own_slug_from_reference_library(work_dir, filenames)
 
         print(f"\nRunning {skill_name}...")
         try:

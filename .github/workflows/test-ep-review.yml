@@ -1,0 +1,31 @@
+name: Test EP Review
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/ep_*.py'
+      - '.github/scripts/check_ep_naming.py'
+      - '.github/scripts/test_*ep*.py'
+      - '.github/scripts/testdata/**'
+      - '.github/scripts/requirements.txt'
+      - '.github/workflows/test-ep-review.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          cd .github/scripts
+          pip install -r requirements.txt
+
+      - name: Run EP review tests
+        run: |
+          cd .github/scripts
+          python3 -m unittest discover -s . -p "test_*ep*.py" -v

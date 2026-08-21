@@ -1,9 +1,19 @@
+import json
+import os
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import ep_review as er
+from ep_hooks import EPHooks
+
+try:
+    import agentic_ci.skill  # noqa: F401
+    HAVE_AGENTIC_CI = True
+except ImportError:
+    HAVE_AGENTIC_CI = False
 
 
 class PrEnhancementSlugsTests(unittest.TestCase):
@@ -109,6 +119,297 @@ class ExcludeOwnSlugFromReferenceLibraryTests(unittest.TestCase):
         er.exclude_own_slug_from_reference_library(self.work_dir, files)
 
         self.assertTrue((self.ref_root / "unrelated").exists())
+
+
+class BuildTicketBaseTests(unittest.TestCase):
+    """Real file-list shapes from #168/#172/#173/#174 — filenames only, no
+    diff content needed for Phase A."""
+
+    def test_pr_168_single_key_no_violations(self):
+        files = ["enhancements/OSAC-1589-vm-worker-caas/prd.md"]
+        pr = {"title": "OSAC-1589: PRD — VM Worker CaaS", "body": "", "author": {}, "labels": []}
+
+        ticket = er.build_ticket_base(pr, "deadbeef", "168", files)
+
+        self.assertEqual(ticket["jira_key"], "OSAC-1589")
+        self.assertFalse(ticket["jira_key_ambiguous"])
+        self.assertEqual(ticket["structure_violations"], [])
+
+    def test_pr_172_single_key_no_violations(self):
+        files = ["enhancements/OSAC-2872-storage-control-plane/design.md"]
+        pr = {"title": "OSAC-2872: Design update", "body": "", "author": {}, "labels": []}
+
+        ticket = er.build_ticket_base(pr, "deadbeef", "172", files)
+
+        self.assertEqual(ticket["jira_key"], "OSAC-2872")
+        self.assertFalse(ticket["jira_key_ambiguous"])
+        self.assertEqual(ticket["structure_violations"], [])
+
+    def test_pr_173_key_derived_from_path_not_title(self):
+        # Real case: PR title references OSAC-2645, but the touched EP
+        # directory is OSAC-1339-bcm-backend/ — the derived key must come
+        # from the path, not the (unrelated) title.
+        files = ["enhancements/OSAC-1339-bcm-backend/design.md"]
+        pr = {
+            "title": "OSAC-2645: Design — BCM Backend Integration for BMaaS",
+            "body": "Relates to OSAC-2645",
+            "author": {},
+            "labels": [],
+        }
+
+        ticket = er.build_ticket_base(pr, "deadbeef", "173", files)
+
+        self.assertEqual(ticket["jira_key"], "OSAC-1339")
+        self.assertFalse(ticket["jira_key_ambiguous"])
+        self.assertEqual(ticket["structure_violations"], [])
+
+    def test_pr_174_multi_ep_rename_is_ambiguous(self):
+        files = [
+            "enhancements/OSAC-1002-catalog-items/README.md",
+            "enhancements/OSAC-1002-catalog-items/ui-design.md",
+            "enhancements/OSAC-1030-organizations/README.md",
+            "enhancements/OSAC-1030-organizations/ui-design.md",
+            "enhancements/OSAC-1034-vm-api-fields/README.md",
+            "enhancements/OSAC-1050-dns-api/README.md",
+            "enhancements/OSAC-1118-baremetal-instance-api/README.md",
+            "enhancements/OSAC-1269-cluster-version-api/design.md",
+            "enhancements/OSAC-1330-type-safe-resource-references/design.md",
+            "enhancements/OSAC-1421-cluster-and-vm-provisioning-wizard/design.md",
+            "enhancements/OSAC-1421-cluster-and-vm-provisioning-wizard/prd.md",
+            "enhancements/OSAC-1567-secret-management/design.md",
+            "enhancements/OSAC-1732-repository-consolidation/README.md",
+            "enhancements/OSAC-979-image-management/README.md",
+            "enhancements/OSAC-985-metering-and-usage-tracking/design.md",
+            "enhancements/OSAC-985-metering-and-usage-tracking/prd.md",
+        ]
+        pr = {
+            "title": "OSAC-2870: rename 5 more EPs per Jira-content cross-check",
+            "body": "",
+            "author": {},
+            "labels": [],
+        }
+
+        ticket = er.build_ticket_base(pr, "deadbeef", "174", files)
+
+        self.assertIsNone(ticket["jira_key"])
+        self.assertTrue(ticket["jira_key_ambiguous"])
+        self.assertEqual(ticket["structure_violations"], [])
+
+    def test_missing_key_prefix_surfaces_as_structure_violation(self):
+        files = ["enhancements/vm-worker-nodes/prd.md"]
+        pr = {"title": "", "body": "", "author": {}, "labels": []}
+
+        ticket = er.build_ticket_base(pr, "deadbeef", "999", files)
+
+        self.assertIsNone(ticket["jira_key"])
+        self.assertFalse(ticket["jira_key_ambiguous"])
+        self.assertEqual(len(ticket["structure_violations"]), 1)
+
+
+class SkipLogisticsGatingTests(unittest.TestCase):
+    """EP_REVIEW_SKIP_LOGISTICS gates whether a LOGISTICS_ONLY verdict can
+    actually suppress run_review() — Phase B ships default-off (burn-in)."""
+
+    LOGISTICS_FILES = [{
+        "filename": "enhancements/OSAC-1-a/README.md",
+        "status": "modified",
+        "additions": 1,
+        "deletions": 1,
+        "changes": 2,
+        "previous_filename": None,
+        "patch": (
+            "@@ -3,2 +3,2 @@ authors:\n"
+            " creation-date: 2026-01-01\n"
+            "-last-updated: 2026-01-01\n"
+            "+last-updated: 2026-01-02\n"
+        ),
+    }]
+
+    SUBSTANTIVE_FILES = [{
+        "filename": "enhancements/OSAC-1-a/design.md",
+        "status": "added",
+        "additions": 10,
+        "deletions": 0,
+        "changes": 10,
+        "previous_filename": None,
+    }]
+
+    PR_JSON = json.dumps({
+        "number": 999,
+        "title": "OSAC-1: housekeeping",
+        "body": "",
+        "author": {"login": "someone"},
+        "labels": [],
+        "headRefOid": "deadbeef",
+    })
+
+    def setUp(self):
+        env = {
+            "PR_NUMBER": "999",
+            "PR_HEAD_SHA": "deadbeef",
+            "EP_REVIEW_SHADOW": "true",
+        }
+        self._env_patch = mock.patch.dict(os.environ, env, clear=False)
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        self.addCleanup(os.environ.pop, "EP_REVIEW_SKIP_LOGISTICS", None)
+
+    def _run_main(self, files, skip_logistics, already_reviewed=None):
+        os.environ["EP_REVIEW_SKIP_LOGISTICS"] = "true" if skip_logistics else "false"
+        with mock.patch.object(er, "gh", return_value=self.PR_JSON) as mock_gh, \
+             mock.patch.object(er, "get_changed_files", return_value=files), \
+             mock.patch.object(er, "EPHooks") as mock_hooks_cls, \
+             mock.patch.object(er, "run_review") as mock_run_review, \
+             mock.patch("shutil.copytree"):
+            mock_hooks_cls.return_value.check_pr_state.return_value = already_reviewed
+            er.main()
+        return mock_hooks_cls.return_value, mock_run_review, mock_gh
+
+    def test_flag_off_runs_full_review_even_for_logistics_only(self):
+        hooks, run_review, _ = self._run_main(self.LOGISTICS_FILES, skip_logistics=False)
+        run_review.assert_called_once()
+        hooks.apply_logistics_comment.assert_not_called()
+
+    def test_flag_on_skips_full_review_for_logistics_only(self):
+        hooks, run_review, _ = self._run_main(self.LOGISTICS_FILES, skip_logistics=True)
+        run_review.assert_not_called()
+        hooks.apply_logistics_comment.assert_called_once()
+
+    def test_flag_on_checks_same_sha_dedup_before_posting_logistics_comment(self):
+        # apply_logistics_comment() bypasses run_skill()'s pre_gates entirely
+        # (it's called directly, not through run_review()/run_skill()) — the
+        # same same-SHA dedup check_pr_state() provides for the full-review
+        # path must be applied explicitly on this path too.
+        hooks, run_review, _ = self._run_main(self.LOGISTICS_FILES, skip_logistics=True)
+        hooks.check_pr_state.assert_called_once()
+
+    def test_flag_on_skips_duplicate_logistics_comment_on_rerun(self):
+        hooks, run_review, _ = self._run_main(
+            self.LOGISTICS_FILES, skip_logistics=True,
+            already_reviewed="Already reviewed at SHA deadbeef",
+        )
+        run_review.assert_not_called()
+        hooks.apply_logistics_comment.assert_not_called()
+
+    def test_flag_on_still_runs_full_review_for_substantive(self):
+        hooks, run_review, _ = self._run_main(self.SUBSTANTIVE_FILES, skip_logistics=True)
+        run_review.assert_called_once()
+        hooks.apply_logistics_comment.assert_not_called()
+
+
+@unittest.skipUnless(
+    HAVE_AGENTIC_CI,
+    "agentic-ci not installed — cannot exercise the real run_skill seam",
+)
+class RunReviewRealSeamTests(unittest.TestCase):
+    """Regression test for a bug where hooks.build_prompt()/apply_labels()
+    passed unit tests in isolation (called directly with ticket=...) but
+    never actually received a ticket in production: agentic_ci.skill.
+    run_skill() only forwards its `ticket=` argument to pre_gates/
+    context_writer/extension_config_writer — prompt_builder and
+    label_applier only ever see **extra_kwargs, which excludes `ticket`
+    since it's a named parameter of run_skill(), not a passthrough kwarg.
+
+    This drives ep_review.run_review() through the *real* agentic_ci.skill.
+    run_skill(), with only the container execution faked out, to prove the
+    jira_key/structure_violations data actually reaches the rendered
+    prompt and posted comment through the real call convention — not just
+    through a direct hooks.build_prompt(ticket=...) call.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.work_dir = Path(self.tmp) / "workdir-prd-review"
+
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=True)
+        # write_pr_context() otherwise shells out to the real `gh` CLI.
+        mock.patch.object(self.hooks, "_gh", return_value="").start()
+        self.addCleanup(mock.patch.stopall)
+
+        self.captured = {}
+        real_build_prompt = self.hooks.build_prompt
+        real_apply_labels = self.hooks.apply_labels
+
+        def spy_build_prompt(*a, **kw):
+            self.captured["build_prompt_ticket"] = kw.get("ticket")
+            return real_build_prompt(*a, **kw)
+
+        def spy_apply_labels(*a, **kw):
+            self.captured["apply_labels_ticket"] = kw.get("ticket")
+            return real_apply_labels(*a, **kw)
+
+        self.hooks.build_prompt = spy_build_prompt
+        self.hooks.apply_labels = spy_apply_labels
+
+        def fake_container_runner(work_dir, prompt, output_file, **kwargs):
+            self.captured["prompt"] = prompt
+            verdict_path = kwargs.get("verdict_path") or (Path(work_dir) / "verdict.json")
+            Path(verdict_path).write_text(json.dumps({
+                "verdict": "pass",
+                "scores": {
+                    "what": 2, "why": 2, "user_facing_focus": 2,
+                    "right_sized": 2, "testability": 2,
+                },
+                "total": 10,
+            }))
+            return 0
+
+        real_build_skill_config = er.build_skill_config
+
+        def patched_build_skill_config(**kwargs):
+            config = real_build_skill_config(**kwargs)
+            config.container_runner = fake_container_runner
+            return config
+
+        mock.patch.object(
+            er, "build_skill_config", side_effect=patched_build_skill_config,
+        ).start()
+
+    def test_ticket_reaches_prompt_and_labels_through_real_run_skill(self):
+        ticket = {
+            "number": 168, "title": "t", "body": "b", "author": "x",
+            "headRefOid": "abc12345", "labels": [],
+            "jira_key": "OSAC-1589", "jira_key_ambiguous": False,
+            "structure_violations": [],
+        }
+
+        er.run_review(
+            self.hooks, "prd-review", "skills/prd-review/SKILL.md",
+            "EP-168", ticket, self.work_dir,
+        )
+
+        self.assertIsNotNone(self.captured.get("build_prompt_ticket"))
+        self.assertEqual(
+            self.captured["build_prompt_ticket"]["jira_key"], "OSAC-1589",
+        )
+        self.assertIn("Jira Feature key: OSAC-1589", self.captured["prompt"])
+
+        self.assertIsNotNone(self.captured.get("apply_labels_ticket"))
+        self.assertEqual(
+            self.captured["apply_labels_ticket"]["jira_key"], "OSAC-1589",
+        )
+
+    def test_no_key_renders_could_not_be_determined_through_real_run_skill(self):
+        ticket = {
+            "number": 168, "title": "t", "body": "b", "author": "x",
+            "headRefOid": "abc12345", "labels": [],
+            "jira_key": None, "jira_key_ambiguous": True,
+            "structure_violations": ["some violation"],
+        }
+
+        er.run_review(
+            self.hooks, "prd-review", "skills/prd-review/SKILL.md",
+            "EP-168", ticket, self.work_dir,
+        )
+
+        self.assertIn(
+            "Jira Feature key: could not be determined", self.captured["prompt"],
+        )
+        self.assertEqual(
+            self.captured["apply_labels_ticket"]["structure_violations"],
+            ["some violation"],
+        )
 
 
 if __name__ == "__main__":

@@ -118,13 +118,28 @@ class EPHooks:
     # ── Prompt builder ──
 
     def build_prompt(self, ticket_key, mode, skill_name, **kw):
+        ticket = kw.get("ticket") or {}
         if skill_name == "prd-review":
-            return self._prd_prompt()
-        return self._design_prompt()
+            return self._prd_prompt(ticket)
+        return self._design_prompt(ticket)
 
-    def _prd_prompt(self):
+    @staticmethod
+    def _feature_context_block(ticket):
+        jira_key = ticket.get("jira_key")
+        ambiguous = ticket.get("jira_key_ambiguous", False)
+        if jira_key and not ambiguous:
+            key_line = f"Jira Feature key: {jira_key}"
+        else:
+            key_line = "Jira Feature key: could not be determined"
+        return (
+            "Feature context (derived by the harness from the EP directory "
+            f"path): {key_line}\n\n"
+        )
+
+    def _prd_prompt(self, ticket):
         return (
             PROMPT_INJECTION_BOUNDARY +
+            self._feature_context_block(ticket) +
             "Review the document in .context/pr-diff.txt using the review criteria "
             "in .context/skill-prompt.md.\n\n"
             "Apply the review dimensions from skill-prompt.md, then map your assessment "
@@ -159,9 +174,10 @@ class EPHooks:
             "}"
         )
 
-    def _design_prompt(self):
+    def _design_prompt(self, ticket):
         return (
             PROMPT_INJECTION_BOUNDARY +
+            self._feature_context_block(ticket) +
             "Review the design document in .context/pr-diff.txt using the review criteria "
             "in .context/skill-prompt.md.\n\n"
             "Apply the review dimensions from skill-prompt.md, then map your assessment "
@@ -253,7 +269,16 @@ class EPHooks:
             print(f"  [{ticket_key}] No verdict — skipping")
             return
 
-        head_sha = (kw.get("ticket") or {}).get("headRefOid", "")
+        ticket = kw.get("ticket") or {}
+        head_sha = ticket.get("headRefOid", "")
+        jira_key = ticket.get("jira_key")
+        jira_key_ambiguous = ticket.get("jira_key_ambiguous", False)
+        structure_violations = ticket.get("structure_violations", [])
+        feature_line = (
+            f"**Feature:** {jira_key}"
+            if jira_key and not jira_key_ambiguous
+            else "**Feature:** could not be determined"
+        )
 
         scores = verdict.get("scores", {})
         for k in scores:
@@ -276,6 +301,7 @@ class EPHooks:
             f"<!-- sha:{head_sha[:8]} -->" if head_sha else "",
             "",
             f"**Score: {total}/{max_total}** | **Verdict: {pass_fail}**",
+            feature_line,
             "",
             "| Criterion | Score | Notes |",
             "|-----------|-------|-------|",
@@ -305,6 +331,14 @@ class EPHooks:
                     lines.append(f"{i}. {self._sanitize_text(item)}")
             else:
                 lines.append("None.")
+
+        lines.append("")
+        lines.append(f"### Structural notes ({len(structure_violations)})")
+        if structure_violations:
+            for i, violation in enumerate(structure_violations, 1):
+                lines.append(f"{i}. {self._sanitize_text(violation)}")
+        else:
+            lines.append("None.")
 
         cost_summary = verdict.get("_cost_summary")
         if cost_summary:
@@ -342,6 +376,67 @@ class EPHooks:
                   check=True)
 
         print(f"  [{ticket_key}] Score: {total}/{max_total} ({pass_fail})")
+
+    # ── Logistics-only comment (Phase B, gated behind EP_REVIEW_SKIP_LOGISTICS) ──
+
+    def apply_logistics_comment(self, ticket_key, ticket, skill_name, **kw):
+        """Post the minimal "skipped" comment for a PR ep_classify has
+        determined is LOGISTICS_ONLY, in place of a full rubric review.
+
+        Mirrors apply_labels' Feature/structural-notes rendering and reviewed
+        label so re-runs against the same SHA are still recognized as already
+        handled by check_pr_state.
+        """
+        pr_number = ticket_key.replace("EP-", "")
+        head_sha = ticket.get("headRefOid", "")
+        jira_key = ticket.get("jira_key")
+        jira_key_ambiguous = ticket.get("jira_key_ambiguous", False)
+        structure_violations = ticket.get("structure_violations", [])
+        feature_line = (
+            f"**Feature:** {jira_key}"
+            if jira_key and not jira_key_ambiguous
+            else "**Feature:** could not be determined"
+        )
+        marker = "AI Design Review:" if skill_name == "design-review" else "AI EP Review:"
+
+        lines = [
+            f"## {marker} Logistics-only change — full review skipped",
+            f"<!-- sha:{head_sha[:8]} -->" if head_sha else "",
+            "",
+            "This PR was classified as **logistics-only** (a rename, frontmatter "
+            "housekeeping, or link/path fix with no substantive content change) "
+            "and did not receive a full rubric review.",
+            feature_line,
+            "",
+            f"### Structural notes ({len(structure_violations)})",
+        ]
+        if structure_violations:
+            for i, violation in enumerate(structure_violations, 1):
+                lines.append(f"{i}. {self._sanitize_text(violation)}")
+        else:
+            lines.append("None.")
+
+        comment = "\n".join(lines)
+
+        if self.shadow:
+            print(f"  [{ticket_key}] SHADOW: would post logistics-only comment "
+                  f"({len(comment)} chars)")
+            return
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write(comment)
+            comment_file = f.name
+
+        self._gh(["pr", "comment", pr_number, "--repo", self.repo,
+                   "--body-file", comment_file],
+                  check=True)
+        print(f"  [{ticket_key}] Posted logistics-only comment")
+
+        os.unlink(comment_file)
+
+        self._gh(["pr", "edit", pr_number, "--repo", self.repo,
+                   "--add-label", self.reviewed_label],
+                  check=True)
 
     # ── Cost formatter ──
 
