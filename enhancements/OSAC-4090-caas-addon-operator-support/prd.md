@@ -50,8 +50,6 @@ are ready for specific workloads out of the box.
   operators installed as side-effects of a requested operator are not validated
   against availability or compatibility and may appear on a cluster without the
   Cloud Provider Admin having explicitly offered them
-- UI support for specifying add-on operators directly at cluster order time —
-  deferred to a follow-on milestone
 - Non-CaaS services (VMaaS, BMaaS)
 
 ## User Stories
