@@ -1178,6 +1178,21 @@ k8sManager creates a K8s overlay on each hosting cluster and bridges it to
 the fabric segment. VMs on different hosting clusters share the same subnet
 via the fabric.
 
+#### Hub Selection (CR Placement)
+
+The fulfillment-controller creates K8s CRs on a registered hub cluster.
+All networking resources (VirtualNetwork, Subnet, SecurityGroup,
+ExternalIPPool, ExternalIP, ExternalIPAttachment, NATGateway) select a
+hub randomly from the available hubs. Hub selection is sticky — once a
+resource is assigned to a hub via `status.hub`, subsequent reconciliations
+reuse the same hub.
+
+This design assumes a single-hub deployment. Multi-hub resource placement
+(affinity between related resources, cross-hub CR visibility) is deferred
+as a future design concern. The fabric spans all hosting clusters, so
+AAP-dispatched operations reach the same infrastructure regardless of
+which hub triggers them.
+
 #### Cross-VN Communication
 
 VirtualNetworks are isolated. Cross-VN communication (VN Peering) is a
