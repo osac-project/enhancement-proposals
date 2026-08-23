@@ -24,11 +24,19 @@ running. [Jira: OSAC-4277]
   cover BMaaS or CaaS resource resizing.
 - Both increasing and decreasing to a different InstanceType are supported.
   [Clarify: R1.Q1]
+- A resize target's eligibility follows the same InstanceType lifecycle-state
+  rules as VM creation (see OSAC-46): an `ACTIVE` or `DEPRECATED` target is a
+  valid resize target (`DEPRECATED` succeeds with a warning), and an
+  `OBSOLETE` target is invalid and rejected per the existing "invalid or
+  incompatible" requirement. Resizing to the ComputeInstance's current
+  InstanceType is a no-op.
 
 ## Out of Scope
 
 - Disk size resize — a ComputeInstance's storage is unaffected by an
   InstanceType change.
+- Specific API error codes and response formats for rejected or no-op resize
+  requests — a design-level concern for the design document.
 - Quota validation on InstanceType changes.
 - Audit or tracking of InstanceType changes.
 - Automatic scaling or auto-resize — InstanceType changes are only made in
@@ -72,6 +80,7 @@ running. [Jira: OSAC-4277]
 
 ## Provenance
 
-Authored: draft @ prd 0.8.0 - 7efcedb, workspace main @ 6e8f396
+Authored: respond @ prd 0.8.0 - 7efcedb, workspace main @ 6e8f396
+Phases: draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
