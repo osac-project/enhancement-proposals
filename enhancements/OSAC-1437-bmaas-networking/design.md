@@ -309,6 +309,30 @@ Same as VMaaS/CaaS — the networking API is uniform.
 11. **Tenant deletes networking resources** (independently):
     - Delete ExternalIPAttachments, ExternalIPs, SecurityGroup, Subnet, VirtualNetwork — each via its own dispatcher-triggered delete job
 
+**BMaaS-specific deletion dependency guard:**
+
+The Subnet controller gates its deprovision job on the complete removal
+of all BareMetalInstance CRs with `spec.networkAttachments[].subnetRef`
+referencing the subnet. This prevents the infrastructure backend from
+rejecting the subnet deletion because bare-metal servers are still
+attached to it. The guard lists BMI CRs in the namespace and filters by
+`subnetRef` in-memory, requeuing every 10 seconds until all BMIs are gone.
+See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)
+for the full guard table covering all networking resources.
+
+**IP discovery lease validation:**
+
+The IP discovery phase (`reconcileIPDiscovery`) requires that all network
+attachments have a valid DHCP lease before marking `IPDiscoveryComplete=True`.
+If the AAP `query_dhcp_lease` job returns no artifacts, or returns leases
+that do not cover all attachments, the operator treats this as a failure
+and backs off with exponential retry. A BareMetalInstance cannot reach
+`Ready` phase (and therefore `RUNNING` state) without all attachment IPs
+discovered. This prevents the scenario where a DHCP lease is not yet
+available (e.g., the fabric manager's DHCP server has not propagated the
+lease to the new network segment) and the BMI appears as RUNNING with
+no internal IP.
+
 ### API Extensions
 
 #### Proto (fulfillment-service)

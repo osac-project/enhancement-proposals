@@ -1062,6 +1062,60 @@ All fields are immutable after creation.
 
 ### Implementation Details
 
+#### Deletion Dependency Guards
+
+When the API layer (fulfillment-service) soft-deletes networking resources,
+it accepts the delete as soon as child resources are themselves soft-deleted.
+On the operator side, each controller triggers its AAP deprovision job when
+it sees a `deletionTimestamp`. If a parent and its children are deleted
+near-simultaneously, the parent's deprovision job fires before children
+have been fully removed from the infrastructure backend, causing the backend
+to reject the parent deletion.
+
+To prevent unnecessary failed jobs and backoff delays, each parent
+controller gates its deprovision on the complete removal of child CRs.
+The controller lists child CRs referencing the parent before triggering the
+AAP deprovision job. If any children still exist on the cluster (regardless
+of their own deletion state), the controller requeues with a short interval
+(10 seconds) instead of dispatching a doomed job.
+
+| Controller | Gate deprovision on |
+|---|---|
+| VirtualNetwork | No Subnet, SecurityGroup, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
+| Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet; no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)) |
+| ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
+| ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
+
+The full dependency chain (delete order, leaf first):
+
+```text
+ComputeInstance / BareMetalInstance (leaf)
+  must be gone before --> Subnet
+  must be gone before --> ExternalIPAttachment (via auto-cleanup)
+
+ExternalIPAttachment
+  must be gone before --> ExternalIP
+
+NATGateway
+  must be gone before --> ExternalIP
+  must be gone before --> VirtualNetwork
+
+SecurityGroup
+  must be gone before --> VirtualNetwork
+
+Subnet
+  must be gone before --> VirtualNetwork
+
+ExternalIP
+  must be gone before --> ExternalIPPool
+
+VirtualNetwork (delete last)
+```
+
+This is the same pattern used during provisioning (e.g., the NATGateway
+controller gates provisioning on ExternalIP readiness and VirtualNetwork
+readiness) -- applied symmetrically to the deprovision path.
+
 #### NATGateway Scope
 
 One NATGateway per VirtualNetwork. All subnets in the VN use the gateway.
