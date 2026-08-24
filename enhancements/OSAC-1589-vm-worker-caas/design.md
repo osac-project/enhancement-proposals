@@ -156,7 +156,7 @@ ComputeInstance is not required for shared catalog, billing, or network identity
 
 **Modified CRDs:**
 
-- `ClusterOrder` (osac-operator): add `NetworkAttachments []NetworkAttachment` to `ClusterOrderSpec`. The `NetworkAttachment` type is reused from `ComputeInstance` (`SubnetRef string`, `SecurityGroupRefs []string`). No controller logic changes -- the operator is platform-agnostic; `DesiredConfigVersion` automatically includes the new field since it hashes the entire Spec.
+- `ClusterOrder` (osac-operator): add `NetworkAttachments []ClusterNetworkAttachment` to `ClusterOrderSpec`. The CRD type should align with the proto's `ClusterNetworkAttachment` (which already exists with `subnet` and `security_groups` fields) rather than reusing ComputeInstance's `NetworkAttachment`. Clusters support a single network attachment shared across all node sets; ComputeInstances support multiple per-NIC attachments — these have different semantics and should use different types. No controller logic changes -- the operator is platform-agnostic; `DesiredConfigVersion` automatically includes the new field since it hashes the entire Spec.
 
 **Modified proto messages:** None. `ClusterSpec.network_attachment` (`ClusterNetworkAttachment` with `subnet` string and `security_groups` repeated string) already exists in the fulfillment-service proto. [Codebase: osac/fulfillment-service/proto/private/osac/private/v1/cluster_type.proto]
 
@@ -205,7 +205,7 @@ type NetworkAttachment struct {
 }
 ```
 
-Reusing this type for ClusterOrder is consistent with the unified networking decision that the same Subnet can host VMs, bare-metal servers, and cluster nodes.
+**Note on type choice:** The CRD implementation should define a `ClusterNetworkAttachment` type aligned with the proto's `ClusterNetworkAttachment`, rather than reusing ComputeInstance's `NetworkAttachment`. The proto already has the correct type with cluster-appropriate semantics (singular attachment shared across node sets). The initial implementation (PR #374) used ComputeInstance's type for expediency; this should be corrected to use a cluster-specific type before merge.
 
 #### Fulfillment-Service Cluster Controller
 
@@ -321,7 +321,7 @@ This hook fires after the `hosted_cluster` service role builds NodePool definiti
       }, recursive=true) | list }}
 ```
 
-VM sizing parameters (`cores`, `memory`, `root_volume_size`, `storage_class`) come from `template_parameters`, set by the tenant at cluster creation time. Defaults match a reasonable development cluster profile. [Locked: D4]
+VM sizing parameters (`cores`, `memory`, `root_volume_size`, `storage_class`) come from `template_parameters`, set by the tenant at cluster creation time. Defaults match a reasonable development cluster profile. The template validates VM sizing parameters before creating NodePools: cores must be >= 1, memory must be a valid Kubernetes resource quantity >= 4Gi, root volume size >= 64Gi. Invalid parameters cause the AAP job to fail with a descriptive error before any infrastructure is created. [Locked: D4]
 
 #### Secondary CUDN for Tenant Networking
 
@@ -344,11 +344,11 @@ The `pre_install` hook creates a Secondary Layer2 ClusterUserDefinedNetwork (CUD
       apiVersion: k8s.ovn.org/v1
       kind: ClusterUserDefinedNetwork
       metadata:
-        name: "{{ cluster_name }}-tenant-net"
+        name: "{{ cluster_order_uid }}-tenant-net"
       spec:
         namespaceSelector:
           matchLabels:
-            osac.openshift.io/cudn: "{{ cluster_name }}-tenant-net"
+            osac.openshift.io/cudn: "{{ cluster_order_uid }}-tenant-net"
         network:
           layer2:
             role: Secondary
@@ -368,6 +368,12 @@ The `pre_install` hook creates a Secondary Layer2 ClusterUserDefinedNetwork (CUD
 ```
 
 The CUDN creates a NAD in every namespace matching the label selector. By labeling the HostedCluster namespace, the NAD is created there -- which is required because OCP 4.22 multus namespace isolation blocks cross-namespace NAD references. The NodePool's `additionalNetworks` then references `"<hc-namespace>/<nad-name>"`.
+
+The CUDN name uses the ClusterOrder UID (`cluster_order_uid`) rather than `cluster_name` to avoid collisions on cluster name reuse. The UID is immutable and globally unique, ensuring that a delayed delete or reused name cannot cause a new HostedCluster namespace to match a stale CUDN.
+
+The template waits for the NAD to be created in the HostedCluster namespace before proceeding to NodePool creation (retry loop with timeout). This ensures VMs are not created before network connectivity is available.
+
+SecurityGroupRefs on the network attachment are validated and stored but not enforced in Phase 1 (Secondary CUDN does not support security group policy). The template rejects non-empty `securityGroupRefs` until SecurityGroup enforcement is implemented for CaaS workers. This is consistent with the phased networking approach.
 
 The Subnet CIDR is looked up from the Subnet CR rather than requiring the caller to pass it as a separate template parameter. This avoids a mismatch between the referenced subnet and the CIDR used for the CUDN.
 
@@ -415,11 +421,19 @@ Target architecture for Phase 2: `network_attachment` on ClusterSpec flows to th
 
 In Phase 3, KubeVirt workers gain multi-interface support via SR-IOV passthrough on NodePools. The `networkAttachments` list (already supporting up to 8 entries) maps to multiple `additionalNetworks` entries. East-west traffic (GPU-to-GPU, L3VPN) requires a FabricDomain mechanism to reference VM workers -- this is deferred to OSAC-1382. [Locked: D6, D7]
 
+**Phase transition criteria:** Phase 2 is triggered when the unified networking dispatcher (OSAC-1433) and OVN-k8s EVPN k8s manager (OSAC-1717) reach production readiness. **Migration path:** existing Phase 1 clusters continue operating on Secondary CUDN; new clusters use the dispatcher. No re-provisioning of existing clusters is required — the CUDN and NAD remain functional. Migration of existing clusters to the dispatcher is optional and can happen during cluster scaling (new NodePools get dispatcher-managed networking). **If Phase 2 is more than 2 quarters out,** Phase 1 is designed to be production-grade: the Secondary CUDN approach has been validated end-to-end and provides tenant subnet isolation with the same Subnet resource used by all other OSAC services.
+
 #### Metering
 
 CaaS worker metering follows the same pattern as ROSA: meter at the cluster/NodePool layer, not per individual VM. OSAC's metering pipeline (`osac-metering`) currently maps only ComputeInstance events. A new `clusterOrderMapper` is needed to read from the Cluster/ClusterOrder Watch stream and emit billing events with dimensions such as `template_id`, `node_set_count`, `resource_class`, and `duration`. The billing formula is: `node_set × resourceClass × time`, derived from ClusterOrder status — no ComputeInstance involvement is required.
 
 This matches industry practice: ROSA bills per-vCPU at the cluster layer, not per-EC2-instance. The compute primitive (EC2 for ROSA, KubeVirt VM for OSAC) is an infrastructure detail, not a billing entity.
+
+#### Worker Inventory Visibility
+
+The BareMetalWorkerReconciler design (PR #198) introduces `status.workers[]` on ClusterOrder to track worker resources by kind and phase. For CAPK VM workers, the same field tracks `kind: VirtualMachine` entries with references to the CAPK-created VMs in the HostedCluster namespace. This gives the fulfillment-service operational visibility into worker VMs without routing them through ComputeInstance.
+
+The ClusterOrder controller (or a lightweight status-sync component) reads CAPK VM status from the HostedCluster namespace and writes worker entries to `status.workers[]`, providing counts, phases, and individual VM references to the fulfillment-service and operators. This is the same inventory pattern used for bare-metal workers (which are tracked as `kind: BareMetalInstance`, not as ComputeInstances).
 
 #### Base Template Rename
 
@@ -484,7 +498,7 @@ The KubeVirt template adds no new Prometheus metrics, Kubernetes events, or stru
 
 **No mixed workers:** A single HostedCluster cannot mix bare-metal and KubeVirt workers. HyperShift enforces `platform.type` consistency across all NodePools. If mixed workers are needed in the future, it would require either upstream HyperShift changes or a federation approach across two HostedClusters.
 
-**Hook coupling to `ocp_small` internals:** The hook-based template composition requires understanding the base template's internal variable names (`hosted_cluster_definition`, `nodepool_definitions`) to write correct hooks. These variables are not a formal API -- they are implementation details of the `ocp_small` template and `hosted_cluster` service role. If the base template refactors these variables, the KubeVirt hooks break. The alternative (a standalone template that duplicates the HostedCluster/NodePool lifecycle) avoids this coupling but duplicates significant logic and drifts when the base template evolves. The hook approach is preferred because the HostedCluster/NodePool lifecycle is complex (namespace creation, RBAC, NodePool management, status tracking) and maintaining two copies increases the risk of divergence.
+**Hook coupling to `ocp_small` internals:** The hook-based template composition requires understanding the base template's internal variable names (`hosted_cluster_definition`, `nodepool_definitions`) to write correct hooks. These variables are not a formal API -- they are implementation details of the `ocp_small` template and `hosted_cluster` service role. If the base template refactors these variables, the KubeVirt hooks break. The alternative (a standalone template that duplicates the HostedCluster/NodePool lifecycle) avoids this coupling but duplicates significant logic and drifts when the base template evolves. The hook approach is preferred because the HostedCluster/NodePool lifecycle is complex (namespace creation, RBAC, NodePool management, status tracking) and maintaining two copies increases the risk of divergence. To mitigate, the hook variables (`hosted_cluster_definition`, `nodepool_definitions`) should be documented as a stable interface in the `hosted_cluster` service role, with a compatibility test that verifies derived templates still produce valid HostedCluster and NodePool definitions after base template changes.
 
 **Phase 1 networking is interim:** The Secondary CUDN approach works but does not integrate with the fabric manager or provide the same level of control (ACLs, IP allocation, metering) that the unified networking architecture will offer. Templates deployed with Secondary CUDN will need to be migrated when the unified networking dispatcher (OSAC-1433) is ready. The migration path is: replace the CUDN creation step with a dispatcher call, keeping the NAD reference on NodePools unchanged.
 
