@@ -53,21 +53,17 @@ running. [Jira: OSAC-4277]
 
 - As a Tenant User, I want to change a running VM's InstanceType via API so
   that I can scale CPU and memory up or down without recreating the VM.
-- As a Tenant User, I want to know whether an InstanceType change will
-  require restarting my VM before I request it, so that I can plan for the
-  downtime. To be determined — whether the Tenant User must initiate that
-  restart themselves or OSAC restarts the VM automatically. [Clarify: R1.Q2]
+- As a Tenant User, I want to know from OSAC's deployment documentation
+  whether InstanceType changes require a VM restart in my environment, so
+  that I can plan for the downtime before requesting a resize. Whether a
+  restart is required is a property of the OSAC deployment — in most
+  deployments no restart is required. Where a restart is required, the
+  Tenant User is responsible for restarting their own VM; OSAC does not
+  restart it automatically.
 - As a Tenant User, I want a request for an InstanceType that's invalid or
   incompatible with my ComputeInstance to be rejected immediately when
   possible, so that I don't wait for a change that can't succeed. [Clarify:
   R1.Q5]
-
-## Assumptions
-
-- Whether an InstanceType change is eligible for hot-plug or requires a
-  restart is assumed to be a predictable, cluster-level capability that a
-  Tenant User can know ahead of time — not an outcome that varies
-  unpredictably per individual request. [Clarify: R1.Q2]
 
 ## Dependencies
 
@@ -81,6 +77,6 @@ running. [Jira: OSAC-4277]
 ## Provenance
 
 Authored: respond @ prd 0.8.0 - 7efcedb, workspace main @ 6e8f396
-Phases: draft, respond
+Phases: draft, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
