@@ -123,9 +123,10 @@ Starting state: user is on the DiskImage list page.
 1. User clicks **Create disk image**, opening `DiskImageForm` in create mode.
 2. The form collects: source type (only `REGISTRY` today, rendered as a fixed
    read-only value), source reference (OCI URL, required), guest OS family
-   (`LINUX`/`WINDOWS`, defaulting to `LINUX`), architecture (multi-select,
-   ≥ 1 of `AMD64`/`ARM64`/`S390X`), optional icon, and display name /
-   description (`metadata`, see Open Question 3).
+   (`LINUX`/`WINDOWS`, defaulting to `LINUX`), and architecture (multi-select,
+   ≥ 1 of `AMD64`/`ARM64`/`S390X`). The human label is `metadata.name`; there is
+   no custom icon input (the OS-family icon is derived, see the Resolved
+   Questions section).
 3. A **Provider Admin** additionally sees a **Scope** control (Global vs a
    tenant). A Tenant Admin / Tenant User does not see the control — the image
    is always tenant-scoped to their own tenant, set server-side from identity.
@@ -159,9 +160,12 @@ sequenceDiagram
     Wizard-->>User: show any create-response warnings
 ```
 
-The picker lists images the caller can see (global plus own-tenant, resolved
-server-side) with OBSOLETE excluded. Selecting a DEPRECATED image shows an
-inline warning but does not block. The wizard emits `spec.disk_image` instead
+The picker is a `SelectField` whose options are labeled by `metadata.name` and
+show the guest-OS-family icon plus architecture badge(s) (per the Resolved
+Questions decision — a `SelectField`, not a card/gallery). It lists images the
+caller can see (global plus own-tenant, resolved server-side) with OBSOLETE
+excluded. Selecting a DEPRECATED image shows an inline warning but does not
+block. The wizard emits `spec.disk_image` instead
 of `spec.image.sourceRef` + `is_windows`; the guest OS family and source are
 resolved by the backend at reconcile time, so the Windows toggle is removed.
 Any `warnings[]` returned by `ComputeInstances/Create` (e.g. the backend's
@@ -192,10 +196,13 @@ stateDiagram-v2
     DEPRECATED --> OBSOLETE: Obsolete
     DEPRECATED --> AVAILABLE: Reactivate
     OBSOLETE --> AVAILABLE: Reactivate
-    AVAILABLE --> [*]: Delete (if unreferenced)
-    DEPRECATED --> [*]: Delete (if unreferenced)
     OBSOLETE --> [*]: Delete (if unreferenced)
 ```
+
+Delete is offered **only from OBSOLETE**, matching the console's InstanceType
+behavior (the UI gates delete on the terminal lifecycle state; the server still
+enforces the referencing-resource protection). AVAILABLE and DEPRECATED images
+must be obsoleted before they can be deleted.
 
 Each action issues `DiskImages/Update` setting `spec.lifecycle`; the backend
 auto-sets/clears the deprecation timestamps. Delete issues `DiskImages/Delete`.
@@ -253,8 +260,7 @@ Query wrappers `useApiQuery`/`useApiQueryClient`. [Codebase: osac-ui/libs/ui-com
 - `useDiskImage(id)` — `Get`.
 - `useCreateDiskImage()` — `Create` mutation; invalidates the list query key.
 - `useUpdateDiskImage()` — `Update` mutation with an `update_mask`; used for
-  both metadata edits (architecture, display name, description) and lifecycle
-  transitions.
+  both metadata edits (architecture) and lifecycle transitions.
 - `useDeleteDiskImage()` — `Delete` mutation; invalidates the list.
 
 Register the new route strings in the `ApiRoute` union at
@@ -274,7 +280,7 @@ Columns:
 
 | Column | Source |
 |--------|--------|
-| Name | `metadata.name` (display name once OSAC-2921 lands — Open Question 3), link → detail |
+| Name | `metadata.name`, link → detail |
 | Guest OS family | `spec.guest_os_family` |
 | Architecture | `spec.architecture[]` rendered as `LabelGroup` chips |
 | Lifecycle | `DiskImageLifecycleLabel` |
@@ -304,13 +310,13 @@ that set, not an authorization boundary.
 One form component, create and edit modes.
 
 - Fields: source type (fixed `REGISTRY`, read-only), source reference (text,
-  required, `min_len ≥ 1`), guest OS family (select, default `LINUX`),
-  architecture (multi-select, ≥ 1 required), optional icon, display name /
-  description (metadata).
+  required, `min_len ≥ 1`), guest OS family (select, default `LINUX`), and
+  architecture (multi-select, ≥ 1 required). The human label is `metadata.name`;
+  there is no custom icon input.
 - **Immutability** [Locked: D2]: in **edit** mode, source type, source
-  reference, and guest OS family render read-only; only architecture, display
-  name, description, and icon are editable. This matches the server, which
-  rejects changes to the immutable fields with `InvalidArgument`.
+  reference, and guest OS family render read-only; only architecture is
+  editable. This matches the server, which rejects changes to the immutable
+  fields with `InvalidArgument`.
 - **Scope (Provider Admin only)**: a Global-vs-tenant control shown only to the
   provider-admin role. Tenant personas always create tenant-scoped images; the
   control is hidden and the tenant is set server-side from identity.
@@ -323,8 +329,8 @@ One form component, create and edit modes.
 `ResourceLifecycleLabel` (AVAILABLE → green, DEPRECATED → orange, OBSOLETE →
 grey). `useDiskImageLifecycleAction.ts` exposes `getDiskImageLifecycleActions`
 (`canDeprecate`: AVAILABLE; `canObsolete`: AVAILABLE or DEPRECATED;
-`canReactivate`: DEPRECATED or OBSOLETE; `canDelete`: any state, server
-enforces protection) and `runLifecycleAction` (issues `Update`, toasts on
+`canReactivate`: DEPRECATED or OBSOLETE; `canDelete`: OBSOLETE only, matching
+InstanceType — the server additionally enforces referencing-resource protection) and `runLifecycleAction` (issues `Update`, toasts on
 error). [Codebase: osac-ui/libs/ui-components/src/components/InstanceType/useInstanceTypeLifecycleAction.ts]
 
 #### VM wizard picker (the one non-clone change)
@@ -438,11 +444,6 @@ mechanisms apply.
   types are regenerated. *Mitigation:* sequence the UI epic after the backend
   epic; the picker swap is the only change that touches existing, shipping code,
   so the rest can be built in isolation once types exist.
-- **Risk: display name depends on OSAC-2921.** If the shared Metadata
-  display_name/description has not landed, the list/detail/form fall back to
-  `metadata.name`. *Mitigation:* build against `metadata.name` and add the
-  display_name column/field behind a simple presence check when OSAC-2921 ships
-  (Open Question 3).
 - **Risk: mandatory image breaks the VM wizard in environments with no
   registered images.** With `disk_image` required, a fresh deployment cannot
   create a VM until an image exists. *Mitigation:* the picker's empty state
@@ -496,44 +497,38 @@ risking drift. Rejected; cloning the proven pattern is lower-risk and faster.
 ### Gallery/card picker with thumbnails
 
 Render the VM-create picker as image cards with OS icons and arch badges.
-*Pros:* the PRD's "choose visually" language. *Cons:* larger scope, icon is
-optional so many images have none, and it diverges from the existing
-`SelectField` pattern. Deferred to Open Question 2 rather than committed here.
+*Pros:* the PRD's "choose visually" language. *Cons:* larger scope, and it
+diverges from the existing `SelectField` pattern. Rejected in review: the picker
+is a `SelectField` labeled by `metadata.name` with the OS-family icon and
+architecture badge(s) (see Resolved Questions).
 
-## Open Questions
+## Resolved Questions
 
-### 1. Create-form input UX for architecture and icon
+All open questions were resolved in PR review (rawagner, PR #223):
 
-- **Question:** Is a multi-select for architecture and an optional icon
-  (URL vs upload vs omit for the first milestone) acceptable, or is a more
-  guided control wanted?
-- **Owner:** UX / feature owner (msluiter@redhat.com per PRD).
-- **Impact:** `DiskImageForm.tsx` field controls.
+### 1. Create-form input UX for architecture and icon — RESOLVED
 
-### 2. VM-create picker richness
+Architecture is a multi-select. There is **no custom icon input**: the only
+icon shown is the derived guest-OS-family icon (in the list, detail, and
+picker). `metadata.name` is the human label. No dependency on a custom icon
+field for the first milestone.
 
-- **Question:** Plain `SelectField` for the first milestone, or a card/gallery
-  picker showing OS icon + architecture badges ("choose visually")?
-- **Owner:** UX / feature owner.
-- **Impact:** `VmConfigurationStep.tsx` picker component; may pull the gallery
-  alternative above into scope.
+### 2. VM-create picker richness — RESOLVED
 
-### 3. display_name dependency on OSAC-2921
+A plain `SelectField`, not a card/gallery picker. Options are labeled by
+`metadata.name` and show the OS-family icon and architecture badge(s).
 
-- **Question:** Proceed with `metadata.name` as the human label now and add
-  display_name/description columns and form fields when OSAC-2921 lands, or gate
-  the UI on OSAC-2921?
-- **Owner:** feature owner + OSAC-2921 owner.
-- **Impact:** list columns, detail `DescriptionList`, `DiskImageForm` fields.
+### 3. display_name dependency on OSAC-2921 — RESOLVED
 
-### 4. Milestone split for the UI
+Not waiting on OSAC-2921. `metadata.name` is used as the human label
+everywhere (list, detail, form, picker). No display_name/description columns or
+fields are added.
 
-- **Question:** Does the first UI milestone include the full lifecycle controls
-  (deprecate/obsolete/reactivate), or is v1 list + picker + create, with
-  lifecycle actions in a follow-up?
-- **Owner:** feature owner.
-- **Impact:** scope of `useDiskImageLifecycleAction` and detail/action menus in
-  the first delivery.
+### 4. Milestone split for the UI — RESOLVED
+
+The first UI milestone includes the **full lifecycle controls**
+(deprecate / obsolete / reactivate), plus delete gated to OBSOLETE. No split
+into a follow-up.
 
 ## Test Plan
 
@@ -550,7 +545,7 @@ as manual/exploratory against a live cluster.*
   AVAILABLE/DEPRECATED/OBSOLETE.
 - `getDiskImageLifecycleActions` returns the correct enabled actions per state
   (deprecate only from AVAILABLE; obsolete from AVAILABLE/DEPRECATED; reactivate
-  from DEPRECATED/OBSOLETE).
+  from DEPRECATED/OBSOLETE; delete only from OBSOLETE).
 - `DiskImageForm` client validation rejects empty source_ref and empty
   architecture, and renders source type / source ref / guest OS family
   read-only in edit mode.
@@ -587,7 +582,7 @@ If persisted e2e is later required, it would live in osac-ux's Cypress flows
   wizard picker function against a backend with the DiskImages service; Vitest
   component tests pass; no regression in the existing VM creation wizard.
 - **Tech Preview:** role gating (global vs tenant management) verified against
-  real Keycloak roles; display_name column active once OSAC-2921 has shipped.
+  real Keycloak roles.
 - **GA:** accessibility pass (keyboard/AT for the picker and forms),
   i18n strings complete, verified at catalog scale (large image lists paginate/
   filter acceptably).
@@ -642,5 +637,8 @@ begins.
 ## Provenance
 
 Authored: draft @ design 0.8.0 - 7efcedb, workspace main @ 6e8f396 (dirty)
+Final: respond @ design 0.8.0 - 7efcedb, workspace main @ 505e141 (dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"505e141 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
