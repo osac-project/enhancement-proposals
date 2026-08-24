@@ -25,17 +25,28 @@ polling and accepting missed events.
 
 - Reliable delivery of the existing event set through the `Watch` API, so a
   consumer receives the events it missed while disconnected once it reconnects
-  and resumes from its last position (at-least-once delivery)
-  [Clarify: R1.Q1, R2.Q3].
+  and resumes from its last position (at-least-once delivery). Because delivery
+  is at-least-once, a reconnecting consumer may see an event more than once, so
+  consumers — including the migrated controllers — must tolerate duplicate
+  deliveries [Clarify: R1.Q1, R2.Q3].
+- Per-resource ordering of delivered events: for any single resource, a
+  consumer receives that resource's change events in the order they occurred,
+  including after a resume [Clarify: R2.Q3] [Assumption: per-resource, not
+  global].
 - An opt-in resume position ("offset") and consumer-group identifier on the
   `Watch` request: supplying a group causes each event to be delivered to
   exactly one instance of that group; omitting it delivers every event to
-  every instance [Clarify: R2.Q2] [User].
+  every instance. Within a group the resume position is shared, so when one
+  instance is replaced another resumes from the group's last position rather
+  than from scratch or skipping events [Clarify: R2.Q2] [User].
 - Broadcast delivery as the default mode, with load-balanced delivery across a
   consumer group available as an opt-in [User].
 - Tenant isolation preserved end-to-end in the reliable delivery path — a
   consumer receives only events for the organization(s) it is authorized to
-  see [Jira: OSAC-983].
+  see. Offsets and consumer-group identifiers are scoped to the authorized
+  organization(s); authorization is enforced on replayed and retained events
+  as well as live ones; and no offset or group identity can be used to receive
+  another tenant's events [Jira: OSAC-983].
 - Migration of the fulfillment-service controllers — the internal consumers
   that subscribe to events as the backbone of their work — onto the reliable
   delivery path as the first adopters, with no regression in resource
@@ -87,7 +98,7 @@ primary internal consumer (see In Scope) [User].
   ordered events to build an immutable audit trail.
 - **Breakfix Structured Event API (OSAC-3128):** Depends on
   reliable event delivery for structured breakfix events.
-- **MOC compliance logging:** Depends on reliable event delivery for
+- **Compliance logging:** Depends on reliable event delivery for
   HIPAA/NIST audit pipelines.
 - **Cost-management subsystem:** Depends on this work to eventually receive
   every event without loss; it adopts the reliable path through the same API
@@ -97,7 +108,7 @@ primary internal consumer (see In Scope) [User].
 
 ## Provenance
 
-Authored: revise @ prd 0.8.0 - 7efcedb, workspace main @ 6e8f396
-Phases: draft, revise, revise, revise
+Authored: respond @ prd 0.8.0 - 7efcedb, workspace main @ 6e8f396
+Phases: draft, revise, revise, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
