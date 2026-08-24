@@ -8,15 +8,15 @@
 
 ## Problem Statement
 
-Tenant Users provision VMaaS ComputeInstances and need to scale their CPU and
-memory as workload demands change, but today the only way to change a
-running VM's compute resources is to recreate it. The fulfillment-service
-API no longer accepts direct CPU and RAM values from tenants — as
-originally proposed in OSAC-39 — because compute sizing is now derived from
-a selected InstanceType. Without a way to change a ComputeInstance's
-InstanceType directly, Tenant Users face unnecessary downtime and
-disruption from re-provisioning just to right-size a VM they already have
-running. [Jira: OSAC-4277]
+Tenant Admins and Tenant Users provision VMaaS ComputeInstances and need to
+scale their CPU and memory as workload demands change, but today the only
+way to change a running VM's compute resources is to recreate it. The OSAC
+API no longer accepts direct CPU and RAM values from tenants — as originally
+proposed in OSAC-39 — because compute sizing is now derived from a selected
+InstanceType. Without a way to change a ComputeInstance's InstanceType
+directly, tenants face unnecessary downtime and disruption from
+re-provisioning just to right-size a VM they already have running. [Jira:
+OSAC-4277]
 
 ## In Scope
 
@@ -42,43 +42,43 @@ running. [Jira: OSAC-4277]
 - Quota validation on InstanceType changes.
 - Audit or tracking of InstanceType changes.
 - Automatic scaling or auto-resize — InstanceType changes are only made in
-  response to an explicit Tenant User request.
-- Live migration during a resize — a VM restart is the fallback when
-  hot-plug isn't supported for the requested change.
+  response to an explicit request from a Tenant Admin or Tenant User.
+- Guaranteed restart-free resize — whether a restart is required depends on
+  the OSAC deployment (see the restart-notice note under User Stories).
 - OSAC UI console support — InstanceType resize is available via API only
   in this feature; the OSAC UI does not currently support ComputeInstance
   updates beyond power management. [Clarify: R1.Q3]
 
 ## User Stories
 
-### Tenant User
+### Tenant Admin / Tenant User
 
-- As a Tenant User, I want to change a running VM's InstanceType via API so
-  that I can scale CPU and memory up or down without recreating the VM.
-- As a Tenant User, I want to know from OSAC's deployment documentation
-  whether InstanceType changes require a VM restart in my environment, so
-  that I can plan for the downtime before requesting a resize. Whether a
-  restart is required is a property of the OSAC deployment — in most
-  deployments no restart is required. Where a restart is required, the
-  Tenant User is responsible for restarting their own VM; OSAC does not
-  restart it automatically.
-- As a Tenant User, I want a request for an InstanceType that's invalid or
-  incompatible with my ComputeInstance to be rejected immediately when
-  possible, so that I don't wait for a change that can't succeed. [Clarify:
-  R1.Q5]
+- As a Tenant Admin or Tenant User, I want to change a running VM's
+  InstanceType via API so that I can scale CPU and memory up or down without
+  recreating the VM.
+- As a Tenant Admin or Tenant User, I want a request for an InstanceType
+  that's invalid or incompatible with my ComputeInstance to be rejected
+  immediately when possible, so that I don't wait for a change that can't
+  succeed. [Clarify: R1.Q5]
+
+**Note:** Whether an InstanceType resize requires a VM restart is a property
+of the OSAC deployment, documented for Tenant Admins and Tenant Users — in
+most deployments no restart is required. Where one is required, the user who
+requested the change is responsible for restarting the VM themselves; OSAC
+does not restart it automatically.
 
 ## Dependencies
 
-- **fulfillment-service InstanceType-based sizing:** This feature depends
-  on ComputeInstance CPU and memory already being derived from a selected
-  InstanceType rather than set directly, replacing the model originally
-  proposed in OSAC-39.
+- **InstanceType-based sizing:** This feature depends on ComputeInstance CPU
+  and memory already being derived from a selected InstanceType rather than
+  set directly through the OSAC API, replacing the model originally proposed
+  in OSAC-39.
 
 ---
 
 ## Provenance
 
 Authored: respond @ prd 0.8.0 - 7efcedb, workspace main @ 6e8f396
-Phases: draft, respond, respond, respond
+Phases: draft, respond, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
