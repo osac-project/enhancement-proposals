@@ -18,6 +18,7 @@ VMaaS and CaaS catalog items (ComputeInstanceCatalogItem, ClusterCatalogItem) di
 - **API, CLI, and UI surfaces** — enriched pricing is available on catalog items across all three surfaces. The UI shows formatted prices, including the per-unit rate and any itemized non-metered charges.
 - **Visibility alignment with catalog assignment** — pricing follows the same hierarchical visibility model as catalog items (global → tenant → project) and is shown only for items the requesting user can browse. List prices are tenant-scoped: the same for every project and user in the tenant. A list price is not incurred-cost visibility; OSAC-3784 scopes actual charges by project membership.
 - **Cloud Provider Admin preview is tenant-contextual** — when a Cloud Provider Admin previews catalog prices, the amounts are the list prices that tenant would see (that tenant's effective plan). This verifies tenant-facing display; it is not a second, provider-specific price list.
+- **Displayed price reflects the catalog item's default configuration** — the browse-time price is computed from the catalog item's default field values. With Catalog Items v2 (OSAC-3538), a catalog item may expose editable billable fields (for example, the instance type); if a tenant overrides an editable billable field at provisioning, the actual charge may differ from the displayed price. The UI signals this — for example a "price may vary" indicator — when the displayed item has editable billable fields.
 
 ## Out of Scope
 
@@ -29,6 +30,7 @@ VMaaS and CaaS catalog items (ComputeInstanceCatalogItem, ClusterCatalogItem) di
 - **BMaaS catalog pricing** — price enrichment of BareMetalInstanceCatalogItem is [OSAC-3795](https://redhat.atlassian.net/browse/OSAC-3795).
 - **MaaS catalog pricing** — price enrichment of MaasCatalogItem (including per-token prices) is [OSAC-3794](https://redhat.atlassian.net/browse/OSAC-3794).
 - **Non-catalog billable resources** — this feature does not show list prices for resources that are not catalog items (for example standalone instance types, storage, or ExternalIPs). Incurred-cost views and rate-card management for those remain OSAC-3784.
+- **Pre-provisioning price preview for the catalog-less API path** — with Catalog Items v2 (OSAC-3538), a catalog item is optional for API provisioning. When a tenant provisions directly through the API without selecting a catalog item, there is no catalog display and therefore no pre-provisioning price preview. This path is now a first-class provisioning flow rather than an edge case; closing the preview gap for it is expected to be addressed by OSAC-3784.
 
 ## User Stories
 
@@ -60,8 +62,8 @@ VMaaS and CaaS catalog items (ComputeInstanceCatalogItem, ClusterCatalogItem) di
 ## Provenance
 
 Authored: draft @ prd 0.8.0 - a605aa5, workspace feat/add-osac-metering-documentation @ 514565f (3 behind origin/main)
-Final: revise @ prd 0.8.0 - 7efcedb, workspace HEAD @ 155acfa
+Final: revise @ prd 0.8.0 - 7efcedb, workspace HEAD @ 6e8f396 (2 behind origin/main)
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"155acfa","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"HEAD","commits_behind_main":2,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
