@@ -29,7 +29,9 @@ running. [Jira: OSAC-4277]
   valid resize target (`DEPRECATED` succeeds with a warning), and an
   `OBSOLETE` target is invalid and rejected per the existing "invalid or
   incompatible" requirement. Resizing to the ComputeInstance's current
-  InstanceType is a no-op.
+  InstanceType is a no-op — the no-op check takes precedence over lifecycle
+  validation, so a request targeting the current InstanceType is always a
+  no-op even when that InstanceType is `DEPRECATED` or `OBSOLETE`.
 
 ## Out of Scope
 
@@ -77,6 +79,6 @@ running. [Jira: OSAC-4277]
 ## Provenance
 
 Authored: respond @ prd 0.8.0 - 7efcedb, workspace main @ 6e8f396
-Phases: draft, respond, respond
+Phases: draft, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
