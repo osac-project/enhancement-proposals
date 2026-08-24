@@ -169,7 +169,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
    - Template deletes KubeVirt VM + DataVolume
-   - No `delete_network_attachment` call (VM was on overlay, not switch port)
+   - No `move_network_attachment` call — the VM lives on the CUDN overlay, not a fabric switch port, so it is never parked or port-moved (the port-move primitive and parking apply only to fabric-attached BM servers and CaaS agents)
 
 10. **Delete networking resources:**
     - Each networking resource controller triggers its delete AAP job
