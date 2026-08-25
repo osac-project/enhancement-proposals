@@ -151,6 +151,7 @@ jobs:
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
           CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
           EP_REVIEW_SHADOW: ${{ vars.EP_REVIEW_SHADOW || 'true' }}
+          EP_REVIEW_SKIP_LOGISTICS: ${{ vars.EP_REVIEW_SKIP_LOGISTICS || 'false' }}
           PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
           PR_HEAD_SHA: ${{ needs.resolve-pr.outputs.head_sha }}
         run: python .github/scripts/ep_review.py
