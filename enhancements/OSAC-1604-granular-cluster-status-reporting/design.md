@@ -81,6 +81,13 @@ operator mapping is sufficient to propagate granular status to every consumer
 - VMaaS and BMaaS status (VMaaS is OSAC-1027; BMaaS is separate) [Locked: D2].
 - Cluster upgrade status (OSAC-1415) and power-state phases - clusters have no
   start/stop/pause [Locked: D1].
+- End-user documentation authoring. This EP defines the `PROGRESSING.reason` /
+  condition vocabulary and the `describe` output normatively; publishing that into
+  user-facing docs (osac-docs) is done with the implementation task, not authored
+  here - consistent with the UI being deferred to osac-ux.
+- A true per-node "X of Y ready" health count. Not reachable at the pinned
+  HyperShift version (see the resource-controller section); `ready_replicas` is
+  binary until a follow-up bumps HyperShift or adds Cluster-API access.
 
 ## Proposal
 
@@ -272,6 +279,14 @@ Field numbers on `ClusterNodeSet` are indicative; the implementation must read
 the current `.proto` and append after the highest existing number. `enum.defined_only`
 protovalidate applies to the new enums.
 
+`ClusterNodeSet` keeps its existing `size` field (the tenant's requested node count
+from the order) alongside the new `desired_replicas` (the operator's current target,
+= NodePool `spec.Replicas`). They are usually equal but legitimately differ mid-scale
+(the user requested a new `size`; the operator is still walking `desired_replicas`
+toward it), so implementers must not treat them as redundant. `current_replicas` is
+the observed node count (NodePool `status.Replicas`) and `ready_replicas` the ready
+count - binary at this HyperShift pin, see the resource-controller section.
+
 ### osac-operator: feedback controller
 
 Replace `syncClusterOrderConditions`
@@ -320,22 +335,64 @@ In `clusterorder_controller.go`:
   `metadata.deletionTimestamp` + `CloudResourcesDestroyed` +
   `HostedClusterDestroyed` (there is no `HostedClusterDeleting` condition - C3).
   HyperShift is pinned at `v0.0.0-20250331235933-616a2fae81ae`.
-- **Per-node-set attribution.** Fix the single-NodePool limitation - `handleNodePool`
-  only attributes status when exactly one node request exists (TODO in
-  `clusterorder_controller.go`) - so each `NodePool` maps to its `ClusterNodeSet`
-  by name/host-type. `ready_replicas` is derived: NodePool exposes no numeric
-  `readyReplicas`, so derive "X of Y ready" from `status.Replicas` gated by the
-  NodePool `AllNodesHealthy`/`Ready` conditions (or a Machine count where
-  available). `desired_replicas` = `spec.Replicas`, `current_replicas` =
-  `status.Replicas`. The derivation approximation is documented; exact readiness
-  requires condition-gating because HyperShift does not surface a ready count.
-- **Stalled detection.** Track the `PROGRESSING` condition's `lastTransitionTime`
-  per sub-stage. On reconcile, if `now - lastTransitionTime` exceeds the stage
-  threshold, set reason `Stalled`; requeue with `RequeueAfter` = threshold so the
-  flip happens without an external event. Proposed configurable defaults (cluster
-  provisioning is slow): `PreparingInfrastructure` 15m, `ControlPlaneStarting`
-  30m, `WorkersJoining` 20m. `Stalled` (known stage, not advancing) is distinct
-  from `StageUnknown` (signal unavailable) and from `FAILED` (terminal).
+- **Per-node-set attribution and replica counts.** Fix the single-NodePool
+  limitation - `handleNodePool` only attributes status when exactly one node request
+  exists (TODO at `clusterorder_controller.go:440-453`, which today reads only
+  `nodePool.Status.Replicas`) - so each `NodePool` maps to its `ClusterNodeSet` by
+  name/host-type. Replica counts are derived from what the pinned HyperShift API
+  actually exposes [Codebase: verified against
+  `hypershift/api@v0.0.0-20250331235933/hypershift/v1beta1/nodepool_types.go` -
+  `NodePoolStatus` has only `Replicas int32`, no `readyReplicas`/`availableReplicas`;
+  and osac-operator has no Cluster-API dependency, so it cannot count `Ready`
+  Machines/Nodes]:
+  - `desired_replicas` = NodePool `spec.Replicas`.
+  - `current_replicas` = NodePool `status.Replicas` (the latest observed node count).
+    This is a real number that climbs as nodes join, so joining and scaling progress
+    *is* genuinely granular ("2 of 3 nodes present") - it satisfies AC-4 scaling
+    visibility and the metering "how many have joined" need.
+  - `ready_replicas` is **binary at this HyperShift pin**: readiness is a pool-wide
+    boolean (`Ready`/`AllMachinesReady`/`AllNodesHealthy`), so `ready_replicas` equals
+    `current_replicas` when the pool reports `AllNodesHealthy`/`Ready` and `0`
+    otherwise. This is stated explicitly rather than advertising a per-node "X of Y
+    ready" the mechanism cannot produce. A true ready *health* count is a follow-up
+    requiring either a HyperShift bump that surfaces a ready count or adding
+    Cluster-API `Machine` access (new dependency + RBAC) - out of scope here. Note
+    partial-join visibility is already covered by `current_replicas`; only per-node
+    *health* is coarse-grained at this pin.
+- **Stalled detection.** The `PROGRESSING` condition stays `True` for the whole
+  provisioning run while only its `reason` cycles, and Kubernetes bumps a condition's
+  `lastTransitionTime` on a *status* change, not a *reason* change
+  (`meta.SetStatusCondition` semantics). Reusing `PROGRESSING.lastTransitionTime`
+  would therefore measure cumulative run time, not time-in-current-stage, and would
+  false-trip the instant a cluster enters a late stage. Instead, key each stage's
+  timer off the **CR condition whose own transition marks that stage** - each of
+  `ControlPlaneCreated`/`ControlPlaneAvailable`/`ClusterAvailable` carries its own
+  `lastTransitionTime` - or, for a stage with no dedicated CR condition, persist a
+  small `(observedReason, since)` pair in the ClusterOrder status. On reconcile, if
+  `now - <stage-entry-time>` exceeds that stage's threshold, set `PROGRESSING` reason
+  `Stalled` (message names the stuck stage); requeue with `RequeueAfter` = the
+  remaining threshold so the flip happens without an external event. A fake-clock unit
+  test must advance through two stages and assert the stall fires against *stage*
+  elapsed, not run elapsed.
+
+  Proposed configurable defaults (cluster provisioning is slow; these are
+  **provisional**): `PreparingInfrastructure` 15m, `ControlPlaneStarting` 30m,
+  `WorkersJoining` 20m. Worker-join time scales with pool size and instance type
+  (image pull, cloud provisioning latency), so the `WorkersJoining` threshold is
+  per-host-type overridable (a base value plus optional per-host-type override) rather
+  than one flat global. `Stalled` (known stage, not advancing) is distinct from
+  `StageUnknown` (signal unavailable) and from `FAILED` (terminal); it is non-terminal
+  and self-clears when the stage advances.
+- **Teardown stall vs `DELETE_FAILED`.** `DELETE_FAILED` is set only on an actual
+  HyperShift teardown failure signal, never on slowness alone. On delete the controller
+  watches `metadata.deletionTimestamp` + `CloudResourcesDestroyed` /
+  `HostedClusterDestroyed`; if HyperShift surfaces a teardown failure the state becomes
+  `DELETE_FAILED` with a `FAILED` condition reason. A teardown that is merely slow stays
+  `DELETING` with a teardown `PROGRESSING` reason
+  (`DestroyingCloudResources`/`DestroyingControlPlane`) and is subject to the same
+  stage-age stall timer using two configurable teardown thresholds, which flips the
+  reason to `Stalled` so a hung teardown is visible to support and to metering rather
+  than sitting silently in `DELETING` forever.
 - **Transition events (IS-7 / AC-7).** The ClusterOrder controller has no
   `EventRecorder` today (the ComputeInstance controller does). Add one and emit a
   Normal Kubernetes event on each sub-stage `Reason` transition and on each
@@ -358,10 +415,14 @@ After CR type/constant changes: `make manifests generate` and `make helm-crds`.
   initial PROGRESSING
   [Codebase: fulfillment-service/internal/controllers/cluster/cluster_reconciler_function.go:281-283];
   nothing bumps it on later transitions, because `syncClusterOrderPhase` calls
-  `SetState` without touching the transition time. The fix stamps
-  `state_transition_time` at the point of state change (in the operator feedback
-  path where `SetState` is called, and/or when the fulfillment reconciler detects
-  a state delta), giving OSAC-4077 sub-minute billing accuracy.
+  `SetState` without touching the transition time. To avoid a read-modify-write race
+  or double-stamping, there is exactly **one** writer: the operator feedback path,
+  which stamps `state_transition_time` at the point where the proto `state` actually
+  flips (alongside the `SetState` call in `syncClusterOrderPhase`). The
+  fulfillment-service reconciler treats the field as read-only. A unit test asserts the
+  timestamp changes exactly once per state transition and is stable across no-op
+  reconciles, giving OSAC-4077 a single monotonic transition timestamp for sub-minute
+  billing accuracy.
 
 ### CLI and tables
 
@@ -376,7 +437,10 @@ existing template; keep help text Markdown-formatted per component convention.
 List tables `osac.public.v1.Cluster.yaml` (+ private) show only `state`; add
 STAGE (from the `PROGRESSING` reason) and HEALTH (from
 `DEGRADED`/`CONTROL_PLANE_AVAILABLE`/`WORKERS_READY`) CEL columns over
-`status.conditions`.
+`status.conditions`. Both these CEL columns and `describe` must bucket an
+unrecognized condition type or node-set state as an explicit "unknown" label
+(rendering the raw name/number) rather than failing, for version-skew safety (see
+Version Skew Strategy).
 
 ### Freshness (NFR)
 
@@ -409,9 +473,12 @@ because it adds only derived, read-only status.
 - **Partial worker failure**: `DEGRADED` True, `WORKERS_READY` False,
   `CONTROL_PLANE_AVAILABLE` stays True; overall `READY` preserved so the usable
   control plane is not masked (AC-3).
-- **Teardown failure/stuck**: state `DELETE_FAILED` + `FAILED` condition reason;
-  the ClusterOrder finalizer is retried on the next reconcile and removed only
-  after teardown completes (existing finalizer discipline).
+- **Teardown failure vs stuck**: a real HyperShift teardown failure → state
+  `DELETE_FAILED` + `FAILED` condition reason; a merely slow teardown stays `DELETING`
+  and, past its teardown threshold, surfaces `PROGRESSING` reason `Stalled` (it is not
+  marked `DELETE_FAILED` on slowness alone). The ClusterOrder finalizer is retried on
+  the next reconcile and removed only after teardown completes (existing finalizer
+  discipline).
 - **Controller restart mid-reconcile**: status is idempotently re-derived from
   observed HC/NodePool state each reconcile; the `DeepEqual` status gate avoids
   update loops. `last_transition_time` is only bumped on an actual status change,
@@ -446,10 +513,10 @@ status. Tenant isolation metadata on ClusterOrder is unchanged.
 | Risk | Mitigation |
 |------|------------|
 | Internal consumers keyed on the collapsed `PROGRESSING` break when conditions become granular | Product is pre-GA with no external clients; enum values are append-only and metering treats unknown states as non-billable (safe default). Coordinate the osac-ux regen in the same release window. |
-| Derived `ready_replicas` is approximate (HyperShift exposes no ready count) | Derive via condition-gated `status.Replicas`; document the approximation; treat NodePool `AllNodesHealthy` as the authoritative "all ready" signal. |
+| `ready_replicas` health count is binary at the pinned HyperShift (no per-node ready count; operator has no Cluster-API Machine access) | Documented explicitly as binary rather than advertised as granular; `current_replicas` (`status.Replicas`) still gives granular join/scaling progress; a true ready count is a scoped follow-up (HyperShift bump or CAPI access). |
 | Stall thresholds mis-tuned (false `Stalled` on slow-but-healthy provisioning) | Make thresholds controller-configurable with generous defaults; `Stalled` is non-terminal and self-clears. |
 | Fixing the two latent feedback bugs changes today's (wrong) behavior | Covered by new unit tests asserting each CR condition reaches its distinct proto condition with `Reason` preserved. |
-| Version skew: operator emits new conditions an older fulfillment-service enum lacks | Enum is append-only; unknown numeric values round-trip harmlessly and render as UNSPECIFIED until both sides are upgraded. |
+| Version skew: operator emits new conditions an older fulfillment-service enum lacks | Enum is append-only; proto3 preserves unknown enum numbers on the wire, so values round-trip unchanged. Consumers (CLI, tables, metering) must treat an unrecognized condition type or node-set state as an unknown/ignored bucket - not coerce it to a wrong value. |
 
 ## Drawbacks
 
@@ -526,8 +593,18 @@ maintainable.
 
 ## Graduation Criteria
 
-Graduation criteria will be defined when targeting a release. Expected stages:
-Dev Preview → Tech Preview → GA based on production deployment feedback.
+Expected stages, with an indicative bar for each (finalized when targeting a release):
+
+- **Dev Preview:** unit coverage of the CR→proto condition mapping (each condition
+  reaches its distinct type with `Reason` preserved), the two latent-bug regressions,
+  and the fake-clock stall timer (asserting stage-elapsed, not run-elapsed).
+- **Tech Preview:** envtest drive-through of all provisioning stages plus deletion
+  (deletionTimestamp + CloudResourcesDestroyed → DELETING → removal) and the degraded
+  and scaling paths; an E2E run observing distinct stages (not a single PROGRESSING) on
+  a real provision and delete; osac-ux consuming the granular conditions.
+- **GA:** production soak with no material `Stalled` false-positives over an agreed
+  window, and metering (OSAC-4077) validated against the DELETING transition and
+  `state_transition_time`.
 
 ## Upgrade / Downgrade Strategy
 
@@ -535,19 +612,24 @@ Additive proto change (append-only enum values, new message fields) with no
 database migration - status is JSON-serialized protobuf. On upgrade, existing
 clusters gain granular conditions on the next reconcile; no client action is
 required. Older stored objects deserialize unchanged. Downgrade: the new enum
-values/fields are ignored by an older binary (unknown enum numbers render as
-UNSPECIFIED); no destructive migration to reverse. OSAC does not support in-place
-cluster upgrades generally; this feature does not change that.
+values/fields are preserved as their raw numeric value and bucketed as unknown by an
+older binary (proto3 does not coerce them to UNSPECIFIED); no destructive migration to
+reverse. OSAC does not support in-place cluster upgrades generally; this feature does
+not change that.
 
 ## Version Skew Strategy
 
 Operator and fulfillment-service ship from the same mono-repo and are released
-together, but skew is safe regardless: enum values are append-only and numeric on
-the wire, so an operator emitting `CONTROL_PLANE_AVAILABLE`/`WORKERS_READY` to an
-older fulfillment-service (or an older client reading a newer object) round-trips
-the number and renders it as UNSPECIFIED until both sides are upgraded. No CRD
-storage-version migration is involved (the CR change is additive
-conditions/reasons, same `v1alpha1`).
+together, but skew is safe regardless: enum values are append-only and proto3
+preserves unknown enum numbers on the wire, so an operator emitting
+`CONTROL_PLANE_AVAILABLE`(5)/`WORKERS_READY`(6) to an older fulfillment-service (or an
+older client reading a newer object) round-trips the raw number unchanged. This is
+*not* automatic coercion to `UNSPECIFIED` - a proto3 consumer keeps the unknown integer
+(generated Go prints the number, not `UNSPECIFIED`). Consumers must therefore bucket
+unrecognized values: the CLI `describe` and the STAGE/HEALTH CEL columns render an
+unknown condition type or node-set state as its raw name/number (or an explicit
+"unknown" label) and must not crash or mis-map it. No CRD storage-version migration is
+involved (the CR change is additive conditions/reasons, same `v1alpha1`).
 
 ## Support Procedures
 
@@ -577,4 +659,4 @@ Committed: commit @ design 0.8.0 - 7efcedb (dirty), workspace main @ 4bfc214
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb (dirty)","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb (dirty)","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
