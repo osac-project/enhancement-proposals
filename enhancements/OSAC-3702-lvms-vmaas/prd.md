@@ -12,18 +12,17 @@ The OSAC storage control plane provisions tenant storage only from network-attac
 
 ## In Scope
 
-*This release delivers LVMS for single-node VMaaS only, as an **extension** of the existing OSAC storage control plane (OSAC-2872): it adds LVMS as a backend behind the opaque `local` tier and reuses the already-delivered `osac-csi-driver`, tier resolution, cross-cluster auth, and StorageClass generation rather than introducing any new driver-install or provisioning path. See Out of Scope for what is deferred to a future feature.*
+*This release delivers LVMS as a `local` storage tier for single-node VMaaS only, extending OSAC's existing storage offering (OSAC-2872) with a node-local backend. It uses the same storage tier and onboarding path as remote backends, so no new provisioning or install path is introduced. See Out of Scope for what is deferred to a future feature.*
 
-- LVMS (node-local LVM) as a storage backend in the OSAC storage control plane, exposed through the same opaque storage tier and `osac-csi-driver` model defined in OSAC-2872 — tenants see a `local` tier, not LVMS internals.
-- VMaaS onboarding provisions the `local` tier through the **existing** OSAC storage onboarding path (OSAC-2872) — the `osac-csi-driver`, cross-cluster auth, and tenant-scoped StorageClass generation are already delivered. This feature adds installing and configuring LVMS on the single-node cluster (hub == tenant) during onboarding so that path resolves to node-local storage, leaving a usable `local` PVC path ready without manual setup.
-- Volumes on the `local` tier are provisioned on node-local LVM volume groups. Because the storage is node-local, a volume is provisioned when its consuming workload is scheduled and is then pinned to that node — the standard Kubernetes behavior for node-local storage.
-- ComputeInstance (VMaaS) workloads can consume the `local` tier for boot and additional disks using tenant-resolved StorageClasses.
-- End-to-end volume lifecycle: provision → mount → data round-trips → delete releases both the OSAC inventory record and the underlying node-local volume. This end-to-end flow is the definition of done for this release.
-- Deleting a ComputeInstance removes its node-local volume and inventory record, following the same volume lifecycle as other OSAC backends (OSAC-2872), so node-local capacity is not leaked.
-- Central inventory tracking of `local`-tier volumes (tenant, tier, state, size), consistent with OSAC-2872.
-- When a node lacks local capacity to satisfy a request, provisioning fails predictably and leaves no partial volume or inventory record.
-- E2E test covering the single-node VMaaS `local`-tier provision → mount → cleanup flow, including that the volume remains on the node where its workload was scheduled.
-- Administrator documentation (node LVM prerequisites, registering the LVMS backend and `local` tier) and user documentation (consuming the `local` tier).
+- **A `local` storage tier backed by node-local storage.** Platform admins register LVMS as a backend and define a `local` tier; tenants see an opaque tier, not LVMS internals — the same experience, tier model, and onboarding path as remote backends (OSAC-2872).
+- **Automatic setup during VMaaS onboarding.** Onboarding a single-node deployment configures the `local` tier end to end, leaving a usable local storage path ready without manual steps.
+- **Node-local provisioning behavior.** A `local`-tier volume is provisioned when its ComputeInstance is scheduled and then stays on that node; consequently a ComputeInstance using `local` storage is pinned to its node.
+- **ComputeInstance consumption.** VMaaS workloads can use the `local` tier for boot and additional disks.
+- **Full volume lifecycle with cleanup.** Provision → mount → data round-trips → delete; deleting a ComputeInstance releases both its node-local storage and its inventory record, so capacity is not leaked. This end-to-end flow is the definition of done for this release.
+- **Inventory tracking.** `local`-tier volumes are tracked centrally (tenant, tier, state, size), consistent with other backends.
+- **Predictable capacity failure.** When a node lacks local capacity, provisioning fails predictably and leaves no partial volume or inventory record.
+- **Interfaces.** The `local` tier appears through the same tenant-facing channels (console and CLI) as other storage tiers; no LVMS-specific UI is added.
+- **Test and documentation.** An E2E test covers the single-node provision → mount → cleanup flow (including that the volume stays on its scheduled node); admin docs cover node prerequisites and backend/tier registration; user docs cover consuming the `local` tier.
 
 ## Out of Scope
 
@@ -58,16 +57,15 @@ Deferred to a future feature (current scope is single-node VMaaS only):
 ## Assumptions
 
 - The OSAC storage control plane (OSAC-2872) — Volume API, tier resolution, central inventory, and `osac-csi-driver` — supports a new backend provider with additive changes only. LVMS reuses this model rather than introducing a parallel storage path.
-- In the single-node scope, the cluster where tenants run is the same cluster that runs the OSAC control plane (hub == tenant), so no cross-cluster provisioning is required in this release.
+- In the single-node scope, the control plane and tenant workloads share one cluster, so no cross-cluster provisioning is required in this release.
 - Nodes have local disks and a volume group available for LVMS to consume; provisioning that hardware and capacity is a cluster/infrastructure prerequisite handled outside OSAC.
 - LVMS targets single-node development environments where remote storage arrays are unavailable or unnecessary; it does not aim for feature parity with network backends (in particular, node-local volumes do not move between nodes).
 - The LVMS installation tooling is available to the VMaaS onboarding automation.
 
 ## Dependencies
 
-- **OSAC-2872 (Storage Control Plane):** provides the Volume API, tier resolution, central inventory, and `osac-csi-driver` that this backend plugs into. Must be in place for the `local` tier to resolve and provision end-to-end.
+- **OSAC-2872 (Storage Control Plane):** provides the storage tier model, driver, central inventory, and onboarding path this backend plugs into. Must be in place for the `local` tier to provision end to end.
 - **VMaaS tenant onboarding automation:** extended to install and configure LVMS on the single-node cluster during onboarding.
-- **osac-csi-driver:** `local`-tier provisioning and mount route through the same driver as other backends.
 
 ---
 
