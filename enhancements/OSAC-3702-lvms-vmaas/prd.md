@@ -56,7 +56,7 @@ Deferred to a future feature (current scope is single-node VMaaS only):
 
 ## Assumptions
 
-- The OSAC storage control plane (OSAC-2872) — Volume API, tier resolution, central inventory, and `osac-csi-driver` — supports a new backend provider with additive changes only. LVMS reuses this model rather than introducing a parallel storage path.
+- The `local` tier uses the same onboarding, provisioning, and inventory experience as remote backends (OSAC-2872), adding no new tenant-facing or admin-facing workflow.
 - In the single-node scope, the control plane and tenant workloads share one cluster, so no cross-cluster provisioning is required in this release.
 - Nodes have local disks and a volume group available for LVMS to consume; provisioning that hardware and capacity is a cluster/infrastructure prerequisite handled outside OSAC.
 - LVMS targets single-node development environments where remote storage arrays are unavailable or unnecessary; it does not aim for feature parity with network backends (in particular, node-local volumes do not move between nodes).
