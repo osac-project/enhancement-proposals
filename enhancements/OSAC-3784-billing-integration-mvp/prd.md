@@ -52,7 +52,7 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 ## Out of Scope
 
 - **Payment processing and gateway integration** — OSAC generates draft invoices; payment collection and PCI compliance are handled externally.
-- **Quota enforcement and budget alerts** — tracked separately as OSAC-998.
+- **Quota enforcement and budget alerts** — tracked separately as OSAC-4220 (Quota Foundation).
 - **Workload-level metering** — OSAC meters resources it provisions, not workloads running inside tenant clusters.
 - **Billing provider UI** — the billing provider's own administration interface; this PRD covers OSAC-side surfaces only. Functionality native to the billing provider (invoicing, tax, payment, refunds) is delegated to it.
 - **Trial, promotional, and ad-hoc credits, refunds, and adjustments** — granted and managed in the billing provider's own interface. OSAC treats an existing credit balance as an offset against normal rates (see Assumptions); it does not provide a credit-granting UI.
@@ -86,7 +86,7 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 - As a Cloud Provider Admin, I want billing operations (pricing plan management, billing-period configuration, invoice review) restricted to users with billing-specific permissions, so that only authorized personnel can modify pricing or access financial data.
 
-- As a Cloud Provider Admin, I want all billing-related administrative actions — pricing plan changes, plan-to-tenant assignments, billing-period configuration, billing-provider changes, and invoice generation — to produce entries in the OSAC audit log (visible through the API, CLI, and UI where audit is surfaced), so that I can satisfy compliance and regulatory audit requirements.
+- As a Cloud Provider Admin, I want all billing-related administrative actions performed through OSAC — pricing plan changes, plan-to-tenant assignments, billing-period configuration, billing-provider installation and switchover, and invoice generation — to produce entries in the OSAC audit log (visible through the API, CLI, and UI where audit is surfaced), so that I can satisfy compliance and regulatory audit requirements. OSAC audits the actions taken through its own surfaces; changes made directly in the billing provider's own interface are audited by that provider, consistent with the billing provider remaining the pricing source of truth.
 
 ### Cloud Infrastructure Admin
 
@@ -142,7 +142,7 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 - **Resource composition metadata:** Billing for non-metered components requires the provisioning layer to record which billable components (for example, add-on operators, licenses, or fees) are attached to a provisioned resource. Where these components originate from catalog items, this ties into the catalog dependency above.
 
-- **OSAC-998 — Quota Management:** Billing cost data may feed into quota enforcement in a future milestone. This PRD does not implement quota logic but does not preclude it.
+- **OSAC-4220 — Quota Foundation:** Billing cost data may feed into quota enforcement in a future milestone. This PRD does not implement quota logic but does not preclude it.
 
 - **Documentation:** User-facing documentation for billing management (pricing plan setup, invoice workflows, cost visibility) and API reference for billing endpoints are delivered with the feature.
 
@@ -151,8 +151,8 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 ## Provenance
 
 Authored: draft @ prd 0.8.0 - a605aa5, workspace feat/add-osac-metering-documentation @ 514565f
-Final: revise @ prd 0.8.0 - 7efcedb, workspace HEAD @ 155acfa
+Final: revise @ prd 0.8.0 - 7efcedb, workspace HEAD @ 6e8f396 (10 behind origin/main)
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"155acfa","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"HEAD","commits_behind_main":10,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
