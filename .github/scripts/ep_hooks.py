@@ -62,6 +62,96 @@ class EPHooks:
             return ""
         return result.stdout
 
+    # ── Comment upsert (one comment per review type, updated in place) ──
+
+    @staticmethod
+    def _comment_tag(skill_name):
+        """Stable invisible marker identifying this bot's comment for a given
+        review type. Embedded in every comment body so re-runs update the same
+        comment in place instead of posting a new one each time."""
+        kind = "prd-review" if skill_name == "prd-review" else "design-review"
+        return f"<!-- ep-review-bot:{kind} -->"
+
+    def _find_comment_id(self, pr_number, tag):
+        """Return the id of this bot's existing comment carrying `tag`, or
+        None. Matches on both bot login and the hidden tag so a human quoting
+        the tag can't hijack the target comment."""
+        out = self._gh([
+            "api", f"repos/{self.repo}/issues/{pr_number}/comments",
+            "--paginate", "--jq",
+            f'[.[] | select(.user.login == "{self.bot_login}") '
+            f'| select(.body | contains("{tag}"))][0].id // empty'
+        ]).strip()
+        return out or None
+
+    def _upsert_comment(self, pr_number, tag, body):
+        """PATCH the bot's existing tagged comment if present, else create one.
+
+        `gh api -F body=@FILE` reads the field value verbatim from the file,
+        which sidesteps shell/JSON escaping of the markdown body.
+        """
+        comment_id = self._find_comment_id(pr_number, tag)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
+            f.write(body)
+            path = f.name
+        try:
+            if comment_id:
+                self._gh(["api", "--method", "PATCH",
+                          f"repos/{self.repo}/issues/comments/{comment_id}",
+                          "-F", f"body=@{path}"], check=True)
+            else:
+                self._gh(["pr", "comment", pr_number, "--repo", self.repo,
+                          "--body-file", path], check=True)
+        finally:
+            os.unlink(path)
+        return comment_id is not None
+
+    def _post_status(self, ticket_key, skill_name, title, status, message):
+        """Upsert a short status comment (in-progress or failed) that shares
+        the final review's header and hidden tag, so the update reads as one
+        comment evolving. It deliberately carries no `<!-- sha:XXXX -->` marker
+        and adds no reviewed label, so check_pr_state doesn't see it as
+        "already reviewed at this SHA" and the real review still runs."""
+        if self.shadow:
+            print(f"  [{ticket_key}] SHADOW: would post status '{status}'")
+            return
+        pr_number = ticket_key.replace("EP-", "")
+        tag = self._comment_tag(skill_name)
+        marker = "AI Design Review:" if skill_name == "design-review" else "AI EP Review:"
+        body = "\n".join([
+            f"## {marker} {title}",
+            tag,
+            "",
+            f"**Status:** {status}",
+            "",
+            message,
+        ])
+        # The progress/failure comment is cosmetic — never let a comment API
+        # hiccup abort the actual review, which runs after this returns.
+        try:
+            self._upsert_comment(pr_number, tag, body)
+            print(f"  [{ticket_key}] Posted status '{status}'")
+        except Exception as e:
+            print(f"  [{ticket_key}] status comment failed (ignored): {e}",
+                  file=sys.stderr)
+
+    def post_progress_placeholder(self, ticket_key, skill_name):
+        """Show immediate "in progress" feedback before the (slow) review runs;
+        apply_labels later updates this same comment with the full results."""
+        self._post_status(
+            ticket_key, skill_name, "Analyzing changes…", "Review in progress",
+            "The automated review is analyzing the updated document. This "
+            "comment will be replaced with the full results (scores, findings, "
+            "and structural notes) as soon as the run completes.")
+
+    def post_failure_note(self, ticket_key, skill_name):
+        """Replace an in-progress placeholder with a failure note so the comment
+        doesn't sit on "in progress" after an errored run."""
+        self._post_status(
+            ticket_key, skill_name, "Review failed", "Failed",
+            "The automated review encountered an error and did not complete. "
+            "It will retry on the next push.")
+
     @staticmethod
     def _sanitize_text(text, max_len=500):
         text = re.sub(r'!\[[^\]]*\]\([^\)]*\)', '', text)
@@ -81,16 +171,26 @@ class EPHooks:
 
     # ── Pre-gate ──
 
-    def check_pr_state(self, ticket_key, ticket, mode, work_dir, **kw):
+    def check_pr_state(self, ticket_key, ticket, mode, work_dir,
+                       skill_name=None, **kw):
         labels = ticket.get("labels", [])
         if self.reviewed_label in labels:
             head = ticket.get("headRefOid", "")
             pr_number = ticket_key.replace("EP-", "")
+            # Scope the lookup to THIS review type's tagged comment only. A PR
+            # can carry both a PRD and a design review; if the PRD review
+            # completed (its comment holds the current SHA) but the design
+            # review failed, an any-type query would treat the PRD comment as
+            # the design review's own and wrongly skip the design retry.
+            skill_name = skill_name or ticket.get("_skill_name", "")
+            tag = self._comment_tag(skill_name)
             existing = self._gh([
                 "api", f"repos/{self.repo}/issues/{pr_number}/comments",
-                "--jq",
+                "--paginate", "--jq",
+                # An in-progress placeholder carries the tag but no SHA marker,
+                # so the head[:8] check below still lets the real review run.
                 f'[.[] | select(.user.login == "{self.bot_login}") '
-                f'| select(.body | contains("AI EP Review:") or contains("AI Design Review:"))][0].body // empty'
+                f'| select(.body | contains("{tag}"))][0].body // empty'
             ]).strip()
             if existing and head and head[:8] in existing:
                 return f"Already reviewed at SHA {head[:8]}"
@@ -295,9 +395,13 @@ class EPHooks:
         pass_fail = "PASS" if total >= threshold and not has_zero else "FAIL"
         marker = "AI EP Review:" if is_prd else "AI Design Review:"
         display_labels = PRD_DISPLAY if is_prd else DESIGN_DISPLAY
+        skill_name = ticket.get("_skill_name") or (
+            "prd-review" if is_prd else "design-review")
+        tag = self._comment_tag(skill_name)
 
         lines = [
             f"## {marker} {self._sanitize_text(verdict.get('title', ticket_key), 200)}",
+            tag,
             f"<!-- sha:{head_sha[:8]} -->" if head_sha else "",
             "",
             f"**Score: {total}/{max_total}** | **Verdict: {pass_fail}**",
@@ -360,16 +464,8 @@ class EPHooks:
                 print(f"  [{ticket_key}] SHADOW cost: {cost_summary}")
             return
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(comment)
-            comment_file = f.name
-
-        self._gh(["pr", "comment", pr_number, "--repo", self.repo,
-                   "--body-file", comment_file],
-                  check=True)
-        print(f"  [{ticket_key}] Posted new review comment")
-
-        os.unlink(comment_file)
+        updated = self._upsert_comment(pr_number, tag, comment)
+        print(f"  [{ticket_key}] {'Updated' if updated else 'Posted'} review comment")
 
         self._gh(["pr", "edit", pr_number, "--repo", self.repo,
                    "--add-label", self.reviewed_label],
@@ -398,9 +494,11 @@ class EPHooks:
             else "**Feature:** could not be determined"
         )
         marker = "AI Design Review:" if skill_name == "design-review" else "AI EP Review:"
+        tag = self._comment_tag(skill_name)
 
         lines = [
             f"## {marker} Logistics-only change — full review skipped",
+            tag,
             f"<!-- sha:{head_sha[:8]} -->" if head_sha else "",
             "",
             "This PR was classified as **logistics-only** (a rename, frontmatter "
@@ -423,16 +521,9 @@ class EPHooks:
                   f"({len(comment)} chars)")
             return
 
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(comment)
-            comment_file = f.name
-
-        self._gh(["pr", "comment", pr_number, "--repo", self.repo,
-                   "--body-file", comment_file],
-                  check=True)
-        print(f"  [{ticket_key}] Posted logistics-only comment")
-
-        os.unlink(comment_file)
+        updated = self._upsert_comment(pr_number, tag, comment)
+        print(f"  [{ticket_key}] {'Updated' if updated else 'Posted'} "
+              "logistics-only comment")
 
         self._gh(["pr", "edit", pr_number, "--repo", self.repo,
                    "--add-label", self.reviewed_label],

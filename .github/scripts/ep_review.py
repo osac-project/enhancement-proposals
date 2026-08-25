@@ -247,17 +247,21 @@ def main():
     for skill_name, skill_path in skills:
         ticket_key = f"EP-{pr_number}"
 
+        # Same-SHA dedup for both paths. The full-review path runs this again as
+        # a run_skill pre_gate, but checking here first keeps the logistics
+        # branch (which bypasses pre_gates) from posting a duplicate and stops
+        # us overwriting a valid final comment with a placeholder then bailing.
+        # A placeholder carries the stable tag but no SHA marker, so this check
+        # still lets the review run against a new SHA.
+        already_reviewed = hooks.check_pr_state(
+            ticket_key, ticket_base, mode="resolve", work_dir=Path("."),
+            skill_name=skill_name,
+        )
+        if already_reviewed:
+            print(f"\n[{skill_name}] {already_reviewed} — skipping")
+            continue
+
         if skip_logistics and logistics_verdict == ep_classify.LOGISTICS_ONLY:
-            # apply_logistics_comment() is called directly, bypassing the
-            # pre_gates list run_review()/run_skill() uses for the full-review
-            # path — call the same same-SHA dedup check explicitly so a rerun
-            # against an unchanged head doesn't post a duplicate comment.
-            already_reviewed = hooks.check_pr_state(
-                ticket_key, ticket_base, mode="resolve", work_dir=Path("."),
-            )
-            if already_reviewed:
-                print(f"\n[{skill_name}] {already_reviewed} — skipping")
-                continue
             print(f"\n[{skill_name}] LOGISTICS_ONLY — skipping full review")
             hooks.apply_logistics_comment(ticket_key, ticket_base, skill_name)
             continue
@@ -272,6 +276,10 @@ def main():
                         ignore_dangling_symlinks=True)
         exclude_own_slug_from_reference_library(work_dir, filenames)
 
+        # Show immediate feedback on the PR while the (slow) review runs; the
+        # final apply_labels upsert updates this same comment in place.
+        hooks.post_progress_placeholder(ticket_key, skill_name)
+
         print(f"\nRunning {skill_name}...")
         try:
             run_review(hooks, skill_name, skill_path, ticket_key, ticket_base, work_dir)
@@ -279,6 +287,9 @@ def main():
             print(f"  [{skill_name}] failed: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc()
+            # Replace the in-progress placeholder so the comment doesn't sit on
+            # "in progress" after an errored run.
+            hooks.post_failure_note(ticket_key, skill_name)
             if IN_CI:
                 sys.exit(1)
 
