@@ -12,16 +12,17 @@ The OSAC storage control plane provisions tenant storage only from network-attac
 
 ## In Scope
 
-*This release delivers LVMS for single-node VMaaS only. See Out of Scope for what is deferred to a future feature.*
+*This release delivers LVMS for single-node VMaaS only, as an **extension** of the existing OSAC storage control plane (OSAC-2872): it adds LVMS as a backend behind the opaque `local` tier and reuses the already-delivered `osac-csi-driver`, tier resolution, cross-cluster auth, and StorageClass generation rather than introducing any new driver-install or provisioning path. See Out of Scope for what is deferred to a future feature.*
 
 - LVMS (node-local LVM) as a storage backend in the OSAC storage control plane, exposed through the same opaque storage tier and `osac-csi-driver` model defined in OSAC-2872 — tenants see a `local` tier, not LVMS internals.
-- VMaaS onboarding installs and configures LVMS on the single-node cluster (hub == tenant) during tenant onboarding, so node-local storage is ready without manual setup.
+- VMaaS onboarding provisions the `local` tier through the **existing** OSAC storage onboarding path (OSAC-2872) — the `osac-csi-driver`, cross-cluster auth, and tenant-scoped StorageClass generation are already delivered. This feature adds installing and configuring LVMS on the single-node cluster (hub == tenant) during onboarding so that path resolves to node-local storage, leaving a usable `local` PVC path ready without manual setup.
 - Volumes on the `local` tier are provisioned on node-local LVM volume groups. Because the storage is node-local, a volume is provisioned when its consuming workload is scheduled and is then pinned to that node — the standard Kubernetes behavior for node-local storage.
 - ComputeInstance (VMaaS) workloads can consume the `local` tier for boot and additional disks using tenant-resolved StorageClasses.
 - End-to-end volume lifecycle: provision → mount → data round-trips → delete releases both the OSAC inventory record and the underlying node-local volume. This end-to-end flow is the definition of done for this release.
+- Deleting a ComputeInstance removes its node-local volume and inventory record, following the same volume lifecycle as other OSAC backends (OSAC-2872), so node-local capacity is not leaked.
 - Central inventory tracking of `local`-tier volumes (tenant, tier, state, size), consistent with OSAC-2872.
-- Clear, predictable failure when a node has insufficient local capacity to satisfy a request.
-- E2E test covering the single-node VMaaS `local`-tier provision → mount → cleanup flow.
+- When a node lacks local capacity to satisfy a request, provisioning fails predictably and leaves no partial volume or inventory record.
+- E2E test covering the single-node VMaaS `local`-tier provision → mount → cleanup flow, including that the volume remains on the node where its workload was scheduled.
 - Administrator documentation (node LVM prerequisites, registering the LVMS backend and `local` tier) and user documentation (consuming the `local` tier).
 
 ## Out of Scope
@@ -72,6 +73,6 @@ Deferred to a future feature (current scope is single-node VMaaS only):
 
 ## Provenance
 
-Authored: draft @ prd 0.8.0 - 7efcedb, workspace fix/OSAC-3985-tier-guard-before-provision @ be68f168a
+Authored: draft @ prd 0.8.0 - 7efcedb, workspace main @ 62ad8a38b
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"be68f168a","source_repo_branch":"fix/OSAC-3985-tier-guard-before-provision","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"62ad8a38b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
