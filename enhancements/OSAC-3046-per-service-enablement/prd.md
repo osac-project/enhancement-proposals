@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-OSAC deploys all services (CaaS, VMaaS, BMaaS, MaaS) unconditionally. Deployments that only need a subset — for example, a CaaS-only site — still run controllers, expose APIs, and carry the compliance burden for services they do not use. This increases operational complexity and widens the compliance surface area: a deployment that does not provision bare metal hosts must still satisfy BMaaS-specific attestation controls (UEFI Secure Boot, TPM 2.0) during audits. Both the MOC 2.0 program and the Telenor engagement require the ability to tailor deployments to only the services they need. [Jira: OSAC-3046, comment by @Bradford Nichols]
+OSAC deploys all services (CaaS, VMaaS, BMaaS, MaaS) unconditionally. Deployments that only need a subset — for example, a CaaS-only site — still run controllers, expose APIs, and carry the compliance burden for services they do not use. This increases operational complexity and widens the compliance surface area: a deployment that does not provision bare metal hosts must still satisfy BMaaS-specific attestation controls (UEFI Secure Boot, TPM 2.0) during audits.
 
 ## In Scope
 
