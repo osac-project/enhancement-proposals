@@ -565,7 +565,8 @@ class ApplyLogisticsCommentTests(unittest.TestCase):
         captured, mock_gh = self._comment()
         self.assertIn("body", captured)
         self.assertEqual(captured.get("label"), "rfe-creator-auto-reviewed")
-        self.assertEqual(mock_gh.call_count, 2)
+        # find-existing-comment (returns none) + create + add-label.
+        self.assertEqual(mock_gh.call_count, 3)
 
     def test_shadow_mode_prints_only_no_gh_calls(self):
         from unittest.mock import patch
@@ -574,6 +575,231 @@ class ApplyLogisticsCommentTests(unittest.TestCase):
         with patch.object(hooks, "_gh") as mock_gh:
             hooks.apply_logistics_comment("EP-1", self.ticket, "design-review")
         mock_gh.assert_not_called()
+
+
+class CommentTagTests(unittest.TestCase):
+    """_comment_tag() must map skill names to stable per-type hidden tags."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+
+    def test_prd_tag(self):
+        self.assertEqual(
+            self.hooks._comment_tag("prd-review"), "<!-- ep-review-bot:prd-review -->",
+        )
+
+    def test_design_tag(self):
+        self.assertEqual(
+            self.hooks._comment_tag("design-review"),
+            "<!-- ep-review-bot:design-review -->",
+        )
+
+    def test_unknown_skill_defaults_to_design(self):
+        self.assertEqual(
+            self.hooks._comment_tag("something-else"),
+            "<!-- ep-review-bot:design-review -->",
+        )
+
+
+class UpsertCommentTests(unittest.TestCase):
+    """apply_labels()/_upsert_comment() must edit the existing tagged comment
+    in place when one exists, and create a new one otherwise."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=False)
+        self.verdict = {
+            "verdict": "pass",
+            "scores": {
+                "feasibility": 2, "testability": 2,
+                "scope": 2, "architecture": 2,
+            },
+            "total": 8,
+            "criterionNotes": {},
+            "summary": "Good design",
+            "feedback": "No issues",
+            "findings": {"critical": [], "important": [], "suggestions": []},
+        }
+        self.ticket = {
+            "headRefOid": "abc12345", "jira_key": "OSAC-1", "_skill_name": "design-review",
+            "jira_key_ambiguous": False, "structure_violations": [],
+        }
+
+    def _apply(self, existing_id):
+        from unittest.mock import patch
+
+        calls = []
+
+        def fake_gh(args, check=False):
+            calls.append(args)
+            # The _find_comment_id lookup ends in the issues/{pr}/comments API
+            # read — return the existing comment id (or empty to force create).
+            if args and args[0] == "api" and args[1].endswith("/comments"):
+                return existing_id or ""
+            return ""
+
+        with patch.object(self.hooks, "_gh", side_effect=fake_gh):
+            self.hooks.apply_labels(
+                "EP-1", self.verdict, "resolve", "/tmp", ticket=self.ticket,
+            )
+        return calls
+
+    def test_creates_new_comment_when_none_exists(self):
+        calls = self._apply(existing_id=None)
+        self.assertTrue(any(c[:2] == ["pr", "comment"] for c in calls),
+                        "expected a create via 'gh pr comment'")
+        self.assertFalse(any("PATCH" in c for c in calls),
+                         "must not PATCH when no comment exists")
+
+    def test_updates_existing_comment_in_place(self):
+        calls = self._apply(existing_id="12345")
+        patch_calls = [c for c in calls if "PATCH" in c]
+        self.assertEqual(len(patch_calls), 1, "expected exactly one PATCH")
+        self.assertIn("repos/test/repo/issues/comments/12345", patch_calls[0])
+        self.assertFalse(any(c[:2] == ["pr", "comment"] for c in calls),
+                         "must not also create a new comment")
+
+    def test_comment_body_carries_stable_tag(self):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        captured = {}
+
+        def fake_gh(args, check=False):
+            if "--body-file" in args:
+                captured["body"] = Path(args[args.index("--body-file") + 1]).read_text()
+            return ""
+
+        with patch.object(self.hooks, "_gh", side_effect=fake_gh):
+            self.hooks.apply_labels(
+                "EP-1", self.verdict, "resolve", "/tmp", ticket=self.ticket,
+            )
+        self.assertIn("<!-- ep-review-bot:design-review -->", captured["body"])
+        self.assertIn("<!-- sha:abc12345 -->", captured["body"])
+
+
+class ProgressPlaceholderTests(unittest.TestCase):
+    """post_progress_placeholder()/post_failure_note() must upsert a minimal
+    comment carrying the tag but NO sha marker and NO reviewed label."""
+
+    def _run(self, method_name, shadow):
+        from pathlib import Path
+        from unittest.mock import patch
+
+        hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=shadow)
+        captured = {}
+
+        def fake_gh(args, check=False):
+            if "--body-file" in args:
+                captured["body"] = Path(args[args.index("--body-file") + 1]).read_text()
+            if "--add-label" in args:
+                captured["label"] = True
+            return ""
+
+        with patch.object(hooks, "_gh", side_effect=fake_gh) as mock_gh:
+            getattr(hooks, method_name)("EP-1", "prd-review")
+        return captured, mock_gh
+
+    def test_placeholder_body_has_tag_no_sha_no_label(self):
+        captured, _ = self._run("post_progress_placeholder", shadow=False)
+        self.assertIn("<!-- ep-review-bot:prd-review -->", captured["body"])
+        self.assertNotIn("<!-- sha:", captured["body"])
+        self.assertNotIn("label", captured)
+        self.assertIn("in progress", captured["body"].lower())
+
+    def test_failure_note_body_has_tag_no_sha_no_label(self):
+        captured, _ = self._run("post_failure_note", shadow=False)
+        self.assertIn("<!-- ep-review-bot:prd-review -->", captured["body"])
+        self.assertNotIn("<!-- sha:", captured["body"])
+        self.assertNotIn("label", captured)
+        self.assertIn("failed", captured["body"].lower())
+
+    def test_placeholder_shadow_makes_no_gh_calls(self):
+        _, mock_gh = self._run("post_progress_placeholder", shadow=True)
+        mock_gh.assert_not_called()
+
+    def test_status_comment_failure_is_swallowed(self):
+        """A gh failure while publishing the progress/failure comment must not
+        propagate — the comment is cosmetic and the review must still run."""
+        from unittest.mock import patch
+
+        hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=False)
+
+        def boom(args, check=False):
+            raise RuntimeError("gh api exploded")
+
+        with patch.object(hooks, "_gh", side_effect=boom):
+            # Must not raise.
+            hooks.post_progress_placeholder("EP-1", "prd-review")
+            hooks.post_failure_note("EP-1", "prd-review")
+
+
+class CheckPrStateTagTests(unittest.TestCase):
+    """check_pr_state() must locate the bot comment by the stable tag and only
+    treat it as already-reviewed when the current SHA marker is present."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+
+    def _check(self, existing_body, skill_name="prd-review"):
+        from unittest.mock import patch
+
+        with patch.object(self.hooks, "_gh", return_value=existing_body):
+            return self.hooks.check_pr_state(
+                "EP-1",
+                {"labels": ["rfe-creator-auto-reviewed"], "headRefOid": "abc12345deadbeef"},
+                mode="resolve", work_dir=".", skill_name=skill_name,
+            )
+
+    def _check_scoped(self, comments, skill_name):
+        """Drive check_pr_state against a fake comment list where each review
+        type has its own body, honouring the per-type --jq the lookup builds.
+        `comments` maps "prd"/"design" -> body (or None for absent)."""
+        from unittest.mock import patch
+
+        def fake_gh(args, check=False):
+            jq = args[args.index("--jq") + 1] if "--jq" in args else ""
+            if "ep-review-bot:prd-review" in jq:
+                return comments.get("prd") or ""
+            if "ep-review-bot:design-review" in jq:
+                return comments.get("design") or ""
+            return ""
+
+        with patch.object(self.hooks, "_gh", side_effect=fake_gh):
+            return self.hooks.check_pr_state(
+                "EP-1",
+                {"labels": ["rfe-creator-auto-reviewed"], "headRefOid": "abc12345deadbeef"},
+                mode="resolve", work_dir=".", skill_name=skill_name,
+            )
+
+    def test_tag_only_comment_with_matching_sha_is_already_reviewed(self):
+        body = "## AI EP Review: x\n<!-- ep-review-bot:prd-review -->\n<!-- sha:abc12345 -->\n"
+        self.assertIsNotNone(self._check(body))
+
+    def test_placeholder_tag_without_sha_is_not_already_reviewed(self):
+        body = "## AI EP Review: Review in progress…\n<!-- ep-review-bot:prd-review -->\n"
+        self.assertIsNone(self._check(body))
+
+    def test_completed_prd_does_not_block_failed_design_retry(self):
+        # PRD review completed (its comment holds the current SHA); the design
+        # review failed at the same SHA, leaving only a no-SHA placeholder. The
+        # design retry must NOT see the PRD comment as its own completed review.
+        prd_done = ("## AI EP Review: x\n<!-- ep-review-bot:prd-review -->\n"
+                    "<!-- sha:abc12345 -->\n")
+        design_placeholder = ("## AI Design Review: Analyzing changes…\n"
+                              "<!-- ep-review-bot:design-review -->\n")
+        result = self._check_scoped(
+            {"prd": prd_done, "design": design_placeholder},
+            skill_name="design-review",
+        )
+        self.assertIsNone(result)
+
+    def test_completed_prd_is_recognized_for_prd_retry(self):
+        prd_done = ("## AI EP Review: x\n<!-- ep-review-bot:prd-review -->\n"
+                    "<!-- sha:abc12345 -->\n")
+        result = self._check_scoped(
+            {"prd": prd_done, "design": None}, skill_name="prd-review",
+        )
+        self.assertIsNotNone(result)
 
 
 if __name__ == "__main__":
