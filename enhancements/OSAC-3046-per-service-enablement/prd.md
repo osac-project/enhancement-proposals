@@ -8,12 +8,12 @@
 
 ## Problem Statement
 
-OSAC deploys all services (CaaS, VMaaS, BMaaS, MaaS) unconditionally. Deployments that only need a subset — for example, a CaaS-only site — still run controllers, expose APIs, and carry the compliance burden for services they do not use. This increases operational complexity and widens the compliance surface area: a deployment that does not provision bare metal hosts must still satisfy BMaaS-specific attestation controls (UEFI Secure Boot, TPM 2.0) during audits.
+OSAC deploys all services (CaaS, VMaaS, BMaaS, MaaS) unconditionally. Deployments that only need a subset — for example, a CaaS-only site — still carry the compliance burden and operational overhead for services they do not use. This widens the compliance surface area: a deployment that does not provision bare metal hosts must still satisfy BMaaS-specific attestation controls (UEFI Secure Boot, TPM 2.0) during audits.
 
 ## In Scope
 
 - Cloud Provider Admins select which services are active at installation time via Helm values.
-- Disabled services are fully excluded: no running controllers, no registered APIs, no UI surfaces.
+- Disabled services are not accessible — no API endpoints, no UI surfaces, no provisioning capability.
 - Post-installation enablement of additional services via `helm upgrade`.
 - The Capabilities endpoint advertises which services are currently enabled so that clients (CLI, UI) can adapt. [Clarify: R1.Q5]
 - When a service is disabled, other enabled services cannot provision resources that depend on it (e.g., disabling BMaaS blocks bare-metal-backed CaaS cluster host types). [Clarify: R1.Q1]
@@ -37,7 +37,7 @@ OSAC deploys all services (CaaS, VMaaS, BMaaS, MaaS) unconditionally. Deployment
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want the platform to block provisioning of resources that depend on a disabled service (e.g., bare-metal host types when BMaaS is disabled) so that the compliance boundary is enforced at the infrastructure level, not just the API level. [Clarify: R1.Q1]
+- As a Cloud Infrastructure Admin, I want the platform to block provisioning of resources that depend on a disabled service (e.g., bare-metal host types when BMaaS is disabled) so that the compliance boundary cannot be bypassed. [Clarify: R1.Q1]
 
 ### Tenant Admin / Tenant User
 
