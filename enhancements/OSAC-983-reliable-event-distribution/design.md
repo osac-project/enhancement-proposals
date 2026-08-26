@@ -314,7 +314,7 @@ Kafka-position columns because the position is encoded into the delivered event 
 | `object_type` | `text` | Source object-type table (e.g. `cluster`, `subnet`) |
 | `object_id` | `text not null` | Identifies the object the event concerns (the object's `id`, `object.id`); carried in the event, not the partition key |
 | `event_type` | `text` | `created` / `updated` / `deleted` / `signaled` |
-| `payload` | `jsonb` | Object snapshot (the row's `data`): `NEW` for insert/update, `OLD` for delete |
+| `payload` | `jsonb` | Object snapshot (the row's `data`): `NEW` for insert/update, `OLD` for delete. For `Secret` objects the `data` column holds only metadata and secret-backend coordinates, never the secret material — see Security Considerations |
 | `creation_timestamp` | `timestamptz not null default now()` | Capture time; used only for publish-latency metrics |
 
 Indexes: the primary key on `serial` is sufficient for the ordered
@@ -489,6 +489,18 @@ is an ordering/partitioning choice, **not** an isolation mechanism: the key is
 hashed, so multiple tenants share a partition and a consumer reading a partition
 still sees other tenants' events. Application-level filtering therefore remains
 mandatory on every delivered and replayed event.
+
+**Secret payloads carry no secret material.** For the `Secret` object type, the
+events written to Kafka (and replayed through `Watch`) contain **only the secret's
+metadata and its coordinates in the external secret backend — never the secret
+data itself**. This is not a special case in the pipeline: the event `payload` is
+the row's `data` column captured by the trigger, and the `secrets` table already
+stores only metadata and backend coordinates, because the secret material lives
+solely in the secret backend (Vault / OpenBao) and never in PostgreSQL. The outbox,
+Kafka, and the `Watch` stream therefore inherit the same property the database
+already has — secret material never enters the event pipeline at any stage
+[User]. Consumers that need the material resolve it from the backend using the
+coordinates in the event, under the backend's own access control.
 
 Two additional bindings prevent an offset or group identity from crossing
 tenants:
@@ -967,4 +979,4 @@ Final: revise @ design 0.9.0 - 5629175, workspace main @ 4bfc214
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"5629175","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"5629175","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
