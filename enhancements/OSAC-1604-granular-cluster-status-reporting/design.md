@@ -222,8 +222,53 @@ condition types for the health axes and uses `Reason` for the linear sub-stage.
 | `READY` | 2 | cluster fully provisioned and healthy | CP available AND workers ready |
 | `FAILED` | 3 | terminal provisioning/teardown failure | HC failure / phase Failed |
 | `DEGRADED` | 4 | orthogonal health problem, independent of stage | HC `Degraded`, partial NodePool failure |
-| `CONTROL_PLANE_AVAILABLE` | 5 (new) | API server reachable | HC `KubeAPIServerAvailable` / `Available` |
-| `WORKERS_READY` | 6 (new) | all node sets' desired workers joined and healthy | NodePool `Ready` / `AllNodesHealthy` |
+| `CONTROL_PLANE_AVAILABLE` | 5 (new) | API server reachable | HC `KubeAPIServerAvailable` (authoritative) AND `Available` |
+| `WORKERS_READY` | 6 (new) | all node sets' desired workers joined and healthy | every NodePool `Ready` AND `AllNodesHealthy` |
+
+**`state` vs the `READY` condition (contract).** The top-level
+`ClusterStatus.state` is **lifecycle-only**: it answers "has initial
+provisioning completed and is the control plane usable". Once a cluster first
+reaches `READY` it stays `READY` through later degradation or scaling; it leaves
+`READY` only for `DELETING`/`DELETE_FAILED`, or for `FAILED` on a terminal
+provisioning failure that occurs before it ever became ready. The `READY`
+**condition** is the full-health rollup, orthogonal to `state`: it is `True` only
+when both `CONTROL_PLANE_AVAILABLE` and `WORKERS_READY` are `True`, and it goes
+`False` (reason `Degraded` during partial worker failure, `Scaling` during a
+resize) whenever a usable control plane has unready workers - even while `state`
+stays `READY`. "Usable but not fully healthy" is therefore read as `state=READY`
++ `READY` condition `False` + the orthogonal health conditions. The CLI HEALTH
+column, the list-table HEALTH column, and all health assertions in tests key off
+the **conditions**, never off `state`; `state` drives only the lifecycle STATE
+column. This keeps a usable control plane from being masked (AC-3) while making
+partial worker health explicit.
+
+**CR-to-proto condition mapping (complete).** Every CR condition the resource
+controller sets has exactly one disposition - a distinct target proto condition,
+a stage-reason contribution, or an explicit ignore. Nothing falls through to a
+silent `default`:
+
+| CR source (operator) | Proto target | Status rule | Reason | Collision / notes |
+|----------------------|--------------|-------------|--------|-------------------|
+| `Accepted` | `PROGRESSING` | True until ready | seeds `PreparingInfrastructure` | earliest stage; superseded by later stage reasons per the precedence rule below |
+| `Progressing` | `PROGRESSING` | mirror | current sub-stage reason | the reason carrier |
+| `ControlPlaneCreated` | `PROGRESSING` (reason only) | - | advances reason to `ControlPlaneStarting` | stage marker, not its own proto type |
+| `ControlPlaneAvailable` | `CONTROL_PLANE_AVAILABLE` | mirror (see availability precedence) | `Available` / `NotYetAvailable` | orthogonal health axis |
+| `ClusterStorageReady` | `PROGRESSING` (readiness gate) | contributes to readiness | - | previously ignored (latent bug 2), now mapped |
+| `ClusterAvailable` | `READY` | mirror | `Ready` | previously dropped (latent bug 1: name mismatch), now mapped |
+| (derived) NodePool health | `WORKERS_READY` | True iff all pools `Ready` AND `AllNodesHealthy` | `Scaling` / `Ready` / `WorkersDegraded` | orthogonal health axis |
+| (derived) HC `Degraded` / partial NodePool | `DEGRADED` | True on degradation | names the affected node set | independent of stage |
+| (derived) HC failure / phase `Failed` | `FAILED` | True on terminal failure | HyperShift failure reason | terminal; not set on slowness |
+| `NamespaceCreated` | *ignored* | - | - | internal bookkeeping; explicit `// ignored` case, not `default` |
+| `Deleting` | drives `state=DELETING` via `syncClusterOrderPhase` | - | teardown `PROGRESSING` reason (`DestroyingCloudResources` / `DestroyingControlPlane`) | affects lifecycle `state`, not a condition slot |
+
+Precedence when several inputs touch `PROGRESSING`: the reason reflects the
+**furthest-advanced stage observed** in the fixed order
+`PreparingInfrastructure < ControlPlaneStarting < WorkersJoining < Scaling`
+(teardown reasons apply only while `state=DELETING`). `Stalled` and `StageUnknown`
+override the stage reason when their own trigger fires. Exactly one reason is
+written per reconcile, so there is no last-writer-wins ambiguity. The unit tests
+below assert this table row-by-row and assert `FAILED` and `DEGRADED` are each
+reachable.
 
 `PROGRESSING.reason` vocabulary (string, no proto change - the `reason` field
 already exists at `ClusterCondition`): `PreparingInfrastructure`,
@@ -335,11 +380,33 @@ In `clusterorder_controller.go`:
   `metadata.deletionTimestamp` + `CloudResourcesDestroyed` +
   `HostedClusterDestroyed` (there is no `HostedClusterDeleting` condition - C3).
   HyperShift is pinned at `v0.0.0-20250331235933-616a2fae81ae`.
+- **Availability precedence (`CONTROL_PLANE_AVAILABLE`).** HyperShift's
+  `KubeAPIServerAvailable` (HCP API-server reachable) and `Available` (overall
+  control-plane health rollup) are **distinct** signals, so the derivation is
+  explicit rather than "either one": `KubeAPIServerAvailable` is the
+  **authoritative** signal for `CONTROL_PLANE_AVAILABLE` (that condition names API
+  reachability), **AND-gated** with `Available` so a reachable-but-unhealthy
+  control plane is not reported fully available. Truth table: both `True` →
+  `CONTROL_PLANE_AVAILABLE` `True`; either `False` → `False` (reason
+  `NotYetAvailable`, naming the failing signal); either `Unknown`/absent → `False`
+  with reason `StageUnknown` - never coerced to `True`. `Available` additionally
+  gates the `READY` condition rollup. Unit tests cover all `{True,False,Unknown}`
+  combinations of the two signals.
 - **Per-node-set attribution and replica counts.** Fix the single-NodePool
   limitation - `handleNodePool` only attributes status when exactly one node request
   exists (TODO at `clusterorder_controller.go:440-453`, which today reads only
-  `nodePool.Status.Replicas`) - so each `NodePool` maps to its `ClusterNodeSet` by
-  name/host-type. Replica counts are derived from what the pinned HyperShift API
+  `nodePool.Status.Replicas`). Attribution must use a **stable identity key**, not
+  the host type: `ClusterSpec.node_sets` / `ClusterStatus.node_sets` are already
+  keyed maps, but `ClusterOrder.NodeRequest` today stores only `ResourceClass` +
+  `NumberOfNodes`, and two node sets can legitimately share a host type - matching
+  by resource class would let one NodePool's status overwrite the other's. The
+  design therefore carries the node-set **map key** into each `NodeRequest` (a new
+  stable-identifier field, validated unique within the order), stamps it on the
+  created `NodePool` (label/annotation), and attributes `NodePool → ClusterNodeSet`
+  by that key so per-set status never collides. `WORKERS_READY` is `True` only when
+  **every** node set's NodePool reports `Ready` AND `AllNodesHealthy` (AND across
+  both signals and across all pools); any pool short of that keeps it `False`.
+  Replica counts are derived from what the pinned HyperShift API
   actually exposes [Codebase: verified against
   `hypershift/api@v0.0.0-20250331235933/hypershift/v1beta1/nodepool_types.go` -
   `NodePoolStatus` has only `Replicas int32`, no `readyReplicas`/`availableReplicas`;
@@ -370,19 +437,34 @@ In `clusterorder_controller.go`:
   `lastTransitionTime` - or, for a stage with no dedicated CR condition, persist a
   small `(observedReason, since)` pair in the ClusterOrder status. On reconcile, if
   `now - <stage-entry-time>` exceeds that stage's threshold, set `PROGRESSING` reason
-  `Stalled` (message names the stuck stage); requeue with `RequeueAfter` = the
-  remaining threshold so the flip happens without an external event. A fake-clock unit
-  test must advance through two stages and assert the stall fires against *stage*
-  elapsed, not run elapsed.
+  `Stalled` (message names the stuck stage). To avoid delayed detection - requeuing
+  for a full threshold after a partial interval could push a check from 14m to 29m
+  on a 15m threshold - the requeue is scheduled for the **remaining** interval:
+  `RequeueAfter = max(0, threshold - (now - stageEntryTime))`, so the flip happens
+  right at the threshold without an external event. A fake-clock unit test must
+  advance through two stages and assert the stall fires against *stage* elapsed, not
+  run elapsed, and that the requeue is scheduled for the remaining interval.
 
-  Proposed configurable defaults (cluster provisioning is slow; these are
-  **provisional**): `PreparingInfrastructure` 15m, `ControlPlaneStarting` 30m,
-  `WorkersJoining` 20m. Worker-join time scales with pool size and instance type
-  (image pull, cloud provisioning latency), so the `WorkersJoining` threshold is
-  per-host-type overridable (a base value plus optional per-host-type override) rather
-  than one flat global. `Stalled` (known stage, not advancing) is distinct from
-  `StageUnknown` (signal unavailable) and from `FAILED` (terminal); it is non-terminal
-  and self-clears when the stage advances.
+  A threshold is stored for **every** stage that can stall, not only the three
+  provisioning stages. Proposed configurable defaults (cluster provisioning and
+  teardown are slow; these are **provisional**):
+
+  | Stage (`PROGRESSING.reason`) | Default threshold |
+  |------------------------------|-------------------|
+  | `PreparingInfrastructure` | 15m |
+  | `ControlPlaneStarting` | 30m |
+  | `WorkersJoining` | 20m (per-host-type overridable) |
+  | `Scaling` | 20m (per-host-type overridable) |
+  | `DestroyingCloudResources` | 20m |
+  | `DestroyingControlPlane` | 15m |
+
+  Worker-join and scaling time scale with pool size and instance type (image pull,
+  cloud provisioning latency), so those two thresholds are per-host-type overridable
+  (a base value plus optional per-host-type override) rather than one flat global.
+  `Stalled` (known stage, not advancing) is distinct from `StageUnknown` (signal
+  unavailable) and from `FAILED` (terminal); it is non-terminal and self-clears when
+  the stage advances. Crossing a teardown threshold surfaces `Stalled` on the
+  teardown reason; it never by itself escalates to `DELETE_FAILED` (see below).
 - **Teardown stall vs `DELETE_FAILED`.** `DELETE_FAILED` is set only on an actual
   HyperShift teardown failure signal, never on slowness alone. On delete the controller
   watches `metadata.deletionTimestamp` + `CloudResourcesDestroyed` /
@@ -416,13 +498,19 @@ After CR type/constant changes: `make manifests generate` and `make helm-crds`.
   [Codebase: fulfillment-service/internal/controllers/cluster/cluster_reconciler_function.go:281-283];
   nothing bumps it on later transitions, because `syncClusterOrderPhase` calls
   `SetState` without touching the transition time. To avoid a read-modify-write race
-  or double-stamping, there is exactly **one** writer: the operator feedback path,
-  which stamps `state_transition_time` at the point where the proto `state` actually
-  flips (alongside the `SetState` call in `syncClusterOrderPhase`). The
-  fulfillment-service reconciler treats the field as read-only. A unit test asserts the
-  timestamp changes exactly once per state transition and is stable across no-op
-  reconciles, giving OSAC-4077 a single monotonic transition timestamp for sub-minute
-  billing accuracy.
+  or competing timestamps, `state_transition_time` has exactly **one** authoritative
+  writer for its entire lifecycle: the operator feedback path, which stamps it at the
+  single point where the proto `state` actually flips (co-located with the `SetState`
+  call in `syncClusterOrderPhase`), including the very first `UNSPECIFIED → PROGRESSING`
+  transition. The prior `setDefaults` stamp in the fulfillment-service reconciler is
+  **removed** so that path no longer writes the field; the reconciler treats
+  `state_transition_time` as read-only. Precedence/preservation rule: the field is
+  written only when `SetState` changes the value (guarded by the existing `DeepEqual`
+  status gate), so a no-op reconcile preserves the existing timestamp and never
+  re-stamps it. A unit test asserts the timestamp changes exactly once per state
+  transition, is set on the initial transition, and is stable across no-op reconciles -
+  giving OSAC-4077 a single monotonic transition timestamp for sub-minute billing
+  accuracy.
 
 ### CLI and tables
 
@@ -454,9 +542,10 @@ is labelled `Stalled`.
 
 ## Security Considerations
 
-No change to the security model. Status is system-controlled (written only by the
-operator and fulfillment reconciler, never client-settable), and the new fields
-are non-sensitive observed state. Cluster visibility remains tenant-scoped by the
+No change to the security model. Status is system-controlled (derived by the
+operator and synced through the fulfillment reconciler, never client-settable;
+`state_transition_time` specifically has the operator feedback path as its sole
+writer, per P1 above), and the new fields are non-sensitive observed state. Cluster visibility remains tenant-scoped by the
 existing public-API auth/OPA path; the private API and `Events.Watch` remain
 control-plane-only. No new input validation surface beyond `enum.defined_only`
 protovalidate on the two new enums. The feature inherits the existing model
@@ -571,6 +660,14 @@ maintainable.
 - Event emission guarded on prior value (no per-reconcile spam).
 - Proto: `buf lint` passes; round-trip of stored objects with the new enum values
   and node-set fields.
+- Mixed-version round-trip (status contract): simulate operator-new →
+  service-old → JSON persistence → client-old. Assert each boundary **preserves**
+  the raw `CONTROL_PLANE_AVAILABLE`(5) / `WORKERS_READY`(6) enum numbers rather
+  than normalizing them to `UNSPECIFIED`, across both the private→public projection
+  (with its differing field numbers) and an old-binary read-modify-write path (an
+  older writer that reads, mutates an unrelated field, and writes back must not drop
+  the unknown condition values). This is the executable check behind the Version
+  Skew Strategy below.
 
 ### Integration Tests
 
@@ -655,8 +752,8 @@ None.
 
 ## Provenance
 
-Committed: commit @ design 0.8.0 - 7efcedb (dirty), workspace main @ 4bfc214
+Authored: respond @ design 0.8.0 - 7efcedb (dirty), workspace main @ 4bfc214
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb (dirty)","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb (dirty)","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["commit","commit","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
