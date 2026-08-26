@@ -47,9 +47,6 @@ OSAC-4277]
   response to an explicit request from a Tenant Admin or Tenant User.
 - Guaranteed restart-free resize — whether a restart is required depends on
   the OSAC deployment (see the restart-notice note under User Stories).
-- OSAC UI console support — InstanceType resize is available via API only
-  in this feature; the OSAC UI does not currently support ComputeInstance
-  updates beyond power management. [Clarify: R1.Q3]
 
 ## User Stories
 
@@ -81,8 +78,8 @@ does not restart it automatically.
 ## Provenance
 
 Authored: draft @ prd 0.8.0 - 7efcedb, workspace main @ 6e8f396
-Final: respond @ prd 0.8.0 - 7efcedb, workspace main @ 505e141
+Final: respond @ prd 0.8.0 - 837cf0d, workspace main @ 4bfc214
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"505e141","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"837cf0d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
