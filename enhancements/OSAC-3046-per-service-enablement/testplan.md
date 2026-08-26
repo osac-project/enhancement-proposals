@@ -6,6 +6,24 @@
 - **Total test cases:** 18
 - **Requirements covered:** 8 of 8
 
+## Execution Strategy
+
+Each `helm upgrade` triggers a pod rollout (2-5 minutes). To minimize rollout cycles, test cases should be grouped by deployment state during execution:
+
+**State 1 — BMaaS+MaaS disabled** (`services.bmaas.enabled=false`, `services.maas.enabled=false`):
+TC-FR1-01, TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-FR2-04, TC-FR2-05, TC-FR4-01, TC-FR5-01, TC-FR5-03, TC-FR5-04, TC-NFR1-01, TC-NFR3-01
+
+**State 2 — Upgrade to enable BMaaS** (`helm upgrade` with `services.bmaas.enabled=true`):
+TC-FR3-01
+
+**State 3 — All services enabled (default values)**:
+TC-FR1-02, TC-FR2-04, TC-FR4-02, TC-FR4-03, TC-NFR2-01
+
+**State 4 — VMaaS disabled** (`services.vmaas.enabled=false`):
+TC-FR5-02
+
+This reduces execution from 18 individual rollouts to 4 deployment states.
+
 ## Test Cases
 
 ### FR-1: Cloud Provider Admins select which services are active at installation time via Helm values
