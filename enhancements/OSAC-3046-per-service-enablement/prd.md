@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-OSAC deploys all services (CaaS, VMaaS, BMaaS, MaaS) unconditionally. Deployments that only need a subset — for example, a CaaS-only site — still carry the compliance burden and operational overhead for services they do not use. This widens the compliance surface area: a deployment that does not provision bare metal hosts must still satisfy BMaaS-specific attestation controls (UEFI Secure Boot, TPM 2.0) during audits.
+NIST SP 800-53 CM-7 (Least Functionality) requires organizations to "identify unnecessary functions, ports, protocols, software, and services; and disable or remove them." OSAC deploys all services (CaaS, VMaaS, BMaaS, MaaS) unconditionally, making it impossible to satisfy this control for unused services. Deployments that only need a subset — for example, a CaaS-only site — still carry the compliance burden and operational overhead for services they do not use: a deployment that does not provision bare metal hosts must still satisfy BMaaS-specific attestation controls (UEFI Secure Boot, TPM 2.0) during audits.
 
 ## In Scope
 
