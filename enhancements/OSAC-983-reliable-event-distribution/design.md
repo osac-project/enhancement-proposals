@@ -3,7 +3,7 @@ title: reliable-event-distribution
 authors:
   - juan.hernandez@redhat.com
 creation-date: 2026-08-25
-last-updated: 2026-08-25
+last-updated: 2026-08-26
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-983
 prd:
@@ -363,6 +363,18 @@ it lands at a new offset and is therefore delivered as an at-least-once duplicat
 event id to dedup on, so idempotent consumers must reconcile by object state, as
 the reconcilers already do.
 
+This visibility-watermark handling is the most intricate part of the publisher,
+and it is intrinsic to draining an execution-ordered staging table safely. The one
+mechanism that removes it — consuming PostgreSQL's write-ahead log via logical
+replication, which delivers only committed transactions and delivers them in
+commit order — was evaluated as a replacement for the whole outbox and rejected on
+high-availability grounds (a logical replication slot is server-local state that
+does not survive a primary/standby failover without provider-specific configuration
+the outbox does not need). See *Logical replication (in-process logical decoding)
+in place of the outbox* under Alternatives. The `xmin`-watermark complexity here is
+therefore the deliberately accepted price of the outbox's provider-agnostic,
+config-free durability under HA.
+
 **Notification-driven wake (not timer polling).** The publisher does not run a
 query on a fixed timer. Following the change detector removed in
 osac-project/fulfillment-service#10, it holds a dedicated connection that has
@@ -672,12 +684,55 @@ drawback is added write amplification from the outbox, addressed under Risks.
   transactionally tied to the mutation, reintroducing the dual-write risk. The
   proof-of-concept's Kafka client code, interface seams, and `it/` chart are
   reused, but paired with the durable outbox [Research: §Existing Solutions].
-- **Log-based CDC (Debezium / logical decoding).** Also captures every committed
-  change regardless of write path, with lower source overhead and native commit
-  ordering, but adds Kafka Connect workers and replication-slot/WAL management,
-  and couples to DB internals. Rejected as the starting point in favor of the
-  in-schema triggers the codebase already knows; reasonable future optimization if
-  outbox write-amplification is measured [Research: §Comparison Matrix].
+- **Logical replication (in-process logical decoding) in place of the outbox.**
+  Instead of triggers + an `event_outbox` table + a watermarked drain, enable
+  `wal_level = logical`, create a publication over the object-type tables (with
+  `REPLICA IDENTITY FULL` so updates and deletes carry the full row), and have the
+  publisher consume the streaming replication protocol in-process via
+  `pgx`/`pglogrepl` (`pgoutput`), turning each decoded change into an `Event` and
+  the `Signal` RPC into a transactional `pg_logical_emit_message`. This is genuinely
+  attractive: it is doable on the deployed PostgreSQL 18 (all required features —
+  `pgoutput` messages, `pg_logical_emit_message`, `max_slot_wal_keep_size` — exist),
+  it removes the trigger-per-table schema coupling and the extra outbox write per
+  mutation, it captures out-of-band (direct SQL) writes for free from the WAL, and —
+  the decisive appeal — logical decoding delivers only committed transactions and in
+  commit order, which would eliminate the entire `xmin`-watermark / `serial`-cursor
+  machinery described under *Commit-safe publisher drain*. **Rejected primarily
+  because of PostgreSQL high availability.** A logical replication slot is
+  server-local state, not ordinary table data, so in a primary/standby
+  streaming-replication HA setup it does not survive a failover on its own: before
+  PostgreSQL 16 the slot exists only on the primary and a promotion loses it
+  (creating an event *gap*, not just a pause); PostgreSQL 17+ adds native "failover
+  slots" (a slot created with `failover = true`, synced to standbys via
+  `sync_replication_slots`, gated by `synchronized_standby_slots` on the primary,
+  with `hot_standby_feedback` and a physical slot), and the publisher must always
+  connect to the *current* primary (logical decoding runs only there; a synced
+  standby slot is not consumable until promotion). That machinery is available on
+  PG18 but is a substantial cross-node configuration, and it does not exist for the
+  *default* production deployment, where the database is external and
+  customer-managed: failover-slot support varies by provider (AWS RDS Multi-AZ
+  clusters and RDS 17+/Aurora support it with caveats; standard single-instance RDS,
+  Cloud SQL, and Azure Flexible Server vary or lack it), so OSAC cannot guarantee it,
+  and where it is absent a failover silently drops events. `synchronized_standby_slots`
+  also introduces a new coupling absent from the outbox — the primary withholds
+  decoded changes from our publisher until a physical standby has flushed the WAL, so
+  a lagging or down standby stalls event delivery and grows retained WAL. By
+  contrast, the `event_outbox` is ordinary table rows: it is carried by physical
+  replication like all other data and therefore survives failover with **zero**
+  special configuration on any provider, and its drain position is table data too. In
+  short, logical replication would trade the outbox's publisher-code complexity (the
+  `xmin` watermark) for operational and portability complexity (failover-slot
+  configuration plus a hard dependency on the DB provider supporting it) — a poor
+  trade given OSAC's provider-agnostic, customer-managed-database default. Kept as a
+  viable future direction if OSAC ever standardizes on OSAC-controlled or
+  failover-slot-capable PostgreSQL 17+ HA, at which point the commit-ordered stream
+  becomes the natural way to retire the watermark [User; Research: §Comparison
+  Matrix; PostgreSQL 17 §29.3 Logical Replication Failover].
+- **Log-based CDC via Debezium / Kafka Connect.** The same WAL logical-decoding
+  source as above, but run through Debezium on Kafka Connect rather than in-process.
+  Rejected for the same HA/slot reasons, plus it adds a separate Connect runtime to
+  deploy, secure, and operate — more moving parts than either the outbox or an
+  in-process consumer [Research: §Comparison Matrix].
 - **PostgreSQL-only durable event log with offset cursors (no Kafka).** Keeps the
   stack to PostgreSQL and makes tenant filtering a trivial SQL `WHERE`. Rejected:
   it would reimplement consumer groups, partitioned ordering, and retention that
@@ -907,7 +962,9 @@ repositories or CI infrastructure beyond adding the Kafka client dependency, the
 
 ## Provenance
 
-Authored: revise @ design 0.8.0 - 7efcedb, workspace main @ 4bfc214
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, revise
+Authored: draft @ design 0.8.0 - 7efcedb, workspace main @ 4bfc214
+Final: revise @ design 0.9.0 - 5629175, workspace main @ 4bfc214
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"5629175","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
