@@ -122,6 +122,8 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 - Billing, cost, and invoice data are stored and retained on the external billing system, governed by its retention policy. Metering and usage data retention is governed by OSAC-985. OSAC does not independently store, mirror, or delete billing or cost data.
 
+- Region-based billing — assigning a tenant a region that determines tax jurisdiction, e-invoicing format, and regulatory framework — is a separate Feature (OSAC-3798), and cross-currency handling is OSAC-3790; both are out of this MVP (tax and invoicing are delegated to the billing provider). The tenant-to-billing-account model established here must not preclude assigning a region attribute to a tenant in a later milestone without re-provisioning its billing account.
+
 - When billing integration is enabled on a deployment with existing tenants, billing accounts are created for those tenants. Pre-existing usage data (generated before billing activation) is not retroactively billed.
 
 - Billing integration can be disabled without affecting resource provisioning or lifecycle operations. When disabled, billing and cost data already recorded on the billing system remains subject to that system's retention policy.
@@ -149,8 +151,8 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 ## Provenance
 
 Authored: draft @ prd 0.8.0 - a605aa5, workspace feat/add-osac-metering-documentation @ 514565f
-Final: revise @ prd 0.8.0 - 7efcedb, workspace HEAD @ 6e8f396 (10 behind origin/main)
+Final: revise @ prd 0.9.0 - f7f8c6d, workspace HEAD @ 6e8f396 (10 behind origin/main)
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"HEAD","commits_behind_main":10,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"6e8f396","source_repo_branch":"HEAD","commits_behind_main":10,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
