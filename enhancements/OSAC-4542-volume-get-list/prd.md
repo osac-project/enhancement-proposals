@@ -60,17 +60,12 @@ Deferred to later work (this release is read-only Get/List only):
 - **OSAC-2872 (Storage Control Plane):** provides the private Volume API, the volume inventory, and the tier/backend model this read API surfaces. Must be in place for volumes to exist and be retrievable.
 - **Console UI / UX and UI design gates (OSAC-4546, OSAC-4547):** consume this API to present the volume list and detail views; tracked separately.
 
-## Open Questions
-
-### 8.1 Should vendor storage identifiers ever be visible for support?
-
-- **Owner:** Storage WG / product
-- **Impact:** Whether a Cloud Provider Admin should be able to see a volume's underlying vendor identifier for support workflows. Kept out of the public representation for now; can be added later without affecting the read model.
-
 ---
 
 ## Provenance
 
-Authored: draft @ prd 0.9.0 - f7f8c6d, workspace HEAD @ 93ca7ba16
+Committed: commit @ prd 0.9.0 - f7f8c6d, workspace main @ b177ce9 (dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"93ca7ba16","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":25,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"b177ce9 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
