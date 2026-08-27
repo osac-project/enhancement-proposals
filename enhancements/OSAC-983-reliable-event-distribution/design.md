@@ -32,9 +32,10 @@ with two new opt-in request fields — `from` (resume position) and `group`
 (consumer group). A dedicated per-tenant topic gives each tenant a totally ordered event
 stream on a single partition — a superset of the PRD's per-object ordering — so a
 consumer resumes with a single monotonic offset rather than reconstructing a
-position across partitions; it also makes tenant offboarding a single topic
-deletion (no scrubbing a shared log) and gives each tenant data-at-rest
-isolation. Cluster-wide consumers (the controllers) subscribe to every tenant
+position across partitions, and gives each tenant data-at-rest isolation.
+(Per-tenant topics also position the system for clean tenant offboarding later —
+a future topic deletion rather than scrubbing a shared log — but offboarding
+itself is out of scope for this feature.) Cluster-wide consumers (the controllers) subscribe to every tenant
 topic at once with a single regex subscription (`^osac\.events\..*$`), which
 Kafka and the client library support natively and which auto-discovers a new
 tenant's topic on the next metadata refresh. Each delivered event's `id` is an opaque, encrypted
@@ -72,15 +73,18 @@ pipeline whose capture originates in the database itself, while preserving the
 existing event content and the existing `Watch` request/response shape for
 callers that do not opt in.
 
-A durable event log also introduces a tenant-lifecycle obligation the
-best-effort transport never had: once events are retained and replayable, an
-offboarded tenant's events persist in the log. Concentrating every tenant's
-events in one shared topic would make offboarding expensive — the only ways to
-remove a departed tenant's data are to scrub and rebuild the whole topic or to
-retain that data indefinitely, and neither is acceptable for a compliance-facing
-pipeline. Giving each tenant its own topic (`osac.events.<tenant>`) makes
-offboarding a single topic deletion and gives each tenant data-at-rest isolation,
-at the cost of the service having to manage a topic per tenant [User].
+A durable event log also raises the bar on tenant isolation the best-effort
+transport never had to meet: once events are retained and replayable, every
+tenant's history sits in the log until retention expires. Concentrating every
+tenant's events in one shared topic would leave isolation to application-level
+filtering alone, with all tenants' data physically co-mingled at rest. Giving
+each tenant its own topic (`osac.events.<tenant>`) gives each tenant data-at-rest
+isolation on top of the filtering, at the cost of the service having to manage a
+topic per tenant [User]. Per-tenant topics additionally position the system for a
+future clean tenant-offboarding operation — deleting one tenant's topic rather
+than scrubbing and rebuilding a shared log — but **offboarding is not in scope for
+this feature**; it is called out here only to record why the per-tenant-topic
+choice is forward-looking [User].
 
 The messaging technology is Kafka, resolved during the design phase per the epic
 that frames this work [Research: §Recommended Approach; OSAC-1161]. Kafka is
@@ -98,11 +102,8 @@ transport.
   giving each tenant a totally ordered stream on one partition (a superset of the
   PRD's required per-object ordering) and a single-offset resume, requiring no
   global ordering across tenants [PRD: In Scope].
-- Make tenant offboarding a clean, bounded operation: deleting a tenant's topic
-  removes all of that tenant's events at once, with no scrubbing of a shared log
-  and no indefinite retention of an offboarded tenant's data. The per-tenant
-  topic also gives each tenant data-at-rest isolation, not only application-level
-  filtering [User].
+- Give each tenant data-at-rest isolation, not only application-level filtering,
+  by physically separating each tenant's events into its own topic [User].
 - Let cluster-wide consumers (the controllers) read every tenant's topic through
   a single regex subscription (`^osac\.events\..*$`) under one consumer group, so
   Kafka tracks their committed position per topic automatically and a newly
@@ -129,6 +130,11 @@ transport.
   the reliable path; they adopt later through the same API [PRD: Out of Scope].
 - Notification delivery (OSAC-75), audit-log storage/query (OSAC-63), and
   Prometheus alerting rules [PRD: Out of Scope].
+- Tenant offboarding — the deletion of a departed tenant's topic and data, and
+  the surrounding retention/lifecycle policy. Per-tenant topics are chosen partly
+  because they will make offboarding tractable later, but this feature only
+  provisions a tenant's topic so events can flow (see Proposal); tearing it down
+  and the offboarding workflow are future work [User].
 
 ## Proposal
 
@@ -162,11 +168,12 @@ schema, three in fulfillment-service — plus one new infrastructure dependency:
    stream (a superset of the per-object ordering the PRD requires). This makes
    resume exact — a single monotonic offset per tenant, with no cross-partition
    position reconstruction [Research: §Kafka delivery semantics] — and, unlike a
-   shared topic keyed by tenant, isolates each tenant's events into their own log:
-   offboarding a tenant is a single topic deletion, and a tenant's data is
-   physically separate at rest. A tenant's topic is created when the tenant is
-   onboarded and deleted when it is offboarded (topic lifecycle owned by the
-   tenant flow — see Implementation Details). Cluster-wide consumers subscribe to
+   shared topic keyed by tenant, isolates each tenant's events into their own log
+   so a tenant's data is physically separate at rest (and, as a future benefit
+   outside this feature's scope, offboarding could later be a single topic
+   deletion). A tenant's topic is created when the tenant is onboarded so events
+   can flow; its deletion at offboarding is out of scope here (see Non-Goals).
+   Cluster-wide consumers subscribe to
    all tenant topics at once with a regex subscription (`^osac\.events\..*$`),
    which librdkafka/`confluent-kafka-go` support natively via a `^`-prefixed
    pattern and which auto-discovers new tenant topics on the next metadata refresh
@@ -482,15 +489,15 @@ valid Kafka topic name (`[a-zA-Z0-9._-]`, ≤ 249 chars). Because Kafka collapse
 collision-free, reversible encoding of the tenant id (the exact scheme is an open
 question — see Open Questions).
 
-*Topic lifecycle.* A tenant's topic is provisioned when the tenant is onboarded
-and deleted when it is offboarded. In production this is a Strimzi `KafkaTopic`
-resource whose lifecycle is tied to the `Tenant` resource; deleting it on
-offboarding removes all of that tenant's retained events at once, with no shared
-log to scrub and no orphaned data left behind — the primary reason for the
-per-tenant model [User]. (Whether the topic is created by the tenant reconciler,
-by the publisher via an admin client on first produce, or by broker
-auto-creation, and who owns deletion timing, is an open question — see Open
-Questions.)
+*Topic lifecycle.* This feature provisions a tenant's topic when the tenant is
+onboarded, so that events can flow; in production this is a Strimzi `KafkaTopic`
+resource. Deleting the topic at offboarding — which would remove all of that
+tenant's retained events at once, with no shared log to scrub — is a future
+benefit the per-tenant model enables but is **out of scope for this feature** (see
+Non-Goals); the offboarding workflow and its retention policy are deferred. (For
+the in-scope onboarding side, whether the topic is created by the tenant
+reconciler, by the publisher via an admin client on first produce, or by broker
+auto-creation is an open question — see Open Questions.)
 
 *Cluster-wide consumption.* A consumer that must read every tenant (the
 controllers, a provider-admin scope) subscribes once with the regex
@@ -576,8 +583,9 @@ structural first layer that a shared topic could not: a tenant's events live onl
 in `osac.events.<tenant>`, physically separated at rest, and a public caller's
 consumer subscribes only to the topic(s) of the tenant(s) it is authorized to see,
 so it never reads another tenant's records off the wire in the first place.
-Deleting a tenant's topic on offboarding removes that tenant's data-at-rest
-outright. This structural separation does **not**, however, make ACLs the
+(Physical separation also means a future offboarding could remove a tenant's
+data-at-rest by deleting its topic, but that operation is out of scope here — see
+Non-Goals.) This structural separation does **not**, however, make ACLs the
 isolation boundary: the fulfillment-service remains the sole Kafka principal, so
 Kafka ACLs still cannot distinguish one tenant from another, and topic selection
 is performed by the same trusted service code that could subscribe more broadly.
@@ -711,10 +719,8 @@ New Prometheus metrics:
 - `event_tenant_topics` (gauge) — number of provisioned `osac.events.*` topics;
   tracked against the cluster's practical topic/partition ceiling so topic
   proliferation is visible before it becomes a broker problem (see Risks).
-- `event_topic_provision_errors_total` (counter, labeled by `op=create|delete`) —
-  failures to provision or tear down a tenant topic during onboarding/offboarding;
-  a nonzero value means a tenant's stream is missing or an offboarded tenant's data
-  was not removed.
+- `event_topic_provision_errors_total` (counter) — failures to provision a tenant
+  topic at onboarding; a nonzero value means a tenant's stream is missing.
 
 Structured log events on publisher claim/publish/mark failures and on
 resume-position resolution failures. No new Kubernetes events (there is no CRD).
@@ -761,13 +767,13 @@ Prometheus alerting rules are out of scope [PRD: Out of Scope].
   `event_tenant_topics` against the cluster limit, and sizing the cluster for the
   expected tenant count (Open Questions); KRaft raises the practical ceiling
   relative to ZooKeeper-era Kafka [Research: §Kafka on Kubernetes].
-- **Topic-provisioning coupling to tenant lifecycle.** A tenant with no topic
-  produces no deliverable events, and an offboarded tenant whose topic is not
-  deleted leaves data at rest — so topic create/delete must be reliably tied to
-  tenant onboarding/offboarding. Mitigated by owning the topic lifecycle in the
-  tenant flow (Strimzi `KafkaTopic` tied to the `Tenant` resource), the
+- **Topic-provisioning coupling to tenant onboarding.** A tenant with no topic
+  produces no deliverable events — so topic creation must be reliably tied to
+  tenant onboarding. Mitigated by owning topic creation in the tenant flow
+  (Strimzi `KafkaTopic` tied to the `Tenant` resource), the
   `event_topic_provision_errors_total` metric, and the publisher-retry behavior
-  that tolerates a briefly-missing topic without loss (Failure Handling).
+  that tolerates a briefly-missing topic without loss (Failure Handling). (Topic
+  deletion at offboarding is out of scope — see Non-Goals.)
 - **Resume window too short.** If consumers are offline longer than retention,
   their `from` expires. Mitigated by the fail-fast expired-cursor signal, the
   `event_watch_resume_expired_total` metric, and the retained low-frequency
@@ -810,12 +816,14 @@ exchange for the exact, single-offset resume that keying by object identifier
 could not provide without timestamp-based cross-partition reconstruction (see
 Alternatives) [User]. A fourth drawback is intrinsic to the per-tenant topic
 model itself: the service must now manage a Kafka topic per tenant — creating one
-on onboarding, deleting one on offboarding, and carrying total topics/partitions
-that scale with tenant count toward the cluster's partition ceiling (see Risks) —
-where a single shared topic needed none of that lifecycle machinery. This cost is
-accepted in exchange for clean, bounded offboarding (a topic deletion rather than
-a shared-log scrub) and per-tenant data-at-rest isolation, which the compliance
-consumers need and a shared topic cannot provide (see Alternatives). Encoding the Kafka position into the event id (which lets the
+on onboarding and carrying total topics/partitions that scale with tenant count
+toward the cluster's partition ceiling (see Risks) — where a single shared topic
+needed none of that provisioning machinery. This cost is accepted in exchange for
+per-tenant data-at-rest isolation, which the compliance consumers need and a
+shared topic cannot provide, and because the per-tenant model positions a future
+offboarding as a bounded topic deletion rather than a shared-log scrub — though
+offboarding itself is out of scope for this feature (see Non-Goals and
+Alternatives). Encoding the Kafka position into the event id (which lets the
 outbox stay transient and removes a server-side resume index) has its own costs:
 the `Event.id` now identifies a *delivery position* rather than a stable logical
 event, so an at-least-once re-produce surfaces as a new id and there is no stable
@@ -903,16 +911,19 @@ drawback is added write amplification from the outbox, addressed under Risks.
   tenant maps to one (hashed, shared) partition; the bridge tenant-filters every
   read because a partition carries several tenants. This gave the same per-tenant
   total ordering and single-offset resume as per-tenant topics with no topic
-  lifecycle to manage and a fixed, small topic count. **Rejected because it makes
-  tenant offboarding and data-at-rest isolation intractable:** a departed tenant's
-  events are interleaved with everyone else's in shared partitions, so removing
-  them means either scrubbing and rebuilding the entire topic (rewriting all
-  tenants' retained history) or retaining the offboarded tenant's data
+  provisioning to manage and a fixed, small topic count. **Rejected because it
+  denies each tenant data-at-rest isolation:** all tenants' events are interleaved
+  in shared partitions, leaving isolation to application-level filtering alone with
+  no physical separation at rest, unacceptable for a compliance-facing log. It
+  would also leave a future offboarding intractable, since removing a departed
+  tenant's data would mean scrubbing and rebuilding the entire shared topic
+  (rewriting all tenants' retained history) or retaining that data
   indefinitely — neither acceptable for a compliance-facing log — and no tenant has
-  physical separation at rest. Per-tenant topics make offboarding a single topic
-  deletion and give each tenant its own log, at the cost of managing a topic per
-  tenant and a partition count that scales with tenant cardinality (see Drawbacks
-  and Risks). Because the client library supports regex subscription
+  physical separation at rest. Per-tenant topics give each tenant its own log now,
+  and position that future offboarding as a bounded topic deletion (though
+  offboarding is out of scope for this feature — see Non-Goals), at the cost of
+  managing a topic per tenant and a partition count that scales with tenant
+  cardinality (see Drawbacks and Risks). Because the client library supports regex subscription
   (`^osac\.events\..*$`) and Kafka tracks consumer-group offsets per topic
   natively, cluster-wide consumers absorb the many-topics model with no bespoke
   fan-out or offset bookkeeping [User; Research: §Go Kafka client].
@@ -952,9 +963,9 @@ drawback is added write amplification from the outbox, addressed under Risks.
 ### 2. Whether per-tenant topics fully satisfy the compliance isolation bar
 
 - **Decision taken:** the design now uses **per-tenant topics**
-  (`osac.events.<tenant>`), which provide data-at-rest tenant separation and
-  clean offboarding — this resolves the earlier shared-topic-vs-per-tenant-topic
-  question in favor of per-tenant topics.
+  (`osac.events.<tenant>`), which provide data-at-rest tenant separation (and
+  position a future offboarding, which is out of scope here) — this resolves the
+  earlier shared-topic-vs-per-tenant-topic question in favor of per-tenant topics.
 - **Residual question:** does per-tenant *topic* separation meet the HIPAA/NIST
   compliance and audit bar (OSAC-63), or do those pipelines additionally require
   per-tenant Kafka *principals*/ACLs or broker encryption-at-rest? Per-tenant
@@ -1006,18 +1017,17 @@ drawback is added write amplification from the outbox, addressed under Risks.
 - **Owner:** fulfillment-service maintainers
 - **Impact:** API Extensions; Opaque resume cursor; downstream consumer contracts.
 
-### 7. Tenant topic provisioning and offboarding lifecycle
+### 7. Tenant topic provisioning at onboarding
 
-- **Question:** Who creates and deletes a tenant's `osac.events.<tenant>` topic,
-  and when? Options: the tenant reconciler creates/deletes a Strimzi `KafkaTopic`
-  tied to the `Tenant` resource (preferred, since offboarding is the driver); the
-  publisher creates it via an admin client on first produce; or broker
-  auto-creation. On offboarding, how long is the topic retained before deletion
-  (immediately, or after a grace/export window for compliance), and is deletion
-  gated on downstream consumers having drained it?
+- **Question:** Who creates a tenant's `osac.events.<tenant>` topic, and when?
+  Options: the tenant reconciler creates a Strimzi `KafkaTopic` tied to the
+  `Tenant` resource (preferred); the publisher creates it via an admin client on
+  first produce; or broker auto-creation. (Topic *deletion* at offboarding is out
+  of scope for this feature — see Non-Goals — so the retention/grace/drain policy
+  for offboarding is deferred to that future work.)
 - **Owner:** fulfillment-service maintainers + tenant-lifecycle owners
 - **Impact:** Implementation Details (topic lifecycle); Failure Handling
-  (topic-not-yet-provisioned); offboarding correctness; `event_topic_provision_errors_total`.
+  (topic-not-yet-provisioned); `event_topic_provision_errors_total`.
 
 ### 8. Tenant-to-topic name mapping
 
@@ -1086,9 +1096,6 @@ drawback is added write amplification from the outbox, addressed under Risks.
 - Group-mode per-topic offset resume without `from`: a group consumer subscribed by
   regex is restarted and resumes each tenant topic from its own Kafka-committed
   offset, with no client-side cursor persisted and no missed or re-listed events.
-- Offboarding: deleting a tenant's topic removes its retained events; a regex
-  consumer stops receiving that tenant's events and the other tenants' topics are
-  unaffected.
 - Group mode: for a cross-tenant scope, two members of a group receive disjoint
   events; killing one reassigns its topics/partitions and the survivor resumes from the
   committed position with no loss. For a single-tenant scope, only one member
@@ -1112,7 +1119,7 @@ Tricky areas called out: out-of-commit-order sequence visibility, per-tenant tot
 ordering and exact single-offset resume, deterministic cursor encryption plus
 tamper/cross-tenant rejection, read-time id stamping from record metadata,
 regex-subscription discovery of tenant topics created after subscribe, group-mode
-per-topic offset resume without `from`, offboarding by topic deletion,
+per-topic offset resume without `from`,
 consumer-group rebalance across many tenant topics, tenant
 filtering on replayed events, and trigger coverage across all object-type tables.
 
@@ -1125,8 +1132,7 @@ object-consistency regressions observed; `event_outbox_unpublished_rows` stays
 bounded under production load; `event_watch_resume_expired_total` stays near zero
 for in-SLA consumers; `event_tenant_topics` tracks tenant count with
 `event_topic_provision_errors_total` at zero (topic provisioning keeps pace with
-tenant onboarding/offboarding); a tenant offboarding is demonstrated to remove that
-tenant's topic and data; and at least one downstream consumer (OSAC-75 or OSAC-63)
+tenant onboarding); and at least one downstream consumer (OSAC-75 or OSAC-63)
 integrates against the reliable path.
 
 ## Upgrade / Downgrade Strategy
@@ -1179,26 +1185,19 @@ Solutions].
   draining the outbox backlog in commit-safe order; consistency is maintained
   because capture never stopped and consumers tolerate the at-least-once duplicates
   a recovery drain may produce by reconciling object state.
-- **Offboarding:** deleting a tenant deletes its `osac.events.<tenant>` topic
-  (via the Strimzi `KafkaTopic` tied to the Tenant lifecycle), which removes that
-  tenant's event data at rest without touching any other tenant's topic. A stalled
-  topic deletion shows as a non-zero `event_topic_provision_errors_total`; the
-  offboarding completes once the topic is gone. Controllers subscribed by regex
-  drop the topic from their assignment on the next metadata refresh with no
-  reconfiguration.
 
 ## Infrastructure Needed
 
 A Kafka cluster: Strimzi-managed in production, and the single-broker KRaft Helm
 chart in the fulfillment-service `it/` harness for integration tests [Research:
 §Existing Solutions]. One topic per tenant (`osac.events.<tenant>`), provisioned at
-tenant onboarding and deprovisioned at offboarding as a Strimzi `KafkaTopic`
-resource tied to the Tenant lifecycle; controllers consume across all of them with
-a single `^osac\.events\..*$` regex subscription under a consumer group, so no
-per-tenant consumer configuration is needed [Research: §Go Kafka client]. This
-raises the cluster's topic/partition count linearly with tenant count — the
-partition-per-tenant budget against the broker ceiling is tracked as Open Question
-Q7. A symmetric key (Kubernetes secret, keyset for rotation) for the resume-cursor
+tenant onboarding as a Strimzi `KafkaTopic` resource tied to the Tenant lifecycle
+(topic deletion at offboarding is out of scope — see Non-Goals); controllers
+consume across all of them with a single `^osac\.events\..*$` regex subscription
+under a consumer group, so no per-tenant consumer configuration is needed
+[Research: §Go Kafka client]. This raises the cluster's topic/partition count
+linearly with tenant count — the partition-per-tenant budget against the broker
+ceiling is tracked as Open Question Q4. A symmetric key (Kubernetes secret, keyset for rotation) for the resume-cursor
 cipher must be provisioned and mounted into the service. No new repositories or CI
 infrastructure beyond adding the Kafka client dependency, the `it/` Kafka chart,
 the per-tenant topic provisioning hook, and the cursor-key secret.
@@ -1212,4 +1211,4 @@ Final: revise @ design 0.9.0 - f7f8c6d, workspace main @ 4bfc214
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
