@@ -13,7 +13,7 @@ When creating a ComputeInstance, tenant users must paste their full SSH public k
 ## In Scope
 
 - SSH key registration, listing, and deletion are available via the fulfillment API, CLI (`osac create/get/delete sshkey`, where `osac get sshkey` with no name lists all keys registered in the tenant), and UI
-- Selecting a registered key when creating a ComputeInstance is available via the UI, CLI, and API, with the key injected into the VM via cloud-init on first boot only
+- Selecting a registered key when creating a Linux ComputeInstance that uses cloud-init is available via the UI, CLI, and API, with the key injected into the VM on first boot only
 - The SSH key registry is a standalone resource, not embedded in ComputeInstance-specific logic, so other OSAC services can reference the same registered keys in a future milestone [Clarify: R1.Q1]
 - SSH public key validation matches BMaaS's existing validation behavior — a key must be a well-formed OpenSSH public key to register successfully [Clarify: R1.Q4]
 - Registered key names must be unique within a tenant, across all of that tenant's users [Clarify: R2.Q1]
@@ -27,7 +27,7 @@ When creating a ComputeInstance, tenant users must paste their full SSH public k
 - Generic secret types such as passwords or tokens, and secret rotation
 - Integration with external secret managers (e.g. Vault), and automated secret syncing into tenant namespaces via an external secrets operator [Clarify: R1.Q5]
 - A limit on the number of SSH keys a tenant may register
-- SSH key injection into Windows-based ComputeInstances — Windows guests use sysprep for initial configuration, which has no SSH key injection mechanism today
+- SSH key injection into ComputeInstances that don't rely on cloud-init for first-boot configuration — Windows guests use sysprep, and Linux ComputeInstances configured with Ignition (or other non-cloud-init) user data instead are not supported by the registry's injection mechanism
 
 ## User Stories
 
@@ -52,4 +52,4 @@ Final: respond @ prd 0.9.0 - f7f8c6d, workspace main @ 4a8ac6c
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4a8ac6c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4a8ac6c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
