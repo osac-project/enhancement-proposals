@@ -3,7 +3,7 @@ title: per-service-enablement
 authors:
   - htayrie@redhat.com
 creation-date: 2026-08-26
-last-updated: 2026-08-26
+last-updated: 2026-08-27
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3046
 prd:
@@ -161,6 +161,12 @@ services:
 ```
 
 All four default to `true` for backward compatibility. The `values.schema.json` is updated with corresponding boolean schema entries with descriptions.
+
+The schema also enforces inter-service dependency constraints:
+- CaaS requires at least one of VMaaS or BMaaS to be enabled — CaaS provisions clusters that need compute nodes, which come from either VMaaS or BMaaS.
+- MaaS requires CaaS to be enabled — MaaS serves models on clusters provisioned by CaaS.
+
+These constraints are encoded as `if`/`then` rules in `values.schema.json` so that `helm install` and `helm upgrade` fail immediately with a descriptive error when an invalid combination is specified.
 
 The installer propagates these values to each component using the same pattern — individual boolean flags passed as container args or env vars:
 
@@ -448,6 +454,8 @@ The `--enable-*` flags are typed booleans — no input parsing or validation is 
 
 ### Failure Handling and Recovery
 
+**Invalid service combination in Helm values:** If an admin specifies an invalid combination (e.g., CaaS enabled without VMaaS or BMaaS), `helm install`/`helm upgrade` fails immediately with a validation error from `values.schema.json`. No pods are started or restarted.
+
 **No `--enable-*` flags provided:** If no service enable flag is provided, the fulfillment-service enables all services via `enableAllIfNoneSet()` (backward compatibility). This matches the operator's behavior.
 
 **Helm upgrade with new services enabled:** When a `helm upgrade` enables a previously disabled service, the fulfillment-service pod restarts and registers the new service endpoints. No database migration is needed — the database schema includes all tables regardless of enabled services (tables for disabled services are unused but present). The operator pod restarts and begins reconciling the newly enabled controller's resources.
@@ -492,7 +500,7 @@ Mitigation: The filtering implementation uses the same `interfaces` field semant
 
 ### Drawbacks
 
-**Multiple flags to coordinate.** Disabling a service requires setting flags across multiple components (e.g., `service.services.bmaas`, `operator.controllers.bareMetalInstance`, and `bmf.enabled` for BMaaS). An admin could disable one but miss the others. CI profiles demonstrate the correct combinations, and documentation must list which flags to set together for each service.
+**Multiple flags to coordinate.** Disabling a service requires setting flags across multiple components (e.g., `service.services.bmaas`, `operator.controllers.bareMetalInstance`, and `bmf.enabled` for BMaaS). An admin could disable one but miss the others. The `values.schema.json` constraints (see Helm Values Structure) catch invalid combinations at `helm install`/`helm upgrade` time, preventing the most dangerous misconfigurations. CI profiles demonstrate the correct combinations, and documentation must list which flags to set together for each service.
 
 **All-or-nothing API process startup.** The fulfillment-service is a single process serving all gRPC services. Disabling a service still requires restarting the entire process (via `helm upgrade`), not hot-reloading. This is consistent with the current deployment model and the PRD requirement that changes go through `helm upgrade` [Locked: D4], but it means enabling a new service causes brief downtime for all services.
 
@@ -643,11 +651,3 @@ No data migration is required in either direction. Database tables for all servi
 ## Infrastructure Needed
 
 None. All changes are within existing repositories (osac mono-repo) and CI infrastructure. The existing CI profiles (`vmaas-ci`, `caas-ci`, `bmaas-ci`, `full-ci`) are extended to validate the new service enablement flags.
-
----
-
-## Provenance
-
-Authored: draft @ design 0.8.0 - 837cf0d, workspace main @ 4bfc214
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"837cf0d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
