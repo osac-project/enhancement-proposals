@@ -3,7 +3,7 @@
 ## Status
 
 - Rounds completed: 3
-- Open gaps: 0 (one item carried into PRD Open Questions per D8, not a clarification gap)
+- Open gaps: 0 (D8 revised during PR review — see R2.Q3 Revision note)
 - Exit criteria met: Yes
 
 ## Round 1 — Scope, Personas, Validation
@@ -152,6 +152,14 @@ Deletion of a registered key is unconditionally allowed, even if a ComputeInstan
 
 Deleting a registered SSH key is never blocked by existing ComputeInstance references — already-provisioned VMs retain the key from first boot regardless of later deletion from the registry. This decision is also carried into the PRD's Open Questions section for reviewer discussion.
 
+#### Revision (PR review, 2026-08-27)
+
+CodeRabbit's review of PR #238 flagged that D8, as written, leaves the delete/re-register timing between ComputeInstance creation (key selection) and first boot undefined (would the key still be there to inject?). The driver reversed D8 in response: allowing deletion of a referenced key was assessed as needless complexity that introduces a delete-before-boot race, and would complicate supporting injection of multiple keys per ComputeInstance at runtime in a later milestone.
+
+#### Decision (D8, revised)
+
+Deleting a registered SSH key is rejected while any ComputeInstance references it. The key becomes deletable only once no ComputeInstance references it. This supersedes the original D8 and eliminates the delete-before-first-boot race and the associated resolution/snapshot-timing question — a referenced key can no longer disappear between selection and first boot. Incorporated into the PRD's In Scope section (not Assumptions, since this is now a stated behavior, not an unverified precondition).
+
 ---
 
 ### R2.Q4: E2E test coverage
@@ -208,4 +216,4 @@ Renaming a registered SSH key is out of scope. To change a key's name, the user 
 
 ## Remaining Gaps
 
-None. All identified gaps were resolved across rounds 1–3. One resolved decision (D8 — delete-while-referenced) is additionally carried into the PRD's Open Questions section for reviewer discussion, per the user's request — this is not an unresolved clarification gap.
+None. All identified gaps were resolved across rounds 1–3. Decision D8 (delete-while-referenced) was revised during PR review — see the Revision note under R2.Q3 — and is now incorporated directly into the PRD's In Scope section rather than carried as an open item.

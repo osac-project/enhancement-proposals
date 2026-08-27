@@ -14,6 +14,7 @@ When creating a ComputeInstance, tenant users must paste their full SSH public k
 
 - SSH key registration, listing, and deletion are available via the fulfillment API, CLI (`osac create/get/delete sshkey`, where `osac get sshkey` with no name lists all keys registered in the tenant), and UI
 - Selecting a registered key when creating a Linux ComputeInstance that uses cloud-init is available via the UI, CLI, and API, with the key injected into the VM on first boot only
+- Deleting a registered SSH key that is referenced by an existing ComputeInstance is rejected with a clear error; the key becomes deletable once no ComputeInstance references it [User]
 - The SSH key registry is a standalone resource, not embedded in ComputeInstance-specific logic, so other OSAC services can reference the same registered keys in a future milestone [Clarify: R1.Q1]
 - SSH public key validation matches BMaaS's existing validation behavior — a key must be a well-formed OpenSSH public key to register successfully [Clarify: R1.Q4]
 - Registered key names must be unique within a tenant, across all of that tenant's users [Clarify: R2.Q1]
@@ -39,10 +40,6 @@ When creating a ComputeInstance, tenant users must paste their full SSH public k
 - As a Tenant Admin or Tenant User, I want to select one registered SSH public key by name when creating a ComputeInstance, so that it is automatically injected into the VM on first boot instead of me pasting the key manually.
 - As a Tenant Admin or Tenant User, I want key registration to fail with a clear error message when the key I provide is invalid, so that I immediately know to fix or replace it. [User]
 
-## Assumptions
-
-- Deleting a registered SSH key is never blocked by existing ComputeInstance references — because key injection happens only at first boot, an already-provisioned VM keeps working with the key it was created with regardless of later deletion from the registry. [Clarify: R2.Q3]
-
 ---
 
 ## Provenance
@@ -52,4 +49,4 @@ Final: respond @ prd 0.9.0 - f7f8c6d, workspace main @ 4a8ac6c
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4a8ac6c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4a8ac6c","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
