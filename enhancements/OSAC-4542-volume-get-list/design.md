@@ -108,17 +108,36 @@ The table maps its fields to this EP's public proto and records deviations. The
 temp-api is an anticipatory placeholder ("replace with proto-generated once
 fulfillment-service adds v1/block_volumes"), so several deviations are expected.
 
-| UI field (`@temp-api` TypeScript) | Proto field (this EP) | Notes / deviation |
-| `metadata.name` | `metadata.name` | Direct mapping |
-| `metadata.creationTimestamp` | `metadata.creation_timestamp` | Direct mapping |
-| `metadata.creator` | `metadata.creator` | Direct mapping |
-| `metadata.description` | `metadata.description` | Direct mapping |
-| `spec.sizeGib` | `spec.size_gib` | Direct mapping |
-| `spec.storageClass` (`'ssd'\|'nvme'\|'standard'`) | `spec.storage_tier` (string) | **Deviation:** UI uses a string-union storage class (a known anti-pattern); proto references a `StorageTier` by name. UI should migrate to tier references. |
-| `status.state` (`PROVISIONING\|AVAILABLE\|ATTACHED\|DETACHING\|DELETING\|FAILED`) | `status.state` (`CREATING\|AVAILABLE\|FAILED\|DELETING\|DELETED`) | **Deviation:** proto has no `ATTACHED`/`DETACHING` (attach is out of scope, managed separately) and uses `CREATING` (not `PROVISIONING`); adds `DELETED`. UI maps `PROVISIONING`→`CREATING` and drops attach states for this read view. |
-| `status.attachedTo` / `attachedToName` | _none_ | **Deviation:** attachment is out of scope for OSAC-4542 (separate VMaaS/Compute work); not surfaced here. |
-| (no field) | `spec.access_mode` | Extra field available to the UI (K8s access mode). |
-| resource path `v1/block_volumes` | `v1/volumes` | **Deviation:** UI predicted `block_volumes`; the resource is `volumes` (consistent with the private API; file/object storage are separate future resources). See Open Questions 8.2. |
+Field mapping (short notes; detailed deviations follow):
+
+| UI field (`@temp-api`) | Proto field (this EP) | Mapping |
+|---|---|---|
+| `metadata.name` | `metadata.name` | direct |
+| `metadata.creationTimestamp` | `metadata.creation_timestamp` | direct |
+| `metadata.creator` | `metadata.creator` | direct |
+| `metadata.description` | `metadata.description` | direct |
+| `spec.sizeGib` | `spec.size_gib` | direct |
+| `spec.storageClass` | `spec.storage_tier` | deviation D1 |
+| `status.state` | `status.state` | deviation D2 |
+| `status.attachedTo` / `attachedToName` | _none_ | deviation D3 |
+| _none_ | `spec.access_mode` | extra field, available to the UI |
+| path `v1/block_volumes` | path `v1/volumes` | deviation D4 |
+
+Deviations (each requires UI migration work):
+
+- **D1 — storage class.** The UI uses a string-union `storageClass`
+  (`'ssd'|'nvme'|'standard'`), a known anti-pattern; the proto references a
+  `StorageTier` by name. The UI should migrate to tier references.
+- **D2 — state enum.** UI: `PROVISIONING|AVAILABLE|ATTACHED|DETACHING|DELETING|FAILED`;
+  proto: `CREATING|AVAILABLE|FAILED|DELETING|DELETED`. The proto has no
+  `ATTACHED`/`DETACHING` (attach is out of scope, managed separately), uses
+  `CREATING` rather than `PROVISIONING`, and adds `DELETED`. The UI maps
+  `PROVISIONING`→`CREATING` and drops the attach states in this read view.
+- **D3 — attachment fields.** `attachedTo`/`attachedToName` are not surfaced;
+  attachment is out of scope for OSAC-4542 (separate VMaaS/Compute work).
+- **D4 — resource path.** The UI predicted `block_volumes`; the resource is
+  `volumes` (consistent with the private API; file/object storage are separate
+  future resources). See Open Questions #1.
 
 After the backend ships and `pnpm gen-types` runs in osac-ux, the UI migration
 diff should be limited to the deviations above.
@@ -186,9 +205,10 @@ and the interceptor chain apply to the new methods automatically.
 ### Risks and Mitigations
 
 | Risk | Impact | Mitigation |
+|---|---|---|
 | DoD "own only" not met by tenant-level scoping | A Tenant User sees all volumes in their tenant, not just their own | Explicitly scoped out to a platform tenancy feature; flagged on the PR for the team to own or delegate; no migration needed later (`creator` column + index exist) |
 | cleanapi leaves unused imports in generated public protos | `buf lint` fails on regeneration | Prune the two imports (documented); follow-up to automate in tooling |
-| UI temp-api drift (`block_volumes` path, `storageClass`, attach states) | UI migration larger than a field rename | UX Alignment table bounds the diff; naming raised as Open Question 8.2 |
+| UI temp-api drift (`block_volumes` path, `storageClass`, attach states) | UI migration larger than a field rename | UX Alignment table bounds the diff; naming raised as Open Questions #1 |
 
 ### Drawbacks
 
@@ -210,15 +230,14 @@ narrowing of the stated DoD for this release.
 
 ## Open Questions [optional]
 
-### 8.1 Public resource name: `volumes` vs `block_volumes`
-- The UI temp-api predicts `block_volumes`; this EP uses `volumes` (consistent with
-  the private API; file/object storage are separate future resources). Confirm the
-  name with the UI/UX owners before the UI migrates off the temp-api.
-
-### 8.2 Ownership of the deferred owner-level visibility feature
-- Tenant-level scoping ships here; per-creator visibility is a platform-wide
-  tenancy capability. Team decision: own it in this WG or delegate to a
-  platform/tenancy owner.
+1. **Public resource name: `volumes` vs `block_volumes`.** The UI temp-api predicts
+   `block_volumes`; this EP uses `volumes` (consistent with the private API;
+   file/object storage are separate future resources). Confirm the name with the
+   UI/UX owners before the UI migrates off the temp-api.
+2. **Ownership of the deferred owner-level visibility feature.** Tenant-level
+   scoping ships here; per-creator visibility is a platform-wide tenancy
+   capability. Team decision: own it in this WG or delegate to a platform/tenancy
+   owner.
 
 ## Test Plan
 
@@ -281,4 +300,4 @@ Committed: commit @ design 0.9.0 - f7f8c6d, workspace main @ b177ce9 (dirty)
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"b177ce9 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"b177ce9 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
