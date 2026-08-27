@@ -183,10 +183,15 @@ schema, three in fulfillment-service — plus one new infrastructure dependency:
 4. **Watch bridge** — the public and private `Events` servers become Kafka
    consumers that stream matching events to gRPC `Watch` clients, applying CEL
    filtering and tenant isolation, and honoring the new `from`/`group` fields
-   [Codebase: osac/fulfillment-service/internal/servers/events_server.go]. A
-   public caller's consumer subscribes only to the topic(s) of the tenant(s) the
-   caller is authorized to see; the private (controller) consumer subscribes to
-   every tenant topic via the `^osac\.events\..*$` regex under a consumer group.
+   [Codebase: osac/fulfillment-service/internal/servers/events_server.go]. The
+   multi-topic handling lives entirely inside the `Watch` RPC implementation: it
+   resolves the set of tenants visible to the caller and subscribes to exactly
+   those tenants' topics, so callers never name or manage topics themselves. When
+   the visible set is a specific subset, the implementation subscribes to an
+   explicit list of `osac.events.<tenant>` topics; when the visible set is *all*
+   tenants (the controllers, a provider-admin scope), it expresses that same set as
+   the `^osac\.events\..*$` regex under a consumer group so newly onboarded tenants
+   are picked up automatically.
    The bridge stamps each delivered event's `id` with an opaque, encrypted encoding of
    that record's Kafka `(tenant, partition, offset)` — the topic identifying the
    tenant, derived from the consumer record at
@@ -230,7 +235,7 @@ sequenceDiagram
     participant Kafka as Kafka (osac.events.&lt;tenant&gt; topics)
 
     Client->>Bridge: Watch(filter, from?, group?)
-    Bridge->>Kafka: subscribe (tenant topic(s) or ^osac\.events\..*$) / seek to resolved position
+    Bridge->>Kafka: subscribe to visible tenants' topics (explicit list, or ^osac\.events\..*$ when all) / seek to resolved position
     Note over Writer,DB: object mutation transaction
     Writer->>DB: INSERT / UPDATE / DELETE on object table
     DB->>DB: AFTER trigger enqueues event_outbox row + pg_notify (same TX)
@@ -536,11 +541,19 @@ a buffered channel so one slow client cannot block others (the current
 unbuffered blocking send under `subsLock.RLock` is removed) [Codebase:
 osac/fulfillment-service/internal/servers/events_server.go]. The public bridge
 continues to map private events to public events and to drop signal/hub-only
-events. A public caller's consumer subscribes only to the topic(s)
-`osac.events.<tenant>` of the tenant(s) the caller is authorized to see (an
-explicit topic list, since the broadcast path uses manual assignment); the private
-(controller) consumer subscribes to every tenant topic via the
-`^osac\.events\..*$` regex under a consumer group. Each consumed record's
+events. **Selecting and subscribing to the per-tenant topics is entirely the
+`Watch` RPC implementation's job** — no other layer and no caller is aware that
+events are partitioned into one topic per tenant. On each `Watch` call the bridge
+resolves the caller's visible tenants (via the same `DetermineVisibleTenants`
+logic that governs filtering) and subscribes to exactly those tenants'
+`osac.events.<tenant>` topics: an explicit topic list when the visible set is a
+specific subset (the broadcast path uses manual assignment), or the
+`^osac\.events\..*$` regex under a consumer group when the visible set is *all*
+tenants (controllers, provider-admin), which is that same "every visible tenant"
+set expressed as a pattern so newly onboarded tenants join automatically. This
+keeps the topic-per-tenant fan-in a private implementation detail of the `Watch`
+server; the request/response contract exposes only a single logical event stream.
+Each consumed record's
 `Event.id` is stamped from its `(tenant, partition, offset)`
 metadata (the tenant read from the record's topic; see Opaque resume cursor)
 before filtering and delivery. Resume
@@ -550,8 +563,10 @@ seek with no timestamp-based approximation and no database lookup. The outbox is
 not consulted on the read path at all — it is transient staging on the write side.
 
 **Controller migration.** Each of the 18 reconcilers passes a stable `group`
-(its own name) on the private `Watch`; the bridge subscribes that group to every
-tenant topic via the `^osac\.events\..*$` regex, and Kafka tracks the group's
+(its own name) on the private `Watch`; because a controller's visible set is all
+tenants, the bridge (inside the `Watch` implementation) subscribes that group to
+every tenant topic via the `^osac\.events\..*$` regex — the reconciler itself
+names no topics. Kafka tracks the group's
 committed position per `(group, topic, partition)` and auto-commits it, so a
 restarted reconciler resumes from its committed offsets — per tenant topic —
 instead of re-listing every object, and it does so *without persisting a `from`
@@ -1211,4 +1226,4 @@ Final: revise @ design 0.9.0 - f7f8c6d, workspace main @ 4bfc214
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
