@@ -490,11 +490,24 @@ contrast, improves relative to a single shared topic: a cluster-wide group now h
 as many partitions to distribute as there are tenant topics, rather than one
 topic's fixed partition count.
 
-*Topic name mapping.* The `<tenant>` segment is the tenant identifier mapped to a
-valid Kafka topic name (`[a-zA-Z0-9._-]`, ≤ 249 chars). Because Kafka collapses
-`.` and `_` when checking for name collisions, the mapping must guarantee a
-collision-free, reversible encoding of the tenant id (the exact scheme is an open
-question — see Open Questions).
+*Topic name mapping.* The tenant name is used **directly** as the `<tenant>`
+segment — the topic is `"osac.events." + tenant.name`, with no encoding, hashing,
+or escaping. This is safe because a tenant name is a strict RFC 1123 DNS label:
+protovalidate enforces `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$` (min 1, max 63) on
+`Metadata.name`, and fulfillment-service is the system of record for tenant
+creation [Codebase:
+osac/fulfillment-service/proto/private/osac/private/v1/metadata_type.proto;
+osac/fulfillment-service/internal/servers/private_tenants_server.go]. A DNS label
+is a subset of Kafka's legal topic characters (`[a-zA-Z0-9._-]`), so every tenant
+name is a valid topic segment as-is. It contains neither `.` nor `_`, so Kafka's
+`.`/`_` collision rule (which folds the two together for internal metric names)
+can never make two distinct tenants collide — the only dots in the topic name are
+the fixed ones in the `osac.events.` prefix. The full name stays well under Kafka's
+249-char limit (`osac.events.` is 12 chars + at most 63 = at most 75). The mapping
+is trivially reversible: strip the `osac.events.` prefix to recover the tenant
+name. The publisher builds the destination topic from the outbox row's `tenant`
+column and the bridge derives the tenant from a consumed record's topic by the same
+identity rule.
 
 *Topic lifecycle.* This feature provisions a tenant's topic when the tenant is
 onboarded, so that events can flow; in production this is a Strimzi `KafkaTopic`
@@ -1058,11 +1071,18 @@ drawback is added write amplification from the outbox, addressed under Risks.
 
 ### 8. Tenant-to-topic name mapping
 
-- **Question:** What is the exact, collision-free, reversible mapping from a tenant
-  identifier to the `<tenant>` topic-name segment, given Kafka's allowed character
-  set (`[a-zA-Z0-9._-]`), 249-char limit, and the `.`/`_` collision rule? Does any
-  existing tenant identifier need encoding (e.g. hashing or percent-style escaping)
-  to remain unambiguous?
+- **Decision taken:** the tenant name is used **directly** as the topic segment
+  (`"osac.events." + tenant.name`), with no encoding. This is safe because tenant
+  names are strict RFC 1123 DNS labels (protovalidate
+  `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`, max 63) — a subset of Kafka's legal topic
+  characters, containing no `.` or `_`, so the `.`/`_` collision rule cannot make
+  two tenants collide, and the result stays under 249 chars. The mapping is the
+  identity and is reversible by stripping the prefix (see Implementation Details:
+  Topic name mapping) [Codebase:
+  osac/fulfillment-service/proto/private/osac/private/v1/metadata_type.proto].
+- **Residual:** none for the mapping itself. If tenant naming rules were ever
+  relaxed to permit `.` or `_` (not currently the case), this decision would need
+  revisiting.
 - **Owner:** fulfillment-service maintainers
 - **Impact:** Implementation Details (topic name mapping); publisher and bridge
   topic resolution.
@@ -1080,9 +1100,10 @@ drawback is added write amplification from the outbox, addressed under Risks.
 - Publisher re-produces a row that was produced but not deleted (crash
   simulation); the duplicate lands at a new offset and is tolerated (no stable id
   to dedup on — idempotent consumers reconcile by state).
-- The publisher resolves the destination topic `osac.events.<tenant>` from the
-  row's `tenant` (including the tenant-to-topic-name mapping for a tenant id that
-  needs encoding).
+- The publisher resolves the destination topic `osac.events.<tenant>` by
+  appending the row's `tenant` (a DNS label) directly to the `osac.events.` prefix,
+  and a boundary tenant name (63-char label, leading/trailing-digit, hyphenated)
+  produces the expected topic verbatim with no encoding.
 - The bridge stamps `Event.id` from the consumer record's `(tenant/topic, partition, offset)`,
   and the same record deterministically yields the same encrypted id.
 - `from` resolution decrypts a token to the correct topic/partition/offset and seeks
@@ -1252,4 +1273,4 @@ Final: revise @ design 0.9.0 - f7f8c6d, workspace main @ 4bfc214
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
