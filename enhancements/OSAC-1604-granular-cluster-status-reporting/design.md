@@ -128,10 +128,12 @@ Happy-path provisioning, as observed via `osac describe cluster <id>` or the API
 3. **Control plane available.** HyperShift `KubeAPIServerAvailable`/`Available`
    True → `CONTROL_PLANE_AVAILABLE` flips True; `api_endpoint`/`api_url`
    populated; `PROGRESSING` reason advances to `WorkersJoining`.
-4. **Workers joining → ready.** Each `NodePool` reports `Ready`/`AllNodesHealthy`;
-   per-node-set `ready_replicas` climbs toward `desired_replicas`. When all sets
-   are ready, `WORKERS_READY` flips True.
-5. **Ready.** State `READY`; condition `READY` True; `PROGRESSING` False.
+4. **Workers joining → ready.** As nodes join, per-node-set `current_replicas`
+   climbs toward `desired_replicas`; `ready_replicas` stays `0` until the
+   `NodePool` reports `Ready`/`AllNodesHealthy`, then equals `current_replicas`
+   (binary at this HyperShift pin - see the resource-controller section). When all
+   sets are ready, `WORKERS_READY` flips True.
+5. **Ready.** State `READY`; condition `AVAILABLE` True; `PROGRESSING` False.
    `state_transition_time` stamped at the transition.
 
 ```mermaid
@@ -156,6 +158,12 @@ Variations:
   stays True, `WORKERS_READY` False, and `DEGRADED` True with a reason naming the
   affected node set. Overall state stays `READY` if the control plane is usable,
   so degradation is visible without masking availability.
+- **Degraded → recovered.** There is no explicit clearing logic: status is
+  idempotently re-derived from observed HyperShift state on every reconcile, so
+  once HC `Degraded` is False again and every NodePool reports `Ready` AND
+  `AllNodesHealthy`, `DEGRADED` clears to False, `WORKERS_READY` flips back True,
+  and the `AVAILABLE` condition returns True. The same bidirectional re-derivation
+  applies to `Scaling` (clears when the resized set reaches `desired_replicas`).
 - **Stalled (AC-2).** The current `PROGRESSING` reason has not advanced within its
   stage threshold: reason becomes `Stalled` (message names the stuck stage). The
   cluster is not marked `FAILED` - it may still recover.
@@ -212,35 +220,49 @@ single reason-cycling condition (the pure OSAC-1027 shape) cannot express
 "control plane True AND workers False" at once, so this design keeps orthogonal
 condition types for the health axes and uses `Reason` for the linear sub-stage.
 
-`ClusterConditionType` (append-only; existing values keep their numbers)
+`ClusterConditionType` (append-only for numbers; value `2` is **renamed**
+`READY` → `AVAILABLE`, number unchanged - safe because the `READY` condition is
+never populated today, dropped at the feedback boundary by latent bug 1 below, so
+no stored object or consumer relies on it)
 [Codebase: fulfillment-service/proto/private/osac/private/v1/cluster_type.proto]:
 
 | Value | Num | Meaning | Source signal |
 |-------|-----|---------|---------------|
 | `UNSPECIFIED` | 0 | zero value | - |
 | `PROGRESSING` | 1 | provisioning/teardown underway; `Reason` = current sub-stage | derived |
-| `READY` | 2 | cluster fully provisioned and healthy | CP available AND workers ready |
+| `AVAILABLE` | 2 | full-health rollup (fully provisioned and healthy) | CP available AND workers ready |
 | `FAILED` | 3 | terminal provisioning/teardown failure | HC failure / phase Failed |
 | `DEGRADED` | 4 | orthogonal health problem, independent of stage | HC `Degraded`, partial NodePool failure |
 | `CONTROL_PLANE_AVAILABLE` | 5 (new) | API server reachable | HC `KubeAPIServerAvailable` (authoritative) AND `Available` |
 | `WORKERS_READY` | 6 (new) | all node sets' desired workers joined and healthy | every NodePool `Ready` AND `AllNodesHealthy` |
 
-**`state` vs the `READY` condition (contract).** The top-level
+**`state` vs the `AVAILABLE` condition (contract).** The top-level
 `ClusterStatus.state` is **lifecycle-only**: it answers "has initial
 provisioning completed and is the control plane usable". Once a cluster first
 reaches `READY` it stays `READY` through later degradation or scaling; it leaves
 `READY` only for `DELETING`/`DELETE_FAILED`, or for `FAILED` on a terminal
-provisioning failure that occurs before it ever became ready. The `READY`
+provisioning failure that occurs before it ever became ready. The `AVAILABLE`
 **condition** is the full-health rollup, orthogonal to `state`: it is `True` only
 when both `CONTROL_PLANE_AVAILABLE` and `WORKERS_READY` are `True`, and it goes
 `False` (reason `Degraded` during partial worker failure, `Scaling` during a
 resize) whenever a usable control plane has unready workers - even while `state`
 stays `READY`. "Usable but not fully healthy" is therefore read as `state=READY`
-+ `READY` condition `False` + the orthogonal health conditions. The CLI HEALTH
-column, the list-table HEALTH column, and all health assertions in tests key off
-the **conditions**, never off `state`; `state` drives only the lifecycle STATE
-column. This keeps a usable control plane from being masked (AC-3) while making
-partial worker health explicit.
++ `AVAILABLE` condition `False` + the orthogonal health conditions.
+
+The rollup is named `AVAILABLE`, not `READY`, deliberately: it follows the
+OpenShift `ClusterOperator` / HyperShift `HostedCluster` convention, where
+`Available` (with `Progressing`/`Degraded`) is the cluster-level health rollup and
+there is **no** cluster-level `Ready` condition (Kubernetes reserves `Ready` for
+Nodes). Reusing `Ready` would collide with the lifecycle `state=READY` and read as
+a contradiction (`state=READY` while the `READY` condition is `False`). The
+`AVAILABLE` rollup is distinct from the `CONTROL_PLANE_AVAILABLE` axis it rolls up,
+mirroring how OpenShift pairs a cluster-level `Available` with each operator's own
+`Available`.
+
+The CLI HEALTH column, the list-table HEALTH column, and all health assertions in
+tests key off the **conditions**, never off `state`; `state` drives only the
+lifecycle STATE column. This keeps a usable control plane from being masked (AC-3)
+while making partial worker health explicit.
 
 **CR-to-proto condition mapping (complete).** Every CR condition the resource
 controller sets has exactly one disposition - a distinct target proto condition,
@@ -254,7 +276,7 @@ silent `default`:
 | `ControlPlaneCreated` | `PROGRESSING` (reason only) | - | advances reason to `ControlPlaneStarting` | stage marker, not its own proto type |
 | `ControlPlaneAvailable` | `CONTROL_PLANE_AVAILABLE` | mirror (see availability precedence) | `Available` / `NotYetAvailable` | orthogonal health axis |
 | `ClusterStorageReady` | `PROGRESSING` (readiness gate) | contributes to readiness | - | previously ignored (latent bug 2), now mapped |
-| `ClusterAvailable` | `READY` | mirror | `Ready` | previously dropped (latent bug 1: name mismatch), now mapped |
+| `ClusterAvailable` | `AVAILABLE` | mirror | `Available` | previously dropped (latent bug 1: name mismatch), now mapped |
 | (derived) NodePool health | `WORKERS_READY` | True iff all pools `Ready` AND `AllNodesHealthy` | `Scaling` / `Ready` / `WorkersDegraded` | orthogonal health axis |
 | (derived) HC `Degraded` / partial NodePool | `DEGRADED` | True on degradation | names the affected node set | independent of stage |
 | (derived) HC failure / phase `Failed` | `FAILED` | True on terminal failure | HyperShift failure reason | terminal; not set on slowness |
@@ -294,7 +316,7 @@ field numbers - private `ClusterStatus` has an extra `hub = 6`, shifting
 enum ClusterConditionType {
   CLUSTER_CONDITION_TYPE_UNSPECIFIED = 0;
   CLUSTER_CONDITION_TYPE_PROGRESSING = 1;
-  CLUSTER_CONDITION_TYPE_READY = 2;
+  CLUSTER_CONDITION_TYPE_AVAILABLE = 2;  // renamed from _READY; number unchanged
   CLUSTER_CONDITION_TYPE_FAILED = 3;
   CLUSTER_CONDITION_TYPE_DEGRADED = 4;
   CLUSTER_CONDITION_TYPE_CONTROL_PLANE_AVAILABLE = 5;
@@ -341,7 +363,7 @@ a table-driven map mirroring `syncCIConditions`
 
 - Map each CR condition to a distinct proto condition type (Accepted/Progressing
   → `PROGRESSING`; `ControlPlaneAvailable` → `CONTROL_PLANE_AVAILABLE`;
-  `ClusterAvailable` → `READY`; a derived workers condition → `WORKERS_READY`).
+  `ClusterAvailable` → `AVAILABLE`; a derived workers condition → `WORKERS_READY`).
 - Make `syncClusterConditionFromCR` copy `Reason`
   (`clusterCondition.SetReason(condition.Reason)`), which the ComputeInstance path
   does at `syncCIConditionFromCR`
@@ -390,7 +412,7 @@ In `clusterorder_controller.go`:
   `CONTROL_PLANE_AVAILABLE` `True`; either `False` → `False` (reason
   `NotYetAvailable`, naming the failing signal); either `Unknown`/absent → `False`
   with reason `StageUnknown` - never coerced to `True`. `Available` additionally
-  gates the `READY` condition rollup. Unit tests cover all `{True,False,Unknown}`
+  gates the `AVAILABLE` condition rollup. Unit tests cover all `{True,False,Unknown}`
   combinations of the two signals.
 - **Per-node-set attribution and replica counts.** Fix the single-NodePool
   limitation - `handleNodePool` only attributes status when exactly one node request
@@ -645,7 +667,7 @@ maintainable.
   its distinct proto condition type with `Reason` preserved (table-driven,
   mirroring the ComputeInstance feedback tests).
 - Regression for latent bug 1: a CR `ClusterAvailable` condition now reaches the
-  proto `READY` condition (previously dropped to `default`).
+  proto `AVAILABLE` condition (previously dropped to `default`).
 - Regression for latent bug 2: `ControlPlaneCreated`/`ClusterStorageReady` are
   mapped, not ignored.
 - `state_transition_time` is stamped on PROGRESSING→READY, →DELETING,
