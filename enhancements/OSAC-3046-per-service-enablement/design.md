@@ -10,6 +10,7 @@ prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-3046-per-service-enablement/prd.md"
+  - "https://github.com/osac-project/osac/pull/380"
 replaces:
   - N/A
 superseded-by:
@@ -557,12 +558,13 @@ Should navigation items for disabled services be completely hidden or shown as g
 **Owner:** UX team (osac-ux)
 **Impact:** Affects osac-ui implementation. The design currently specifies "hidden entirely" based on the principle that showing unavailable options confuses users, but the UX team may prefer a different treatment.
 
-### 2. Enclave Wizard Alignment
+### 2. Enclave Wizard Alignment [Resolved]
 
 How do Enclave wizard "experiences" relate to the per-service enablement flags? Do experiences drive the Helm values, get replaced by them, or run alongside them?
 
-**Owner:** Enclave team
-**Impact:** Affects the Helm values structure and the Enclave wizard pipeline. The current design defines `services.*.enabled` as standalone Helm values with no dependency on experiences. If experiences should drive these values, the Helm template logic needs adjustment.
+**Resolution:** Enclave profiles drive the service enablement values. The Enclave plugin's `osacProfilesList` (e.g., `[caas, vmaas]`) is translated into individual `services.*.enabled` flags via value-map extension — the plugin sets `--set services.caas.enabled=true,services.vmaas.enabled=true` rather than templating entire value files. This aligns with the team decision to modify the Enclave plugin to extend by value map (OSAC-4106).
+
+**Reconciliation with PR [osac-project/osac#380](https://github.com/osac-project/osac/pull/380):** PR #380 introduced a `global.profilesList` convenience layer with Helm helper functions that compute per-controller flags from a list. This design's `services.*.enabled` booleans are the canonical chart interface — they are simpler to validate (schema constraints, see Helm Values Structure), propagate uniformly to all components (fulfillment-service, operator, BMF), and are directly settable via Enclave value-map extension. PR #380's `global.profilesList` should be reconciled with this design: either adopt `services.*.enabled` as the underlying mechanism that the list maps to, or be superseded by the per-service booleans.
 
 ### 3. AAP Instance Group Enablement
 
