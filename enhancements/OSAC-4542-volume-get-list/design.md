@@ -210,16 +210,12 @@ narrowing of the stated DoD for this release.
 
 ## Open Questions [optional]
 
-### 8.1 Vendor identifier visibility for support
-- Whether a Cloud Provider Admin should ever see a volume's underlying vendor
-  identifier for support. Kept private for now; addable later without model change.
-
-### 8.2 Public resource name: `volumes` vs `block_volumes`
+### 8.1 Public resource name: `volumes` vs `block_volumes`
 - The UI temp-api predicts `block_volumes`; this EP uses `volumes` (consistent with
   the private API; file/object storage are separate future resources). Confirm the
   name with the UI/UX owners before the UI migrates off the temp-api.
 
-### 8.3 Ownership of the deferred owner-level visibility feature
+### 8.2 Ownership of the deferred owner-level visibility feature
 - Tenant-level scoping ships here; per-creator visibility is a platform-wide
   tenancy capability. Team decision: own it in this WG or delegate to a
   platform/tenancy owner.
@@ -281,6 +277,8 @@ None.
 
 ## Provenance
 
-Authored: draft @ design 0.9.0 - f7f8c6d, workspace feat/OSAC-4542 @ 0fe64ee1b
+Committed: commit @ design 0.9.0 - f7f8c6d, workspace main @ b177ce9 (dirty)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"0fe64ee1b","source_repo_branch":"feat/OSAC-4542","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"b177ce9 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
