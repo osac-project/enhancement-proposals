@@ -89,9 +89,11 @@ choice is forward-looking [User].
 The messaging technology is Kafka, resolved during the design phase per the epic
 that frames this work [Research: §Recommended Approach; OSAC-1161]. Kafka is
 already operated in the organization by `osac-metering`, which publishes
-CloudEvents to Kafka [Codebase: osac/osac-metering]. PostgreSQL LISTEN/NOTIFY is
-retained only as a low-latency wake hint for the publisher, never as the delivery
-transport.
+CloudEvents to Kafka [Codebase: osac/osac-metering]. The existing LISTEN/NOTIFY
+*delivery* transport — the `notifications` table and its in-memory fan-out — is
+removed entirely as part of introducing the Kafka path, not run alongside it. The
+only remaining use of `pg_notify` is a new, separate low-latency wake hint that
+prods the publisher to drain the outbox; it is never a delivery transport.
 
 ### Goals
 
@@ -582,14 +584,24 @@ low-frequency correctness backstop [PRD: In Scope]. Reconcilers already re-read
 fresh state before acting, so they tolerate the at-least-once duplicates
 [Codebase: osac/fulfillment-service/internal/controllers/reconciler.go].
 
-**Coexistence and cutover.** Rollout is phased: first add `event_outbox`, the
-change-capture triggers, the publisher, per-tenant topic provisioning, and the
-Kafka-backed
-bridge while the request contract stays backward compatible; then, once the Kafka
-path is validated in production, a later additive migration drops the
-`notifications` table and its application-level emission. Existing migrations are
-never modified — each step is a new numbered `*.up.sql` file [Codebase:
-osac/fulfillment-service/internal/database/migrations].
+**Cutover (no coexistence).** The Kafka path replaces LISTEN/NOTIFY in a single
+transition rather than running the two side by side. The release that introduces
+the reliable path adds `event_outbox`, the change-capture triggers, the publisher,
+per-tenant topic provisioning, and the Kafka-backed bridge, and in the same step
+removes the old delivery mechanism: the application-level emission code is deleted
+and a forward migration drops the `notifications` table. The request/response
+contract stays backward compatible (the `Watch` shape is unchanged and
+`from`/`group` are optional), so *clients* need no changes — but the *transport*
+is swapped wholesale, not deprecated gradually. Migrations are forward-only: every
+step is a new numbered `*.up.sql` file and existing migrations are never modified;
+there are no `*.down.sql` files because the deployment has no mechanism to apply
+them [Codebase: osac/fulfillment-service/internal/database/migrations]. Because the
+old and new transports do not coexist, a standard replica-by-replica rolling
+upgrade is not safe for this transition — an old replica still running the deleted
+emission code would attempt to write to a dropped `notifications` table. The
+transition therefore requires a coordinated cutover (all replicas moved together,
+accepting a brief delivery-only interruption during which capture continues via
+the triggers) rather than a gradual rollout; see Version Skew Strategy.
 
 ### Security Considerations
 
@@ -1152,34 +1164,47 @@ integrates against the reliable path.
 
 ## Upgrade / Downgrade Strategy
 
-Upgrade is additive and backward compatible: new migrations create `event_outbox`
-and install the change-capture triggers (and later drop `notifications`); the new
-`from`/`group` fields are optional, so existing clients and stored requests are
-unaffected. The Kafka dependency must be deployed (Strimzi) before or with the
-service upgrade, and per-tenant topics must be provisioned for the existing
-tenant set as part of the upgrade (a one-time backfill of `osac.events.<tenant>`
-topics for tenants that predate the feature, thereafter created at onboarding);
-until the publisher and bridge are active, no events are lost because the triggers
-persist outbox rows regardless. Downgrade to a pre-feature
-version requires reverting the service image; the accompanying down migration must
-also drop the triggers, otherwise they would keep enqueuing into `event_outbox`
-with no publisher draining it and grow the table unbounded. Events captured but
-not yet consumed remain in Kafka within retention. The `notifications`-drop
-migration is applied only after cutover is validated, so a downgrade before that
-step retains the old transport.
+Upgrade applies forward-only migrations that create `event_outbox`, install the
+change-capture triggers, and drop the now-unused `notifications` table (the
+transport swap is described under Cutover). From the client's perspective the
+upgrade is backward compatible: the new `from`/`group` fields are optional, so
+existing clients and stored requests are unaffected. The Kafka dependency must be
+deployed (Strimzi) before or with the service upgrade, and per-tenant topics must
+be provisioned for the existing tenant set as part of the upgrade (a one-time
+backfill of `osac.events.<tenant>` topics for tenants that predate the feature,
+thereafter created at onboarding); the triggers persist outbox rows from the
+moment they are installed, so no events are lost before the publisher and bridge
+are active.
+
+**There is no downgrade mechanism, and there are no down migrations** — the
+deployment has no facility to run `*.down.sql`, so none are written. Once the
+Kafka-based mechanism is introduced, the only way back is to *revert the changes*:
+redeploy the previous service image (which contains the LISTEN/NOTIFY code) and
+ship a **new forward migration** that recreates the `notifications` table and one
+that drops the change-capture triggers (otherwise the triggers would keep
+enqueuing into `event_outbox` with no publisher draining it, growing the table
+unbounded). Reverting is thus a deliberate roll-forward-to-restore operation, not
+an automatic downgrade. Events captured but not yet consumed remain in Kafka
+within retention across such a revert.
 
 ## Version Skew Strategy
 
 Once the trigger migration is applied, every writer — old or new replica, API or
 direct SQL — enqueues into `event_outbox`, so the reliable path is fed regardless
-of which replica served the write. Old replicas additionally keep using the
-`notifications` transport for their own in-memory delivery until cutover; the two
-mechanisms are independent and neither loses events. Because `from`/`group` are
-optional and ignored by old replicas, a client that sends them to an old replica
-simply gets today's behavior. There is no CRD, so no CRD version migration
-applies. Kafka client/broker skew is bounded by using the `confluent-kafka-go/v2`
-client against a broker version validated in the `it/` chart [Research: §Existing
-Solutions].
+of which replica served the write. The old and new transports do **not** coexist:
+because the old delivery mechanism is removed and the `notifications` table dropped
+in the same release (see Cutover), a mixed fleet is unsafe — an old replica still
+running the deleted emission code would try to write to a dropped table. This
+transition is therefore not a gradual replica-by-replica rolling upgrade; it is a
+coordinated cutover in which all replicas move together. During the brief window
+the triggers are already capturing to `event_outbox`, so no events are lost — only
+live delivery is momentarily interrupted, and it resumes (with replay) once the
+new replicas are serving. After cutover there is no version skew between transports
+to manage. Because `from`/`group` are optional, clients that send them to a
+not-yet-migrated replica simply get today's behavior. There is no CRD, so no CRD
+version migration applies. Kafka client/broker skew is bounded by using the
+`confluent-kafka-go/v2` client against a broker version validated in the `it/`
+chart [Research: §Existing Solutions].
 
 ## Support Procedures
 
@@ -1189,13 +1214,14 @@ Solutions].
   spikes; publisher and bridge log structured errors on claim/publish/resume
   failures.
 - **Disabling:** the reliable path cannot be disabled by removing an API
-  extension (there is no webhook/APIService); to fall back, redeploy the prior
-  service version (which uses LISTEN/NOTIFY) while `notifications` still exists. If
-  reverting for longer than a brief maintenance window, also drop the triggers to
-  stop unbounded `event_outbox` growth. Consequence on cluster health: none
-  directly; consumers relying on replay lose it until re-enabled. Existing
-  workloads and newly created objects are unaffected — capture continues either
-  way while the triggers are present.
+  extension (there is no webhook/APIService), and there is no automatic downgrade.
+  Falling back to LISTEN/NOTIFY means reverting the change (see Upgrade / Downgrade
+  Strategy): redeploy the prior service image and ship a new forward migration that
+  recreates the `notifications` table, plus one that drops the change-capture
+  triggers so they stop enqueuing into `event_outbox`. This is a deliberate
+  roll-forward-to-restore, not a `*.down.sql` rollback. Consequence on cluster
+  health: none directly; consumers relying on replay lose it until re-enabled.
+  Existing workloads and newly created objects are unaffected.
 - **Recovery:** re-enabling (redeploying the Kafka-backed version) resumes
   draining the outbox backlog in commit-safe order; consistency is maintained
   because capture never stopped and consumers tolerate the at-least-once duplicates
@@ -1226,4 +1252,4 @@ Final: revise @ design 0.9.0 - f7f8c6d, workspace main @ 4bfc214
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
