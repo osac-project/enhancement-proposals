@@ -57,7 +57,11 @@ Enumerated changes, all in `fulfillment-service`:
 1. **Public proto (generated from private via cleanapi).** Opt the private
    `Volumes` service and `Volume` type into public generation; expose only `List`
    and `Get`; strip the internal status fields (`backend`, `protocol`, `hub`,
-   `vendor_volume_id`). `StorageProtocol`/`storage_common_type` stay fully private.
+   `vendor_volume_id`) by annotating each with `[(cleanapi.field).private = true]`
+   on the private proto — cleanapi excludes annotated fields from the generated
+   public message, so a private field can only reach the public schema if someone
+   both adds it and forgets the annotation. A generated-schema test guards against
+   that (see Test Plan). `StorageProtocol`/`storage_common_type` stay fully private.
 2. **Public `VolumesServer`** (`internal/servers/volumes_server.go`): delegates
    `List`/`Get` to `PrivateVolumesServer`, maps private→public (dropping internal
    fields), and sets the CEL filter descriptor to the public `Volume` so callers
@@ -78,7 +82,7 @@ volumes already exist and are inventoried by OSAC-2872.
 
 Request path:
 
-```
+```text
 HTTP/gRPC client
   -> REST gateway (grpc-gateway mux)            [REST callers only]
   -> gRPC interceptors: authn (JWT) -> authz (OPA) -> tenancy
@@ -98,6 +102,12 @@ the same by id, returning `NotFound` when the id is not visible/absent.
 - New **public gRPC service** `osac.public.v1.Volumes` with `List` and `Get`, and
   REST transcoding at `/api/fulfillment/v1/volumes` and `/{id}`.
 - New public `Volume` message (subset of the private one).
+- **Resource name (resolved):** the public collection is `volumes` (path
+  `/api/fulfillment/v1/volumes`), matching the private resource name and the
+  plural-noun convention used by every other public resource. An earlier draft
+  raised `block_volumes` as a candidate; it is not adopted — the public API mirrors
+  the private name, and file/block/object distinctions are carried in fields, not
+  the resource path.
 - No CRDs, webhooks, aggregated API servers, or finalizers. No change to any
   externally-owned resource.
 
@@ -125,6 +135,12 @@ UI-side action is regenerating types after this lands. (Confirmed with the UI ow
 - `SetFilterDesc((*publicv1.Volume)(nil).ProtoReflect().Descriptor())` restricts
   CEL filters to public fields, so a caller cannot filter on hidden fields such as
   `status.backend`.
+- **`order` parameter:** the `List` request carries an `order` field (inherited
+  from the shared list-request shape), but the generic DAO currently ignores it and
+  always sorts by `id` (`generic_dao_list.go`). It is therefore *not* a private-field
+  exposure vector today. If server-side ordering is implemented later, it must be
+  translated against the same public descriptor as the filter so it cannot reference
+  hidden fields — called out here so the constraint is not lost.
 - **cleanapi import pruning (tooling note):** cleanapi v0.0.8 copies imports
   verbatim and does not prune those that become unused after fields/methods are
   stripped (`storage_common_type` in the public `volume_type`, `field_mask` in the
@@ -162,6 +178,21 @@ caller's tenants (plus shared). This is **tenant-level** scoping — the same mo
 every other resource uses; role does not change which rows are visible, only which
 methods may be called.
 
+Authorization matrix for this EP:
+
+| Actor | `Get` / `List` allowed? | Rows returned |
+|---|---|---|
+| Tenant User | Yes | All volumes in the caller's own tenant(s) (+ `shared`) |
+| Tenant Admin | Yes | Same as Tenant User — identical row scope |
+| Cloud Provider Admin | Yes | Volumes across every tenant the subject is a member of, per `DetermineVisibleTenants` (no cross-tenant superuser bypass is added here) |
+| Unauthenticated | No | — (`Unauthenticated`) |
+| Mutating methods (`Create`/`Update`/`Delete`/`Signal`) | No public method exists | — (private API only) |
+
+Tenant User and Tenant Admin have identical read scope, consistent with OSAC-2872,
+where both roles share the same storage capabilities. A "Cloud Provider Admin"
+sees more only because that subject belongs to more tenants — the row predicate is
+the same `tenant IN (visible)` for everyone; there is no role-specific query path.
+
 The PRD DoD's "Tenant User sees only their own volumes" is a **per-creator**
 boundary that no OSAC resource implements today (`creator` is an attribution field
 and an optional filter, never an enforced boundary). Implementing it requires
@@ -170,6 +201,15 @@ apply uniformly across resources; it is therefore **deferred to a platform tenan
 feature**. This EP ships tenant-level scoping, which is consistent and unblocks the
 console. No new tenant-isolation metadata is introduced (reads reuse the existing
 `tenant` column and visibility logic).
+
+To be explicit about the security boundary: shipping tenant-level (not
+owner-level) visibility is **not a cross-tenant data leak** — every returned row is
+already within the caller's own tenant(s). It is an accepted, recorded *product*
+narrowing of the DoD (a Tenant User may see peers' volumes *within their tenant*),
+matching how every other read resource behaves today. If a given deployment needs
+per-creator confidentiality before the platform feature lands, the endpoints can be
+withheld via the OPA allowlist (see Support Procedures); they are not enabled
+silently in a way that would surprise a tenant.
 
 ### Observability and Monitoring
 
@@ -214,7 +254,14 @@ narrowing of the stated DoD for this release.
 - Public `Get` returns the public projection; `List` returns items with size/total.
 - Field mapping: public `Volume` carries spec (tier/size/access mode) and status
   (state/message); internal fields are absent by type.
+- **Generated-schema guard:** a test asserts the public `Volume` descriptor
+  contains *only* the intended public fields — i.e. none of `backend`, `protocol`,
+  `hub`, `vendor_volume_id` appear — so a future private field added without the
+  `private = true` annotation fails the build rather than silently leaking.
 - CEL filter over a public field (`status.state`) returns the expected subset.
+- **CEL filter over a private field is rejected:** a filter referencing
+  `status.backend` returns `InvalidArgument` (proves `SetFilterDesc` restricts the
+  public filter surface).
 - `Get` on a nonexistent id returns an error.
 - Authz: a tenant client is allowed on `Volumes/Get` + `/List` and denied on
   (nonexistent) public `Volumes/Create` + `/Delete`.
