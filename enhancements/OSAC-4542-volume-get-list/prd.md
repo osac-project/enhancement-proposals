@@ -17,7 +17,8 @@ The OSAC storage control plane (OSAC-2872) already provisions standalone storage
 - **Retrieve a volume's details.** A user can fetch a single volume and see its tenant-meaningful attributes — name, tier, size, access mode, and current state — so they can confirm its configuration and availability.
 - **List volumes.** A user can list the volumes they are entitled to see, with filtering, sorting, and pagination consistent with other OSAC list endpoints, so the console and CLI can present and navigate storage inventory.
 - **Tenant-scoped visibility.** Each caller sees only the volumes in the tenants they are entitled to: a Cloud Provider Admin across their assigned tenants, and tenant members within their own tenant — the same visibility model used by every other OSAC resource.
-- **Read-only, tenant-meaningful representation.** The public view exposes only information that is meaningful to tenants; internal placement and routing details used to serve a volume are not shown. Volumes are read-only through this API.
+- **Read-only, tenant-meaningful representation.** The public view exposes only information that is meaningful to tenants; internal placement and routing details used to serve a volume — the serving backend, its storage protocol, the hub that hosts it, and the vendor-assigned volume identifier — are never shown. Volumes are read-only through this API.
+- **Stable public identifier.** Each volume has an immutable, tenant-unique `id` that `List` returns and `Get` accepts; `name` is a display attribute and is not the request key. Console deep-links and Get requests use `id`, so they remain stable even if a volume is renamed and are unambiguous when names repeat.
 - **Same access channels as other resources.** Volumes are reachable over the same public gRPC and REST endpoints, console, and CLI as other OSAC resources; no storage-specific access path is introduced.
 - **Test and documentation.** Tests cover retrieving and listing standalone volumes through the public API, including tenant-scoped isolation; API documentation and the published API spec are updated with the new read endpoints.
 
@@ -44,6 +45,7 @@ Deferred to later work (this release is read-only Get/List only):
 ### Tenant User
 
 - As a Tenant User, I want to get the details of a specific storage volume — its size, tier, and state — so that I can understand its configuration and verify its availability.
+- As a Tenant User, I want to list the storage volumes in my tenant, so that I can find a volume and navigate storage inventory in the console. Tenant User and Tenant Admin have the same read scope in this release (both see all volumes in the tenant), consistent with OSAC-2872, where both roles share the same storage capabilities. Restricting a Tenant User to only the volumes they created is explicitly out of scope (see Out of Scope).
 
 ### Cloud Infrastructure Admin
 
@@ -59,6 +61,17 @@ Deferred to later work (this release is read-only Get/List only):
 
 - **OSAC-2872 (Storage Control Plane):** provides the private Volume API, the volume inventory, and the tier/backend model this read API surfaces. Must be in place for volumes to exist and be retrievable.
 - **Console UI / UX and UI design gates (OSAC-4546, OSAC-4547):** consume this API to present the volume list and detail views; tracked separately.
+
+## Acceptance Criteria
+
+The "consistent with other OSAC list endpoints" behavior above resolves to the following testable contract, inherited from the shared list machinery:
+
+- **Identifier.** `List` items and `Get` both key on the immutable `id`; a `Get` by the `id` of a visible volume returns it, and a `Get` by an id outside the caller's tenants returns `not found` (indistinguishable from a non-existent id, so existence is not leaked across tenants).
+- **Filtering.** `List` accepts a CEL filter over public fields only (e.g. `status.state`, `spec.storage_tier`). A filter that references a non-public field (e.g. the serving backend) is rejected as an invalid argument rather than silently ignored.
+- **Ordering.** Results have a stable, deterministic order (by `id`) so pagination does not drop or duplicate rows across pages.
+- **Pagination.** `List` accepts `offset` and `limit`; the default page size is 100 and the maximum is 1000 (a larger `limit` is capped, not rejected). The response reports the total count so the console can page through the full set.
+- **Inventory states.** `List` and `Get` return volumes in every state tracked by OSAC-2872 (`creating`, `available`, `deleting`, `deleted`) as long as the volume remains in inventory; there is no implicit state filter — callers filter by `status.state` if they want a subset.
+- **Isolation.** A caller never receives a volume outside their entitled tenants through either `List` or `Get`, and this is covered by an automated tenant-isolation test.
 
 ---
 
