@@ -36,7 +36,7 @@ The visibility scope is the same as for any other resource — the Tenant Admin 
 
 #### Impact
 
-Confirmed against the existing OSAC authorization model (`osac/fulfillment-service/docs/AUTH.md`): visibility and authorization for tenant resources (ComputeInstance, VirtualNetwork, etc.) are keyed on `metadata.tenant`, not on the creating user — `metadata.creator` is informational only. There is no existing per-user ownership/visibility restriction for any comparable resource. Applying the same model here means any Tenant Admin in the org can see, use, and delete any Tenant User's registered SSH keys, and any Tenant User can potentially see keys registered by others in the same tenant (list scope = tenant, not creator). The PRD's Tenant Admin user stories and acceptance criteria must reflect full CRUD parity with Tenant User, scoped by tenant.
+Confirmed against the existing OSAC authorization model (`osac/fulfillment-service/docs/AUTH.md`): visibility and authorization for tenant resources (ComputeInstance, VirtualNetwork, etc.) are keyed on `metadata.tenant`, not on the creating user — `metadata.creator` is informational only. There is no existing per-user ownership/visibility restriction for any comparable resource. Applying the same model here means any Tenant Admin in the org can see, use, and delete any Tenant User's registered SSH keys, and any Tenant User can potentially see keys registered by others in the same tenant (list scope = tenant, not creator). The PRD's Tenant Admin user stories and acceptance criteria must reflect the same create/list/get/delete capabilities as Tenant User, scoped by tenant.
 
 #### Decision (D2)
 
