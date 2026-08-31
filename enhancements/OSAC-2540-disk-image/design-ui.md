@@ -284,7 +284,7 @@ Columns:
 | Guest OS family | `spec.guest_os_family` |
 | Architecture | `spec.architecture[]` rendered as `LabelGroup` chips |
 | Lifecycle | `DiskImageLifecycleLabel` |
-| Scope | Global if `metadata.tenant` empty, else Tenant |
+| Scope | Global if `metadata.tenant == "shared"`, else Tenant |
 | Created | `metadata.creation_timestamp` (`Timestamp`) |
 | — | per-row `DiskImageActionsMenu` |
 
@@ -423,9 +423,9 @@ responsibilities:
   **global scope** control in the create form and global-image lifecycle
   actions are shown only to the provider-admin role.
 - **Visibility**: the console renders exactly what `List`/`Get` return for the
-  caller — global images (empty `metadata.tenant`) plus the caller's own tenant.
-  Cross-tenant images are never returned, so no client-side filtering is needed
-  for isolation.
+  caller — global images (`metadata.tenant == "shared"`) plus the caller's own
+  tenant. Cross-tenant images are never returned, so no client-side filtering
+  is needed for isolation.
 - **Jira component convention**: each persona's UI task carries the epic's
   components plus `UI` (Provider Admin, Tenant Admin, Tenant User all use `UI`).
   [Codebase: .design/context/osac-dimensions.md]

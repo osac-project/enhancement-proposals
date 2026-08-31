@@ -190,7 +190,7 @@
 
 ##### Preconditions
 
-- Global DiskImage created by Cloud Provider Admin (metadata.tenant empty)
+- Global DiskImage created by Cloud Provider Admin (metadata.tenant == "shared")
 - Users in Tenant A and Tenant B exist
 
 ##### Steps
