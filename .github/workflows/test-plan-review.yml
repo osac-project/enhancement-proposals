@@ -1,9 +1,8 @@
 name: Test Plan Review
 
 on:
-  push:
-    branches:
-      - 'test-plan/**'
+  pull_request_target:
+    types: [opened, synchronize, reopened]
     paths:
       - '**/TestPlan.md'
       - '**/testplan.md'
@@ -16,7 +15,7 @@ permissions: {}
 jobs:
   resolve-pr:
     if: >-
-      github.event_name == 'push'
+      github.event_name == 'pull_request_target'
       || (github.event_name == 'issue_comment'
           && github.event.issue.pull_request
           && (contains(github.event.comment.body, '/test-plan-score')
@@ -57,19 +56,16 @@ jobs:
         id: resolve
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
           EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
           COMMENT_BODY: ${{ github.event.comment.body }}
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            BRANCH="${GITHUB_REF#refs/heads/}"
-            PR_JSON=$(gh pr list --repo "${{ github.repository }}" --head "$BRANCH" --json number,headRefOid,baseRefName --jq '.[0]')
-            if [[ -z "$PR_JSON" || "$PR_JSON" == "null" ]]; then
-              echo "::error::No PR found for branch $BRANCH"
-              exit 1
-            fi
-            echo "pr_number=$(echo "$PR_JSON" | jq -r .number)" >> "$GITHUB_OUTPUT"
-            echo "head_sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
-            echo "base_ref=$(echo "$PR_JSON" | jq -r .baseRefName)" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == "pull_request_target" ]]; then
+            echo "pr_number=$EVENT_PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$EVENT_PR_HEAD_SHA" >> "$GITHUB_OUTPUT"
+            echo "base_ref=$EVENT_PR_BASE_REF" >> "$GITHUB_OUTPUT"
             echo "mode=score" >> "$GITHUB_OUTPUT"
 
           elif [[ "${{ github.event_name }}" == "issue_comment" ]]; then
