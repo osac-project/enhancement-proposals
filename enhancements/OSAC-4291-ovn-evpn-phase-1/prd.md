@@ -21,6 +21,7 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join th
 - **Automatic CUDN creation** with EVPN transport topology when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
 - **Automatic FRRConfiguration creation** for EVPN overlay (VNI-specific route targets, L2VPN EVPN address family) [Clarify: R2.Q1, D5]
 - **VM-to-fabric connectivity** via BGP EVPN (Type-2 MAC/IP routes, Type-3 VTEP discovery, Type-5 prefix routes)
+- **Layer 2 and Layer 3 VPC support** — CUDN can bridge to Netris VPCs with flexible subnet configuration: same subnet as Netris VNet uses Layer 2 VNI (macVRF) for L2 connectivity; different subnet uses Layer 3 VNI (ipVRF) for L3 routing [User]
 - **Single-subnet-per-VirtualNetwork constraint** enforced at Subnet API creation time (OVN Connectors limitation) [Clarify: R1.Q4, D4]
 - **DHCP range coordination** between OCP CUDN IPAM and Netris DHCP to avoid IP collisions [Clarify: R1.Q5]
 - **Installation prerequisites documentation** for Cloud Infrastructure Admin (underlay link, VTEP setup, BGP peering) [Clarify: R2.Q2, R2.Q3, D6]
@@ -63,7 +64,7 @@ The following are out of scope for Phase 1:
 
 - As a Tenant Admin or Tenant User, I want to create VirtualNetworks and Subnets using the existing OSAC API without needing to configure EVPN details (VNIs, route targets, BGP peering) so that VMs I provision are automatically bridged to the physical fabric. [Clarify: R1.Q2, D2]
 
-- As a Tenant Admin or Tenant User, I want VMs I provision on an EVPN-bridged subnet to receive IP addresses via OVN DHCP and be reachable from bare-metal servers on the same Netris VPC subnet so that my workloads can span VMs and physical hosts in the same L2 network.
+- As a Tenant Admin or Tenant User, I want VMs I provision on an EVPN-bridged subnet to receive IP addresses via OVN DHCP and be reachable from bare-metal servers in the same Netris VPC so that my workloads can span VMs and physical hosts — either via Layer 2 connectivity when using the same subnet, or via Layer 3 routing when using different subnets within the same VPC. [User]
 
 - As a Tenant Admin or Tenant User, I want the system to reject my second Subnet creation attempt under the same VirtualNetwork with a clear error message referencing the OVN Connectors limitation so that I understand the constraint and can structure my networks accordingly. [Clarify: R1.Q4, D4]
 
@@ -104,8 +105,11 @@ The following are out of scope for Phase 1:
 
 ## Provenance
 
-Committed: commit @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ e18362f (20 behind origin/main)
+Authored: commit @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ e18362f (20 behind origin/main)
+Final: revise @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ a346761 (20 behind origin/main)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between commit and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"837cf0d","source_repo":"e18362f","source_repo_branch":"prd/OSAC-4291","commits_behind_main":20,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"837cf0d","source_repo":"a346761","source_repo_branch":"prd/OSAC-4291","commits_behind_main":20,"commits_ahead_main":1,"main_ref":"main","phases":["commit","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
