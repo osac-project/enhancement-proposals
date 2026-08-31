@@ -3,15 +3,18 @@
 ## Overview
 
 - **Feature:** OSAC-3046 — Per-Service Enablement (CaaS/VMaaS/BMaaS/MaaS)
-- **Total test cases:** 18
+- **Total test cases:** 20
 - **Requirements covered:** 8 of 8
 
 ## Execution Strategy
 
 Each `helm upgrade` triggers a pod rollout (2-5 minutes). To minimize rollout cycles, test cases should be grouped by deployment state during execution:
 
+**State 0 — Helm validation (no deployment needed):**
+TC-FR1-03, TC-FR1-04
+
 **State 1 — BMaaS+MaaS disabled** (`services.bmaas.enabled=false`, `services.maas.enabled=false`):
-TC-FR1-01, TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-FR2-04, TC-FR2-05, TC-FR4-01, TC-FR5-01, TC-FR5-03, TC-FR5-04, TC-NFR1-01, TC-NFR3-01
+TC-FR1-01, TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-FR2-04, TC-FR2-05, TC-FR4-01, TC-FR5-01, TC-FR5-04, TC-NFR1-01, TC-NFR3-01
 
 **State 2 — Upgrade to enable BMaaS** (`helm upgrade` with `services.bmaas.enabled=true`):
 TC-FR3-01
@@ -22,7 +25,7 @@ TC-FR1-02, TC-FR2-04, TC-FR4-02, TC-FR4-03, TC-NFR2-01
 **State 4 — VMaaS disabled** (`services.vmaas.enabled=false`):
 TC-FR5-02
 
-This reduces execution from 18 individual rollouts to 4 deployment states.
+This reduces execution from 20 individual rollouts to 4 deployment states plus a pre-deployment Helm validation step.
 
 ## Test Cases
 
@@ -71,6 +74,42 @@ This reduces execution from 18 individual rollouts to 4 deployment states.
 - The fulfillment-service container args include `--enable-caas`, `--enable-vmaas`, `--enable-bmaas`, and `--enable-maas`
 - All operator controller env vars are set to `true`
 - The BMF operator deployment is present
+
+#### TC-FR1-03: Invalid combination — CaaS without VMaaS or BMaaS — rejected
+
+| Story | AC | Priority | Automation |
+|-------|-----|----------|------------|
+| Story 1.05 | AC-2 | critical | automated |
+
+##### Preconditions
+
+- Helm chart source with `values.schema.json` containing inter-service dependency constraints
+
+##### Steps
+
+1. Run `helm template osac charts/osac --set services.caas.enabled=true --set services.vmaas.enabled=false --set services.bmaas.enabled=false`
+
+##### Expected Results
+
+- The command fails with a schema validation error indicating CaaS requires at least one of VMaaS or BMaaS
+
+#### TC-FR1-04: Invalid combination — MaaS without CaaS — rejected
+
+| Story | AC | Priority | Automation |
+|-------|-----|----------|------------|
+| Story 1.05 | AC-2 | critical | automated |
+
+##### Preconditions
+
+- Helm chart source with `values.schema.json` containing inter-service dependency constraints
+
+##### Steps
+
+1. Run `helm template osac charts/osac --set services.maas.enabled=true --set services.caas.enabled=false`
+
+##### Expected Results
+
+- The command fails with a schema validation error indicating MaaS requires CaaS
 
 ### FR-2: Disabled services are not accessible — no API endpoints, no UI surfaces, no provisioning capability
 
@@ -139,7 +178,7 @@ This reduces execution from 18 individual rollouts to 4 deployment states.
 
 ##### Preconditions
 
-- Fulfillment-service running with only CaaS enabled (VMaaS, BMaaS, MaaS disabled)
+- Fulfillment-service running with some services disabled (tested under State 1: BMaaS+MaaS disabled, and State 3: all enabled)
 
 ##### Steps
 
@@ -303,15 +342,15 @@ This reduces execution from 18 individual rollouts to 4 deployment states.
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
-| Story 3.01 | AC-3 | high | automated |
+| Story 3.01 | AC-3 | high | unit only |
 
 ##### Preconditions
 
-- Fulfillment-service running with both BMaaS and VMaaS disabled
+- `serviceFlags` with both BMaaS and VMaaS disabled (unit test — this combination is not deployable via Helm because CaaS requires VMaaS or BMaaS)
 
 ##### Steps
 
-1. Call `HostTypes.List` via gRPC
+1. Call `HostTypes.List` via the unit test harness
 
 ##### Expected Results
 
@@ -346,7 +385,7 @@ This reduces execution from 18 individual rollouts to 4 deployment states.
 
 ##### Preconditions
 
-- Fulfillment-service running with all compute services disabled (BMaaS and VMaaS both disabled, only CaaS enabled)
+- Fulfillment-service running with BMaaS and MaaS disabled (State 1 configuration)
 
 ##### Steps
 
@@ -354,8 +393,9 @@ This reduces execution from 18 individual rollouts to 4 deployment states.
 
 ##### Expected Results
 
-- The call returns `codes.OK` with an empty list (not `codes.Unavailable` or `codes.Unimplemented`)
-- The HostTypes service is accessible even though its backing compute services are disabled
+- The call returns `codes.OK` (not `codes.Unavailable` or `codes.Unimplemented`)
+- The HostTypes service is accessible even though one of its backing compute services (BMaaS) is disabled
+- The response contains only virtual host types (bare-metal types filtered out)
 
 ### NFR-2: Backward compatibility — all services enabled by default
 
@@ -406,17 +446,19 @@ This reduces execution from 18 individual rollouts to 4 deployment states.
 
 - **Story 1.04, AC-4** (`fulfillment_disabled_service_requests_total` Prometheus metric): Verified by unit tests only — metric increment is an internal implementation detail, not a behavioral scenario observable from outside the system.
 - **Story 1.04, AC-5** (startup log listing enabled/disabled services): Verified by unit tests only — log output is an operational detail, not a user-facing behavioral outcome.
+- **TC-FR5-03** (Story 3.01, AC-3 — empty host types when both compute services disabled): Unit-test-only. The `values.schema.json` constraint requires CaaS to have at least one of VMaaS or BMaaS enabled, so both-disabled is not a deployable Helm configuration. The filtering logic is verified at the unit test level with `serviceFlags` set directly.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 18 |
-| Critical | 8 |
+| Total test cases | 20 |
+| Critical | 10 |
 | High | 8 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 18 |
+| Automated (E2E) | 18 |
+| Unit only | 1 |
 | Manual | 0 |
 | Requirements with test cases | 8 / 8 |
 | Requirements without test cases | 0 |
