@@ -263,9 +263,19 @@ func (f *serviceFlags) enableAllIfNoneSet() {
         f.MaaS = true
     }
 }
+
+func (f *serviceFlags) validate() error {
+    if f.CaaS && !f.VMaaS && !f.BMaaS {
+        return fmt.Errorf("CaaS requires at least one of VMaaS or BMaaS to be enabled")
+    }
+    if f.MaaS && !f.CaaS {
+        return fmt.Errorf("MaaS requires CaaS to be enabled")
+    }
+    return nil
+}
 ```
 
-If no `--enable-*` flag is provided, all services are enabled — matching the operator's `enableAllIfNoneSet()` pattern for backward compatibility. [Codebase: osac-operator/cmd/main.go]
+If no `--enable-*` flag is provided, all services are enabled — matching the operator's `enableAllIfNoneSet()` pattern for backward compatibility. After `enableAllIfNoneSet()`, `validate()` is called to reject invalid combinations before any server initialization begins. The process exits with a clear error message if validation fails. This provides defense in depth alongside the Helm-level `values.schema.json` constraints — catching misconfigurations even when the binary is started outside Helm (development, testing, custom manifests). [Codebase: osac-operator/cmd/main.go]
 
 #### Fulfillment-Service: Conditional gRPC Registration
 
@@ -429,7 +439,7 @@ The osac-operator already has per-controller enable flags — no new mechanism i
 
 Shared controllers (Tenant, Storage, Volume, Networking) remain always-enabled — they are shared infrastructure. [Locked: D2]
 
-The existing `operator.controllers.*` values and their propagation to `OSAC_ENABLE_*_CONTROLLER` env vars are unchanged. [Codebase: osac-operator/charts/operator/templates/deployment.yaml]
+The existing `operator.controllers.*` values and their propagation to `OSAC_ENABLE_*_CONTROLLER` env vars are unchanged. The operator's existing `controllerFlags` struct is extended with a `validate()` method that enforces the same inter-service dependency rules as the fulfillment-service: CaaS requires VMaaS or BMaaS, MaaS requires CaaS. The operator exits on startup with a clear error if an invalid combination is detected. [Codebase: osac-operator/charts/operator/templates/deployment.yaml]
 
 #### Bare-Metal Fulfillment Operator
 
@@ -451,13 +461,15 @@ The security improvement is additive: disabled services have no attack surface b
 
 The Capabilities endpoint remains unauthenticated (consistent with its current behavior — it is matched by `anonymousMethodsRegex`). The `enabled_services` field exposes which services are active, which is intentional: clients need this information to adapt their behavior. This information is not sensitive — an attacker could determine the same by probing each service endpoint.
 
-The `--enable-*` flags are typed booleans — no input parsing or validation is needed beyond what pflag provides. If no flags are set, all services are enabled (backward compatibility).
+The `--enable-*` flags are typed booleans — no input parsing is needed beyond what pflag provides. Inter-service dependency validation (`validate()`) runs at startup to reject invalid combinations before any server initialization. If no flags are set, all services are enabled (backward compatibility).
 
 ### Failure Handling and Recovery
 
 **Invalid service combination in Helm values:** If an admin specifies an invalid combination (e.g., CaaS enabled without VMaaS or BMaaS), `helm install`/`helm upgrade` fails immediately with a validation error from `values.schema.json`. No pods are started or restarted.
 
-**No `--enable-*` flags provided:** If no service enable flag is provided, the fulfillment-service enables all services via `enableAllIfNoneSet()` (backward compatibility). This matches the operator's behavior.
+**Invalid service combination at runtime:** If the binary is started with an invalid flag combination outside Helm (development, testing, custom manifests), the `validate()` method on `serviceFlags` (fulfillment-service) or `controllerFlags` (operator) rejects the combination at startup before any server or controller initialization. The process exits with a clear error message (e.g., `"CaaS requires at least one of VMaaS or BMaaS to be enabled"`). This is defense in depth — Helm catches it at deploy time, the binary catches it at startup.
+
+**No `--enable-*` flags provided:** If no service enable flag is provided, the fulfillment-service enables all services via `enableAllIfNoneSet()` (backward compatibility). This matches the operator's behavior. The `validate()` call runs after `enableAllIfNoneSet()`, so the all-enabled default always passes validation.
 
 **Helm upgrade with new services enabled:** When a `helm upgrade` enables a previously disabled service, the fulfillment-service pod restarts and registers the new service endpoints. No database migration is needed — the database schema includes all tables regardless of enabled services (tables for disabled services are unused but present). The operator pod restarts and begins reconciling the newly enabled controller's resources.
 
@@ -580,6 +592,7 @@ Should AAP instance groups be disabled when their corresponding service is disab
 **fulfillment-service:**
 
 - `enableAllIfNoneSet` enables all services when no flag is explicitly set, and preserves explicit flags when any are set.
+- `validate` rejects invalid combinations (CaaS without VMaaS/BMaaS, MaaS without CaaS), accepts valid combinations, and passes after `enableAllIfNoneSet()`.
 - `RegisterResourceServers` with each `serviceFlags` combination registers only the expected services. Verify by checking which services are registered on the gRPC server (via reflection or the server's `GetServiceInfo()` method).
 - `UnknownServiceHandler` returns `codes.Unavailable` with the correct service name for calls to known-but-disabled services, and falls through to `codes.Unimplemented` for genuinely unknown services.
 - REST gateway `registerHandlers` returns the expected handler set for each `serviceFlags` combination.
