@@ -3,7 +3,7 @@ title: reliable-event-distribution
 authors:
   - juan.hernandez@redhat.com
 creation-date: 2026-08-25
-last-updated: 2026-08-26
+last-updated: 2026-08-27
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-983
 prd:
@@ -39,8 +39,9 @@ itself is out of scope for this feature.) Cluster-wide consumers (the controller
 topic at once with a single regex subscription (`^osac\.events\..*$`), which
 Kafka and the client library support natively and which auto-discovers a new
 tenant's topic on the next metadata refresh. Each delivered event's `id` is an opaque, encrypted
-encoding of its Kafka position `(tenant, partition, offset)` — the tenant selecting the topic — so a consumer resumes simply
-by replaying that id as `from`, with no server-side resume index. The
+encoding of its Kafka position `(tenant, offset)` — the tenant selecting the topic, the
+partition omitted because each tenant topic has exactly one partition (always partition 0) —
+so a consumer resumes simply by replaying that id as `from`, with no server-side resume index. The
 `event_outbox` is a transient staging buffer — drained and deleted once published —
 and Kafka (within its retention window) is the sole durable, replayable event log. Delivery becomes at-least-once with per-tenant total
 ordering, per-tenant data-at-rest isolation, and end-to-end tenant isolation, while requests that omit the new fields
@@ -130,6 +131,20 @@ prods the publisher to drain the outbox; it is never a delivery transport.
   `Watch` [PRD: Out of Scope].
 - Migrating non-controller consumers (for example cost-management/metering) onto
   the reliable path; they adopt later through the same API [PRD: Out of Scope].
+  When osac-metering later adopts the reliable path, its consumption pattern is
+  `Watch(filter: "has(event.compute_instance) || has(event.cluster)", group:
+  "osac-metering")` on the private path — a cluster-wide group consumer with a
+  CEL object-type filter. The bridge subscribes to all tenant topics via regex,
+  consumes all events, and applies the filter server-side; the efficiency
+  trade-off is that the bridge processes every tenant event to filter for the
+  relevant types, which is acceptable because filter evaluation is cheap relative
+  to I/O. The resulting data flow is two-hop: events transit `osac.events.<tenant>`
+  through the Watch API into the metering service, which then enriches and
+  republishes billing CloudEvents to `osac.metering.*`. This is expected — the
+  metering pipeline produces CloudEvents enriched with billing dimensions
+  (previous/current state, duration, billing dimensions), not raw object snapshots,
+  so direct subscription to `osac.events.*` topics would bypass the enrichment.
+  See Watch bridge for the validated API contract.
 - Notification delivery (OSAC-75), audit-log storage/query (OSAC-63), and
   Prometheus alerting rules [PRD: Out of Scope].
 - Tenant offboarding — the deletion of a departed tenant's topic and data, and
@@ -261,20 +276,22 @@ replay.
 
 **Resume after disconnect (broadcast mode, no `group`).** A consumer records the
 `id` of the last event it processed. On reconnect it passes that id as `from`. The
-id *is* the (encrypted) Kafka position, so the bridge decrypts it directly to a
-topic, partition and offset and seeks that partition to the next offset — no database
-lookup and no server-side index. Because a tenant's events all live on that
-tenant's single-partition topic, a consumer scoped to a single tenant resumes from exactly one offset —
-a total order with no cross-partition reconstruction and no timestamp-based
-approximation. A consumer authorized for multiple tenants reads one topic per
-tenant; because the token is opaque it encodes the full
-set of per-(topic,partition) offsets the consumer had reached, so a single `from` still
-resumes every topic exactly, without any timestamp seek. (Broadcast mode assigns
+id is the encrypted Kafka position, so the bridge decrypts it directly to a topic,
+partition and offset and seeks that partition to the next offset — no database
+lookup and no server-side index. Broadcast-mode `from` is designed for
+single-tenant consumers: the last received `Event.id` encodes the position for
+that one topic, and replaying it resumes exactly. A broadcast consumer watching
+multiple tenant topics (e.g. a provider-admin without a group) receives one
+`Event.id` per delivered event; using the last received id as `from` on reconnect
+resumes only that event's topic from the correct position — the remaining
+subscribed topics restart from their current head. Multi-tenant consumers that
+need per-topic resume across all subscribed topics must use group mode (`group`
+supplied), where Kafka tracks committed offsets per `(group, topic, partition)`
+automatically (see Load-balanced delivery below). (Broadcast mode assigns
 the specific tenant topics explicitly rather than by regex, since regex
 subscription is a consumer-group facility — see Watch bridge.) Delivery remains
-at-least-once, so a consumer
-may still see a boundary event twice and must be idempotent — this is expected,
-not an error [PRD: In Scope].
+at-least-once, so a consumer may still see a boundary event twice and must be
+idempotent — this is expected, not an error [PRD: In Scope].
 
 **Load-balanced delivery (group mode, `group` supplied).** Each event is
 delivered to exactly one member of the group. The bridge derives a Kafka consumer
@@ -318,12 +335,13 @@ message EventsWatchRequest {
   // Existing CEL filter (unchanged).
   optional string filter = 1;
 
-  // Resume position: the opaque id of the last event the consumer processed (an
-  // encrypted encoding of the Kafka position; clients treat it as opaque). When
+  // Opaque resume position: the id of the last event the consumer processed. When
   // set, the server resumes delivery immediately after that position. Ignored when
-  // a group is supplied (the group's committed position governs resume). The bound
-  // is generous because for a multi-tenant scope the token
-  // encodes one offset per tenant topic read.
+  // a group is supplied (the group's committed position governs resume). For
+  // single-tenant consumers, replaying the last received id resumes that topic
+  // exactly. For multi-tenant consumers that need per-topic resume across all
+  // subscribed topics, use the group field — Kafka tracks committed positions per
+  // topic automatically without a client-side cursor.
   optional string from = 2 [
     (buf.validate.field).string.max_len = 4096
   ];
@@ -459,24 +477,39 @@ bridge stamps `Event.id` from the consumer record's own `(partition, offset)`
 metadata at read time. To resume, a client replays that id as `from`; the bridge
 decodes it and seeks — no database lookup.
 
-The encoding is an authenticated, symmetric encryption (AEAD, e.g. AES-GCM-SIV or
-XChaCha20-Poly1305) over the tuple, keyed by a service-held secret, for three
-reasons: (1) *obfuscation* — clients see an opaque token and cannot come to depend
-on the internal `tenant:partition:offset` structure; (2) *tamper-evidence* — a forged or
-truncated token fails authenticated decryption and is rejected with
-`INVALID_ARGUMENT`; (3) *tenant binding* — the `tenant` travels inside the token
-(as plaintext-bound associated data), so the bridge rejects with `PERMISSION_DENIED`
-any `from` whose tenant is outside the caller's visible scope. Encryption is
-*obfuscation and integrity, not the isolation boundary*: even a valid token only
-selects a seek position, and every delivered event is still tenant-filtered
-regardless of the supplied cursor (see Security). A *deterministic* AEAD (synthetic
-IV) is used so the same record always yields the same id — stable and repeatable
-across re-reads — rather than a fresh random ciphertext each time. For a
-multi-tenant or cluster-wide scope, the token encodes
-the vector of per-(topic, partition) offsets the consumer had reached, so one `from` resumes
-every tenant topic it reads. The signing/encryption key is supplied from service
-configuration (a Kubernetes secret) and rotated via a keyset — the newest key
-encrypts, all live keys decrypt — so cursors minted before a rotation remain
+The encoding is an authenticated, symmetric encryption (AEAD) over the tuple,
+keyed by a service-held secret, for three reasons: (1) *obfuscation* — clients see
+an opaque token and cannot come to depend on the internal `tenant:partition:offset`
+structure; (2) *tamper-evidence* — a forged or truncated token fails authenticated
+decryption and is rejected with `INVALID_ARGUMENT`; (3) *tenant binding* — the
+`tenant` travels inside the token (as plaintext-bound associated data), so the
+bridge rejects with `PERMISSION_DENIED` any `from` whose tenant is outside the
+caller's visible scope. Encryption is *obfuscation and integrity, not the isolation
+boundary*: even a valid token only selects a seek position, and every delivered
+event is still tenant-filtered regardless of the supplied cursor (see Security).
+
+A *deterministic* AEAD is used so the same `(tenant, partition, offset)` always
+yields the same id — stable and repeatable across re-reads. AES-GCM-SIV is the
+preferred AEAD because it is nonce-misuse-resistant by construction: the nonce is
+derived deterministically from the plaintext (synthetic IV), so nonce reuse reveals
+only ciphertext equality (two events at the same position produce the same id)
+rather than plaintext content — the accepted equality-leak for stable ids. If AES
+hardware acceleration is unavailable, XChaCha20-Poly1305 is a viable alternative,
+but requires an explicit deterministic nonce derivation (e.g., `HMAC-SHA256(key,
+plaintext)` truncated to the 24-byte nonce length) to avoid random-nonce conflicts
+with the stable-id requirement. The key version is prepended as a 1-byte tag to
+the ciphertext so the decryptor selects the correct key from the keyset before
+attempting decryption. The final AEAD, nonce scheme, and key-version encoding are
+resolved in Open Question Q5.
+
+`Event.id` always encodes the position of a single delivered event — one tenant,
+one partition, one offset. A broadcast-mode `from` token is therefore a
+single-event position; using the last received id as `from` resumes only that
+event's topic from the correct offset. Multi-tenant consumers that need per-topic
+resume across all subscribed topics must use group mode (see Watch bridge and
+Workflow Description: Resume after disconnect). The signing key is supplied from
+service configuration (a Kubernetes secret) and rotated via a keyset — the newest
+key encrypts, all live keys decrypt — so cursors minted before a rotation remain
 valid (see Infrastructure Needed).
 
 **Per-tenant Kafka topics.** One topic per tenant, `osac.events.<tenant>`, each
@@ -538,12 +571,16 @@ Partition count per tenant topic is fixed at one and is not the throughput-sizin
 knob it was for a shared topic; the sizing concern shifts to the *total* number of
 topics/partitions the cluster carries as tenant count grows (see Open Questions
 and Risks). Because the outbox is transient, Kafka's retention is
-now the *entire* replay bound — the sole durable event history. Retention is the
-resume-window SLA and is set to Kafka's default of 7 days: a consumer offline
+now the *entire* replay bound — the sole durable event history. Retention is the resume-window SLA and is set to 7 days: a consumer offline
 longer than 7 days receives the fail-fast resync signal rather than a silent skip
-[User; Research: §Kafka delivery semantics]. Retention is a per-topic setting, so
-a tenant with a distinct compliance retention requirement can be configured
-independently. The idempotent producer
+[User; Research: §Kafka delivery semantics]. Each `KafkaTopic` resource must
+explicitly set `retention.ms: 604800000` (7 × 24 × 3600 × 1000 ms) rather than
+inheriting broker defaults, so the SLA holds even if broker-level defaults change.
+`retention.bytes` must be set to `-1` (unlimited) so a size-based eviction cannot
+silently shorten the time-based window; an operator requiring a size cap must set
+it large enough that the time-based window is always the binding constraint.
+Retention is a per-topic setting, so a tenant with a distinct compliance retention
+requirement can be configured independently. The idempotent producer
 (`enable.idempotence=true`, default since client 3.0) prevents producer-retry
 duplicates and preserves per-partition order [Research: §Kafka delivery
 semantics].
@@ -595,7 +632,26 @@ up on the next metadata refresh with no reconciler change. The per-reconnect
 full `List` is removed; the periodic `syncInterval` full resync is retained as a
 low-frequency correctness backstop [PRD: In Scope]. Reconcilers already re-read
 fresh state before acting, so they tolerate the at-least-once duplicates
-[Codebase: osac/fulfillment-service/internal/controllers/reconciler.go].
+[Codebase: osac/fulfillment-service/internal/controllers/reconciler.go]. Auto-commit
+advances the Kafka committed offset when the client polls an event, not when the
+reconciler finishes processing it, so a crash in the narrow window between poll
+and processing completion could leave that event unprocessed despite its offset
+being committed. The retained periodic `syncInterval` resync backstop closes this
+gap: reconcilers re-reconcile object state on each sync cycle, making correctness
+independent of per-event delivery. A future hardening option is manual commit after
+each event is processed (not required for correctness given the resync backstop).
+
+**Non-controller cluster-wide consumers.** Services that need cluster-wide
+delivery with an object-type filter — for example, osac-metering consuming
+`ComputeInstance` and `ClusterOrder` events for billing — use the same group-mode
++ regex pattern as the controllers: `Watch(filter: "has(event.compute_instance)
+|| has(event.cluster)", group: "osac-metering")` on the private path. The bridge
+subscribes to every tenant topic via regex, consumes all events, and applies the
+CEL filter server-side. This is the validated API contract for the metering use
+case before it is adopted. The efficiency trade-off is that the bridge processes
+every tenant event to apply the filter — acceptable because filter evaluation is
+lightweight relative to I/O, but high-volume deployments should account for the
+per-event bridge overhead when sizing these consumers.
 
 **Cutover (no coexistence).** The Kafka path replaces LISTEN/NOTIFY in a single
 transition rather than running the two side by side. The release that introduces
@@ -615,6 +671,26 @@ emission code would attempt to write to a dropped `notifications` table. The
 transition therefore requires a coordinated cutover (all replicas moved together,
 accepting a brief delivery-only interruption during which capture continues via
 the triggers) rather than a gradual rollout; see Version Skew Strategy.
+
+**Migration sequencing.** The recommended cutover sequence is: (1) bring the
+service to zero replicas (all old pods stopped); (2) apply all migrations in the
+release — these create `event_outbox`, install change-capture triggers on all
+object-type tables, and drop `notifications` — while no replicas are running;
+(3) deploy the new replicas. Applying the trigger migration while old replicas
+are still running is safe, since triggers only add behavior that the old code
+ignores. However, the `notifications` drop must happen while no old replicas are
+running, because old replicas write to `notifications` on every mutation. In
+practice the migration runner applies all up migrations before replicas start, so
+steps 2 and 3 are atomic from the operator's perspective.
+
+Rows remaining in `notifications` at the time the drop migration runs represent
+best-effort events from the old transport that may or may not have already been
+delivered via LISTEN/NOTIFY. These rows cannot be transferred to the new pipeline —
+the `notifications` format lacks the columns (`payload`, `event_type`) needed to
+construct an outbox row — and they carry the same best-effort guarantee the old
+transport always provided. Any events missed in this window are reconciled by the
+low-frequency controller resync on the first sync after cutover. There is no
+delivery gap beyond what the old transport already admitted.
 
 ### Security Considerations
 
@@ -1031,10 +1107,16 @@ drawback is added write amplification from the outbox, addressed under Risks.
   ordering) topic for outlier tenants? Separately, how many tenants must the
   cluster support, and does one topic (× replication) per tenant stay within the
   broker's practical total-partition ceiling at that cardinality — i.e. how should
-  the Kafka cluster be sized and `event_tenant_topics` alarmed?
+  the Kafka cluster be sized and `event_tenant_topics` alarmed? If sharing the
+  `osac-kafka` cluster with osac-metering (expected — see Infrastructure Needed),
+  the ceiling calculation must include metering's existing partition count (~15
+  across 5 topics today, growing to ~72 at full metering capacity per the metering
+  design); the sizing target is the combined `osac.events.*` plus `osac.metering.*`
+  partition budget against the broker's practical ceiling.
 - **Owner:** fulfillment-service maintainers
 - **Impact:** Implementation Details (per-tenant topics); hot-tenant-topic risk;
-  topic/partition-proliferation risk; cluster sizing.
+  topic/partition-proliferation risk; cluster sizing; combined budget with
+  osac-metering.
 
 ### 5. Resume-cursor cipher and key management
 
@@ -1221,9 +1303,13 @@ coordinated cutover in which all replicas move together. During the brief window
 the triggers are already capturing to `event_outbox`, so no events are lost — only
 live delivery is momentarily interrupted, and it resumes (with replay) once the
 new replicas are serving. After cutover there is no version skew between transports
-to manage. Because `from`/`group` are optional, clients that send them to a
-not-yet-migrated replica simply get today's behavior. There is no CRD, so no CRD
-version migration applies. Kafka client/broker skew is bounded by using the
+to manage. Because `from`/`group` are optional, clients that send them to a not-yet-migrated
+replica silently receive today's best-effort behavior — the new fields are unknown
+to the old server and ignored, degrading from reliable to best-effort semantics
+without an error signal. This degradation is acceptable because the coordinated
+cutover minimizes the skew window to a single brief service interruption; a client
+operating during this window receives the same best-effort delivery it had before
+the feature existed. There is no CRD, so no CRD version migration applies. Kafka client/broker skew is bounded by using the
 `confluent-kafka-go/v2` client against a broker version validated in the `it/`
 chart [Research: §Existing Solutions].
 
@@ -1264,13 +1350,38 @@ cipher must be provisioned and mounted into the service. No new repositories or 
 infrastructure beyond adding the Kafka client dependency, the `it/` Kafka chart,
 the per-tenant topic provisioning hook, and the cursor-key secret.
 
+**Kafka cluster coexistence with osac-metering.** Event distribution topics
+(`osac.events.*`) deploy on the existing `osac-kafka` Strimzi cluster (namespace
+`osac-kafka`) alongside osac-metering's `osac.metering.*` topics — the prefixes do
+not collide. The event publisher requires a `KafkaUser` resource with `Write` ACL
+scoped to the `osac.events.*` prefix; the Watch bridge requires a `KafkaUser` with
+`Read` ACL on the same prefix and on `__consumer_offsets` for consumer-group
+tracking. Auth must align with the cluster's existing SCRAM-SHA-512 mechanism
+(used by osac-metering) unless the cluster is reconfigured to support additional
+mechanisms. The combined partition budget — osac-metering's existing and projected
+partitions plus one partition per tenant for event distribution — must be tracked
+against the broker's practical ceiling; see Open Question Q4.
+
+**Helm values (osac-installer).** Event distribution requires the following
+configuration additions in `osac-installer`: a Kafka bootstrap address (shared with
+the `kafka.enabled` cluster); a `KafkaUser` secret reference for publisher
+authentication; a Kubernetes secret mount for the resume-cursor cipher keyset; and
+a per-topic `retention.ms` value (defaulting to `604800000` / 7 days). These
+values should be grouped under a new `eventDistribution` section. Whether to gate
+on a dedicated `eventDistribution.enabled` flag or on `kafka.enabled` is an
+installation design decision: a dedicated flag allows Kafka to be present without
+event distribution enabled (useful during staged rollouts), while reusing
+`kafka.enabled` reduces configuration surface. The `KafkaTopic` resources for
+per-tenant topics are provisioned by the service at tenant onboarding (via the
+Strimzi `KafkaTopic` CRD), not statically by the Helm chart.
+
 ---
 
 ## Provenance
 
 Authored: draft @ design 0.8.0 - 7efcedb, workspace main @ 4bfc214
-Final: revise @ design 0.9.0 - f7f8c6d, workspace main @ 4bfc214
+Final: respond @ design 0.9.0 - a17a43d, workspace main @ ed93971
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"f7f8c6d","source_repo":"4bfc214","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"a17a43d","source_repo":"ed93971","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
