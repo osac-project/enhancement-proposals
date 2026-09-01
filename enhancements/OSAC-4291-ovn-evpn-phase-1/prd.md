@@ -17,7 +17,7 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join th
 ## In Scope
 
 - **K8s manager registration** via NetworkClass ConfigMap with declared capabilities (`cudn_evpn`, `ipv4` or `dualstack`) [Clarify: R2.Q4]
-- **Automatic VNI and route-target propagation** from Netris VPC/VNet creation to CUDN configuration [Clarify: R1.Q3]
+- **Automatic VNI and route-target propagation** from Netris VPC/VNet creation to CUDN configuration — route targets are set automatically without manual configuration [Clarify: R1.Q3, R2.Q5, D7] [User]
 - **Automatic CUDN creation** with EVPN transport topology when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
 - **Automatic FRRConfiguration creation** for EVPN overlay (VNI-specific route targets, L2VPN EVPN address family) [Clarify: R2.Q1, D5]
 - **VM-to-fabric connectivity** via BGP EVPN (Type-2 MAC/IP routes, Type-3 VTEP discovery, Type-5 prefix routes)
@@ -41,7 +41,7 @@ The following are explicitly deferred to Phase 2 (OSAC-3667, release 0.4):
 
 The following are out of scope for Phase 1:
 
-- **`0:VNI_ID` route-target standardization** — deferred until Netris implements it. Phase 1 uses `(leaf ASN % 65536):VNI` formula. [Clarify: R1.Q3, D3]
+- **`0:VNI_ID` route-target standardization** — deferred until Netris implements it. Phase 1 uses `(leaf ASN % 65536):VNI` formula, but route targets are automatically provided by Netris (no manual calculation or configuration required). [Clarify: R1.Q3, D3, D7] [User]
 - **MetalLB IPAddressPool creation** — handled separately in OSAC-1436 (CaaS Networking) [Clarify: R3.Q3, D9]
 - **BGP underlay automation** — physical link configuration, Netris port setup, and BGP session creation are manual prerequisites configured by Cloud Infrastructure Admin [Clarify: R2.Q1, R2.Q3, D5, D6]
 - **Dual gateway MAC coordination** — automatic matching of OCP CUDN gateway and Netris VNet gateway MAC addresses (known limitation requiring manual coordination) [Clarify: R1.Q5]
@@ -56,7 +56,7 @@ The following are out of scope for Phase 1:
 
 - As a Cloud Infrastructure Admin, I want FRR diagnostic commands documented (show evpn vni, show bgp l2vpn evpn, show bgp vni <VNI>, show bgp l2vpn evpn summary) so that I can verify VNI creation and troubleshoot VNI/route-target mismatches. [Clarify: R3.Q2]
 
-- As a Cloud Infrastructure Admin, I want the k8s manager to automatically create FRRConfiguration for EVPN overlay (VNI-specific route targets, L2VPN EVPN address family) when a CUDN is created so that VMs can advertise routes to the fabric without manual FRR configuration. [Clarify: R2.Q1, D5]
+- As a Cloud Infrastructure Admin, I want the k8s manager to automatically create FRRConfiguration for EVPN overlay (VNI-specific route targets from Netris, L2VPN EVPN address family) when a CUDN is created so that VMs can advertise routes to the fabric without manual FRR or route-target configuration. [Clarify: R2.Q1, D5, D7] [User]
 
 - As a Cloud Infrastructure Admin, I want integration tests to run automatically in CI against a real Netris fabric so that I can verify the full path from subnet creation through VM-to-bare-metal connectivity before deployment. [Clarify: R3.Q1, D8]
 
@@ -106,10 +106,10 @@ The following are out of scope for Phase 1:
 ## Provenance
 
 Authored: commit @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ e18362f (20 behind origin/main)
-Final: revise @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ cd2cbfa (20 behind origin/main)
+Final: revise @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ e69542d (20 behind origin/main)
 
 > Context changed between commit and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"837cf0d","source_repo":"cd2cbfa","source_repo_branch":"prd/OSAC-4291","commits_behind_main":20,"commits_ahead_main":2,"main_ref":"main","phases":["commit","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"837cf0d","source_repo":"e69542d","source_repo_branch":"prd/OSAC-4291","commits_behind_main":20,"commits_ahead_main":3,"main_ref":"main","phases":["commit","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
