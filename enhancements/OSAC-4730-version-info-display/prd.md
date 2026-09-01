@@ -15,7 +15,7 @@ OSAC operators and users currently have no way to identify which versions of the
 - Version display in an About modal accessible from the application Masthead, following the PatternFly AboutModal pattern, consistent with Red Hat product UX conventions `[Clarify: R1.Q1]`
 - Backend and frontend version strings displayed as provided by the build system with no format transformation applied by the UI `[Clarify: R1.Q2]`
 - "Unavailable" placeholder shown for the backend version when the backend service is unreachable; frontend version remains visible regardless of backend availability `[Clarify: R1.Q3]`
-- About modal accessible only to authenticated users — not visible before login `[Clarify: R1.Q4]`
+- About modal accessible only to authenticated users — not visible before login; backend version service authentication is an open question (see below) `[Clarify: R1.Q4]`
 - CLI command to retrieve both backend and frontend version information `[Clarify: R1.Q5]`
 - Automatic version updates on deployment — no manual configuration required
 
@@ -59,21 +59,21 @@ The following items are not required for the initial delivery of this feature bu
 
 ## Assumptions
 
-- The build systems for fulfillment-service and osac-ui support injecting version strings at build time.
-- An existing OSAC CLI tool exists that can be extended with a version subcommand.
+- Released fulfillment-service binaries already contain injected version strings via `.goreleaser.yaml`. The osac-ui build system is assumed to support equivalent version injection.
+- Version sub-commands already exist in both the CLI (`fulfillment-service/internal/cmd/cli/version/`) and the service (`fulfillment-service/internal/cmd/service/version/`). These may need to be surfaced or extended to provide version information to the UI and external callers. `[PR review: jhernand]`
 - The PatternFly component library is available in the osac-ui frontend project.
 
 ## Dependencies
 
 - **Build pipelines:** Both fulfillment-service and osac-ui CI/CD pipelines must be updated to inject version strings during the build process.
 - **PatternFly:** The frontend relies on the PatternFly AboutModal component for the version display UI.
-- **Backend version endpoint:** The frontend requires a backend endpoint to retrieve the backend service version at runtime.
+- **Backend version service:** The frontend requires a gRPC service (or an extension to an existing service such as capabilities) that exposes the backend version. The corresponding REST method is auto-generated from the gRPC definition. `[PR review: jhernand]`
 
 ## Open Questions
 
-### Should the backend version endpoint require authentication?
+### Should the backend version service method require authentication?
 
 - **Owner:** To be determined
-- **Impact:** Affects authentication scope and security posture of the version API
+- **Impact:** Affects authentication scope and security posture of the version service
 
-Should the backend version endpoint require authentication, or be publicly accessible? Unauthenticated access simplifies health checks and monitoring integrations, but exposes deployed version details to unauthenticated users.
+Should the gRPC method that returns the backend version require authentication, or be publicly accessible? Unauthenticated access simplifies health checks and monitoring integrations, but exposes deployed version details to unauthenticated callers. `[PR review: jhernand]`
