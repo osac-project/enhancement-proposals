@@ -46,8 +46,6 @@ have no operational visibility. This enhancement adds the minimal read surface �
 
 - Volume lifecycle through the public API (create/update/delete/resize) — deferred
   to later OSAC-984 phases.
-- Per-user (owner-level) visibility for Tenant Users — deferred to a platform-wide
-  tenancy feature (see RBAC / Tenancy and Open Questions).
 - Volume attach/detach, snapshots/clones, file storage (OSAC-4515), object storage.
 
 ## Proposal
@@ -77,7 +75,7 @@ Enumerated changes, all in `fulfillment-service`:
 ### Workflow Description
 
 Actors: **Tenant User / Tenant Admin** (read their tenant's volumes via console or
-CLI), **Cloud Provider Admin** (read across assigned tenants). Starting state:
+CLI), **Cloud Provider Admin** (read across all tenants). Starting state:
 volumes already exist and are inventoried by OSAC-2872.
 
 Request path:
@@ -184,32 +182,14 @@ Authorization matrix for this EP:
 |---|---|---|
 | Tenant User | Yes | All volumes in the caller's own tenant(s) (+ `shared`) |
 | Tenant Admin | Yes | Same as Tenant User — identical row scope |
-| Cloud Provider Admin | Yes | Volumes across every tenant the subject is a member of, per `DetermineVisibleTenants` (no cross-tenant superuser bypass is added here) |
+| Cloud Provider Admin | Yes | All volumes across all tenants, per `DetermineVisibleTenants` |
 | Unauthenticated | No | — (`Unauthenticated`) |
 | Mutating methods (`Create`/`Update`/`Delete`/`Signal`) | No public method exists | — (private API only) |
 
 Tenant User and Tenant Admin have identical read scope, consistent with OSAC-2872,
-where both roles share the same storage capabilities. A "Cloud Provider Admin"
-sees more only because that subject belongs to more tenants — the row predicate is
-the same `tenant IN (visible)` for everyone; there is no role-specific query path.
-
-The PRD DoD's "Tenant User sees only their own volumes" is a **per-creator**
-boundary that no OSAC resource implements today (`creator` is an attribution field
-and an optional filter, never an enforced boundary). Implementing it requires
-new, cross-cutting tenancy plumbing (a role-aware `creator` predicate) and should
-apply uniformly across resources; it is therefore **deferred to a platform tenancy
-feature**. This EP ships tenant-level scoping, which is consistent and unblocks the
-console. No new tenant-isolation metadata is introduced (reads reuse the existing
-`tenant` column and visibility logic).
-
-To be explicit about the security boundary: shipping tenant-level (not
-owner-level) visibility is **not a cross-tenant data leak** — every returned row is
-already within the caller's own tenant(s). It is an accepted, recorded *product*
-narrowing of the DoD (a Tenant User may see peers' volumes *within their tenant*),
-matching how every other read resource behaves today. If a given deployment needs
-per-creator confidentiality before the platform feature lands, the endpoints can be
-withheld via the OPA allowlist (see Support Procedures); they are not enabled
-silently in a way that would surprise a tenant.
+where both roles share the same storage capabilities. A Cloud Provider Admin sees
+all tenants. The row predicate is the same `tenant IN (visible)` for everyone;
+there is no role-specific query path.
 
 ### Observability and Monitoring
 
@@ -220,14 +200,12 @@ and the interceptor chain apply to the new methods automatically.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| DoD "own only" not met by tenant-level scoping | A Tenant User sees all volumes in their tenant, not just their own | Explicitly scoped out to a platform tenancy feature; flagged on the PR for the team to own or delegate; no migration needed later (`creator` column + index exist) |
 | cleanapi leaves unused imports in generated public protos | `buf lint` fails on regeneration | Prune the two imports (documented); follow-up to automate in tooling |
 
 ### Drawbacks
 
 Read-only is a partial capability — the console can display but not manage volumes
-until later phases. Tenant-level (not owner-level) visibility is a deliberate
-narrowing of the stated DoD for this release.
+until later phases.
 
 ## Alternatives (Not Implemented)
 
@@ -243,10 +221,7 @@ narrowing of the stated DoD for this release.
 
 ## Open Questions [optional]
 
-1. **Ownership of the deferred owner-level visibility feature.** Tenant-level
-   scoping ships here; per-creator visibility is a platform-wide tenancy
-   capability. Team decision: own it in this WG or delegate to a platform/tenancy
-   owner.
+None.
 
 ## Test Plan
 
