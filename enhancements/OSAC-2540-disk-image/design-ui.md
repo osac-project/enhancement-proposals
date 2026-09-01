@@ -286,12 +286,7 @@ Columns:
 | Lifecycle | `DiskImageLifecycleLabel` |
 | Scope | Global if `metadata.tenant == "shared"`, else Tenant |
 | Created | `metadata.creation_timestamp` (`Timestamp`) |
-
-No per-row actions column for now: `DiskImageActionsMenu.tsx` originally
-offered View/Edit, but View duplicated the Name column's link and Edit's
-`:id/edit` route was removed (edit mode deferred — see Resolved Questions
-§5), leaving no live action to menu. It returns, non-empty, when workflow 4's
-lifecycle actions (deprecate/obsolete/reactivate/delete) ship.
+| — | per-row `DiskImageActionsMenu` |
 
 Toolbar: name search plus filter controls for guest OS family, architecture,
 lifecycle (including a **show obsolete** option that adds
