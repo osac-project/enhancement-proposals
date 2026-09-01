@@ -288,11 +288,11 @@ Columns:
 | Created | `metadata.creation_timestamp` (`Timestamp`) |
 | — | per-row `DiskImageActionsMenu` |
 
-`DiskImageActionsMenu` currently offers no items: its original View and Edit
-entries are both removed (View duplicated the Name column's link; Edit's
-`:id/edit` route was removed with edit mode — see Resolved Questions §5). It
-gains entries again once workflow 4's lifecycle actions
-(deprecate/obsolete/reactivate/delete) ship.
+`DiskImageActionsMenu`'s content is workflow 4's lifecycle actions
+(deprecate/obsolete/reactivate/delete), described below. Two entries it
+originally also carried, View and Edit, are removed: View duplicated the
+Name column's link, and Edit's `:id/edit` route was removed with edit mode
+(see Resolved Questions §5).
 
 Toolbar: name search plus filter controls for guest OS family, architecture,
 lifecycle (including a **show obsolete** option that adds

@@ -66,8 +66,8 @@ On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` fi
 **Actor:** Cloud Provider Admin (global images), Tenant Admin or Tenant User (tenant-scoped images)
 
 1. Caller invokes `DiskImages/Create` with the DiskImage object containing `spec.source_type`, `spec.source_ref`, `spec.guest_os_family`, and `spec.architecture`.
-2. Server validates required fields, sets `spec.lifecycle` to `DISK_IMAGE_LIFECYCLE_AVAILABLE` if unspecified, persists the object, and returns it with system-generated `id` and `metadata`.
-3. For global images, `metadata.tenant` is set to the platform's shared-tenant sentinel (`"shared"`). For tenant-scoped images, the server sets `metadata.tenant` from the caller's identity.
+2. Server validates required fields, sets `spec.lifecycle` to `DISK_IMAGE_LIFECYCLE_AVAILABLE` if unspecified, and resolves `metadata.tenant`: for global images it's set to the platform's shared-tenant sentinel (`"shared"`); for tenant-scoped images it's set from the caller's identity.
+3. Server persists the object and returns it with system-generated `id` and `metadata`.
 
 #### Creating a ComputeInstance with DiskImage
 
