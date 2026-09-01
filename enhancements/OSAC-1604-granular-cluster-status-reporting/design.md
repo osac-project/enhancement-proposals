@@ -304,6 +304,18 @@ known sub-stage that has not advanced within its threshold) and `StageUnknown`
 `Provisioned`-reason cycle, which likewise derives its reason from the current
 provisioning step [Codebase: OSAC-1027 EP §3.3].
 
+This fixes the stability contract of `ClusterCondition.reason` for consumers
+(CLI `describe`, UI, metering, alerting): the machine-matchable surface is the
+condition **types** plus the two behavioral reasons `Stalled` / `StageUnknown` -
+consumer logic keys off these. The per-sub-stage reason strings are
+**informational**: a stable-but-operator-owned label of the current CR sub-stage,
+suitable for display and for humans reading events, but consumers MUST treat them
+as opaque and MUST NOT build branching logic on specific sub-stage reason values
+(the set may grow as sub-stages are added). A consumer that needs to react to a
+specific milestone keys off the corresponding orthogonal condition
+(`CONTROL_PLANE_AVAILABLE`, `WORKERS_READY`) rather than a `PROGRESSING` reason
+string.
+
 New CR-side condition/reason constants go in
 `osac-operator/api/v1alpha1/conditions.go`; new proto enum values require
 `buf lint && buf generate` (public generated from private via protoc-gen-cleanapi).
@@ -476,14 +488,14 @@ In `clusterorder_controller.go`:
   sub-stage the timer watches (cluster provisioning and teardown are slow; these
   are **provisional**):
 
-  | Sub-stage | Default threshold |
-  |-----------|-------------------|
-  | Preparing infrastructure | 15m |
-  | Control plane starting | 30m |
-  | Workers joining | 20m (per-host-type overridable) |
-  | Scaling | 20m (per-host-type overridable) |
-  | Destroying cloud resources | 20m |
-  | Destroying control plane | 15m |
+  | Sub-stage | Watching CR condition (stage-entry marker) | Default threshold |
+  |-----------|--------------------------------------------|-------------------|
+  | Preparing infrastructure | `Accepted` | 15m |
+  | Control plane starting | `ControlPlaneCreated` | 30m |
+  | Workers joining | `ControlPlaneAvailable` | 20m (per-host-type overridable) |
+  | Scaling | none (persisted `(observedReason, since)` pair) | 20m (per-host-type overridable) |
+  | Destroying cloud resources | `CloudResourcesDestroyed` | 20m |
+  | Destroying control plane | `HostedClusterDestroyed` | 15m |
 
   Worker-join and scaling time scale with pool size and instance type (image pull,
   cloud provisioning latency), so those two thresholds are per-host-type overridable
