@@ -9,9 +9,9 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/OSAC-1002-catalog-items"
+  - "/enhancements/OSAC-1002-catalog-items/ui-design.md"
 replaces:
-  - N/A
+  - "/enhancements/OSAC-1002-catalog-items"
 superseded-by:
   - N/A
 ---
