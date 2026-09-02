@@ -30,6 +30,7 @@ Deferred to later work (this release is read-only Get/List only):
 - **Volume attach / detach** — managed via VMaaS / Compute work.
 - **Snapshots, clones, and restore.**
 - **File storage** (NFS/SMB — OSAC-4515) and **object storage** (S3).
+- **Volume identifiability / provenance** — distinguishing what each volume represents (e.g. a VM filesystem disk vs. a workload PV) and which tenant cluster it belongs to. This is a recognized UX gap raised in architect review and is deferred to a dedicated follow-up feature: [OSAC-4793](https://redhat.atlassian.net/browse/OSAC-4793) (under the OSAC-2871 Storage Volumes outcome).
 
 ## User Stories
 
