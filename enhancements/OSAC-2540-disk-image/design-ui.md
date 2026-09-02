@@ -284,9 +284,15 @@ Columns:
 | Guest OS family | `spec.guest_os_family` |
 | Architecture | `spec.architecture[]` rendered as `LabelGroup` chips |
 | Lifecycle | `DiskImageLifecycleLabel` |
-| Scope | Global if `metadata.tenant` empty, else Tenant |
+| Scope | Global if `metadata.tenant == "shared"`, else Tenant |
 | Created | `metadata.creation_timestamp` (`Timestamp`) |
 | — | per-row `DiskImageActionsMenu` |
+
+`DiskImageActionsMenu`'s content is workflow 4's lifecycle actions
+(deprecate/obsolete/reactivate/delete), described below. Two entries it
+originally also carried, View and Edit, are removed: View duplicated the
+Name column's link, and Edit's `:id/edit` route was removed with edit mode
+(see Resolved Questions §5).
 
 Toolbar: name search plus filter controls for guest OS family, architecture,
 lifecycle (including a **show obsolete** option that adds
@@ -305,18 +311,23 @@ that set, not an authorization boundary.
 (deprecate/obsolete/reactivate) plus a delete button with a confirmation modal.
 [Codebase: osac-ui/libs/ui-components/src/components/InstanceType/AdminInstanceTypeDetailPage.tsx]
 
-#### Create/edit form (`DiskImageForm.tsx`)
+#### Create form (`DiskImageForm.tsx`)
 
-One form component, create and edit modes.
+**Milestone scope** [Locked: D11]: create mode only for the first UI
+milestone. Edit mode (the only ever-mutable field is `spec.architecture`,
+per Immutability below) is deferred to a follow-up story — see Resolved
+Questions §5. `DiskImageForm.tsx` is written as a single component so the
+deferred edit mode is additive later, not a rewrite.
 
 - Fields: source type (fixed `REGISTRY`, read-only), source reference (text,
   required, `min_len ≥ 1`), guest OS family (select, default `LINUX`), and
   architecture (multi-select, ≥ 1 required). The human label is `metadata.name`;
   there is no custom icon input.
-- **Immutability** [Locked: D2]: in **edit** mode, source type, source
-  reference, and guest OS family render read-only; only architecture is
-  editable. This matches the server, which rejects changes to the immutable
-  fields with `InvalidArgument`.
+- **Immutability** [Locked: D2]: source type, source reference, and guest OS
+  family can never change after creation — the server rejects changes to
+  these fields with `InvalidArgument`. Only `spec.architecture` is ever
+  mutable via `Update`. This constraint still holds even though the edit UI
+  itself is deferred (see Milestone scope above).
 - **Scope (Provider Admin only)**: a Global-vs-tenant control shown only to the
   provider-admin role. Tenant personas always create tenant-scoped images; the
   control is hidden and the tenant is set server-side from identity.
@@ -423,9 +434,9 @@ responsibilities:
   **global scope** control in the create form and global-image lifecycle
   actions are shown only to the provider-admin role.
 - **Visibility**: the console renders exactly what `List`/`Get` return for the
-  caller — global images (empty `metadata.tenant`) plus the caller's own tenant.
-  Cross-tenant images are never returned, so no client-side filtering is needed
-  for isolation.
+  caller — global images (`metadata.tenant == "shared"`) plus the caller's own
+  tenant. Cross-tenant images are never returned, so no client-side filtering
+  is needed for isolation.
 - **Jira component convention**: each persona's UI task carries the epic's
   components plus `UI` (Provider Admin, Tenant Admin, Tenant User all use `UI`).
   [Codebase: .design/context/osac-dimensions.md]
@@ -504,7 +515,8 @@ architecture badge(s) (see Resolved Questions).
 
 ## Resolved Questions
 
-All open questions were resolved in PR review (rawagner, PR #223):
+Questions 1–4 were resolved in PR review (rawagner, PR #223); question 5 was
+decided later, during [OSAC-4450](https://redhat.atlassian.net/browse/OSAC-4450)'s implementation:
 
 ### 1. Create-form input UX for architecture and icon — RESOLVED
 
@@ -530,6 +542,17 @@ The first UI milestone includes the **full lifecycle controls**
 (deprecate / obsolete / reactivate), plus delete gated to OBSOLETE. No split
 into a follow-up.
 
+### 5. Edit-mode milestone split — DEFERRED
+
+Decided during `DiskImageForm.tsx` implementation ([OSAC-4450](https://redhat.atlassian.net/browse/OSAC-4450)):
+edit mode is cut from the first UI milestone. `spec.architecture` is the only
+field the server ever allows an `Update` to change (see Immutability, above),
+so an edit surface in this milestone would be a single-field control for
+comparatively high UI cost (a whole read-only-field-rendering mode). The
+create flow ships independently; editing architecture post-creation ships as
+a follow-up story, tracked separately. `DiskImageForm.tsx` remains a single
+component so that follow-up is additive.
+
 ## Test Plan
 
 **Note:** *osac-ui uses Vitest 4 + React Testing Library (jsdom), colocated
@@ -547,8 +570,8 @@ as manual/exploratory against a live cluster.*
   (deprecate only from AVAILABLE; obsolete from AVAILABLE/DEPRECATED; reactivate
   from DEPRECATED/OBSOLETE; delete only from OBSOLETE).
 - `DiskImageForm` client validation rejects empty source_ref and empty
-  architecture, and renders source type / source ref / guest OS family
-  read-only in edit mode.
+  architecture (create mode only for this milestone — see Resolved
+  Questions §5).
 - Scope control is rendered for the provider-admin role and hidden for tenant
   roles.
 

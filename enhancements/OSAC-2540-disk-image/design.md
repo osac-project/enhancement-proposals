@@ -66,8 +66,8 @@ On ComputeInstance, the `image` field (ComputeInstanceImage) and `is_windows` fi
 **Actor:** Cloud Provider Admin (global images), Tenant Admin or Tenant User (tenant-scoped images)
 
 1. Caller invokes `DiskImages/Create` with the DiskImage object containing `spec.source_type`, `spec.source_ref`, `spec.guest_os_family`, and `spec.architecture`.
-2. Server validates required fields, sets `spec.lifecycle` to `DISK_IMAGE_LIFECYCLE_AVAILABLE` if unspecified, persists the object, and returns it with system-generated `id` and `metadata`.
-3. For global images, `metadata.tenant` is empty. For tenant-scoped images, the server sets `metadata.tenant` from the caller's identity.
+2. Server validates required fields, sets `spec.lifecycle` to `DISK_IMAGE_LIFECYCLE_AVAILABLE` if unspecified, and resolves `metadata.tenant`: for global images it's set to the platform's shared-tenant sentinel (`"shared"`); for tenant-scoped images it's set from the caller's identity.
+3. Server persists the object and returns it with system-generated `id` and `metadata`.
 
 #### Creating a ComputeInstance with DiskImage
 
@@ -451,7 +451,7 @@ Default list excludes OBSOLETE images. The server prepends `this.spec.lifecycle 
 CatalogItem Create and Update handlers validate DiskImage references in `field_definitions`. A new `validateFieldDefinitionsDiskImage()` function scans `field_definitions` for entries targeting `spec.disk_image`, extracts the default value, and validates:
 
 1. The referenced DiskImage exists.
-2. The DiskImage is visible to the CatalogItem's tenant — accept global DiskImages (empty tenant) or those belonging to the same tenant. Cross-tenant references are rejected with `InvalidArgument`. This prevents CatalogItems from persisting inaccessible references that would fail at ComputeInstance creation time. Note: `validateFieldDefinitionsInstanceType()` does not need this check because InstanceTypes are always global/shared.
+2. The DiskImage is visible to the CatalogItem's tenant — accept global DiskImages (`metadata.tenant == "shared"`) or those belonging to the same tenant. Cross-tenant references are rejected with `InvalidArgument`. This prevents CatalogItems from persisting inaccessible references that would fail at ComputeInstance creation time. Note: `validateFieldDefinitionsInstanceType()` does not need this check because InstanceTypes are always global/shared.
 3. The DiskImage lifecycle is not OBSOLETE — return `InvalidArgument`.
 4. If the DiskImage lifecycle is DEPRECATED, return a warning.
 
@@ -513,7 +513,7 @@ DiskImage inherits the existing OSAC security model without modification:
 - **Authentication:** JWT validation via the gRPC interceptor chain (same as all other resources).
 - **Authorization:** OPA policies control access. See RBAC / Tenancy section below.
 - **Input validation:** `buf.validate` annotations enforce required fields, enum validity, and minimum lengths on proto fields. The `source_ref` field accepts any string (URLs, digests). OSAC does not validate OCI reference reachability — invalid references surface as errors at VM provisioning time, consistent with the current behavior.
-- **Tenant isolation:** The generic server enforces tenant field validation, ensuring tenant-scoped DiskImages are only accessible within their tenant. Global DiskImages (empty tenant) are readable by all tenants.
+- **Tenant isolation:** The generic server enforces tenant field validation, ensuring tenant-scoped DiskImages are only accessible within their tenant. Global DiskImages (`metadata.tenant == "shared"`) are readable by all tenants.
 
 No new attack surface is introduced. DiskImage does not handle binary uploads, registry authentication, or credential storage.
 
@@ -552,7 +552,7 @@ All authenticated users (Tenant Users and Tenant Admins) can create, update, and
 
 **Tenant isolation metadata:**
 
-- `metadata.tenant`: Set by the server from the caller's identity for tenant-scoped images. Empty for global (provider-managed) images.
+- `metadata.tenant`: Set by the server from the caller's identity for tenant-scoped images. Set to the platform's shared-tenant sentinel (`"shared"`) for global (provider-managed) images — the same convention used by StorageTier, StorageBackend, and other platform-scoped resources. The generic server's tenant-assignment logic never leaves this field empty: an unset tenant resolves to the caller's own tenant, or to `"shared"` for a caller with universal (admin) access.
 - `osac.openshift.io/owner-reference`: Not applicable — DiskImage has no parent resource.
 - `osac.openshift.io/tenant`: Set as annotation by the generic server (standard behavior).
 
@@ -560,7 +560,7 @@ All authenticated users (Tenant Users and Tenant Admins) can create, update, and
 
 | DiskImage tenant | Who can see it |
 |-----------------|---------------|
-| Empty (global) | All authenticated users |
+| `"shared"` (global) | All authenticated users |
 | Tenant X | Users in Tenant X only |
 
 The generic server's existing tenant filtering handles this automatically. Tenant Users see global images and their own tenant's images in List results.
