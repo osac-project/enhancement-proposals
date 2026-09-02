@@ -16,9 +16,9 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join th
 
 ## In Scope
 
-- **K8s manager registration** via ConfigMap (identifier: `cudn_evpn`, capabilities: IPv4 address family) [Clarify: R2.Q4]
+- **K8s manager registration** via ConfigMap (identifier: `cudn_evpn`, capabilities: `addressFamily:ipv4`) [Clarify: R2.Q4]
 - **Automatic VNI propagation** from Netris VPC/VNet creation to CUDN configuration (route targets are calculated automatically from VNI) [Clarify: R1.Q3, R2.Q5, D7] [User]
-- **Automatic CUDN creation** with EVPN transport topology when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
+- **Automatic overlay network provisioning** on hosting clusters (via ClusterUserDefinedNetwork with EVPN transport) when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
 - **Automatic BGP EVPN route advertisement** for VMs, using VNI mappings from Netris [Clarify: R2.Q1, D5]
 - **VM-to-fabric connectivity** via BGP EVPN (Type-2 MAC/IP routes, Type-3 VTEP discovery, Type-5 prefix routes)
 - **Layer 2 and Layer 3 VPC support** — CUDN can bridge to Netris VPCs with flexible subnet configuration: same subnet as Netris VNet uses Layer 2 VNI (macVRF) for L2 connectivity; different subnet uses Layer 3 VNI (ipVRF) for L3 routing [User]
@@ -50,7 +50,7 @@ The following are out of scope for Phase 1:
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to register the `cudn_evpn` k8s manager via a ConfigMap (with IPv4 address family capability) so that OSAC can provision EVPN-bridged subnets for VMs. [Clarify: R1.Q1, R2.Q4, D1]
+- As a Cloud Infrastructure Admin, I want to register the `cudn_evpn` k8s manager via a ConfigMap (with `addressFamily:ipv4` capability) so that OSAC can provision EVPN-bridged subnets for VMs. [Clarify: R1.Q1, R2.Q4, D1]
 
 - As a Cloud Infrastructure Admin, I want documented installation prerequisites (underlay link setup, VTEP configuration, BGP peering with Netris including VTEP subnets/prefixes advertisement) so that I can prepare the infrastructure before enabling EVPN for the first time. [Clarify: R2.Q2, R2.Q3, D6] [User]
 
@@ -59,6 +59,8 @@ The following are out of scope for Phase 1:
 - As a Cloud Infrastructure Admin, I want VMs to automatically advertise their routes to the fabric via BGP EVPN when a subnet is provisioned, using VNI mappings from Netris, so that VMs are reachable from the fabric without manual BGP configuration. [Clarify: R2.Q1, D5, D7] [User]
 
 - As a Cloud Infrastructure Admin, I want integration tests to run automatically in CI against a real Netris fabric so that I can verify the full path from subnet creation through VM-to-bare-metal connectivity before deployment. [Clarify: R3.Q1, D8]
+
+- As a Cloud Infrastructure Admin, I want to identify which VirtualNetworks have reached the single-subnet limit (via monitoring or status queries) so that I can plan for Phase 2 deployment or guide tenants to create additional VirtualNetworks.
 
 ### Tenant Admin / Tenant User
 
@@ -79,6 +81,16 @@ The following are out of scope for Phase 1:
 - The FRR operator and NMState operator are installed on the OCP cluster before EVPN configuration. [Clarify: R2.Q2]
 
 - A NetworkClass exists with `fabric_manager: "netris"` and `k8s_manager: "cudn_evpn"`, enabling dual-dispatch provisioning where fabric and k8s manager jobs run in parallel for each subnet.
+
+## Acceptance Criteria
+
+- [ ] A NetworkClass with `fabric_manager: "netris"` and `k8s_manager: "cudn_evpn"` can be created and transitions to READY state
+- [ ] Creating a VirtualNetwork + Subnet with this NetworkClass provisions both Netris VNet (with L2/L3 VNI) and OCP CUDN with EVPN transport
+- [ ] VMs deployed on the subnet receive IP addresses via OVN DHCP
+- [ ] VMs are reachable via ping from a bare-metal server on the same Netris VPC (both L2 same-subnet and L3 different-subnet scenarios)
+- [ ] FRR diagnostic commands (`show evpn vni`, `show bgp l2vpn evpn`) show correct VNI and route-target state on OCP workers
+- [ ] Creating a second Subnet under the same VirtualNetwork returns a validation error message referencing OVN Connectors limitation
+- [ ] Integration test in CI passes: subnet creation → CUDN + EVPN provisioning → VM placement → fabric reachability verification
 
 ## Dependencies
 
