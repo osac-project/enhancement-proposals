@@ -16,7 +16,7 @@ When a bare metal server is ordered through the OSAC UI, the instance enters a "
 - The provisioning workflow presents five user-visible phases: Host Allocation, Hardware Preparation, OS Deployment, Configuration, and Verification. The deprovisioning workflow presents three phases: Teardown Initiated, Cleaning, and Released. [Clarify: R3.Q3]
 - The progress view auto-refreshes approximately every 5 seconds without requiring user action. [Clarify: R1.Q2]
 - The step-level timeline persists after provisioning or deprovisioning finishes, giving users access to the full phase history of completed — including failed — instances. [Clarify: R1.Q4]
-- The provisioning progress data model is designed for reuse across OSAC services: its structure must accommodate the provisioning semantics of other services (such as VMaaS and CaaS) so that they can adopt the same model without redesign when their progress visibility is implemented. [User]
+- Progress is surfaced using the status-condition pattern OSAC already established for VMaaS compute instances (OSAC-1027) and is adopting for CaaS clusters (OSAC-1604): a lifecycle phase plus status conditions whose reason names the current sub-step. BMaaS-specific phases (host allocation, hardware preparation, and so on) are expressed as BMaaS reason values within that shared shape — they are not imposed on other services. Reusing the established pattern keeps the progress experience consistent across services without inventing a BMaaS-specific model. [User]
 - Failure descriptions identify the phase that failed and the failure condition in human-readable terms; raw internal system errors and implementation-level details are not surfaced. [User]
 
 ## Out of Scope
@@ -24,7 +24,7 @@ When a bare metal server is ordered through the OSAC UI, the instance enters a "
 - User-initiated actions on failure: the progress and failure display is read-only. No retry or re-provision actions are in scope. [Clarify: R1.Q3]
 - Automated remediation of failed provisioning steps.
 - Changes to the underlying bare metal operator or provisioning automation logic.
-- Progress visibility for VMaaS compute instances or CaaS clusters: while the pattern introduced here is intended to generalize across OSAC services, those services are out of scope for this feature. [Clarify: R3.Q1]
+- Progress visibility for VMaaS compute instances or CaaS clusters: those services are addressed by OSAC-1027 and OSAC-1604 respectively and are out of scope for this feature, which reuses the same pattern for BMaaS. [Clarify: R3.Q1]
 - A new cross-tenant aggregated list of in-progress bare metal instances: Cloud Provider Admin reaches individual instances through existing navigation. [Clarify: R2.Q2]
 - Component log access per provisioning phase: this feature delivers step-level visibility only — phase name, state, and timestamps. Surfacing log output from the underlying provisioning automation is out of scope. [User]
 
@@ -52,17 +52,20 @@ When a bare metal server is ordered through the OSAC UI, the instance enters a "
 
 ## Assumptions
 
-- The five provisioning phases (Host Allocation, Hardware Preparation, OS Deployment, Configuration, Verification) and three deprovisioning phases (Teardown Initiated, Cleaning, Released) accurately represent the stages a user can observe during bare metal deployment and teardown. The mapping from backend states to these labels is subject to validation during design; phase names may be adjusted if the backend state model does not align.
+- The five provisioning phases (Host Allocation, Hardware Preparation, OS Deployment, Configuration, Verification) and three deprovisioning phases (Teardown Initiated, Cleaning, Released) are user-facing labels, not backend states. They do not map one-to-one to the metal3 BareMetalHost state machine: OS Deployment corresponds to metal3 `provisioning`; Hardware Preparation aggregates metal3 `registering`/`inspecting`/`preparing`/`cleaning`; and Configuration and Verification are OSAC-level steps that occur after metal3 reaches `provisioned`. The design must map each user-visible phase to an authoritative backend signal and define its start/finish conditions, timestamp durability, and behavior for skipped or retried steps; phases that do not correspond to a distinct, observable backend signal (for example, Verification) may be renamed, merged, or dropped during design.
+- A bare metal instance's step-level timeline remains viewable after the instance finishes provisioning or is released. How a released instance's history stays addressable, how long it is retained, and which roles can view it are design decisions deferred to the design phase.
 
 ## Dependencies
 
-- **OSAC-1604 (Cluster status report, CaaS):** OSAC-1604 is actively working on granular status reporting for CaaS clusters. The design for this feature should coordinate with OSAC-1604 to produce a consistent progress visibility pattern across OSAC services and to avoid divergent approaches that would complicate future cross-service generalization. [Clarify: R3.Q2]
+- **OSAC-1027 (ComputeInstance phase/condition expansion, VMaaS) and OSAC-1604 (Cluster status report, CaaS):** together these establish the OSAC status-condition progress pattern — a lifecycle phase plus orthogonal conditions with a reason vocabulary. OSAC-1027 is implemented for VMaaS; OSAC-1604 adapts it for CaaS and is in progress. This feature adopts that same pattern for BMaaS rather than introducing a new one; the design should align with OSAC-1604 to keep the cross-service experience consistent. (OSAC-1604's own PRD already scopes BMaaS as a separate feature sharing this pattern.) [Clarify: R3.Q2]
 
 ---
 
 ## Provenance
 
-Authored: revise @ prd 0.9.0 - a17a43d, workspace main @ ed93971
-Phases: draft, revise, revise, revise, revise, revise
+Authored: draft @ prd 0.9.0 - a17a43d, workspace main @ ed93971
+Final: respond @ prd 0.9.0 - a17a43d, workspace main @ 63b090a
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"a17a43d","source_repo":"ed93971","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and respond.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"a17a43d","source_repo":"63b090a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
