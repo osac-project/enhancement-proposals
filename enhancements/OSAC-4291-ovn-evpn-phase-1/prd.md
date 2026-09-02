@@ -17,9 +17,9 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join th
 ## In Scope
 
 - **K8s manager registration** via ConfigMap (identifier: `cudn_evpn`, capabilities: IPv4 address family) [Clarify: R2.Q4]
-- **Automatic VNI and route-target propagation** from Netris VPC/VNet creation to CUDN configuration — route targets are set automatically without manual configuration [Clarify: R1.Q3, R2.Q5, D7] [User]
+- **Automatic VNI propagation** from Netris VPC/VNet creation to CUDN configuration (route targets are calculated automatically from VNI) [Clarify: R1.Q3, R2.Q5, D7] [User]
 - **Automatic CUDN creation** with EVPN transport topology when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
-- **Automatic FRRConfiguration creation** for EVPN overlay (VNI-specific route targets, L2VPN EVPN address family) [Clarify: R2.Q1, D5]
+- **Automatic BGP EVPN route advertisement** for VMs, using VNI mappings from Netris [Clarify: R2.Q1, D5]
 - **VM-to-fabric connectivity** via BGP EVPN (Type-2 MAC/IP routes, Type-3 VTEP discovery, Type-5 prefix routes)
 - **Layer 2 and Layer 3 VPC support** — CUDN can bridge to Netris VPCs with flexible subnet configuration: same subnet as Netris VNet uses Layer 2 VNI (macVRF) for L2 connectivity; different subnet uses Layer 3 VNI (ipVRF) for L3 routing [User]
 - **Single-subnet-per-VirtualNetwork constraint** enforced at Subnet API creation time (OVN Connectors limitation) [Clarify: R1.Q4, D4]
@@ -56,13 +56,13 @@ The following are out of scope for Phase 1:
 
 - As a Cloud Infrastructure Admin, I want FRR diagnostic commands documented (show evpn vni, show bgp l2vpn evpn, show bgp vni <VNI>, show bgp l2vpn evpn summary) so that I can verify VNI creation and troubleshoot VNI/route-target mismatches. [Clarify: R3.Q2]
 
-- As a Cloud Infrastructure Admin, I want the k8s manager to automatically create FRRConfiguration for EVPN overlay (VNI-specific route targets from Netris, L2VPN EVPN address family) when a CUDN is created so that VMs can advertise routes to the fabric without manual FRR or route-target configuration. [Clarify: R2.Q1, D5, D7] [User]
+- As a Cloud Infrastructure Admin, I want VMs to automatically advertise their routes to the fabric via BGP EVPN when a subnet is provisioned, using VNI mappings from Netris, so that VMs are reachable from the fabric without manual BGP configuration. [Clarify: R2.Q1, D5, D7] [User]
 
 - As a Cloud Infrastructure Admin, I want integration tests to run automatically in CI against a real Netris fabric so that I can verify the full path from subnet creation through VM-to-bare-metal connectivity before deployment. [Clarify: R3.Q1, D8]
 
 ### Tenant Admin / Tenant User
 
-- As a Tenant Admin or Tenant User, I want to create VirtualNetworks and Subnets using the existing OSAC API without needing to configure EVPN details (VNIs, route targets, BGP peering) so that VMs I provision are automatically bridged to the physical fabric. [Clarify: R1.Q2, D2]
+- As a Tenant Admin or Tenant User, I want to create VirtualNetworks and Subnets using the existing OSAC API without needing to configure EVPN details (VNIs, BGP peering) so that VMs I provision are automatically bridged to the physical fabric. [Clarify: R1.Q2, D2]
 
 - As a Tenant Admin or Tenant User, I want VMs I provision on an EVPN-bridged subnet to receive IP addresses via OVN DHCP and be reachable from bare-metal servers in the same Netris VPC so that my workloads can span VMs and physical hosts — either via Layer 2 connectivity when using the same subnet, or via Layer 3 routing when using different subnets within the same VPC. [User]
 
@@ -72,7 +72,7 @@ The following are out of scope for Phase 1:
 
 - The Cloud Infrastructure Admin has completed the documented prerequisites (underlay link configuration, VTEP setup, BGP session with Netris including VTEP subnets/prefixes advertisement) before creating the first VirtualNetwork. [Clarify: R2.Q3] [User]
 
-- The Netris fabric manager returns VNI IDs and route target values when OSAC creates a VPC/VNet, enabling automatic propagation to CUDN without client-side calculation. [Clarify: R1.Q3, R2.Q5, D7]
+- The Netris fabric manager returns VNI IDs when OSAC creates a VPC/VNet, enabling automatic propagation to CUDN. Route targets are calculated automatically from VNI (no manual configuration required). [Clarify: R1.Q3, R2.Q5, D7]
 
 - OCP workers have network connectivity to the Netris fabric switches via the configured underlay link. [Clarify: R2.Q3]
 
@@ -92,10 +92,11 @@ The following are out of scope for Phase 1:
   - OSAC-1460: Wire dispatcher into controllers
 
 - **Netris Fabric Manager:** Must support:
-  - VPC/VNet creation with VNI ID allocation
-  - Route target calculation and return via API (`(leaf ASN % 65536):VNI` formula)
+  - VPC/VNet creation with VNI ID allocation and return via API
   - Underlay port configuration (via Netris API or UI)
   - BGP session configuration with OCP workers
+  
+  Route targets are calculated automatically using `(leaf ASN % 65536):VNI` formula — no API return or manual configuration needed.
 
 - **OVN-Kubernetes:** FRR routing capability with EVPN support, RouteAdvertisements for CUDN with EVPN transport topology. Constraint: does not currently route between separate CUDNs on the same cluster (Connectors feature pending). [Clarify: R1.Q4]
 
