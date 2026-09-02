@@ -16,7 +16,7 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join th
 
 ## In Scope
 
-- **K8s manager registration** via NetworkClass ConfigMap with declared capabilities (`cudn_evpn`, `ipv4` or `dualstack`) [Clarify: R2.Q4]
+- **K8s manager registration** via ConfigMap (identifier: `cudn_evpn`, capabilities: IPv4 address family) [Clarify: R2.Q4]
 - **Automatic VNI and route-target propagation** from Netris VPC/VNet creation to CUDN configuration — route targets are set automatically without manual configuration [Clarify: R1.Q3, R2.Q5, D7] [User]
 - **Automatic CUDN creation** with EVPN transport topology when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
 - **Automatic FRRConfiguration creation** for EVPN overlay (VNI-specific route targets, L2VPN EVPN address family) [Clarify: R2.Q1, D5]
@@ -50,7 +50,7 @@ The following are out of scope for Phase 1:
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to register the OVN EVPN k8s manager via a NetworkClass ConfigMap so that OSAC can provision EVPN-bridged subnets for VMs. [Clarify: R1.Q1, R2.Q4, D1]
+- As a Cloud Infrastructure Admin, I want to register the `cudn_evpn` k8s manager via a ConfigMap (with IPv4 address family capability) so that OSAC can provision EVPN-bridged subnets for VMs. [Clarify: R1.Q1, R2.Q4, D1]
 
 - As a Cloud Infrastructure Admin, I want documented installation prerequisites (underlay link setup, VTEP configuration, BGP peering with Netris including VTEP subnets/prefixes advertisement) so that I can prepare the infrastructure before enabling EVPN for the first time. [Clarify: R2.Q2, R2.Q3, D6] [User]
 
@@ -77,6 +77,8 @@ The following are out of scope for Phase 1:
 - OCP workers have network connectivity to the Netris fabric switches via the configured underlay link. [Clarify: R2.Q3]
 
 - The FRR operator and NMState operator are installed on the OCP cluster before EVPN configuration. [Clarify: R2.Q2]
+
+- A NetworkClass exists with `fabric_manager: "netris"` and `k8s_manager: "cudn_evpn"`, enabling dual-dispatch provisioning where fabric and k8s manager jobs run in parallel for each subnet.
 
 ## Dependencies
 
