@@ -52,20 +52,20 @@ When a bare metal server is ordered through the OSAC UI, the instance enters a "
 
 ## Assumptions
 
-- The five provisioning phases (Host Allocation, Hardware Preparation, OS Deployment, Configuration, Verification) and three deprovisioning phases (Teardown Initiated, Cleaning, Released) are user-facing labels, not backend states. They do not map one-to-one to the metal3 BareMetalHost state machine: OS Deployment corresponds to metal3 `provisioning`; Hardware Preparation aggregates metal3 `registering`/`inspecting`/`preparing`/`cleaning`; and Configuration and Verification are OSAC-level steps that occur after metal3 reaches `provisioned`. The design must map each user-visible phase to an authoritative backend signal and define its start/finish conditions, timestamp durability, and behavior for skipped or retried steps; phases that do not correspond to a distinct, observable backend signal (for example, Verification) may be renamed, merged, or dropped during design.
+- The five provisioning phases (Host Allocation, Hardware Preparation, OS Deployment, Configuration, Verification) and three deprovisioning phases (Teardown Initiated, Cleaning, Released) are user-facing labels, not backend states. They do not map one-to-one to the metal3 BareMetalHost state machine: OS Deployment corresponds to metal3 `provisioning`; Hardware Preparation aggregates metal3 `registering`/`inspecting`/`preparing`/`cleaning`; and Configuration and Verification are OSAC-level steps that occur after metal3 reaches `provisioned`. The design must map each user-visible phase to an authoritative backend signal and define its start/finish conditions, timestamp durability, and behavior for skipped, retried, or overlapping steps. The design must also classify each phase as either a point-in-time milestone or a phase with a running state — in particular the deprovisioning phases Teardown Initiated and Released. Phases that do not correspond to a distinct, observable backend signal (for example, Verification) may be renamed, merged, or dropped during design.
 - A bare metal instance's step-level timeline remains viewable after the instance finishes provisioning or is released. How a released instance's history stays addressable, how long it is retained, and which roles can view it are design decisions deferred to the design phase.
 
 ## Dependencies
 
-- **OSAC-1027 (ComputeInstance phase/condition expansion, VMaaS) and OSAC-1604 (Cluster status report, CaaS):** together these establish the OSAC status-condition progress pattern — a lifecycle phase plus orthogonal conditions with a reason vocabulary. OSAC-1027 is implemented for VMaaS; OSAC-1604 adapts it for CaaS and is in progress. This feature adopts that same pattern for BMaaS rather than introducing a new one; the design should align with OSAC-1604 to keep the cross-service experience consistent. (OSAC-1604's own PRD already scopes BMaaS as a separate feature sharing this pattern.) [Clarify: R3.Q2]
+- **OSAC-1027 (ComputeInstance phase/condition expansion, VMaaS) and OSAC-1604 (Cluster status report, CaaS) — references, not blockers:** these establish the OSAC status-condition progress pattern — a lifecycle phase plus orthogonal conditions with a reason vocabulary — that this feature reuses. This work is not gated on either: OSAC-1027 is already implemented for VMaaS, and OSAC-1604 (adapting the pattern for CaaS) can proceed in parallel. The design should align with OSAC-1604 to keep the cross-service experience consistent. (OSAC-1604's own PRD already scopes BMaaS as a separate feature sharing this pattern.) [Clarify: R3.Q2]
 
 ---
 
 ## Provenance
 
 Authored: draft @ prd 0.9.0 - a17a43d, workspace main @ ed93971
-Final: respond @ prd 0.9.0 - a17a43d, workspace main @ 63b090a
+Final: respond @ prd 0.9.0 - 562b610, workspace main @ 63b090a
 
 > Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"a17a43d","source_repo":"63b090a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"63b090a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":6,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
