@@ -11,11 +11,16 @@ prd:
 see-also:
   - "/enhancements/OSAC-1002-catalog-items"
   - "/enhancements/OSAC-1421-cluster-and-vm-provisioning-wizard"
+  - "/enhancements/OSAC-3538-catalog-items-v2"
 replaces:
+  - N/A
 superseded-by:
+  - "/enhancements/OSAC-3538-catalog-items-v2"
 ---
 
 # Catalog Items — UI Management
+
+> **Status:** This design remains related to the Catalog Items admin-management flow, but its legacy field-definition payload and editor details are superseded by [Catalog Items v2](../OSAC-3538-catalog-items-v2/design.md). Use v2 for current catalog-item field governance and API behavior.
 
 ## Summary
 

@@ -7,11 +7,16 @@ last-updated: 2026-07-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1002
 see-also:
+  - "/enhancements/OSAC-3538-catalog-items-v2"
 replaces:
+  - N/A
 superseded-by:
+  - "/enhancements/OSAC-3538-catalog-items-v2"
 ---
 
 # Published Templates
+
+> **Status:** This proposal is superseded by [Catalog Items v2](../OSAC-3538-catalog-items-v2/design.md). It remains useful as historical background, but its `FieldDefinition`, dot-notation path, and JSON Schema API model are legacy and should not be treated as current behavior.
 
 ## Summary
 
