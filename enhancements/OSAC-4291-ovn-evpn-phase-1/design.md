@@ -11,6 +11,12 @@ prd:
 see-also:
   - "/enhancements/OSAC-1433-unified-networking-architecture"
   - "/enhancements/OSAC-1717-ovn-kubernetes-evpn-spike"
+  - "/enhancements/OSAC-1435-vmaas-networking"
+  - "/enhancements/OSAC-1436-caas-networking"
+  - "/enhancements/OSAC-1437-bmaas-networking"
+  - "/enhancements/OSAC-1433-default-networking"
+  - "/enhancements/OSAC-2135-caas-bm-worker-provisioning"
+  - "/enhancements/OSAC-1382-multi-fabric-east-west"
 replaces:
   - "N/A"
 superseded-by:
@@ -23,6 +29,17 @@ superseded-by:
 
 This design extends OSAC-1433's NetworkClass two-manager architecture with a new k8s manager (`cudn_evpn`) that provisions OVN-Kubernetes ClusterUserDefinedNetwork (CUDN) with EVPN transport, enabling KubeVirt VMs to join the physical fabric via BGP EVPN route advertisement. The design covers sequential provisioning (fabric → k8s manager data flow), CUDN lifecycle, single-subnet validation, and integration test patterns. FRRConfiguration for BGP underlay peering is an installation prerequisite (not created by k8s manager); OVN-Kubernetes auto-updates it when CUDN appears. See [PRD](prd.md) for detailed requirements.
 
+## Related Designs
+
+This design builds on and interacts with several networking designs:
+
+- **OSAC-1435 VMaaS Networking** — VMs provisioned via `ComputeNetworkAttachment` consume the cudn_evpn namespaces created by this design. VMaaS placement logic must resolve the manager-prefixed namespace name (`cudn-evpn-{subnet_name}`) when placing VMs in EVPN-bridged Subnets.
+- **OSAC-1436 CaaS Networking** — CaaS clusters may run on EVPN-bridged subnets. Port-move primitive compatibility with EVPN transport (VXLAN encap vs VLAN trunking) is TBD (out of scope for Phase 1).
+- **OSAC-1437 BMaaS Networking** — Bare-metal servers provisioned via `BareMetalNetworkAttachment` are L2/L3 peers of EVPN-bridged VMs. This design validates same-subnet (L2) and cross-subnet (L3 via fabric ipVRF) connectivity in test cases.
+- **OSAC-1433 Default Networking** — Auto-provisioning of VN/Subnet/SG/NAT at tenant onboarding uses a default NetworkClass. `cudn_evpn` is **not suitable** as the default NetworkClass due to manual prerequisites (VTEP, FRR, BGP underlay). Default networking should use a simpler k8s manager (e.g., cudn_localnet or none).
+- **OSAC-2135 CaaS BM Worker Provisioning** — System-tenant bare-metal instances reference tenant Subnets. If those Subnets use `cudn_evpn`, the BMI provisioning flow interacts with the EVPN namespace/CUDN. Interaction is TBD (out of scope for Phase 1).
+- **OSAC-1382 Multi-Fabric East-West** — Phase 1 east-west isolation domains will need to work across EVPN-bridged and non-EVPN subnets. Inter-domain routing with EVPN transport is TBD (out of scope for Phase 1).
+
 ## Motivation
 
 OSAC runs VMs on OpenShift using KubeVirt. VM IP addresses exist only within the OVN overlay network and are not visible on the physical fabric. This prevents VMs from sharing L2 subnets with bare-metal servers or being directly reachable from the fabric, blocking workloads that span VMs and bare-metal infrastructure.
@@ -30,7 +47,7 @@ OSAC runs VMs on OpenShift using KubeVirt. VM IP addresses exist only within the
 The CUDN LocalNet approach (OSAC-1511) was frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support (validated by OSAC-1717 spike). This design delivers single-cluster EVPN bridging as Phase 1, with a constraint that OVN-Kubernetes cannot currently route between separate CUDNs on the same cluster (Connectors feature pending).
 
 **Implementation Context:**  
-OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabric + k8s). This design adds the second k8s manager type (`cudn_evpn` alongside existing `cudn_localnet`) and solves the fabric-to-k8s data dependency: fabric manager allocates VNI, k8s manager consumes it to configure CUDN. The current multi-target provisioning runs jobs in parallel; sequential provisioning is required here.
+OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabric + k8s). This design adds the second k8s manager type (`cudn_evpn` alongside existing `cudn_localnet`) and solves the fabric-to-k8s data dependency: fabric manager allocates VNI, k8s manager consumes it to configure CUDN. The current multi-target provisioning evaluates targets sequentially within each reconcile cycle (both can be in-flight simultaneously on AAP); this design adds a gate to ensure the fabric target completes and produces output before the k8s target is evaluated.
 
 ### Goals
 
@@ -168,22 +185,30 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
         return nil, status.Errorf(codes.Internal, "failed to fetch NetworkClass: %v", err)
     }
     
-    // Enforce single-subnet constraint for cudn_evpn k8s manager
-    if ncResp.GetNetworkClass().GetKubernetesManager() == "cudn_evpn" {
-        // Count existing subnets under this VirtualNetwork
-        listResp, err := s.List(ctx, &v1.ListSubnetsRequest{
-            Filter: fmt.Sprintf("spec.virtualNetwork='%s'", vnetResp.GetVirtualNetwork().GetId()),
-        })
-        if err != nil {
-            return nil, status.Errorf(codes.Internal, "failed to list existing subnets: %v", err)
-        }
-        
-        if len(listResp.GetSubnets()) > 0 {
-            return nil, status.Errorf(codes.FailedPrecondition,
-                "NetworkClass with k8s_manager 'cudn_evpn' supports only one subnet per VirtualNetwork. "+
-                "VirtualNetwork %q already has subnet %q. OVN Connectors feature (routing between CUDNs) is pending.",
-                vnetResp.GetVirtualNetwork().GetMetadata().GetName(),
-                listResp.GetSubnets()[0].GetMetadata().GetName())
+    // Enforce single-subnet constraint if k8s manager declares capability
+    k8sManager := ncResp.GetNetworkClass().GetKubernetesManager()
+    if k8sManager != "" {
+        // Look up k8s manager capabilities from NetworkClass capabilities field
+        // (populated by NetworkClass controller from k8s manager ConfigMap during registration)
+        caps := ncResp.GetNetworkClass().GetCapabilities()
+        // Check for single_subnet_per_vn capability (set by cudn_evpn and future managers with this constraint)
+        if caps.GetSingleSubnetPerVirtualNetwork() {
+            // Count existing subnets under this VirtualNetwork
+            listResp, err := s.List(ctx, &v1.ListSubnetsRequest{
+                Filter: fmt.Sprintf("spec.virtualNetwork='%s'", vnetResp.GetVirtualNetwork().GetId()),
+            })
+            if err != nil {
+                return nil, status.Errorf(codes.Internal, "failed to list existing subnets: %v", err)
+            }
+            
+            if len(listResp.GetSubnets()) > 0 {
+                return nil, status.Errorf(codes.FailedPrecondition,
+                    "NetworkClass with k8s_manager %q supports only one subnet per VirtualNetwork. "+
+                    "VirtualNetwork %q already has subnet %q. OVN Connectors feature (routing between CUDNs) is pending.",
+                    k8sManager,
+                    vnetResp.GetVirtualNetwork().GetMetadata().GetName(),
+                    listResp.GetSubnets()[0].GetMetadata().GetName())
+            }
         }
     }
     
@@ -199,24 +224,88 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
 
 #### osac-operator: Sequential Provisioning
 
-**Current Multi-Target Flow (Parallel):**
+**Provisioning Package Extension:**
+
+Sequential provisioning is implemented in the provisioning package (`pkg/provisioning/`) for reusability across controllers. The `JobTarget` struct is extended with dependency fields:
 
 ```go
-// internal/controller/subnet_controller.go (current)
-func (r *SubnetReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
-    // ... fetch Subnet CR, dispatch plan ...
-    
-    // Parallel execution
-    targets := []provisioning.JobTarget{
-        {TemplateName: "osac-create-subnet-netris", ...},  // fabric
-        {TemplateName: "osac-create-subnet-cudn-evpn", ...}, // k8s
-    }
-    err := provisioning.RunMultiTargetProvisioningLifecycle(ctx, targets, callbacks)
-    // Both jobs start simultaneously
+// pkg/provisioning/types.go (new fields)
+type JobTarget struct {
+    Name                 string
+    Provider             ProvisioningProvider
+    Callbacks            PollCallbacks
+    CheckAPIServer       bool
+    AbsorbsLegacyHistory bool
+    DependsOn            string                 // NEW: name of target that must complete first
+    ExtraVarsFrom        string                 // NEW: name of target whose ConfigMap provides extra vars
+    ExtraVarsConfigMap   string                 // NEW: ConfigMap name for output (created by fabric manager)
 }
 ```
 
-**New Sequential Flow:**
+The `RunMultiTargetProvisioningLifecycle` function handles ordering generically:
+
+```go
+// pkg/provisioning/lifecycle.go (modified)
+func RunMultiTargetProvisioningLifecycle(
+    ctx context.Context,
+    targets []JobTarget,
+    callbacks TargetCallbacks,
+) error {
+    // Build dependency graph
+    deps := buildDependencyGraph(targets)
+    
+    for _, target := range targets {
+        // Gate dependent targets on their dependency's completion
+        if target.DependsOn != "" {
+            depTarget := findTargetByName(targets, target.DependsOn)
+            if !isTargetComplete(depTarget, callbacks) {
+                // Dependency not complete yet - skip this target, will eval next reconcile
+                continue
+            }
+            
+            // Extract output vars from dependency's ConfigMap and merge
+            if target.ExtraVarsFrom != "" {
+                extraVars, err := extractExtraVarsFromConfigMap(ctx, target.ExtraVarsFrom)
+                if err != nil {
+                    return fmt.Errorf("failed to extract extra vars from %s: %w", target.ExtraVarsFrom, err)
+                }
+                // Merge into target's extra vars
+                for k, v := range extraVars {
+                    target.ExtraVars[k] = v
+                }
+            }
+        }
+        
+        // Run provisioning for this target (existing logic)
+        if err := runTargetProvisioningLifecycle(ctx, target, callbacks); err != nil {
+            return err
+        }
+    }
+    
+    return nil
+}
+
+func extractExtraVarsFromConfigMap(ctx context.Context, configMapName string) (map[string]interface{}, error) {
+    // Fetch ConfigMap created by fabric manager
+    cm := &corev1.ConfigMap{}
+    if err := client.Get(ctx, client.ObjectKey{Namespace: "osac", Name: configMapName}, cm); err != nil {
+        return nil, err
+    }
+    
+    // Parse JSON data from ConfigMap
+    // Fabric manager writes: {"l2_vni": 14, "l3_vni": 11, "fabric_reserved_range": "200.200.1.1/32,200.200.1.100-200.200.1.200"}
+    var extraVars map[string]interface{}
+    if err := json.Unmarshal([]byte(cm.Data["extra_vars"]), &extraVars); err != nil {
+        return nil, fmt.Errorf("failed to parse ConfigMap data: %w", err)
+    }
+    
+    return extraVars, nil
+}
+```
+
+**Subnet Controller Usage:**
+
+The controller builds targets with dependency annotations:
 
 ```go
 // internal/controller/subnet_controller.go (modified)
@@ -227,120 +316,77 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req reconcile.Request)
     }
     
     // Dispatch to fabric + k8s managers
-    plan, err := r.Dispatcher.Dispatch(ctx, "Subnet", subnet.Spec.NetworkClass)
+    plan, err := r.Dispatcher.Dispatch(ctx, "Subnet", getNetworkClassID(subnet))
     if err != nil {
         return reconcile.Result{}, err
     }
     
-    // Sequential execution when both fabric and k8s managers exist
-    if len(plan.Targets) == 2 && plan.HasFabricManager() && plan.HasK8sManager() {
-        return r.reconcileSequential(ctx, subnet, plan)
+    // Build targets with dependencies
+    var targets []provisioning.JobTarget
+    for _, dispatchTarget := range plan.Targets {
+        target := provisioning.JobTarget{
+            Name:         dispatchTarget.TemplateName,
+            TemplateName: dispatchTarget.TemplateName,
+            ExtraVars:    dispatchTarget.ExtraVars,
+            // ... other fields ...
+        }
+        
+        // If this is a k8s manager and a fabric manager exists, add dependency
+        if dispatchTarget.Role == dispatcher.K8sManager {
+            fabricTarget := plan.GetFabricTarget()
+            if fabricTarget != nil {
+                target.DependsOn = fabricTarget.TemplateName
+                target.ExtraVarsFrom = fmt.Sprintf("subnet-%s-fabric-output", subnet.GetName())
+                // Fabric manager will create this ConfigMap with VNI data
+            }
+        }
+        
+        // If this is a fabric manager, specify output ConfigMap
+        if dispatchTarget.Role == dispatcher.FabricManager {
+            target.ExtraVarsConfigMap = fmt.Sprintf("subnet-%s-fabric-output", subnet.GetName())
+        }
+        
+        targets = append(targets, target)
     }
     
-    // Fallback to parallel for backward compatibility (single-manager or legacy)
-    return r.reconcileParallel(ctx, subnet, plan)
+    // Provisioning package handles ordering generically
+    return provisioning.RunMultiTargetProvisioningLifecycle(ctx, targets, r.buildCallbacks(subnet))
 }
 
-func (r *SubnetReconciler) reconcileSequential(ctx context.Context, subnet *osacv1.Subnet, plan *dispatcher.DispatchPlan) (reconcile.Result, error) {
-    // Phase 1: Fabric manager
-    fabricTarget := plan.GetFabricTarget()
-    if !r.isFabricJobComplete(subnet) {
-        if err := r.runFabricJob(ctx, subnet, fabricTarget); err != nil {
-            return reconcile.Result{}, err
-        }
-        // Requeue to check fabric job status
-        return reconcile.Result{RequeueAfter: 10 * time.Second}, nil
-    }
-    
-    // Extract VNI from fabric job output
-    vniData, err := r.extractVNIFromFabricJob(ctx, subnet, fabricTarget)
-    if err != nil {
-        r.Recorder.Event(subnet, corev1.EventTypeWarning, "VNIExtractionFailed", err.Error())
-        return reconcile.Result{}, err
-    }
-    
-    // Phase 2: K8s manager with VNI data
-    k8sTarget := plan.GetK8sTarget()
-    k8sTarget.ExtraVars["l2_vni"] = vniData.L2VNI
-    k8sTarget.ExtraVars["l3_vni"] = vniData.L3VNI
-    k8sTarget.ExtraVars["netris_reserved_range"] = vniData.NetrisReservedRange
-    // Route targets not passed - CUDN auto-generates as "AS:VNI"
-    
-    if !r.isK8sJobComplete(subnet) {
-        if err := r.runK8sJob(ctx, subnet, k8sTarget); err != nil {
-            return reconcile.Result{}, err
-        }
-        return reconcile.Result{RequeueAfter: 10 * time.Second}, nil
-    }
-    
-    // Both jobs complete
-    subnet.Status.Phase = osacv1.SubnetPhaseReady
-    return reconcile.Result{}, r.Status().Update(ctx, subnet)
-}
-
-func (r *SubnetReconciler) extractVNIFromFabricJob(ctx context.Context, subnet *osacv1.Subnet, fabricTarget dispatcher.JobTarget) (*VNIData, error) {
-    // Find most recent fabric job in subnet.Status.JobHistory
-    // Match by template name from dispatcher (not hardcoded "netris" substring)
-    var fabricJob *osacv1.JobRecord
-    for i := range subnet.Status.JobHistory {
-        job := &subnet.Status.JobHistory[i]
-        if job.TemplateName == fabricTarget.TemplateName && job.Phase == "Successful" {
-            fabricJob = job
-            break
-        }
-    }
-    if fabricJob == nil {
-        return nil, fmt.Errorf("no successful fabric job found in status (expected template: %s)", fabricTarget.TemplateName)
-    }
-    
-    // Fetch AAP Job CR to get output
-    aapJob := &aapv1.Job{}
-    if err := r.Get(ctx, client.ObjectKey{Namespace: fabricJob.Namespace, Name: fabricJob.Name}, aapJob); err != nil {
-        return nil, fmt.Errorf("failed to fetch fabric AAP Job: %w", err)
-    }
-    
-    // Parse VNI and reserved range from job.Status.ExtraVars
-    // ASSUMPTION: set_stats output lands in AAP Job CR status.extraVars
-    // (unverified - may require ConfigMap fallback, see Open Question #3)
-    // Route targets not extracted in Phase 1 - CUDN auto-generates them as "AS:VNI"
-    // (Phase 2 multi-cluster may need explicit RT control)
-    vniData := &VNIData{
-        L2VNI:               aapJob.Status.ExtraVars["l2_vni"].(int),
-        L3VNI:               aapJob.Status.ExtraVars["l3_vni"].(int),
-        NetrisReservedRange: aapJob.Status.ExtraVars["netris_reserved_range"].(string),  // Netris SVI + DHCP range
-    }
-    
-    return vniData, nil
+func getNetworkClassID(subnet *osacv1.Subnet) string {
+    // Subnet CR references VirtualNetwork, which has osac.openshift.io/network-class-id annotation
+    // Dispatcher uses this annotation to resolve the NetworkClass
+    // (Annotation is set by VirtualNetwork feedback controller when VN is created)
+    return subnet.Annotations["osac.openshift.io/network-class-id"]
 }
 ```
 
 **Rationale:**
-- Requeue pattern (Pattern 1 from research) avoids blocking reconcile loop
-- Preserves dispatcher plugin architecture (vs unified workflow template)
-- Fabric job identified by dispatcher-resolved template name (not hardcoded "netris" substring) — extensible to future fabric managers
-- Fabric job status extraction via AAP Job CR (ASSUMPTION: set_stats populates status.extraVars — see Open Question #3 for ConfigMap fallback)
-- ExtraVars merging happens at controller level (not AAP workflow level)
+- Sequential logic in provisioning package (not controller) makes it reusable for ANY future fabric→k8s dependency
+- Controllers declaratively specify dependencies via `DependsOn` and `ExtraVarsFrom` fields
+- ConfigMap data path is explicit and verified (not an assumption like AAP Job CR status.extraVars)
+- Fabric manager creates ConfigMap with output, k8s manager consumes it — manager-agnostic interface
 - [Research: §Sequential Provisioning Patterns] [PRD: In Scope — fabric-to-k8s data dependency]
 
 #### osac-aap: netris Fabric Manager Role
 
-**Role Structure:**
+This design **extends the existing netris role** (`collections/ansible_collections/osac/templates/roles/netris/`) by adding VirtualNetwork and Subnet provisioning tasks. The existing role already handles SecurityGroup, ExternalIP, and NATGateway provisioning — those task files remain unchanged.
+
+**New Task Files:**
 
 ```
-collections/ansible_collections/osac/templates/roles/netris/
-├── meta/
-│   └── osac.yaml                    # Capability declaration (fabric_manager: netris)
-└── tasks/
-    ├── create_subnet.yaml           # Create Netris VPC + VNet, return VNI
-    └── delete_subnet.yaml           # Delete Netris VNet
+collections/ansible_collections/osac/templates/roles/netris/tasks/
+├── create_virtual_network.yaml      # NEW: Create Netris VPC, return L3 VNI
+├── create_subnet.yaml               # NEW: Create Netris VNet, return L2 VNI
+├── delete_virtual_network.yaml      # NEW: Delete Netris VPC
+└── delete_subnet.yaml               # NEW: Delete Netris VNet
 ```
 
-**meta/osac.yaml:**
+The existing `meta/osac.yaml` already declares `fabric_manager: netris` with capabilities — no changes needed there. For reference, the existing schema:
 
 ```yaml
 ---
-manager_type: fabric
-manager: netris
+fabric_manager: netris
 capabilities:
   supports_ipv4: true
   supports_ipv6: false
@@ -358,7 +404,7 @@ capabilities:
     tenant_id: "{{ osac_job_vars.resource.metadata.annotations['osac.openshift.io/tenant'] }}"
 
 - name: Create or get Netris VPC for VirtualNetwork
-  netris.api.vpc:
+  netris.controller.vpc:
     name: "{{ vnet_name }}"
     tenant: "{{ tenant_id }}"
     state: present
@@ -366,7 +412,7 @@ capabilities:
   # Netris VPC maps to OSAC VirtualNetwork (L3 VNI allocated)
 
 - name: Create Netris VNet (subnet within VPC)
-  netris.api.vnet:
+  netris.controller.vnet:
     name: "{{ osac_job_vars.resource.metadata.name }}"
     vpc: "{{ vpc_result.vpc.name }}"
     cidr: "{{ subnet_cidr }}"
@@ -381,15 +427,27 @@ capabilities:
   ansible.builtin.set_fact:
     l2_vni: "{{ vnet_result.vnet.l2_vni }}"
     l3_vni: "{{ vpc_result.vpc.l3_vni }}"
-    netris_reserved_range: "{{ vnet_result.vnet.gateway_range }}"  # e.g. 200.200.1.0/26 (SVIs + DHCP)
+    fabric_reserved_range: "{{ vnet_result.vnet.gateway_range }}"  # e.g. 200.200.1.0/26 (SVIs + DHCP pool) - generic name for any fabric manager
 
-- name: Publish VNI data for k8s manager
-  ansible.builtin.set_stats:
-    data:
-      l2_vni: "{{ l2_vni }}"
-      l3_vni: "{{ l3_vni }}"
-      netris_reserved_range: "{{ netris_reserved_range }}"
-      vnet_id: "{{ vnet_result.vnet.id }}"
+- name: Publish VNI data for k8s manager via ConfigMap
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ osac_job_vars.configmap_name }}"  # Set by controller: subnet-{name}-fabric-output
+        namespace: osac
+      data:
+        extra_vars: |
+          {
+            "l2_vni": {{ l2_vni }},
+            "l3_vni": {{ l3_vni }},
+            "fabric_reserved_range": "{{ fabric_reserved_range }}",
+            "vnet_id": "{{ vnet_result.vnet.id }}"
+          }
+  # ConfigMap is consumed by k8s manager (provisioning package extracts and merges into k8s job extra_vars)
+  # Generic field names (fabric_reserved_range, not netris_reserved_range) allow any fabric manager to provide output
 ```
 
 **tasks/delete_subnet.yaml:**
@@ -401,19 +459,29 @@ capabilities:
     vnet_name: "{{ osac_job_vars.resource.metadata.name }}"
 
 - name: Delete Netris VNet
-  netris.api.vnet:
+  netris.controller.vnet:
     name: "{{ vnet_name }}"
     state: absent
   # VPC remains (may have other VNets)
+
+- name: Delete fabric output ConfigMap
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ osac_job_vars.configmap_name }}"
+    namespace: osac
+  ignore_errors: yes  # May not exist if create failed early
 ```
 
 **Rationale:**
 - Netris VPC (ipVRF) maps to VirtualNetwork (L3 VNI for cross-subnet routing via fabric)
 - Netris VNet (macVRF) maps to Subnet (L2 VNI for same-subnet bridging)
 - VPC is created/fetched idempotently (multiple Subnets under same VirtualNetwork reuse VPC)
-- set_stats publishes VNI data to AAP Job CR status.extraVars for controller extraction
+- **ConfigMap data path** (not set_stats → AAP Job CR) — verified approach, set_stats does not populate Job CR status.extraVars
+- Generic field names (`fabric_reserved_range`, not `netris_reserved_range`) make output contract reusable for future fabric managers (OpenStack Neutron, Cisco ACI)
 - Route targets not returned in Phase 1 - CUDN auto-generates as "AS:VNI"
-- **Reserved range (gateway_range) is mandatory output** — prevents OVN IPAM collision with Netris SVIs and DHCP (correctness bug if missing)
+- **Reserved range (fabric_reserved_range) is mandatory output** — prevents OVN IPAM collision with fabric SVIs and DHCP (correctness bug if missing)
 - K8s manager validates reserved range presence and fails if missing
 - Netris SVI owns the gateway IP — EVPN CUDNs delegate L3 routing to fabric (no OVN logical router port created)
 
@@ -453,18 +521,19 @@ capabilities:
     that:
       - osac_job_vars.extra_vars.l2_vni is defined
       - osac_job_vars.extra_vars.l3_vni is defined
-      - osac_job_vars.extra_vars.netris_reserved_range is defined
-    fail_msg: "Fabric job must provide l2_vni, l3_vni, and netris_reserved_range. Missing data prevents IP collision avoidance (correctness bug)."
+      - osac_job_vars.extra_vars.fabric_reserved_range is defined
+    fail_msg: "Fabric job must provide l2_vni, l3_vni, and fabric_reserved_range. Missing data prevents IP collision avoidance (correctness bug)."
 
 - name: Extract VNI values from extra_vars
   ansible.builtin.set_fact:
     l2_vni: "{{ osac_job_vars.extra_vars.l2_vni }}"
     l3_vni: "{{ osac_job_vars.extra_vars.l3_vni }}"
-    netris_reserved_range: "{{ osac_job_vars.extra_vars.netris_reserved_range }}"  # Netris SVI + DHCP range (REQUIRED)
+    fabric_reserved_range: "{{ osac_job_vars.extra_vars.fabric_reserved_range }}"  # Fabric SVI + DHCP range (REQUIRED) - generic name works with any fabric manager
     subnet_cidr: "{{ osac_job_vars.resource.spec.ipv4CIDR }}"
     subnet_name: "{{ osac_job_vars.resource.metadata.name }}"  # Subnet CR name (namespace owner)
     vnet_name: "{{ osac_job_vars.resource.spec.virtualNetwork }}"  # VirtualNetwork name (CUDN name)
     tenant_id: "{{ osac_job_vars.resource.metadata.annotations['osac.openshift.io/tenant'] }}"
+    namespace_name: "cudn-evpn-{{ subnet_name }}"  # Manager-scoped to prevent collision with other k8s managers
 
 - name: Create tenant workload namespace
   kubernetes.core.k8s:
@@ -473,11 +542,12 @@ capabilities:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ subnet_name }}"  # One namespace per Subnet (not VirtualNetwork)
+        name: "{{ namespace_name }}"  # Manager-prefixed: cudn-evpn-{subnet_name}
         labels:
           tenant: "{{ tenant_id }}"
           virtual-network: "{{ vnet_name }}"
           k8s.ovn.org/primary-user-defined-network: ""
+          osac.openshift.io/k8s-manager: "cudn_evpn"  # Identifies which manager created this namespace
         annotations:
           osac.openshift.io/tenant: "{{ tenant_id }}"
           osac.openshift.io/owner-reference: "Subnet/{{ subnet_name }}"
@@ -507,7 +577,7 @@ capabilities:
             subnets:
               - "{{ subnet_cidr }}"
             excludeSubnets:
-              - "{{ netris_reserved_range }}"  # REQUIRED: Netris SVIs + DHCP range (prevents IP collision - correctness bug if omitted)
+              - "{{ fabric_reserved_range }}"  # REQUIRED: Fabric SVIs + DHCP range (prevents IP collision - correctness bug if omitted)
             # defaultGatewayIPs omitted - OVN auto-picks .1, which Netris SVI answers
           evpn:
             vtep: tenant-vtep  # Cluster-wide singleton VTEP
@@ -534,22 +604,23 @@ capabilities:
   ansible.builtin.set_stats:
     data:
       cudn_name: "{{ vnet_name }}"
-      cudn_namespace: "{{ subnet_name }}"  # Namespace = Subnet name (1:1 mapping)
+      cudn_namespace: "{{ namespace_name }}"  # Manager-prefixed namespace
       vrf_name: "{{ cudn_status.resources[0].status.vrfName }}"
 ```
 
 **Rationale:**
-- **Namespace name = Subnet name** (1:1 mapping, correct even when Phase 2 lifts single-subnet constraint)
+- **Namespace name = Manager-prefixed Subnet name** (`cudn-evpn-{subnet_name}`) to prevent collision with other k8s managers (e.g., cudn_net also creates namespaces per Subnet)
 - **CUDN name = VirtualNetwork name** (Phase 1: one CUDN per VirtualNetwork due to single-subnet constraint)
 - CUDN namespaceSelector matches by `virtual-network` label (selects namespace(s) for this VirtualNetwork)
 - Namespace label `k8s.ovn.org/primary-user-defined-network` required for UDN as primary network
+- Namespace label `osac.openshift.io/k8s-manager: "cudn_evpn"` identifies which manager owns the namespace
 - VTEP reference = `tenant-vtep` (cluster singleton, installation prerequisite)
-- VNI values (L2 macVRF, L3 ipVRF) from extra_vars (passed by controller from fabric job output)
+- VNI values (L2 macVRF, L3 ipVRF) from extra_vars (passed by provisioning package from fabric ConfigMap output)
 - Route targets omitted in Phase 1 — CUDN auto-generates as "AS:VNI" (Phase 2 multi-cluster may require explicit RT control for inter-cluster route distribution)
 - Wait for CUDN Ready before completing (prevents race with VM provisioning)
-- **excludeSubnets (REQUIRED)** prevents OVN IPAM from allocating IPs in Netris-managed range (SVIs, DHCP) — mandatory for correctness (collision causes connectivity failure)
-- Validation fails k8s job if netris_reserved_range missing from fabric job extra_vars
-- defaultGatewayIPs omitted — OVN auto-picks .1, which Netris SVI answers (documented working behavior)
+- **excludeSubnets (REQUIRED)** prevents OVN IPAM from allocating IPs in fabric-managed range (SVIs, DHCP) — mandatory for correctness (collision causes connectivity failure)
+- Validation fails k8s job if fabric_reserved_range missing from fabric job ConfigMap (generic name works with any fabric manager)
+- defaultGatewayIPs omitted — OVN auto-picks .1, which fabric SVI answers (documented working behavior)
 - set_stats publishes CUDN details (used by controller for status update, not for inter-job flow)
 - [Demo: Phase 5.2 CUDN structure] [Research: §Existing Solutions — OVN-K CUDN]
 
@@ -557,33 +628,14 @@ capabilities:
 
 ```yaml
 ---
-# Critical: Deletion order enforced to prevent stale VRFs and stuck finalizers
-# Observed failure: Deleting CUDN before VMs causes ovnkube finalizer hang
+# Prerequisite: Subnet controller validates no ComputeInstances exist before triggering this job
+# Separation of concerns: ComputeInstance controller owns VM lifecycle, not networking playbook
 
 - name: Extract resource identifiers
   ansible.builtin.set_fact:
     subnet_name: "{{ osac_job_vars.resource.metadata.name }}"  # Subnet CR name
     vnet_name: "{{ osac_job_vars.resource.spec.virtualNetwork }}"  # VirtualNetwork name (CUDN name)
-    namespace: "{{ osac_job_vars.resource.metadata.name }}"  # Namespace = Subnet name (1:1 mapping)
-
-- name: Delete all VirtualMachines in namespace
-  kubernetes.core.k8s:
-    api_version: kubevirt.io/v1
-    kind: VirtualMachine
-    namespace: "{{ namespace }}"
-    state: absent
-  # Delete all VMs first - CUDN finalizer waits for VMIs to terminate
-
-- name: Wait for all VMIs terminated
-  kubernetes.core.k8s_info:
-    api_version: kubevirt.io/v1
-    kind: VirtualMachineInstance
-    namespace: "{{ namespace }}"
-  register: vmi_list
-  until: vmi_list.resources | length == 0
-  retries: 30
-  delay: 10
-  # Must wait - deleting CUDN while VMIs exist causes stuck finalizer
+    namespace_name: "cudn-evpn-{{ osac_job_vars.resource.metadata.name }}"  # Manager-prefixed namespace
 
 - name: Delete ClusterUserDefinedNetwork
   kubernetes.core.k8s:
@@ -591,9 +643,8 @@ capabilities:
     kind: ClusterUserDefinedNetwork
     name: "{{ vnet_name }}"
     state: absent
-  # Safe to delete after VMIs gone
 
-- name: Wait for CUDN deleted
+- name: Wait for CUDN fully deleted (not just deletionTimestamp set)
   kubernetes.core.k8s_info:
     api_version: k8s.ovn.org/v1
     kind: ClusterUserDefinedNetwork
@@ -602,21 +653,53 @@ capabilities:
   until: cudn_check.resources | length == 0
   retries: 30
   delay: 10
+  # Wait for full deletion (not just deletionTimestamp) to ensure OVN has released VNI
+  # Mitigates VNI reuse race: Netris deletes VNet only after CUDN gone (see Controller deletion ordering)
 
 - name: Delete namespace
   kubernetes.core.k8s:
     api_version: v1
     kind: Namespace
-    name: "{{ namespace }}"
+    name: "{{ namespace_name }}"
     state: absent
-  # Namespace deleted last
+  # Namespace deleted after CUDN gone
+```
+
+**Subnet Controller Pre-Delete Validation:**
+
+The Subnet controller (not the playbook) enforces deletion ordering:
+
+```go
+// internal/controller/subnet_controller.go
+func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subnet) (reconcile.Result, error) {
+    // Check for ComputeInstances in the Subnet's namespace before deprov job
+    namespace := fmt.Sprintf("cudn-evpn-%s", subnet.GetName())
+    vmList := &kubevirtv1.VirtualMachineList{}
+    if err := r.List(ctx, vmList, client.InNamespace(namespace)); err != nil {
+        return reconcile.Result{}, err
+    }
+    
+    if len(vmList.Items) > 0 {
+        r.Recorder.Event(subnet, corev1.EventTypeWarning, "DeletionBlocked",
+            fmt.Sprintf("Cannot delete Subnet while %d VMs exist in namespace %s. Delete VMs first.", len(vmList.Items), namespace))
+        // Requeue - ComputeInstance controller will delete VMs when their CRs are deleted
+        return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
+    }
+    
+    // Safe to proceed - no VMs in namespace
+    // Run deprovision job (CUDN delete → namespace delete)
+    // Then trigger fabric deprovision (Netris VNet delete) only after CUDN fully deleted
+    return r.runDeprovisionJob(ctx, subnet)
+}
 ```
 
 **Deletion Rationale:**
-- VMs must be deleted before CUDN (finalizer deadlock observed in testing)
-- VMI wait prevents "resource not found" errors in CUDN controller
-- Namespace deleted last (1:1 Subnet→Namespace mapping, namespace owned by Subnet)
-- **Stale VRF recovery (if needed):** See Support Procedures — manual troubleshooting step, not automated in delete playbook (too heavy-handed for routine delete)
+- **Controller validation** (not playbook) enforces VM deletion prerequisite — separation of concerns (ComputeInstance controller owns VM lifecycle)
+- Playbook deletes: CUDN → wait fully deleted → namespace
+- **CUDN wait for full deletion** (not just deletionTimestamp) ensures OVN has released VNI before fabric deprovision
+- **Fabric deprovision after CUDN deleted** mitigates VNI reuse race (Netris may reuse VNI if VNet deleted while CUDN still exists)
+- Namespace delete safe after CUDN gone (no finalizer race)
+- **Stale VRF recovery (if needed):** See Support Procedures — manual troubleshooting step, not automated (ovnkube-node restart affects all VMs on node, too disruptive for routine delete)
 
 **FRRConfiguration Handling:**
 
@@ -641,10 +724,10 @@ Both Netris and OVN run DHCP servers for the same subnet:
 OVN intercepts DHCP requests inside the logical switch before they reach the fabric. VMs receive IP addresses from OVN DHCP and never see Netris DHCP offers. The two DHCP servers coexist safely without conflict.
 
 **IP allocation strategy (REQUIRED for correctness):**
-- **`excludeSubnets` is mandatory** — prevents OVN IPAM from allocating IPs in the Netris-reserved range (SVIs + DHCP pool)
-- Without `excludeSubnets`, OVN may allocate IPs that Netris owns (e.g., gateway .1, SVI IPs, DHCP pool) causing connectivity failures
-- Fabric manager must return `netris_reserved_range` in extra_vars (e.g., `200.200.1.0/26` for SVIs + DHCP low range)
-- K8s manager validates `netris_reserved_range` presence and fails provisioning if missing (prevents silent collision)
+- **`excludeSubnets` is mandatory** — prevents OVN IPAM from allocating IPs in the fabric-reserved range (SVIs + DHCP pool)
+- Without `excludeSubnets`, OVN may allocate IPs that the fabric owns (e.g., gateway .1, SVI IPs, DHCP pool) causing connectivity failures
+- Fabric manager must return `fabric_reserved_range` in ConfigMap output (e.g., `200.200.1.0/26` for SVIs + DHCP low range) — generic name works with any fabric manager (Netris, OpenStack Neutron, Cisco ACI)
+- K8s manager validates `fabric_reserved_range` presence and fails provisioning if missing (prevents silent collision)
 
 **Operational notes:**
 - Netris DHCP can remain enabled (no configuration change needed) — it serves bare-metal nodes on the fabric
@@ -699,15 +782,20 @@ metadata:
   name: k8s-manager-cudn-evpn
   namespace: osac
   labels:
-    osac.openshift.io/k8s-manager: "true"
+    osac.openshift.io/network/k8s-manager: "true"  # Matches OSAC-1433 label path
 data:
-  manager: cudn_evpn
-  capabilities: |
-    supports_ipv4: true
-    supports_ipv6: false
-    supports_dual_stack: false
-    dpu_support: false
-  template_role: osac.templates.cudn_evpn
+  name: cudn_evpn  # Field name 'name' per OSAC-1433 schema (not 'manager')
+  description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)"
+  capabilities: "supports_ipv4:true,supports_ipv6:false,single_subnet_per_vn:true"  # Comma-separated string per OSAC-1433
+  # template_role field removed - not in OSAC-1433 spec, dispatcher resolves role name from k8s_manager field
+```
+
+**Capability Fields:**
+- `supports_ipv4:true` — IPv4 address family supported
+- `supports_ipv6:false` — IPv6 not supported in Phase 1
+- `single_subnet_per_vn:true` — NEW capability: enforces single-subnet-per-VirtualNetwork constraint (checked by fulfillment-service validation)
+
+The `single_subnet_per_vn` capability is checked by fulfillment-service Subnet validation (see Subnet Validation section above) to make the constraint pluggable for future k8s managers.
 ```
 
 **RBAC:**
@@ -862,13 +950,14 @@ Existing alerts on `osac_subnet_reconcile_failures_total` cover this feature. Th
 
 | Risk | Mitigation |
 |------|------------|
-| **VNI allocation race condition** — two Subnets created simultaneously get same VNI from Netris | Netris must guarantee cluster-wide VNI uniqueness atomically, OR fulfillment-service API serializes Subnet creates with database lock |
-| **Gateway MAC mismatch** — manual coordination step skipped, L3 traffic breaks | Document prerequisite clearly in installation guide, add diagnostic command to compare MACs (kubectl + Netris API) |
+| **VNI allocation race condition** — two Subnets created simultaneously get same VNI | Fabric manager (Netris) guarantees cluster-wide VNI uniqueness atomically. Real risk is VNI reuse during delete+recreate: mitigated by fabric deprovision only after CUDN fully deleted (not just deletionTimestamp set) |
+| **Gateway MAC mismatch** — manual coordination step skipped, L3 traffic breaks | Document prerequisite clearly in installation guide, add diagnostic command to compare MACs (kubectl + fabric API) |
 | **VTEP not created** — k8s manager assumes VTEP exists, CUDN creation fails | Installation validation script checks VTEP exists before allowing NetworkClass with k8s_manager=cudn_evpn |
-| **set_stats data loss** — fabric job completes but AAP loses VNI data before controller reads it | AAP Job CR persists VNI in status.extraVars (durable), not just in-memory artifacts. **ASSUMPTION: set_stats populates status.extraVars — see Open Question #3 for ConfigMap fallback if this doesn't work.** |
+| **Fabric output data loss** — fabric job completes but ConfigMap deleted before provisioning package reads it | ConfigMap persists in osac namespace (durable), k8s manager fails if ConfigMap missing (explicit error, not silent failure). ConfigMap cleaned up by fabric manager delete playbook after deprovision. |
 | **IPv4-only regression** — future IPv6 support breaks existing CUDNs | CUDN VNI is immutable (delete+recreate required), no in-place upgrade |
-| **FRRConfiguration conflict** — multiple OSAC installations on same cluster, label collision** | Installation guide warns against multi-instance deployments, OR use namespace-scoped FRRConfiguration selector |
-| **Dual DHCP confusion** — both Netris and OVN run DHCP, unclear which serves VMs | Documented behavior: OVN intercepts DHCP inside logical switch, VMs never see Netris DHCP. Both coexist safely. |
+| **FRRConfiguration conflict** — multiple OSAC installations on same cluster, label collision | Installation guide warns against multi-instance deployments, OR use namespace-scoped FRRConfiguration selector |
+| **Dual DHCP confusion** — both fabric and OVN run DHCP, unclear which serves VMs | Documented behavior: OVN intercepts DHCP inside logical switch, VMs never see fabric DHCP. Both coexist safely. |
+| **cudn_evpn coupled to Netris-specific outputs** — k8s manager expects Netris VPC/VNet concepts, won't work with other fabric managers | Generic output contract (`l2_vni`, `l3_vni`, `fabric_reserved_range`) defined for fabric→k8s data flow. Any fabric manager (OpenStack Neutron, Cisco ACI, Netris) can provide this contract without k8s manager changes. Netris role is first implementation of the contract. |
 
 ### Drawbacks
 
@@ -943,15 +1032,7 @@ Subnet provisioning takes 2× the time of parallel provisioning (fabric job + k8
 
 ## Open Questions
 
-### 1. VNI Uniqueness Enforcement
-
-**Owner:** Connectivity & Fabric team (fabric manager implementers)
-
-**Impact:** CUDN provisioning reliability (§4.1 Implementation Details)
-
-Does Netris guarantee cluster-wide VNI uniqueness when two VNet create requests arrive simultaneously? If not, fulfillment-service API must add Subnet create serialization (database advisory lock on parent VirtualNetwork).
-
-### 2. Gateway MAC Coordination Mechanism
+### 1. Gateway MAC Coordination Mechanism
 
 **Owner:** Cloud Infrastructure Admin (installation documentation owner)
 
@@ -960,69 +1041,6 @@ Does Netris guarantee cluster-wide VNI uniqueness when two VNet create requests 
 Where is the authoritative MAC value? Does Netris VNet gateway MAC come from a pool (predictable), or is it random? Does CUDN gateway MAC come from a configurable field, or auto-generated? If both are random, manual coordination is impossible.
 
 **Assumption:** Both sides support deterministic MAC generation or explicit MAC configuration. [Assumption]
-
-### 3. set_stats Data Path to Job CR Status
-
-**Owner:** osac-operator team (AAP Job CR controller implementation)
-
-**Impact:** Sequential provisioning implementation (§4.1 Implementation Details — controller VNI extraction)
-
-**Question:**
-
-Does Ansible `set_stats` output actually populate the AAP Job CR's `status.extraVars` field, or does it only publish to AAP server artifacts (database/file storage)?
-
-The design assumes:
-```go
-vniData := &VNIData{
-    L2VNI: aapJob.Status.ExtraVars["l2_vni"].(int),
-    L3VNI: aapJob.Status.ExtraVars["l3_vni"].(int),
-}
-```
-
-**If set_stats does NOT populate status.extraVars:**
-
-Use ConfigMap-based data passing instead:
-
-```yaml
-# Fabric role: tasks/create_subnet.yaml
-- name: Publish VNI data to ConfigMap
-  kubernetes.core.k8s:
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: "subnet-{{ osac_job_vars.resource.metadata.name }}-vni"
-        namespace: osac
-        labels:
-          osac.openshift.io/subnet: "{{ osac_job_vars.resource.metadata.name }}"
-      data:
-        l2_vni: "{{ l2_vni }}"
-        l3_vni: "{{ l3_vni }}"
-        netris_reserved_range: "{{ netris_reserved_range }}"
-```
-
-```go
-// Controller: extractVNIFromFabricJob alternative
-func (r *SubnetReconciler) extractVNIFromConfigMap(ctx context.Context, subnet *osacv1.Subnet) (*VNIData, error) {
-    cm := &corev1.ConfigMap{}
-    cmName := fmt.Sprintf("subnet-%s-vni", subnet.Name)
-    if err := r.Get(ctx, client.ObjectKey{Namespace: "osac", Name: cmName}, cm); err != nil {
-        return nil, fmt.Errorf("failed to fetch VNI ConfigMap: %w", err)
-    }
-    
-    l2VNI, _ := strconv.Atoi(cm.Data["l2_vni"])
-    l3VNI, _ := strconv.Atoi(cm.Data["l3_vni"])
-    
-    return &VNIData{
-        L2VNI:               l2VNI,
-        L3VNI:               l3VNI,
-        NetrisReservedRange: cm.Data["netris_reserved_range"],
-    }, nil
-}
-```
-
-**Validation needed:** Test actual AAP Job CR after set_stats execution to confirm data path.
 
 ## Test Plan
 
@@ -1273,8 +1291,8 @@ None. All infrastructure (OCP cluster, Netris fabric, FRR operator) is assumed t
 ## Provenance
 
 Authored: draft @ design 0.9.0 - 562b610, workspace main @ 63b090a (dirty)
-Final: revise @ design 0.9.0 - 562b610, workspace main @ 63b090a (6 behind origin/main, dirty)
+Final: respond @ design 0.9.0 - 562b610, workspace main @ 63b090a (6 behind origin/main, dirty)
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"63b090a (dirty)","source_repo_branch":"main","commits_behind_main":6,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"63b090a (dirty)","source_repo_branch":"main","commits_behind_main":6,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
