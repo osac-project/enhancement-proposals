@@ -16,16 +16,15 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join th
 
 ## In Scope
 
-- **K8s manager registration** via ConfigMap (identifier: `cudn_evpn`, capabilities: `addressFamily:ipv4`) [Clarify: R2.Q4]
-- **Automatic VNI propagation** from Netris VPC/VNet creation to CUDN configuration (route targets are calculated automatically from VNI) [Clarify: R1.Q3, R2.Q5, D7] [User]
-- **Automatic overlay network provisioning** on hosting clusters (via ClusterUserDefinedNetwork with EVPN transport) when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
-- **Automatic BGP EVPN route advertisement** for VMs, using VNI mappings from Netris [Clarify: R2.Q1, D5]
-- **VM-to-fabric connectivity** — VMs are discoverable and directly reachable from bare-metal servers on the physical fabric
-- **Layer 2 and Layer 3 VPC support** — VMs can be bridged to Netris VPCs with flexible subnet configuration: same subnet uses Layer 2 bridging for direct connectivity; different subnets within the same VPC use Layer 3 routing [User]
-- **Single-subnet-per-VirtualNetwork constraint** enforced at Subnet API creation time (OVN Connectors limitation) [Clarify: R1.Q4, D4]
-- **Non-conflicting IP address assignment** — VMs receive IP addresses that do not conflict with Netris DHCP allocations [Clarify: R1.Q5]
-- **Installation prerequisites documentation** for Cloud Infrastructure Admin (underlay link, VTEP setup, BGP peering with VTEP subnets/prefixes advertisement) [Clarify: R2.Q2, R2.Q3, D6] [User]
-- **Diagnostic tooling documentation** for Cloud Infrastructure Admin (FRR commands: `show evpn vni`, `show bgp l2vpn evpn`, `show bgp vni <VNI>`, `show bgp l2vpn evpn summary`) [Clarify: R3.Q2]
+- **K8s manager registration** for EVPN fabric bridging (IPv4 address family only) [Clarify: R2.Q4]
+- **Fabric-to-k8s manager data dependency** — subnet provisioning must ensure the fabric manager completes and provides network segment identifiers before the k8s manager begins, using a manager-agnostic interface [Clarify: R1.Q3, R2.Q5, D7] [User]
+- **Automatic overlay network provisioning** on hosting clusters that bridges VMs to the physical fabric when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
+- **VM-to-fabric connectivity** — VMs are discoverable and directly reachable from bare-metal servers on the physical fabric (both L2 same-subnet and L3 cross-subnet scenarios)
+- **Single-subnet-per-VirtualNetwork constraint for this k8s manager** — when a VirtualNetwork uses a NetworkClass with this k8s manager, the system rejects additional subnet creation with a clear error [Clarify: R1.Q4, D4]
+- **Non-conflicting IP address assignment** — VMs receive IP addresses that do not conflict with fabric DHCP allocations [Clarify: R1.Q5]
+- **Installation prerequisites documentation** — Cloud Infrastructure Admin must complete documented infrastructure prerequisites to enable physical fabric connectivity before creating the first VirtualNetwork [Clarify: R2.Q2, R2.Q3, D6] [User]
+- **Diagnostic tooling documentation** — documented tools for Cloud Infrastructure Admins to verify network segment state and troubleshoot connectivity issues [Clarify: R3.Q2]
+- **Gateway MAC coordination prerequisite** — Cloud Infrastructure Admin must ensure gateway MAC addresses match between overlay and fabric before enabling EVPN to prevent L3 traffic failures [Clarify: R1.Q5]
 - **Single hosting cluster** (no multi-cluster VM placement)
 - **Release 0.3**
 
@@ -40,44 +39,45 @@ The following are explicitly deferred to Phase 2 (OSAC-3667, release 0.4):
 
 The following are out of scope for Phase 1:
 
-- **`0:VNI_ID` route-target standardization** — deferred until Netris implements it. Phase 1 uses `(leaf ASN % 65536):VNI` formula, with route targets calculated automatically from VNI (no manual configuration required). [Clarify: R1.Q3, D3, D7] [User]
+- **IPv6 and dual-stack support** — Phase 1 supports IPv4 only. IPv6 route advertisement via EVPN is untested and deferred to Phase 2. [Clarify: R2.Q4]
+- **Standardized route-target format** — deferred until fabric manager implements it [Clarify: R1.Q3, D3, D7] [User]
 - **MetalLB IPAddressPool creation** — handled separately in OSAC-1436 (CaaS Networking) [Clarify: R3.Q3, D9]
-- **BGP underlay automation** — physical link configuration, Netris port setup, and BGP session creation are manual prerequisites configured by Cloud Infrastructure Admin [Clarify: R2.Q1, R2.Q3, D5, D6]
-- **Dual gateway MAC coordination** — automatic matching of OCP CUDN gateway and Netris VNet gateway MAC addresses (known limitation requiring manual coordination) [Clarify: R1.Q5]
+- **Physical infrastructure automation** — manual prerequisites remain manual for Phase 1 [Clarify: R2.Q1, R2.Q3, D5, D6]
+- **Automatic gateway MAC coordination** — Cloud Infrastructure Admin must manually coordinate gateway MAC addresses (moved to prerequisites above) [Clarify: R1.Q5]
 
 ## User Stories
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to register the `cudn_evpn` k8s manager via a ConfigMap (with `addressFamily:ipv4` capability) so that OSAC can provision EVPN-bridged subnets for VMs. [Clarify: R1.Q1, R2.Q4, D1]
+- As a Cloud Infrastructure Admin, I want to register the EVPN k8s manager so that OSAC can provision fabric-bridged subnets for VMs. [Clarify: R1.Q1, R2.Q4, D1]
 
-- As a Cloud Infrastructure Admin, I want documented installation prerequisites (underlay link setup, VTEP configuration, BGP peering with Netris including VTEP subnets/prefixes advertisement) so that I can prepare the infrastructure before enabling EVPN for the first time. [Clarify: R2.Q2, R2.Q3, D6] [User]
+- As a Cloud Infrastructure Admin, I want documented installation prerequisites so that I can prepare the infrastructure before enabling EVPN for the first time. [Clarify: R2.Q2, R2.Q3, D6] [User]
 
-- As a Cloud Infrastructure Admin, I want FRR diagnostic commands documented (show evpn vni, show bgp l2vpn evpn, show bgp vni <VNI>, show bgp l2vpn evpn summary) so that I can verify VNI creation and troubleshoot VNI/route-target mismatches. [Clarify: R3.Q2]
-
-- As a Cloud Infrastructure Admin, I want VMs to automatically advertise their routes to the fabric via BGP EVPN when a subnet is provisioned, using VNI mappings from Netris, so that VMs are reachable from the fabric without manual BGP configuration. [Clarify: R2.Q1, D5, D7] [User]
+- As a Cloud Infrastructure Admin, I want documented diagnostic tools so that I can verify network segment state and troubleshoot connectivity issues when VMs cannot reach the fabric. [Clarify: R3.Q2]
 
 - As a Cloud Infrastructure Admin, I want to identify which VirtualNetworks have reached the single-subnet limit (via monitoring or status queries) so that I can plan for Phase 2 deployment or guide tenants to create additional VirtualNetworks.
 
 ### Tenant Admin / Tenant User
 
-- As a Tenant Admin or Tenant User, I want to create VirtualNetworks and Subnets using the existing OSAC API without needing to configure EVPN details (VNIs, BGP peering) so that VMs I provision are automatically bridged to the physical fabric. [Clarify: R1.Q2, D2]
+- As a Tenant Admin or Tenant User, I want to create VirtualNetworks and Subnets using the existing OSAC API without needing to configure fabric bridging details, so that VMs I provision are automatically reachable from the physical fabric. [Clarify: R1.Q2, D2]
 
-- As a Tenant Admin or Tenant User, I want VMs I provision on an EVPN-bridged subnet to receive IP addresses via OVN DHCP and be reachable from bare-metal servers in the same Netris VPC so that my workloads can span VMs and physical hosts — either via Layer 2 connectivity when using the same subnet, or via Layer 3 routing when using different subnets within the same VPC. [User]
+- As a Tenant Admin or Tenant User, I want VMs I provision on fabric-bridged subnets to be reachable from bare-metal servers, so that my workloads can span VMs and physical hosts. [User]
 
-- As a Tenant Admin or Tenant User, I want the system to reject my second Subnet creation attempt under the same VirtualNetwork with a clear error message referencing the OVN Connectors limitation so that I understand the constraint and can structure my networks accordingly. [Clarify: R1.Q4, D4]
+- As a Tenant Admin or Tenant User, I want the system to reject my second Subnet creation attempt under the same VirtualNetwork with a clear error message, so that I understand the constraint and can structure my networks accordingly. [Clarify: R1.Q4, D4]
 
 ## Assumptions
 
-- The Cloud Infrastructure Admin has completed the documented prerequisites (underlay link configuration, VTEP setup, BGP session with Netris including VTEP subnets/prefixes advertisement) before creating the first VirtualNetwork. [Clarify: R2.Q3] [User]
+- The Cloud Infrastructure Admin has completed the documented infrastructure prerequisites before creating the first VirtualNetwork. [Clarify: R2.Q3] [User]
 
-- The Netris fabric manager returns VNI IDs when OSAC creates a VPC/VNet, enabling automatic propagation to CUDN. Route targets are calculated automatically from VNI (no manual configuration required). [Clarify: R1.Q3, R2.Q5, D7]
+- The fabric manager provides network segment identifiers when OSAC creates a VPC/VNet, enabling automatic provisioning by the k8s manager without manual configuration. [Clarify: R1.Q3, R2.Q5, D7]
 
-- OCP workers have network connectivity to the Netris fabric switches via the configured underlay link. [Clarify: R2.Q3]
+- OCP workers have network connectivity to the fabric. [Clarify: R2.Q3]
 
-- The FRR operator and NMState operator are installed on the OCP cluster before EVPN configuration. [Clarify: R2.Q2]
+- A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- A NetworkClass exists with `fabric_manager: "netris"` and `k8s_manager: "cudn_evpn"`, enabling dual-dispatch provisioning where fabric and k8s manager jobs run in parallel for each subnet.
+- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic.
+
+- Fabric-level NATGateways (SNAT via softgate) apply to fabric-bridged VM egress traffic.
 
 ## Acceptance Criteria
 
@@ -99,18 +99,21 @@ The following are out of scope for Phase 1:
 
 - **OSAC-1440 (Dispatcher Core):** Provides dispatcher infrastructure for routing networking operations to fabric and k8s managers based on NetworkClass configuration.
 
-- **Netris Fabric Manager:** Must support:
-  - VPC/VNet creation with VNI ID allocation and return via API
-  - Underlay port configuration (via Netris API or UI)
-  - BGP session configuration with OCP workers
-  
-  Route targets are calculated automatically using `(leaf ASN % 65536):VNI` formula — no API return or manual configuration needed.
+- **Fabric Manager (Netris):** Must support VPC/VNet provisioning with network segment identifier allocation and API return. Physical infrastructure configuration (underlay ports, BGP sessions) is manual.
 
-- **OVN-Kubernetes:** FRR routing capability with EVPN support, RouteAdvertisements for CUDN with EVPN transport topology. Constraint: does not currently route between separate CUDNs on the same cluster (Connectors feature pending). [Clarify: R1.Q4]
+- **OVN-Kubernetes:** Must support overlay network provisioning with fabric bridging. Constraint: does not currently route between separate overlay networks on the same cluster (Connectors feature pending). [Clarify: R1.Q4]
+
+- **FRR Operator (kubernetes-nmstate-operator):** Required for BGP EVPN route advertisement from OCP workers. Must be installed before EVPN configuration.
+
+- **NMState Operator (openshift-nmstate):** Required for network interface configuration on OCP workers. Must be installed before EVPN configuration.
 
 - **OSAC-3667 (Phase 2):** Blocked by this feature. Adds multi-cluster hosting, inter-subnet routing, and multi-NIC support.
 
 - **OSAC-1435 (VMaaS Networking API Integration):** Blocked by this feature. Requires k8s manager (CUDN LocalNet or OVN EVPN) to be available before end-to-end VM networking works.
+
+## Known Limitations
+
+- **Silent connectivity failure on network segment mismatch** — If network segment identifiers are misconfigured between the fabric and overlay, VMs may boot successfully and receive IP addresses but cannot reach the fabric. The system does not surface warnings when segment state is inconsistent. Cloud Infrastructure Admins must use documented diagnostic tools to verify segment state. [Clarify: R3.Q2]
 
 ---
 
