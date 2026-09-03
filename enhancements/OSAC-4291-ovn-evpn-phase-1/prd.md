@@ -12,7 +12,7 @@ OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a pod w
 
 Without a k8s manager that bridges VMs to the fabric, tenants cannot deploy workloads that span VMs and bare-metal hosts in the same subnet. The CUDN LocalNet approach (OSAC-1511) has been frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support. [Clarify: R1.Q3]
 
-The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join the fabric via BGP EVPN route advertisements, enabling MAC/IP learning (Type-2 routes), VTEP discovery (Type-3 routes), and cross-subnet reachability (Type-5 routes). Phase 1 delivers single-cluster EVPN bridging with a constraint that OVN-Kubernetes does not currently route between separate CUDNs on the same cluster (the Connectors feature is pending). [Clarify: R1.Q4]
+The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join the fabric via BGP EVPN route advertisements, enabling L2 same-subnet and L3 cross-subnet reachability. Phase 1 delivers single-cluster EVPN bridging with a constraint that OVN-Kubernetes does not currently route between separate CUDNs on the same cluster (the Connectors feature is pending). [Clarify: R1.Q4]
 
 ## In Scope
 
@@ -82,7 +82,7 @@ The following are out of scope for Phase 1:
 ## Acceptance Criteria
 
 - [ ] A NetworkClass with `fabric_manager: "netris"` and `k8s_manager: "cudn_evpn"` can be created and transitions to READY state
-- [ ] Creating a VirtualNetwork + Subnet with this NetworkClass provisions both Netris VNet (with L2/L3 VNI) and overlay network on OCP
+- [ ] Creating a VirtualNetwork + Subnet with this NetworkClass provisions both Netris VNet and overlay network on OCP
 - [ ] VMs deployed on the subnet receive IP addresses that do not conflict with Netris DHCP allocations
 - [ ] VMs are discoverable and directly reachable from bare-metal servers on the physical fabric (both L2 same-subnet and L3 different-subnet scenarios)
 - [ ] FRR diagnostic commands show correct VNI state on OCP workers
@@ -99,7 +99,7 @@ The following are out of scope for Phase 1:
 
 - **OSAC-1440 (Dispatcher Core):** Provides dispatcher infrastructure for routing networking operations to fabric and k8s managers based on NetworkClass configuration.
 
-- **Fabric Manager (Netris):** Must support VPC/VNet provisioning with network segment identifier allocation and API return. Physical infrastructure configuration (underlay ports, BGP sessions) is manual.
+- **Fabric Manager (Netris):** Must support VPC/VNet provisioning with network segment identifier allocation and API return. Physical infrastructure configuration is manual.
 
 - **OVN-Kubernetes:** Must support overlay network provisioning with fabric bridging. Constraint: does not currently route between separate overlay networks on the same cluster (Connectors feature pending). [Clarify: R1.Q4]
 
