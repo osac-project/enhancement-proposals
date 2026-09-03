@@ -81,10 +81,10 @@ operator mapping is sufficient to propagate granular status to every consumer
 - VMaaS and BMaaS status (VMaaS is OSAC-1027; BMaaS is separate) [Locked: D2].
 - Cluster upgrade status (OSAC-1415) and power-state phases - clusters have no
   start/stop/pause [Locked: D1].
-- End-user documentation authoring. This EP defines the `PROGRESSING.reason` /
-  condition vocabulary and the `describe` output normatively; publishing that into
-  user-facing docs (osac-docs) is done with the implementation task, not authored
-  here - consistent with the UI being deferred to osac-ux.
+- End-user documentation authoring. This EP defines the condition model and the
+  `describe` output normatively; publishing that into user-facing docs (osac-docs)
+  is done with the implementation task, not authored here - consistent with the UI
+  being deferred to osac-ux.
 - A true per-node "X of Y ready" health count. Not reachable at the pinned
   HyperShift version (see the resource-controller section); `ready_replicas` is
   binary until a follow-up bumps HyperShift or adds Cluster-API access.
@@ -95,9 +95,9 @@ The change spans two components in the `osac` mono-repo, in dependency order:
 
 1. **fulfillment-service (proto + CLI + tables).** Add two orthogonal
    `ClusterConditionType` values (`CONTROL_PLANE_AVAILABLE`, `WORKERS_READY`),
-   define a documented `Reason` vocabulary for the `PROGRESSING` condition, and
-   extend `ClusterNodeSet` with desired/current/ready replica counts and a
-   per-set state. Render conditions, endpoints, and node-set status in
+   populate the `PROGRESSING` condition's `Reason` with the current provisioning
+   sub-stage, and extend `ClusterNodeSet` with desired/current/ready replica counts
+   and a per-set state. Render conditions, endpoints, and node-set status in
    `osac describe cluster`, and add STAGE/HEALTH columns to the list tables.
 2. **osac-operator (feedback + resource controllers).** Replace the
    collapse in `syncClusterOrderConditions` with a table-driven map that
@@ -121,13 +121,13 @@ has created a ClusterOrder CR and a HyperShift `HostedCluster`.
 Happy-path provisioning, as observed via `osac describe cluster <id>` or the API:
 
 1. **Preparing infrastructure.** State `PROGRESSING`; condition `PROGRESSING`
-   True, reason `PreparingInfrastructure`. `CONTROL_PLANE_AVAILABLE` and
-   `WORKERS_READY` False.
+   True, reason naming the initial provisioning sub-stage.
+   `CONTROL_PLANE_AVAILABLE` and `WORKERS_READY` False.
 2. **Control plane starting.** HyperShift `InfrastructureReady` True →
-   `PROGRESSING` reason advances to `ControlPlaneStarting`.
+   `PROGRESSING` reason advances to the control-plane-starting sub-stage.
 3. **Control plane available.** HyperShift `KubeAPIServerAvailable`/`Available`
    True → `CONTROL_PLANE_AVAILABLE` flips True; `api_endpoint`/`api_url`
-   populated; `PROGRESSING` reason advances to `WorkersJoining`.
+   populated; `PROGRESSING` reason advances to the workers-joining sub-stage.
 4. **Workers joining → ready.** As nodes join, per-node-set `current_replicas`
    climbs toward `desired_replicas`; `ready_replicas` stays `0` until the
    `NodePool` reports `Ready`/`AllNodesHealthy`, then equals `current_replicas`
@@ -175,9 +175,9 @@ Variations:
   `ready_replicas` < `desired_replicas`, and `WORKERS_READY` goes False with
   reason `Scaling`, while overall state stays `READY`.
 - **Deletion (AC-5).** On delete, state `DELETING`; `PROGRESSING` reason reflects
-  teardown (`DestroyingCloudResources` while HyperShift `CloudResourcesDestroyed`
-  is False, then final teardown). If teardown fails or stalls, state
-  `DELETE_FAILED` with a `FAILED` condition reason.
+  the current teardown sub-stage (destroying cloud resources while HyperShift
+  `CloudResourcesDestroyed` is False, then final teardown). If teardown fails or
+  stalls, state `DELETE_FAILED` with a `FAILED` condition reason.
 
 ### API Extensions
 
@@ -187,7 +187,7 @@ fulfillment-service; it adds no new CRD, service, or webhook.
 | Layer | Resource | Change |
 |-------|----------|--------|
 | Fulfillment public+private | `ClusterConditionType` enum | Append `CONTROL_PLANE_AVAILABLE`, `WORKERS_READY` |
-| Fulfillment public+private | `ClusterCondition.reason` | Newly populated (field already exists); documented reason vocabulary |
+| Fulfillment public+private | `ClusterCondition.reason` | Newly populated (field already exists); reason set to the current sub-stage |
 | Fulfillment public+private | `ClusterNodeSet` message | Add `desired_replicas`, `current_replicas`, `ready_replicas`, `state` |
 | Fulfillment public+private | `ClusterStatus.state_transition_time` | Newly stamped on every state transition (field already exists) |
 | osac-operator | `ClusterOrder` CR conditions | Derive granular conditions + sub-stage reasons from HyperShift signals |
@@ -271,9 +271,9 @@ silent `default`:
 
 | CR source (operator) | Proto target | Status rule | Reason | Collision / notes |
 |----------------------|--------------|-------------|--------|-------------------|
-| `Accepted` | `PROGRESSING` | True until ready | seeds `PreparingInfrastructure` | earliest stage; superseded by later stage reasons per the precedence rule below |
+| `Accepted` | `PROGRESSING` | True until ready | contributes the accepted sub-stage reason | earliest stage; superseded by the furthest-advanced later stage per the precedence rule below |
 | `Progressing` | `PROGRESSING` | mirror | current sub-stage reason | the reason carrier |
-| `ControlPlaneCreated` | `PROGRESSING` (reason only) | - | advances reason to `ControlPlaneStarting` | stage marker, not its own proto type |
+| `ControlPlaneCreated` | `PROGRESSING` (reason only) | - | advances the reason to its own sub-stage | stage marker, not its own proto type |
 | `ControlPlaneAvailable` | `CONTROL_PLANE_AVAILABLE` | mirror (see availability precedence) | `Available` / `NotYetAvailable` | orthogonal health axis |
 | `ClusterStorageReady` | `PROGRESSING` (readiness gate) | contributes to readiness | - | previously ignored (latent bug 2), now mapped |
 | `ClusterAvailable` | `AVAILABLE` | mirror | `Available` | previously dropped (latent bug 1: name mismatch), now mapped |
@@ -281,24 +281,40 @@ silent `default`:
 | (derived) HC `Degraded` / partial NodePool | `DEGRADED` | True on degradation | names the affected node set | independent of stage |
 | (derived) HC failure / phase `Failed` | `FAILED` | True on terminal failure | HyperShift failure reason | terminal; not set on slowness |
 | `NamespaceCreated` | *ignored* | - | - | internal bookkeeping; explicit `// ignored` case, not `default` |
-| `Deleting` | drives `state=DELETING` via `syncClusterOrderPhase` | - | teardown `PROGRESSING` reason (`DestroyingCloudResources` / `DestroyingControlPlane`) | affects lifecycle `state`, not a condition slot |
+| `Deleting` | drives `state=DELETING` via `syncClusterOrderPhase` | - | current teardown sub-stage reason | affects lifecycle `state`, not a condition slot |
 
 Precedence when several inputs touch `PROGRESSING`: the reason reflects the
-**furthest-advanced stage observed** in the fixed order
-`PreparingInfrastructure < ControlPlaneStarting < WorkersJoining < Scaling`
-(teardown reasons apply only while `state=DELETING`). `Stalled` and `StageUnknown`
-override the stage reason when their own trigger fires. Exactly one reason is
+**furthest-advanced sub-stage observed**, selected from the CR sub-stage
+conditions by their fixed rank (accepted → control-plane-created →
+control-plane-available), not by the order they happen to appear in status;
+teardown sub-stages apply only while `state=DELETING`. `Stalled` and `StageUnknown`
+override the sub-stage reason when their own trigger fires. Exactly one reason is
 written per reconcile, so there is no last-writer-wins ambiguity. The unit tests
 below assert this table row-by-row and assert `FAILED` and `DEGRADED` are each
 reachable.
 
-`PROGRESSING.reason` vocabulary (string, no proto change - the `reason` field
-already exists at `ClusterCondition`): `PreparingInfrastructure`,
-`ControlPlaneStarting`, `WorkersJoining`, `Scaling`, `Stalled`, `StageUnknown`,
-and teardown reasons `DestroyingCloudResources` / `DestroyingControlPlane`. These
-mirror the ComputeInstance `Provisioned`-reason cycle
-(`TenantNotReady → WaitingForVM → ProvisioningStorage → InfrastructureReady`)
-[Codebase: OSAC-1027 EP §3.3].
+`PROGRESSING.reason` is not a design-fixed string vocabulary (no proto change -
+the `reason` field already exists at `ClusterCondition`). For an active
+provisioning or teardown sub-stage the reason is derived by the implementation
+from the corresponding CR sub-stage condition, so the exact token strings are
+owned by the operator, not pinned here. The only design-normative `PROGRESSING`
+reasons are the two behavioral ones that are not sub-stage names: `Stalled` (a
+known sub-stage that has not advanced within its threshold) and `StageUnknown`
+(sub-stage signal unavailable). This mirrors the ComputeInstance
+`Provisioned`-reason cycle, which likewise derives its reason from the current
+provisioning step [Codebase: OSAC-1027 EP §3.3].
+
+This fixes the stability contract of `ClusterCondition.reason` for consumers
+(CLI `describe`, UI, metering, alerting): the machine-matchable surface is the
+condition **types** plus the two behavioral reasons `Stalled` / `StageUnknown` -
+consumer logic keys off these. The per-sub-stage reason strings are
+**informational**: a stable-but-operator-owned label of the current CR sub-stage,
+suitable for display and for humans reading events, but consumers MUST treat them
+as opaque and MUST NOT build branching logic on specific sub-stage reason values
+(the set may grow as sub-stages are added). A consumer that needs to react to a
+specific milestone keys off the corresponding orthogonal condition
+(`CONTROL_PLANE_AVAILABLE`, `WORKERS_READY`) rather than a `PROGRESSING` reason
+string.
 
 New CR-side condition/reason constants go in
 `osac-operator/api/v1alpha1/conditions.go`; new proto enum values require
@@ -467,18 +483,19 @@ In `clusterorder_controller.go`:
   advance through two stages and assert the stall fires against *stage* elapsed, not
   run elapsed, and that the requeue is scheduled for the remaining interval.
 
-  A threshold is stored for **every** stage that can stall, not only the three
-  provisioning stages. Proposed configurable defaults (cluster provisioning and
-  teardown are slow; these are **provisional**):
+  A threshold is stored for **every** sub-stage that can stall, not only the three
+  provisioning sub-stages. Proposed configurable defaults, keyed by the CR
+  sub-stage the timer watches (cluster provisioning and teardown are slow; these
+  are **provisional**):
 
-  | Stage (`PROGRESSING.reason`) | Default threshold |
-  |------------------------------|-------------------|
-  | `PreparingInfrastructure` | 15m |
-  | `ControlPlaneStarting` | 30m |
-  | `WorkersJoining` | 20m (per-host-type overridable) |
-  | `Scaling` | 20m (per-host-type overridable) |
-  | `DestroyingCloudResources` | 20m |
-  | `DestroyingControlPlane` | 15m |
+  | Sub-stage | Watching CR condition (stage-entry marker) | Default threshold |
+  |-----------|--------------------------------------------|-------------------|
+  | Preparing infrastructure | `Accepted` | 15m |
+  | Control plane starting | `ControlPlaneCreated` | 30m |
+  | Workers joining | `ControlPlaneAvailable` | 20m (per-host-type overridable) |
+  | Scaling | none (persisted `(observedReason, since)` pair) | 20m (per-host-type overridable) |
+  | Destroying cloud resources | `CloudResourcesDestroyed` | 20m |
+  | Destroying control plane | `HostedClusterDestroyed` | 15m |
 
   Worker-join and scaling time scale with pool size and instance type (image pull,
   cloud provisioning latency), so those two thresholds are per-host-type overridable
@@ -492,8 +509,8 @@ In `clusterorder_controller.go`:
   watches `metadata.deletionTimestamp` + `CloudResourcesDestroyed` /
   `HostedClusterDestroyed`; if HyperShift surfaces a teardown failure the state becomes
   `DELETE_FAILED` with a `FAILED` condition reason. A teardown that is merely slow stays
-  `DELETING` with a teardown `PROGRESSING` reason
-  (`DestroyingCloudResources`/`DestroyingControlPlane`) and is subject to the same
+  `DELETING` with a teardown `PROGRESSING` reason (the current teardown sub-stage)
+  and is subject to the same
   stage-age stall timer using two configurable teardown thresholds, which flips the
   reason to `Stalled` so a hung teardown is visible to support and to metering rather
   than sitting silently in `DELETING` forever.
@@ -609,8 +626,7 @@ status. Tenant isolation metadata on ClusterOrder is unchanged.
 ## Observability and Monitoring
 
 - **Kubernetes events** (new): Normal events from the ClusterOrder controller on
-  each provisioning sub-stage reason transition (`PreparingInfrastructure`,
-  `ControlPlaneStarting`, `WorkersJoining`, `Stalled`), on
+  each provisioning sub-stage reason transition (and on `Stalled`), on
   `CONTROL_PLANE_AVAILABLE`/`WORKERS_READY` flipping True, and on entry to
   `DELETING`. Guarded on prior value to avoid per-reconcile spam. These serve
   IS-7/AC-7 (provider dashboards and alerts derived from the event stream and the
@@ -632,7 +648,7 @@ status. Tenant isolation metadata on ClusterOrder is unchanged.
 ## Drawbacks
 
 More states to reason about in the controller, tests, and docs (six condition
-types plus a reason vocabulary, versus one collapsed condition), and the operator
+types plus per-sub-stage reasons, versus one collapsed condition), and the operator
 gains stall-timer bookkeeping and per-node-set attribution logic it did not have.
 This mirrors the OSAC-1027 cost for VMaaS and is the direct price of the
 visibility the PRD requires; the derivation is table-driven to keep it
