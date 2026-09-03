@@ -61,15 +61,15 @@ For Phase 1:
 
 #### Answer
 
-Phase 1 will not include `0:VNI_ID` route-target standardization. VNI extraction happens automatically - when creating VPC on Netris, the VNI is automatically set in CUDN.
+Phase 1 will not include `0:VNI_ID` route-target standardization. VNI propagation from fabric manager to k8s manager is automatic - no manual extraction or coordination steps required (unlike the demo's Phase 4/5 manual workflow).
 
 #### Impact
 
-PRD scope includes automatic VNI propagation (no manual extraction step like demo Phase 4). Out of scope: `0:VNI_ID` route-target format (deferred until Netris implements it). Netris VPC creation must return VNI ID, which OSAC's k8s manager consumes when creating CUDN.
+PRD scope includes automatic VNI propagation (no manual steps). Out of scope: `0:VNI_ID` route-target format (deferred until Netris implements it). The fabric manager must provide VNI when provisioning VPC/VNet, and the k8s manager must receive it to configure the overlay network. The mechanism for passing VNI from fabric manager output to k8s manager input is a design decision.
 
 #### Decision (D3)
 
-Automatic VNI extraction and propagation to CUDN is in scope for Phase 1. The `0:VNI_ID` route-target standardization is out of scope (Phase 1 uses `(leaf ASN % 65536):VNI` formula from demo).
+Automatic VNI propagation from fabric manager to k8s manager is in scope for Phase 1. The `0:VNI_ID` route-target standardization is out of scope.
 
 ---
 
