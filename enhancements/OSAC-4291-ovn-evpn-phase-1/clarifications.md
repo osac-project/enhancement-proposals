@@ -88,11 +88,11 @@ The limit is one subnet per VirtualNetwork. The validation happens when creating
 
 #### Impact
 
-PRD validation requirements: fulfillment-service Subnet creation API must reject a second subnet when the parent VirtualNetwork already has one subnet. Error message should reference OVN Connectors limitation. No operator-side validation needed (API rejection prevents the CR from ever being created).
+PRD validation requirements: fulfillment-service Subnet creation API must reject a second subnet when the parent VirtualNetwork uses a NetworkClass whose k8s manager has this limitation. Error message should reference OVN Connectors limitation. No operator-side validation needed (API rejection prevents the CR from ever being created).
 
 #### Decision (D4)
 
-Validation enforced at Subnet API creation time in fulfillment-service. Constraint is one subnet per VirtualNetwork (not the stricter "one CUDN per VPC ipVRF"). Second subnet creation attempt returns validation error.
+Validation enforced at Subnet API creation time in fulfillment-service, conditional on the NetworkClass's k8s manager. Constraint is one subnet per VirtualNetwork when the k8s manager is `cudn_evpn` (not a universal constraint; other NetworkClasses support multiple subnets). Second subnet creation attempt returns validation error.
 
 ---
 
@@ -354,8 +354,8 @@ When tenant creates VirtualNetwork/Subnet:
 
 - **D1:** EVPN configuration is Cloud Infrastructure Admin responsibility during installation
 - **D2:** EVPN is completely transparent to tenants
-- **D3:** Automatic VNI extraction and propagation to CUDN is in scope; `0:VNI_ID` route-target format is out of scope
-- **D4:** One-subnet-per-VirtualNetwork validation enforced at Subnet API creation time in fulfillment-service
+- **D3:** Automatic VNI propagation from fabric manager to k8s manager is in scope; `0:VNI_ID` route-target format is out of scope
+- **D4:** One-subnet-per-VirtualNetwork validation enforced at Subnet API creation time, conditional on NetworkClass's k8s manager (applies to `cudn_evpn`, not universal)
 - **D5:** FRRConfiguration for EVPN overlay is automatic; BGP underlay peering is manual prerequisite
 - **D6:** Underlay configuration is documented prerequisite, not automated
 - **D7:** Route targets come from Netris (no client-side calculation)
