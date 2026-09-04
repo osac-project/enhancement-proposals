@@ -3,7 +3,6 @@ name: review-gate
 
 # Fail required check while a human reviewer still has CHANGES_REQUESTED.
 permissions:
-  contents: read
   pull-requests: read
 
 on:
@@ -11,10 +10,11 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main]
   pull_request_review:
-    types: [submitted]
+    types: [submitted, dismissed]
 
 jobs:
   check-human-reviews:
+    if: github.event.pull_request.base.ref == 'main'
     runs-on: ubuntu-latest
     steps:
       - name: Check for human changes requested
