@@ -65,3 +65,12 @@ OSAC can provision storage volumes through its existing storage control plane, b
 - **OSAC-2872:** Provides the existing storage control plane used by this Feature.
 - **OSAC-4542:** Provides public Volume Get/List so users can view volumes outside the CUD operations.
 - **Storage tier and backend configuration:** A tenant must have at least one usable storage tier before creating a volume.
+
+---
+
+## Provenance
+
+Authored: draft @ prd 0.9.0 - OpenAI, workspace main @ bc947588
+Phases: ingest, draft, publish
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","source_repo":"bc947588","source_repo_branch":"main","phases":["ingest","draft","publish"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
