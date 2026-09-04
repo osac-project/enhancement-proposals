@@ -3,13 +3,19 @@
 ## Overview
 
 - **Feature:** OSAC-3702 — LVMS Node-Local Storage Backend for VMaaS (single-node)
-- **Total test cases:** 21
+- **Total test cases:** 22
 - **Requirements covered:** 9 of 9 (R1–R9)
 - **Interface changes covered:** 8 of 8 (IC-1–IC-8)
 
 Requirement IDs are R1–R9 as assigned in `01-context.md` (the house-style PRD
-has no FR-N/NFR-N IDs). Interface Changes are numbered from the design's
-§API Extensions / §Implementation Details in `03-design.md`, in T-order:
+has no FR-N/NFR-N IDs). Naming follows the merged PRD: LVMS registers as a
+**Block** backend and admins define an **LVMS-backed tier** whose name is
+admin-chosen (`local` is used here only as the example tier/backend name).
+Backend registration is gated to development/test deployment profiles (the
+`deployment.profile` flag when available, `lvms.enabled` in the interim) —
+LVMS is not supported for production. Interface Changes are numbered from the
+design's §API Extensions / §Implementation Details in `03-design.md`, in
+T-order:
 
 | IC | Interface surface | Design ref | Ticket |
 |----|-------------------|-----------|--------|
@@ -24,7 +30,7 @@ has no FR-N/NFR-N IDs). Interface Changes are numbered from the design's
 
 ## Test Cases
 
-### R1: Opaque `local` tier — LVMS presented like any remote backend
+### R1: Opaque LVMS-backed tier — LVMS presented like any remote backend
 
 #### TC-R1-01: Provider-keyed routing selects the LVMS provisioner for a `provider: lvms` backend
 
@@ -103,6 +109,24 @@ has no FR-N/NFR-N IDs). Interface Changes are numbered from the design's
 ##### Expected Results
 
 - No OSAC-managed per-tenant `provisioner: topolvm.io` StorageClass is emitted on the control-plane path; the separate LVMS-operator default StorageClass (from `LVMCluster`) is still present and unmodified.
+
+#### TC-R2-03: LVMS backend registration is refused without the dev/test gate
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-8 | high | automated |
+
+##### Preconditions
+
+- A deployment where the dev/test gate is off (`lvms.enabled=false` in the interim, or a production `deployment.profile` once the flag exists).
+
+##### Steps
+
+1. Attempt to register/enable the LVMS-backed tier during onboarding.
+
+##### Expected Results
+
+- The LVMS-backed tier and its `osac-csi` StorageClass are not created; LVMS is not registerable outside a development/test profile, matching the PRD's not-for-production gate.
 
 ### R3: Node-local provisioning behavior (WaitForFirstConsumer, node-pinned)
 
@@ -469,18 +493,18 @@ has no FR-N/NFR-N IDs). Interface Changes are numbered from the design's
 ### Interface Change Coverage Gaps
 
 - All eight interface changes (IC-1 through IC-8) are exercised by at least one test case:
-  IC-1 → TC-R8-01/02; IC-2 → TC-R3-04/05, TC-R6-01; IC-3 → TC-R3-06; IC-4 → TC-R1-01, TC-R4-02, TC-R5-01/02/03, TC-R6-02, TC-R7-01; IC-5 → TC-R3-01/02; IC-6 → TC-R3-03; IC-7 → TC-R6-03; IC-8 → TC-R1-02, TC-R2-01/02, TC-R4-01.
+  IC-1 → TC-R8-01/02; IC-2 → TC-R3-04/05, TC-R6-01; IC-3 → TC-R3-06; IC-4 → TC-R1-01, TC-R4-02, TC-R5-01/02/03, TC-R6-02, TC-R7-01; IC-5 → TC-R3-01/02; IC-6 → TC-R3-03; IC-7 → TC-R6-03; IC-8 → TC-R1-02, TC-R2-01/02/03, TC-R4-01.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 21 |
+| Total test cases | 22 |
 | Critical | 7 |
-| High | 10 |
+| High | 11 |
 | Medium | 4 |
 | Low | 0 |
-| Automated | 21 |
+| Automated | 22 |
 | Manual | 0 |
 | Requirements with test cases | 9 / 9 |
 | Interface changes with test cases | 8 / 8 |
