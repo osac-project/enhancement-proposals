@@ -203,6 +203,7 @@ The feature inherits the OSAC-2872 security model. Node-local storage introduces
 - **Local tier, no scheduled consumer:** fulfillment returns `FailedPrecondition`; the Volume is not persisted. Recovery: use a `WaitForFirstConsumer` StorageClass (the PVC path); the user sees a standard PVC Pending state until a pod schedules.
 - **Insufficient VG capacity:** `LvmsVendorProvisioner` returns `ResourceExhausted`; external-provisioner clears `selected-node` and reschedules. On SNO this is terminal and surfaced as a PVC event.
 - **LV never becomes ready:** the provisioner polls `LogicalVolume.status` with a bounded timeout; on timeout the Volume goes to an error state with a message, and the reconciler retries. topolvm-node carving is idempotent per `LogicalVolume` name.
+- **Device-class misconfiguration:** the device class is resolved server-side from the `StorageBackend`/tier. If the configured device class does not correspond to a topolvm device-class/VG present on the target node, topolvm-node cannot carve the LV, so the `LogicalVolume` never becomes ready and the flow falls into the bounded-timeout path above — the Volume goes to error with a message identifying the missing device class. Validating the configured device class against the node's advertised topolvm device-classes at backend/tier registration time is a hardening follow-up (fail-fast at config time rather than at first provision); it is not required for single-node dev/test where the VG is known, so it is deferred.
 - **Operator restart mid-provision:** the Volume controller is stateless — on restart it re-reads the Volume CR and re-enters provisioning; creating the `LogicalVolume` is idempotent by name, so no duplicate LV is carved.
 - **Node-name disagreement:** mitigated structurally — the `osac.io/node` value is the k8s Node name, matching `LogicalVolume.spec.nodeName` and topolvm-node's view; a unit test asserts the value equals the Node name.
 - **Deletion with missing LogicalVolume:** treated as already-deleted; the Volume record is still cleaned up (no orphaned inventory).
@@ -213,7 +214,7 @@ The operator ServiceAccount gains `create/get/list/watch/delete` on `topolvm.io/
 
 ### Observability and Monitoring
 
-No new observability changes; existing mechanisms apply. Provisioning state is visible through the Volume record lifecycle (`CREATING → AVAILABLE`/error) and operator logs; `ResourceExhausted` surfaces as a PVC provisioning event via external-provisioner. topolvm-node exposes its own LV metrics independently.
+Existing mechanisms apply: provisioning state is visible through the Volume record lifecycle (`CREATING → AVAILABLE`/error) and operator logs; `ResourceExhausted` surfaces as a PVC provisioning event via external-provisioner; topolvm-node exposes its own LV metrics independently. In addition, the `LvmsVendorProvisioner` should emit a provisioner-scoped metric (e.g. `lvms_provision_duration_seconds`, labeled by outcome), and the operator should surface a signal when a `LogicalVolume` stays un-ready past the provisioner's bounded poll timeout — a log event at minimum, and an alert rule where the deployment ships Prometheus rules. Without an LVMS-specific signal, an operator watching dashboards sees only generic PVC events and cannot distinguish a stuck node-local provision from normal `WaitForFirstConsumer` pending.
 
 ### Risks and Mitigations
 
@@ -223,7 +224,7 @@ No new observability changes; existing mechanisms apply. Provisioning state is v
 | Multi-node capacity-aware scheduling gap | On a multi-node cluster the scheduler can bind a pod to a node without VG room; `ResourceExhausted` re-pick is blind and can thrash | Scope is single-node VMaaS where this is moot; `CSIStorageCapacity`/`GetCapacity` is the multi-node fix, deferred [Locked: D1] |
 | Node identifier mismatch between CSI topology and `LogicalVolume.spec.nodeName` | Volume provisions but the pod never schedules where the data is | Derive the `osac.io/node` value from the k8s Node name; unit + e2e test assert equality [Locked: D8] |
 | Dependency on OSAC-4221 for provider routing | T4 blocked if 4221 slips | This feature owns the LVMS provisioner and builds the routing itself if 4221 has not landed [Locked: D4] |
-| CSI driver / local-tier node-socket install ownership unresolved (OSAC-4252) | The meta-driver's lvms node socket may not get wired, so the mount proxy has no target | Track OSAC-4252 (ownership) + OSAC-3290/#361 (node-local vendor mode); this design states the wiring requirement and defers the installer choice (OQ 8.3) |
+| LVMS node-socket wiring for a controller-less vendor (OSAC-3290 / #361) | The meta-driver's `lvms` node socket may not get wired, so the mount proxy has no target | OSAC-4252 is resolved (umbrella owns `csi-backends`, Option A) and LVMS needs no controller entry; the node-socket-only wiring lands with node-local-vendor support in OSAC-3290 / #361. This design states the requirement (OQ 8.3) |
 
 ### Drawbacks
 
@@ -250,10 +251,12 @@ The operator now carries a per-backend provisioner split (network vs node-local)
 - **Owner:** this feature (OSAC-4221 owned here)
 - **Resolution:** OSAC-4221 (provider registry + LVMS stub + `VendorCreateVolumeRequest` reshape, including the `Topology{Node}` field) is sequenced **first within this activity** as a precondition of T4, rather than a parallel external dependency. T4 then fills the LVMS stub instead of duplicating the routing. Landing order: OSAC-4221 → T4 (OSAC-4360).
 
-### 8.3 Ownership of the CSI driver install + local-tier node-socket wiring
+### 8.3 LVMS node-socket wiring for the controller-less node-local vendor
 
-- **Owner:** Storage/platform (OSAC-4252) + OSAC-3290 / #361
-- **Impact:** §Implementation Details (node plugin) and the install path. The meta-driver's `node.vendorSockets` must carry `lvms → <topolvm-node socket>` for the mount proxy to work, but LVMS is a controller-less node-local vendor and the current driver-install role fails fast without a vendor controller Service. OSAC-4252 is deciding csi-backends/driver ownership (umbrella-static vs AAP-dynamic, and is leaning toward tying install to the backend entity rather than tenant onboarding), which determines *who* installs and wires this. This design states the requirement but does not prescribe the installer — it depends on the OSAC-4252 outcome and on node-local-vendor support in OSAC-3290. The backend-tied direction fits LVMS well: the `local` backend is registered once, and with no controller the wiring is node-socket-only.
+- **Owner:** OSAC-3290 / #361 (hub CSI-driver onboarding)
+- **Resolved input:** OSAC-4252 is **closed** — the `osac` umbrella chart (osac-installer) owns the `csi-backends` deployment and AAP skips it (Option A). That decision governs vendor **controllers** (e.g. `vast-csi-controller`); LVMS is controller-less, so it needs **no** `csi-backends` controller entry at all.
+- **Open (LVMS-specific):** what remains is how the meta-driver **node plugin's** `node.vendorSockets` gets the `lvms → <topolvm-node socket>` entry wired for a controller-less, node-local-only vendor. The current driver-install path assumes a vendor controller Service and does not yet handle a node-socket-only vendor; adding that node-local-vendor support is tracked under OSAC-3290 / #361 (In Progress). This design states the wiring requirement; the installer mechanism lands with that work.
+- **Impact:** §Implementation Details (node plugin) and the install path only — no change to the proto, fulfillment, or operator surfaces.
 
 ## Test Plan
 
@@ -279,7 +282,11 @@ The operator now carries a per-backend provisioner split (network vs node-local)
 
 ## Graduation Criteria
 
-Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview → Tech Preview → GA based on single-node VMaaS deployment feedback. Dev Preview: the full provision → mount → cleanup flow passes on a single-node cluster with LVMS.
+Graduation criteria will be finalized when targeting a release; draft conditions per stage:
+
+- **Dev Preview:** the full provision → mount → cleanup flow (including node-pinning) passes on a single-node cluster with LVMS, and the dev/test gate blocks LVMS registration in production profiles.
+- **Tech Preview:** the single-node VMaaS e2e (T9 / OSAC-3711) runs in CI; LVMS-specific observability is in place (a provisioning-duration metric and a stuck-`LogicalVolume` signal — see Observability); device-class misconfiguration fails with a clear, surfaced error; admin/user docs cover setup and the not-for-production limitation.
+- **GA:** not targeted under this feature. LVMS node-local storage is scoped to development/test/CI-CD and is not production-supported; a production-grade path would require the current Non-Goals (multi-node capacity-aware scheduling, expansion, quota) as prerequisites and is out of scope here.
 
 ## Upgrade / Downgrade Strategy
 
@@ -304,6 +311,6 @@ None. topolvm/LVMS is already installed on the cluster by OSAC-3011; this enhanc
 ## Provenance
 
 Authored: revise [manual] @ design 0.9.0 - 562b610, workspace design/OSAC-3702 @ 0652d338d
-Phases: draft, draft, revise
+Phases: draft, draft, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"0652d338d","source_repo_branch":"design/OSAC-3702","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"0652d338d","source_repo_branch":"design/OSAC-3702","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","draft","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
