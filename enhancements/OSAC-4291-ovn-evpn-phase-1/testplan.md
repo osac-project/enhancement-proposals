@@ -3,10 +3,10 @@
 ## Overview
 
 - **Feature:** OSAC-4291 — K8s Manager — OVN EVPN Phase 1: Single-Cluster VM-to-Fabric Bridging
-- **Total test cases:** 16
+- **Total test cases:** 17
 - **Requirements covered:** 9 of 9 (R1-R9)
 - **Interface changes covered:** 6 of 6 (IC-1 through IC-6)
-- **Additional operational tests:** 2 deletion lifecycle tests
+- **Additional operational tests:** 2 deletion lifecycle tests + 1 skip-k8s-manager annotation test
 
 ## Test Cases
 
@@ -228,6 +228,36 @@
 - API returns HTTP 201 Created
 - Second Subnet provisioned successfully
 - Single-subnet validation skipped (conditional on k8s_manager)
+
+#### TC-R5-03: Second subnet allowed with skip-k8s-manager annotation (fabric-only)
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | high | automated |
+
+##### Preconditions
+
+- NetworkClass with k8s_manager="cudn_evpn"
+- VirtualNetwork created with this NetworkClass
+- One Subnet already exists under this VirtualNetwork (without skip annotation, CUDN created)
+
+##### Steps
+
+1. Create second Subnet under same VirtualNetwork with annotation `osac.openshift.io/skip-k8s-manager: "true"`
+2. Observe API response
+3. Verify Subnet provisioning only dispatches to fabric manager (Netris)
+4. Verify no CUDN created for second Subnet
+5. Verify Netris VNet created under same VPC as first Subnet
+6. Verify first Subnet's CUDN remains unchanged
+
+##### Expected Results
+
+- API returns HTTP 201 Created (validation excludes subnets with skip annotation)
+- Second Subnet status transitions to READY
+- Subnet job history shows only fabric manager job (no k8s manager job)
+- Netris VPC has two VNets (one from first Subnet, one from second)
+- First Subnet's CUDN namespace and resources unaffected
+- Second Subnet has no associated namespace or CUDN
 
 ### R6: Non-conflicting IP address assignment
 
