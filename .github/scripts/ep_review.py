@@ -66,14 +66,22 @@ def filenames_only(files):
     return [f["filename"] for f in files]
 
 
+def design_doc_filenames(files):
+    """Changed-file paths that are Design documents: design.md, or the
+    legacy enhancements/**/README.md format. Same match detect_skills() uses
+    to decide whether design-review runs at all."""
+    return [
+        f for f in files
+        if os.path.basename(f).lower() == "design.md"
+        or (os.path.basename(f).lower() == "readme.md" and "enhancements/" in f.lower())
+    ]
+
+
 def detect_skills(files):
     skills = []
     basenames = [os.path.basename(f).lower() for f in files]
     has_prd = "prd.md" in basenames
-    has_design = "design.md" in basenames or any(
-        os.path.basename(f).lower() == "readme.md" and "enhancements/" in f.lower()
-        for f in files
-    )
+    has_design = bool(design_doc_filenames(files))
 
     if has_prd:
         skills.append(("prd-review", "skills/prd-review/SKILL.md"))
@@ -133,6 +141,7 @@ def build_ticket_base(pr, head_sha, pr_number, files):
         "jira_key": feature_key_result if feature_key_result != "ambiguous" else None,
         "jira_key_ambiguous": feature_key_result == "ambiguous",
         "structure_violations": ep_paths.validate_ep_structure(files),
+        "design_doc_paths": design_doc_filenames(files),
     }
 
 

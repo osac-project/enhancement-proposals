@@ -5,6 +5,7 @@ Implements the hook interface: prompt_builder, context_writer,
 verdict_loader, label_applier, and gates.
 """
 
+import base64
 import json
 import os
 import re
@@ -206,6 +207,12 @@ class EPHooks:
         diff = self._gh(["pr", "diff", pr_number, "--repo", self.repo])
         (context_dir / "pr-diff.txt").write_text(diff)
 
+        if ticket.get("_skill_name") == "design-review":
+            design_full = self._fetch_design_full_text(
+                ticket.get("design_doc_paths") or [], ticket.get("headRefOid", "")
+            )
+            (context_dir / "design-full.txt").write_text(design_full)
+
         skill_path = ticket.get("_skill_path", "")
         skill_file = Path(self.skills_path) / skill_path
         if skill_file.exists():
@@ -214,6 +221,49 @@ class EPHooks:
         (context_dir / "pr-meta.json").write_text(
             json.dumps(ticket, indent=2, default=str)
         )
+
+    def _fetch_design_full_text(self, paths, head_sha):
+        """Full content of every Design document touched by this PR, at the
+        PR's head commit -- the source of truth for Design scoring, as
+        opposed to pr-diff.txt's diff-only view.
+
+        Tolerates individual fetch failures as long as at least one document
+        comes through; raises if none do, so the caller fails the review
+        instead of scoring placeholder content."""
+        sections = []
+        fetched = 0
+        for path in (paths if head_sha else []):
+            content = self._fetch_file_at_ref(path, head_sha)
+            if content is None:
+                sections.append(
+                    f"### File: {path}\n\n(Could not fetch this document at "
+                    "the PR head commit -- it may have been deleted or "
+                    "renamed in this PR.)\n"
+                )
+                continue
+            fetched += 1
+            sections.append(f"### File: {path}\n\n{content}\n")
+
+        if fetched == 0:
+            raise RuntimeError(
+                f"Could not fetch any Design document at {head_sha or '(no head sha)'} "
+                f"for paths {paths or '(none identified)'}"
+            )
+        return "\n".join(sections)
+
+    def _fetch_file_at_ref(self, path, ref):
+        """Read-only content fetch via the GitHub contents API. Never checks
+        out or executes the PR head -- just reads a text blob by SHA."""
+        encoded = self._gh([
+            "api", "--method", "GET", f"repos/{self.repo}/contents/{path}",
+            "-f", f"ref={ref}", "--jq", ".content",
+        ]).strip()
+        if not encoded or encoded == "null":
+            return None
+        try:
+            return base64.b64decode(encoded).decode("utf-8", errors="replace")
+        except ValueError:
+            return None
 
     # ── Prompt builder ──
 
@@ -278,8 +328,12 @@ class EPHooks:
         return (
             PROMPT_INJECTION_BOUNDARY +
             self._feature_context_block(ticket) +
-            "Review the design document in .context/pr-diff.txt using the review criteria "
-            "in .context/skill-prompt.md.\n\n"
+            "The full resulting content of each Design document in this PR, at this "
+            "PR's head commit, is in .context/design-full.txt -- this is the source of "
+            "truth for scoring Design quality. Review it using the review criteria in "
+            ".context/skill-prompt.md.\n\n"
+            ".context/pr-diff.txt is secondary context showing what this PR changed -- "
+            "use it to understand the change, not as the basis for scoring.\n\n"
             "Apply the review dimensions from skill-prompt.md, then map your assessment "
             "to these 4 scoring criteria:\n\n"
             "- feasibility (0-2): Is the design technically feasible and implementable?\n"

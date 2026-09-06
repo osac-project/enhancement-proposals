@@ -121,6 +121,38 @@ class ExcludeOwnSlugFromReferenceLibraryTests(unittest.TestCase):
         self.assertTrue((self.ref_root / "unrelated").exists())
 
 
+class DesignDocFilenamesTests(unittest.TestCase):
+    """design_doc_filenames() feeds both detect_skills() (has_design) and
+    build_ticket_base()'s design_doc_paths -- single source of truth for
+    "which changed files are Design documents"."""
+
+    def test_design_md_matched(self):
+        files = ["enhancements/OSAC-1-x/design.md", "enhancements/OSAC-1-x/prd.md"]
+        self.assertEqual(er.design_doc_filenames(files), ["enhancements/OSAC-1-x/design.md"])
+
+    def test_legacy_readme_in_enhancements_matched(self):
+        files = ["enhancements/OSAC-1-x/README.md"]
+        self.assertEqual(er.design_doc_filenames(files), files)
+
+    def test_readme_outside_enhancements_not_matched(self):
+        self.assertEqual(er.design_doc_filenames(["README.md"]), [])
+
+    def test_case_insensitive_basename(self):
+        files = ["enhancements/OSAC-1-x/DESIGN.md"]
+        self.assertEqual(er.design_doc_filenames(files), files)
+
+    def test_multiple_design_docs_multi_feature_pr(self):
+        files = [
+            "enhancements/OSAC-1-a/design.md",
+            "enhancements/OSAC-2-b/design.md",
+            "enhancements/OSAC-2-b/prd.md",
+        ]
+        self.assertEqual(
+            er.design_doc_filenames(files),
+            ["enhancements/OSAC-1-a/design.md", "enhancements/OSAC-2-b/design.md"],
+        )
+
+
 class BuildTicketBaseTests(unittest.TestCase):
     """Real file-list shapes from #168/#172/#173/#174 — filenames only, no
     diff content needed for Phase A."""
@@ -144,6 +176,7 @@ class BuildTicketBaseTests(unittest.TestCase):
         self.assertEqual(ticket["jira_key"], "OSAC-2872")
         self.assertFalse(ticket["jira_key_ambiguous"])
         self.assertEqual(ticket["structure_violations"], [])
+        self.assertEqual(ticket["design_doc_paths"], files)
 
     def test_pr_173_key_derived_from_path_not_title(self):
         # Real case: PR title references OSAC-2645, but the touched EP
@@ -194,6 +227,12 @@ class BuildTicketBaseTests(unittest.TestCase):
         self.assertIsNone(ticket["jira_key"])
         self.assertTrue(ticket["jira_key_ambiguous"])
         self.assertEqual(ticket["structure_violations"], [])
+        # Multi-feature PR: every touched Design document is carried through,
+        # even though the Feature key itself is ambiguous.
+        self.assertEqual(
+            ticket["design_doc_paths"],
+            [f for f in files if er.os.path.basename(f).lower() in ("readme.md", "design.md")],
+        )
 
     def test_missing_key_prefix_surfaces_as_structure_violation(self):
         files = ["enhancements/vm-worker-nodes/prd.md"]
