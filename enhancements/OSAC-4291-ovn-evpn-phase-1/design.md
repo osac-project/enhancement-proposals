@@ -576,9 +576,9 @@ capabilities:
             role: Primary
             subnets:
               - "{{ subnet_cidr }}"
-            excludeSubnets:
-              - "{{ fabric_reserved_range }}"  # REQUIRED: Fabric SVIs + DHCP range (prevents IP collision - correctness bug if omitted)
-            # defaultGatewayIPs omitted - OVN auto-picks .1, which Netris SVI answers
+            reservedSubnets:
+              - "{{ fabric_reserved_range }}"  # REQUIRED: Prevents OVN IPAM from allocating IPs in fabric-managed range (SVIs, DHCP pool)
+            # defaultGatewayIPs omitted - OVN auto-picks .1, which fabric SVI answers
           evpn:
             vtep: tenant-vtep  # Cluster-wide singleton VTEP
             macVRF:
@@ -618,7 +618,7 @@ capabilities:
 - VNI values (L2 macVRF, L3 ipVRF) from extra_vars (passed by provisioning package from fabric ConfigMap output)
 - Route targets omitted in Phase 1 — CUDN auto-generates as "AS:VNI" (Phase 2 multi-cluster may require explicit RT control for inter-cluster route distribution)
 - Wait for CUDN Ready before completing (prevents race with VM provisioning)
-- **excludeSubnets (REQUIRED)** prevents OVN IPAM from allocating IPs in fabric-managed range (SVIs, DHCP) — mandatory for correctness (collision causes connectivity failure)
+- **reservedSubnets (REQUIRED)** set to fabric_reserved_range — prevents OVN IPAM from allocating IPs in fabric-managed range (SVIs, DHCP) — mandatory for correctness (collision causes connectivity failure)
 - Validation fails k8s job if fabric_reserved_range missing from fabric job ConfigMap (generic name works with any fabric manager)
 - defaultGatewayIPs omitted — OVN auto-picks .1, which fabric SVI answers (documented working behavior)
 - set_stats publishes CUDN details (used by controller for status update, not for inter-job flow)
@@ -1286,13 +1286,3 @@ None. All infrastructure (OCP cluster, Netris fabric, FRR operator) is assumed t
 
 **End of Design Document**
 
----
-
-## Provenance
-
-Authored: draft @ design 0.9.0 - 562b610, workspace main @ 63b090a (dirty)
-Final: respond @ design 0.9.0 - 562b610, workspace main @ 63b090a (6 behind origin/main, dirty)
-
-> Context changed between draft and respond.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"63b090a (dirty)","source_repo_branch":"main","commits_behind_main":6,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

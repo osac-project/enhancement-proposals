@@ -244,24 +244,24 @@
 
 ##### Steps
 
-1. Verify CUDN `spec.network.layer2.excludeSubnets` includes Netris reserved range (REQUIRED)
-2. Verify k8s job extra_vars contains netris_reserved_range from fabric job
+1. Verify CUDN `spec.network.layer2.reservedSubnets` includes fabric reserved range (REQUIRED)
+2. Verify k8s job extra_vars contains fabric_reserved_range from fabric job ConfigMap
 3. Deploy VirtualMachine in CUDN namespace
 4. Verify VM receives IP address via DHCP
 5. Check VM received IP from OVN DHCP (inside VM: check DHCP server IP in lease file)
 6. Verify VM IP is not in Netris DHCP range (not 200.200.1.100-200)
-7. Verify VM IP is not in Netris reserved range (excludeSubnets)
+7. Verify VM IP is not in fabric reserved range (reservedSubnets)
 8. Check Netris DHCP logs — verify no DHCP requests from VM MAC address
 9. Verify VM IP is in subnet CIDR (200.200.1.0/24)
 
 ##### Expected Results
 
-- CUDN `excludeSubnets` field is populated (k8s job fails if netris_reserved_range missing from fabric job)
+- CUDN `reservedSubnets` field is populated (k8s job fails if fabric_reserved_range missing from fabric job ConfigMap)
 - VM IP assigned by OVN-Kubernetes DHCP (not Netris DHCP)
 - VM DHCP lease shows OVN DHCP server IP (logical switch IP, not Netris SVI)
 - Netris DHCP logs show no requests from VM MAC (OVN intercepts DHCP inside logical switch)
-- **VM IP does not collide with Netris-managed IPs (gateway .1, SVIs, DHCP pool)**
-- OVN IPAM respects the excluded range (correctness requirement, not optional)
+- **VM IP does not collide with fabric-managed IPs (gateway .1, SVIs, DHCP pool)**
+- OVN IPAM respects the reserved range (correctness requirement, not optional)
 - Both DHCP servers coexist without conflict (validated behavior)
 
 ### R7: Installation prerequisites documentation
