@@ -73,7 +73,7 @@ def design_doc_filenames(files):
     return [
         f for f in files
         if os.path.basename(f).lower() == "design.md"
-        or (os.path.basename(f).lower() == "readme.md" and "enhancements/" in f.lower())
+        or (os.path.basename(f).lower() == "readme.md" and f.lower().startswith("enhancements/"))
     ]
 
 

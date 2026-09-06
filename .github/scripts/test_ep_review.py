@@ -137,6 +137,9 @@ class DesignDocFilenamesTests(unittest.TestCase):
     def test_readme_outside_enhancements_not_matched(self):
         self.assertEqual(er.design_doc_filenames(["README.md"]), [])
 
+    def test_readme_under_non_root_enhancements_not_matched(self):
+        self.assertEqual(er.design_doc_filenames(["docs/enhancements/README.md"]), [])
+
     def test_case_insensitive_basename(self):
         files = ["enhancements/OSAC-1-x/DESIGN.md"]
         self.assertEqual(er.design_doc_filenames(files), files)
