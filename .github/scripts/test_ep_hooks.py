@@ -1,8 +1,11 @@
+import base64
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from ep_hooks import (
@@ -79,7 +82,7 @@ class PRDPromptTests(unittest.TestCase):
 
 
 class DesignPromptTests(unittest.TestCase):
-    """_design_prompt() must remain unchanged (already correct)."""
+    """_design_prompt() must still request scores using the skill's criteria."""
 
     def setUp(self):
         self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
@@ -88,6 +91,22 @@ class DesignPromptTests(unittest.TestCase):
     def test_prompt_contains_all_design_keys(self):
         for key in DESIGN_KEYS:
             self.assertIn(f"- {key} (0-2):", self.prompt)
+
+
+class DesignPromptSourceOfTruthTests(unittest.TestCase):
+    """_design_prompt() must point scoring at the full document, not the diff."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+        self.prompt = self.hooks._design_prompt({})
+
+    def test_full_document_is_primary_source(self):
+        self.assertIn("design-full.txt", self.prompt)
+        self.assertIn("source of truth", self.prompt)
+
+    def test_diff_is_secondary_context_only(self):
+        self.assertIn("pr-diff.txt", self.prompt)
+        self.assertIn("secondary context", self.prompt)
 
 
 class ValidateScoresTests(unittest.TestCase):
@@ -731,6 +750,194 @@ class ProgressPlaceholderTests(unittest.TestCase):
             # Must not raise.
             hooks.post_progress_placeholder("EP-1", "prd-review")
             hooks.post_failure_note("EP-1", "prd-review")
+
+
+class FetchFileAtRefTests(unittest.TestCase):
+    """_fetch_file_at_ref() reads file content read-only via the GitHub
+    contents API, by SHA -- never checks out or executes the PR head."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+
+    def _with_gh(self, return_value):
+        return mock.patch.object(self.hooks, "_gh", return_value=return_value)
+
+    def test_decodes_base64_content(self):
+        encoded = base64.b64encode(b"# Design\n\nfull content\n").decode()
+        with self._with_gh(encoded):
+            content = self.hooks._fetch_file_at_ref("enhancements/x/design.md", "deadbeef")
+        self.assertEqual(content, "# Design\n\nfull content\n")
+
+    def test_fetch_uses_contents_api_at_given_ref(self):
+        captured = {}
+
+        def fake_gh(args, check=False):
+            captured["args"] = args
+            return base64.b64encode(b"content").decode()
+
+        with mock.patch.object(self.hooks, "_gh", side_effect=fake_gh):
+            self.hooks._fetch_file_at_ref("enhancements/x/design.md", "deadbeef")
+        self.assertIn("repos/test/repo/contents/enhancements/x/design.md", captured["args"])
+        self.assertIn("ref=deadbeef", captured["args"])
+        self.assertNotIn("checkout", captured["args"])
+        # gh api silently switches to POST when -f is present unless the
+        # method is pinned explicitly -- this must stay a GET.
+        self.assertIn("GET", captured["args"])
+
+    def test_missing_file_returns_none(self):
+        with self._with_gh(""):
+            self.assertIsNone(
+                self.hooks._fetch_file_at_ref("enhancements/x/design.md", "deadbeef")
+            )
+
+    def test_null_content_returns_none(self):
+        with self._with_gh("null"):
+            self.assertIsNone(
+                self.hooks._fetch_file_at_ref("enhancements/x/design.md", "deadbeef")
+            )
+
+    def test_invalid_base64_returns_none(self):
+        with self._with_gh("not-valid-base64!!"):
+            self.assertIsNone(
+                self.hooks._fetch_file_at_ref("enhancements/x/design.md", "deadbeef")
+            )
+
+
+class FetchDesignFullTextTests(unittest.TestCase):
+    """_fetch_design_full_text() assembles the full-document scoring source
+    for one or more Design documents. Tolerates individual fetch failures as
+    long as at least one document comes through; raises if none do."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+
+    def test_no_paths_raises(self):
+        with self.assertRaises(RuntimeError):
+            self.hooks._fetch_design_full_text([], "deadbeef")
+
+    def test_no_head_sha_raises(self):
+        with self.assertRaises(RuntimeError):
+            self.hooks._fetch_design_full_text(["enhancements/x/design.md"], "")
+
+    def test_all_fetches_failing_raises(self):
+        with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=None):
+            with self.assertRaises(RuntimeError):
+                self.hooks._fetch_design_full_text(
+                    ["enhancements/OSAC-1-x/design.md"], "deadbeef"
+                )
+
+    def test_single_document_initial_submission(self):
+        full_doc = "---\ntitle: X\n---\n\n## Summary\n\nfull design content\n"
+        with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=full_doc):
+            text = self.hooks._fetch_design_full_text(
+                ["enhancements/OSAC-1-x/design.md"], "deadbeef"
+            )
+        self.assertIn("### File: enhancements/OSAC-1-x/design.md", text)
+        self.assertIn(full_doc, text)
+
+    def test_full_document_fetched_regardless_of_diff_size(self):
+        full_doc = "---\ntitle: X\n---\n\n" + "\n".join(
+            f"## Section {i}\n\ndetailed content\n" for i in range(20)
+        )
+        with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=full_doc):
+            text = self.hooks._fetch_design_full_text(
+                ["enhancements/OSAC-1-x/design.md"], "deadbeef"
+            )
+        self.assertIn("Section 19", text)
+
+    def test_degraded_revision_content_passed_through_unmodified(self):
+        degraded_doc = "---\ntitle: X\n---\n\n## Summary\n\nno test plan section here\n"
+        with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=degraded_doc):
+            text = self.hooks._fetch_design_full_text(
+                ["enhancements/OSAC-1-x/design.md"], "deadbeef"
+            )
+        self.assertIn(degraded_doc, text)
+        self.assertNotIn("Test Plan", text)
+
+    def test_multiple_documents_in_one_pr(self):
+        docs = {
+            "enhancements/OSAC-1-a/design.md": "design A content",
+            "enhancements/OSAC-2-b/design.md": "design B content",
+        }
+        with mock.patch.object(self.hooks, "_fetch_file_at_ref", side_effect=lambda p, r: docs[p]):
+            text = self.hooks._fetch_design_full_text(list(docs), "deadbeef")
+        for path, content in docs.items():
+            self.assertIn(f"### File: {path}", text)
+            self.assertIn(content, text)
+
+    def test_unfetchable_document_gets_placeholder_others_unaffected(self):
+        def fake_fetch(path, ref):
+            return None if path == "enhancements/OSAC-1-a/design.md" else "design B content"
+
+        with mock.patch.object(self.hooks, "_fetch_file_at_ref", side_effect=fake_fetch):
+            text = self.hooks._fetch_design_full_text(
+                ["enhancements/OSAC-1-a/design.md", "enhancements/OSAC-2-b/design.md"],
+                "deadbeef",
+            )
+        self.assertIn("Could not fetch", text)
+        self.assertIn("design B content", text)
+
+
+class WritePrContextDesignFullTests(unittest.TestCase):
+    """write_pr_context() writes design-full.txt for design-review only,
+    sourced from the ticket's already-known design_doc_paths."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_design_review_writes_design_full_txt(self):
+        def fake_gh(args, check=False):
+            if args[:2] == ["pr", "diff"]:
+                return "tiny diff"
+            if any("contents/enhancements/OSAC-1-x/design.md" in a for a in args):
+                return base64.b64encode(b"full design content").decode()
+            return ""
+
+        with mock.patch.object(self.hooks, "_gh", side_effect=fake_gh):
+            self.hooks.write_pr_context(
+                "EP-1",
+                {
+                    "_skill_name": "design-review",
+                    "_skill_path": "skills/design-review/SKILL.md",
+                    "headRefOid": "deadbeef",
+                    "design_doc_paths": ["enhancements/OSAC-1-x/design.md"],
+                },
+                mode="resolve", work_dir=self.tmp,
+            )
+        design_full = (Path(self.tmp) / ".context" / "design-full.txt").read_text()
+        self.assertIn("full design content", design_full)
+        self.assertTrue((Path(self.tmp) / ".context" / "pr-diff.txt").exists())
+
+    def test_design_review_raises_when_fetch_fails_entirely(self):
+        with mock.patch.object(self.hooks, "_gh", return_value=""):
+            with self.assertRaises(RuntimeError):
+                self.hooks.write_pr_context(
+                    "EP-1",
+                    {
+                        "_skill_name": "design-review",
+                        "_skill_path": "skills/design-review/SKILL.md",
+                        "headRefOid": "deadbeef",
+                        "design_doc_paths": ["enhancements/OSAC-1-x/design.md"],
+                    },
+                    mode="resolve", work_dir=self.tmp,
+                )
+        self.assertFalse((Path(self.tmp) / ".context" / "design-full.txt").exists())
+
+    def test_prd_review_does_not_write_design_full_txt(self):
+        with mock.patch.object(self.hooks, "_gh", return_value=""):
+            self.hooks.write_pr_context(
+                "EP-1",
+                {
+                    "_skill_name": "prd-review",
+                    "_skill_path": "skills/prd-review/SKILL.md",
+                    "headRefOid": "deadbeef",
+                    "design_doc_paths": [],
+                },
+                mode="resolve", work_dir=self.tmp,
+            )
+        self.assertFalse((Path(self.tmp) / ".context" / "design-full.txt").exists())
 
 
 class CheckPrStateTagTests(unittest.TestCase):
