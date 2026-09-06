@@ -42,7 +42,7 @@ This design builds on and interacts with several networking designs:
 
 ## Motivation
 
-OSAC runs VMs on OpenShift using KubeVirt. VM IP addresses exist only within the OVN overlay network and are not visible on the physical fabric. This prevents VMs from sharing L2 subnets with bare-metal servers or being directly reachable from the fabric, blocking workloads that span VMs and bare-metal infrastructure.
+OSAC runs VMs on OpenShift using KubeVirt. VM IP addresses exist only within the OVN overlay network and are not visible on the physical fabric. This prevents VMs from sharing L2 subnets with bare-metal servers or communicating across L3 subnets via shared ipVRF, blocking workloads that span VMs and bare-metal infrastructure.
 
 The CUDN LocalNet approach (OSAC-1511) was frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support (validated by OSAC-1717 spike). This design delivers single-cluster EVPN bridging as Phase 1, with a constraint that OVN-Kubernetes cannot currently route between separate CUDNs on the same cluster (Connectors feature pending).
 
@@ -53,7 +53,7 @@ OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabri
 
 - Reuse NetworkClass dispatcher pattern and two-manager architecture from OSAC-1433
 - Sequential provisioning pattern reusable for future fabric-to-k8s dependencies
-- Single-subnet constraint enforced at fulfillment-service API layer (fails fast)
+- Single-subnet constraint enforced at fulfillment-service API layer (fails fast) — applies to CUDN-provisioned subnets only; fabric-only subnets (bare-metal) bypass via `skip-k8s-manager` annotation
 - K8s manager playbook creates CUDN as Kubernetes-native resource (no external API calls)
 - FRRConfiguration for BGP underlay peering is installation prerequisite (auto-updated by OVN-Kubernetes, not by k8s manager)
 - Installation prerequisites documented for Cloud Infrastructure Admin
