@@ -4,7 +4,7 @@
 |-------------|----------------------|
 | Author(s)   | Moti Asayag          |
 | Jira        | [OSAC-3784](https://redhat.atlassian.net/browse/OSAC-3784) |
-| Date        | 2026-08-23           |
+| Date        | 2026-09-06           |
 
 ## Glossary
 
@@ -35,18 +35,11 @@ OSAC's metering layer (OSAC-985) captures resource consumption for VMaaS, CaaS, 
 
 ## In Scope
 
-This MVP defines what OSAC owns at the seam between its own resource lifecycle and an external billing system. The organizing principle is a clean split of responsibility: **the billing system is the source of truth for pricing, rating, and invoicing; OSAC delivers usage and charge triggers, connects tenants to billing accounts, and displays cost.** OSAC does not author, store, or compute rates, and is deliberately thin at this seam — complex billing configuration lives in the billing system. Detailed behavior is captured in the User Stories below; this section states the conceptual boundaries.
+This MVP defines what OSAC owns at the seam between its resource lifecycle and an external billing system. The billing system is the source of truth for pricing, rating, and invoicing; OSAC delivers usage, connects tenants to billing accounts, and displays cost. OSAC does not author, store, or compute rates. Detailed behavior is in the User Stories; this section states boundaries those stories do not already convey.
 
-- **Billing system as pricing source of truth** — OSAC does not maintain or compute prices. The billing system owns rate authoring, rating, and invoice production; OSAC references whether a billable component has a rate and displays the cost the billing system calculates. Pricing is anchored to the resource's billable components — for VMaaS the billable component is the instance type, rated as a single unit rather than decomposed into separate CPU, memory, and storage line items — not to the catalog item, since resources can be provisioned outside the catalog and are managed independently afterward. Browse-time catalog price display is OSAC-3793.
-- **Rate authoring and tenant billing onboarding are external** — defining rates, organizing them (rate cards), and onboarding a tenant's billing terms are performed directly in the billing system by the Cloud Provider Admin, not in OSAC. OSAC is **agnostic to how rates are organized** — whether one rate card is shared across all tenants or authored per account is internal to the billing system and carries no OSAC-side cost or model. OSAC neither provides rate-authoring surfaces nor assumes a particular rate-card cardinality.
-- **Rate coverage before availability (publish gate)** — OSAC ensures every billable component of a resource type — both metered dimensions (OSAC-985) and non-metered components — has a rate in the billing system before that resource type is offered for provisioning, and surfaces any component lacking a rate. This prevents cost-incurring resources from being provisioned unbilled, without OSAC holding the rate itself.
-- **Charges for non-metered components** — a provisioned resource may include billable components whose cost is not derived from metered usage (for example, a paid add-on operator on a CaaS cluster, a software license bundled with a VM image, or a setup fee). OSAC identifies these components, ensures each is registered as a rateable item in the billing system, and delivers the charge trigger; the billing system holds the rate and produces the charge so it appears on the invoice alongside metered usage. OSAC does not compute the monetary amount.
-- **Initial providers and services** — one billing provider per deployment (Monetize360 (M360) or Red Hat Cost Management (Koku)); billing for the two services with existing metering (VMaaS and CaaS, via OSAC-985). Billing for other services and providers activates via separate Features (see Out of Scope).
-- **Tenant-to-billing-account lifecycle** — OSAC provisions and links billing accounts as tenants are created and deleted, including 1:N account-to-tenant sharing. On deletion, the tenant's active access is revoked immediately, but its pending-charge attribution is retained until those charges settle and the provider's retention period expires, at which point only that tenant's records are purged; a shared account is retained until its last tenant is purged, so one tenant's deletion never loses its own pending charges nor removes or hides another tenant's invoices or charges. Each account is provisioned with a single immutable base currency validated as an active ISO-4217 code.
-- **Cost visibility with RBAC scoping** — cost views and invoice listings scoped to the tenant's billing account and aligned to the billing period defined in the billing system, with Tenant Admin (tenant-wide) versus Tenant User (own resources/projects) boundaries, so financial data is not exposed across unrelated teams. Because a billing account may back multiple tenants (1:N), every cost, invoice, and export response is filtered to the requesting tenant's own records — scoping to the shared account alone is not sufficient — so one tenant never sees another tenant's charges on a shared account; this partitioning is required of every supported provider integration. OSAC attributes usage to the billing period in which it accrued.
-- **Billing resilience** — billing system unavailability never blocks tenant provisioning or resource lifecycle operations; on recovery, no usage is lost and no charges or accounts are duplicated.
-- **Provider installation and switch as configuration** — installing and switching the billing provider is an installation-configuration action, not a code change or reinstall.
-- **API, CLI, and UI surfaces** — the above are accessible via the OSAC API, the `osac` CLI, and the OSAC web console; UI may be API/CLI-first this milestone. Two `osac-ux` prototype concepts are not in this MVP (prepaid/subscription billing-model selector and affiliate identifier — see Out of Scope).
+- **Pricing is on billable components, not catalog items** — for VMaaS the billable component is the instance type, rated as a single unit rather than separate CPU, memory, and storage line items. Resources provisioned outside the catalog are billed the same way. Browse-time catalog price display is OSAC-3793.
+- **One provider, two services** — one billing provider per deployment (Monetize360 (M360) or Red Hat Cost Management (Koku)); VMaaS and CaaS only. Other services and providers activate via separate Features (see Out of Scope).
+- **API and CLI this milestone** — the OSAC web console is not required to close this MVP. User-facing billing documentation and API reference ship with the Feature. Rate authoring and tenant billing onboarding are documented by the billing system, not OSAC.
 
 ## Out of Scope
 
@@ -55,7 +48,7 @@ This MVP defines what OSAC owns at the seam between its own resource lifecycle a
 - **Workload-level metering** — OSAC meters resources it provisions, not workloads running inside tenant clusters.
 - **Billing provider UI** — the billing provider's own administration interface; this PRD covers OSAC-side surfaces only. Functionality native to the billing provider (invoicing, tax, payment, refunds) is delegated to it.
 - **Trial, promotional, and ad-hoc credits, refunds, and adjustments** — granted and managed in the billing provider's own interface. The billing provider holds any credit balance and applies it against rated charges; OSAC neither grants credits nor computes the offset (see Assumptions), and does not provide a credit-granting UI.
-- **Per-user cost attribution and user wallets** — the MVP attributes cost at tenant and project scope only. Per-user consumption views and per-user prepaid wallets are a known future need (e.g., MOC 2.0 requests) and are tracked separately.
+- **Per-user cost attribution and user wallets** — the MVP attributes cost at tenant and project scope only. Per-user consumption views and per-user prepaid wallets are a known future need and are tracked separately.
 - **Prepaid and subscription billing models** — the MVP bills tenants on a pay-as-you-go basis (charges accrue into a draft invoice per billing period). Per-tenant prepaid balances and recurring subscription models (the osac-ux prototype's billing-model selector) are deferred. Per-tenant enforcement policy on billing-system unavailability — for example, blocking provisioning to protect a prepaid balance — is deferred with prepaid wallets; the MVP's resilience guarantee (provisioning is never blocked) applies uniformly to all tenants.
 - **Reseller and affiliate billing** — affiliate/reseller attribution and reseller-specific pricing (the osac-ux prototype's affiliate identifier) are deferred.
 - **MaaS billing** — depends on MaaS metering, which is not yet available; tracked independently (OSAC-3794). It does not gate this MVP.
@@ -75,21 +68,31 @@ This MVP defines what OSAC owns at the seam between its own resource lifecycle a
 
 - As a Cloud Provider Admin, I want tenant usage to be charged in the billing system installed for my deployment (M360 or RH Cost Management), so that I get invoicing and cost calculation without building a custom billing pipeline.
 
-- As a Cloud Provider Admin, I want to author rates and onboard each tenant's billing terms directly in the billing system rather than in OSAC, so that I use the billing system's full pricing capabilities and OSAC stays thin at the billing seam. This is why rate cards, pricing plans, per-tenant rate differentiation, and the billing period are configured in the billing system and do not appear as OSAC surfaces.
+- As a Cloud Provider Admin, I want each tenant associated with a billing account — including several tenants sharing one account — with a single immutable base currency per account, validated as an active ISO-4217 code, so that charges land on the correct invoice.
 
-- As a Cloud Provider Admin, I want OSAC to prevent a resource type from being offered for provisioning until every one of its billable components has a rate in the billing system — both metered dimensions (OSAC-985; for example VMaaS instance types, which encapsulate CPU, memory, and GPU) and non-metered components such as a paid add-on operator or a software license — and to alert me to any component lacking a rate, so that nothing that incurs cost is provisioned unbilled, whether from the catalog or directly. Browse-time catalog price display is OSAC-3793.
+- As a Cloud Provider Admin, I want every cost, invoice, and export response filtered to the requesting tenant's own records, so that on a shared billing account (1:N account-to-tenant) one tenant never sees another tenant's charges. This partitioning is required of every supported provider integration; scoping to the shared account alone is not sufficient.
 
-- As a Cloud Provider Admin, I want to view the billing provider's draft invoice per tenant for a billing period, itemized by service and resource type, so that I can review charges and export them to my payment system. The billing provider owns invoice identity, revisions, and amounts, and any corrections or adjustments are made in the billing provider, not in OSAC; OSAC requests and retrieves the draft, and that request is repeat-safe per (tenant, billing period), returning the existing provider draft on retry rather than creating a duplicate.
+- As a Cloud Provider Admin, I want a deleted tenant's pending charges retained until they settle, without hiding or removing another tenant's invoices or charges on a shared account, so that deletion does not lose billable history or affect other tenants.
+
+- As a Cloud Provider Admin, I want OSAC to prevent a resource type from being offered for provisioning until every one of its billable components has a rate in the billing system — both metered dimensions (OSAC-985; for example VMaaS instance types, which encapsulate CPU, memory, and GPU) and non-metered components such as a paid add-on operator or a software license — and to alert me to any component lacking a rate, so that nothing that incurs cost is provisioned unbilled, whether from the catalog or directly.
+
+- As a Cloud Provider Admin, I want to view the billing provider's draft invoice per tenant for a billing period, itemized by service and resource type — including non-metered component charges — so that I can review charges before they are issued. The billing provider owns invoice identity, revisions, and amounts; corrections and adjustments are made in the billing provider, not in OSAC. Retrieving a draft invoice more than once for the same tenant and billing period returns the same draft; it does not create a second invoice.
+
+- As a Cloud Provider Admin, I want to export the billing provider's draft invoice for a tenant and billing period to my payment system, so that I can collect payment outside OSAC.
 
 - As a Cloud Provider Admin, I want OSAC-side billing operations — invoice review and export, billing-provider installation and switchover, and access to cost data — restricted to users with billing-specific permissions, so that only authorized personnel can access financial data or change the billing connection.
 
-- As a Cloud Provider Admin, I want the billing-related actions performed through OSAC — billing-provider installation and switchover, tenant-to-billing-account provisioning, and draft-invoice retrieval and export — to produce entries in the OSAC audit log (visible through the API, CLI, and UI where audit is surfaced), so that I can satisfy compliance and regulatory audit requirements. Rate and pricing changes made directly in the billing system are audited by that system, consistent with it remaining the pricing source of truth.
+- As a Cloud Provider Admin, I want the billing-related actions performed through OSAC — billing-provider installation and switchover, tenant-to-billing-account provisioning, and draft-invoice retrieval and export — to produce entries in the OSAC audit log (visible through the API and CLI), so that I can satisfy compliance and regulatory audit requirements. Rate and pricing changes made directly in the billing system are audited by that system, consistent with it remaining the pricing source of truth.
+
+### Cloud Provider Admin / Tenant Admin
+
+- As a Cloud Provider Admin or Tenant Admin, I want resource provisioning and lifecycle operations to continue when the billing system is unreachable, so that a billing outage does not stop tenants from using the cloud. When the billing system recovers, no usage is missing and no charges or accounts are duplicated.
 
 ### Cloud Infrastructure Admin
 
 - As a Cloud Infrastructure Admin, I want to install the billing provider connection as part of the OSAC installation — including credentials that are not stored in plaintext — so that billing integration is operational from day one without exposing secrets in configuration files.
 
-- As a Cloud Infrastructure Admin, I want to switch the billing provider (for example, from M360 to RH Cost Management) via installation configuration, so that a provider change is a configuration change, not a code change, rebuild, or reinstall of OSAC. Configuring the connection is an infrastructure responsibility; authoring rates, the billing period, and tenant billing terms is done in the billing system by the Cloud Provider Admin. A switch takes effect from the switch point forward at a billing-period boundary — prior usage is not replayed, and historical records remain with the previous provider.
+- As a Cloud Infrastructure Admin, I want to switch the billing provider (for example, from M360 to RH Cost Management) via installation configuration, so that a provider change is a configuration change, not a code change, rebuild, or reinstall of OSAC. A switch takes effect from the switch point forward at a billing-period boundary — prior usage is not replayed, and historical records remain with the previous provider.
 
 - As a Cloud Infrastructure Admin, I want to see when billing integration is unhealthy (usage is not flowing to the billing system), so that I can fix it before invoices are wrong.
 
@@ -103,7 +106,7 @@ This MVP defines what OSAC owns at the seam between its own resource lifecycle a
 
 ### Tenant User
 
-- As a Tenant User, I want to view the estimated cost of the resources I have deployed and the Projects I have access to, so that I understand my consumption footprint without seeing tenant-wide financial data. Estimated cost reflects the charges the billing system calculates for the resource's billable components — metered usage together with any non-metered component charges — queried on demand rather than pushed as a streamed feed. Cost views show the most recently processed data with an "as of" timestamp; usage not yet processed by the billing provider is not yet reflected.
+- As a Tenant User, I want to view the estimated cost of the resources I have deployed and the Projects I have access to, so that I understand my consumption footprint without seeing tenant-wide financial data. When I open a cost view, it shows the billing system's latest calculated charges — metered usage together with any non-metered component charges — and an "as of" timestamp; usage still being processed is not yet included.
 
 - As a Tenant User, I want to view the cost history over time of the resources and Projects I have access to, so that I can spot trends in my own spending.
 
@@ -111,11 +114,11 @@ This MVP defines what OSAC owns at the seam between its own resource lifecycle a
 
 - The metering layer (OSAC-985) is operational and collecting usage data for VMaaS and CaaS before billing integration begins.
 
-- The billing provider (M360 or RH Cost Management) is deployed and reachable from the OSAC deployment. OSAC does not manage the billing provider's lifecycle. Behavior when the provider is unreachable is governed by the Billing resilience item in In Scope — provisioning is never blocked, and no usage, charges, or accounts are lost or duplicated on recovery.
+- The billing provider (M360 or RH Cost Management) is deployed and reachable from the OSAC deployment. OSAC does not manage the billing provider's lifecycle.
 
 - The billing system supports the pricing OSAC relies on (per-component rates, including negative rates for discounts, and whatever per-tenant rate differentiation the Cloud Provider Admin authors). OSAC is agnostic to how the billing system organizes those rates. If a billing provider lacks a capability, that feature is unavailable in that deployment until the provider supports it. Whether a single rate structure can be shared across billing accounts is a provider-specific detail OSAC does not assume.
 
-- Metering-event processing latency — measured from event delivery to the billing provider until the derived charge is queryable — is provider-dependent and typically low (on the order of a minute). OSAC does not guarantee a fixed end-to-end latency in this MVP, and the bound does not hold during provider recovery or backlog drain; cost queries return the most recently processed data with an "as of" timestamp, and usage still being processed is not yet reflected.
+- OSAC does not guarantee a fixed end-to-end latency from usage delivery to queryable charge in this MVP. Cost queries return the most recently processed data with an "as of" timestamp; usage still being processed is not yet reflected. This does not hold during provider recovery or backlog drain.
 
 - Trial and promotional access is modeled as a per-tenant credit balance held by the billing provider, which the provider draws down against charges as usage is rated at normal (non-zero) rates, rather than as a separate zero-rate plan or trial mode. Credits are granted and applied in the billing provider's interface (see Out of Scope).
 
@@ -133,15 +136,13 @@ This MVP defines what OSAC owns at the seam between its own resource lifecycle a
 
 - **MaaS billing (OSAC-3794) — tracked independently:** MaaS billing depends on MaaS metering and does not gate this MVP. If MaaS metering lands in time, its billable dimensions are priced through the same mechanism defined here.
 
-- **Billing provider deployment:** M360 or RH Cost Management must be deployed and configured independently. OSAC integrates via the billing provider's APIs.
+- **Billing provider deployment:** M360 or RH Cost Management must be deployed and configured independently. OSAC integrates with the billing provider.
 
 - **OSAC Catalog (OSAC-1531, OSAC-2452):** VMaaS and CaaS catalog items must exist as offerings. Pricing is on the billable components of provisioned resources, not on catalog items. Browse-time catalog price display is OSAC-3793.
 
-- **Resource composition metadata:** Billing for non-metered components requires the provisioning layer to record which billable components are attached to a provisioned resource. Where these components originate from catalog items, this ties into the catalog dependency above.
+- **Resource composition metadata:** Billing for non-metered components requires the provisioning workflow to record which billable components are attached to a provisioned resource. Where these components originate from catalog items, this ties into the catalog dependency above.
 
 - **OSAC-4220 — Quota Foundation:** Billing cost data may feed into quota enforcement in a future milestone. This PRD does not implement quota logic but does not preclude it.
-
-- **Documentation:** User-facing documentation for billing management (billing-provider installation and switch, tenant-to-billing-account lifecycle, invoice review and export, cost visibility) and API reference for billing endpoints are delivered with the feature. Rate authoring and tenant billing onboarding are documented by the billing system, not OSAC.
 
 ---
 
