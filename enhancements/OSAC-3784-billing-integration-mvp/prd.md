@@ -101,35 +101,23 @@ This MVP defines what OSAC owns at the seam between its resource lifecycle and a
 
 - The metering layer (OSAC-985) is operational and collecting usage data for VMaaS and CaaS before billing integration begins.
 
-- The billing provider (M360 or RH Cost Management) is deployed and reachable from the OSAC deployment. OSAC does not manage the billing provider's lifecycle.
+- The billing provider (M360 or RH Cost Management) supports the pricing capabilities required by this MVP. OSAC does not manage its lifecycle.
 
-- The billing system supports the pricing OSAC relies on (per-component rates, including negative rates for discounts, and whatever per-tenant rate differentiation the Cloud Provider Admin authors). OSAC is agnostic to how the billing system organizes those rates. If a billing provider lacks a capability, that feature is unavailable in that deployment until the provider supports it. Whether a single rate structure can be shared across billing accounts is a provider-specific detail OSAC does not assume.
-
-- OSAC does not guarantee a fixed end-to-end latency from usage delivery to queryable charge in this MVP. Cost queries return the most recently processed data with an "as of" timestamp; usage still being processed is not yet reflected. This does not hold during provider recovery or backlog drain.
-
-- Trial and promotional access is modeled as a per-tenant credit balance held by the billing provider, which the provider draws down against charges as usage is rated at normal (non-zero) rates, rather than as a separate zero-rate plan or trial mode. Credits are granted and applied in the billing provider's interface (see Out of Scope).
+- Cost queries return the billing provider's most recently processed data with an "as of" timestamp; OSAC does not guarantee a fixed processing latency.
 
 - Billing, cost, and invoice data are stored and retained on the external billing system, governed by its retention policy. Metering and usage data retention is governed by OSAC-985. OSAC does not independently store, mirror, or delete billing or cost data.
 
 - When billing integration is enabled on a deployment with existing tenants, billing accounts are created for those tenants. Pre-existing usage data (generated before billing activation) is not retroactively billed.
 
-- Billing integration can be disabled without affecting resource provisioning or lifecycle operations. When disabled, billing and cost data already recorded on the billing system remains subject to that system's retention policy.
-
-- Billing data (prices, costs, invoices, tenant consumption) is financially sensitive. It is protected by OSAC's existing data protection mechanisms (encryption in transit and at rest).
+- Billing outages or disabling the integration do not block resource provisioning or lifecycle operations; recorded provider data remains subject to the provider's retention policy.
 
 ## Dependencies
 
 - **OSAC-985 — Metering and Usage Tracking:** Provides the usage data pipeline that billing consumes, and defines the set of billable dimensions that must carry rates. Metering must be operational for VMaaS and CaaS before billing can calculate charges.
 
-- **MaaS billing (OSAC-3794) — tracked independently:** MaaS billing depends on MaaS metering and does not gate this MVP. If MaaS metering lands in time, its billable dimensions are priced through the same mechanism defined here.
-
-- **Billing provider deployment:** M360 or RH Cost Management must be deployed and configured independently. OSAC integrates with the billing provider.
+- **Billing provider deployment:** M360 or RH Cost Management must be deployed and configured independently.
 
 - **OSAC Catalog (OSAC-1531, OSAC-2452):** VMaaS and CaaS catalog items must exist as offerings. Pricing is on the billable components of provisioned resources, not on catalog items. Browse-time catalog price display is OSAC-3793.
-
-- **Resource composition metadata:** Billing for non-metered components requires the provisioning workflow to record which billable components are attached to a provisioned resource. Where these components originate from catalog items, this ties into the catalog dependency above.
-
-- **OSAC-4220 — Quota Foundation:** Billing cost data may feed into quota enforcement in a future milestone. This PRD does not implement quota logic but does not preclude it.
 
 ---
 
