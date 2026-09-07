@@ -43,8 +43,7 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to view block storage usage across all tenants broken down by storage tier (fast, standard, archival) and capacity, so that I can account for the block-storage capacity each tenant holds by tier.
-- As a Cloud Provider Admin, I want block storage usage to be automatically grouped by the storage tiers I have configured in OSAC, so that each tier (e.g., NVMe SSD, HDD archival) is metered independently — without requiring a separate registration step in the metering system.
+- As a Cloud Provider Admin, I want to view block storage usage across all tenants broken down by the storage tiers configured in OSAC (e.g., fast, standard, archival) and capacity, so that I can account for the block-storage capacity each tenant holds by tier without separately registering each tier in the metering system.
 
 ### Tenant Admin
 
@@ -59,7 +58,6 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 ### 5.1 Block Storage Metering
 
 - **CAP-1:** Block storage volumes are metered using allocation-based metering from creation to deletion. The metering unit is GiB-seconds per storage tier.
-- ~~**CAP-2:** File storage shares are metered by storage tier from creation to deletion.~~ Removed — file storage metering split into a separate feature, [OSAC-4940 (Metering for File Storage)](https://redhat.atlassian.net/browse/OSAC-4940).
 
 ### 5.2 Query Dimensions and Attribution
 
@@ -90,33 +88,29 @@ Block storage uses allocation meters because the tenant's actual backend consump
 - [ ] Storage usage data appears alongside existing metering data without additional admin setup
 - [ ] Storage meters record usage at per-second granularity — a volume existing for 30 seconds appears in usage data
 - [ ] Storage usage totals are accurate — querying the same period twice returns consistent results
-- [ ] Historical storage usage data is available for at least 13 months
+- [ ] Historical storage usage data is available for the retention period defined by Part 1 metering requirements (duration: TBD)
 - [ ] Enabling storage metering does not disrupt existing provisioning workflows
 
-## 8. Open Questions
-
-_None._
-
-## 9. Assumptions
+## 8. Assumptions
 
 - Part 1 metering infrastructure is deployed and operational.
 - Storage meters are additive to the Part 1 metering deployment and require no separate infrastructure.
 - The tenant-facing block storage Volume API will be implemented before block storage metering.
 - Allocation-based metering (confirmed for block storage) is supported by the Part 1 metering infrastructure without architectural changes.
 
-## 10. Dependencies
+## 9. Dependencies
 
 - **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Block storage metering extends but does not replace it.
 - **OSAC-984 (Storage Volume API):** Tenant-facing block storage Volume resource must exist in the fulfillment-service proto before block storage metering can be implemented.
 
-## 11. Risks
+## 10. Risks
 
-### 11.1 Block storage API does not exist yet
+### 10.1 Block storage API does not exist yet
 
 - **Owner:** OSAC platform team
 - **Mitigation:** The block storage (OSAC-984) API must be implemented before its meters can be built. Block storage metering delivery is gated on this API. Coordinate with the storage team to align timelines.
 
-### 11.2 Part 1 metering infrastructure not yet built
+### 10.2 Part 1 metering infrastructure not yet built
 
 - **Owner:** OSAC platform team
 - **Mitigation:** All block storage meters depend on the metering infrastructure (event pipeline, usage store) established by Part 1 (OSAC-985). Block storage metering implementation cannot begin until Part 1 infrastructure is deployed.
