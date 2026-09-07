@@ -14,15 +14,15 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 
 ## In Scope
 
-- Block storage metering — allocation-based metering for standalone Volumes (OSAC-984) by storage tier and capacity (GiB-seconds)
+- Block storage metering — allocation-based metering for standalone Volumes (OSAC-984) by storage tier and capacity (GiB-seconds), regardless of what the volume is attached to (including volumes attached to bare metal hosts)
 - Parent-child attribution so that block storage volumes attached to VMs or clusters can be attributed to the parent resource in a unified usage view
-- Applies across VMaaS (block volumes on ComputeInstances) and CaaS (volumes on ClusterOrders)
+- Applies across VMaaS (block volumes on ComputeInstances) and CaaS (volumes on ClusterOrders); the volume meter also covers volumes attached to bare metal hosts, whose unified host footprint view is owned by OSAC-2506
 
 ## Out of Scope
 
 - File storage metering — tracked separately ([OSAC-4940](https://redhat.atlassian.net/browse/OSAC-4940))
 - Object storage metering — tracked separately ([OSAC-3444](https://redhat.atlassian.net/browse/OSAC-3444))
-- BMaaS metering, including block storage volumes attached to bare metal hosts — tracked separately ([OSAC-2506](https://redhat.atlassian.net/browse/OSAC-2506))
+- Bare metal host resource metering (host-time, CPU, memory) and the unified bare-metal-host footprint view that rolls attached volumes into a host's usage — tracked separately ([OSAC-2506](https://redhat.atlassian.net/browse/OSAC-2506)). OSAC-3141 still produces the block-volume meter for those volumes; OSAC-2506 attributes them to the host.
 - Networking resource metering — tracked separately ([OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145))
 - Network bandwidth metering — tracked separately ([OSAC-3149](https://redhat.atlassian.net/browse/OSAC-3149))
 - Costing, billing, quota enforcement, and budget alerts — deferred to a separate PRD
@@ -76,7 +76,8 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 ## Provenance
 
 Authored: revise @ prd 0.9.0 - 562b610, workspace main @ c30b1b6d9
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"c30b1b6d9","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"c30b1b6d9","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
