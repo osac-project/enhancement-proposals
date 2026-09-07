@@ -15,14 +15,14 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 ## In Scope
 
 - Block storage metering — allocation-based metering for standalone Volumes (OSAC-984) by storage tier and capacity (GiB-seconds)
-- Parent-child attribution so that block storage volumes attached to VMs, clusters, or bare metal hosts can be attributed to the parent resource in a unified usage view
-- Applies across VMaaS (block volumes on ComputeInstances), CaaS (volumes on ClusterOrders), and BMaaS (volumes on bare metal hosts)
+- Parent-child attribution so that block storage volumes attached to VMs or clusters can be attributed to the parent resource in a unified usage view
+- Applies across VMaaS (block volumes on ComputeInstances) and CaaS (volumes on ClusterOrders)
 
 ## Out of Scope
 
 - File storage metering — tracked separately ([OSAC-4940](https://redhat.atlassian.net/browse/OSAC-4940))
 - Object storage metering — tracked separately ([OSAC-3444](https://redhat.atlassian.net/browse/OSAC-3444))
-- BMaaS metering — tracked separately ([OSAC-2506](https://redhat.atlassian.net/browse/OSAC-2506))
+- BMaaS metering, including block storage volumes attached to bare metal hosts — tracked separately ([OSAC-2506](https://redhat.atlassian.net/browse/OSAC-2506))
 - Networking resource metering — tracked separately ([OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145))
 - Network bandwidth metering — tracked separately ([OSAC-3149](https://redhat.atlassian.net/browse/OSAC-3149))
 - Costing, billing, quota enforcement, and budget alerts — deferred to a separate PRD
@@ -46,15 +46,17 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 
 ## Acceptance Criteria
 
-- [ ] A block storage volume generates usage data (GiB-seconds) from creation to deletion, queryable per tenant, storage tier, and capacity
-- [ ] When a block volume is resized, subsequent usage data reflects the new capacity
+- [ ] A block storage volume generates usage data (GiB-seconds) for the period it holds allocated capacity — from when it becomes available for use until it is deleted — queryable per tenant, storage tier, and capacity
+- [ ] A block storage volume that fails to provision and never becomes available generates no usage data
+- [ ] When a block volume is resized, usage data reflects the new capacity from the point the resize takes effect; a resize that fails or is reverted leaves usage data unchanged
 - [ ] Storage usage can be broken down by storage tier, tenant, project, and individual volume
 - [ ] A block storage volume attached to a stopped VM continues generating usage data
-- [ ] A block storage volume attached to a VM, cluster, or bare metal host can be attributed to the parent resource in a unified usage view
+- [ ] A block storage volume attached to a VM or cluster can be attributed to the parent resource in a unified usage view
 - [ ] Storage usage data appears alongside existing metering data without additional admin setup
 - [ ] Storage meters record usage at per-second granularity — a volume existing for 30 seconds appears in usage data
 - [ ] Storage usage totals are accurate — querying the same period twice returns consistent results
-- [ ] Historical storage usage data is available for the retention period defined by Part 1 metering requirements (duration: TBD)
+- [ ] Raw storage metering events are retained for at least 7 days (configurable), per Part 1 metering requirements
+- [ ] Aggregated storage usage data is retained for at least 13 months (configurable), per Part 1 metering requirements
 - [ ] Enabling storage metering does not disrupt existing provisioning workflows
 
 ## Assumptions
@@ -67,17 +69,14 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 ## Dependencies
 
 - **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Block storage metering extends but does not replace it.
-- **OSAC-984 (Storage Volume API):** A tenant-facing block storage Volume resource must exist before block storage metering can be implemented.
+- **OSAC-984 (Storage Volume API):** A tenant-facing block storage Volume resource must exist before block storage metering can be implemented, and must expose a stable association between a volume and its parent resource (VM or cluster) so usage can be attributed to that parent. The mechanism for this association is a design concern for OSAC-984 and this feature's enhancement proposal.
 
 ---
 
 ## Provenance
 
-Authored: revise @ prd 0.6.3 - 68284c8, workspace main @ ef4f3af
-Final: revise @ prd 0.9.0 - 562b610, workspace HEAD @ d165396
-
-> Context changed between revise and revise.
+Authored: revise @ prd 0.9.0 - 562b610, workspace main @ c30b1b6d9
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"d165396","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"c30b1b6d9","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
