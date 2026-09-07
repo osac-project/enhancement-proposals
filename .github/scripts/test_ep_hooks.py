@@ -109,6 +109,22 @@ class DesignPromptSourceOfTruthTests(unittest.TestCase):
         self.assertIn("secondary context", self.prompt)
 
 
+class PrdPromptSourceOfTruthTests(unittest.TestCase):
+    """_prd_prompt() must point scoring at the full document, not the diff."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+        self.prompt = self.hooks._prd_prompt({})
+
+    def test_full_document_is_primary_source(self):
+        self.assertIn("prd-full.txt", self.prompt)
+        self.assertIn("source of truth", self.prompt)
+
+    def test_diff_is_secondary_context_only(self):
+        self.assertIn("pr-diff.txt", self.prompt)
+        self.assertIn("secondary context", self.prompt)
+
+
 class ValidateScoresTests(unittest.TestCase):
     def setUp(self):
         self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
@@ -803,34 +819,38 @@ class FetchFileAtRefTests(unittest.TestCase):
             )
 
 
-class FetchDesignFullTextTests(unittest.TestCase):
-    """_fetch_design_full_text() assembles the full-document scoring source
-    for one or more Design documents. Tolerates individual fetch failures as
-    long as at least one document comes through; raises if none do."""
+class FetchDocFullTextTests(unittest.TestCase):
+    """Tolerates individual fetch failures as long as at least one document
+    comes through; raises if none do."""
 
     def setUp(self):
         self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
 
     def test_no_paths_raises(self):
         with self.assertRaises(RuntimeError):
-            self.hooks._fetch_design_full_text([], "deadbeef")
+            self.hooks._fetch_doc_full_text([], "deadbeef", "Design")
 
     def test_no_head_sha_raises(self):
         with self.assertRaises(RuntimeError):
-            self.hooks._fetch_design_full_text(["enhancements/x/design.md"], "")
+            self.hooks._fetch_doc_full_text(["enhancements/x/design.md"], "", "Design")
 
     def test_all_fetches_failing_raises(self):
         with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=None):
             with self.assertRaises(RuntimeError):
-                self.hooks._fetch_design_full_text(
-                    ["enhancements/OSAC-1-x/design.md"], "deadbeef"
+                self.hooks._fetch_doc_full_text(
+                    ["enhancements/OSAC-1-x/design.md"], "deadbeef", "Design"
                 )
+
+    def test_raise_message_uses_supplied_doc_label(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self.hooks._fetch_doc_full_text([], "deadbeef", "PRD")
+        self.assertIn("PRD", str(ctx.exception))
 
     def test_single_document_initial_submission(self):
         full_doc = "---\ntitle: X\n---\n\n## Summary\n\nfull design content\n"
         with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=full_doc):
-            text = self.hooks._fetch_design_full_text(
-                ["enhancements/OSAC-1-x/design.md"], "deadbeef"
+            text = self.hooks._fetch_doc_full_text(
+                ["enhancements/OSAC-1-x/design.md"], "deadbeef", "Design"
             )
         self.assertIn("### File: enhancements/OSAC-1-x/design.md", text)
         self.assertIn(full_doc, text)
@@ -840,16 +860,16 @@ class FetchDesignFullTextTests(unittest.TestCase):
             f"## Section {i}\n\ndetailed content\n" for i in range(20)
         )
         with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=full_doc):
-            text = self.hooks._fetch_design_full_text(
-                ["enhancements/OSAC-1-x/design.md"], "deadbeef"
+            text = self.hooks._fetch_doc_full_text(
+                ["enhancements/OSAC-1-x/design.md"], "deadbeef", "Design"
             )
         self.assertIn("Section 19", text)
 
     def test_degraded_revision_content_passed_through_unmodified(self):
         degraded_doc = "---\ntitle: X\n---\n\n## Summary\n\nno test plan section here\n"
         with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=degraded_doc):
-            text = self.hooks._fetch_design_full_text(
-                ["enhancements/OSAC-1-x/design.md"], "deadbeef"
+            text = self.hooks._fetch_doc_full_text(
+                ["enhancements/OSAC-1-x/design.md"], "deadbeef", "Design"
             )
         self.assertIn(degraded_doc, text)
         self.assertNotIn("Test Plan", text)
@@ -860,7 +880,7 @@ class FetchDesignFullTextTests(unittest.TestCase):
             "enhancements/OSAC-2-b/design.md": "design B content",
         }
         with mock.patch.object(self.hooks, "_fetch_file_at_ref", side_effect=lambda p, r: docs[p]):
-            text = self.hooks._fetch_design_full_text(list(docs), "deadbeef")
+            text = self.hooks._fetch_doc_full_text(list(docs), "deadbeef", "Design")
         for path, content in docs.items():
             self.assertIn(f"### File: {path}", text)
             self.assertIn(content, text)
@@ -870,9 +890,9 @@ class FetchDesignFullTextTests(unittest.TestCase):
             return None if path == "enhancements/OSAC-1-a/design.md" else "design B content"
 
         with mock.patch.object(self.hooks, "_fetch_file_at_ref", side_effect=fake_fetch):
-            text = self.hooks._fetch_design_full_text(
+            text = self.hooks._fetch_doc_full_text(
                 ["enhancements/OSAC-1-a/design.md", "enhancements/OSAC-2-b/design.md"],
-                "deadbeef",
+                "deadbeef", "Design",
             )
         self.assertIn("Could not fetch", text)
         self.assertIn("design B content", text)
@@ -926,7 +946,14 @@ class WritePrContextDesignFullTests(unittest.TestCase):
         self.assertFalse((Path(self.tmp) / ".context" / "design-full.txt").exists())
 
     def test_prd_review_does_not_write_design_full_txt(self):
-        with mock.patch.object(self.hooks, "_gh", return_value=""):
+        def fake_gh(args, check=False):
+            if args[:2] == ["pr", "diff"]:
+                return "tiny diff"
+            if any("contents/enhancements/OSAC-1-x/prd.md" in a for a in args):
+                return base64.b64encode(b"full prd content").decode()
+            return ""
+
+        with mock.patch.object(self.hooks, "_gh", side_effect=fake_gh):
             self.hooks.write_pr_context(
                 "EP-1",
                 {
@@ -934,10 +961,106 @@ class WritePrContextDesignFullTests(unittest.TestCase):
                     "_skill_path": "skills/prd-review/SKILL.md",
                     "headRefOid": "deadbeef",
                     "design_doc_paths": [],
+                    "prd_doc_paths": ["enhancements/OSAC-1-x/prd.md"],
                 },
                 mode="resolve", work_dir=self.tmp,
             )
         self.assertFalse((Path(self.tmp) / ".context" / "design-full.txt").exists())
+
+
+class WritePrContextPrdFullTests(unittest.TestCase):
+    """write_pr_context() writes prd-full.txt for prd-review only, sourced
+    from the ticket's already-known prd_doc_paths."""
+
+    def setUp(self):
+        self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_prd_review_writes_prd_full_txt(self):
+        def fake_gh(args, check=False):
+            if args[:2] == ["pr", "diff"]:
+                return "tiny diff"
+            if any("contents/enhancements/OSAC-1-x/prd.md" in a for a in args):
+                return base64.b64encode(b"full prd content").decode()
+            return ""
+
+        with mock.patch.object(self.hooks, "_gh", side_effect=fake_gh):
+            self.hooks.write_pr_context(
+                "EP-1",
+                {
+                    "_skill_name": "prd-review",
+                    "_skill_path": "skills/prd-review/SKILL.md",
+                    "headRefOid": "deadbeef",
+                    "prd_doc_paths": ["enhancements/OSAC-1-x/prd.md"],
+                },
+                mode="resolve", work_dir=self.tmp,
+            )
+        prd_full = (Path(self.tmp) / ".context" / "prd-full.txt").read_text()
+        self.assertIn("full prd content", prd_full)
+        self.assertTrue((Path(self.tmp) / ".context" / "pr-diff.txt").exists())
+
+    def test_prd_review_uses_prd_doc_paths_and_head_sha(self):
+        captured = {}
+
+        def fake_gh(args, check=False):
+            if args[:2] == ["pr", "diff"]:
+                return "tiny diff"
+            if "GET" in args:
+                captured["args"] = args
+                return base64.b64encode(b"full prd content").decode()
+            return ""
+
+        with mock.patch.object(self.hooks, "_gh", side_effect=fake_gh):
+            self.hooks.write_pr_context(
+                "EP-1",
+                {
+                    "_skill_name": "prd-review",
+                    "_skill_path": "skills/prd-review/SKILL.md",
+                    "headRefOid": "cafef00d",
+                    "prd_doc_paths": ["enhancements/OSAC-1-x/prd.md"],
+                },
+                mode="resolve", work_dir=self.tmp,
+            )
+        self.assertIn("repos/test/repo/contents/enhancements/OSAC-1-x/prd.md", captured["args"])
+        self.assertIn("ref=cafef00d", captured["args"])
+
+    def test_prd_review_raises_when_fetch_fails_entirely(self):
+        with mock.patch.object(self.hooks, "_gh", return_value=""):
+            with self.assertRaises(RuntimeError):
+                self.hooks.write_pr_context(
+                    "EP-1",
+                    {
+                        "_skill_name": "prd-review",
+                        "_skill_path": "skills/prd-review/SKILL.md",
+                        "headRefOid": "deadbeef",
+                        "prd_doc_paths": ["enhancements/OSAC-1-x/prd.md"],
+                    },
+                    mode="resolve", work_dir=self.tmp,
+                )
+        self.assertFalse((Path(self.tmp) / ".context" / "prd-full.txt").exists())
+
+    def test_design_review_does_not_write_prd_full_txt(self):
+        def fake_gh(args, check=False):
+            if args[:2] == ["pr", "diff"]:
+                return "tiny diff"
+            if any("contents/enhancements/OSAC-1-x/design.md" in a for a in args):
+                return base64.b64encode(b"full design content").decode()
+            return ""
+
+        with mock.patch.object(self.hooks, "_gh", side_effect=fake_gh):
+            self.hooks.write_pr_context(
+                "EP-1",
+                {
+                    "_skill_name": "design-review",
+                    "_skill_path": "skills/design-review/SKILL.md",
+                    "headRefOid": "deadbeef",
+                    "design_doc_paths": ["enhancements/OSAC-1-x/design.md"],
+                    "prd_doc_paths": [],
+                },
+                mode="resolve", work_dir=self.tmp,
+            )
+        self.assertFalse((Path(self.tmp) / ".context" / "prd-full.txt").exists())
 
 
 class CheckPrStateTagTests(unittest.TestCase):

@@ -77,10 +77,14 @@ def design_doc_filenames(files):
     ]
 
 
+def prd_doc_filenames(files):
+    """Changed-file paths that are PRD documents: prd.md."""
+    return [f for f in files if os.path.basename(f).lower() == "prd.md"]
+
+
 def detect_skills(files):
     skills = []
-    basenames = [os.path.basename(f).lower() for f in files]
-    has_prd = "prd.md" in basenames
+    has_prd = bool(prd_doc_filenames(files))
     has_design = bool(design_doc_filenames(files))
 
     if has_prd:
@@ -142,6 +146,7 @@ def build_ticket_base(pr, head_sha, pr_number, files):
         "jira_key_ambiguous": feature_key_result == "ambiguous",
         "structure_violations": ep_paths.validate_ep_structure(files),
         "design_doc_paths": design_doc_filenames(files),
+        "prd_doc_paths": prd_doc_filenames(files),
     }
 
 

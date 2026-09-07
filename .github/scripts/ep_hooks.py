@@ -207,11 +207,19 @@ class EPHooks:
         diff = self._gh(["pr", "diff", pr_number, "--repo", self.repo])
         (context_dir / "pr-diff.txt").write_text(diff)
 
-        if ticket.get("_skill_name") == "design-review":
-            design_full = self._fetch_design_full_text(
-                ticket.get("design_doc_paths") or [], ticket.get("headRefOid", "")
+        skill_name = ticket.get("_skill_name")
+        if skill_name == "design-review":
+            design_full = self._fetch_doc_full_text(
+                ticket.get("design_doc_paths") or [], ticket.get("headRefOid", ""),
+                "Design",
             )
             (context_dir / "design-full.txt").write_text(design_full)
+        elif skill_name == "prd-review":
+            prd_full = self._fetch_doc_full_text(
+                ticket.get("prd_doc_paths") or [], ticket.get("headRefOid", ""),
+                "PRD",
+            )
+            (context_dir / "prd-full.txt").write_text(prd_full)
 
         skill_path = ticket.get("_skill_path", "")
         skill_file = Path(self.skills_path) / skill_path
@@ -222,10 +230,8 @@ class EPHooks:
             json.dumps(ticket, indent=2, default=str)
         )
 
-    def _fetch_design_full_text(self, paths, head_sha):
-        """Full content of every Design document touched by this PR, at the
-        PR's head commit -- the source of truth for Design scoring, as
-        opposed to pr-diff.txt's diff-only view.
+    def _fetch_doc_full_text(self, paths, head_sha, doc_label):
+        """Full content of every doc_label document at the PR's head commit.
 
         Tolerates individual fetch failures as long as at least one document
         comes through; raises if none do, so the caller fails the review
@@ -246,7 +252,7 @@ class EPHooks:
 
         if fetched == 0:
             raise RuntimeError(
-                f"Could not fetch any Design document at {head_sha or '(no head sha)'} "
+                f"Could not fetch any {doc_label} document at {head_sha or '(no head sha)'} "
                 f"for paths {paths or '(none identified)'}"
             )
         return "\n".join(sections)
@@ -290,8 +296,12 @@ class EPHooks:
         return (
             PROMPT_INJECTION_BOUNDARY +
             self._feature_context_block(ticket) +
-            "Review the document in .context/pr-diff.txt using the review criteria "
-            "in .context/skill-prompt.md.\n\n"
+            "The full resulting content of each PRD document in this PR, at this "
+            "PR's head commit, is in .context/prd-full.txt -- this is the source of "
+            "truth for scoring PRD quality. Review it using the review criteria in "
+            ".context/skill-prompt.md.\n\n"
+            ".context/pr-diff.txt is secondary context showing what this PR changed -- "
+            "use it to understand the change, not as the basis for scoring.\n\n"
             "Apply the review dimensions from skill-prompt.md, then map your assessment "
             "to these 5 scoring criteria:\n\n"
             "- what (0-2): Clear user-facing need? Does the PRD describe a new product "
