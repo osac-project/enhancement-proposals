@@ -46,7 +46,7 @@ OSAC runs VMs on OpenShift using KubeVirt. VM IP addresses exist only within the
 
 The CUDN LocalNet approach (OSAC-1511) was frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support (validated by OSAC-1717 spike). This design delivers single-cluster EVPN bridging as Phase 1, with a constraint that OVN-Kubernetes cannot currently route between separate CUDNs on the same cluster (Connectors feature pending).
 
-**Implementation Context:**  
+**Implementation Context:**
 OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabric + k8s). This design adds the second k8s manager type (`cudn_evpn` alongside existing `cudn_localnet`) and solves the fabric-to-k8s data dependency: fabric manager allocates VNI, k8s manager consumes it to configure CUDN. The current multi-target provisioning evaluates targets sequentially within each reconcile cycle (both can be in-flight simultaneously on AAP); this design adds a gate to ensure the fabric target completes and produces output before the k8s target is evaluated.
 
 ### Goals
@@ -84,7 +84,7 @@ Key resources:
 
 **Actor:** Cloud Infrastructure Admin (prerequisite setup) and Tenant Admin (runtime usage)
 
-**Starting State:** 
+**Starting State:**
 - OCP cluster installed with OVN-Kubernetes, FRR operator, NMState operator
 - VTEP CR exists (defines VTEP IPs for each worker node)
 - BGP underlay configured (workers peer with fabric switches)
@@ -106,23 +106,23 @@ sequenceDiagram
     API->>API: Validate single-subnet constraint
     Note over API: Check NetworkClass k8s_manager,<br/>reject if second subnet
     API-->>Tenant: 201 Created
-    
+
     Controller->>Controller: Dispatch to fabric + k8s managers
     Note over Controller: Sequential: fabric → k8s
-    
+
     Controller->>AAP: Create fabric Job (netris role)
     AAP->>AAP: Provision Netris VNet, allocate VNI
     AAP-->>Controller: Job Complete (VNI in status)
-    
+
     Controller->>Controller: Extract L2 VNI, L3 VNI
     Controller->>K8s: Create k8s Job (cudn_evpn role)<br/>extra_vars: {l2_vni, l3_vni, ...}
-    
+
     K8s->>OVN: Create CUDN (EVPN transport, VNI)
     OVN->>FRR: Auto-update FRRConfiguration (advertiseVNIs)
     OVN-->>K8s: CUDN Ready
     FRR-->>K8s: Routes advertised
     K8s-->>Controller: Job Complete
-    
+
     Controller-->>Tenant: Subnet Provisioned (status: Ready)
 ```
 
@@ -179,11 +179,17 @@ spec:
   ipv4CIDR: 10.0.2.0/24
 ```
 
-When present:
+**Provisioning behavior:**
 - Subnet validation **excludes** this Subnet when counting against single-subnet-per-VirtualNetwork constraint
 - Dispatcher **skips** k8s manager target, only provisions fabric manager
 - Netris role creates VNet under same VPC (VPC created by first Subnet)
 - No CUDN, no namespace, no k8s resources created
+
+**Deletion behavior:**
+- Subnet controller reads annotation during deprovision
+- **Skips k8s manager deprovision** (no CUDN/namespace to delete)
+- Only runs fabric manager deprovision (deletes Netris VNet)
+- VirtualNetwork deletion waits for ALL child Subnets (both with and without annotation) before deleting Netris VPC
 
 
 ## UX Alignment
@@ -202,7 +208,7 @@ Conditional validation in Subnet gRPC `Create()` handler:
 // internal/servers/subnet_server.go
 func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) (*v1.CreateSubnetResponse, error) {
     // ... existing validation ...
-    
+
     // Fetch parent VirtualNetwork to get NetworkClass
     vnetResp, err := s.virtualNetworkServer.Get(ctx, &v1.GetVirtualNetworkRequest{
         Id: req.GetSubnet().GetSpec().GetVirtualNetwork(),
@@ -210,7 +216,7 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
     if err != nil {
         return nil, status.Errorf(codes.Internal, "failed to fetch parent VirtualNetwork: %v", err)
     }
-    
+
     // Fetch NetworkClass to check k8s_manager
     ncResp, err := s.networkClassServer.Get(ctx, &v1.GetNetworkClassRequest{
         Id: vnetResp.GetVirtualNetwork().GetSpec().GetNetworkClass(),
@@ -218,7 +224,7 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
     if err != nil {
         return nil, status.Errorf(codes.Internal, "failed to fetch NetworkClass: %v", err)
     }
-    
+
     // Enforce single-subnet constraint if k8s manager declares capability
     k8sManager := ncResp.GetNetworkClass().GetKubernetesManager()
     if k8sManager != "" {
@@ -239,7 +245,7 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
                 if err != nil {
                     return nil, status.Errorf(codes.Internal, "failed to list existing subnets: %v", err)
                 }
-                
+
                 // Count only subnets that will trigger k8s manager provisioning
                 count := 0
                 for _, subnet := range listResp.GetSubnets() {
@@ -247,7 +253,7 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
                         count++
                     }
                 }
-                
+
                 if count > 0 {
                     return nil, status.Errorf(codes.FailedPrecondition,
                         "NetworkClass with k8s_manager %q supports only one subnet per VirtualNetwork. "+
@@ -261,7 +267,7 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
             }
         }
     }
-    
+
     // ... continue with normal create flow ...
 }
 ```
@@ -303,7 +309,7 @@ func RunMultiTargetProvisioningLifecycle(
 ) error {
     // Build dependency graph
     deps := buildDependencyGraph(targets)
-    
+
     for _, target := range targets {
         // Gate dependent targets on their dependency's completion
         if target.DependsOn != "" {
@@ -312,7 +318,7 @@ func RunMultiTargetProvisioningLifecycle(
                 // Dependency not complete yet - skip this target, will eval next reconcile
                 continue
             }
-            
+
             // Extract output vars from dependency's ConfigMap and merge
             if target.ExtraVarsFrom != "" {
                 extraVars, err := extractExtraVarsFromConfigMap(ctx, target.ExtraVarsFrom)
@@ -325,13 +331,13 @@ func RunMultiTargetProvisioningLifecycle(
                 }
             }
         }
-        
+
         // Run provisioning for this target (existing logic)
         if err := runTargetProvisioningLifecycle(ctx, target, callbacks); err != nil {
             return err
         }
     }
-    
+
     return nil
 }
 
@@ -341,14 +347,14 @@ func extractExtraVarsFromConfigMap(ctx context.Context, configMapName string) (m
     if err := client.Get(ctx, client.ObjectKey{Namespace: "osac", Name: configMapName}, cm); err != nil {
         return nil, err
     }
-    
+
     // Parse JSON data from ConfigMap
     // Fabric manager writes: {"l2_vni": 14, "l3_vni": 11, "fabric_reserved_range": "200.200.1.1/32,200.200.1.100-200.200.1.200"}
     var extraVars map[string]interface{}
     if err := json.Unmarshal([]byte(cm.Data["extra_vars"]), &extraVars); err != nil {
         return nil, fmt.Errorf("failed to parse ConfigMap data: %w", err)
     }
-    
+
     return extraVars, nil
 }
 ```
@@ -364,16 +370,16 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req reconcile.Request)
     if err := r.Get(ctx, req.NamespacedName, subnet); err != nil {
         return reconcile.Result{}, client.IgnoreNotFound(err)
     }
-    
+
     // Dispatch to fabric + k8s managers
     plan, err := r.Dispatcher.Dispatch(ctx, "Subnet", getNetworkClassID(subnet))
     if err != nil {
         return reconcile.Result{}, err
     }
-    
+
     // Check for skip-k8s-manager annotation
     skipK8sManager := subnet.GetAnnotations()["osac.openshift.io/skip-k8s-manager"] == "true"
-    
+
     // Build targets with dependencies
     var targets []provisioning.JobTarget
     for _, dispatchTarget := range plan.Targets {
@@ -381,14 +387,14 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req reconcile.Request)
         if dispatchTarget.Role == dispatcher.K8sManager && skipK8sManager {
             continue
         }
-        
+
         target := provisioning.JobTarget{
             Name:         dispatchTarget.TemplateName,
             TemplateName: dispatchTarget.TemplateName,
             ExtraVars:    dispatchTarget.ExtraVars,
             // ... other fields ...
         }
-        
+
         // If this is a k8s manager and a fabric manager exists, add dependency
         if dispatchTarget.Role == dispatcher.K8sManager {
             fabricTarget := plan.GetFabricTarget()
@@ -398,15 +404,15 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req reconcile.Request)
                 // Fabric manager will create this ConfigMap with VNI data
             }
         }
-        
+
         // If this is a fabric manager, specify output ConfigMap
         if dispatchTarget.Role == dispatcher.FabricManager {
             target.ExtraVarsConfigMap = fmt.Sprintf("subnet-%s-fabric-output", subnet.GetName())
         }
-        
+
         targets = append(targets, target)
     }
-    
+
     // Provisioning package handles ordering generically
     return provisioning.RunMultiTargetProvisioningLifecycle(ctx, targets, r.buildCallbacks(subnet))
 }
@@ -737,14 +743,14 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subn
     if err := r.List(ctx, vmList, client.InNamespace(namespace)); err != nil {
         return reconcile.Result{}, err
     }
-    
+
     if len(vmList.Items) > 0 {
         r.Recorder.Event(subnet, corev1.EventTypeWarning, "DeletionBlocked",
             fmt.Sprintf("Cannot delete Subnet while %d VMs exist in namespace %s. Delete VMs first.", len(vmList.Items), namespace))
         // Requeue - ComputeInstance controller will delete VMs when their CRs are deleted
         return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
     }
-    
+
     // Safe to proceed - no VMs in namespace
     // Run deprovision job (CUDN delete → namespace delete)
     // Then trigger fabric deprovision (Netris VNet delete) only after CUDN fully deleted
@@ -759,6 +765,44 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subn
 - **Fabric deprovision after CUDN deleted** mitigates VNI reuse race (Netris may reuse VNI if VNet deleted while CUDN still exists)
 - Namespace delete safe after CUDN gone (no finalizer race)
 - **Stale VRF recovery (if needed):** See Support Procedures — manual troubleshooting step, not automated (ovnkube-node restart affects all VMs on node, too disruptive for routine delete)
+
+**VirtualNetwork Deletion with Mixed Subnets:**
+
+When a VirtualNetwork has multiple Subnets (some with `skip-k8s-manager` annotation, some without), deletion must follow this order:
+
+1. **User deletes VirtualNetwork CR**
+2. **VirtualNetwork controller blocks deletion** until all child Subnets are deleted (enforced via Kubernetes finalizer)
+3. **Subnets must be deleted individually first:**
+   - Subnet WITHOUT annotation: k8s manager deprovision (CUDN + namespace) → fabric deprovision (Netris VNet)
+   - Subnet WITH `skip-k8s-manager`: fabric deprovision only (Netris VNet)
+4. **After all Subnets deleted:** VirtualNetwork finalizer clears, fabric manager deprovision runs (deletes Netris VPC)
+
+**Critical constraint:** Netris API rejects VPC deletion if any VNets exist under it. The VirtualNetwork fabric manager playbook must validate no child VNets exist before deleting VPC:
+
+```yaml
+# osac-aap netris role: tasks/delete_virtual_network.yaml
+- name: Check for orphaned VNets before VPC deletion
+  netris.controller.vnet_info:
+    vpc: "{{ vpc_name }}"
+  register: vnet_list
+
+- name: Fail if VNets still exist (indicates Subnet finalizer didn't run)
+  ansible.builtin.fail:
+    msg: "Cannot delete VPC {{ vpc_name }} - {{ vnet_list.vnets | length }} VNets still exist. Delete all Subnets first."
+  when: vnet_list.vnets | length > 0
+
+- name: Delete Netris VPC
+  netris.controller.vpc:
+    name: "{{ vpc_name }}"
+    state: absent
+```
+
+**Kubernetes finalizer logic** ensures proper ordering:
+- VirtualNetwork has finalizer `osac.openshift.io/fabric-resources`
+- Controller checks for child Subnets (via label selector `osac.openshift.io/virtual-network: <vn-name>`)
+- If Subnets exist → requeue, do not remove finalizer
+- After all Subnets deleted → run fabric deprovision → remove finalizer
+- ✅ Works with mixed subnets (annotation checked per-Subnet during their own deletion)
 
 **FRRConfiguration Handling:**
 
@@ -1311,7 +1355,7 @@ If a VRF device persists on a worker node after CUDN deletion:
    ```bash
    # Option 1: Restart ovnkube-node pod on affected node (impacts all VMs on node)
    oc delete pod -n openshift-ovn-kubernetes -l app=ovnkube-node --field-selector spec.nodeName=<node-name>
-   
+
    # Option 2: Direct VRF deletion (less disruptive, requires node access)
    oc debug node/<node-name>
    chroot /host
@@ -1344,4 +1388,3 @@ None. All infrastructure (OCP cluster, Netris fabric, FRR operator) is assumed t
 ---
 
 **End of Design Document**
-
