@@ -78,8 +78,7 @@ def design_doc_filenames(files):
 
 
 def prd_doc_filenames(files):
-    """Changed-file paths that are PRD documents: prd.md. Same match
-    detect_skills() uses to decide whether prd-review runs at all."""
+    """Changed-file paths that are PRD documents: prd.md."""
     return [f for f in files if os.path.basename(f).lower() == "prd.md"]
 
 

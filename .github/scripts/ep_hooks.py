@@ -231,9 +231,7 @@ class EPHooks:
         )
 
     def _fetch_doc_full_text(self, paths, head_sha, doc_label):
-        """Full content of every `doc_label` document (e.g. "Design", "PRD")
-        touched by this PR, at the PR's head commit -- the source of truth
-        for scoring, as opposed to pr-diff.txt's diff-only view.
+        """Full content of every doc_label document at the PR's head commit.
 
         Tolerates individual fetch failures as long as at least one document
         comes through; raises if none do, so the caller fails the review

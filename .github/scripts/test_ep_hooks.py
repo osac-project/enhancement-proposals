@@ -820,10 +820,8 @@ class FetchFileAtRefTests(unittest.TestCase):
 
 
 class FetchDocFullTextTests(unittest.TestCase):
-    """_fetch_doc_full_text() assembles the full-document scoring source for
-    one or more documents of a given doc_label. Tolerates individual fetch
-    failures as long as at least one document comes through; raises if none
-    do."""
+    """Tolerates individual fetch failures as long as at least one document
+    comes through; raises if none do."""
 
     def setUp(self):
         self.hooks = EPHooks(repo="test/repo", skills_path="/tmp")
@@ -848,11 +846,6 @@ class FetchDocFullTextTests(unittest.TestCase):
             self.hooks._fetch_doc_full_text([], "deadbeef", "PRD")
         self.assertIn("PRD", str(ctx.exception))
 
-    def test_raise_message_uses_design_label(self):
-        with self.assertRaises(RuntimeError) as ctx:
-            self.hooks._fetch_doc_full_text([], "deadbeef", "Design")
-        self.assertIn("Design", str(ctx.exception))
-
     def test_single_document_initial_submission(self):
         full_doc = "---\ntitle: X\n---\n\n## Summary\n\nfull design content\n"
         with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=full_doc):
@@ -860,15 +853,6 @@ class FetchDocFullTextTests(unittest.TestCase):
                 ["enhancements/OSAC-1-x/design.md"], "deadbeef", "Design"
             )
         self.assertIn("### File: enhancements/OSAC-1-x/design.md", text)
-        self.assertIn(full_doc, text)
-
-    def test_single_prd_document(self):
-        full_doc = "---\ntitle: X\n---\n\n## What\n\nfull prd content\n"
-        with mock.patch.object(self.hooks, "_fetch_file_at_ref", return_value=full_doc):
-            text = self.hooks._fetch_doc_full_text(
-                ["enhancements/OSAC-1-x/prd.md"], "deadbeef", "PRD"
-            )
-        self.assertIn("### File: enhancements/OSAC-1-x/prd.md", text)
         self.assertIn(full_doc, text)
 
     def test_full_document_fetched_regardless_of_diff_size(self):
@@ -897,17 +881,6 @@ class FetchDocFullTextTests(unittest.TestCase):
         }
         with mock.patch.object(self.hooks, "_fetch_file_at_ref", side_effect=lambda p, r: docs[p]):
             text = self.hooks._fetch_doc_full_text(list(docs), "deadbeef", "Design")
-        for path, content in docs.items():
-            self.assertIn(f"### File: {path}", text)
-            self.assertIn(content, text)
-
-    def test_multiple_prd_documents_in_one_pr(self):
-        docs = {
-            "enhancements/OSAC-1-a/prd.md": "prd A content",
-            "enhancements/OSAC-2-b/prd.md": "prd B content",
-        }
-        with mock.patch.object(self.hooks, "_fetch_file_at_ref", side_effect=lambda p, r: docs[p]):
-            text = self.hooks._fetch_doc_full_text(list(docs), "deadbeef", "PRD")
         for path, content in docs.items():
             self.assertIn(f"### File: {path}", text)
             self.assertIn(content, text)

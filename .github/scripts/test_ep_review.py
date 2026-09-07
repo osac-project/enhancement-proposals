@@ -158,10 +158,6 @@ class DesignDocFilenamesTests(unittest.TestCase):
 
 
 class PrdDocFilenamesTests(unittest.TestCase):
-    """prd_doc_filenames() feeds both detect_skills() (has_prd) and
-    build_ticket_base()'s prd_doc_paths -- single source of truth for
-    "which changed files are PRD documents"."""
-
     def test_prd_md_matched(self):
         files = ["enhancements/OSAC-1-x/design.md", "enhancements/OSAC-1-x/prd.md"]
         self.assertEqual(er.prd_doc_filenames(files), ["enhancements/OSAC-1-x/prd.md"])
@@ -187,8 +183,8 @@ class PrdDocFilenamesTests(unittest.TestCase):
 
 
 class DetectSkillsPrdDefinitionTests(unittest.TestCase):
-    """detect_skills() must use prd_doc_filenames() as its source of truth
-    for PRD detection -- not a second, independent basename check."""
+    """detect_skills() must use prd_doc_filenames(), not a separate basename
+    check, as its source of truth for PRD detection."""
 
     def test_prd_detected_via_prd_doc_filenames(self):
         files = ["enhancements/OSAC-1-x/prd.md"]
@@ -426,9 +422,8 @@ class RunReviewRealSeamTests(unittest.TestCase):
 
         self.hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=True)
 
-        # write_pr_context() shells out to the real `gh` CLI: return decodable
-        # content for the PRD contents-API call so it doesn't raise, "" for
-        # everything else (e.g. `pr diff`, which is fine to be empty here).
+        # write_pr_context() fetches the PRD's full content via gh; anything
+        # else (e.g. pr diff) can be empty without failing the run.
         prd_full_doc = base64.b64encode(b"# PRD\n\nfull prd content\n").decode()
 
         def fake_gh(args, check=False):
