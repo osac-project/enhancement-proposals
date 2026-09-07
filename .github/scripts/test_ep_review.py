@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import shutil
@@ -156,6 +157,59 @@ class DesignDocFilenamesTests(unittest.TestCase):
         )
 
 
+class PrdDocFilenamesTests(unittest.TestCase):
+    """prd_doc_filenames() feeds both detect_skills() (has_prd) and
+    build_ticket_base()'s prd_doc_paths -- single source of truth for
+    "which changed files are PRD documents"."""
+
+    def test_prd_md_matched(self):
+        files = ["enhancements/OSAC-1-x/design.md", "enhancements/OSAC-1-x/prd.md"]
+        self.assertEqual(er.prd_doc_filenames(files), ["enhancements/OSAC-1-x/prd.md"])
+
+    def test_case_insensitive_basename(self):
+        files = ["enhancements/OSAC-1-x/PRD.md"]
+        self.assertEqual(er.prd_doc_filenames(files), files)
+
+    def test_unrelated_filenames_not_matched(self):
+        files = ["enhancements/OSAC-1-x/design.md", "README.md", "guidelines/prd_template.md"]
+        self.assertEqual(er.prd_doc_filenames(files), [])
+
+    def test_multiple_prd_docs_multi_feature_pr(self):
+        files = [
+            "enhancements/OSAC-1-a/prd.md",
+            "enhancements/OSAC-2-b/design.md",
+            "enhancements/OSAC-2-b/prd.md",
+        ]
+        self.assertEqual(
+            er.prd_doc_filenames(files),
+            ["enhancements/OSAC-1-a/prd.md", "enhancements/OSAC-2-b/prd.md"],
+        )
+
+
+class DetectSkillsPrdDefinitionTests(unittest.TestCase):
+    """detect_skills() must use prd_doc_filenames() as its source of truth
+    for PRD detection -- not a second, independent basename check."""
+
+    def test_prd_detected_via_prd_doc_filenames(self):
+        files = ["enhancements/OSAC-1-x/prd.md"]
+        self.assertEqual(
+            er.detect_skills(files),
+            [("prd-review", "skills/prd-review/SKILL.md")],
+        )
+
+    def test_both_detected_for_prd_and_design(self):
+        files = ["enhancements/OSAC-1-x/prd.md", "enhancements/OSAC-1-x/design.md"]
+        skills = er.detect_skills(files)
+        self.assertEqual(
+            {name for name, _ in skills}, {"prd-review", "design-review"},
+        )
+
+    def test_no_prd_when_prd_doc_filenames_empty(self):
+        files = ["enhancements/OSAC-1-x/design.md"]
+        skills = er.detect_skills(files)
+        self.assertNotIn("prd-review", [name for name, _ in skills])
+
+
 class BuildTicketBaseTests(unittest.TestCase):
     """Real file-list shapes from #168/#172/#173/#174 — filenames only, no
     diff content needed for Phase A."""
@@ -169,6 +223,7 @@ class BuildTicketBaseTests(unittest.TestCase):
         self.assertEqual(ticket["jira_key"], "OSAC-1589")
         self.assertFalse(ticket["jira_key_ambiguous"])
         self.assertEqual(ticket["structure_violations"], [])
+        self.assertEqual(ticket["prd_doc_paths"], files)
 
     def test_pr_172_single_key_no_violations(self):
         files = ["enhancements/OSAC-2872-storage-control-plane/design.md"]
@@ -180,6 +235,7 @@ class BuildTicketBaseTests(unittest.TestCase):
         self.assertFalse(ticket["jira_key_ambiguous"])
         self.assertEqual(ticket["structure_violations"], [])
         self.assertEqual(ticket["design_doc_paths"], files)
+        self.assertEqual(ticket["prd_doc_paths"], [])
 
     def test_pr_173_key_derived_from_path_not_title(self):
         # Real case: PR title references OSAC-2645, but the touched EP
@@ -230,11 +286,15 @@ class BuildTicketBaseTests(unittest.TestCase):
         self.assertIsNone(ticket["jira_key"])
         self.assertTrue(ticket["jira_key_ambiguous"])
         self.assertEqual(ticket["structure_violations"], [])
-        # Multi-feature PR: every touched Design document is carried through,
-        # even though the Feature key itself is ambiguous.
+        # Multi-feature PR: every touched Design/PRD document is carried
+        # through, even though the Feature key itself is ambiguous.
         self.assertEqual(
             ticket["design_doc_paths"],
             [f for f in files if er.os.path.basename(f).lower() in ("readme.md", "design.md")],
+        )
+        self.assertEqual(
+            ticket["prd_doc_paths"],
+            [f for f in files if er.os.path.basename(f).lower() == "prd.md"],
         )
 
     def test_missing_key_prefix_surfaces_as_structure_violation(self):
@@ -365,8 +425,18 @@ class RunReviewRealSeamTests(unittest.TestCase):
         self.work_dir = Path(self.tmp) / "workdir-prd-review"
 
         self.hooks = EPHooks(repo="test/repo", skills_path="/tmp", shadow=True)
-        # write_pr_context() otherwise shells out to the real `gh` CLI.
-        mock.patch.object(self.hooks, "_gh", return_value="").start()
+
+        # write_pr_context() shells out to the real `gh` CLI: return decodable
+        # content for the PRD contents-API call so it doesn't raise, "" for
+        # everything else (e.g. `pr diff`, which is fine to be empty here).
+        prd_full_doc = base64.b64encode(b"# PRD\n\nfull prd content\n").decode()
+
+        def fake_gh(args, check=False):
+            if any("contents/enhancements/OSAC-1589-vm-worker-caas/prd.md" in a for a in args):
+                return prd_full_doc
+            return ""
+
+        mock.patch.object(self.hooks, "_gh", side_effect=fake_gh).start()
         self.addCleanup(mock.patch.stopall)
 
         self.captured = {}
@@ -414,6 +484,7 @@ class RunReviewRealSeamTests(unittest.TestCase):
             "headRefOid": "abc12345", "labels": [],
             "jira_key": "OSAC-1589", "jira_key_ambiguous": False,
             "structure_violations": [],
+            "prd_doc_paths": ["enhancements/OSAC-1589-vm-worker-caas/prd.md"],
         }
 
         er.run_review(
@@ -438,6 +509,7 @@ class RunReviewRealSeamTests(unittest.TestCase):
             "headRefOid": "abc12345", "labels": [],
             "jira_key": None, "jira_key_ambiguous": True,
             "structure_violations": ["some violation"],
+            "prd_doc_paths": ["enhancements/OSAC-1589-vm-worker-caas/prd.md"],
         }
 
         er.run_review(
