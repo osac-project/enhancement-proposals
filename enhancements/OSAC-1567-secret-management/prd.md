@@ -13,7 +13,9 @@ Credentials across OSAC services — cluster kubeconfigs, identity provider secr
 ## In Scope
 
 - Applies to all OSAC services (BMaaS, CaaS, VMaaS, MaaS, Enclave) — any service that creates or consumes credentials
-- Uniform secret management across all OSAC services (CLI and API)
+- Uniform secret management across all OSAC services (UI, CLI, and API)
+- Full Secret management through the UI, including create, list, view metadata, update, and delete operations subject to the user's permissions
+- Secret pickers in UI workflows for resources that accept Secret references, including Identity Provider client secrets and Cluster pull secrets
 - Pluggable secret backends, so cloud providers can bring their own secret store
 - Encrypted storage of tenant and platform credentials at rest
 - On-demand credential retrieval for provisioned resources (e.g., cluster kubeconfigs, admin passwords)
@@ -22,12 +24,11 @@ Credentials across OSAC services — cluster kubeconfigs, identity provider secr
 - Tenant-scoped privilege isolation — OSAC limits its access to only a tenant's secrets when operating on that tenant's behalf
 - Installation — cloud provider must deploy and configure a Vault-compatible secret store as a prerequisite
 - E2E testing — secret CRUD, automatic secret creation during provisioning, and tenant isolation require coverage
-- Documentation — user guides for secret management CLI/API workflows per persona; API reference
+- Documentation — user guides for secret management UI, CLI, and API workflows per persona; API reference
 
 ## Out of Scope
 
 - Secret rotation automation — users can manually update secrets, but automated rotation workflows are not in scope
-- UI — secret management is CLI and API only for 0.2
 
 ## User Stories
 
@@ -41,16 +42,18 @@ Credentials across OSAC services — cluster kubeconfigs, identity provider secr
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create and manage secrets within my organization (e.g., OIDC client secrets for identity provider integration), so that my team's credentials are centrally managed.
+- As a Tenant Admin, I want to create and manage secrets within my organization (e.g., OIDC client secrets for identity provider integration) through the UI, CLI, or API, so that my team's credentials are centrally managed.
 - As a Tenant Admin, I want to control which users can access secrets through RBAC, so that I can enforce credential access policies consistent with other OSAC resources.
+- As a Tenant Admin, I want to select an existing Secret when configuring an Identity Provider or another resource that accepts a Secret reference, so that I can reuse centrally managed credentials without exposing their values.
 
 ### Tenant User
 
-- As a Tenant User, I want to create secrets (e.g., SSH key pairs, cloud-init credentials) and reference them when provisioning resources so that I can manage my credentials in one place.
+- As a Tenant User, I want to create secrets (e.g., SSH key pairs, cloud-init credentials) through the UI, CLI, or API and reference them when provisioning resources so that I can manage my credentials in one place.
 - As a Tenant User, I want to retrieve credentials for provisioned resources (e.g., cluster kubeconfigs, admin passwords) through the same secret interface I use for my own secrets, so that credential access is consistent regardless of how the secret was created.
-- As a Tenant User, I want to list my secrets and see metadata without exposing the actual secret data, so that I can browse credentials safely.
+- As a Tenant User, I want to list my secrets and see metadata through the UI without exposing the actual secret data, so that I can browse credentials safely.
 - As a Tenant User, I want to update the value of a secret I own so that I can rotate credentials without recreating resource references.
-- As a Tenant User, I want to delete a secret I no longer need so that stale credentials do not persist in the system.
+- As a Tenant User, I want to delete a secret I no longer need through the UI, CLI, or API so that stale credentials do not persist in the system.
+- As a Tenant User, I want to select an existing Secret when creating or editing a Cluster or another resource that accepts a Secret reference, so that I can provide credentials through the same UI workflow without copying secret values.
 
 ## Assumptions
 
