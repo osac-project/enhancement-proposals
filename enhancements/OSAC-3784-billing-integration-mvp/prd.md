@@ -40,24 +40,14 @@ This MVP defines what OSAC owns at the seam between its resource lifecycle and a
 
 ## Out of Scope
 
-- **Payment processing and gateway integration** — OSAC surfaces the billing provider's draft invoices for review and export; payment collection and PCI compliance are handled externally.
-- **Quota enforcement and budget alerts** — tracked separately as OSAC-4220 (Quota Foundation).
-- **Workload-level metering** — OSAC meters resources it provisions, not workloads running inside tenant clusters.
-- **Billing provider UI** — the billing provider's own administration interface; this PRD covers OSAC-side surfaces only. Functionality native to the billing provider (invoicing, tax, payment, refunds) is delegated to it.
-- **Trial, promotional, and ad-hoc credits, refunds, and adjustments** — granted and managed in the billing provider's own interface. The billing provider holds any credit balance and applies it against rated charges; OSAC neither grants credits nor computes the offset (see Assumptions), and does not provide a credit-granting UI.
-- **Per-user cost attribution and user wallets** — the MVP attributes cost at tenant and project scope only. Per-user consumption views and per-user prepaid wallets are a known future need and are tracked separately.
-- **Prepaid and subscription billing models** — the MVP bills tenants on a pay-as-you-go basis (charges accrue into a draft invoice per billing period). Per-tenant prepaid balances and recurring subscription models (the osac-ux prototype's billing-model selector) are deferred. Per-tenant enforcement policy on billing-system unavailability — for example, blocking provisioning to protect a prepaid balance — is deferred with prepaid wallets; the MVP's resilience guarantee (provisioning is never blocked) applies uniformly to all tenants.
-- **Reseller and affiliate billing** — affiliate/reseller attribution and reseller-specific pricing (the osac-ux prototype's affiliate identifier) are deferred.
-- **MaaS billing** — depends on MaaS metering, which is not yet available; tracked independently (OSAC-3794). It does not gate this MVP.
-- **Multi-currency billing** — each billing account uses a single immutable base currency. Billing tenants in different currencies is achieved by provisioning separate billing accounts; native multi-currency per account, cross-currency handling (OSAC-3790), and reseller/multi-region local-currency billing, are deferred.
-- **Multi-provider per deployment** — each OSAC deployment uses one billing provider. Per-tenant provider selection is deferred.
-- **Historical data replay across a provider switch** — switching the billing provider takes effect from the switch point forward at a billing-period boundary; OSAC does not replay prior usage into the new provider, and historical records remain with the previous provider. Because OSAC does not mirror billing data, cost and invoice views for periods before the switch — including any then-open period and its draft invoice — remain available only while the previous provider stays reachable and within its retention window; OSAC neither transfers that history to the new provider nor guarantees a unified pre/post-switch view.
-- **Rate and rate-card authoring** — defining rates, organizing them into rate cards, and onboarding a tenant's billing terms are performed in the billing system, not OSAC. OSAC provides no rate-authoring surface and is agnostic to rate-card structure and cardinality.
-- **Advanced and per-tenant pricing models** — tiered, volume, promotional, and other advanced pricing, and per-tenant rate differentiation, are handled in the billing system (OSAC-3792 is closed; this capability is delivered there, not as an OSAC Feature).
-- **Region-based billing and data residency** — assigning a tenant a region that determines tax jurisdiction, e-invoicing format, regulatory framework, and per-region data residency is handled in the billing system (OSAC-3798 is closed; delivered there, not as an OSAC Feature). The tenant-to-billing-account model established here must not preclude assigning a region attribute to a tenant later without re-provisioning its billing account.
-- **Bulk billing operations** — bulk recalculation and bulk invoice export are deferred.
-- **Catalog item pricing enrichment** — enriching catalog items with live prices from the billing system is a separate Feature (OSAC-3793).
-- **Billing for services beyond VMaaS and CaaS** — BMaaS (OSAC-3795), Storage (OSAC-3796), and Networking (OSAC-3797) billing activate via separate Features as metering lands. MaaS (OSAC-3794) is covered by the MaaS-billing item above.
+- **Payment and provider-native finance operations** — payment processing, tax, invoicing administration, credits, refunds, adjustments, and the billing provider's own UI remain external. OSAC only reviews and exports draft invoices.
+- **Quota, budget, and alternative billing models** — quota enforcement, budget alerts (OSAC-4220), per-user wallets, prepaid, subscription, reseller, and affiliate billing are deferred.
+- **Advanced pricing and rate authoring** — OSAC does not author rates or rate cards; tiered, volume, promotional, and per-tenant pricing are handled in the billing system (OSAC-3792).
+- **Additional services** — billing for MaaS (OSAC-3794), BMaaS (OSAC-3795), Storage (OSAC-3796), and Networking (OSAC-3797) is deferred until their metering is available.
+- **Additional currencies and regions** — each billing account has one immutable base currency. Multi-currency, regional tax and e-invoicing, and data residency are handled by the billing system (OSAC-3790 and OSAC-3798).
+- **Workload metering and bulk operations** — OSAC meters provisioned resources, not workloads inside tenant clusters; bulk recalculation and invoice export are deferred.
+- **Provider migration history** — a provider switch takes effect at a billing-period boundary. OSAC does not replay prior usage, transfer historical data, or guarantee a unified pre/post-switch view; historical data remains subject to the previous provider's availability and retention policy.
+- **Catalog pricing enrichment and multi-provider deployments** — live catalog pricing (OSAC-3793) and selecting different providers per tenant are deferred.
 
 ## User Stories
 
