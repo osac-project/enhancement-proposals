@@ -62,6 +62,7 @@ OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabri
 
 - Multi-cluster VM placement (deferred to OSAC-3667 Phase 2)
 - Inter-subnet L3 routing between VMs on same cluster (requires OVN Connectors)
+- Multiple subnets per VirtualNetwork with multi-NIC VMs (deferred to Phase 2 when OVN Connectors is available — will enable VMs with multiple NICs, one per subnet)
 - IPv6 or dual-stack support (Phase 1 is IPv4-only)
 - Automatic gateway MAC coordination (manual prerequisite)
 - Automatic VTEP provisioning (manual prerequisite)
@@ -1074,7 +1075,7 @@ Cloud Infrastructure Admin must configure VTEP, FRRConfiguration, BGP underlay, 
 
 Tenants cannot create multiple Subnets under one VirtualNetwork when using `cudn_evpn` k8s manager. Must create separate VirtualNetworks for each Subnet.
 
-**Trade-off justification:** OVN Connectors feature is pending. Phase 1 delivers single-cluster EVPN bridging; Phase 2 adds inter-subnet routing.
+**Trade-off justification:** OVN Connectors feature is pending. Phase 1 delivers single-cluster EVPN bridging; Phase 2 (when OVN Connectors is available) will enable multiple subnets per VirtualNetwork with inter-subnet routing and multi-NIC VMs (one NIC per subnet).
 
 **Sequential Provisioning Latency:**
 
@@ -1270,7 +1271,7 @@ Graduation criteria will be defined when targeting a release. Expected stages:
 
 - **Dev Preview (0.3):** Single-cluster EVPN bridging with manual prerequisites, documented installation guide, E2E test in CI
 - **Tech Preview (0.4):** Multi-cluster support (OSAC-3667 Phase 2), gateway MAC auto-coordination, VTEP automation
-- **GA (0.5+):** IPv6/dual-stack support, OVN Connectors integration (multi-subnet per VirtualNetwork), production SLA
+- **GA (0.5+):** IPv6/dual-stack support, OVN Connectors integration (multi-subnet per VirtualNetwork with multi-NIC VMs), production SLA
 
 Success signals for GA:
 - 3+ customer deployments in production
