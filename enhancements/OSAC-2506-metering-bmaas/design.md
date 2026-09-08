@@ -142,12 +142,12 @@ sequenceDiagram
     KP->>K: publish → osac.metering.lifecycle (1 record)
 
     FS->>WC: OBJECT_DELETED
-    WC->>SP: read is_billable=true, billable_since
-    Note right of WC: Both meters stop
-    WC->>KP: osac.resource.suspended.v1 (meter_type=allocation, duration_seconds)
-    WC->>KP: osac.resource.suspended.v1 (meter_type=consumption, duration_seconds)
+    WC->>SP: read allocation and consumption interval timestamps
+    Note right of WC: Close each active meter independently
+    WC->>KP: osac.resource.suspended.v1 (meter_type=allocation, duration_seconds; if allocation active)
+    WC->>KP: osac.resource.suspended.v1 (meter_type=consumption, duration_seconds; if consumption active)
     WC->>KP: osac.resource.deleted.v1
-    KP->>K: publish → osac.metering.lifecycle (3 records)
+    KP->>K: publish → osac.metering.lifecycle (up to 3 records)
     WC->>SP: delete(resource_id)
 ```
 
@@ -157,7 +157,7 @@ Key observations:
 - `RUNNING` → `STOPPING` produces one `suspended.v1` (consumption stops; allocation continues — no event needed)
 - `STOPPED` → `RUNNING` produces one `resumed.v1` (consumption resumes; allocation unchanged)
 - Any transition into `FAILED` suspends every active meter; a host in `FAILED` state produces no allocation or consumption heartbeats and accrues no charges
-- Deletion produces two `suspended.v1` events (both meters close their intervals) plus one `deleted.v1` (audit)
+- `OBJECT_DELETED` closes each currently active meter independently, then produces one `deleted.v1` audit event. A meter that is already inactive (for example after `FAILED`) produces no synthetic suspension.
 - Heartbeats vary by state: `RUNNING` produces two (allocation + consumption), `STOPPED`/`STARTING`/`STOPPING` produce one (allocation only). Allocation heartbeat duration is measured from `BillableSince`; a `RUNNING` consumption heartbeat is measured from `ComponentBillableSince["consumption"]`.
 
 ### API Extensions
@@ -235,6 +235,8 @@ The resolver performs exact `(from, to)` lookups. The following is the complete 
 **Consumption transition table** — billable state: `RUNNING` only. It registers the same complete pair set above. `PROVISIONING`, `STOPPED`, `STARTING`, and `FAILED` → `RUNNING` open a consumption interval; every `RUNNING` → `STOPPING`, `STOPPED`, `FAILED`, or `DELETING` pair closes it; all remaining registered pairs are `Skip`. The `RUNNING` → `STOPPING` boundary is intentional: consumption ends when the stop operation begins, while allocation continues through the transient state.
 
 The decomposer evaluates both tables for each Watch event and produces one CloudEvent per meter that crosses a billing boundary. Transitions where neither meter crosses a boundary (_e.g._, `STOPPED` → `STOPPED`) produce no lifecycle events. Every lifecycle event receives the transition timestamp and the active interval for its own meter; the allocation and consumption intervals are never calculated from one shared timestamp.
+
+`OBJECT_CREATED` and `OBJECT_DELETED` are fixed resource-level events and bypass the transition table. `OBJECT_DELETED` must nevertheless close active meter intervals before removing the projection row: it emits an allocation suspension only when `BillableSince` is present, a consumption suspension only when `ComponentBillableSince["consumption"]` is present, and then the audit deletion event. The suspension IDs are `{baseID}/allocation` and `{baseID}/consumption`, and the deletion ID is `{baseID}`. Replayed or duplicated deletion notifications therefore resolve to the same IDs and cannot create duplicate billing intervals. A preceding `DELETING` update is not required for closure.
 
 ```go
 type BMaaSMeterIntervals struct {
@@ -557,6 +559,8 @@ The Part 1 design flags `status.state_transition_time` as a P1 prerequisite for 
   - `STOPPED` → `DELETING`: 1 event (allocation suspended)
   - `RUNNING` → `FAILED`: 2 events (allocation suspended + consumption suspended)
   - `FAILED` → `RUNNING`: 2 events (allocation started + consumption started)
+  - `OBJECT_DELETED` with both intervals active: 2 suspensions plus 1 deletion audit event, with stable IDs on redelivery
+  - `OBJECT_DELETED` with no active intervals: deletion audit event only
   - `STOPPED` → `STOPPED`: 0 events
 - Heartbeat decomposer produces 2 heartbeats for `RUNNING`, 1 for `STOPPED`/`STARTING`/`STOPPING`, and 0 for `FAILED`
 - Reconciliation billability checker uses allocation-billable states
