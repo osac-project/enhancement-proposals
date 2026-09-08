@@ -21,9 +21,10 @@ or UI. This blocks several real-world workflows:
 - **Golden-image clones.** Pre-configured Windows images that require a
   specific Unattend.xml at first boot cannot be paired with the right answer
   file at creation time.
-- **Customization parity with Linux.** Linux VM tenants can supply user data
-  at creation time for first-boot customization; Windows VM tenants have no
-  equivalent self-service path.
+- **Customization parity with Linux.** Linux VM tenants supply cloud-init
+  scripts through the ComputeInstance `user-data` field at creation time;
+  Windows VM tenants have no equivalent self-service path for Unattend.xml
+  through that same field.
 
 Guest OS family (linux / windows) is determined by the DiskImage resource
 (OSAC-2540), not by the ComputeInstance. Unattend.xml is a per-VM-creation
@@ -32,24 +33,24 @@ itself.
 
 ## In Scope
 
-- Supply Unattend.xml content when creating a Windows ComputeInstance via API,
-  CLI, and UI; the field is optional
-- If Unattend.xml is omitted, the VM boots without an answer file — no
-  platform-generated default is substituted
-- Answer file content is treated as sensitive: not returned in default list or
-  get responses for the ComputeInstance
-- Validation at creation time:
-  - Accepted only when the ComputeInstance's DiskImage has a Windows guest OS
-    family
-  - Content must be well-formed XML
+- Tenants supply Unattend.xml content through the existing ComputeInstance
+  `user-data` field — the same open-text field already used for Linux
+  cloud-init data; no new API parameters are introduced
+- When the ComputeInstance's DiskImage has a Windows guest OS family, the
+  platform interprets `user-data` as Unattend.xml content and delivers it to
+  the guest as an answer file
+- The `user-data` field remains optional; if omitted on a Windows VM, the VM
+  boots without an answer file — no platform-generated default is substituted
+- Answer file content supplied via `user-data` is treated as sensitive: not
+  returned in default list or get responses for the ComputeInstance
+- Validation at creation time when the DiskImage guest OS family is Windows:
+  - `user-data` content must be well-formed XML
   - Empty payloads are rejected when the field is present
   - A documented maximum size is enforced
-- CLI accepts a local file path for the Unattend.xml content (e.g.
-  `--unattend-xml <path>`)
-- UI provides upload or paste for Unattend.xml content during Windows VM
-  creation
-- API and user-facing documentation: Unattend.xml usage, size limits, and
-  sensitive-content handling
+- The CLI and UI supply Unattend.xml through their existing `user-data`
+  mechanisms (file-path flag in the CLI, text input in the UI creation form)
+- API and user-facing documentation: Unattend.xml usage via `user-data`, size
+  limits, and sensitive-content handling
 
 ## Out of Scope
 
@@ -72,13 +73,13 @@ itself.
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want Unattend.xml content treated as sensitive
-  so that answer files containing passwords or product keys are not exposed
-  when listing or retrieving ComputeInstances across tenants.
-- As a Cloud Provider Admin, I want Unattend.xml rejected when the
-  ComputeInstance's DiskImage is not Windows, when the content is not
-  well-formed XML, when the payload is empty, or when it exceeds the platform
-  size limit, so that tenants cannot attach invalid or unbounded payloads.
+- As a Cloud Provider Admin, I want `user-data` content on Windows VMs treated
+  as sensitive so that answer files containing passwords or product keys are
+  not exposed when listing or retrieving ComputeInstances across tenants.
+- As a Cloud Provider Admin, I want `user-data` validated as well-formed XML
+  when the ComputeInstance's DiskImage is Windows, and rejected when the
+  payload is empty or exceeds the platform size limit, so that tenants cannot
+  attach invalid or unbounded answer files.
 
 ### Cloud Infrastructure Admin
 
@@ -87,19 +88,19 @@ itself.
 ### Tenant Admin / Tenant User
 
 - As a Tenant Admin or Tenant User, I want to supply my organization's
-  Unattend.xml when creating a Windows ComputeInstance so that the VM's first
-  boot follows our standard configuration (locale, OOBE settings, users,
-  licensing).
+  Unattend.xml via the `user-data` field when creating a Windows
+  ComputeInstance so that the VM's first boot follows our standard
+  configuration (locale, OOBE settings, users, licensing).
 - As a Tenant Admin or Tenant User, I want to create a Windows
-  ComputeInstance without supplying an Unattend.xml so that an
+  ComputeInstance without supplying `user-data` so that an
   already-customized golden image boots without an extra answer file.
 - As a Tenant Admin or Tenant User, I want creation to fail with a clear
-  message if I supply an Unattend.xml for a non-Windows DiskImage, if the XML
-  is malformed, if the content is empty, or if it exceeds the size limit, so
-  that I can correct the problem before re-submitting.
-- As a Tenant Admin or Tenant User, I want to provide Unattend.xml content via
-  file upload or paste in the UI, or by referencing a local file path in the
-  CLI, so that I can use my preferred workflow.
+  message if my `user-data` content is not well-formed XML, is empty, or
+  exceeds the size limit on a Windows VM, so that I can correct the problem
+  before re-submitting.
+- As a Tenant Admin or Tenant User, I want to provide Unattend.xml content
+  through the existing `user-data` input in the CLI and UI so that no new
+  tooling or flags are required.
 
 ## Assumptions
 
