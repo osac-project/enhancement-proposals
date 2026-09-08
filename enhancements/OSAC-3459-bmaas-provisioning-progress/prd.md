@@ -12,11 +12,11 @@ When a bare metal server is ordered through the OSAC UI, the instance enters a "
 
 ## In Scope
 
-- Both provisioning and deprovisioning workflows expose step-level progress: the bare metal instance detail view shows each phase's name, state (pending, running, succeeded, or failed), and a single transition timestamp (the moment the phase became active); per-phase duration is derived from the next phase's transition timestamp rather than stored as a separate start/end pair. [Clarify: R2.Q3]
+- Both provisioning and deprovisioning workflows expose step-level progress: the bare metal instance detail view shows each phase's name, state (pending, running, succeeded, failed, or skipped — a phase with no work to do, such as network setup for an instance requesting no network attachment, is marked skipped rather than left pending), and a single transition timestamp (the moment the phase became active); per-phase duration is derived from the next phase's transition timestamp rather than stored as a separate start/end pair. The final resting phase and the point-in-time milestones carry a transition timestamp with no derived duration. [Clarify: R2.Q3]
 - The provisioning workflow presents four observable phases: Host Allocation, Provisioning, Network Setup, and Ready. (The earlier Hardware Preparation, OS Deployment, Configuration, and Verification steps run inside a single opaque provisioning-automation job and are not independently observable, so they are folded into the Provisioning phase.) The deprovisioning workflow presents three phases: Teardown Initiated, Cleaning, and Released. [Clarify: R3.Q3]
-- The progress view auto-refreshes approximately every 5 seconds without requiring user action — a soft target for single-digit-second freshness, not a hard real-time guarantee. [Clarify: R1.Q2]
-- The step-level timeline persists after provisioning finishes, giving users access to the full phase history of completed — including failed — instances. Once deprovisioning begins, the timeline reflects the deprovisioning phases; the provisioning phase history is not retained through teardown, because the timeline shows the instance's current lifecycle direction rather than an append-only ledger of both directions. [Clarify: R1.Q4]
-- Progress is surfaced using the status-condition pattern OSAC already established for VMaaS compute instances (OSAC-1027) and is adopting for CaaS clusters (OSAC-1604): a lifecycle phase plus status conditions whose reason names the current sub-step. BMaaS-specific phases (host allocation, hardware preparation, and so on) are expressed as BMaaS reason values within that shared shape — they are not imposed on other services. Reusing the established pattern keeps the progress experience consistent across services without inventing a BMaaS-specific model. [User]
+- While a bare metal instance is actively provisioning or deprovisioning, the progress view auto-refreshes on a bounded ~5-second interval without requiring user action, and stops polling once the instance reaches a terminal state (ready, failed, or released). Users see backend progress reflected within single-digit seconds without reloading the page. [Clarify: R1.Q2]
+- The step-level timeline persists after provisioning finishes, giving users access to the full phase history of completed — including failed — instances. When deprovisioning begins, the completed provisioning history is retained alongside the new deprovisioning timeline: the two are surfaced as separate provisioning and deprovisioning histories, so users can review both the original deployment and the teardown of the same instance. Both histories persist for the life of the instance record. [Clarify: R1.Q4]
+- Progress is presented consistently with how VMaaS compute instances (OSAC-1027) and CaaS clusters (OSAC-1604) surface their progress — the same phase-and-sub-step display — so users get a consistent progress experience across services rather than a BMaaS-specific one. (How this consistency is achieved at the API level is a design concern.) [User]
 - Failure descriptions identify the phase that failed and the failure condition in human-readable terms; raw internal system errors and implementation-level details are not surfaced. [User]
 
 ## Out of Scope
@@ -39,11 +39,10 @@ When a bare metal server is ordered through the OSAC UI, the instance enters a "
 
   | Phase | Example |
   |---|---|
-  | Host Allocation | "No available host matching the requested configuration. All hosts with the required profile are currently allocated." |
-  | Hardware Preparation | "Hardware preparation timed out — the host did not complete cleaning within the expected time." |
-  | OS Deployment | "OS deployment failed — the operating system image could not be written to the host." |
-  | Configuration | "Configuration failed — the host was not reachable for configuration application after imaging." |
-  | Verification | "Verification failed — the host did not pass readiness checks within the expected time." |
+  | Host Allocation | "No bare metal host matched the requested profile; contact support if this persists." |
+  | Provisioning | "OS installation and configuration did not complete; the provisioning job failed." |
+  | Network Setup | "Network attachment did not complete." |
+  | Ready | "The instance did not reach its powered-on ready state." |
 
   Failure descriptions identify the phase and condition without persona-specific action guidance; the appropriate next step varies by user role.
 - As a Tenant User, Tenant Admin, or Cloud Provider Admin, I want the progress view to refresh automatically while I am watching, so that I do not have to reload the page to track an active deployment.
@@ -52,7 +51,7 @@ When a bare metal server is ordered through the OSAC UI, the instance enters a "
 
 ## Assumptions
 
-- The four provisioning phases (Host Allocation, Provisioning, Network Setup, Ready) and three deprovisioning phases (Teardown Initiated, Cleaning, Released) are user-facing labels, not backend states. They do not map one-to-one to the metal3 BareMetalHost state machine: Host Allocation corresponds to claiming an available `BareMetalHost`; Provisioning is a single opaque provisioning-automation (AAP) job that subsumes what were originally described as Hardware Preparation, OS Deployment, and Configuration (metal3 `registering`/`inspecting`/`preparing`/`provisioning`); Network Setup covers network attachment, handoff, and IP discovery; and Ready reflects the instance reaching its powered-on ready state (absorbing the originally proposed Verification step, which is not a distinct observable backend signal). The design maps each user-visible phase to an authoritative backend signal and defines its start/finish conditions, timestamp durability, and behavior for skipped, retried, or overlapping steps, and classifies each phase as either a point-in-time milestone (Teardown Initiated, Released) or a phase with a running state.
+- The four provisioning phases (Host Allocation, Provisioning, Network Setup, Ready) and three deprovisioning phases (Teardown Initiated, Cleaning, Released) are user-facing labels, not backend states, and do not necessarily map one-to-one to underlying provisioning states — a single phase may aggregate several backend steps, and some originally envisioned steps are not distinct observable signals. How each user-visible phase maps to an authoritative backend signal — its start/finish conditions, timestamp durability, behavior for skipped, retried, or overlapping steps, and whether it is a point-in-time milestone or a phase with a running state — is a design concern resolved in the design document.
 - A bare metal instance's step-level timeline remains viewable after the instance finishes provisioning or is released. How a released instance's history stays addressable, how long it is retained, and which roles can view it are design decisions deferred to the design phase.
 
 ## Dependencies

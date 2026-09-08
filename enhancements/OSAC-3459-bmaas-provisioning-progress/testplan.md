@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-3459 — BMaaS Provisioning Progress and Step Visibility
-- **Total test cases:** 15
+- **Total test cases:** 16
 - **Requirements covered:** 8 of 8
 - **Interface changes covered:** 6 of 6
 
@@ -26,8 +26,9 @@
 
 ##### Preconditions
 
-- A bare metal instance is provisioning; its API status carries a `phases`
-  timeline with the four provisioning phases.
+- A bare metal instance is provisioning; its API status carries a
+  `provisioning_phases` timeline with the four provisioning phases (and an empty
+  `deprovisioning_phases`).
 
 ##### Steps
 
@@ -52,7 +53,8 @@
 ##### Preconditions
 
 - A bare metal instance is being deleted; its API status carries the three
-  deprovisioning phases.
+  deprovisioning phases in `deprovisioning_phases` (with the four completed
+  `provisioning_phases` still retained).
 
 ##### Steps
 
@@ -65,7 +67,7 @@
 - Teardown Initiated and Released render as point-in-time milestones (single
   timestamp, no running spinner); Cleaning shows a running state while active.
 
-#### TC-FR1-03: API returns the phases array with populated transition timestamps
+#### TC-FR1-03: API returns the provisioning_phases array with populated transition timestamps
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -78,11 +80,12 @@
 ##### Steps
 
 1. Issue `GET /api/fulfillment/v1/baremetal_instances/{id}`.
-2. Read `status.phases`.
+2. Read `status.provisioning_phases`.
 
 ##### Expected Results
 
-- `status.phases` contains entries for each phase with `phase` and `state` set.
+- `status.provisioning_phases` contains entries for each phase with `phase` and
+  `state` set; `status.deprovisioning_phases` is empty.
 - Host Allocation has `state = SUCCEEDED` with a `last_transition_time`; Provisioning
   has `state = RUNNING` with a later `last_transition_time`, so Host Allocation's
   derived end equals Provisioning's `last_transition_time`.
@@ -134,11 +137,12 @@
 ##### Steps
 
 1. Reconcile the instance in the fulfillment reconciler.
-2. Read `status.phases` from the DB-backed API.
+2. Read `status.provisioning_phases` from the DB-backed API.
 
 ##### Expected Results
 
-- `phases` is ordered Host Allocation, Provisioning, Network Setup, Ready.
+- `provisioning_phases` is ordered Host Allocation, Provisioning, Network Setup,
+  Ready.
 - The `PROVISIONED` condition `reason` equals the name of the phase whose
   `state == RUNNING`.
 
@@ -200,7 +204,7 @@
 
 ##### Preconditions
 
-- An instance that reached `Ready`; API `phases` all `SUCCEEDED`.
+- An instance that reached `Ready`; API `provisioning_phases` all `SUCCEEDED`.
 
 ##### Steps
 
@@ -209,11 +213,15 @@
 
 ##### Expected Results
 
-- All four steps render `success`, each showing its transition time and a
-  duration derived from the next step's transition time.
+- All four steps render `success`.
+- Host Allocation, Provisioning, and Network Setup each show their transition
+  time and a duration derived from the next step's transition time.
+- The terminal `Ready` step shows its transition time only and **no** derived
+  duration (there is no subsequent phase to derive an end from) — the assertion
+  must not expect a duration on `Ready`.
 - No running spinner is shown and no step is marked current.
 
-#### TC-FR4-02: Released instance is archived; the timeline is served up to archival, then the public GET 404s
+#### TC-FR4-02: Released holds the finalizer until the terminal timeline is persisted (both arrays retained), then archives
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -221,24 +229,36 @@
 
 ##### Preconditions
 
-- An instance that reached the Released milestone; the operator is about to
-  remove the finalizer.
+- An instance that completed provisioning (four `provisioning_phases`
+  `SUCCEEDED`) and then reached the Released milestone; the reconciler-gated
+  finalizer handshake is under test.
 
 ##### Steps
 
-1. Before finalizer removal, issue `GET /api/fulfillment/v1/baremetal_instances/{id}`
-   and read `status.phases`.
-2. Let the operator remove the finalizer (fulfillment soft-deletes and archives
-   the record to `archived_<table>`), then issue the same `GET` again.
+1. When the operator writes the Released milestone, assert the `BareMetalInstance`
+   finalizer is **still present** and no `osac.openshift.io/timeline-persisted`
+   acknowledgment is set yet.
+2. Issue `GET /api/fulfillment/v1/baremetal_instances/{id}` and read both
+   `status.provisioning_phases` and `status.deprovisioning_phases`.
+3. Let the reconciler sync the terminal timeline to the DB and write the
+   `osac.openshift.io/timeline-persisted` acknowledgment back onto the CR; assert
+   the operator then removes the finalizer.
+4. Let fulfillment soft-delete and archive the record to `archived_<table>`, then
+   issue the same `GET` again.
 
 ##### Expected Results
 
-- Step 1 returns the final deprovisioning timeline (Teardown Initiated, Cleaning
-  `SUCCEEDED`, Released), served from the DB independent of the CR. `status.phases`
-  contains **only** the three deprovisioning phases — the four provisioning phases
-  are intentionally not retained once deprovisioning starts (`phases` is a
-  full-replace projection of the CR's current direction, by design).
-- Step 2 returns 404: the released record has been archived and there is no
+- Step 1: the finalizer is retained — the operator does not remove it before the
+  reconciler acknowledges persistence.
+- Step 2: the response retains **both** timelines — the four completed
+  `provisioning_phases` (all `SUCCEEDED`) **and** the three
+  `deprovisioning_phases` (Teardown Initiated, Cleaning `SUCCEEDED`, Released) —
+  served from the DB independent of the CR. The provisioning history is retained
+  through teardown, not discarded.
+- Step 3: only after the `timeline-persisted` acknowledgment is observed does the
+  operator remove the finalizer (host returned to the pool: `available`,
+  `consumerRef` cleared, reusable).
+- Step 4: returns 404 — the released record has been archived and there is no
   archive-read path, so FR-4 is bounded to the life of the live record
   (matching VMaaS/CaaS).
 
@@ -277,14 +297,17 @@
 
 ##### Steps
 
-1. Drive the instance to a Provisioning failure.
+1. Drive the instance to a Provisioning failure via `ProvisionJobFailed` (the
+   `osac-create-bare-metal-instance` job fails).
 2. Read the failed phase's `message` from the API.
 
 ##### Expected Results
 
-- `phases[Provisioning].message` equals the defined text, e.g. "Provisioning
-  failed — the host could not be provisioned; contact support if this persists."
-- The same message renders in the stepper's failed step description.
+- `provisioning_phases[Provisioning].message` equals the exact IC-6 string for
+  `ProvisionJobFailed`: "OS installation and configuration did not complete; the
+  provisioning job failed." (byte-for-byte; the mapping is fixed and
+  deterministic — one message per reason).
+- The same message renders verbatim in the stepper's failed step description.
 
 #### TC-FR5-02: Raw internal error text is not surfaced in the timeline
 
@@ -306,7 +329,7 @@
 
 - `message` contains only the phase-specific human-readable text.
 - The raw backend error string does not appear in `message` or anywhere in the
-  API `phases` payload.
+  API `provisioning_phases`/`deprovisioning_phases` payload.
 
 ### NFR-1: Progress reflects backend state within approximately 5 seconds
 
@@ -324,22 +347,55 @@
 
 ##### Steps
 
-1. Record `t0`, then update the `BareMetalInstance` CR `phases` on the hub to
-   advance to Network Setup.
+1. Record `t0`, then update the `BareMetalInstance` CR `ProvisioningProgress` on
+   the hub to advance to Network Setup.
 2. Poll `GET /api/fulfillment/v1/baremetal_instances/{id}` at a sub-second
    cadence and record `t1` — the first response that reflects Network Setup
    `RUNNING`.
 
 ##### Expected Results
 
-- The feedback controller fires `Signal(id)` on the `phases` change, the
-  reconciler re-reads the CR and updates the DB, and the API reflects Network
-  Setup `RUNNING`. The assertion is **bounded**: `t1 - t0` ≤ the NFR-1 freshness
+- The feedback controller fires `Signal(id)` on the `ProvisioningProgress`
+  change, the reconciler re-reads the CR and updates the DB, and the API reflects
+  Network Setup `RUNNING`. The assertion is **bounded**: `t1 - t0` ≤ the NFR-1 freshness
   deadline (single-digit seconds; ~5s soft target), and the update arrives
   **before** the periodic full-resync interval would fire (i.e. freshness comes
   from the `Signal` path, not the resync fallback) and without any new
   watch/informer. To isolate the `Signal` path, the periodic full-resync
   interval is configured well above the asserted bound for this case.
+
+#### TC-NFR1-02: The detail view reflects an API timeline change within the bounded UI poll interval
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5 | high | automated |
+
+##### Preconditions
+
+- The instance detail page is rendered for a **non-terminal** instance; the mock
+  API returns Provisioning `RUNNING`. Fake timers control the query
+  `refetchInterval`.
+
+##### Steps
+
+1. Render the detail page and let the initial fetch settle on Provisioning
+   `RUNNING`.
+2. Update the mock API to return Network Setup `RUNNING`, then advance fake
+   timers by the dedicated ~5s `refetchInterval` (no user interaction).
+3. Inspect the stepper.
+4. Drive the instance to a terminal state (`Ready`), let one more interval
+   elapse, then update the mock API again and advance timers.
+
+##### Expected Results
+
+- After step 2's single ~5s interval, the stepper reflects Network Setup
+  `RUNNING` without any click or reload — the DB→UI leg is bounded to the
+  dedicated per-page ~5s poll, not the global ~10s default. This complements
+  TC-NFR1-01, which measures the CR→API (DB) leg; together they bound
+  end-to-end freshness.
+- After step 4, once the instance is terminal the query **stops refetching**: the
+  later mock-API change is not picked up, confirming polling halts at terminal
+  state.
 
 ### NFR-2: The progress and failure display is read-only
 
@@ -369,8 +425,9 @@
 > "Reuse" here means the shared proto conventions (condition-shape field names —
 > `last_transition_time`, optional `message` — and the coarse `state` + `conditions`
 > layer), not a shared phase/timeline construct: VMaaS (`ComputeInstanceStatus`)
-> and CaaS (`ClusterStatus`) carry no phase field, so the `phases` timeline is
-> BMaaS-specific and follows the `IdentityProviderStatus.phase` precedent.
+> and CaaS (`ClusterStatus`) carry no phase field, so the phase timelines
+> (`provisioning_phases`/`deprovisioning_phases`) are BMaaS-specific and follow
+> the `IdentityProviderStatus.phase` precedent.
 
 #### TC-NFR3-01: Coarse state and conditions are retained alongside the timeline
 
@@ -384,7 +441,8 @@
 
 ##### Steps
 
-1. Read `status.state`, `status.conditions`, and `status.phases` from the API.
+1. Read `status.state`, `status.conditions`, and `status.provisioning_phases`
+   from the API.
 
 ##### Expected Results
 
@@ -392,7 +450,7 @@
   `status.conditions` still includes the existing condition set (the shared
   conditions table is unaffected).
 - The `PROVISIONED` condition `reason` equals `Network Setup`, matching the
-  running phase in `status.phases`.
+  running phase in `status.provisioning_phases`.
 
 ## Gaps
 
@@ -404,19 +462,19 @@ All PRD requirements have test cases.
 
 All interface changes are exercised by test cases (IC-1: TC-FR1-03; IC-2:
 TC-FR2-01, TC-FR2-03; IC-3: TC-FR2-02, TC-FR4-02, TC-NFR3-01; IC-4: TC-NFR1-01;
-IC-5: TC-FR1-01, TC-FR1-02, TC-FR3-01, TC-FR4-01, TC-FR4-03, TC-NFR2-01; IC-6:
-TC-FR5-01, TC-FR5-02).
+IC-5: TC-FR1-01, TC-FR1-02, TC-FR3-01, TC-FR4-01, TC-FR4-03, TC-NFR1-02,
+TC-NFR2-01; IC-6: TC-FR5-01, TC-FR5-02).
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 15 |
+| Total test cases | 16 |
 | Critical | 3 |
-| High | 9 |
+| High | 10 |
 | Medium | 3 |
 | Low | 0 |
-| Automated | 15 |
+| Automated | 16 |
 | Manual | 0 |
 | Requirements with test cases | 8 / 8 |
 | Interface changes with test cases | 6 / 6 |

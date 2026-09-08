@@ -24,12 +24,15 @@ superseded-by:
 This design adds a persisted, ordered, per-phase progress timeline to bare metal
 instances, exposed through the fulfillment-service API and rendered as a
 read-only PatternFly `ProgressStepper` on the instance detail view. The
-`BareMetalInstance` CRD and fulfillment proto gain an embedded `phases` timeline
-(four provisioning phases, three deprovisioning phases) carrying each phase's
-state and a single transition timestamp — the moment the phase became active —
-from which the UI derives per-phase durations; the fulfillment reconciler
-derives the timeline from the CR, and the DB copy is kept fresh within seconds by
-the existing osac-operator feedback→`Signal` path (no new watch). See
+`BareMetalInstance` CRD and fulfillment proto gain two embedded, ordered phase
+timelines — `provisioning_phases` (four phases) and `deprovisioning_phases`
+(three phases) — carrying each phase's state and a single transition timestamp —
+the moment the phase became active — from which the UI derives per-phase
+durations. Both timelines are retained for the life of the fulfillment instance
+record, so an instance under teardown still shows its original provisioning
+history alongside the live deprovisioning timeline. The fulfillment reconciler
+derives both timelines from the CR, and the DB copy is kept fresh within seconds
+by the existing osac-operator feedback→`Signal` path (no new watch). See
 [PRD](prd.md) for detailed requirements.
 
 ## Motivation
@@ -108,12 +111,17 @@ experience consistent with VMaaS (OSAC-1027) and CaaS (OSAC-1604).
 
 The change spans three components in dependency order:
 
-1. **fulfillment-service proto** gains a `repeated BareMetalInstancePhaseProgress
-   phases` field on `BareMetalInstanceStatus`, plus two enums:
-   `BareMetalInstancePhase` (the seven user-facing phases) and
-   `BareMetalInstancePhaseState` (`PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`,
-   `SKIPPED`). Each entry carries `phase`, `state`, `last_transition_time`, and
-   `message`.
+1. **fulfillment-service proto** gains two `repeated
+   BareMetalInstancePhaseProgress` fields on `BareMetalInstanceStatus` —
+   `provisioning_phases` and `deprovisioning_phases` — plus two enums:
+   `BareMetalInstancePhase` (the seven user-facing phase *values*: four
+   provisioning, three deprovisioning) and `BareMetalInstancePhaseState`
+   (`PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`, `SKIPPED`). Each entry carries
+   `phase`, `state`, `last_transition_time`, and `message`. A `BareMetalInstance`
+   lives exactly one provision→(optional) deprovision cycle — re-provisioning
+   creates a new CR — so two fixed-purpose arrays match that lifecycle 1:1, the
+   provisioning/deprovisioning direction is structural (no redundant
+   `direction`/`sequence` field is needed), and both histories are retained.
 
 2. **bare-metal-fulfillment-operator** adds a matching
    `ProvisioningProgress []PhaseProgress` field to `BareMetalInstanceStatus` and
@@ -124,40 +132,64 @@ The change spans three components in dependency order:
    `JobStatus.Timestamp` is trigger-only, so the operator is the authoritative
    source of every transition timestamp.
 
-3. **fulfillment-service reconciler** maps the CR timeline into the proto
-   `phases` field (and sets the current sub-step reason on the existing
-   `PROVISIONED` condition). Freshness reuses the existing osac-operator
-   feedback→`Signal` path: the feedback controller's `Signal(id)` trigger is
-   extended to fire when the `phases` timeline changes, and the reconciler's
-   `syncStatus()` mapping is extended to carry the new field. No new watch or
-   informer is added.
+3. **fulfillment-service reconciler** maps the CR timelines into the proto
+   `provisioning_phases` and `deprovisioning_phases` fields (and sets the current
+   sub-step reason on the existing `PROVISIONED` condition). Freshness reuses the
+   existing osac-operator feedback→`Signal` path: the feedback controller's
+   `Signal(id)` trigger is extended to fire when either timeline changes, and the
+   reconciler's `syncStatus()` mapping is extended to carry the new fields. No new
+   watch or informer is added.
 
 4. **osac-ui** adds a read-only `BareMetalProgressStepper` component to the
-   instance detail view, rendering the `phases` timeline as a vertical
-   PatternFly `ProgressStepper` that auto-refreshes and remains available for
-   completed and failed instances (and for released instances until their record
-   is archived).
+   instance detail view, rendering `provisioning_phases` as a vertical
+   PatternFly `ProgressStepper`; once `deprovisioning_phases` is populated it
+   renders a second teardown stepper below the (now historical) provisioning
+   one, so both timelines stay visible. The component auto-refreshes and remains
+   available for completed and failed instances (and for released instances
+   until their record is archived).
 
-The timeline is the single authoritative representation of per-phase progress;
-the conditions/reason layer is retained only for coarse-status consistency with
-other services. Because the fulfillment DB already stores the instance's proto
-status as JSON, the timeline persists across CR deletion with no new storage.
+The two timelines are the single authoritative representation of per-phase
+progress; the conditions/reason layer is retained only for coarse-status
+consistency with other services. Because the fulfillment DB already stores the
+instance's proto status as JSON, both timelines persist across CR deletion with
+no new storage.
 
 **Design decision — one transition timestamp per phase, not start + end
-`[User]`.** The PRD's In Scope lists "start and end timestamps" per phase. This
-design deliberately records a *single* `last_transition_time` per phase — the
+`[User]`.** This design records a *single* `last_transition_time` per phase — the
 moment the phase became active — rather than a separate start and end. Because the
 user-facing timeline is strictly sequential and contiguous (overlapping backend
 work is collapsed into one ordered sequence, see the phase mapping below), a
 phase's end is exactly the next phase's `last_transition_time`, and its duration is
-the difference between consecutive transition timestamps; the final phase's end
-and a failed phase's fail-instant are already carried by the coarse lifecycle
-`state`/condition `lastTransitionTime`. No information is therefore lost relative
-to explicit start+end, the UI can still show per-phase durations, and the shape
-matches the shipped VMaaS `metav1.Condition` (one `lastTransitionTime` per
-transition) more closely. This challenges the PRD's literal "start and end"
-wording while satisfying its intent; the PRD should be reconciled to "a
-transition timestamp per phase (duration derived)" on its next revision.
+the difference between consecutive transition timestamps. No information is lost
+relative to explicit start+end, the UI can still show per-phase durations, and the
+shape matches the shipped VMaaS `metav1.Condition` (one `lastTransitionTime` per
+transition) more closely. The PRD's In Scope has been reconciled to this contract
+(a transition timestamp per phase, duration derived) — this design and the PRD
+now agree; there is no deferred PRD change.
+
+**Duration derivation rules (terminal, milestone, failed, and skipped phases).**
+A phase's *end* is the next phase's `last_transition_time` when a later phase
+exists in the same timeline; a phase's **duration** is `end −
+last_transition_time`. The boundary cases are defined explicitly so no phase
+requires a duration from a non-existent successor:
+
+- **Terminal resting phase (`Ready`, `SUCCEEDED`).** `Ready` is the resting
+  state a running instance settles into; it has no successor and no bounded
+  duration. The UI shows its transition time only (no duration). This is the
+  intended terminal for a live instance.
+- **Point-in-time milestones (`Teardown Initiated`, `Released`).** Single
+  transition timestamp, no derived duration, by definition (see the phase
+  mapping).
+- **`SKIPPED` phases.** Single transition timestamp (the point the phase was
+  passed), no derived duration.
+- **A `FAILED` phase.** The phase entered `RUNNING` at its `last_transition_time`
+  and then failed with no successor phase. Its end is the coarse lifecycle
+  condition's `lastTransitionTime` — specifically the `PROVISIONED` condition
+  transition that recorded the `FAILED`/terminal state — so a failed phase's
+  duration is `PROVISIONED.lastTransitionTime − phase.last_transition_time`
+  (time spent before failure). This is the one case where the timeline consumes
+  the coarse condition timestamp; every non-terminal phase derives its duration
+  purely from the next phase.
 
 ### Workflow Description
 
@@ -168,28 +200,34 @@ Starting state: a bare metal instance has been ordered and its
 `BareMetalInstance` CR exists on the hub.
 
 1. The user opens the instance detail page in the console. The page issues a
-   `GET /api/fulfillment/v1/baremetal_instances/{id}` and renders the
-   `status.phases` timeline as a vertical stepper: Host Allocation →
-   Provisioning → Network Setup → Ready (or, during deletion, Teardown
-   Initiated → Cleaning → Released).
+   `GET /api/fulfillment/v1/baremetal_instances/{id}` and renders
+   `status.provisioning_phases` as a vertical stepper: Host Allocation →
+   Provisioning → Network Setup → Ready. If `status.deprovisioning_phases` is
+   non-empty (the instance is being or has been torn down), a second teardown
+   stepper — Teardown Initiated → Cleaning → Released — renders below the
+   provisioning one, so both timelines are visible.
 2. Each step shows its state (pending, running with a spinner, succeeded, or
    failed) and the time it became active; the UI derives each finished step's
    duration from the next step's transition time (and the running step's elapsed
-   time from now).
-3. While the instance is active, the detail query re-fetches on the global
-   ~10s polling interval; the operator updates the CR, the osac-operator feedback
-   controller signals fulfillment, which re-syncs the DB within seconds, and the
-   next poll shows the advanced timeline without any user action.
+   time from now), except the terminal `Ready` phase and the milestones, which
+   show a transition time only.
+3. While the instance is non-terminal, the detail query re-fetches on a bounded
+   ~5s polling interval (a per-page interval, not the global ~10s default); the
+   operator updates the CR, the osac-operator feedback controller signals
+   fulfillment, which re-syncs the DB within seconds, and the next poll shows the
+   advanced timeline without any user action.
 4. On failure, the failing step renders in the danger variant with a
-   phase-specific, human-readable message (for example, "Provisioning failed —
-   the host could not be provisioned; contact support if this persists."); no raw
+   phase-specific, human-readable message (for example, "OS installation and
+   configuration did not complete; the provisioning job failed."); no raw
    internal error is shown, and no retry control is offered.
-5. When provisioning completes, all four steps show succeeded with their derived
-   durations; the timeline remains rendered and refetching stops advancing it.
-6. When the user deletes the instance, the stepper switches to the three
-   deprovisioning phases and tracks teardown to Released.
+5. When provisioning completes, all four provisioning steps show succeeded with
+   their derived durations (`Ready` shows only its transition time); the timeline
+   remains rendered and, once the instance is terminal, refetching stops.
+6. When the user deletes the instance, the deprovisioning stepper appears below
+   the retained provisioning history and tracks teardown to Released; polling
+   resumes while teardown is in progress.
 7. After the instance is released and its CR removed, the detail view continues
-   to serve the final persisted timeline from the fulfillment DB until the
+   to serve both final persisted timelines from the fulfillment DB until the
    instance record is archived on finalizer removal, after which the public
    `GET` returns 404 as for any released instance (see Persistence and
    retention).
@@ -209,26 +247,29 @@ sequenceDiagram
     Hub-->>FB: watch event (status changed)
     FB->>Rec: Signal(id) [existing RPC]
     Rec->>Hub: Get CR (fresh)
-    Rec->>Rec: fold CR -> proto phases timeline
-    Rec->>DB: write instance status (phases)
-    loop every ~poll interval while page open
+    Rec->>Rec: fold CR -> proto provisioning/deprovisioning timelines
+    Rec->>DB: write instance status (both phase arrays)
+    loop every ~5s while instance non-terminal
         UI->>API: GET baremetal_instances/{id}
         API->>DB: read status
-        DB-->>API: status.phases
-        API-->>UI: timeline
-        UI->>User: render ProgressStepper
+        DB-->>API: provisioning_phases + deprovisioning_phases
+        API-->>UI: timelines
+        UI->>User: render ProgressStepper(s)
     end
 ```
 
 This diagram shows the freshness path the design reuses — the existing
 osac-operator feedback controller → `Signal(id)` → reconciler re-read → DB write
-— and the unchanged UI polling path. The key takeaway: the operator's CR updates
+— and the UI polling path. The key takeaway: the operator's CR updates
 already reach the DB within seconds via this path; this design only extends what
-the `Signal` fires on (the `phases` timeline) and the reconciler's field mapping.
-Source-side freshness is therefore bounded by the existing feedback path
-(seconds), so the global ~10s UI poll is sufficient to satisfy the PRD's
-"approximately every 5 seconds" auto-refresh — which is a soft target, not a firm
-latency SLA `[User]` — without a bespoke per-page refetch interval.
+the `Signal` fires on (both phase timelines) and the reconciler's field mapping.
+Total UI-visible freshness has two bounded parts: source-side (CR→DB) is bounded
+by the existing feedback path (seconds), and DB→UI is bounded by the UI's
+**~5s per-page poll** while the instance is non-terminal (a dedicated
+`refetchInterval`, not the global ~10s default). The end-to-end bound the user
+sees is therefore the sum of the two — both single-digit seconds — which is what
+the PRD's "approximately every 5 seconds" auto-refresh now names as the UI
+bound `[User]`. Polling stops once the instance is terminal.
 
 ### API Extensions
 
@@ -240,44 +281,55 @@ timeline is derived from osac-operator lifecycle conditions and AAP job status).
 
 The concrete interface changes (referenced by the testplan as IC-N):
 
-- **IC-1 — Proto `phases` field.** Add `repeated BareMetalInstancePhaseProgress
-  phases` to `BareMetalInstanceStatus` in both the private and public protos,
-  with new enums `BareMetalInstancePhase` and
-  `BareMetalInstancePhaseState`. Regenerated via `buf lint && buf generate`.
-  Requirements: FR-1, FR-2.
+- **IC-1 — Proto phase-timeline fields.** Add `repeated
+  BareMetalInstancePhaseProgress provisioning_phases` and `repeated
+  BareMetalInstancePhaseProgress deprovisioning_phases` to
+  `BareMetalInstanceStatus` in both the private and public protos, with new enums
+  `BareMetalInstancePhase` and `BareMetalInstancePhaseState`. Regenerated via
+  `buf lint && buf generate`. Requirements: FR-1, FR-2.
 - **IC-2 — CRD `ProvisioningProgress` field.** Add `ProvisioningProgress
   []PhaseProgress` to `BareMetalInstanceStatus` in the operator, with operator
   logic that populates the ordered timeline from backend signals. Requirements:
   FR-1, FR-2, FR-4.
 - **IC-3 — Reconciler timeline sync.** Extend the fulfillment reconciler's
-  `syncStatus()` to map the CR timeline into the proto `phases` field and set the
-  current-step reason on the `PROVISIONED` condition. Requirements: FR-1, FR-4,
-  FR-5.
+  `syncStatus()` to map the CR timelines into the proto `provisioning_phases` and
+  `deprovisioning_phases` fields and set the current-step reason on the
+  `PROVISIONED` condition. Requirements: FR-1, FR-4, FR-5.
 - **IC-4 — Extend the existing feedback→`Signal` freshness path.** Extend the
-  osac-operator feedback controller's `Signal(id)` trigger to fire when the
-  `phases` timeline changes (today it already fires on other status changes), so
+  osac-operator feedback controller's `Signal(id)` trigger to fire when either
+  phase timeline changes (today it already fires on other status changes), so
   the fulfillment reconciler re-syncs the DB within seconds. No new watch or
   informer is added. Requirements: NFR-1.
 - **IC-5 — UI progress stepper.** Add the read-only `BareMetalProgressStepper`
-  to the instance detail view, consuming `status.phases`, auto-refreshing, with
-  an `aria-live` region. Requirements: FR-1, FR-2, FR-3, FR-4, FR-5, NFR-2.
-- **IC-6 — Failure message vocabulary.** Define the per-phase human-readable
-  failure messages the operator/reconciler write into `phases[].message`. Only
-  phases that carry a `RUNNING`/`FAILED` state can fail; the point-in-time
-  milestones (Teardown Initiated, Released) do not. The canonical starter
-  vocabulary is:
+  to the instance detail view, consuming `status.provisioning_phases` and
+  `status.deprovisioning_phases`, auto-refreshing, with an `aria-live` region.
+  Requirements: FR-1, FR-2, FR-3, FR-4, FR-5, NFR-2.
+- **IC-6 — Failure message mapping.** Define the exact human-readable failure
+  message the operator/reconciler write into the failing phase's `message` field.
+  Only phases that carry a `RUNNING`/`FAILED` state can fail; the point-in-time
+  milestones (Teardown Initiated, Released) do not. The mapping is **fixed and
+  deterministic**: each failure reason maps to exactly one message string, so a
+  consumer or test can assert one expected `message` per reason. There are no
+  alternatives and no per-phase choice at runtime — the operator derives the
+  reason from the failing condition/job and writes the corresponding message
+  verbatim.
 
-  | Phase (that can fail) | `message` on `FAILED` |
-  |-----------------------|-----------------------|
-  | Host Allocation | "No bare metal host matched the requested profile; contact support if this persists." (reason `NoMatchingHosts`) or "Host allocation failed." |
-  | Provisioning | "OS installation and configuration did not complete; the provisioning job failed." |
-  | Network Setup | "Network attachment did not complete." / "Network handoff (reboot) did not complete." / "IP address discovery did not complete." |
-  | Ready | "The instance did not reach its powered-on ready state." |
-  | Cleaning | "Teardown did not complete; the deprovisioning job failed." / "Network offboarding did not complete." |
+  | Phase | Failure reason (from failing condition/job) | Exact `message` on `FAILED` |
+  |-------|---------------------------------------------|-----------------------------|
+  | Host Allocation | `NoMatchingHosts` (no available host matched the profile) | "No bare metal host matched the requested profile; contact support if this persists." |
+  | Host Allocation | `HostAllocationFailed` (host search/claim error other than no-match) | "Host allocation failed; contact support if this persists." |
+  | Provisioning | `ProvisionJobFailed` (the `osac-create-bare-metal-instance` job failed) | "OS installation and configuration did not complete; the provisioning job failed." |
+  | Network Setup | `NetworkAttachmentFailed` | "Network attachment did not complete." |
+  | Network Setup | `NetworkHandoffFailed` | "Network handoff (reboot) did not complete." |
+  | Network Setup | `IPDiscoveryFailed` | "IP address discovery did not complete." |
+  | Ready | `ReadyTimeout` (host did not reach powered-on ready state) | "The instance did not reach its powered-on ready state." |
+  | Cleaning | `DeprovisionJobFailed` (the `osac-delete-bare-metal-instance` job failed) | "Teardown did not complete; the deprovisioning job failed." |
+  | Cleaning | `NetworkOffboardFailed` | "Network offboarding did not complete." |
 
-  Messages are a fixed, human-readable vocabulary (no raw operator/AAP error
-  strings surfaced to the user); the exact wording is finalized at
-  implementation and covered by IC-6 unit tests. Requirements: FR-5.
+  These strings are the complete vocabulary; the operator never copies a raw
+  operator/AAP/metal3 error string into `message`, and no other message value is
+  emitted. The mapping is covered by IC-6 unit tests that assert the exact string
+  for each reason. Requirements: FR-5.
 
 Operational impact: if the operator is down, the timeline stops advancing but
 the last-synced state remains served from the DB. If the fulfillment reconciler
@@ -296,20 +348,25 @@ status type) and its status carries the existing coarse fields (`state`,
 `conditions`, and the other current status fields) but no per-phase progress.
 This EP introduces the fields the UI will consume; after the backend ships and
 `pnpm gen-types` runs (which regenerates the types from the rebuilt protos), the
-migration diff should be limited to adding the timeline field below.
+migration diff should be limited to adding the two timeline fields below. Both
+arrays hold the same `BareMetalInstancePhaseProgress` element type; the rows below
+use `<timeline>` to stand for either `provisioningPhases` or
+`deprovisioningPhases`.
 
 | UI field (`@temp-api` TypeScript) | Proto field (this EP) | Notes / deviation |
 |---|---|---|
-| `status.phases[].phase` | `status.phases[].phase` | New. Enum `BareMetalInstancePhase` (field `phase`, mirroring `IdentityProviderStatus.phase`); UI renders the display label per phase |
-| `status.phases[].state` | `status.phases[].state` | New. Enum `BareMetalInstancePhaseState` → PatternFly step variant |
-| `status.phases[].lastTransitionTime` | `status.phases[].last_transition_time` | New. camelCase → snake_case. When the phase became active; UI derives duration from the next phase's value |
-| `status.phases[].message` | `status.phases[].message` | New. Human-readable failure/status text; empty on success |
+| `status.provisioningPhases[]` | `status.provisioning_phases[]` | New. The four provisioning phases; camelCase → snake_case |
+| `status.deprovisioningPhases[]` | `status.deprovisioning_phases[]` | New. The three deprovisioning phases; empty until teardown begins |
+| `status.<timeline>[].phase` | `status.<timeline>[].phase` | New. Enum `BareMetalInstancePhase` (field `phase`, mirroring `IdentityProviderStatus.phase`); UI renders the display label per phase |
+| `status.<timeline>[].state` | `status.<timeline>[].state` | New. Enum `BareMetalInstancePhaseState` → PatternFly step variant |
+| `status.<timeline>[].lastTransitionTime` | `status.<timeline>[].last_transition_time` | New. camelCase → snake_case. When the phase became active; UI derives duration from the next phase's value |
+| `status.<timeline>[].message` | `status.<timeline>[].message` | New. Human-readable failure/status text; empty on success |
 | `status.state` | `status.state` | Unchanged; still drives the coarse status label |
 | `status.conditions` | `status.conditions` | Unchanged; retained for the shared conditions table |
 
-No known anti-patterns apply: `phases` is a status (read-only, observed-state)
-field, not a sub-resource action, string-union storage class, K8s-internal
-field, one-time secret, or RHOAI operator field.
+No known anti-patterns apply: both timelines are status (read-only,
+observed-state) fields, not a sub-resource action, string-union storage class,
+K8s-internal field, one-time secret, or RHOAI operator field.
 
 ### Implementation Details/Notes/Constraints
 
@@ -345,25 +402,38 @@ message BareMetalInstancePhaseProgress {
   google.protobuf.Timestamp last_transition_time = 3;  // when the phase became active; duration derived from the next phase
   optional string message = 4;                         // human-readable; populated on failure
 }
+
+// Added to BareMetalInstanceStatus alongside the existing `state` and `conditions`:
+//   repeated BareMetalInstancePhaseProgress provisioning_phases = N;    // the four provisioning phases
+//   repeated BareMetalInstancePhaseProgress deprovisioning_phases = N+1; // the three deprovisioning phases (empty until teardown)
 ```
 
-`phases` is added to `BareMetalInstanceStatus` alongside the existing `state` and
-`conditions` [Codebase: fulfillment-service/proto/private/osac/private/v1/baremetal_instance_type.proto].
-The list is ordered by the phase sequence for the active direction
-(provisioning or deprovisioning). **`phases` is a full-replace projection of the
-CR's *current* lifecycle direction, not an append-only ledger:** when
-deprovisioning begins, the array is replaced by the three deprovisioning phases
-(Teardown Initiated, Cleaning, Released) and the four provisioning phases are
-**intentionally not retained** through teardown. This is a deliberate product
-decision — the `BareMetalInstance` CR holds only the current direction, the
-provisioning timeline has no operational value once the instance is being
-destroyed, and retaining both sequences would require a separate historical
-store that is out of scope. The full provisioning history remains viewable for
-the life of a *running* instance (FR-4); it is discarded only at the moment
-deprovisioning starts. The current sub-step is derivable as the entry
-whose `state == RUNNING`; the reconciler also mirrors that phase name into the
-`PROVISIONED` condition's `reason` so the coarse label and conditions table stay
-consistent with VMaaS [Codebase: osac-operator/api/v1alpha1/conditions.go].
+Two `repeated BareMetalInstancePhaseProgress` fields —
+`provisioning_phases` and `deprovisioning_phases` — are added to
+`BareMetalInstanceStatus` alongside the existing `state` and `conditions`
+[Codebase: fulfillment-service/proto/private/osac/private/v1/baremetal_instance_type.proto].
+Each list is ordered by the phase sequence for its direction and is populated
+independently. **Both timelines are retained for the life of the instance
+record, not replaced:** `provisioning_phases` is populated as the instance is
+provisioned and is *never cleared* when deprovisioning begins;
+`deprovisioning_phases` starts empty and is populated with the three teardown
+phases (Teardown Initiated, Cleaning, Released) only when the instance is being
+deleted. An instance under teardown therefore carries both its completed
+provisioning history and its live deprovisioning timeline.
+
+**Why two fixed-purpose arrays rather than one array with a `direction`/`sequence`
+field:** a `BareMetalInstance` CR lives exactly one provision→(optional)
+deprovision cycle — re-provisioning a host produces a *new* CR, never a second
+provisioning pass on the same one — so the two directions map 1:1 onto two arrays
+and the direction is structural. A single array carrying an explicit
+`direction`/`sequence` discriminator would re-encode, as data, information the
+field name already conveys, and would force every reader to filter and sort;
+two arrays keep each timeline self-describing and ordered. The change is purely
+additive to the proto. The **current sub-step** is derivable as the entry whose
+`state == RUNNING` in `deprovisioning_phases` if that array is non-empty,
+otherwise in `provisioning_phases`; the reconciler also mirrors that phase name
+into the `PROVISIONED` condition's `reason` so the coarse label and conditions
+table stay consistent with VMaaS [Codebase: osac-operator/api/v1alpha1/conditions.go].
 
 **Naming conventions and precedent (verified against the shipped protos).** The
 new identifiers follow the documented OSAC proto conventions
@@ -382,8 +452,9 @@ shape used by every resource (`ComputeInstanceCondition`, `ClusterCondition`,
 `repeated {Type}Condition conditions`** [Codebase: compute_instance_type.proto,
 cluster_type.proto]. The consistency this design reuses is therefore (a) those
 conventions and (b) the retained coarse `state` + `conditions` layer; the ordered
-`phases` timeline itself is a net-new construct with no VMaaS/CaaS precedent
-(reinforcing the Alternatives analysis below).
+`provisioning_phases`/`deprovisioning_phases` timelines are themselves a net-new
+construct with no VMaaS/CaaS precedent (reinforcing the Alternatives analysis
+below).
 
 #### CRD field
 
@@ -397,10 +468,14 @@ type PhaseProgress struct {
 }
 ```
 
-`ProvisioningProgress []PhaseProgress` is added to `BareMetalInstanceStatus`
+Two fields are added to `BareMetalInstanceStatus` —
+`ProvisioningProgress []PhaseProgress` and `DeprovisioningProgress []PhaseProgress`
 [Codebase: bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_types.go].
-The operator runs `make manifests generate` and `make helm-crds` after the type
-change (enforced by CI).
+The operator populates `ProvisioningProgress` during provisioning and
+`DeprovisioningProgress` during teardown, and never clears the former when the
+latter begins, mirroring the two proto arrays. The operator runs
+`make manifests generate` and `make helm-crds` after the type change (enforced by
+CI).
 
 #### Phase-to-backend-signal mapping
 
@@ -408,10 +483,12 @@ The operator derives each phase from an authoritative signal and records one
 transition timestamp per phase — the moment the phase becomes active. It is set
 once when the phase first enters `RUNNING` (or, for a milestone, when the
 milestone occurs) and never overwritten (idempotent). Because the sequence is
-strictly ordered and contiguous, a phase's *end* is the next phase's transition
-timestamp, and its duration is the difference between the two; the final phase's
-end and a failed phase's fail-instant are carried by the coarse lifecycle
-`state`/condition transition. The **operator is the authoritative source of
+strictly ordered and contiguous, a non-terminal phase's *end* is the next phase's
+transition timestamp, and its duration is the difference between the two; the
+terminal resting phase (`Ready`) and the milestones show no duration, and a
+failed phase's fail-instant is the coarse lifecycle `PROVISIONED`
+condition's transition (see the duration-derivation rules in the Proposal). The
+**operator is the authoritative source of
 every transition timestamp**: metal3 exposes no observable per-step provisioning
 signal, and the AAP `JobStatus.Timestamp` is trigger-only (it records when a job
 was launched, not phase boundaries), so the operator records each transition
@@ -425,17 +502,37 @@ itself as it drives the lifecycle.
 | Ready | prov | `PowerSynced` → instance phase `Ready` (absorbs readiness/verification) | Operator records when the instance reaches `Ready` |
 | Teardown Initiated | deprov | `DeletionTimestamp` set / phase `Deleting` | Deletion accepted (milestone) |
 | Cleaning | deprov | deprovision AAP job (`DeprovisionTemplateComplete`) + `NetworkOffboardComplete` | Operator records when teardown work begins |
-| Released | deprov | **new** operator-recorded milestone, written before finalizer removal | Release recorded (milestone) |
+| Released | deprov | **new** operator-recorded milestone, written and then acknowledged (see handshake) before finalizer removal | Release recorded (milestone) |
 
-> **Released needs a small operator addition.** There is no existing signal for
-> the terminal "released" instant, so the operator must record a Released
-> milestone just before it removes the finalizer. The reconciler must **durably
-> persist the final timeline to the fulfillment DB before the finalizer is
-> removed** (and the CR becomes unreadable), so the terminal state is never lost
-> to a race; if persistence cannot be confirmed, finalizer removal must not
-> proceed. The exact finalizer-ordering guarantee is Open Question 1 for the
-> bare-metal-operator team. This is a small, in-scope operator change — no AAP
-> or metal3 change is involved.
+> **Released uses a reconciler-gated finalizer handshake.** There is no existing
+> signal for the terminal "released" instant, so the operator records a Released
+> milestone in `DeprovisioningProgress` on the CR. Writing that milestone is
+> **not** by itself a durability guarantee — the asynchronous feedback→`Signal`
+> path could miss the last update and leave the DB at `Cleaning` when the CR is
+> removed. So finalizer removal is gated on a positive acknowledgment that the
+> terminal timeline has reached the DB:
+>
+> 1. The operator writes the `Released` milestone to the CR but **keeps the
+>    finalizer**.
+> 2. The fulfillment reconciler syncs the final timeline (both arrays, with
+>    `Released` `SUCCEEDED`) to the DB, then **acknowledges** by writing a
+>    `osac.openshift.io/timeline-persisted` acknowledgment back onto the CR (an
+>    annotation/status marker the operator already has RBAC to read).
+> 3. Only after the operator observes that acknowledgment on a subsequent
+>    reconcile does it remove the finalizer and let the CR be deleted. If the
+>    acknowledgment never appears (reconciler down, Signal lost), the operator
+>    requeues and the finalizer stays — the instance rests at `Released` in the
+>    CR and the DB is brought current by the periodic full-resync backstop
+>    before removal. Finalizer removal never proceeds without a confirmed,
+>    durably-persisted terminal timeline.
+>
+> **`Released` semantics:** `Released` means the host has been returned to the
+> pool (`BareMetalHost` back to `available`, `consumerRef` cleared) and is
+> reusable, *and* the finalizer has been removed so the CR is deleted. The host
+> becomes reusable at the same handshake that removes the finalizer, so there is
+> no window where a "released" host is still pinned by a live CR. This resolves
+> the former Open Question 1. This is a small, in-scope operator + reconciler
+> change — no AAP or metal3 change is involved.
 
 The operator monitors two concrete backend sources, both **polled on each
 reconcile** (it does not watch either — it re-reads and requeues, default ~30s):
@@ -498,7 +595,9 @@ sequenceDiagram
     Op->>CR: DeprovisionTemplateComplete True, Cleaning SUCCEEDED
     Op->>M3: unassign host, clear consumerRef
     M3-->>Op: host returns to available
-    Op->>CR: Released milestone, remove finalizer
+    Op->>CR: Released milestone (keep finalizer)
+    Note over Op,CR: reconciler syncs terminal timeline to DB, then acks on CR
+    Op->>CR: observe timeline-persisted ack, remove finalizer (host now reusable)
 ```
 
 The four provisioning phases run before the instance is live; the three
@@ -508,10 +607,11 @@ transition timestamp itself as it observes these sources — metal3 exposes no
 per-step provisioning signal beyond the coarse BMH state, and the AAP
 `JobStatus.Timestamp` is trigger-only (records launch, not phase boundaries) —
 which is also why the terminal `Released` instant needs the small
-operator-recorded milestone called out above (no existing BMH state or AAP job
-marks it). Once the operator writes these `status.phases` changes to the CR, they
-reach the DB and API within seconds via the existing feedback→`Signal` path shown
-in the Workflow Description sequence diagram.
+operator-recorded milestone and reconciler-gated handshake called out above (no
+existing BMH state or AAP job marks it). Once the operator writes these
+`ProvisioningProgress`/`DeprovisioningProgress` changes to the CR, they reach the
+DB and API within seconds via the existing feedback→`Signal` path shown in the
+Workflow Description sequence diagram.
 
 Behavior for the cases the PRD asks the design to define [PRD: Assumptions]:
 
@@ -534,31 +634,38 @@ Behavior for the cases the PRD asks the design to define [PRD: Assumptions]:
 
 #### Reconciler and freshness
 
-The fulfillment reconciler's `syncStatus()` folds `ProvisioningProgress` into the
-proto `phases` field and sets the `PROVISIONED` condition reason to the current
-running phase, replacing today's empty-reason ratchet
+The fulfillment reconciler's `syncStatus()` folds `ProvisioningProgress` and
+`DeprovisioningProgress` into the proto `provisioning_phases` and
+`deprovisioning_phases` fields and sets the `PROVISIONED` condition reason to the
+current running phase, replacing today's empty-reason ratchet
 [Codebase: fulfillment-service/internal/controllers/baremetalinstance/baremetalinstance_reconciler_function.go].
+When it syncs a terminal `Released` timeline, it also writes the
+`timeline-persisted` acknowledgment back to the CR that gates finalizer removal
+(see the Released handshake above).
 
 Freshness reuses the existing feedback path rather than adding a new watch. The
 osac-operator already runs a feedback controller that watches the hub
 `BareMetalInstance` CRs and rings fulfillment via a `Signal(id)` RPC when their
 status changes; that signal triggers the fulfillment reconciler to re-read the CR
 and update the DB within seconds [Research: loop-back Domain 8]. This design only
-(a) extends the feedback controller's `Signal` trigger so it also fires when the
-`phases` timeline changes, and (b) extends the reconciler's `syncStatus()` to map
-the new field [Codebase: fulfillment-service/internal/controllers/reconciler.go].
+(a) extends the feedback controller's `Signal` trigger so it also fires when
+either phase timeline changes, and (b) extends the reconciler's `syncStatus()` to
+map the new fields [Codebase: fulfillment-service/internal/controllers/reconciler.go].
 No new informer, watch, or polling loop is introduced. The existing periodic full
-resync is retained as a correctness backstop.
+resync is retained as a correctness backstop (and, per the Released handshake, is
+the fallback that guarantees the terminal timeline reaches the DB before finalizer
+removal even if a `Signal` is lost).
 
 #### Persistence and retention
 
-The timeline persists automatically: the fulfillment DB stores the instance's
-proto status as JSON, so once the reconciler writes the final timeline it
-survives CR deletion and is served read-only for completed and failed instances,
+Both timelines persist automatically: the fulfillment DB stores the instance's
+proto status as JSON, so once the reconciler writes the final timelines they
+survive CR deletion and are served read-only for completed and failed instances,
 and for released instances **for the life of the fulfillment instance record**.
 Retention is tied to that record, mirroring VMaaS and CaaS `[User]` — the
-timeline is a bounded per-instance snapshot (seven phases) embedded in status,
-not an unbounded audit log. On release the operator removes the CR's finalizer;
+timelines are a bounded per-instance snapshot (at most seven phase entries total,
+four provisioning + three deprovisioning) embedded in status, not an unbounded
+audit log. On release the operator removes the CR's finalizer;
 fulfillment then soft-deletes the record and archives it to `archived_<table>`,
 after which the public `GET` returns 404 (there is no archive-read path)
 [Research: loop-back Domain 9]. FR-4 is therefore scoped to the life of the live
@@ -571,29 +678,31 @@ introduced.
 
 #### UI
 
-`BareMetalProgressStepper` (osac-ui) renders `status.phases` as a vertical
-PatternFly `ProgressStepper` [Research: PatternFly]. State → variant mapping:
-`PENDING` → `pending`; `RUNNING` → `info` with a spinner icon and `isCurrent`;
-`SUCCEEDED` → `success`; `FAILED` → `danger`; `SKIPPED` → `default` (muted). Each
-step's `description` shows the time the phase became active and its duration,
-derived from the next step's transition time (or, for the running step, elapsed
-from now); a failed step shows `message`. The component is read-only (no actions)
-and pairs the stepper with a visually hidden `aria-live="polite"` region
-restating the current step so poll-driven updates are announced. It reuses the
-existing `useBareMetalInstance` query at the global ~10s `refetchInterval`
-default — no bespoke per-page interval is needed because the ~5s auto-refresh is
-a soft target and source-side freshness is already delivered by the existing
-feedback→`Signal` path `[User]` — and stops refetching once the instance is
-terminal
-[Codebase: osac-ui/apps/app-frontend/src/main.tsx]. The same component renders
-the persisted timeline for finished instances.
+`BareMetalProgressStepper` (osac-ui) renders `status.provisioning_phases` as a
+vertical PatternFly `ProgressStepper`, and — when `status.deprovisioning_phases`
+is non-empty — a second `ProgressStepper` for the teardown timeline below it, so
+the provisioning history stays visible during and after teardown [Research:
+PatternFly]. State → variant mapping: `PENDING` → `pending`; `RUNNING` → `info`
+with a spinner icon and `isCurrent`; `SUCCEEDED` → `success`; `FAILED` →
+`danger`; `SKIPPED` → `default` (muted). Each step's `description` shows the time
+the phase became active and, for phases that have one, its derived duration
+(from the next step's transition time, or for the running step elapsed from now);
+the terminal `Ready` phase and the milestones show a transition time only, and a
+failed step shows `message`. The component is read-only (no actions) and pairs the
+steppers with a visually hidden `aria-live="polite"` region restating the current
+step so poll-driven updates are announced. It uses the `useBareMetalInstance`
+query with a **dedicated ~5s `refetchInterval` while the instance is non-terminal**
+(a per-page override of the global ~10s default), so the DB→UI leg of freshness is
+bounded to ~5s rather than ~10s, and **stops refetching once the instance is
+terminal** [Codebase: osac-ui/apps/app-frontend/src/main.tsx]. The same component
+renders the persisted timelines for finished instances.
 
 ### Security Considerations
 
-This feature inherits the existing security model without changes. The `phases`
-field is observed state exposed through the same read path and authorization as
-the rest of `BareMetalInstanceStatus`; a caller who can `GET` the instance can
-see its timeline, and no new mutating surface is added (the view is read-only per
+This feature inherits the existing security model without changes. Both phase
+timelines are observed state exposed through the same read path and authorization
+as the rest of `BareMetalInstanceStatus`; a caller who can `GET` the instance can
+see its timelines, and no new mutating surface is added (the view is read-only per
 Non-Goals). Input validation is limited to enum-constrained fields and
 operator-generated timestamps; no user input reaches the timeline. The
 human-readable failure messages are drawn from a fixed operator-defined
@@ -615,21 +724,23 @@ also avoids leaking implementation detail across the tenant boundary.
 - **Feedback→`Signal` path disrupted.** Freshness degrades to the existing
   periodic full resync; timelines are still eventually consistent and no data is
   lost.
-- **CR deleted before final sync (release).** The operator records the Released
-  milestone before finalizer removal, and the reconciler syncs the terminal
-  timeline; if the reconciler misses the final event, the retained DB copy shows
-  the timeline through Cleaning and the instance is served as
-  deleted/released — flagged as Open Question 1 for the exact release-ordering
-  guarantee.
+- **CR deleted before final sync (release).** This cannot silently lose the
+  terminal state: the reconciler-gated finalizer handshake (see the Released
+  note) holds the finalizer until the reconciler has durably persisted the
+  terminal timeline to the DB and acknowledged on the CR. If the acknowledgment
+  is delayed (Signal lost, reconciler down), the operator requeues and the
+  periodic full-resync backstop brings the DB current before the finalizer is
+  removed — the CR is never deleted with the DB left at `Cleaning`.
 - **A phase has no work to do.** Where a phase is inapplicable (for example,
   Network Setup when the instance requests no network attachment), the operator
   emits it as `SKIPPED` rather than leaving it stuck `PENDING`.
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes are required. The `phases` field is added to an
-existing tenant-scoped resource and is served through the same authorization
-path; visibility follows the instance's existing tenant scoping. No new
+No RBAC or tenancy changes are required. Both phase-timeline fields
+(`provisioning_phases` and `deprovisioning_phases`) are added to an existing
+tenant-scoped resource and served through the same authorization path;
+visibility follows the instance's existing tenant scoping. No new
 resources are introduced, so no new `osac.openshift.io/tenant` or
 `osac.openshift.io/owner-reference` metadata is needed — the existing annotations
 on `BareMetalInstance` are unaffected [Codebase: bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_types.go].
@@ -648,25 +759,28 @@ without a schema change.
 ### Risks and Mitigations
 
 - **Extra `Signal` volume on the fulfillment reconciler.** Firing the existing
-  feedback `Signal` on `phases` changes adds signal events. Mitigation: the
-  signal is ID-only ("ring the bell, fulfillment pulls") and coalesces to a
-  single per-instance re-sync; the periodic full resync remains the backstop, and
-  no new watch is added.
-- **Timeline vs. conditions divergence.** Maintaining both the `phases` timeline
-  and the condition reason risks inconsistency. Mitigation: the reconciler
-  derives the reason from the timeline in one place, so they cannot drift.
+  feedback `Signal` on timeline changes (either array) adds signal events.
+  Mitigation: the signal is ID-only ("ring the bell, fulfillment pulls") and
+  coalesces to a single per-instance re-sync; the periodic full resync remains
+  the backstop, and no new watch is added.
+- **Timeline vs. conditions divergence.** Maintaining both phase timelines and
+  the condition reason risks inconsistency. Mitigation: the reconciler derives
+  the reason from the current-phase timeline (the running entry in
+  `deprovisioning_phases` if non-empty, else `provisioning_phases`) in one place,
+  so they cannot drift.
 - **Phase-mapping drift as the operator lifecycle evolves.** The mapping depends
   on osac-operator lifecycle conditions and AAP job status, not metal3 state
   strings. Mitigation: the mapping lives in one operator function with unit tests
   over condition/job-status fixtures.
-- **Refresh cost.** The detail view uses the existing global ~10s refetch and a
-  single-instance GET, so per-page cost is modest and no aggressive cadence is
-  introduced; the ~5s figure in the PRD is a soft target already satisfied by the
-  existing feedback→`Signal` path `[User]`.
+- **Refresh cost.** While an instance is non-terminal the detail view polls with
+  a dedicated ~5s `refetchInterval` (a per-page override of the global ~10s
+  default) and stops at terminal, so per-page cost is bounded to a single-instance
+  GET on an open detail page; end-to-end UI freshness is the CR→DB latency
+  (seconds, via feedback→`Signal`) plus the ~5s poll `[User]`.
 
 ### Drawbacks
 
-The design adds a second representation of progress (the `phases` timeline
+The design adds a second representation of progress (two phase timelines
 alongside conditions), which is more API surface than a pure single-cycling
 condition. It is justified because a single cycling condition retains only the
 *current* sub-step and loses the ordered history of prior phases as the reason
@@ -700,8 +814,9 @@ and reused by future services.
   the timeline. Pros: unbounded retention, append-only writes. Cons: no OSAC
   precedent (every resource embeds status; OSAC-1604 rejected a separate
   stream), new CRD/proto/RPC + DB migration + second fetch path, and breaks the
-  cross-service consistency goal — disproportionate for a bounded seven-phase
-  snapshot [Research: dedicated-object analysis]. Rejected: retention is tied to
+  cross-service consistency goal — disproportionate for a bounded timeline of at
+  most seven phase entries (four provisioning + three deprovisioning)
+  [Research: dedicated-object analysis]. Rejected: retention is tied to
   the life of the instance record, mirroring VMaaS/CaaS `[User]`, so no unbounded
   durable audit is required.
 - **CaaS orthogonal-conditions model (OSAC-1604).** Multiple independent
@@ -720,13 +835,14 @@ and reused by future services.
 
 ## Open Questions
 
-### 1. What is the exact "Released" ordering guarantee?
-
-- **Owner:** bare-metal-fulfillment-operator team
-- **Impact:** Whether "Released" means the host returned to `available`
-  (reusable) or the CR fully deleted, and how the final timeline is guaranteed to
-  reach the DB before the CR is removed (finalizer ordering). Affects the
-  Cleaning→Released transition and persisted-history completeness.
+None. The former open question — the exact "Released" ordering guarantee — is
+resolved by the reconciler-gated finalizer handshake (see the Released note in
+the Proposal): Released means the host is returned to the pool (`available`,
+`consumerRef` cleared, reusable) *and* the finalizer is removed only after the
+reconciler has durably persisted the terminal timeline to the DB and
+acknowledged it on the CR (`osac.openshift.io/timeline-persisted`), with the
+periodic full-resync backstop guaranteeing convergence if the acknowledgment is
+delayed.
 
 ## Test Plan
 
@@ -742,8 +858,10 @@ mapped to the requirement/interface-change matrix, are enumerated in
 - Skipped/retried/collapsed handling: a no-op Network Setup yields `SKIPPED`;
   an AAP provision-job retry keeps Provisioning `RUNNING` with a stable
   `last_transition_time`.
-- Reconciler `syncStatus()`: CR timeline folds into proto `phases`; the
-  `PROVISIONED` condition reason equals the current running phase.
+- Reconciler `syncStatus()`: the CR timelines fold into the proto
+  `provisioning_phases` and `deprovisioning_phases` arrays; the `PROVISIONED`
+  condition reason equals the current running phase (the running entry in
+  `deprovisioning_phases` if non-empty, else `provisioning_phases`).
 - Failure vocabulary: each phase failure produces its defined human-readable
   message and no raw error text.
 
@@ -751,10 +869,13 @@ mapped to the requirement/interface-change matrix, are enumerated in
 
 - envtest: driving a `BareMetalInstance` CR through Host Allocation →
   Provisioning → Network Setup → Ready produces a monotonically advancing
-  timeline; deletion produces the three deprovisioning phases through Released.
-- Feedback→`Signal` path: a CR status/`phases` change triggers a DB sync within
+  `provisioning_phases` timeline; deletion appends the three deprovisioning
+  phases through Released to `deprovisioning_phases` while `provisioning_phases`
+  is retained unchanged.
+- Feedback→`Signal` path: a CR status/timeline change triggers a DB sync within
   seconds (fulfillment reconciler against a kind cluster).
-- Persistence: after CR deletion, the API still serves the final timeline.
+- Persistence: after the Released handshake and CR deletion, the API still
+  serves both retained timelines up to record archival.
 
 ### E2E Tests
 
@@ -770,10 +891,10 @@ mapped to the requirement/interface-change matrix, are enumerated in
 Graduation criteria will be finalized when targeting a release; the measurable
 gates per stage are:
 
-- **Dev Preview:** the `phases` field is populated end-to-end for the happy path;
-  phase-mapping unit tests cover every osac-operator condition / AAP job-status
-  fixture; the UI stepper renders the four provisioning phases against a kind
-  cluster.
+- **Dev Preview:** `provisioning_phases` is populated end-to-end for the happy
+  path; phase-mapping unit tests cover every osac-operator condition / AAP
+  job-status fixture; the UI stepper renders the four provisioning phases against
+  a kind cluster.
 - **Tech Preview:** all testplan cases pass (FR-1…FR-5, NFR-1…NFR-3), including
   the failure (FR-5/IC-6), released-archival (TC-FR4-02), and freshness
   (TC-NFR1-01) scenarios; NFR-1 freshness is verified to meet single-digit
@@ -786,27 +907,30 @@ gates per stage are:
 
 **Documentation.** User-facing change is limited to the instance detail view;
 the new stepper needs a short help/legend entry (phase meanings, state colors).
-The only API-surface documentation change is the new `phases` field in the
-generated proto/API reference — no new endpoints. No runbook change beyond the
+The only API-surface documentation change is the two new phase-timeline fields
+(`provisioning_phases`, `deprovisioning_phases`) in the generated proto/API
+reference — no new endpoints. No runbook change beyond the
 Troubleshooting notes above.
 
 ## Upgrade / Downgrade Strategy
 
 This adds optional fields to an existing CRD and proto message. On upgrade,
-existing instances have an empty `phases` list until their next reconcile
-populates it; the UI renders nothing (or the coarse label) when the list is
-empty, so there is no hard dependency on the new field. Downgrade is safe: the
+existing instances have empty `provisioning_phases`/`deprovisioning_phases`
+lists until their next reconcile populates them; the UI renders nothing (or the
+coarse label) when both are empty, so there is no hard dependency on the new
+fields. Downgrade is safe: the
 new status fields are ignored by older readers and can be dropped without data
 loss because the timeline is derived state, re-derivable from the CR on the next
 reconcile.
 
 ## Version Skew Strategy
 
-The operator writes `ProvisioningProgress` to the CR; an older fulfillment
-reconciler that does not read it simply omits `phases` from the API (existing
-behavior). A newer reconciler reading a CR written by an older operator sees an
-empty timeline and serves the coarse status. The `phases` proto field is additive
-and optional, so fulfillment-service and osac-operator tolerate skew in either
+The operator writes `ProvisioningProgress`/`DeprovisioningProgress` to the CR; an
+older fulfillment reconciler that does not read them simply omits the timeline
+fields from the API (existing behavior). A newer reconciler reading a CR written
+by an older operator sees empty timelines and serves the coarse status. The
+`provisioning_phases`/`deprovisioning_phases` proto fields are additive and
+optional, so fulfillment-service and osac-operator tolerate skew in either
 direction. No CRD version migration is required (fields added within
 `v1alpha1`).
 
@@ -823,7 +947,8 @@ direction. No CRD version migration is required (fields added within
   if unread. Disabling has no effect on provisioning itself (observation only).
 - **Recovery:** restarting the fulfillment reconciler re-syncs CRs via its
   existing full-resync path and reconverges the DB; consistency is maintained
-  because the timeline is a full-replace derived projection of the CR.
+  because both timelines are a full-replace derived projection of the CR's
+  `ProvisioningProgress`/`DeprovisioningProgress` status.
 
 ## Infrastructure Needed
 
@@ -835,6 +960,6 @@ e2e) cover the change.
 ## Provenance
 
 Authored: respond @ design 0.9.0 - 562b610, workspace main @ d27d7951b
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, respond
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"d27d7951b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","research","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"d27d7951b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","research","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
