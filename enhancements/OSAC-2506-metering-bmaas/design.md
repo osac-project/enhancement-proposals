@@ -115,12 +115,16 @@ sequenceDiagram
         KP->>K: publish → osac.metering.heartbeat (2 records)
     end
 
-    FS->>WC: OBJECT_UPDATED (state=STOPPED)
+    FS->>WC: OBJECT_UPDATED (state=STOPPING)
     WC->>SP: read previous_state=RUNNING
-    WC->>SP: upsert(state=STOPPED, is_billable=true)
-    Note right of WC: Allocation continues, consumption stops
+    WC->>SP: upsert(state=STOPPING, is_billable=true)
+    Note right of WC: Consumption stops, allocation continues
     WC->>KP: osac.resource.suspended.v1 (meter_type=consumption, duration_seconds)
     KP->>K: publish → osac.metering.lifecycle (1 record)
+
+    FS->>WC: OBJECT_UPDATED (state=STOPPED)
+    WC->>SP: read previous_state=STOPPING
+    WC->>SP: upsert(state=STOPPED, is_billable=true)
 
     loop Every 60 seconds while STOPPED
         HG->>SP: query(is_billable=true)
@@ -150,11 +154,11 @@ sequenceDiagram
 Key observations:
 
 - `PROVISIONING` → `RUNNING` produces two `started.v1` events (both meters start simultaneously)
-- `RUNNING` → `STOPPED` produces one `suspended.v1` (consumption stops; allocation continues — no event needed)
+- `RUNNING` → `STOPPING` produces one `suspended.v1` (consumption stops; allocation continues — no event needed)
 - `STOPPED` → `RUNNING` produces one `resumed.v1` (consumption resumes; allocation unchanged)
 - Any transition into `FAILED` suspends every active meter; a host in `FAILED` state produces no allocation or consumption heartbeats and accrues no charges
 - Deletion produces two `suspended.v1` events (both meters close their intervals) plus one `deleted.v1` (audit)
-- Heartbeats vary by state: `RUNNING` produces two (allocation + consumption), `STOPPED`/`STARTING`/`STOPPING` produce one (allocation only)
+- Heartbeats vary by state: `RUNNING` produces two (allocation + consumption), `STOPPED`/`STARTING`/`STOPPING` produce one (allocation only). Allocation heartbeat duration is measured from `BillableSince`; a `RUNNING` consumption heartbeat is measured from `ComponentBillableSince["consumption"]`.
 
 ### API Extensions
 
@@ -362,7 +366,7 @@ stateDiagram-v2
 
     PROVISIONING --> RUNNING : provisioning complete\n→ osac.resource.started.v1 (consumption)
 
-    RUNNING --> STOPPING : stop requested\n(transient — consumption continues)
+    RUNNING --> STOPPING : stop requested\n→ osac.resource.suspended.v1 (consumption; allocation continues)
     RUNNING --> FAILED : hardware failure\n→ osac.resource.suspended.v1 (consumption)
     RUNNING --> DELETING : delete requested\n→ osac.resource.suspended.v1 (consumption)
 
@@ -371,7 +375,7 @@ stateDiagram-v2
         60s heartbeat (consumption)
     end note
 
-    STOPPING --> STOPPED : confirmed stopped\n→ osac.resource.suspended.v1 (consumption)
+    STOPPING --> STOPPED : confirmed stopped
 
     STOPPED --> STARTING : start requested\n(transient)
     STOPPED --> DELETING : delete requested
@@ -383,7 +387,7 @@ stateDiagram-v2
     DELETING --> [*] : confirmed deleted
 ```
 
-Consumption-billable state: `RUNNING` only. `FAILED` is non-billable, so the consumption meter is suspended on entry and produces no heartbeats until recovery to `RUNNING`. Structurally identical to the VMaaS `ComputeInstance` pattern.
+Consumption-billable state: `RUNNING` only. The consumption interval ends when `STOPPING` begins, so the transient `STOPPING` and terminal `STOPPED` states produce allocation heartbeats only. `FAILED` is non-billable, so the consumption meter is suspended on entry and produces no heartbeats until recovery to `RUNNING`. Structurally identical to the VMaaS `ComputeInstance` pattern.
 
 #### Reconciliation
 
@@ -418,6 +422,8 @@ The heartbeat decomposer for BMaaS checks `ResourceState.CurrentState`:
 | `FAILED`   | 0                           |
 
 Each heartbeat carries its own `meter_type` in billing dimensions and a deterministic event ID: `{base-hb-id}/allocation` and `{base-hb-id}/consumption`.
+
+The heartbeat builder calculates `duration_seconds` independently for each emitted record: `now - ResourceState.BillableSince` for allocation and `now - ResourceState.ComponentBillableSince["consumption"]` for a `RUNNING` consumption heartbeat. It never uses `BillableSince` for the consumption record. A consumption heartbeat is suppressed when the consumption timestamp is absent; an allocation heartbeat is suppressed when the allocation timestamp is absent. This preserves the separate intervals across stop/start cycles.
 
 #### M360 Adapter
 
@@ -545,7 +551,7 @@ The Part 1 design flags `status.state_transition_time` as a P1 prerequisite for 
 - Consumption transition table registers the same complete pair set with the correct meter-specific effect
 - `DecomposeBMIEvents()` produces 0, 1, or 2 events per transition based on meter boundary crossings:
   - `PROVISIONING → RUNNING: 2 events (allocation started + consumption started)
-  - `RUNNING` → `STOPPED`: 1 event (consumption suspended)
+- `RUNNING` → `STOPPING`: 1 event (consumption suspended)
   - `STOPPED` → `RUNNING`: 1 event (consumption resumed)
   - `RUNNING` → `DELETING`: 2 events (allocation suspended + consumption suspended)
   - `STOPPED` → `DELETING`: 1 event (allocation suspended)
