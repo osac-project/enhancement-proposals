@@ -16,7 +16,7 @@ WORKFLOWS = {
 
 
 class SkillSourceTraceabilityTests(unittest.TestCase):
-    def test_workflows_log_the_resolved_skills_commit(self):
+    def test_workflows_validate_then_log_the_resolved_skills_commit(self):
         for workflow_name, (workflow_path, checkout_path) in WORKFLOWS.items():
             with self.subTest(workflow=workflow_name):
                 content = (REPO_ROOT / workflow_path).read_text()
@@ -26,14 +26,19 @@ class SkillSourceTraceabilityTests(unittest.TestCase):
                     content,
                 )
                 self.assertIn(
-                    f'git -C {checkout_path} rev-parse --verify "HEAD^{{commit}}"',
+                    f'''skills_sha="$(git -C {checkout_path} rev-parse --verify "HEAD^{{commit}}")"
+          if ! [[ "$skills_sha" =~ ^[0-9a-f]{{40}}$ ]]; then
+            echo "::error::osac-ai-skills resolved to an invalid commit SHA: $skills_sha"
+            exit 1
+          fi
+          echo "Resolved osac-ai-skills commit: ${{skills_sha}}"
+          {{
+            echo "### OSAC AI skills"
+            echo
+            echo "Resolved osac-ai-skills commit: ${{skills_sha}}"
+          }} >> "$GITHUB_STEP_SUMMARY"''',
                     content,
                 )
-                self.assertIn("^[0-9a-f]{40}$", content)
-                self.assertIn(
-                    'Resolved osac-ai-skills commit: ${skills_sha}', content
-                )
-                self.assertIn("$GITHUB_STEP_SUMMARY", content)
 
     def test_ep_review_keeps_required_skill_validation(self):
         content = (REPO_ROOT / ".github/workflows/ep-review.yml").read_text()
