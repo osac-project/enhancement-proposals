@@ -530,15 +530,15 @@ Meter BMaaS like VMaaS — `RUNNING` only. Drop the allocation meter.
 
 ### 1. state_transition_time Availability for BMaaS
 
-**STATUS: REQUIRED but NOT YET IMPLEMENTED** — `BareMetalInstanceStatus` does not currently have a `state_transition_time` field, despite it being present on ComputeInstanceStatus and ClusterStatus.
+**STATUS: BLOCKING PREREQUISITE** — `BareMetalInstanceStatus` must expose a `state_transition_time` field, and the BareMetalInstance controller must populate it on every state change, before BMaaS metering can claim the Part 1 accuracy guarantee.
 
-The Part 1 design flags `status.state_transition_time` as a P1 prerequisite for sub-minute billing accuracy. If `state_transition_time` is not populated on `BareMetalInstanceStatus`, the metering-service falls back to event receipt time (typically sub-second but not guaranteed). For production billing accuracy matching Part 1's guarantees (_CAP-5_), `state_transition_time` must be added to the proto and populated by the BareMetalInstance controller whenever the state changes.
+The Watch event's receipt time is not a valid substitute: Watch disconnects, Kafka backlog, consumer backlog, and reconciliation can delay delivery by minutes or hours. The metering service must not estimate a transition timestamp from event receipt time, use a missing timestamp to advance either meter interval, or publish a billable lifecycle, correction, or heartbeat event for a state whose transition timestamp is unavailable. It must retain or reject the event for retry and surface the missing field as a dependency failure.
 
-**Interim Mitigation:** The metering mapper can implement `TransitionTime()` to use event receipt time as a fallback, degrading accuracy by at most one second (time between state change and Kafka publication). This is acceptable for MVP but should be upgraded once `state_transition_time` is available.
+The transition timestamp is carried from `BareMetalInstanceStatus` through the Watch Consumer and `StateContext` into the per-meter decomposer. Reconciliation also requires the same timestamp and cannot infer it from the time that a snapshot is read. Once the controller supplies the field, the fulfillment event stream must preserve it for replay and correction processing.
 
 **Owner:** Platform team (`BareMetalInstance` controller)
-**Required Action:** Add `optional google.protobuf.Timestamp state_transition_time` to `BareMetalInstanceStatus` proto. Populate it whenever the state transitions. Follow the pattern in ComputeInstanceStatus.
-**Impact:** `TransitionTime()` implementation in the BMaaS mapper; billing accuracy guarantee (_CAP-5_)
+**Required Action:** Add `optional google.protobuf.Timestamp state_transition_time` to `BareMetalInstanceStatus` proto. Populate it whenever the state transitions. Follow the pattern in ComputeInstanceStatus, and preserve the value in every Watch payload and replay path.
+**Impact:** BMaaS metering remains blocked until the field and controller population are available; no receipt-time fallback is permitted.
 
 ## Test Plan
 
