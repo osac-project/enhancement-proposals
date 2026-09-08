@@ -1,3 +1,4 @@
+testplan.md (updated) — select all & copy into your branch
 # Testplan — OSAC-3702
 
 ## Overview
@@ -19,7 +20,7 @@ T-order:
 
 | IC | Interface surface | Design ref | Ticket |
 |----|-------------------|-----------|--------|
-| IC-1 | Private proto: optional `VolumeTopology{node}` on `VolumeSpec` + `CreateVolumeRequest` | §API Extensions, §Impl (Topology proto) | T1 / OSAC-4357 |
+| IC-1 | Private proto: optional `VolumeTopology{segments}` (CSI-style map; LVMS uses `osac.io/node`) on `VolumeSpec` + `CreateVolumeRequest` | §API Extensions, §Impl (Topology proto) | T1 / OSAC-4357 |
 | IC-2 | Fulfillment: local-tier node guard (`FailedPrecondition`) + carry topology into Volume CR | §Impl (Fulfillment guard + carry) | T2 / OSAC-4358 |
 | IC-3 | Operator Volume CRD: optional `topology` field | §API Extensions | T3 / OSAC-4359 |
 | IC-4 | Operator: `LvmsVendorProvisioner` + provider-keyed routing + `VendorCreateVolumeRequest.Topology` | §Impl (Provider-keyed routing) | T4 / OSAC-4360 (OSAC-4221 first) |
@@ -89,7 +90,7 @@ T-order:
 
 ##### Expected Results
 
-- A StorageClass with `provisioner: osac.csi.openshift.io`, `volumeBindingMode: WaitForFirstConsumer`, `reclaimPolicy: Delete`, and **no** `topolvm.io/device-class` parameter exists after onboarding, with no manual steps.
+- A StorageClass with `provisioner: osac.csi.openshift.io`, `volumeBindingMode: WaitForFirstConsumer`, `reclaimPolicy: Delete`, and carrying **neither** a `topolvm.io/device-class` **nor** an `osac.io/device-class` parameter (the device class is resolved server-side from the StorageBackend/tier) exists after onboarding, with no manual steps.
 
 #### TC-R2-02: The native `topolvm.io` OSAC-managed StorageClass is retired; the LVMS-operator default is untouched
 
@@ -397,7 +398,7 @@ T-order:
 
 ##### Steps note
 
-- `VolumeTopology.node` lives only on `private.v1.VolumeSpec`.
+- `VolumeTopology.segments` lives only on `private.v1.VolumeSpec` (LVMS uses the `osac.io/node` segment).
 
 ##### Expected Results
 
@@ -415,11 +416,11 @@ T-order:
 
 ##### Steps
 
-1. Marshal/unmarshal a `VolumeSpec` with `topology` set and with `topology` absent.
+1. Marshal/unmarshal a `VolumeSpec` **and** a `CreateVolumeRequest` with `topology` set (an `osac.io/node` entry in `segments`) and with `topology` absent.
 
 ##### Expected Results
 
-- Both round-trip cleanly; the field defaults to empty when absent; `buf lint`/`buf generate` succeed with a fresh field number (not the removed `pvc_ref` slot).
+- All cases round-trip cleanly on both messages; `topology` (and its `segments` map) defaults to empty when absent; `buf lint`/`buf generate` succeed with a fresh field number (not the removed `pvc_ref` slot).
 
 ### R9: Test + docs
 

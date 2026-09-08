@@ -1,3 +1,4 @@
+design.md (updated) — select all & copy into your branch
 ---
 title: lvms-node-local-storage-vmaas
 authors:
@@ -62,7 +63,7 @@ The technical approach was worked out and reviewed with the WG; the eleven decis
 
 The enhancement adds five coordinated pieces, all additive:
 
-1. **Proto + CRD (additive):** an optional `VolumeTopology { string node = 1; }` message on the private `VolumeSpec` and `CreateVolumeRequest`, mirrored on the operator Volume CRD [Locked: D6].
+1. **Proto + CRD (additive):** an optional `VolumeTopology { map<string, string> segments = 1; }` message on the private `VolumeSpec` and `CreateVolumeRequest`, mirrored on the operator Volume CRD. LVMS requires the `osac.io/node` segment; the CSI-style map lets future backends add `zone`/`region`/rack segments without another proto change [Locked: D6, refined per review].
 2. **Fulfillment guard:** tier resolution already maps `tier=local → provider=lvms`; add a guard that rejects a local-tier volume with no topology node, and carry the node into the Volume CR [Locked: D6].
 3. **Operator provider-keyed routing + `LvmsVendorProvisioner`:** select the provisioner by `StorageBackend.spec.provider`; the LVMS provisioner writes a `LogicalVolume` CR and reports the result [Locked: D4, D10].
 4. **CSI plumbing (osac-csi-driver):** advertise `VOLUME_ACCESSIBILITY_CONSTRAINTS`, extract the scheduler-selected node from `CreateVolume`, return `accessible_topology`, report the `osac.io/node` segment from `NodeGetInfo`, and route local-tier mounts to the topolvm-node socket [Locked: D8, D9].
@@ -74,7 +75,7 @@ Attach requires no new code: the local backend is configured with the existing `
 
 **Actors:** Tenant User (creates a ComputeInstance with a `local`-tier disk, which the VMaaS stack backs with a PVC), the OSAC storage stack (CSI driver, fulfillment, operator), and topolvm-node.
 
-**Starting state:** the deployment is a development/test profile — the **dev/test gate** (`deployment.profile` when available, `lvms.enabled` in the interim, default `false`) is what permits LVMS backend registration at all; production profiles cannot register it. The storage control plane is enabled (`OSAC_ENABLE_STORAGE_CONTROLLER=true`) **and** `lvms.enabled` is set — both are required. `lvms.enabled` alone (controller off) is the pre-existing generic-topolvm mode; the registered backend/tier are inert without the controller, which is the only trigger for the storage AAP jobs that surface tenant StorageClasses. LVMS is installed on the single-node cluster (OSAC-3011); a Block-type `StorageBackend { provider: lvms }` and an LVMS-backed tier (admin-named — `local` in this example) are registered, and the AAP-generated `osac-csi` StorageClass exists with `volumeBindingMode: WaitForFirstConsumer`.
+**Starting state:** the deployment is a development/test profile — the **dev/test gate** (`deployment.profile` when available, `lvms.enabled` in the interim, default `false`) is what permits LVMS backend registration at all; production profiles cannot register it. The storage control plane is enabled (`OSAC_ENABLE_STORAGE_CONTROLLER=true`) **and** `lvms.enabled` is set — both are required. `lvms.enabled` alone (controller off) is the pre-existing generic-topolvm mode; the registered backend/tier are inert without the controller, which is the only trigger for the storage AAP jobs that surface tenant StorageClasses. LVMS is installed on the single-node cluster (OSAC-3011); a Block-type `StorageBackend { provider: lvms }` and an LVMS-backed tier (admin-named — `local` in this example) are registered, and the AAP-generated `osac-csi` StorageClass exists with `volumeBindingMode: WaitForFirstConsumer`. **Registration rule:** LVMS is registerable *if and only if* the storage control plane is enabled AND the deployment is a development/test profile. The dev/test profile signal is `deployment.profile` once that flag exists; until then `lvms.enabled=true` is the interim signal and `lvms.enabled=false` (the default) blocks registration. A production profile can never register LVMS, regardless of `lvms.enabled`.
 
 ```mermaid
 sequenceDiagram
@@ -127,7 +128,7 @@ No public (tenant-facing) API changes; the topology field is internal scheduling
 
 ## UX Alignment
 
-Storage `@temp-api` files exist in osac-ux (`block-volumes.ts`, `compute-instance-disk.ts`, `storage-backend.ts`, `storage-tier.ts`, `volume-snapshot.ts`), so this section is completed. This enhancement adds no tenant-facing field: its only API addition is `VolumeTopology.node` on the **private** `VolumeSpec`, an internal scheduler-selected node identifier the UI does not consume.
+Storage `@temp-api` files exist in osac-ux (`block-volumes.ts`, `compute-instance-disk.ts`, `storage-backend.ts`, `storage-tier.ts`, `volume-snapshot.ts`), so this section is completed. This enhancement adds no tenant-facing field: its only API addition is `VolumeTopology.segments` on the **private** `VolumeSpec` (LVMS uses the `osac.io/node` segment), an internal scheduler-selected placement identifier the UI does not consume.
 
 | UI field (`@temp-api` TypeScript) | Proto field (this EP) | Notes / deviation |
 |---|---|---|
@@ -137,13 +138,15 @@ No deviations from known anti-patterns: the field is not a sub-resource action, 
 
 ### Implementation Details/Notes/Constraints
 
-**Topology proto (T1 / OSAC-4357).** A typed message, not a bare string, so `zone`/`region` can be added later without another `VolumeSpec` change [Locked: D6]:
+**Topology proto (T1 / OSAC-4357).** A typed message with a CSI-style segments map, not a bare string, so additional placement dimensions (`zone`/`region`/rack) can be added by future backends without another `VolumeSpec` change [Locked: D6, refined per review]:
 
 ```proto
 // osac.private.v1
 message VolumeTopology {
-  // CSI topology segment value for osac.io/node — the scheduler-selected node.
-  string node = 1;
+  // CSI-style topology segments. LVMS requires the "osac.io/node" segment
+  // (the scheduler-selected node); network backends may set zone/region or
+  // leave it empty. Keys mirror CSI topology keys.
+  map<string, string> segments = 1;
 }
 // on VolumeSpec and CreateVolumeRequest:
 optional VolumeTopology topology = <fresh field number>;
@@ -156,11 +159,11 @@ optional VolumeTopology topology = <fresh field number>;
 **Provider-keyed routing + `LvmsVendorProvisioner` (T4 / OSAC-4360, depends on OSAC-4221).** Today the operator wires a single `VastVendorProvisioner` for every backend, hardcoding VAST specifics — a non-VAST backend either fails at `endpointFor` or mis-routes into VAST logic [Codebase: osac-operator]. OSAC-4221 makes provisioning provider-driven (registry + VAST impl + Pure/NetApp/LVMS **stubs**); this feature **fills the LVMS stub**. If OSAC-4221 has not landed, this feature builds the provider-keyed selection itself — either way it owns the LVMS provisioner [Locked: D4].
 
 `LvmsVendorProvisioner` implements the existing interface via a `targetClusterClient` seam (in-cluster for VMaaS; a remote guest client for CaaS later — same logic) [Locked: D1]:
-- **CreateVolume:** require `Topology.Node`; create a `LogicalVolume` CR (`spec.nodeName` = node, `spec.deviceClass` = the device class configured on the `StorageBackend`/tier and resolved server-side — not a StorageClass parameter, `spec.size` = requested); poll `status.volumeID`; on VG-capacity failure return `codes.ResourceExhausted`; return `vendor_volume_id = status.volumeID` [Locked: D10].
+- **CreateVolume:** require the `osac.io/node` topology segment; create a `LogicalVolume` CR (`spec.nodeName` = node, `spec.deviceClass` = the device class configured on the `StorageBackend`/tier and resolved server-side — not a StorageClass parameter, `spec.size` = requested); poll `status.volumeID`; on VG-capacity failure return `codes.ResourceExhausted` (no `LogicalVolume` was carved; fulfillment marks the Volume record failed/removed so no partial inventory remains, and external-provisioner's re-pick issues a fresh `CreateVolume` — keeping the flow retry-safe); return `vendor_volume_id = status.volumeID` [Locked: D10].
 - **DeleteVolume:** delete the `LogicalVolume` CR by name (idempotent).
 - **Publish/Unpublish:** not implemented — the local backend uses the `none` endpoint sentinel, so the CSI controller no-ops attach [Locked: D3].
 
-**CSI controller + node (T5 / OSAC-4361, T6 / OSAC-4362).** Controller `CreateVolume` reads `req.AccessibilityRequirements.Preferred[0].Segments["osac.io/node"]`, passes it to fulfillment, and on AVAILABLE returns `AccessibleTopology=[{osac.io/node: N}]` plus `volume_context{osac.backend, osac.volume-id, osac.topolvm-volume-id, osac.protocol}` [Locked: D9]. Because `VOLUME_ACCESSIBILITY_CONSTRAINTS` is a plugin-wide capability, the controller returns `AccessibleTopology` **only when the resolved backend is node-local**; for network backends it returns empty topology, so their PVs get no `nodeAffinity` and their StorageClasses stay `volumeBindingMode: Immediate` — advertising the capability does not change network provisioning. The controller remains a thin delegate — it never dials topolvm.
+**CSI controller + node (T5 / OSAC-4361, T6 / OSAC-4362).** Controller `CreateVolume` reads the `osac.io/node` segment from `req.AccessibilityRequirements.Preferred[0]`, falling back to `Requisite` if `Preferred` is empty; if no `osac.io/node` segment is present it passes no node, letting fulfillment return `codes.FailedPrecondition` for the node-local volume (under `WaitForFirstConsumer`, external-provisioner normally populates `Preferred[0]`, so this is defensive). It passes the node to fulfillment, and on AVAILABLE returns `AccessibleTopology=[{osac.io/node: N}]` plus `volume_context{osac.backend, osac.volume-id, osac.topolvm-volume-id, osac.protocol}` [Locked: D9]. Because `VOLUME_ACCESSIBILITY_CONSTRAINTS` is a plugin-wide capability, the controller returns `AccessibleTopology` **only when the resolved backend is node-local**; for network backends it returns empty topology, so their PVs get no `nodeAffinity` and their StorageClasses stay `volumeBindingMode: Immediate` — advertising the capability does not change network provisioning. The controller remains a thin delegate — it never dials topolvm.
 
 `NodeGetInfo` returns the segment `osac.io/node=<node>`. **The value must be the exact Kubernetes Node name** — derived from the downward API / the Node's `.metadata.name`, never `os.Hostname()` — so the PV `nodeAffinity`, the `LogicalVolume.spec.nodeName`, and topolvm-node's node view all agree [Locked: D8]. The node plugin routes local-tier `NodeStage/NodePublish` to the **topolvm-node** unix socket, reusing the existing `osac.backend`-keyed `resolveVendorSocket` routing. **This mount proxy is required, not optional:** because the PV's provisioner is `osac.csi.openshift.io` (Option A), kubelet calls *our* node plugin to mount — but only topolvm-node can mount an LVM LV — so our plugin forwards `NodePublish` (with topolvm's volume ID and the pod target path) to topolvm-node, which performs the mount. This is the same node-side mechanism network vendors use; only the controller side differs (lvms has no controller socket). For it to work, the meta-driver's `node.vendorSockets` must carry `lvms → <topolvm-node socket>`; **which installer wires that entry depends on the csi-backends/driver ownership decision (OSAC-4252) and on node-local-vendor support in the driver-install role (OSAC-3290 / #361) — see Open Question 8.3** [Codebase: osac-csi-driver/pkg/driver/node.go].
 
@@ -189,7 +192,7 @@ The **OSAC-managed per-tenant** `topolvm.io` StorageClass this AAP role emitted 
 | T5 | osac-csi-driver | accessibility capability, topology extract, `AccessibleTopology` | OSAC-4361 | T1 |
 | T6 | osac-csi-driver | `NodeGetInfo` `osac.io/node` segment + topolvm-node socket routing | OSAC-4362 | — |
 | T7 | operator Helm | RBAC for `LogicalVolume` | OSAC-4363 | T4 |
-| T8 | osac-aap | osac-csi local StorageClass (WFC + `osac.io/device-class`), VMaaS onboarding | OSAC-4364 | — |
+| T8 | osac-aap | osac-csi local StorageClass (WFC only; device class resolved server-side from the StorageBackend/tier), VMaaS onboarding | OSAC-4364 | — |
 | T9 | osac-test-infra | single-node VMaaS e2e (provision → mount → cleanup, node-pinning) | OSAC-3711 | T1–T8 |
 
 Deferred to a future feature (not in this design): CaaS/multi-cluster, multi-node capacity-aware scheduling, expansion, quota.
