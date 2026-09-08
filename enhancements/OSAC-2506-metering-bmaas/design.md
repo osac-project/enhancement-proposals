@@ -34,7 +34,7 @@ The Part 1 design states that "_the canonical event model supports future resour
 1. **Reuse Part 1 infrastructure** — no new services, Kafka topics, or deployment artifacts; BMaaS metering is a code-level extension of the existing metering-service and adapter framework
 2. **Extend, don't replace, the event decomposition pattern** — the CaaS `N+1` per-component decomposer is the precedent; BMaaS adds a per-meter decomposer that produces independent CloudEvent streams with independent event types
 3. **Allocation and consumption meters are independently queryable** — each meter has a distinct `meter_type` billing dimension, so downstream systems can filter, aggregate, and price them separately
-4. **No new metering API surface** — the existing `Events.Watch` stream carries the `spec.instance_type` reference introduced by [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201); BMaaS metering also requires the fulfillment controller to expose and populate `BareMetalInstanceStatus.state_transition_time` as a blocking data prerequisite
+4. **No new metering API surface** — the existing `Events.Watch` stream carries the `spec.instance_type` reference introduced by [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201); the fulfillment controller now exposes and populates `BareMetalInstanceStatus.state_transition_time` through merged [OSAC-4969](https://redhat.atlassian.net/browse/OSAC-4969)
 
 ### Non-Goals
 
@@ -439,7 +439,13 @@ The echo adapter requires no changes — it stores all CloudEvents by ID regardl
 
 #### Parent-Child Attribution
 
-The PRD requires storage volumes and public IPs attached to a bare metal host to be queryable as a unified usage view (_CAP-5_ acceptance criterion). This is handled by the `billing_dimensions` model established in Part 1: each subsidiary resource (`StorageVolume`, `ExternalIP`) carries a `parent_resource_id` in its billing dimensions pointing to the `BareMetalInstance`. The actual storage and networking metering implementation is deferred to [OSAC-3141](https://redhat.atlassian.net/browse/OSAC-3141) and [OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145). This design establishes the parent side of the relationship by including the `BareMetalInstance`'s `resource_id` in all its CloudEvents (already present as the base field), which subsidiary resources reference.
+The PRD requires storage volumes and public IPs attached to a bare metal host to be queryable as a unified usage view (_CAP-5_ acceptance criterion). This is an attribution and query relationship, not a second meter for the attached resources. The ownership boundary is:
+
+- [OSAC-3141](https://redhat.atlassian.net/browse/OSAC-3141) owns the block-volume meter (`GiB-seconds`) for every volume, including volumes attached to bare metal hosts.
+- OSAC-2506 owns the bare metal host-resource meters and the unified bare metal host footprint view that rolls already-metered child usage into the host view.
+- [OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145) owns the public-IP/networking meter, including for resources attached to bare metal hosts.
+
+OSAC-2506 does not emit a second block-volume or public-IP meter event. Child-resource events owned by OSAC-3141 and OSAC-3145 carry `parent_resource_id` pointing to the `BareMetalInstance`; the usage query layer uses that relationship to include the child usage in the host's unified view without double-counting it.
 
 ### Security Considerations
 
@@ -534,15 +540,15 @@ Meter BMaaS like VMaaS — `RUNNING` only. Drop the allocation meter.
 
 ### 1. state_transition_time Availability for BMaaS
 
-**STATUS: BLOCKING PREREQUISITE** — `BareMetalInstanceStatus` must expose a `state_transition_time` field, and the BareMetalInstance controller must populate it on every state change, before BMaaS metering can claim the Part 1 accuracy guarantee.
+**STATUS: RESOLVED; IMPLEMENTATION MERGED** — [OSAC-4969](https://redhat.atlassian.net/browse/OSAC-4969) tracks the fulfillment change, which has merged. It adds `BareMetalInstanceStatus.state_transition_time` and populates it on every state change. The fulfillment version consumed by BMaaS metering must include this merged change.
 
 The Watch event's receipt time is not a valid substitute: Watch disconnects, Kafka backlog, consumer backlog, and reconciliation can delay delivery by minutes or hours. The metering service must not estimate a transition timestamp from event receipt time, use a missing timestamp to advance either meter interval, or publish a billable lifecycle, correction, or heartbeat event for a state whose transition timestamp is unavailable. It must retain or reject the event for retry and surface the missing field as a dependency failure.
 
 The transition timestamp is carried from `BareMetalInstanceStatus` through the Watch Consumer and `StateContext` into the per-meter decomposer. Reconciliation also requires the same timestamp and cannot infer it from the time that a snapshot is read. Once the controller supplies the field, the fulfillment event stream must preserve it for replay and correction processing.
 
 **Owner:** Platform team (`BareMetalInstance` controller)
-**Required Action:** Add `optional google.protobuf.Timestamp state_transition_time` to `BareMetalInstanceStatus` proto. Populate it whenever the state transitions. Follow the pattern in ComputeInstanceStatus, and preserve the value in every Watch payload and replay path.
-**Impact:** BMaaS metering remains blocked until the field and controller population are available; no receipt-time fallback is permitted.
+**Implementation:** [OSAC-4969](https://redhat.atlassian.net/browse/OSAC-4969) added `optional google.protobuf.Timestamp state_transition_time` to `BareMetalInstanceStatus`, populates it whenever the state transitions, and follows the pattern in `ComputeInstanceStatus`. The value must be preserved in every Watch payload and replay path.
+**Impact:** The state-transition timestamp prerequisite is satisfied once BMaaS consumes a fulfillment version containing OSAC-4969; no receipt-time fallback is permitted.
 
 ## Test Plan
 
