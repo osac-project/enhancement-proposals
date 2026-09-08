@@ -230,19 +230,26 @@ The resolver performs exact `(from, to)` lookups. The following is the complete 
 
 **Consumption transition table** — billable state: `RUNNING` only. It registers the same complete pair set above. `PROVISIONING`, `STOPPED`, `STARTING`, and `FAILED` → `RUNNING` open a consumption interval; every `RUNNING` → `STOPPING`, `STOPPED`, `FAILED`, or `DELETING` pair closes it; all remaining registered pairs are `Skip`. The `RUNNING` → `STOPPING` boundary is intentional: consumption ends when the stop operation begins, while allocation continues through the transient state.
 
-The decomposer evaluates both tables for each Watch event and produces one CloudEvent per meter that crosses a billing boundary. Transitions where neither meter crosses a boundary (_e.g._, `STOPPED` → `STOPPED`) produce no lifecycle events. The `OBJECT_CREATED` and `OBJECT_DELETED` fixed event types produce a single audit event (no `meter_type` dimension — these are resource-level, not meter-level).
+The decomposer evaluates both tables for each Watch event and produces one CloudEvent per meter that crosses a billing boundary. Transitions where neither meter crosses a boundary (_e.g._, `STOPPED` → `STOPPED`) produce no lifecycle events. Every lifecycle event receives the transition timestamp and the active interval for its own meter; the allocation and consumption intervals are never calculated from one shared timestamp.
 
 ```go
+type BMaaSMeterIntervals struct {
+    AllocationSince  *time.Time
+    ConsumptionSince *time.Time
+}
+
 func DecomposeBMIEvents(
     billingDims map[string]any,
     baseID string,
+    transitionTime time.Time,
+    intervals BMaaSMeterIntervals,
     buildFn EventBuilder,
     allocType string,
     consumType string,
 ) ([]cloudevents.Event, error)
 ```
 
-The decomposer receives the resolved CloudEvent types for each meter (or empty string if no boundary). It builds independent events with deterministic IDs: `{baseID}/allocation` and `{baseID}/consumption`.
+The decomposer receives the resolved CloudEvent types for each meter (or empty string if no boundary), plus the two active interval timestamps from `StateContext`. It computes `duration_seconds` as `transitionTime - intervals.AllocationSince` for allocation events and `transitionTime - intervals.ConsumptionSince` for consumption events. A consumer must not calculate one duration from `ResourceState.BillableSince` and reuse it for both meters. It builds independent events with deterministic IDs: `{baseID}/allocation` and `{baseID}/consumption`.
 
 #### State Projection
 
@@ -252,12 +259,12 @@ The existing `ResourceState` struct is sufficient without schema changes:
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `IsBillable`             | Allocation-billable (true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`)                                                                                   |
 | `EverBillable`           | True once the host has ever been allocation-billable                                                                                                          |
-| `BillableSince`          | When the allocation meter last started                                                                                                                        |
-| `ComponentBillableSince` | `{"consumption": <time>}` — when the consumption meter last started. Reuses the existing per-component timestamp map with a single "consumption" key.         |
+| `BillableSince`          | Start of the active allocation interval. It is set when allocation becomes billable and cleared after allocation suspension.                                  |
+| `ComponentBillableSince` | `{"consumption": <time>}` — start of the active consumption interval. It is set on entry to `RUNNING` and cleared when consumption stops.               |
 | `CurrentState`           | BareMetalInstance state (`PROVISIONING`, `RUNNING`, `STOPPED`, _etc._)                                                                                        |
 | `BillingDimensions`      | BM instance type, catalog item, and other BMaaS-specific dimensions                                                                                          |
 
-The consumption meter's `duration_seconds` on `suspended.v1` events is computed from `ComponentBillableSince["consumption"]`. The allocation meter uses `BillableSince` as existing resources do.
+The Watch Consumer carries both timestamps from the projection into `StateContext` and then into the decomposer. The consumption meter's `duration_seconds` on `suspended.v1` events is computed from `ComponentBillableSince["consumption"]`; the allocation meter uses `BillableSince`. On `RUNNING` → `STOPPING`, consumption is closed and its timestamp is cleared while the allocation timestamp remains unchanged. On a later transition to `RUNNING`, a new consumption timestamp is set at that transition time while the allocation interval continues.
 
 `ListBillable()` returns BMaaS resources that are allocation-billable. The heartbeat decomposer checks `CurrentState` to determine whether to produce one heartbeat (allocation only, for `STOPPED`/`STARTING`/`STOPPING`) or two (allocation + consumption, for `RUNNING`).
 
