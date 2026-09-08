@@ -34,7 +34,7 @@ The Part 1 design states that "_the canonical event model supports future resour
 1. **Reuse Part 1 infrastructure** — no new services, Kafka topics, or deployment artifacts; BMaaS metering is a code-level extension of the existing metering-service and adapter framework
 2. **Extend, don't replace, the event decomposition pattern** — the CaaS `N+1` per-component decomposer is the precedent; BMaaS adds a per-meter decomposer that produces independent CloudEvent streams with independent event types
 3. **Allocation and consumption meters are independently queryable** — each meter has a distinct `meter_type` billing dimension, so downstream systems can filter, aggregate, and price them separately
-4. **No fulfillment-service proto changes for metering** — the existing `Events.Watch` stream already carries the `spec.instance_type` reference introduced by [OSAC-1201]((https://redhat.atlassian.net/browse/OSAC-1201)); metering reads that reference directly
+4. **No fulfillment-service proto changes for metering** — the existing `Events.Watch` stream already carries the `spec.instance_type` reference introduced by [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201); metering reads that reference directly
 
 ### Non-Goals
 
