@@ -3,7 +3,7 @@ title: metering-bmaas
 authors:
   - amoren@redhat.com
 creation-date: 2026-08-19
-last-updated: 2026-09-07
+last-updated: 2026-09-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2506
 prd:
@@ -21,7 +21,7 @@ superseded-by:
 
 ## Summary
 
-This design extends the OSAC Metering Service to meter bare metal hosts using a dual-meter event decomposition model: an allocation meter (`host-type-seconds`) that runs from provisioning complete until the host enters `FAILED` or is deleted, regardless of power state, and a consumption meter (`bare-metal-compute-seconds`) that runs only while the host is powered on. A host in `FAILED` state is never billable for either meter. The design reuses the Part 1 metering infrastructure (Watch Consumer, State Projection, Heartbeat Generator, Reconciliation Loop, Kafka, Provider Adapters) and introduces a per-meter event decomposer that produces independent CloudEvent streams for each meter from a single Watch event. See [PRD](prd.md) for detailed requirements.
+This design extends the OSAC Metering Service to meter bare metal hosts using a dual-meter event decomposition model: an allocation meter (`bare-metal-instance-type-seconds`) that runs from provisioning complete until the host enters `FAILED` or is deleted, regardless of power state, and a consumption meter (`bare-metal-compute-seconds`) that runs only while the host is powered on. A host in `FAILED` state is never billable for either meter. The design reuses the Part 1 metering infrastructure (Watch Consumer, State Projection, Heartbeat Generator, Reconciliation Loop, Kafka, Provider Adapters) and introduces a per-meter event decomposer that produces independent CloudEvent streams for each meter from a single Watch event. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -34,7 +34,7 @@ The Part 1 design states that "_the canonical event model supports future resour
 1. **Reuse Part 1 infrastructure** — no new services, Kafka topics, or deployment artifacts; BMaaS metering is a code-level extension of the existing metering-service and adapter framework
 2. **Extend, don't replace, the event decomposition pattern** — the CaaS `N+1` per-component decomposer is the precedent; BMaaS adds a per-meter decomposer that produces independent CloudEvent streams with independent event types
 3. **Allocation and consumption meters are independently queryable** — each meter has a distinct `meter_type` billing dimension, so downstream systems can filter, aggregate, and price them separately
-4. **No fulfillment-service proto changes for metering** — the `BareMetalInstance` Watch stream and Event proto (field 15) already exist; host type resolution uses existing APIs
+4. **No fulfillment-service proto changes for metering** — the `BareMetalInstance` Watch stream already carries the `spec.instance_type` reference introduced by OSAC-1201; metering reads that reference directly
 
 ### Non-Goals
 
@@ -57,7 +57,7 @@ The Part 1 design states that "_the canonical event model supports future resour
 
 **Meter Type** — A billing dimension (`meter_type`) that discriminates between allocation and consumption events. Enables downstream systems to filter, aggregate, and price each meter independently. Carried in CloudEvent `billing_dimensions`, not as a CloudEvent extension attribute.
 
-**Billing Dimensions** — Structured metadata attached to CloudEvents that describe resource attributes for billing purposes. BMaaS includes: `meter_type` (allocation or consumption), `host_type` (e.g., gpu-a100-8x), `catalog_item` (e.g., bmi-gpu-workstation).
+**Billing Dimensions** — Structured metadata attached to CloudEvents that describe resource attributes for billing purposes. BMaaS includes: `meter_type` (allocation or consumption), `bm_instance_type` (e.g., gpu-large), `catalog_item` (e.g., bmi-gpu-workstation).
 
 **State Projection** — A PostgreSQL-backed runtime view of resource state. Tracks `IsBillable`, `CurrentState`, `BillableSince`, and per-component billable timestamps (`ComponentBillableSince`). Used by the Heartbeat Generator to determine which resources are metering and the Watch Consumer to detect transitions.
 
@@ -65,13 +65,13 @@ The Part 1 design states that "_the canonical event model supports future resour
 
 **CloudEvent** — A standardized event format (CNCF spec) published to Kafka. BMaaS CloudEvents include: event type (_e.g._, `osac.resource.started.v1`), meter-specific billing dimensions, tenant attribution, resource IDs, and timestamps. Consumed by provider adapters for billing integration.
 
-**Host Type** — The compute profile of a bare metal host (_e.g._, `gpu-a100-8x`, `standard-cpu-64`). Resolved from `BareMetalInstanceTemplate` metadata. Primary pricing dimension for allocation and consumption meters.
+**BareMetalInstanceType** — An OSAC resource that identifies a provider-defined bare metal hardware configuration. A `BareMetalInstance` references it through `spec.instance_type`; the reference is the primary pricing dimension for allocation and consumption meters.
 
 ## Proposal
 
 The design introduces four changes to the metering-service codebase:
 
-1. `bareMetalInstanceMapper` — a new `ResourceMapper` implementation that extracts metering data from `BareMetalInstance` Watch events, with `IsBillable()` returning allocation-billable (the broader meter)
+1. `bareMetalInstanceMapper` — a new `ResourceMapper` implementation that extracts metering data, including the `BareMetalInstanceType` reference, from `BareMetalInstance` Watch events, with `IsBillable()` returning allocation-billable (the broader meter)
 2. **Dual-meter event decomposer** — a new `EventDecomposer` that evaluates two independent transition tables (allocation and consumption) per Watch event and produces up to two CloudEvents, each with its own CloudEvent type and `meter_type` billing dimension
 3. **Extended reconciliation** — a `BareMetalInstancesClient` and loader for the hourly reconciliation loop, with a billability checker that uses the allocation meter's state set
 4. **M360 adapter route** — a `/bmaas/event` endpoint that passes the `meter_type` billing dimension through to the M360 Usage API
@@ -239,39 +239,23 @@ The existing `ResourceState` struct is sufficient without schema changes:
 | `BillableSince`          | When the allocation meter last started                                                                                                                        |
 | `ComponentBillableSince` | `{"consumption": <time>}` — when the consumption meter last started. Reuses the existing per-component timestamp map with a single "consumption" key.         |
 | `CurrentState`           | BareMetalInstance state (`PROVISIONING`, `RUNNING`, `STOPPED`, _etc._)                                                                                        |
-| `BillingDimensions`      | Host type, catalog item, and other BMaaS-specific dimensions                                                                                                  |
+| `BillingDimensions`      | BM instance type, catalog item, and other BMaaS-specific dimensions                                                                                          |
 
 The consumption meter's `duration_seconds` on `suspended.v1` events is computed from `ComponentBillableSince["consumption"]`. The allocation meter uses `BillableSince` as existing resources do.
 
 `ListBillable()` returns BMaaS resources that are allocation-billable. The heartbeat decomposer checks `CurrentState` to determine whether to produce one heartbeat (allocation only, for `STOPPED`/`STARTING`/`STOPPING`) or two (allocation + consumption, for `RUNNING`).
 
-#### Host Type Resolution
+#### BareMetalInstanceType Resolution
 
-The PRD's primary metering dimension is host type. The resolution chain from BareMetalInstance to host type:
-
-```
-BareMetalInstance
-  → spec.catalog_item (BareMetalInstanceCatalogItemReference)
-    → BareMetalInstanceCatalogItem
-      → template (BareMetalInstanceTemplateReference)
-        → BareMetalInstanceTemplate
-          → host_type (string, references HostType)
-```
-
-The Watch stream delivers the full BareMetalInstance payload, which includes `spec.catalog_item` as a reference (name/id) — not the resolved `CatalogItem`, `Template`, or `HostType` objects. Two resolution approaches, in preference order:
-
-**Approach A (recommended): Template cache in metering-service.** The metering-service maintains an in-memory cache of `template_id → host_type` mappings, populated on startup via `PrivateBareMetalInstanceTemplatesService.List` and refreshed hourly during reconciliation. Cache misses trigger a synchronous `Get` call. This adds no fulfillment-service proto changes and the template→`host_type` mapping is stable (templates are admin-managed and rarely change).
-
-**Approach B (future optimization): Denormalized host_type.** The fulfillment-service denormalizes `host_type` onto `BareMetalInstanceStatus` or as a resolved spec field, making it directly available in the Watch payload. This eliminates the cache but requires a fulfillment-service change.
-
-The mapper extracts billing dimensions including `host_type`:
+The PRD's primary metering dimension is the `BareMetalInstanceType` selected for the host. OSAC-1201 adds `spec.instance_type` to `BareMetalInstance`; the Watch stream carries that reference with the resource:
 
 ```go
-func BareMetalInstanceBillingDimensions(bmi *privatev1.BareMetalInstance, hostType string) map[string]any {
-    dims := map[string]any{
-        "host_type": hostType,
-    }
+func BareMetalInstanceBillingDimensions(bmi *privatev1.BareMetalInstance) map[string]any {
+    dims := map[string]any{}
     if spec := bmi.GetSpec(); spec != nil {
+        if instanceType := spec.GetInstanceType(); instanceType != "" {
+            dims["bm_instance_type"] = instanceType
+        }
         if ci := spec.GetCatalogItem(); ci != nil {
             dims["catalog_item"] = ci.GetName()
         }
@@ -279,6 +263,8 @@ func BareMetalInstanceBillingDimensions(bmi *privatev1.BareMetalInstance, hostTy
     return dims
 }
 ```
+
+The metering service does not resolve hardware metadata through `BareMetalInstanceType` List/Get calls and does not maintain a type cache or watch the type resource. The `spec.instance_type` reference is the stable billing identity for the lifetime of a `BareMetalInstance`; the field must therefore be immutable after creation. Changes to descriptive or hardware metadata do not rewrite historical metering events. A new billing identity requires a new `BareMetalInstanceType` reference. BMaaS metering requires this reference to be populated; legacy catalog-item-only resources must be migrated before they can satisfy the BMaaS metering dimension requirement. An empty reference is a configuration error and must prevent billable BMaaS events from being published until reconciliation can resolve the configuration.
 
 #### BMaaS Billing Dimensions
 
@@ -289,7 +275,7 @@ BMaaS CloudEvents carry the following billing dimensions. Each event includes a 
 ```json
 {
   "meter_type": "allocation",
-  "host_type": "gpu-a100-8x",
+  "bm_instance_type": "gpu-large",
   "catalog_item": "bmi-gpu-workstation"
 }
 ```
@@ -297,12 +283,12 @@ BMaaS CloudEvents carry the following billing dimensions. Each event includes a 
 ```json
 {
   "meter_type": "consumption",
-  "host_type": "gpu-a100-8x",
+  "bm_instance_type": "gpu-large",
   "catalog_item": "bmi-gpu-workstation"
 }
 ```
 
-The `meter_type` discriminator enables downstream systems to filter and price each meter independently. The `host_type` is the primary pricing dimension (analogous to `instance_type` for VMaaS). The `catalog_item` supports the PRD's queryability requirement (_CAP-3_).
+The `meter_type` discriminator enables downstream systems to filter and price each meter independently. The `bm_instance_type` reference is the primary pricing dimension (analogous to `instance_type` for VMaaS). The `catalog_item` supports the PRD's queryability requirement (_CAP-3_).
 
 Base event fields (`tenant_id`, `project_id`, `catalog_item_id`, `template_id`) are populated from the BareMetalInstance metadata and spec, following the same pattern as ComputeInstance.
 
@@ -435,7 +421,6 @@ BMaaS metering inherits the existing security model without changes:
 | Failure Mode                                    | Effect                                                              | Recovery                                                                                                                                                                | User Observation                                                                  |
 | ----------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | Watch stream disconnect                         | Missed BareMetalInstance transitions                                | Hourly reconciliation detects state drift and emits corrections. Startup reconciliation runs before Watch Consumer resumes.                                             | Brief gap in per-second accuracy (up to 60 min); corrected in next reconciliation |
-| Template cache miss (`host_type` unresolvable)    | `BareMetalInstance` event produced with empty `host_type`             | Logged as warning; cache refresh on next reconciliation picks up the template. Adapter receives the event with missing dimension.                                       | Host type attribution may be missing for up to one reconciliation interval        |
 | Kafka publish failure                           | Events buffered in metering-service; backpressure on Watch Consumer | Kafka producer retries with exponential backoff. If Kafka is unavailable for extended period, events accumulate in memory and reconciliation catches up after recovery. | Delayed event availability for downstream consumers                               |
 | Reconciliation detects missed BareMetalInstance | Resource was created but Watch event was lost                       | Reconciliation emits `correction.v1 (reason=missed_creation)` and seeds the projection                                                                                  | Downstream system receives correction with adjusted interval                      |
 | Metering-service restart mid-lifecycle          | In-memory state projection lost                                     | PostgreSQL-backed projection survives restarts. Startup reconciliation reconciles any gap between last projected state and current fulfillment state.                   | No user-visible impact beyond momentary heartbeat gap                             |
@@ -453,8 +438,6 @@ New Prometheus metrics for BMaaS metering:
 | ----------------------------------------------- | ------- | -------------------------- | ---------------------------------------------------- |
 | `osac_metering_bmi_events_total`                | Counter | `meter_type`, `event_type` | BMaaS lifecycle events produced, by meter and type   |
 | `osac_metering_bmi_heartbeats_total`            | Counter | `meter_type`               | BMaaS heartbeat events produced, by meter            |
-| `osac_metering_bmi_template_cache_misses_total` | Counter | —                          | Template cache misses during `host_type` resolution  |
-| `osac_metering_bmi_template_cache_size`         | Gauge   | —                          | Current template cache size                          |
 
 
 Existing metrics (`osac_metering_reconciliation_corrections_total`, `osac_metering_reconciliation_duration_seconds`) gain `bare_metal_instance` as a new `resource_type` label value. No new alerts — existing reconciliation and Kafka health alerts cover BMaaS.
@@ -465,8 +448,7 @@ Existing metrics (`osac_metering_reconciliation_corrections_total`, `osac_meteri
 | Risk                                                                                                                                           | Mitigation                                                                                                                                                                                                                                                                      |
 | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Dual-meter decomposition complexity** — the per-meter decomposer is a novel pattern not used by VMaaS or CaaS, increasing maintenance burden | The decomposer is self-contained in `bare_metal_instance.go` and isolated behind the `EventDecomposer` interface. Unit tests cover all (from, to, meter) combinations via the two transition tables.                                                                            |
-| **Template cache staleness** — host_type resolution depends on cached template data that could become stale if templates are updated           | Templates are admin-managed and rarely change. The cache refreshes hourly during reconciliation. A cache miss triggers a synchronous lookup, so the worst case is one missed dimension per new template until the cache refreshes.                                              |
-| **OSAC-1201 dependency** — host types must be defined before BMaaS metering is useful                                                          | [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201) EP is complete ([PR #119](https://github.com/osac-project/enhancement-proposals/pull/119)). `BareMetalInstanceTemplate` and `HostType` protos already exist in the codebase. This is a blocking dependency — without host types, the primary metering dimension is empty. |
+| **OSAC-1201 dependency** — BareMetalInstanceTypes must be defined and referenced before BMaaS metering is useful                                  | [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201) defines the `BareMetalInstanceType` resource and the `BareMetalInstance.spec.instance_type` reference. This is a blocking dependency — without the reference, the primary metering dimension is empty. |
 | **Part 1 not yet deployed** — BMaaS metering depends on the metering-service infrastructure from OSAC-985                                      | Part 1 design is complete; implementation is in progress. BMaaS metering code can be developed in parallel but cannot be deployed or tested end-to-end until Part 1 infrastructure is operational.                                                                              |
 
 
@@ -531,8 +513,9 @@ The Part 1 design flags `status.state_transition_time` as a P1 prerequisite for 
 
 ### Unit Tests
 
-- `bareMetalInstanceMapper` extracts resource type, ID, tenant, project, catalog item, template ID, and state from a `BareMetalInstance` proto
-- `BareMetalInstanceBillingDimensions()` populates `host_type` and `catalog_item` from the template cache
+- `bareMetalInstanceMapper` extracts resource type, ID, tenant, project, catalog item, instance type, and state from a `BareMetalInstance` proto
+- `BareMetalInstanceBillingDimensions()` populates `bm_instance_type` from `spec.instance_type` and `catalog_item` from the BareMetalInstance spec
+- `BareMetalInstanceBillingDimensions()` does not emit a billable dimension for a missing `spec.instance_type` and records the configuration error
 - `IsAllocationBillableState()` returns true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`; false for `PROVISIONING`, `FAILED`, `DELETING`, `UNSPECIFIED`
 - `IsConsumptionBillableState()` returns true for `RUNNING` only
 - Allocation transition table covers all (from, to) state pairs with correct billing effect
@@ -547,8 +530,6 @@ The Part 1 design flags `status.state_transition_time` as a P1 prerequisite for 
   - `FAILED` → `RUNNING`: 2 events (allocation started + consumption started)
   - `STOPPED` → `STOPPED`: 0 events
 - Heartbeat decomposer produces 2 heartbeats for `RUNNING`, 1 for `STOPPED`/`STARTING`/`STOPPING`, and 0 for `FAILED`
-- Template cache populates on startup via List API and resolves host_type on cache hit
-- Template cache miss triggers synchronous Get call and caches result
 - Reconciliation billability checker uses allocation-billable states
 - Correction event decomposer produces per-meter corrections matching the state drift direction
 
@@ -584,7 +565,6 @@ The metering-service is a standalone deployment — it does not run alongside a 
 **Detecting BMaaS metering failures:**
 
 - `osac_metering_bmi_events_total` flatlines while `BareMetalInstance` lifecycle changes are occurring → Watch Consumer is not receiving BMaaS events
-- `osac_metering_bmi_template_cache_misses_total` increasing → template cache is stale or templates are missing; check `PrivateBareMetalInstanceTemplatesService.List` connectivity
 - `osac_metering_reconciliation_corrections_total{resource_type="bare_metal_instance"}` consistently > 0 → Watch Consumer is missing events; investigate Watch stream connectivity
 
 **Disabling BMaaS metering:** Remove `bare_metal_instance` from the metering-service's Watch subscription filter (configurable via Helm values). Existing BMaaS projection rows remain in PostgreSQL but are cleaned up by the next reconciliation cycle (missed_deletion). No impact on VMaaS/CaaS metering.
