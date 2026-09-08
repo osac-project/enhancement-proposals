@@ -12,22 +12,25 @@ A sovereign-cloud operator runs NetBox as their authoritative source of truth fo
 
 ## In Scope
 
-- BareMetalInstance provisioning and deprovisioning completes end-to-end against NetBox inventory, with clear status visibility at each stage.
-- NetBox backend is selectable via operator configuration.
+- Cloud Infrastructure Admin can configure NetBox as the inventory backend (endpoint URL, credential Secret reference, optional CA certificate) so the system discovers and provisions available hosts without requiring changes to tenant-facing workflows.
+- Configuration failures or unreachable backends result in clear error messages visible to Cloud Infrastructure Admin.
+- Invalid credentials result in clear error messages without exposing the credential value.
 - NetBox authentication uses API token stored in Vault via the OSAC Secret Resource.
 - TLS certificates are validated for secure endpoints; self-signed certificates are supported via optional CA certificate configuration.
-- Cloud Infrastructure Admin configures: NetBox endpoint URL, credential Secret reference, and optional CA certificate path.
+- BareMetalInstance provisioning and deprovisioning completes end-to-end against NetBox inventory, with accurate status messages at each stage.
+- When host preparation fails, the host is released back to NetBox's available pool.
 - Tenant Users can request bare-metal hosts by label selector and OSAC transparently allocates them from NetBox without exposing NetBox details to the user.
-- Cloud Infrastructure Admins can configure NetBox as the inventory backend so that the system discovers available hosts and provisions them without requiring changes to tenant-facing workflows.
-- Lifecycle states (provisioning, ready, deprovisioning, deleted) accurately reflect the actual state at each stage.
-- E2E tests validate the full BareMetalInstance lifecycle with NetBox as the inventory source.
+- Host assignment is safe for parallel requests — only one BareMetalInstance can claim each host.
+- Tenant Users see "No hosts available" rather than backend-specific errors.
+- No tenant-identifying data appears in NetBox; only the assignment identifier is recorded.
+- NetBox is transparent to tenants in normal operation — allocation/deallocation workflows are identical to other backends.
 - Power management and host readiness are handled independently of inventory selection.
 
 ## Out of Scope
 
 - **OS provisioning and image selection** — NetBox supplies hardware inventory only. OSAC's existing OS provisioning pipeline is orthogonal to this integration.
 - **NetBox device management** — adding, removing, or editing devices in NetBox is not an OSAC responsibility. The operator manages their NetBox inventory independently.
-- **OSAC UI backend selection** — displaying backend selection in the UI console is tracked separately. (Admin configuration via Helm values and Enclave Wizard pipeline is in-scope.)
+- **OSAC UI backend selection** — displaying backend selection in the UI console is tracked separately. (Admin configuration of the inventory backend is in-scope.)
 - **Multi-backend deployments in a single cluster** — each deployment uses one inventory backend.
 - **Status reporting back to NetBox** — OSAC does not write provisioning status or lifecycle events back to NetBox. Only the assignment identifier is recorded.
 - **Health checks on assigned nodes** — OSAC does not periodically verify that assigned nodes still exist in NetBox. If a node is removed from NetBox while assigned, OSAC does not immediately detect the failure.
@@ -61,7 +64,7 @@ A sovereign-cloud operator runs NetBox as their authoritative source of truth fo
 - Each deployment uses a single inventory backend.
 - The operator has populated NetBox hosts with labels or attributes sufficient to distinguish host pools for allocation.
 - NetBox API is reachable from the OSAC control plane.
-- The assignment identifier will be stored in a NetBox native field (e.g., device status, tag, or existing metadata field). If a native field is insufficient, a custom field will be defined during design based on available customization capabilities.
+- OSAC tracks host assignments in NetBox to prevent double-allocation. The specific storage mechanism (native field, custom field, tag, etc.) is a design-time decision.
 
 ## Dependencies
 
@@ -69,25 +72,3 @@ A sovereign-cloud operator runs NetBox as their authoritative source of truth fo
 - **Host readiness and power management** — independent of inventory selection; existing platform mechanisms are used.
 - **Label-selector contract** — consistent across all inventory backends so tenant requests work the same way regardless of the backend in use.
 - **BareMetalInstance API** — tenant-facing API remains unchanged; NetBox integration is transparent to users.
-
-## Acceptance Criteria
-
-- [ ] A Cloud Infrastructure Admin can configure NetBox as the inventory backend (URL, Vault Secret reference, optional CA certificate) and the system connects successfully.
-- [ ] The system validates TLS certificates for secure endpoints and rejects invalid certificates unless a CA certificate is provided.
-- [ ] Invalid NetBox credentials result in a clear error message without exposing the credential value.
-- [ ] A Tenant User can provision a BareMetalInstance and the system selects an available host from NetBox inventory matching the requested labels.
-- [ ] During host preparation, the BareMetalInstance status shows a clear message indicating the host is being readied.
-- [ ] When host preparation fails, the host is released back to NetBox's available pool.
-- [ ] A provisioned BareMetalInstance transitions through provisioning, ready, deprovisioning, and deleted states with accurate status messages.
-- [ ] When a BareMetalInstance is deleted, the host is released back to NetBox's available pool for reuse.
-- [ ] Host assignment is safe for parallel requests — only one BareMetalInstance can claim each host.
-- [ ] When NetBox is unreachable, the BareMetalInstance status shows a clear error message (visible to Cloud Infrastructure Admin).
-- [ ] Tenant Users see "No hosts available" rather than backend-specific errors — NetBox implementation details are not exposed to tenants.
-- [ ] No tenant-identifying data appears in NetBox — only the assignment identifier is stored.
-- [ ] NetBox is transparent to tenants in normal operation — allocation/deallocation workflows are identical to other backends.
-- [ ] E2E tests covering the full BareMetalInstance lifecycle with NetBox pass in CI.
-
-## Non-Functional Requirements
-
-- **Inventory independence:** Networking and storage are independent of the inventory backend. The existing OSAC infrastructure stack handles all platform operations.
-- **Documentation:** Documentation describes how to configure OSAC to use the NetBox backend, including any required prerequisites.

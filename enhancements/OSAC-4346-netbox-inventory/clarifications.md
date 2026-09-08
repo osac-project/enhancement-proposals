@@ -50,7 +50,7 @@ When a host is allocated to a BareMetalInstance, how does OSAC track that alloca
 
 #### Answer
 
-OSAC records an assignment identifier in NetBox when a host is allocated, and clears it when the host is deallocated. This prevents double-allocation. The mechanism (status field, custom field, metadata, etc.) is a design-time decision based on Telefónica's NetBox schema.
+OSAC records an assignment identifier in NetBox when a host is allocated, and clears it when the host is deallocated. This prevents double-allocation. The mechanism (status field, custom field, metadata, etc.) is a design-time decision based on the deployment's NetBox schema.
 
 #### Impact
 
