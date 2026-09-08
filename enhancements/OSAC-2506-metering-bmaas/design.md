@@ -100,7 +100,7 @@ sequenceDiagram
 
     FS->>WC: OBJECT_UPDATED (state=RUNNING)
     WC->>SP: read previous_state=PROVISIONING
-    WC->>SP: upsert(state=RUNNING, is_billable=true, billable_since=now)
+    WC->>SP: upsert(state=RUNNING, is_billable=true, billable_since=state_transition_time)
     Note right of WC: Decomposer evaluates both meters
     WC->>KP: osac.resource.started.v1 (meter_type=allocation)
     WC->>KP: osac.resource.started.v1 (meter_type=consumption)
@@ -188,6 +188,8 @@ Two independent transition tables define each meter's billing boundaries:
 **Allocation transition table** — billable states: `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`
 
 The resolver performs exact `(from, to)` lookups. The following is the complete accepted pair set; repeated snapshots are included explicitly and every row represents one registered pair. No wildcard transition is permitted. Pairs outside this set are invalid controller transitions and should be reported as configuration errors rather than silently interpreted.
+
+`FAILED` is recoverable only through the explicitly registered `FAILED` → `RUNNING` path or by entering `DELETING`; repeated `FAILED` updates are accepted. `DELETING` is terminal until the deletion event, so only repeated `DELETING` updates are accepted. These rules are exact entries in the table, not wildcard fallbacks.
 
 | From           | To             | Allocation Effect                     |
 | -------------- | -------------- | ------------------------------------- |
