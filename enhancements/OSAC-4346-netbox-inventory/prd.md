@@ -15,7 +15,7 @@ A sovereign-cloud operator runs NetBox as their authoritative source of truth fo
 - Cloud Infrastructure Admin can configure NetBox as the inventory backend (endpoint URL, credential Secret reference, optional CA certificate) so the system discovers and provisions available hosts without requiring changes to tenant-facing workflows.
 - Configuration failures or unreachable backends result in clear error messages visible to Cloud Infrastructure Admin.
 - Invalid credentials result in clear error messages without exposing the credential value.
-- NetBox authentication uses API token stored in Vault via the OSAC Secret Resource.
+- NetBox authentication uses API token stored as a Secret resource for secure credential management.
 - TLS certificates are validated for secure endpoints; self-signed certificates are supported via optional CA certificate configuration.
 - BareMetalInstance provisioning and deprovisioning completes end-to-end against NetBox inventory, with accurate status messages at each stage.
 - When host preparation fails, the host is released back to NetBox's available pool.
