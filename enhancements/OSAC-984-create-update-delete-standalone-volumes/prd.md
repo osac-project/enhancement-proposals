@@ -62,7 +62,7 @@ OSAC can provision storage volumes through its existing storage service, but ten
 - A volume requires a name, storage tier, size, and access mode when it is created. The name is unique within the tenant, cannot be changed, and remains reserved until deletion is complete.
 - Storage tier, size, and access mode cannot be changed after creation. The update operation may change `metadata.display_name`, `metadata.description`, `metadata.labels`, and `metadata.annotations`.
 - A volume starts in creating and moves to available when creation succeeds.
-- If creation cannot complete, the volume moves to failed. Failed is a terminal creation state; volumes are not retried in place. The API, CLI, and console show an actionable error.
+- If the storage service reports that creation failed, the volume moves to failed. Failed is a terminal creation state; volumes are not retried in place. The API, CLI, and console show an actionable error.
 - A failed or available volume can be deleted. Delete moves it to deleting, and successful cleanup moves it to deleted.
 - If deletion cannot complete, the volume remains in deleting. The service retries cleanup and reports the latest error to API, CLI, and console users. The volume name remains reserved until cleanup succeeds.
 - Repeating Delete for a deleting volume does not start a second deletion. Deleting an already deleted volume is treated as successful. The name remains reserved until deletion is complete.
