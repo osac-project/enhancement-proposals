@@ -9,7 +9,7 @@
 
 > The PRD does not use numbered `FR-N`/`NFR-N` IDs. The requirement IDs below are
 > derived from the PRD's In Scope items, User Stories, and Out of Scope
-> constraints, and match the requirement IDs used in `03-design.md`:
+> constraints, and match the requirement IDs used in `design.md`:
 > FR-1 per-phase display; FR-2 four+three phases mapped to backend signals;
 > FR-3 auto-refresh; FR-4 persisted timeline; FR-5 per-phase failure messages;
 > NFR-1 ~5s freshness; NFR-2 read-only; NFR-3 pattern-reuse consistency.
@@ -234,7 +234,10 @@
 ##### Expected Results
 
 - Step 1 returns the final deprovisioning timeline (Teardown Initiated, Cleaning
-  `SUCCEEDED`, Released), served from the DB independent of the CR.
+  `SUCCEEDED`, Released), served from the DB independent of the CR. `status.phases`
+  contains **only** the three deprovisioning phases — the four provisioning phases
+  are intentionally not retained once deprovisioning starts (`phases` is a
+  full-replace projection of the CR's current direction, by design).
 - Step 2 returns 404: the released record has been archived and there is no
   archive-read path, so FR-4 is bounded to the life of the live record
   (matching VMaaS/CaaS).
@@ -321,16 +324,22 @@
 
 ##### Steps
 
-1. Update the `BareMetalInstance` CR `phases` on the hub to advance to Network
-   Setup.
-2. Poll `GET /api/fulfillment/v1/baremetal_instances/{id}`.
+1. Record `t0`, then update the `BareMetalInstance` CR `phases` on the hub to
+   advance to Network Setup.
+2. Poll `GET /api/fulfillment/v1/baremetal_instances/{id}` at a sub-second
+   cadence and record `t1` — the first response that reflects Network Setup
+   `RUNNING`.
 
 ##### Expected Results
 
 - The feedback controller fires `Signal(id)` on the `phases` change, the
   reconciler re-reads the CR and updates the DB, and the API reflects Network
-  Setup `RUNNING` within single-digit seconds — without waiting for the periodic
-  full resync and without any new watch/informer.
+  Setup `RUNNING`. The assertion is **bounded**: `t1 - t0` ≤ the NFR-1 freshness
+  deadline (single-digit seconds; ~5s soft target), and the update arrives
+  **before** the periodic full-resync interval would fire (i.e. freshness comes
+  from the `Signal` path, not the resync fallback) and without any new
+  watch/informer. To isolate the `Signal` path, the periodic full-resync
+  interval is configured well above the asserted bound for this case.
 
 ### NFR-2: The progress and failure display is read-only
 

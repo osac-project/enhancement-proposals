@@ -262,8 +262,22 @@ The concrete interface changes (referenced by the testplan as IC-N):
   to the instance detail view, consuming `status.phases`, auto-refreshing, with
   an `aria-live` region. Requirements: FR-1, FR-2, FR-3, FR-4, FR-5, NFR-2.
 - **IC-6 — Failure message vocabulary.** Define the per-phase human-readable
-  failure messages the operator/reconciler write into `phases[].message`.
-  Requirements: FR-5.
+  failure messages the operator/reconciler write into `phases[].message`. Only
+  phases that carry a `RUNNING`/`FAILED` state can fail; the point-in-time
+  milestones (Teardown Initiated, Released) do not. The canonical starter
+  vocabulary is:
+
+  | Phase (that can fail) | `message` on `FAILED` |
+  |-----------------------|-----------------------|
+  | Host Allocation | "No bare metal host matched the requested profile; contact support if this persists." (reason `NoMatchingHosts`) or "Host allocation failed." |
+  | Provisioning | "OS installation and configuration did not complete; the provisioning job failed." |
+  | Network Setup | "Network attachment did not complete." / "Network handoff (reboot) did not complete." / "IP address discovery did not complete." |
+  | Ready | "The instance did not reach its powered-on ready state." |
+  | Cleaning | "Teardown did not complete; the deprovisioning job failed." / "Network offboarding did not complete." |
+
+  Messages are a fixed, human-readable vocabulary (no raw operator/AAP error
+  strings surfaced to the user); the exact wording is finalized at
+  implementation and covered by IC-6 unit tests. Requirements: FR-5.
 
 Operational impact: if the operator is down, the timeline stops advancing but
 the last-synced state remains served from the DB. If the fulfillment reconciler
@@ -336,7 +350,17 @@ message BareMetalInstancePhaseProgress {
 `phases` is added to `BareMetalInstanceStatus` alongside the existing `state` and
 `conditions` [Codebase: fulfillment-service/proto/private/osac/private/v1/baremetal_instance_type.proto].
 The list is ordered by the phase sequence for the active direction
-(provisioning or deprovisioning). The current sub-step is derivable as the entry
+(provisioning or deprovisioning). **`phases` is a full-replace projection of the
+CR's *current* lifecycle direction, not an append-only ledger:** when
+deprovisioning begins, the array is replaced by the three deprovisioning phases
+(Teardown Initiated, Cleaning, Released) and the four provisioning phases are
+**intentionally not retained** through teardown. This is a deliberate product
+decision — the `BareMetalInstance` CR holds only the current direction, the
+provisioning timeline has no operational value once the instance is being
+destroyed, and retaining both sequences would require a separate historical
+store that is out of scope. The full provisioning history remains viewable for
+the life of a *running* instance (FR-4); it is discarded only at the moment
+deprovisioning starts. The current sub-step is derivable as the entry
 whose `state == RUNNING`; the reconciler also mirrors that phase name into the
 `PROVISIONED` condition's `reason` so the coarse label and conditions table stay
 consistent with VMaaS [Codebase: osac-operator/api/v1alpha1/conditions.go].
@@ -405,8 +429,12 @@ itself as it drives the lifecycle.
 
 > **Released needs a small operator addition.** There is no existing signal for
 > the terminal "released" instant, so the operator must record a Released
-> milestone just before it removes the finalizer (see Open Question 1 for the
-> exact ordering guarantee). This is a small, in-scope operator change — no AAP
+> milestone just before it removes the finalizer. The reconciler must **durably
+> persist the final timeline to the fulfillment DB before the finalizer is
+> removed** (and the CR becomes unreadable), so the terminal state is never lost
+> to a race; if persistence cannot be confirmed, finalizer removal must not
+> proceed. The exact finalizer-ordering guarantee is Open Question 1 for the
+> bare-metal-operator team. This is a small, in-scope operator change — no AAP
 > or metal3 change is involved.
 
 The operator monitors two concrete backend sources, both **polled on each
@@ -611,7 +639,11 @@ on `BareMetalInstance` are unaffected [Codebase: bare-metal-fulfillment-operator
 No new Prometheus metrics or alerts are introduced. The operator continues to
 emit Kubernetes events on phase transitions via existing condition-change event
 recording; the new timeline is observable through the API and CR status. Existing
-monitoring mechanisms apply.
+monitoring mechanisms apply. A per-phase "stalled" metric (e.g. a gauge for time
+spent in the current `RUNNING` phase, to alert on phases exceeding an expected
+duration) is a natural follow-up but is out of scope for this design — the
+`last_transition_time` per phase already makes such a metric derivable later
+without a schema change.
 
 ### Risks and Mitigations
 
@@ -700,7 +732,7 @@ and reused by future services.
 
 **Note:** *Section not required until targeted at a release.* Concrete scenarios,
 mapped to the requirement/interface-change matrix, are enumerated in
-`04-testplan.md`.
+`testplan.md`.
 
 ### Unit Tests
 
@@ -735,8 +767,28 @@ mapped to the requirement/interface-change matrix, are enumerated in
 
 ## Graduation Criteria
 
-Graduation criteria will be defined when targeting a release. Expected stages:
-Dev Preview → Tech Preview → GA based on production deployment feedback.
+Graduation criteria will be finalized when targeting a release; the measurable
+gates per stage are:
+
+- **Dev Preview:** the `phases` field is populated end-to-end for the happy path;
+  phase-mapping unit tests cover every osac-operator condition / AAP job-status
+  fixture; the UI stepper renders the four provisioning phases against a kind
+  cluster.
+- **Tech Preview:** all testplan cases pass (FR-1…FR-5, NFR-1…NFR-3), including
+  the failure (FR-5/IC-6), released-archival (TC-FR4-02), and freshness
+  (TC-NFR1-01) scenarios; NFR-1 freshness is verified to meet single-digit
+  seconds via the feedback→`Signal` path in e2e; no regression in the coarse
+  `state`/`conditions` layer.
+- **GA:** the feature has run in a production-representative deployment across at
+  least one full provisioning and one full deprovisioning cycle without timeline
+  divergence from the CR, and the failure-message vocabulary has been reviewed
+  with support.
+
+**Documentation.** User-facing change is limited to the instance detail view;
+the new stepper needs a short help/legend entry (phase meanings, state colors).
+The only API-surface documentation change is the new `phases` field in the
+generated proto/API reference — no new endpoints. No runbook change beyond the
+Troubleshooting notes above.
 
 ## Upgrade / Downgrade Strategy
 
@@ -782,7 +834,7 @@ e2e) cover the change.
 
 ## Provenance
 
-Authored: revise @ design 0.9.0 - 562b610, workspace main @ d27d7951b
-Phases: draft, revise, revise, revise, revise, revise, revise, revise
+Authored: respond @ design 0.9.0 - 562b610, workspace main @ d27d7951b
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"d27d7951b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","research","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"d27d7951b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","research","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
