@@ -69,6 +69,7 @@ OSAC can provision storage volumes through its existing storage service, but ten
 - A failed or available volume can be deleted. Delete moves it to deleting, and successful cleanup moves it to deleted.
 - If deletion cannot complete, the volume remains in deleting. The service retries cleanup and reports the latest error to API, CLI, and console users. The volume name remains reserved until cleanup succeeds.
 - Repeating Delete for a deleting volume does not start a second deletion. Once deletion is complete, the volume is archived and is no longer returned by normal Get or List operations. The name remains reserved until deletion is complete.
+- A Delete request for an archived volume returns not found. The API, CLI, and console use the same result.
 - Volumes are tenant-scoped. Tenant Admins can manage every volume in their tenant. Tenant Users can manage volumes in their tenant, and the creating user is recorded for audit but is not the sole owner.
 - Project-specific volume ownership, sharing, and access-control rules are not defined by this Feature.
 - The public Get/List capability from OSAC-4542 provides volume visibility outside the CUD flow.
