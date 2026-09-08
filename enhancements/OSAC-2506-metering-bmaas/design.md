@@ -404,11 +404,13 @@ type BareMetalInstancesClient interface {
 
 The `billabilityCheckers` map gains an entry for `bare_metal_instance` that returns true for allocation-billable states (`RUNNING`, `STOPPED`, `STARTING`, `STOPPING`).
 
-Reconciliation corrections for BMaaS resources use the same decomposer as the Watch Consumer — a state drift correction that moves from `RUNNING` to `STOPPED` produces a consumption `suspended.v1` correction but no allocation correction.
+Reconciliation corrections for BMaaS resources use the same decomposer as the Watch Consumer — a state drift correction that moves from `RUNNING` to `STOPPING` produces a consumption `suspended.v1` correction but no allocation correction. The correction uses the fulfillment transition timestamp; it cannot use the time at which the snapshot was read.
 
-**Reconciliation Interval:** Each hour, the reconciliation loop queries the fulfillment-service's `PrivateBareMetalInstancesService.List` API and compares the returned state against the State Projection. Any drift (missed creations, state mismatches, missing deletions) triggers correction events. The 60-minute interval is configurable via the `metering.reconciliation_interval_seconds` Helm value (default: 3600).
+**Reconciliation Interval:** Each hour, the reconciliation loop queries the fulfillment-service's `PrivateBareMetalInstancesService.List` API and compares the returned state against the State Projection. Endpoint drift (missed creations, a resource remaining in a different state, or a missing deletion) triggers correction events. The 60-minute interval is configurable via the `metering.reconciliation_interval_seconds` Helm value (default: 3600).
 
-**Startup Reconciliation:** On metering-service startup, reconciliation runs immediately before the Watch Consumer resumes, seeding the projection with current BareMetalInstance state from fulfillment. This ensures no gap between startup and Watch event receipt.
+**Startup Reconciliation:** On metering-service startup, reconciliation runs immediately before the Watch Consumer resumes and seeds the projection with current BareMetalInstance state from fulfillment. It repairs endpoint drift but does not reconstruct transitions that began and ended while the service was unavailable.
+
+**Durable transition history requirement:** `List` is a snapshot API and cannot detect a complete `RUNNING` → `STOPPING`/`STOPPED` → `STARTING`/`RUNNING` cycle that occurs while Watch or Kafka is unavailable: both the source snapshot and the projection can end in `RUNNING`. Snapshot reconciliation therefore cannot recover the stopped interval or correct the consumption meter. Exact lifecycle billing requires `Events.Watch` (or an equivalent fulfillment history API) to retain and replay ordered transitions, including `state_transition_time` and a durable cursor/sequence. Until that history is available, this design cannot claim the Part 1 accuracy guarantee for outages spanning a complete transient cycle; reconciliation is limited to endpoint corrections.
 
 #### Heartbeat Generation
 
@@ -451,10 +453,10 @@ BMaaS metering inherits the existing security model without changes:
 
 | Failure Mode                                    | Effect                                                              | Recovery                                                                                                                                                                | User Observation                                                                  |
 | ----------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Watch stream disconnect                         | Missed BareMetalInstance transitions                                | Hourly reconciliation detects state drift and emits corrections. Startup reconciliation runs before Watch Consumer resumes.                                             | Brief gap in per-second accuracy (up to 60 min); corrected in next reconciliation |
+| Watch stream disconnect                         | Missed BareMetalInstance transitions                                | Durable Watch history is replayed from the last cursor. Snapshot reconciliation handles endpoint drift only; it cannot reconstruct a complete cycle that returns to the same state.                                      | Exact billing remains blocked for an outage without replayable transition history |
 | Kafka publish failure                           | Events buffered in metering-service; backpressure on Watch Consumer | Kafka producer retries with exponential backoff. If Kafka is unavailable for extended period, events accumulate in memory and reconciliation catches up after recovery. | Delayed event availability for downstream consumers                               |
 | Reconciliation detects missed BareMetalInstance | Resource was created but Watch event was lost                       | Reconciliation emits `correction.v1 (reason=missed_creation)` and seeds the projection                                                                                  | Downstream system receives correction with adjusted interval                      |
-| Metering-service restart mid-lifecycle          | In-memory state projection lost                                     | PostgreSQL-backed projection survives restarts. Startup reconciliation reconciles any gap between last projected state and current fulfillment state.                   | No user-visible impact beyond momentary heartbeat gap                             |
+| Metering-service restart mid-lifecycle          | In-memory state projection lost                                     | PostgreSQL-backed projection survives restarts. Durable Watch history replays the gap; startup reconciliation repairs endpoint drift when no transient cycle was missed.                   | No user-visible impact when replayable history is available                         |
 
 ### RBAC / Tenancy
 
@@ -569,7 +571,8 @@ The transition timestamp is carried from `BareMetalInstanceStatus` through the W
 ### Integration Tests
 
 - Reconciliation detects a `BareMetalInstance` present in fulfillment but missing from projection and emits `missed_creation` correction with correct allocation billability
-- Reconciliation detects state drift (projection has `RUNNING`, fulfillment has `STOPPED`) and emits correction events for the consumption meter only (allocation is still billable in both states)
+- Reconciliation replays a `RUNNING` → `STOPPING` transition when the projection has `RUNNING` and fulfillment has `STOPPED`, emitting a correction for the consumption meter only; allocation remains billable
+- Reconciliation replays a complete `RUNNING` → `STOPPED` → `RUNNING` cycle during a simulated Watch outage and restores the stopped interval from durable transition history
 - Reconciliation detects a BareMetalInstance in projection but absent from fulfillment and emits `missed_deletion` correction
 - Stale heartbeat detection generates synthetic heartbeats for allocation-billable BMaaS resources with correct meter decomposition
 
