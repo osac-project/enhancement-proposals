@@ -34,7 +34,7 @@ The Part 1 design states that "_the canonical event model supports future resour
 1. **Reuse Part 1 infrastructure** — no new services, Kafka topics, or deployment artifacts; BMaaS metering is a code-level extension of the existing metering-service and adapter framework
 2. **Extend, don't replace, the event decomposition pattern** — the CaaS `N+1` per-component decomposer is the precedent; BMaaS adds a per-meter decomposer that produces independent CloudEvent streams with independent event types
 3. **Allocation and consumption meters are independently queryable** — each meter has a distinct `meter_type` billing dimension, so downstream systems can filter, aggregate, and price them separately
-4. **No fulfillment-service proto changes for metering** — the existing `Events.Watch` stream already carries the `spec.instance_type` reference introduced by [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201); metering reads that reference directly
+4. **No new metering API surface** — the existing `Events.Watch` stream carries the `spec.instance_type` reference introduced by [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201); BMaaS metering also requires the fulfillment controller to expose and populate `BareMetalInstanceStatus.state_transition_time` as a blocking data prerequisite
 
 ### Non-Goals
 
@@ -236,7 +236,7 @@ The resolver performs exact `(from, to)` lookups. The following is the complete 
 
 The decomposer evaluates both tables for each Watch event and produces one CloudEvent per meter that crosses a billing boundary. Transitions where neither meter crosses a boundary (_e.g._, `STOPPED` → `STOPPED`) produce no lifecycle events. Every lifecycle event receives the transition timestamp and the active interval for its own meter; the allocation and consumption intervals are never calculated from one shared timestamp.
 
-`OBJECT_CREATED` and `OBJECT_DELETED` are fixed resource-level events and bypass the transition table. `OBJECT_DELETED` must nevertheless close active meter intervals before removing the projection row: it emits an allocation suspension only when `BillableSince` is present, a consumption suspension only when `ComponentBillableSince["consumption"]` is present, and then the audit deletion event. The suspension IDs are `{baseID}/allocation` and `{baseID}/consumption`, and the deletion ID is `{baseID}`. Replayed or duplicated deletion notifications therefore resolve to the same IDs and cannot create duplicate billing intervals. A preceding `DELETING` update is not required for closure.
+`OBJECT_CREATED` and `OBJECT_DELETED` are fixed resource-level events and bypass the transition table. `OBJECT_DELETED` must nevertheless close active meter intervals before removing the projection row: it emits an allocation suspension only when `BillableSince` is present, a consumption suspension only when `ComponentBillableSince["consumption"]` is present, and then the audit deletion event. The suspension duration uses the authoritative deletion timestamp carried by the event; if that timestamp is absent, the consumer holds the closure for retry rather than using receipt time. The suspension IDs are `{baseID}/allocation` and `{baseID}/consumption`, and the deletion ID is `{baseID}`. Replayed or duplicated deletion notifications therefore resolve to the same IDs and cannot create duplicate billing intervals. A preceding `DELETING` update is not required for closure.
 
 ```go
 type BMaaSMeterIntervals struct {
