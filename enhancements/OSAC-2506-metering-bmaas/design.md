@@ -3,7 +3,7 @@ title: metering-bmaas
 authors:
   - amoren@redhat.com
 creation-date: 2026-08-19
-last-updated: 2026-08-19
+last-updated: 2026-09-07
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2506
 prd:
@@ -21,11 +21,11 @@ superseded-by:
 
 ## Summary
 
-This design extends the OSAC Metering Service to meter bare metal hosts using a dual-meter event decomposition model: an allocation meter (`host-type-seconds`) that runs from provisioning complete to deletion regardless of power state, and a consumption meter (`bare-metal-compute-seconds`) that runs only while the host is powered on. The design reuses the Part 1 metering infrastructure (Watch Consumer, State Projection, Heartbeat Generator, Reconciliation Loop, Kafka, Provider Adapters) and introduces a per-meter event decomposer that produces independent CloudEvent streams for each meter from a single Watch event. See [PRD](prd.md) for detailed requirements.
+This design extends the OSAC Metering Service to meter bare metal hosts using a dual-meter event decomposition model: an allocation meter (`host-type-seconds`) that runs from provisioning complete until the host enters `FAILED` or is deleted, regardless of power state, and a consumption meter (`bare-metal-compute-seconds`) that runs only while the host is powered on. A host in `FAILED` state is never billable for either meter. The design reuses the Part 1 metering infrastructure (Watch Consumer, State Projection, Heartbeat Generator, Reconciliation Loop, Kafka, Provider Adapters) and introduces a per-meter event decomposer that produces independent CloudEvent streams for each meter from a single Watch event. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-Part 1 (OSAC-985) established OSAC metering for VMaaS and CaaS — both consumption-based meters where `IsBillable` maps to a single boolean: `RUNNING` for VMs, `PROGRESSING`/`READY` for clusters. Bare metal hosts have a fundamentally different capacity profile. A bare metal host occupies physical rack space, a power port, and related networking infrastructure from the moment it is provisioned until it is deleted — regardless of whether the tenant has powered it on. This physical capacity commitment has no equivalent in VMaaS (where stopped VMs release compute) or CaaS (where clusters are always running or failed).
+Part 1 (OSAC-985) established OSAC metering for VMaaS and CaaS — both consumption-based meters where `IsBillable` maps to a single boolean: `RUNNING` for VMs, `PROGRESSING`/`READY` for clusters. Bare metal hosts have a fundamentally different capacity profile. A bare metal host occupies physical rack space, a power port, and related networking infrastructure from the moment it is provisioned until it enters `FAILED` or is deleted — regardless of whether the tenant has powered it on. This physical capacity commitment has no equivalent in VMaaS (where stopped VMs release compute) or CaaS (where clusters are always running or failed).
 
 The Part 1 design states that "_the canonical event model supports future resource types without architectural changes._" This holds for single-meter resources — adding BMaaS consumption-only metering would follow the exact `ComputeInstance` pattern. The dual-meter model is the exception: the existing single-boolean `IsBillable` projection, the single transition table per resource type, and the single-event-per-transition assumption all require targeted extensions. This design proposes those extensions while preserving backward compatibility with existing VMaaS and CaaS metering.
 
@@ -45,11 +45,11 @@ The Part 1 design states that "_the canonical event model supports future resour
 
 ## Terminology
 
-**Allocation Meter** — A billing stream that tracks capacity commitment for a bare metal host from provisioning complete (`RUNNING`, `STOPPED`, `STARTING`, `STOPPING` states) until deletion. Runs continuously across power cycles. Represents the physical rack space, power port, and networking infrastructure reserved by the provider for the tenant.
+**Allocation Meter** — A billing stream that tracks capacity commitment for a bare metal host from provisioning complete (`RUNNING`, `STOPPED`, `STARTING`, `STOPPING` states) until the host enters `FAILED` or is deleted. Runs continuously across power cycles while the host is not `FAILED`. Represents the physical rack space, power port, and networking infrastructure reserved by the provider for the tenant.
 
 **Consumption Meter** — A billing stream that tracks actual compute usage for a bare metal host. Runs only when the host is powered on (`RUNNING` state). Independent of allocation; enables providers to charge separately for reserved capacity vs. active consumption.
 
-**Billable State** — A resource state that incurs metering charges. Distinct per meter: allocation-billable states are `RUNNING`, `STOPPED`, `STARTING`, `STOPPING` (the host is provisioned); consumption-billable state is `RUNNING` only (the host is powered on).
+**Billable State** — A resource state that incurs metering charges. Distinct per meter: allocation-billable states are `RUNNING`, `STOPPED`, `STARTING`, `STOPPING` (the host is provisioned); consumption-billable state is `RUNNING` only (the host is powered on). `FAILED` is non-billable for both meters, so no metering charges accrue while a host is in `FAILED` state.
 
 **Transition Table** — A state machine table defining which state transitions trigger meter events (started, suspended, resumed). Independent transition table per meter; evaluated for each Watch event to determine which CloudEvents to produce.
 
@@ -152,6 +152,7 @@ Key observations:
 - `PROVISIONING` → `RUNNING` produces two `started.v1` events (both meters start simultaneously)
 - `RUNNING` → `STOPPED` produces one `suspended.v1` (consumption stops; allocation continues — no event needed)
 - `STOPPED` → `RUNNING` produces one `resumed.v1` (consumption resumes; allocation unchanged)
+- Any transition into `FAILED` suspends every active meter; a host in `FAILED` state produces no allocation or consumption heartbeats and accrues no charges
 - Deletion produces two `suspended.v1` events (both meters close their intervals) plus one `deleted.v1` (audit)
 - Heartbeats vary by state: `RUNNING` produces two (allocation + consumption), `STOPPED`/`STARTING`/`STOPPING` produce one (allocation only)
 
@@ -177,6 +178,8 @@ No `@temp-api` file exists for metering resources in `osac-ux/libs/ui-components
 The central architectural extension is a per-meter `EventDecomposer` for BMaaS. Unlike CaaS decomposition (which fans out one event type into `N+1` records with different billing dimensions), BMaaS decomposition fans out one Watch event into up to two records with **different CloudEvent types** and different billing dimensions per meter.
 
 Two independent transition tables define each meter's billing boundaries:
+
+`FAILED` is explicitly non-billable for both meters. Entering `FAILED` closes any active allocation and consumption intervals, and the heartbeat generator emits no events while the host remains in `FAILED`. Recovery from `FAILED` starts or resumes metering only after the host reaches a billable state (`RUNNING`); no time spent in `FAILED` is included in either meter.
 
 **Allocation transition table** — billable states: `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`
 
@@ -340,7 +343,7 @@ stateDiagram-v2
     DELETING --> [*] : confirmed deleted\n→ osac.resource.deleted.v1
 ```
 
-Allocation-billable states: `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`. The meter runs continuously across power cycles. Only `FAILED` and `DELETING` stop it.
+Allocation-billable states: `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`. The meter runs continuously across power cycles. `FAILED` and `DELETING` stop it, and no allocation charges accrue while the host is in either state.
 
 #### BMaaS State Machine — Consumption Meter
 
@@ -371,7 +374,7 @@ stateDiagram-v2
     DELETING --> [*] : confirmed deleted
 ```
 
-Consumption-billable state: `RUNNING` only. Structurally identical to the VMaaS `ComputeInstance` pattern.
+Consumption-billable state: `RUNNING` only. `FAILED` is non-billable, so the consumption meter is suspended on entry and produces no heartbeats until recovery to `RUNNING`. Structurally identical to the VMaaS `ComputeInstance` pattern.
 
 #### Reconciliation
 
@@ -403,6 +406,7 @@ The heartbeat decomposer for BMaaS checks `ResourceState.CurrentState`:
 | `STOPPED`  | 1: allocation only          |
 | `STARTING` | 1: allocation only          |
 | `STOPPING` | 1: allocation only          |
+| `FAILED`   | 0                           |
 
 Each heartbeat carries its own `meter_type` in billing dimensions and a deterministic event ID: `{base-hb-id}/allocation` and `{base-hb-id}/consumption`.
 
@@ -511,14 +515,7 @@ Meter BMaaS like VMaaS — `RUNNING` only. Drop the allocation meter.
 
 ## Open Questions
 
-### 1. FAILED State Allocation Billability
-
-The PRD lists allocation-billable states as "`RUNNING`, `STOPPED`, `STARTING`, `STOPPING`" — `FAILED` is not listed. This design treats `FAILED` as non-allocation-billable (the hardware has a fault and may be reclaimed by the provider). If the intent is for `FAILED` hosts to remain allocation-billable until explicit deletion, the allocation transition table and billability checker must be updated.
-
-**Owner:** PRD author ([masayag@redhat.com](mailto:masayag@redhat.com))
-**Impact:** Allocation transition table, `IsAllocationBillableState()` function, reconciliation billability checker
-
-### 2. state_transition_time Availability for BMaaS
+### 1. state_transition_time Availability for BMaaS
 
 **STATUS: REQUIRED but NOT YET IMPLEMENTED** — `BareMetalInstanceStatus` does not currently have a `state_transition_time` field, despite it being present on ComputeInstanceStatus and ClusterStatus.
 
@@ -546,8 +543,10 @@ The Part 1 design flags `status.state_transition_time` as a P1 prerequisite for 
   - `STOPPED` → `RUNNING`: 1 event (consumption resumed)
   - `RUNNING` → `DELETING`: 2 events (allocation suspended + consumption suspended)
   - `STOPPED` → `DELETING`: 1 event (allocation suspended)
+  - `RUNNING` → `FAILED`: 2 events (allocation suspended + consumption suspended)
+  - `FAILED` → `RUNNING`: 2 events (allocation started + consumption started)
   - `STOPPED` → `STOPPED`: 0 events
-- Heartbeat decomposer produces 2 heartbeats for `RUNNING`, 1 for `STOPPED`/`STARTING`/`STOPPING`
+- Heartbeat decomposer produces 2 heartbeats for `RUNNING`, 1 for `STOPPED`/`STARTING`/`STOPPING`, and 0 for `FAILED`
 - Template cache populates on startup via List API and resolves host_type on cache hit
 - Template cache miss triggers synchronous Get call and caches result
 - Reconciliation billability checker uses allocation-billable states
