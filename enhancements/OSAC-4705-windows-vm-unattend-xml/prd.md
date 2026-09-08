@@ -46,8 +46,6 @@ itself.
     ComputeInstance
   - Excluded from watch/event payloads, audit records, logs, and error
     messages
-  - Retrievable only through an explicit get-user-data action that the
-    tenant is authorized for
 - Validation at creation time when the DiskImage guest OS family is Windows:
   - `user-data` content must be well-formed XML, parsed with a securely
     configured parser that rejects DTD declarations and disables external
