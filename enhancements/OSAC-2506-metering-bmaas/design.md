@@ -183,36 +183,52 @@ Two independent transition tables define each meter's billing boundaries:
 
 **Allocation transition table** — billable states: `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`
 
-| From           | To                                | Allocation Effect                     |
-| -------------  | --------------------------------- | ------------------------------------- |
-| "" (initial)   | `PROVISIONING`                    | Skip                                  |
-| ""             | `RUNNING`                         | `billableStart`                       |
-| ""             | `STOPPED`                         | `billableStart`                       |
-| ""             | `STARTING`/`STOPPING`             | Transient                             |
-| ""             | `FAILED`/`DELETING`/`UNSPECIFIED` | Skip                                  |
-| `PROVISIONING` | `RUNNING`                         | `billableStart`                       |
-| `PROVISIONING` | `FAILED`                          | Skip                                  |
-| `PROVISIONING` | `DELETING`                        | Skip                                  |
-| `RUNNING`      | `STOPPED`                         | Skip (still allocation-billable)      |
-| `RUNNING`      | `STOPPING`                        | Transient (still allocation-billable) |
-| `RUNNING`      | `STARTING`                        | Transient (still allocation-billable) |
-| `RUNNING`      | `FAILED`                          | Suspended                             |
-| `RUNNING`      | `DELETING`                        | Suspended                             |
-| `STOPPED`      | `RUNNING`                         | Skip (still allocation-billable)      |
-| `STOPPED`      | `STARTING`                        | Transient (still allocation-billable) |
-| `STOPPED`      | `FAILED`                          | Suspended                             |
-| `STOPPED`      | `DELETING`                        | Suspended                             |
-| `STARTING`     | `RUNNING`                         | Skip (still allocation-billable)      |
-| `STARTING`     | `STOPPED`                         | Skip (still allocation-billable)      |
-| `STARTING`     | `FAILED`                          | Suspended                             |
-| `STOPPING`     | `STOPPED`                         | Skip (still allocation-billable)      |
-| `STOPPING`     | `RUNNING`                         | Skip (still allocation-billable)      |
-| `STOPPING`     | `FAILED`                          | Suspended                             |
-| `FAILED`       | `RUNNING`                         | `billableStart`                       |
-| `FAILED`       | any non-billable                  | Skip                                  |
-| `DELETING`     | any                               | Skip                                  |
+The resolver performs exact `(from, to)` lookups. The following is the complete accepted pair set; repeated snapshots are included explicitly and every row represents one registered pair. No wildcard transition is permitted. Pairs outside this set are invalid controller transitions and should be reported as configuration errors rather than silently interpreted.
 
-**Consumption transition table** — billable states: RUNNING only. Structurally identical to the existing `computeInstanceTransitions` table (`RUNNING` is the sole billable state; all transitions into `RUNNING` produce `billableStart`, all transitions out produce `Suspended`).
+| From           | To             | Allocation Effect                     |
+| -------------- | -------------- | ------------------------------------- |
+| "" (initial)   | `PROVISIONING` | Skip                                  |
+| ""             | `RUNNING`      | `billableStart`                       |
+| ""             | `STOPPED`      | `billableStart`                       |
+| ""             | `STARTING`     | Transient                             |
+| ""             | `STOPPING`     | Transient                             |
+| ""             | `FAILED`       | Skip                                  |
+| ""             | `DELETING`     | Skip                                  |
+| ""             | `UNSPECIFIED`  | Skip                                  |
+| `PROVISIONING` | `PROVISIONING` | Skip                                  |
+| `PROVISIONING` | `RUNNING`      | `billableStart`                       |
+| `PROVISIONING` | `STOPPED`      | `billableStart`                       |
+| `PROVISIONING` | `STARTING`     | Transient                             |
+| `PROVISIONING` | `STOPPING`     | Transient                             |
+| `PROVISIONING` | `FAILED`       | Skip                                  |
+| `PROVISIONING` | `DELETING`     | Skip                                  |
+| `RUNNING`      | `RUNNING`      | Skip                                  |
+| `RUNNING`      | `STOPPED`      | Skip (still allocation-billable)      |
+| `RUNNING`      | `STARTING`     | Transient (still allocation-billable) |
+| `RUNNING`      | `STOPPING`     | Transient (still allocation-billable) |
+| `RUNNING`      | `FAILED`       | Suspended                             |
+| `RUNNING`      | `DELETING`     | Suspended                             |
+| `STOPPED`      | `STOPPED`      | Skip                                  |
+| `STOPPED`      | `RUNNING`      | Skip (still allocation-billable)      |
+| `STOPPED`      | `STARTING`     | Transient (still allocation-billable) |
+| `STOPPED`      | `FAILED`       | Suspended                             |
+| `STOPPED`      | `DELETING`     | Suspended                             |
+| `STARTING`     | `STARTING`     | Transient                             |
+| `STARTING`     | `RUNNING`      | Skip (still allocation-billable)      |
+| `STARTING`     | `STOPPED`      | Skip (still allocation-billable)      |
+| `STARTING`     | `FAILED`       | Suspended                             |
+| `STARTING`     | `DELETING`     | Suspended                             |
+| `STOPPING`     | `STOPPING`     | Transient                             |
+| `STOPPING`     | `STOPPED`      | Skip (still allocation-billable)      |
+| `STOPPING`     | `RUNNING`      | Skip (still allocation-billable)      |
+| `STOPPING`     | `FAILED`       | Suspended                             |
+| `STOPPING`     | `DELETING`     | Suspended                             |
+| `FAILED`       | `FAILED`       | Skip                                  |
+| `FAILED`       | `RUNNING`      | `billableStart`                       |
+| `FAILED`       | `DELETING`     | Skip                                  |
+| `DELETING`     | `DELETING`     | Skip                                  |
+
+**Consumption transition table** — billable state: `RUNNING` only. It registers the same complete pair set above. `PROVISIONING`, `STOPPED`, `STARTING`, and `FAILED` → `RUNNING` open a consumption interval; every `RUNNING` → `STOPPING`, `STOPPED`, `FAILED`, or `DELETING` pair closes it; all remaining registered pairs are `Skip`. The `RUNNING` → `STOPPING` boundary is intentional: consumption ends when the stop operation begins, while allocation continues through the transient state.
 
 The decomposer evaluates both tables for each Watch event and produces one CloudEvent per meter that crosses a billing boundary. Transitions where neither meter crosses a boundary (_e.g._, `STOPPED` → `STOPPED`) produce no lifecycle events. The `OBJECT_CREATED` and `OBJECT_DELETED` fixed event types produce a single audit event (no `meter_type` dimension — these are resource-level, not meter-level).
 
@@ -518,8 +534,8 @@ The Part 1 design flags `status.state_transition_time` as a P1 prerequisite for 
 - `BareMetalInstanceBillingDimensions()` does not emit a billable dimension for a missing `spec.instance_type` and records the configuration error
 - `IsAllocationBillableState()` returns true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`; false for `PROVISIONING`, `FAILED`, `DELETING`, `UNSPECIFIED`
 - `IsConsumptionBillableState()` returns true for `RUNNING` only
-- Allocation transition table covers all (from, to) state pairs with correct billing effect
-- Consumption transition table covers all (from, to) state pairs (identical to ComputeInstance pattern)
+- Allocation transition table registers every pair in the explicit accepted transition set, including repeated snapshots and all provisioning/transient paths
+- Consumption transition table registers the same complete pair set with the correct meter-specific effect
 - `DecomposeBMIEvents()` produces 0, 1, or 2 events per transition based on meter boundary crossings:
   - `PROVISIONING → RUNNING: 2 events (allocation started + consumption started)
   - `RUNNING` → `STOPPED`: 1 event (consumption suspended)
