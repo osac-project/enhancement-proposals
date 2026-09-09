@@ -81,13 +81,13 @@ message ExternalIPAttribution {
 The proposed private API additions are:
 ```protobuf
 message ExternalIPStatus {
-  ExternalIPAttribution attribution = 7; // OUTPUT_ONLY
-  google.protobuf.Timestamp attachment_transition_time = 8; // OUTPUT_ONLY
-  google.protobuf.Timestamp state_transition_time = 9; // OUTPUT_ONLY
+  ExternalIPAttribution attribution = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp attachment_transition_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp state_transition_time = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 
 message NATGatewayStatus {
-  google.protobuf.Timestamp state_transition_time = 4; // OUTPUT_ONLY
+  google.protobuf.Timestamp state_transition_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 ```
 `endpoint` is required only for `cluster`, and is `UNSPECIFIED` otherwise. `attached` remains a derived output-only exclusivity bit; NATGateway may set it for allocation exclusivity but never appears in `ExternalIPAttribution`. NATGateway attribution is its own meter dimensions, including `spec.virtual_network`, `spec.external_ip`, and the configured deployment identity.
