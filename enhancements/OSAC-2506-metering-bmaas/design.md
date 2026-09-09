@@ -283,6 +283,10 @@ func DecomposeBMIEvents(
 
 The decomposer receives the resolved CloudEvent types for each meter (or empty string if no boundary), plus the two active interval timestamps from `StateContext`. It computes `duration_seconds` as `transitionTime - intervals.AllocationSince` for allocation events and `transitionTime - intervals.ConsumptionSince` for consumption events. A consumer must not calculate one duration from `ResourceState.BillableSince` and reuse it for both meters. It builds independent events with deterministic IDs: `{baseID}/allocation` and `{baseID}/consumption`.
 
+**CloudEvent ID contract:** The uniqueness scope is the `(source, id)` pair. Watch-originated lifecycle events use the fulfillment `Event.id` as `baseID` and the `osac-metering` source, matching the existing VMaaS and CaaS path. BMaaS meter fan-out appends `/allocation` or `/consumption`; the same fulfillment event therefore produces stable, distinct IDs for its meter records. `OBJECT_CREATED` and the deletion audit event retain the unmodified fulfillment event ID, while deletion closure records use the meter suffixes. Replaying or redelivering the same fulfillment event must reproduce the same IDs; different fulfillment events, including separate stop/start cycles, must produce different IDs.
+
+Reconciliation corrections follow the shared deterministic correction namespace: `correction/{resource_id}/{reason}/{projection_state}/{source_state}/{correction_fingerprint}`. The fingerprint distinguishes different unresolved discrepancies without using reconciliation time, and BMaaS meter records append the same meter suffix. Heartbeat IDs use `hb/{resource_id}/{heartbeat_window_start_unix}/{meter_type}`; retries in one heartbeat window reproduce the same ID and the next window produces a different ID. Synthetic heartbeat IDs use `synthetic-hb/{resource_id}/{stale_reference_unix}/{meter_type}`. These generated prefixes keep heartbeat and correction IDs distinct from fulfillment event IDs. The `meter_type` suffix is an identity component, not a billing dimension.
+
 #### BMaaS Pipeline Integration Contract
 
 The BMaaS decomposer is an explicit resource-type handler in the existing Metering Service pipeline. The shared Watch, heartbeat, and reconciliation components call this handler through the following contract:
@@ -766,6 +770,7 @@ BMaaS metering remains disabled until all release gates below pass.
 - BMaaS event handling ignores duplicate and stale mapper `fulfillment_version` values without changing the projection or emitting events
 - BMaaS event handling holds a `fulfillment_version` gap, replays the missing durable history, and applies normal events only in contiguous version order
 - `OBJECT_DELETED` closes the meters once using its event ID and deletion tombstone even when its metadata version equals the preceding event
+- Redelivery of one fulfillment event reproduces the same lifecycle IDs; two distinct stop/start source events produce distinct allocation and consumption IDs
 - `DecomposeBMIEvents()` produces 0, 1, or 2 events per transition based on meter boundary crossings:
   - `PROVISIONING → RUNNING`: 2 events (allocation started + consumption started)
 - `RUNNING` → `STOPPING`: 1 event (consumption suspended)
@@ -780,6 +785,7 @@ BMaaS metering remains disabled until all release gates below pass.
   - `OBJECT_DELETED` with no active intervals: deletion audit event only
   - `STOPPED` → `STOPPED`: 0 events
 - Heartbeat decomposer produces 2 heartbeats for `RUNNING`, 1 for `STOPPED`/`STARTING`/`STOPPING`/`DELETING`, and 0 for `FAILED`
+- Heartbeat retries in one window reproduce the same per-meter IDs, while consecutive heartbeat windows produce distinct IDs
 - Repeated allocation and consumption heartbeats for the same active interval have nondecreasing cumulative durations; consumers deduplicate and do not aggregate them as deltas
 - Reconciliation billability checker uses allocation-billable states
 - Correction event decomposer produces per-meter corrections matching the state drift direction
