@@ -39,7 +39,7 @@ VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and U
 |---|---|---|---|---|
 | Part 1 | OSAC platform/metering | Operational projection, Kafka, retention, adapter API | Part 1 integration/retention tests | Required before events |
 | Part 1 correctness | OSAC platform/metering | Version guard before publication (#818), canonical correction identity (#826), durable heartbeat idempotency (OSAC-5097), and failed-state correction/read-model/provider contract (OSAC-4287, OSAC-4285) | stale-event, replay/idempotency, and failed-state E2E tests | Required before Part 2 graduation |
-| Networking API | Fulfillment/operator owners | ExternalIP attribution, attachment/state timestamps, NATGateway state timestamp, matching CRD status fields, `METERING_DEPLOYMENT_ID`, real `OUTPUT_ONLY`/`cleanapi.field.private` annotations, and an acyclic shared proto | buf/CRD generation, public-API exposure, feedback, and delayed-event tests | Required before networking events |
+| Networking API | Fulfillment/operator owners | ExternalIP attribution, attachment/state timestamps, NATGateway state timestamp, matching CRD status fields, `METERING_DEPLOYMENT_ID`, real `OUTPUT_ONLY`/`cleanapi.field.private` annotations, an acyclic shared proto, and declarative target/endpoint validation | buf/CRD generation, public-API exposure, validation, feedback, and delayed-event tests | Required before networking events |
 | Transaction ordering | Fulfillment owners | Shared parent/child helper with one lock order: ExternalIP, then attachment/NATGateway, then target | concurrent attach/delete and rollback tests | Required before networking events |
 | OSAC-983 | OSAC platform team | Durable outbox and resume cursor | outage replay E2E | Exact outage recovery |
 | Correction/read model | Part 1 owner | Initial correction schema and consumers | apply/reverse/replay tests | No graduation without consumers |
@@ -62,7 +62,7 @@ Add state timestamps, output-only ExternalIP attachment attribution, exhaustive 
 ### API Extensions
 The following fields are prerequisites, not delivered behavior. No networking event is admitted until fulfillment-service, osac-operator, and feedback propagation tests prove them: `ExternalIPStatus.attribution`, `ExternalIPStatus.attachment_transition_time`, `ExternalIPStatus.state_transition_time`, `NATGatewayStatus.state_transition_time`, the matching operator CRD status timestamps, and the configured `METERING_DEPLOYMENT_ID`.
 
-The fulfillment API team owns a new private `external_ip_attribution_type.proto`. It imports `cleanapi/cleanapi.proto`, `google/api/field_behavior.proto`, `baremetal_instance_type.proto`, `cluster_type.proto`, and `compute_instance_type.proto`; those target files do not import ExternalIP types. It defines the shared endpoint enum and message below. `external_ip_type.proto` imports only this common file; `external_ip_attachment_type.proto` imports the common file and removes its local endpoint enum. The common file never imports either ExternalIP file, so `buf lint`/generation has no cycle and both API messages share one type.
+The fulfillment API team owns a new private `external_ip_attribution_type.proto`. It imports `buf/validate/validate.proto`, `cleanapi/cleanapi.proto`, `google/api/field_behavior.proto`, `baremetal_instance_type.proto`, `cluster_type.proto`, and `compute_instance_type.proto`; those target files do not import ExternalIP types. It defines the shared endpoint enum and message below. `external_ip_type.proto` imports only this common file; `external_ip_attachment_type.proto` imports the common file and removes its local endpoint enum. The common file never imports either ExternalIP file, so `buf lint`/generation has no cycle and both API messages share one type.
 ```protobuf
 enum ExternalIPAttributionEndpoint {
   EXTERNAL_IP_ATTRIBUTION_ENDPOINT_UNSPECIFIED = 0;
@@ -70,7 +70,19 @@ enum ExternalIPAttributionEndpoint {
   EXTERNAL_IP_ATTRIBUTION_ENDPOINT_INGRESS = 2;
 }
 message ExternalIPAttribution {
+  option (buf.validate.message).cel = {
+    id: "external_ip_attribution_target_id"
+    message: "the selected target must have a non-empty id"
+    expression: "has(this.compute_instance) ? this.compute_instance.id != '' : has(this.cluster) ? this.cluster.id != '' : this.baremetal_instance.id != ''"
+  };
+  option (buf.validate.message).cel = {
+    id: "external_ip_attribution_endpoint"
+    message: "endpoint is required only for cluster targets"
+    expression: "has(this.cluster) ? this.endpoint != 0 : this.endpoint == 0"
+  };
   oneof target {
+    option (buf.validate.oneof).required = true;
+
     ComputeInstanceLocalReference compute_instance = 1;
     ClusterLocalReference cluster = 2;
     BareMetalInstanceLocalReference baremetal_instance = 3;
