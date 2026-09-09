@@ -746,7 +746,7 @@ BMaaS metering may graduate to Dev Preview only when:
 - BMaaS event handling holds a `fulfillment_version` gap, replays the missing durable history, and applies normal events only in contiguous version order
 - `OBJECT_DELETED` closes the meters once using its event ID and deletion tombstone even when its metadata version equals the preceding event
 - `DecomposeBMIEvents()` produces 0, 1, or 2 events per transition based on meter boundary crossings:
-  - `PROVISIONING → RUNNING: 2 events (allocation started + consumption started)
+  - `PROVISIONING → RUNNING`: 2 events (allocation started + consumption started)
 - `RUNNING` → `STOPPING`: 1 event (consumption suspended)
   - `STOPPED` → `RUNNING`: 1 event (consumption resumed)
   - `RUNNING` → `DELETING`: 1 event (consumption suspended; allocation remains active)
