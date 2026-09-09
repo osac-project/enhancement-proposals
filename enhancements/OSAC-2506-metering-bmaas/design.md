@@ -687,10 +687,6 @@ Durable fulfillment transition history with cursor-based replay is a release-blo
 - Verify echo adapter stores events with correct `meter_type` billing dimension
 - Verify event `duration_seconds` accuracy: stop a host after a known interval and assert the consumption `suspended.v1` event's `duration_seconds` is within tolerance
 
-## Graduation Criteria
-
-Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview → Tech Preview → GA based on production deployment feedback and Part 1 metering infrastructure maturity.
-
 ## Upgrade / Downgrade Strategy
 
 This is a new metering capability with no upgrade impact on existing VMaaS/CaaS metering. The metering-service binary gains BMaaS support — on upgrade, it begins consuming BareMetalInstance Watch events and producing CloudEvents. On downgrade, BMaaS events stop being produced; no cleanup is needed since Kafka topics are shared and BMaaS events are differentiated by `osacresourcetype`.
