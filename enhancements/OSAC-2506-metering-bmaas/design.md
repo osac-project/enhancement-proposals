@@ -713,18 +713,39 @@ Durable fulfillment transition history with cursor-based replay is a release-blo
 
 ## Graduation Criteria
 
-BMaaS metering may graduate to Dev Preview only when:
+BMaaS metering remains disabled until all release gates below pass.
 
-1. The consumed fulfillment-service version includes [OSAC-4969](https://redhat.atlassian.net/browse/OSAC-4969) and populates `state_transition_time`.
-2. Fulfillment provides ordered, replayable transition history with cursor semantics, retention, stable event IDs, and authoritative transition timestamps.
-3. Fulfillment provides `deletion_completion_time`; allocation closure uses it instead of deletion-request or event-receipt time.
-4. The `spec.instance_type` contract is finalized and the dimension-rollover behavior is implemented and tested if the reference can change.
-5. Unit tests cover every accepted transition pair, independent allocation and consumption intervals, `FAILED` handling, deletion closure, and replay idempotency.
-6. Integration tests pass for Watch recovery, complete stop/start replay, missed creation, missed deletion, and stale-heartbeat correction.
-7. E2E tests pass for the full BMaaS lifecycle and verify meter-specific durations within the defined tolerance.
-8. Existing VMaaS and CaaS metering tests pass without regression.
-9. BMaaS metrics, alerts, tenant attribution, and failure runbooks are available.
-10. [CAP-5](https://redhat.atlassian.net/browse/CAP-5) is implemented through the parent usage query contract or explicitly deferred from the target release.
+### Fulfillment Dependencies
+
+- The consumed fulfillment-service version includes OSAC-4969 `state_transition_time`.
+- Durable BMaaS history retains events for at least 30 days.
+- Replay uses a per-consumer cursor with documented inclusive/exclusive semantics.
+- A replayed event is acknowledged only after its projection and outbox transaction commits.
+- `OBJECT_DELETED` always includes `deletion_completion_time`; missing timestamps hold processing and emit no closure or deletion event.
+- `spec.instance_type.id` is non-empty and immutable for the consumed API version.
+
+### Correctness
+
+- Every accepted transition-table pair has a passing unit test.
+- Initial reconciliation derives the first allocation boundary from durable history, not the current-state timestamp.
+- Replay of a complete `RUNNING → STOPPED → RUNNING` cycle restores the stopped interval exactly once.
+- Duplicate and out-of-order events produce no duplicate billing intervals.
+- Allocation and consumption duration error is no greater than one second for 30-second, 120-second, and 600-second test intervals.
+- Repeated heartbeat snapshots are nondecreasing within an interval and are not summed as deltas.
+- At least two consecutive hourly reconciliation cycles complete with zero unexpected BMaaS corrections in a clean test environment.
+
+### Regression and Operations
+
+- Existing VMaaS and CaaS unit, integration, and E2E suites pass without regression.
+- The BMaaS lifecycle E2E test passes for create, start, stop, restart, failure, recovery, and deletion.
+- Replay-lag alert fires when lag exceeds five minutes for five minutes.
+- Unpublished outbox alert fires when the oldest unpublished record exceeds five minutes.
+- Missing `state_transition_time` or `deletion_completion_time` produces a critical alert immediately.
+- Fulfillment-service owns history and timestamp alerts; the Metering team owns outbox, replay, and reconciliation alerts.
+
+### Scope
+
+- CAP-5 is either delivered through the parent usage query contract or explicitly moved to a separate release/feature before Dev Preview approval.
 
 ## Test Plan
 
