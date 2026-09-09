@@ -327,6 +327,13 @@ PostgreSQL and Kafka are not a single transaction. The Watch Consumer therefore 
 
 This outbox contract is the idempotency boundary for lifecycle events, heartbeats, corrections, and deletion closure. It does not claim atomicity between PostgreSQL and Kafka; it provides at-least-once publication with deterministic IDs and idempotent consumers.
 
+**Outbox record contract:** The implementation uses two durable record sets:
+
+- `processed_fulfillment_events` records the source `resource_type`, `resource_id`, `source_event_id`, source `metadata.version` when present, and processing timestamp. A unique constraint on `(resource_type, source_event_id)` makes source-event acknowledgement idempotent. An event is recorded even when its transition produces no CloudEvent.
+- `metering_outbox` stores one row per CloudEvent with `outbox_id`, unique `cloud_event_id`, `resource_type`, `resource_id`, `meter_type`, CloudEvent type, serialized CloudEvent payload, optional `source_event_id`, optional source version, `record_kind` (`lifecycle`, `heartbeat`, `correction`, or `deletion`), creation timestamp, publication timestamp, attempt count, and the next retry time. The unique `cloud_event_id` constraint prevents a replay or transaction retry from inserting a second copy.
+
+Lifecycle, heartbeat, correction, and deletion records use the same outbox and publisher path. Heartbeats and snapshot corrections have no fulfillment event ID; their deterministic CloudEvent ID is the idempotency key. Unpublished rows are never removed by cleanup. Published rows and processed-event records are retained for at least the greater of the durable fulfillment-history retention and the downstream deduplication horizon, with a default of 13 months to match provider usage retention. Cleanup may remove only published rows older than that retention, and must extend its horizon whenever either dependency is extended. Cleanup reports the age and count of unpublished rows so a stuck outbox cannot be mistaken for successful publication.
+
 #### State Projection
 
 The shared `ResourceState` projection gains one optional field for independent meter history. This is a Metering Service infrastructure extension owned by the Metering Service team; it does not change the VMaaS or CaaS billing model:
@@ -767,6 +774,7 @@ BMaaS metering may graduate to Dev Preview only when:
 - Reconciliation detects a BareMetalInstance in projection but absent from fulfillment and emits `missed_deletion` correction
 - Stale heartbeat detection generates synthetic heartbeats for allocation-billable BMaaS resources with correct meter decomposition
 - Disabling `bmaas_metering_enabled` suppresses BMaaS Watch handling, heartbeats, reconciliation corrections, deletion cleanup, and outbox publication while retaining projections and queued records; re-enabling resumes replay and drains the retained outbox before heartbeats.
+- Outbox insertion is idempotent by CloudEvent ID for lifecycle, heartbeat, correction, and deletion records; cleanup retains unpublished rows and removes only published rows beyond the configured replay and deduplication horizon.
 
 ### E2E Tests
 
