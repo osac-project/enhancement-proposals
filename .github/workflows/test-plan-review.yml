@@ -114,7 +114,20 @@ jobs:
         run: pip install -r .github/scripts/requirements.txt
 
       - name: Clone test plan skills
-        run: git clone --depth 1 https://github.com/osac-project/osac-ai-skills /opt/test-plan-skills
+        run: |
+          set -euo pipefail
+          git clone --depth 1 https://github.com/osac-project/osac-ai-skills /opt/test-plan-skills
+          skills_sha="$(git -C /opt/test-plan-skills rev-parse --verify "HEAD^{commit}")"
+          if ! [[ "$skills_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::osac-ai-skills resolved to an invalid commit SHA: $skills_sha"
+            exit 1
+          fi
+          echo "Resolved osac-ai-skills commit: ${skills_sha}"
+          {
+            echo "### OSAC AI skills"
+            echo
+            echo "Resolved osac-ai-skills commit: ${skills_sha}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Set up GCP credentials
         run: |
