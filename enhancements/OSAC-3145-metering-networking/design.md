@@ -45,7 +45,7 @@ VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and U
 | Resize | Storage/CSI owners | N/A to networking; Volume-only dependency | storage gate tracked separately | No networking gate |
 | M360 | Billing integration owner | `/networking/event` and initial flat payload | adapter HTTP contract test | Route/correction accepted |
 | Deployment | OSAC networking/API owners | required `METERING_DEPLOYMENT_ID` configuration | API and dimension E2E test | CAP-2 satisfied |
-| CAP-6 | Part 1 owner | runtime configurable meter registry/reload without redeploy | add meter without rebuild/restart test | PRD config story |
+| CAP-6 | Part 1 owner | One reloadable `MeterResourceRegistry` consumed by Watch filters, resource loaders/reconciliation, projection/heartbeat selection, producer topic routing, and every adapter route map | add a meter without rebuild, restart, or partial-path activation | PRD config story |
 
 ## Proposal
 Add state timestamps, output-only ExternalIP attachment attribution, exhaustive registrations, Watch clauses, a shared transaction helper for parent exclusivity, and separate NATGateway dimensions. Fulfillment is the sole writer of settled parent state; operator parent writes and competing direct DAO mutations are removed.
