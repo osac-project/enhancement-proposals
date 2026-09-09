@@ -120,7 +120,7 @@ The helper covers every direct auto path, not only defaults: `private_compute_in
 
 The existing attachment spec is the authoritative input oneof: `external_ip`, exactly one of `compute_instance|cluster|baremetal_instance`, and `target_endpoint` only for cluster (`fulfillment-service/proto/private/osac/private/v1/external_ip_attachment_type.proto:63-103`). It is immutable. State updates use the private update mask; parent output fields are never accepted in that mask. The mapper reads settled ExternalIP output, never joins attachment streams.
 
-IP family comes from an ExternalIPPool lookup by immutable pool ID; a cache miss is an error. ExternalIP dimensions are resource ID, tenant, project, deployment, IP family, pool, `attached`, settled attribution, `auto_created`, and `undeletable`. Empty project means tenant default. NATGateway dimensions are resource ID, virtual-network reference, external-IP reference, tenant, project, and deployment. No VirtualNetwork join is needed for metering.
+IP family comes from an ExternalIPPool lookup by immutable pool ID; a cache miss is an error. ExternalIP dimensions are resource ID, tenant, project, deployment, IP family, pool, `attached`, and settled attribution. Empty project means tenant default. NATGateway dimensions are resource ID, virtual-network reference, external-IP reference, tenant, project, and deployment. No VirtualNetwork join is needed for metering.
 
 ### Usage and Correction Contract
 Current `schema.LifecycleData` has only `duration_seconds`, current `correction.go` emits v1 corrections with a nil affected interval, and `m360-adapter/translate.go` has no correction or networking route. Current code is insufficient.
