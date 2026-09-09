@@ -801,7 +801,7 @@ The metering-service is a standalone deployment — it does not run alongside a 
 
 **BMaaS metering feature gate:** `bmaas_metering_enabled` is evaluated at every BMaaS emission path and is independent of VMaaS/CaaS processing:
 
-- The Watch dispatcher does not acknowledge new BMaaS events for metering while the gate is disabled; it leaves them for durable-history replay after re-enablement.
+- The Watch dispatcher does not apply new BMaaS events or advance the durable replay cursor while the gate is disabled; re-enablement resumes from the last acknowledged cursor.
 - The heartbeat generator excludes BMaaS rows from `ListBillable()` processing.
 - The reconciliation loop skips BMaaS snapshot comparison, correction generation, missed-deletion cleanup, and projection closure.
 - The outbox publisher leaves queued BMaaS records pending. It does not publish, delete, or synthesize BMaaS records while the gate is disabled.
