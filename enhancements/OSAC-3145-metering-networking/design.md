@@ -38,6 +38,7 @@ VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and U
 | Gate | Owner | Required artifact | Test evidence | Graduation gate |
 |---|---|---|---|---|
 | Part 1 | OSAC platform/metering | Operational projection, Kafka, retention, adapter API | Part 1 integration/retention tests | Required before events |
+| Networking API | Fulfillment/operator owners | ExternalIP attribution, attachment/state timestamps, NATGateway state timestamp, matching CRD status fields, and `METERING_DEPLOYMENT_ID` | proto/CRD generation, feedback, and delayed-event tests | Required before networking events |
 | OSAC-983 | OSAC platform team | Durable outbox and resume cursor | outage replay E2E | Exact outage recovery |
 | Correction/read model | Part 1 owner | Initial correction schema and consumers | apply/reverse/replay tests | No graduation without consumers |
 | OSAC-984 | Storage API team | N/A to networking; no dependency claimed | scope test confirms no Volume join | No networking gate |
@@ -57,6 +58,8 @@ Add state timestamps, output-only ExternalIP attachment attribution, exhaustive 
 5. A feature-gate rollout must precede the Watch clause. Disabling a resource gate freezes its complete meter, not merely event intake.
 
 ### API Extensions
+The following fields are prerequisites, not delivered behavior. No networking event is admitted until fulfillment-service, osac-operator, and feedback propagation tests prove them: `ExternalIPStatus.attribution`, `ExternalIPStatus.attachment_transition_time`, `ExternalIPStatus.state_transition_time`, `NATGatewayStatus.state_transition_time`, the matching operator CRD status timestamps, and the configured `METERING_DEPLOYMENT_ID`.
+
 The fulfillment API team owns a new private `external_ip_attribution_type.proto`. It imports `cleanapi/cleanapi.proto`, `google/api/field_behavior.proto`, `baremetal_instance_type.proto`, `cluster_type.proto`, and `compute_instance_type.proto`; those target files do not import ExternalIP types. It defines the shared endpoint enum and message below. `external_ip_type.proto` imports only this common file; `external_ip_attachment_type.proto` imports the common file and removes its local endpoint enum. The common file never imports either ExternalIP file, so `buf lint`/generation has no cycle and both API messages share one type.
 ```protobuf
 enum ExternalIPAttributionEndpoint {
@@ -79,6 +82,10 @@ message ExternalIPStatus {
   ExternalIPAttribution attribution = 7; // OUTPUT_ONLY
   google.protobuf.Timestamp attachment_transition_time = 8; // OUTPUT_ONLY
   google.protobuf.Timestamp state_transition_time = 9; // OUTPUT_ONLY
+}
+
+message NATGatewayStatus {
+  google.protobuf.Timestamp state_transition_time = 4; // OUTPUT_ONLY
 }
 ```
 `endpoint` is required only for `cluster`, and is `UNSPECIFIED` otherwise. `attached` remains a derived output-only exclusivity bit; NATGateway may set it for allocation exclusivity but never appears in `ExternalIPAttribution`. NATGateway attribution is its own meter dimensions, including `spec.virtual_network`, `spec.external_ip`, and the configured deployment identity.
