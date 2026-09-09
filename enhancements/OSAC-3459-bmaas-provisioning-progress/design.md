@@ -245,7 +245,7 @@ sequenceDiagram
     Hub-->>FB: watch event (status changed)
     FB->>Rec: Signal(id) [existing RPC]
     Rec->>Hub: Get CR (fresh)
-    Rec->>Rec: derive furthest-advanced stage -> PROVISIONED reason/message; READY terminal
+    Rec->>Rec: derive furthest-advanced stage into PROVISIONED reason/message, plus READY terminal
     Rec->>DB: write instance status (conditions)
     loop every ~5s while instance non-terminal
         UI->>API: GET baremetal_instances/{id}
