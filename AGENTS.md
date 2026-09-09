@@ -15,7 +15,8 @@ the agent from that checkout's `osac/` root (where `skills/prd` and
 Run `tools/bootstrap.sh` in the OSAC source checkout if the workflows are not
 installed. These workflows handle template selection, feature dimensions
 context, section guidance, provenance, and publishing; `/publish` writes the
-resulting documents to this `enhancement-proposals` checkout. See that OSAC
+resulting documents to this `enhancement-proposals` checkout. The workflow's
+publish command writes there. See that OSAC
 checkout's `AGENTS.md` for the full instructions.
 
 ## Enhancement Proposals
