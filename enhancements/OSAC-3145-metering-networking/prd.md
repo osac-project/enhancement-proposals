@@ -126,12 +126,9 @@ Each metered networking resource type has a flat allocation meter. Usage is quer
 - **Owner:** OSAC platform team
 - **Mitigation:** All Part 2c meters depend on the metering infrastructure (event pipeline, provider adapters) established by Part 1 (OSAC-985). Part 2c implementation cannot begin until Part 1 infrastructure is deployed.
 
-## 11. Open Questions
+## 11. Resolved Decision: Allocation Metering Start Point
 
-### 11.1 Should allocation metering start at PENDING or READY?
-
-- **Owner:** OSAC platform team
-- **Impact:** CAP-1. The current model starts metering at READY/ALLOCATED because that is when the resource is usable by the tenant. However, a resource may already consume scarce provider capacity while PENDING (e.g., an ExternalIP reserved from the pool before it becomes attachable). Starting at PENDING aligns with the BMaaS allocation model (metering from provisioning start). Starting at READY aligns with what the tenant can observe and use. This applies to all metered networking resources with a PENDING-to-READY transition.
+ExternalIP usage starts at `ALLOCATED`, and NATGateway usage starts at `READY`, matching CAP-1. Time spent in `PENDING`, including provider capacity reserved before the resource becomes usable, is not metered.
 
 ## Related PRDs
 
