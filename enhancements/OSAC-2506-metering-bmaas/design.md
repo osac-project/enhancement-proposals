@@ -287,7 +287,7 @@ The BMaaS decomposer is an explicit resource-type handler in the existing Meteri
 | --- | --- |
 | Watch filter and dispatcher | Subscribe to `Events.Watch` with `bare_metal_instance` enabled. Route `Event.bare_metal_instance` events to the BMaaS mapper and handler based on `osacresourcetype`; do not send them through a generic single-meter transition path. `OBJECT_DELETED` enters the BMaaS closure handler before the projection row is removed. |
 | Mapper | Extract the BareMetalInstance resource ID, tenant/project metadata, the `spec.instance_type.id` from the `BareMetalInstanceTypeLocalReference`, catalog item, current state, and authoritative `state_transition_time`. For `OBJECT_UPDATED`, load the previous state, billing dimensions, and per-meter interval timestamps from the projection. |
-| Transition handler | Resolve the exact `(previous_state, current_state)` pair in both BMaaS tables, update `CurrentState` and both meter intervals, and pass the resulting meter event specifications to `DecomposeBMIEvents`. Persist the projection update and all generated events as one idempotent operation. |
+| Transition handler | Resolve the exact `(previous_state, current_state)` pair in both BMaaS tables, update `CurrentState` and both meter intervals, and pass the resulting meter event specifications to `DecomposeBMIEvents`. Persist the projection update and outbox records in one PostgreSQL transaction; Kafka publication occurs after that transaction commits. |
 | Event builder | Build each CloudEvent from the meter-specific event type, meter type, transition timestamp, duration, resource identity, and billing dimensions supplied by the decomposer. The allocation and consumption records use independent event IDs and never share a calculated duration. |
 | Heartbeat generator | Query allocation-billable BMaaS projection rows, inspect `CurrentState`, and invoke the BMaaS heartbeat decomposer. It builds one allocation heartbeat for `STOPPED`, `STARTING`, `STOPPING`, and `DELETING`, and allocation plus consumption heartbeats for `RUNNING`, using each meter's own interval timestamp. |
 | Reconciliation loop | Use the same mapper, transition tables, decomposer, event builder, and `OBJECT_DELETED` closure handler as Watch processing. A correction carries the authoritative fulfillment transition timestamp; it does not use reconciliation read time. Durable history replay is applied through this same path before snapshot drift correction. |
@@ -312,6 +312,17 @@ type EventBuilder func(BMaaSEventBuildRequest) (cloudevents.Event, error)
 
 `DecomposeBMIEvents` creates one build request for each meter boundary, setting `DurationSeconds` from that meter's interval timestamp and setting the CloudEvent type to `started.v1`, `suspended.v1`, `resumed.v1`, or the applicable correction type. The dispatcher, heartbeat generator, and reconciliation loop must use this contract so `meter_type`, event type, transition timestamp, and meter-specific duration reach every emitted event.
 
+#### Projection and Event Publication Idempotency
+
+PostgreSQL and Kafka are not a single transaction. The Watch Consumer therefore uses a transactional outbox:
+
+1. In one PostgreSQL transaction, it locks the resource projection, checks the source fulfillment event ID against the processed-event record, resolves the transition, updates the projection, and inserts one outbox record for each generated CloudEvent. The projection update and outbox inserts commit together or neither is committed.
+2. The consumer acknowledges the fulfillment event only after that transaction commits. If the process crashes first, the fulfillment event is redelivered and the processed-event check makes the retry a no-op.
+3. An outbox publisher reads committed records, publishes them to Kafka with producer acknowledgements, and marks them published only after Kafka confirms receipt. A crash after Kafka publication but before the outbox update can publish the record again; the CloudEvent ID remains deterministic, so adapters and downstream consumers must deduplicate by CloudEvent ID before aggregation.
+4. The per-meter IDs (`{baseID}/allocation` and `{baseID}/consumption`) and the deletion IDs are stable across Watch redelivery, outbox retry, reconciliation correction, and durable-history replay. A duplicate therefore cannot create a second billable interval. A lost process cannot create an unrecorded projection transition because every committed projection change has a corresponding durable outbox record.
+
+This outbox contract is the idempotency boundary for lifecycle events, heartbeats, corrections, and deletion closure. It does not claim atomicity between PostgreSQL and Kafka; it provides at-least-once publication with deterministic IDs and idempotent consumers.
+
 #### State Projection
 
 The shared `ResourceState` projection gains one optional field for independent meter history. This is a Metering Service infrastructure extension owned by the Metering Service team; it does not change the VMaaS or CaaS billing model:
@@ -328,7 +339,7 @@ The shared `ResourceState` projection gains one optional field for independent m
 
 The Watch Consumer carries both timestamps and the per-meter first-use flags from the projection into `StateContext` and then into the decomposer. The consumption meter's `duration_seconds` on `suspended.v1` events is computed from `ComponentBillableSince["consumption"]`; the allocation meter uses `BillableSince`. On `RUNNING` → `STOPPING`, consumption is closed and its active timestamp is cleared while its `ComponentEverStarted["consumption"]` flag remains true. On a later transition to `RUNNING`, a new consumption timestamp is set at that transition time and the event is `resumed.v1`; the allocation interval continues.
 
-The field is additive and optional for existing resource types. VMaaS and CaaS retain their current `EverBillable` and component behavior, and their handlers ignore the BMaaS-only keys. The projection migration initializes the map empty for existing rows. BMaaS sets `ComponentEverStarted["allocation"]` or `ComponentEverStarted["consumption"]` atomically when the corresponding meter first opens, and chooses `started.v1` or `resumed.v1` from that flag. The projection update and emitted events are committed idempotently together.
+The field is additive and optional for existing resource types. VMaaS and CaaS retain their current `EverBillable` and component behavior, and their handlers ignore the BMaaS-only keys. The projection migration initializes the map empty for existing rows. BMaaS sets `ComponentEverStarted["allocation"]` or `ComponentEverStarted["consumption"]` atomically when the corresponding meter first opens, and chooses `started.v1` or `resumed.v1` from that flag. The projection update and corresponding outbox records are committed idempotently together; Kafka publication occurs after the PostgreSQL transaction commits.
 
 `ComponentEverStarted` is intentionally retained because `BillableSince` and `ComponentBillableSince["consumption"]` describe only active intervals; they cannot distinguish the first consumption opening after `STOPPED` from a later resumed interval. `EverBillable` is resource-wide allocation history and cannot represent that distinction.
 
@@ -336,7 +347,7 @@ The field is additive and optional for existing resource types. VMaaS and CaaS r
 
 #### BMaaS Watch Consumer State Application
 
-The generic Watch Consumer's projection-only handling for transient states is not sufficient for BMaaS. The BMaaS handler loads the previous `ResourceState`, resolves the exact `(from, to)` pair, applies both meter effects, and persists the projection and deterministic lifecycle events as one idempotent transition. A transition that leaves one meter unchanged still updates `CurrentState` so the heartbeat generator sees the correct power state.
+The generic Watch Consumer's projection-only handling for transient states is not sufficient for BMaaS. The BMaaS handler loads the previous `ResourceState`, resolves the exact `(from, to)` pair, applies both meter effects, and persists the projection and deterministic lifecycle outbox records in one PostgreSQL transaction. A transition that leaves one meter unchanged still updates `CurrentState` so the heartbeat generator sees the correct power state.
 
 The meter-specific application rules are:
 
