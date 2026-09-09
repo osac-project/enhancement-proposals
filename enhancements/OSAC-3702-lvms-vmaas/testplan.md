@@ -1,10 +1,9 @@
-testplan.md (updated) — select all & copy into your branch
 # Testplan — OSAC-3702
 
 ## Overview
 
 - **Feature:** OSAC-3702 — LVMS Node-Local Storage Backend for VMaaS (single-node)
-- **Total test cases:** 22
+- **Total test cases:** 23
 - **Requirements covered:** 9 of 9 (R1–R9)
 - **Interface changes covered:** 8 of 8 (IC-1–IC-8)
 
@@ -500,12 +499,12 @@ T-order:
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 22 |
+| Total test cases | 23 |
 | Critical | 7 |
 | High | 11 |
 | Medium | 4 |
 | Low | 0 |
-| Automated | 22 |
+| Automated | 23 |
 | Manual | 0 |
 | Requirements with test cases | 9 / 9 |
 | Interface changes with test cases | 8 / 8 |

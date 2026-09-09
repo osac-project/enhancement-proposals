@@ -1,4 +1,3 @@
-design.md (updated) — select all & copy into your branch
 ---
 title: lvms-node-local-storage-vmaas
 authors:
@@ -75,7 +74,7 @@ Attach requires no new code: the local backend is configured with the existing `
 
 **Actors:** Tenant User (creates a ComputeInstance with a `local`-tier disk, which the VMaaS stack backs with a PVC), the OSAC storage stack (CSI driver, fulfillment, operator), and topolvm-node.
 
-**Starting state:** the deployment is a development/test profile — the **dev/test gate** (`deployment.profile` when available, `lvms.enabled` in the interim, default `false`) is what permits LVMS backend registration at all; production profiles cannot register it. The storage control plane is enabled (`OSAC_ENABLE_STORAGE_CONTROLLER=true`) **and** `lvms.enabled` is set — both are required. `lvms.enabled` alone (controller off) is the pre-existing generic-topolvm mode; the registered backend/tier are inert without the controller, which is the only trigger for the storage AAP jobs that surface tenant StorageClasses. LVMS is installed on the single-node cluster (OSAC-3011); a Block-type `StorageBackend { provider: lvms }` and an LVMS-backed tier (admin-named — `local` in this example) are registered, and the AAP-generated `osac-csi` StorageClass exists with `volumeBindingMode: WaitForFirstConsumer`. **Registration rule:** LVMS is registerable *if and only if* the storage control plane is enabled AND the deployment is a development/test profile. The dev/test profile signal is `deployment.profile` once that flag exists; until then `lvms.enabled=true` is the interim signal and `lvms.enabled=false` (the default) blocks registration. A production profile can never register LVMS, regardless of `lvms.enabled`.
+**Starting state:** LVMS is installed on the single-node cluster (OSAC-3011); the storage control plane is enabled (`OSAC_ENABLE_STORAGE_CONTROLLER=true`); a Block-type `StorageBackend { provider: lvms }` and an LVMS-backed tier (admin-named — `local` in this example) are registered; and the AAP-generated `osac-csi` StorageClass exists with `volumeBindingMode: WaitForFirstConsumer`. **Registration rule (single formula):** LVMS is registerable *if and only if* the storage control plane is enabled AND the deployment is a development/test profile. The dev/test-profile signal is `deployment.profile == development` once that flag exists; until then it is `lvms.enabled == true` (default `false`, which blocks registration). `lvms.enabled` is therefore the interim profile signal, not a separate requirement. A production profile can never register LVMS, regardless of `lvms.enabled`. Note: `lvms.enabled` with the controller **off** is the pre-existing generic-topolvm mode — the registered backend/tier stay inert without the controller, which is the only trigger for the storage AAP jobs that surface tenant StorageClasses.
 
 ```mermaid
 sequenceDiagram
@@ -106,7 +105,7 @@ The diagram shows the happy path. The takeaway is that the OSAC CSI controller s
 
 #### Error handling: local tier with no scheduled consumer
 
-A `Volume` created against a local tier with an empty `topology.node` (the API-first / provision-in-advance path natural for network backends) is rejected by fulfillment with `codes.FailedPrecondition` [Locked: D6]. Under `WaitForFirstConsumer` this never fires on the PVC path (the node is always known at create); it guards direct-API misuse.
+A `Volume` created against a local tier with an empty `topology.segments["osac.io/node"]` (the API-first / provision-in-advance path natural for network backends) is rejected by fulfillment with `codes.FailedPrecondition` [Locked: D6]. Under `WaitForFirstConsumer` this never fires on the PVC path (the node is always known at create); it guards direct-API misuse.
 
 #### Error handling: insufficient node capacity
 
@@ -132,7 +131,7 @@ Storage `@temp-api` files exist in osac-ux (`block-volumes.ts`, `compute-instanc
 
 | UI field (`@temp-api` TypeScript) | Proto field (this EP) | Notes / deviation |
 |---|---|---|
-| _none_ | `private.v1.VolumeSpec.topology.node` | Internal-only; not surfaced to any tenant-facing resource (`block-volumes`, `compute-instance-disk`). No UI migration required. |
+| _none_ | `private.v1.VolumeSpec.topology.segments["osac.io/node"]` | Internal-only; not surfaced to any tenant-facing resource (`block-volumes`, `compute-instance-disk`). No UI migration required. |
 
 No deviations from known anti-patterns: the field is not a sub-resource action, string-union storage class, one-time secret, or RHOAI operator field. After the backend ships, `pnpm gen-types` should produce no UI diff for tenant-facing storage resources.
 
@@ -154,12 +153,12 @@ optional VolumeTopology topology = <fresh field number>;
 
 `buf lint` + `buf generate` before commit; mirror the field on the operator Volume CRD (T3 / OSAC-4359).
 
-**Fulfillment guard + carry (T2 / OSAC-4358).** Tier resolution already sets `status.backend` from the tier's backend association (routing key = StorageBackend ID) [Locked: D5, Codebase: fulfillment-service/internal/servers/private_volumes_server.go]. Add: if the resolved provider is node-local (`lvms`) and `topology.node` is empty → `codes.FailedPrecondition`; otherwise persist and thread `topology` into the Volume CR.
+**Fulfillment guard + carry (T2 / OSAC-4358).** Tier resolution already sets `status.backend` from the tier's backend association (routing key = StorageBackend ID) [Locked: D5, Codebase: fulfillment-service/internal/servers/private_volumes_server.go]. Add: if the resolved provider is node-local (`lvms`) and `topology.segments["osac.io/node"]` is empty → `codes.FailedPrecondition`; otherwise persist and thread `topology` into the Volume CR.
 
 **Provider-keyed routing + `LvmsVendorProvisioner` (T4 / OSAC-4360, depends on OSAC-4221).** Today the operator wires a single `VastVendorProvisioner` for every backend, hardcoding VAST specifics — a non-VAST backend either fails at `endpointFor` or mis-routes into VAST logic [Codebase: osac-operator]. OSAC-4221 makes provisioning provider-driven (registry + VAST impl + Pure/NetApp/LVMS **stubs**); this feature **fills the LVMS stub**. If OSAC-4221 has not landed, this feature builds the provider-keyed selection itself — either way it owns the LVMS provisioner [Locked: D4].
 
 `LvmsVendorProvisioner` implements the existing interface via a `targetClusterClient` seam (in-cluster for VMaaS; a remote guest client for CaaS later — same logic) [Locked: D1]:
-- **CreateVolume:** require the `osac.io/node` topology segment; create a `LogicalVolume` CR (`spec.nodeName` = node, `spec.deviceClass` = the device class configured on the `StorageBackend`/tier and resolved server-side — not a StorageClass parameter, `spec.size` = requested); poll `status.volumeID`; on VG-capacity failure return `codes.ResourceExhausted` (no `LogicalVolume` was carved; fulfillment marks the Volume record failed/removed so no partial inventory remains, and external-provisioner's re-pick issues a fresh `CreateVolume` — keeping the flow retry-safe); return `vendor_volume_id = status.volumeID` [Locked: D10].
+- **CreateVolume:** require the `osac.io/node` topology segment; create a `LogicalVolume` CR (`spec.nodeName` = node, `spec.deviceClass` = the device class configured on the `StorageBackend`/tier and resolved server-side — not a StorageClass parameter, `spec.size` = requested); poll `status.volumeID`; on VG-capacity failure return `codes.ResourceExhausted` (the provisioner deletes the `LogicalVolume` CR it created and marks the Volume record failed/removed, so no partial CR or inventory remains; external-provisioner's re-pick then issues a fresh `CreateVolume` — keeping the flow retry-safe); return `vendor_volume_id = status.volumeID` [Locked: D10].
 - **DeleteVolume:** delete the `LogicalVolume` CR by name (idempotent).
 - **Publish/Unpublish:** not implemented — the local backend uses the `none` endpoint sentinel, so the CSI controller no-ops attach [Locked: D3].
 
@@ -260,13 +259,14 @@ The operator now carries a per-backend provisioner split (network vs node-local)
 - **Resolved input:** OSAC-4252 is **closed** — the `osac` umbrella chart (osac-installer) owns the `csi-backends` deployment and AAP skips it (Option A). That decision governs vendor **controllers** (e.g. `vast-csi-controller`); LVMS is controller-less, so it needs **no** `csi-backends` controller entry at all.
 - **Open (LVMS-specific):** what remains is how the meta-driver **node plugin's** `node.vendorSockets` gets the `lvms → <topolvm-node socket>` entry wired for a controller-less, node-local-only vendor. The current driver-install path assumes a vendor controller Service and does not yet handle a node-socket-only vendor; adding that node-local-vendor support is tracked under OSAC-3290 / #361 (In Progress). This design states the wiring requirement; the installer mechanism lands with that work.
 - **Impact:** §Implementation Details (node plugin) and the install path only — no change to the proto, fulfillment, or operator surfaces.
+- **Feature dependency (no fallback):** this is a hard dependency — until OSAC-3290 / #361 wires the `lvms` node socket, the mount proxy has no target and provisioned volumes cannot mount. There is no partial-enablement fallback; T6 (and thus the end-to-end feature) must not ship until the wiring lands.
 
 ## Test Plan
 
 ### Unit Tests
 
 - Proto: `VolumeTopology` presence/absence round-trips; optional field defaults empty for network backends.
-- Fulfillment guard: local tier + empty `topology.node` → `FailedPrecondition`; local tier + node present → persists; network tier ignores topology.
+- Fulfillment guard: local tier + empty `topology.segments["osac.io/node"]` → `FailedPrecondition`; local tier + node present → persists; network tier ignores topology.
 - `LvmsVendorProvisioner`: constructs `LogicalVolume` with correct `nodeName`/`deviceClass`/`size`; maps VG-capacity failure to `ResourceExhausted`; delete is idempotent when the CR is absent.
 - `NodeGetInfo`: returned `osac.io/node` value equals the k8s Node name.
 - Device-class resolution: the LVMS provisioner reads the device class from the `StorageBackend`/tier config and sets `LogicalVolume.spec.deviceClass` (no StorageClass parameter).
