@@ -76,7 +76,7 @@ The design introduces four changes to the metering-service codebase:
 3. **Extended reconciliation** — a `BareMetalInstancesClient` and loader for the hourly reconciliation loop, with a billability checker that uses the allocation meter's state set
 4. **M360 adapter route** — a `/bmaas/event` endpoint that passes the `meter_type` billing dimension through to the M360 Usage API
 
-No new Kafka topics, no State Projection schema changes, no new deployment artifacts. The existing `osac.metering.lifecycle`, `osac.metering.heartbeat`, and `osac.metering.corrections` topics carry BMaaS events alongside VMaaS and CaaS events, differentiated by the `osacresourcetype` extension attribute (`bare_metal_instance`). BMaaS events inherit Part 1's data-availability guarantees: Kafka's 30-day retention provides replay capability, and provider adapters persist usage data for at least 13 months via their respective storage backends.
+No new Kafka topics, no State Projection schema changes, no new deployment artifacts. The existing `osac.metering.lifecycle`, `osac.metering.heartbeat`, and `osac.metering.corrections` topics carry BMaaS events alongside VMaaS and CaaS events, differentiated by the `osacresourcetype` extension attribute (`bare_metal_instance`). Kafka's 30-day retention replays BMaaS events after they have been published, but cannot recover a transition that the fulfillment `Events.Watch` stream never delivered. Provider adapters persist published usage data for at least 13 months via their respective storage backends.
 
 ### Workflow Description
 
@@ -274,7 +274,29 @@ The existing `ResourceState` struct is sufficient without schema changes:
 
 The Watch Consumer carries both timestamps from the projection into `StateContext` and then into the decomposer. The consumption meter's `duration_seconds` on `suspended.v1` events is computed from `ComponentBillableSince["consumption"]`; the allocation meter uses `BillableSince`. On `RUNNING` → `STOPPING`, consumption is closed and its timestamp is cleared while the allocation timestamp remains unchanged. On a later transition to `RUNNING`, a new consumption timestamp is set at that transition time while the allocation interval continues.
 
-`ListBillable()` returns BMaaS resources that are allocation-billable. The heartbeat decomposer checks `CurrentState` to determine whether to produce one heartbeat (allocation only, for `STOPPED`/`STARTING`/`STOPPING`) or two (allocation + consumption, for `RUNNING`).
+The field is additive and optional for existing resource types. VMaaS and CaaS retain their current `EverBillable` and component behavior, and their handlers ignore the BMaaS-only keys. The projection migration initializes the map empty for existing rows. BMaaS sets `ComponentEverStarted["allocation"]` or `ComponentEverStarted["consumption"]` atomically when the corresponding meter first opens, and chooses `started.v1` or `resumed.v1` from that flag. The projection update and emitted events are committed idempotently together.
+
+`ListBillable()` returns BMaaS resources that are allocation-billable. The heartbeat decomposer checks `CurrentState` to determine whether to produce one heartbeat (allocation only, for `STOPPED`/`STARTING`/`STOPPING`/`DELETING`) or two (allocation + consumption, for `RUNNING`).
+
+#### BMaaS Watch Consumer State Application
+
+The generic Watch Consumer's projection-only handling for transient states is not sufficient for BMaaS. The BMaaS handler loads the previous `ResourceState`, resolves the exact `(from, to)` pair, applies both meter effects, and persists the projection and deterministic lifecycle events as one idempotent transition. A transition that leaves one meter unchanged still updates `CurrentState` so the heartbeat generator sees the correct power state.
+
+The meter-specific application rules are:
+
+| Transition | Projection update | Lifecycle events |
+| --- | --- | --- |
+| `PROVISIONING` → `STARTING`/`STOPPING` | Set `BillableSince` to `state_transition_time`; set `ComponentEverStarted["allocation"]`; leave consumption inactive; set `IsBillable=true` | `started.v1` for allocation |
+| `PROVISIONING` → `RUNNING` | Set `BillableSince` and `ComponentBillableSince["consumption"]` to `state_transition_time`; set both `ComponentEverStarted` flags and `IsBillable=true` | `started.v1` for allocation and consumption |
+| `PROVISIONING` → `STOPPED` | Set `BillableSince` to `state_transition_time`; set `ComponentEverStarted["allocation"]`; leave consumption inactive; set `IsBillable=true` | `started.v1` for allocation |
+| `STOPPED`/`STARTING` → `RUNNING` | Preserve `BillableSince`; set `ComponentBillableSince["consumption"]` to `state_transition_time`; set `ComponentEverStarted["consumption"]` if false | `started.v1` for a first consumption opening, otherwise `resumed.v1` |
+| `FAILED` → `RUNNING` | Set active timestamps to `state_transition_time` for meters that open; set `IsBillable=true`; preserve and update each `ComponentEverStarted` flag | `started.v1` or `resumed.v1` independently for each meter, based on its flag |
+| `RUNNING` → `STOPPING` | Preserve `BillableSince`; clear the consumption timestamp; keep `IsBillable=true` | `suspended.v1` for consumption |
+| `STOPPING` → `STOPPED`, or `STOPPED` → `STARTING` | Preserve the allocation timestamp and consumption inactivity; keep `IsBillable=true` | No lifecycle event |
+| `RUNNING`/`STOPPED`/`STARTING`/`STOPPING` → `DELETING` | Preserve `BillableSince`; clear the consumption timestamp if active; keep `IsBillable=true` until `OBJECT_DELETED` | Suspend consumption if active; allocation remains open |
+| An allocation-billable state → `FAILED` | Clear `BillableSince` and any active consumption timestamp; set `IsBillable=false` | Suspend each meter that was active |
+
+`started.v1` is reserved for the first opening of each meter interval. `resumed.v1` is used when that same meter opens again after suspension. A missing creation event is handled by reconciliation using the current state and its authoritative `state_transition_time`: `RUNNING` seeds both meters and marks both first-use flags, allocation-billable non-`RUNNING` states seed allocation only, and `FAILED` seeds neither. Reconciliation emits correction events with the same meter-specific effects and IDs. A state snapshot cannot infer a completed stop/start cycle; replayable durable history is therefore a release prerequisite for the exact billing guarantee.
 
 #### BareMetalInstanceType Resolution
 
@@ -412,7 +434,17 @@ Reconciliation corrections for BMaaS resources use the same decomposer as the Wa
 
 **Startup Reconciliation:** On metering-service startup, reconciliation runs immediately before the Watch Consumer resumes and seeds the projection with current BareMetalInstance state from fulfillment. It repairs endpoint drift but does not reconstruct transitions that began and ended while the service was unavailable.
 
-**Durable transition history requirement:** `List` is a snapshot API and cannot detect a complete `RUNNING` → `STOPPING`/`STOPPED` → `STARTING`/`RUNNING` cycle that occurs while Watch or Kafka is unavailable: both the source snapshot and the projection can end in `RUNNING`. Snapshot reconciliation therefore cannot recover the stopped interval or correct the consumption meter. Exact lifecycle billing requires `Events.Watch` (or an equivalent fulfillment history API) to retain and replay ordered transitions, including `state_transition_time` and a durable cursor/sequence. Until that history is available, this design cannot claim the Part 1 accuracy guarantee for outages spanning a complete transient cycle; reconciliation is limited to endpoint corrections.
+**Durable transition history requirement:** `List` is a snapshot API and cannot detect a complete `RUNNING` → `STOPPING`/`STOPPED` → `STARTING`/`RUNNING` cycle that occurs while Watch or Kafka is unavailable: both the source snapshot and the projection can end in `RUNNING`. Snapshot reconciliation therefore cannot recover the stopped interval or correct the consumption meter.
+
+The current fulfillment `Events.Watch` contract does not provide this history. Its proto explicitly makes no guarantee about delivery or order, events that occur while the client is disconnected are not delivered, and the API has no replay cursor. `Event.id` identifies an event but is not a cursor or ordering guarantee. [OSAC PR #799](https://github.com/osac-project/osac/pull/799) adds the authoritative `state_transition_time` to BMaaS status; it does not change these Watch delivery semantics.
+
+**Blocking release gate — durable fulfillment transition history/cursor:** BMaaS MUST NOT be deployed with billing enabled until fulfillment provides the replay contract below. This is required to satisfy the Part 1 exact lifecycle billing guarantee for outages that can contain a complete transient cycle. Snapshot reconciliation and event receipt timestamps cannot substitute for replayable history.
+
+**Owner:** Fulfillment-service team
+
+**Implementation:** Provide an ordered, replayable stream or history endpoint with a durable per-consumer cursor or sequence, stable event ID, event type, complete resource payload, authoritative transition timestamp, and retention long enough to cover the maximum metering outage. Cursor resumption must define inclusive/exclusive semantics and allow the metering service to acknowledge progress after idempotently applying each event. The metering service will resume from that cursor before applying replayed events.
+
+**Impact:** Until this dependency is available, BMaaS billing cannot be enabled. Reconciliation is limited to endpoint corrections and cannot reconstruct an unseen cycle.
 
 #### Heartbeat Generation
 
@@ -461,8 +493,8 @@ BMaaS metering inherits the existing security model without changes:
 
 | Failure Mode                                    | Effect                                                              | Recovery                                                                                                                                                                | User Observation                                                                  |
 | ----------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Watch stream disconnect                         | Missed BareMetalInstance transitions                                | Durable Watch history is replayed from the last cursor. Snapshot reconciliation handles endpoint drift only; it cannot reconstruct a complete cycle that returns to the same state.                                      | Exact billing remains blocked for an outage without replayable transition history |
-| Kafka publish failure                           | Events buffered in metering-service; backpressure on Watch Consumer | Kafka producer retries with exponential backoff. If Kafka is unavailable for extended period, events accumulate in memory and reconciliation catches up after recovery. | Delayed event availability for downstream consumers                               |
+| Watch stream disconnect                         | Missed BareMetalInstance transitions                                | Durable Watch history is replayed from the last cursor. Snapshot reconciliation handles endpoint drift only; it cannot reconstruct a complete cycle that returns to the same state.                                      | BMaaS billing is not enabled unless replayable transition history is available |
+| Kafka publish failure                           | Events buffered in metering-service; backpressure on Watch Consumer | Kafka producer retries with exponential backoff. If buffered events are lost, the durable fulfillment history/cursor dependency must replay them; snapshot reconciliation can repair endpoint drift only. | Delayed event availability; exact billing remains dependent on replayable history |
 | Reconciliation detects missed BareMetalInstance | Resource was created but Watch event was lost                       | Reconciliation emits `correction.v1 (reason=missed_creation)` and seeds the projection                                                                                  | Downstream system receives correction with adjusted interval                      |
 | Metering-service restart mid-lifecycle          | In-memory state projection lost                                     | PostgreSQL-backed projection survives restarts. Durable Watch history replays the gap; startup reconciliation repairs endpoint drift when no transient cycle was missed.                   | No user-visible impact when replayable history is available                         |
 
@@ -489,7 +521,10 @@ Existing metrics (`osac_metering_reconciliation_corrections_total`, `osac_meteri
 | Risk                                                                                                                                           | Mitigation                                                                                                                                                                                                                                                                      |
 | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Dual-meter decomposition complexity** — the per-meter decomposer is a novel pattern not used by VMaaS or CaaS, increasing maintenance burden | The decomposer is self-contained in `bare_metal_instance.go` and isolated behind the `EventDecomposer` interface. Unit tests cover all (from, to, meter) combinations via the two transition tables.                                                                            |
-| **OSAC-1201 dependency** — BareMetalInstanceTypes must be defined and referenced before BMaaS metering is useful                                  | [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201) defines the `BareMetalInstanceType` resource and the `BareMetalInstance.spec.instance_type` reference. This is a blocking dependency — without the reference, the primary metering dimension is empty. |
+| **Blocking release gate: durable fulfillment transition history/cursor** — the current `Events.Watch` stream does not guarantee delivery or order and cannot replay events missed during disconnects | Fulfillment-service team must provide the ordered replay contract described in the Reconciliation section. BMaaS billing remains disabled until it is available. |
+| **OSAC-1201 dependency** — BareMetalInstanceTypes must be defined and referenced before BMaaS metering is useful                                  | [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201) must define the `BareMetalInstanceType` resource and populate the `BareMetalInstance.spec.instance_type` string. Whether that field is immutable remains an open question; if updates are allowed, the separate dimension-rollover contract described above must be resolved before those updates can be metered. |
+| **Deletion completion timestamp dependency** — metadata records deletion requested, not deletion completed | Fulfillment-service team must add `deletion_completion_time` to `OBJECT_DELETED` and durable history, populated after finalizers complete. Metering closes allocation at that timestamp and waits for it when absent. |
+| **Parent attribution/query dependency** — the current canonical event schema, child-meter designs, and Usage Query API do not yet define the parent relationship contract | The Part 1 metering-service team must add the optional parent fields; OSAC-3141 and OSAC-3145 must populate them for attachment-bounded child intervals; Usage Query API owners must implement the parent query contract. CAP-5 remains blocked until these contracts are available. |
 | **Part 1 not yet deployed** — BMaaS metering depends on the metering-service infrastructure from OSAC-985                                      | Part 1 design is complete; implementation is in progress. BMaaS metering code can be developed in parallel but cannot be deployed or tested end-to-end until Part 1 infrastructure is operational.                                                                              |
 
 
@@ -550,6 +585,15 @@ The transition timestamp is carried from `BareMetalInstanceStatus` through the W
 **Implementation:** [OSAC-4969](https://redhat.atlassian.net/browse/OSAC-4969) added `optional google.protobuf.Timestamp state_transition_time` to `BareMetalInstanceStatus`, populates it whenever the state transitions, and follows the pattern in `ComputeInstanceStatus`. The value must be preserved in every Watch payload and replay path.
 **Impact:** The state-transition timestamp prerequisite is satisfied once BMaaS consumes a fulfillment version containing OSAC-4969; no receipt-time fallback is permitted.
 
+### 2. Exact Part 1 Billing Guarantee During Watch Outages
+
+**STATUS: RESOLVED IN DESIGN; RELEASE GATE** — The PRD requires BMaaS meters to use the same accuracy and data-availability guarantees as Part 1, while the current fulfillment `Events.Watch` API cannot replay transitions missed during a disconnect. Snapshot reconciliation cannot reconstruct a complete transient cycle that starts and ends in the same state.
+
+Durable fulfillment transition history with cursor-based replay is a release-blocking prerequisite for the Part 1 guarantee. The design does not weaken the guarantee or use `List` reconciliation as a substitute. Research of the current fulfillment implementation found only the live `Events.Watch` subscription; it has no history store or cursor, and its proto documents that disconnected events are lost. BMaaS billing cannot be enabled until the contract above is implemented.
+
+**Owner:** OSAC-2506 product/design owners and the fulfillment-service team
+**Impact:** BMaaS deployment and billing remain blocked until the durable replay contract is implemented and verified.
+
 ## Test Plan
 
 ### Unit Tests
@@ -580,7 +624,7 @@ The transition timestamp is carried from `BareMetalInstanceStatus` through the W
 
 - Reconciliation detects a `BareMetalInstance` present in fulfillment but missing from projection and emits `missed_creation` correction with correct allocation billability
 - Reconciliation replays a `RUNNING` → `STOPPING` transition when the projection has `RUNNING` and fulfillment has `STOPPED`, emitting a correction for the consumption meter only; allocation remains billable
-- Reconciliation replays a complete `RUNNING` → `STOPPED` → `RUNNING` cycle during a simulated Watch outage and restores the stopped interval from durable transition history
+- Release gate: reconciliation replays a complete `RUNNING` → `STOPPED` → `RUNNING` cycle during a simulated Watch outage and restores the stopped interval from the replayed transitions before BMaaS billing is enabled.
 - Reconciliation detects a BareMetalInstance in projection but absent from fulfillment and emits `missed_deletion` correction
 - Stale heartbeat detection generates synthetic heartbeats for allocation-billable BMaaS resources with correct meter decomposition
 
@@ -617,4 +661,4 @@ The metering-service is a standalone deployment — it does not run alongside a 
 
 ## Infrastructure Needed
 
-None. BMaaS metering uses existing infrastructure: metering-service binary, Kafka topics, PostgreSQL State Projection, and Provider Adapter framework.
+No new metering deployment artifacts are required. BMaaS metering depends on the fulfillment-service durable transition history/cursor and deletion completion timestamp contracts described above, in addition to the existing metering-service binary, Kafka topics, PostgreSQL State Projection, and Provider Adapter framework.
