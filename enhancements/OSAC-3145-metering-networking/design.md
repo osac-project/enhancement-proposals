@@ -80,7 +80,7 @@ message ExternalIPAttribution {
   option (buf.validate.message).cel = {
     id: "external_ip_attribution_endpoint"
     message: "endpoint is required only for cluster targets"
-    expression: "has(this.cluster) ? this.endpoint != 0 : this.endpoint == 0"
+    expression: "has(this.cluster) ? (this.endpoint == 1 || this.endpoint == 2) : this.endpoint == 0"
   };
   oneof target {
     option (buf.validate.oneof).required = true;
@@ -89,7 +89,7 @@ message ExternalIPAttribution {
     ClusterLocalReference cluster = 2;
     BareMetalInstanceLocalReference baremetal_instance = 3;
   }
-  ExternalIPAttributionEndpoint endpoint = 4;
+  ExternalIPAttributionEndpoint endpoint = 4 [(buf.validate.field).enum.defined_only = true];
 }
 ```
 The proposed private API additions are:
