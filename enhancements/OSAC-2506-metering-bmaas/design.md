@@ -470,7 +470,6 @@ The current fulfillment `Events.Watch` contract does not provide this history. I
 
 The heartbeat decomposer for BMaaS checks `ResourceState.CurrentState`:
 
-
 | State      | Heartbeat Events            |
 | ---------- | --------------------------- |
 | `RUNNING`  | 2: allocation + consumption |
@@ -494,7 +493,7 @@ The echo adapter requires no changes — it stores all CloudEvents by ID regardl
 The PRD requires storage volumes and public IPs attached to a bare metal host to be queryable as a unified usage view (_CAP-5_ acceptance criterion). This is an attribution and query relationship, not a second meter for the attached resources. The ownership boundary is:
 
 - [OSAC-3141](https://redhat.atlassian.net/browse/OSAC-3141) owns the block-volume meter (`GiB-seconds`) for every volume, including volumes attached to bare metal hosts.
-- OSAC-2506 owns the bare metal host-resource meters and the unified bare metal host footprint view that rolls already-metered child usage into the host view.
+- [OSAC-2506](https://redhat.atlassian.net/browse/OSAC-2506) owns the bare metal host-resource meters and the unified bare metal host footprint view that rolls already-metered child usage into the host view.
 - [OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145) owns the public-IP/networking meter, including for resources attached to bare metal hosts.
 
 OSAC-2506 does not emit a second block-volume or public-IP meter event. Child-resource events owned by OSAC-3141 and OSAC-3145 carry the parent relationship in the canonical event data:
@@ -531,7 +530,6 @@ BMaaS metering inherits the existing security model without changes:
 
 ### Failure Handling and Recovery
 
-
 | Failure Mode                                    | Effect                                                              | Recovery                                                                                                                                                                | User Observation                                                                  |
 | ----------------------------------------------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
 | Watch stream disconnect                         | Missed BareMetalInstance transitions                                | Durable Watch history is replayed from the last cursor. Snapshot reconciliation handles endpoint drift only; it cannot reconstruct a complete cycle that returns to the same state.                                      | BMaaS billing is not enabled unless replayable transition history is available |
@@ -547,17 +545,14 @@ No RBAC or tenancy changes required. BMaaS metering is a backend pipeline that r
 
 New Prometheus metrics for BMaaS metering:
 
-
 | Metric                                          | Type    | Labels                     | Description                                          |
 | ----------------------------------------------- | ------- | -------------------------- | ---------------------------------------------------- |
 | `osac_metering_bmi_events_total`                | Counter | `meter_type`, `event_type` | BMaaS lifecycle events produced, by meter and type   |
 | `osac_metering_bmi_heartbeats_total`            | Counter | `meter_type`               | BMaaS heartbeat events produced, by meter            |
 
-
 Existing metrics (`osac_metering_reconciliation_corrections_total`, `osac_metering_reconciliation_duration_seconds`) gain `bare_metal_instance` as a new `resource_type` label value. No new alerts — existing reconciliation and Kafka health alerts cover BMaaS.
 
 ### Risks and Mitigations
-
 
 | Risk                                                                                                                                           | Mitigation                                                                                                                                                                                                                                                                      |
 | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -567,9 +562,6 @@ Existing metrics (`osac_metering_reconciliation_corrections_total`, `osac_meteri
 | **Deletion completion timestamp dependency** — metadata records deletion requested, not deletion completed | Fulfillment-service team must add `deletion_completion_time` to `OBJECT_DELETED` and durable history, populated after finalizers complete. Metering closes allocation at that timestamp and waits for it when absent. |
 | **Parent attribution/query dependency** — the current canonical event schema, child-meter designs, and Usage Query API do not yet define the parent relationship contract | The Part 1 metering-service team must add the optional parent fields; OSAC-3141 and OSAC-3145 must populate them for attachment-bounded child intervals; the Metering team must implement the parent query contract. CAP-5 remains blocked until these contracts are available. |
 | **Part 1 not yet deployed** — BMaaS metering depends on the metering-service infrastructure from OSAC-985                                      | Part 1 design is complete; implementation is in progress. BMaaS metering code can be developed in parallel but cannot be deployed or tested end-to-end until Part 1 infrastructure is operational.                                                                              |
-
-
-
 
 ### Drawbacks
 
@@ -622,7 +614,7 @@ The Watch event's receipt time is not a valid substitute: Watch disconnects, Kaf
 
 The transition timestamp is carried from `BareMetalInstanceStatus` through the Watch Consumer and `StateContext` into the per-meter decomposer. Reconciliation also requires the same timestamp and cannot infer it from the time that a snapshot is read. Once the controller supplies the field, the fulfillment event stream must preserve it for replay and correction processing.
 
-**Owner:** Platform team (`BareMetalInstance` controller)
+**Owner:** Platform team (`BareMetalInstance` controller) / Amit Oren (amoren@redhat.com)
 **Implementation:** [OSAC-4969](https://redhat.atlassian.net/browse/OSAC-4969) added `optional google.protobuf.Timestamp state_transition_time` to `BareMetalInstanceStatus`, populates it whenever the state transitions, and follows the pattern in `ComputeInstanceStatus`. The value must be preserved in every Watch payload and replay path.
 **Impact:** The state-transition timestamp prerequisite is satisfied once BMaaS consumes a fulfillment version containing OSAC-4969; no receipt-time fallback is permitted.
 
