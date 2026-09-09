@@ -46,8 +46,10 @@ VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and U
 | OSAC-984 | Storage API team | N/A to networking; no dependency claimed | scope test confirms no Volume join | No networking gate |
 | Resize | Storage/CSI owners | N/A to networking; Volume-only dependency | storage gate tracked separately | No networking gate |
 | M360 | Billing integration owner | `/networking/event` and initial flat payload | adapter HTTP contract test | Route/correction accepted |
-| Deployment | OSAC networking/API owners | required `METERING_DEPLOYMENT_ID` configuration | API and dimension E2E test | CAP-2 satisfied |
+| Deployment | OSAC networking/API owners | stable installer-provided `METERING_DEPLOYMENT_ID` (the OSAC installation name) | API and dimension E2E test | CAP-2 satisfied |
 | CAP-6 | Part 1 owner | One reloadable `MeterResourceRegistry` consumed by Watch filters, resource loaders/reconciliation, projection/heartbeat selection, producer topic routing, and every adapter route map | add a meter without rebuild, restart, or partial-path activation | PRD config story |
+
+`METERING_DEPLOYMENT_ID` is the stable OSAC installation name supplied by the installer, normally the Helm release name. If release names are reused across installations that share billing data, the installer qualifies the name with the namespace. The value is required, non-empty, and unchanged for the installation lifetime. Changing it starts a new metering identity; reusing another installation's value is a configuration error. Metering fails startup when the value is missing, and does not attempt central collision detection.
 
 ## Proposal
 Add state timestamps, output-only ExternalIP attachment attribution, exhaustive registrations, Watch clauses, a shared transaction helper for parent exclusivity, and separate NATGateway dimensions. Fulfillment is the sole writer of settled parent state; operator parent writes and competing direct DAO mutations are removed.
