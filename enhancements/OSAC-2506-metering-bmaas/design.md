@@ -169,7 +169,7 @@ The Metering Service introduces no new CRDs, webhooks, or API surfaces. It consu
 
 - `Events.Watch` — the existing fulfillment event stream. BMaaS events are carried in `Event.bare_metal_instance` (field 3); field 15 is `secret`. The metering-service Watch filter must include the `bare_metal_instance` payload so these events reach the BMaaS mapper.
 - `PrivateBareMetalInstancesService.List` — used by the Reconciliation Loop for drift detection
-- The fulfillment deletion event contract must add `deletion_completion_time` to `OBJECT_DELETED`. Fulfillment sets it only after the BareMetalInstance has been removed and its finalizers have completed; `Metadata.deletion_timestamp` records the deletion request and is not a completion timestamp. The field must be retained by the durable history/cursor API.
+- The fulfillment deletion event contract must add an optional `google.protobuf.Timestamp deletion_completion_time` to the `Event` envelope for `OBJECT_DELETED`. Fulfillment sets it only after the BareMetalInstance has been removed and its finalizers have completed; `Metadata.deletion_timestamp` records the deletion request and is not a completion timestamp. The field and its value must be retained by the durable history/cursor API.
 
 **CloudEvent changes:** No new extension attributes. The existing `osacresourcetype` carries `bare_metal_instance`. The new `meter_type` value lives in `billing_dimensions`, not as a CloudEvent extension — it is a billing attribute, not an infrastructure routing key.
 
@@ -244,7 +244,21 @@ The decomposer evaluates both tables for each Watch event and produces one Cloud
 
 `OBJECT_CREATED` and `OBJECT_DELETED` are fixed resource-level events and bypass the transition table. `OBJECT_DELETED` must nevertheless close active meter intervals before removing the projection row: it emits an allocation suspension only when `BillableSince` is present, a consumption suspension only when `ComponentBillableSince["consumption"]` is present, and then the audit deletion event. The fulfillment-service team must add `deletion_completion_time` to this event and set it only after deletion has completed, including finalizer processing. `Metadata.deletion_timestamp` is the deletion-request time and must not be used for billing closure. The suspension duration uses `deletion_completion_time`; if it is absent, the consumer holds the closure for retry rather than using metadata deletion time or receipt time. The suspension IDs are `{baseID}/allocation` and `{baseID}/consumption`, and the deletion ID is `{baseID}`. Replayed or duplicated deletion notifications therefore resolve to the same IDs and cannot create duplicate billing intervals. A preceding `DELETING` update is not required for closure.
 
-**Deletion completion contract:** **Owner:** fulfillment-service team. **Implementation:** when finalizer processing confirms that the BareMetalInstance is gone, fulfillment records that instant as `deletion_completion_time` and includes it in the `OBJECT_DELETED` event and every durable-history replay record. This field is distinct from `Metadata.deletion_timestamp`, which marks the deletion request. **Impact:** metering closes the allocation interval at the actual deletion-completion instant; it retains the closure for retry when the completion timestamp is unavailable and never substitutes event receipt time.
+**Deletion completion contract**
+
+**Owner:** Fulfillment-service team.
+
+**Implementation:** Add an optional `google.protobuf.Timestamp deletion_completion_time` field to the `Event` envelope. It is populated only for `EVENT_TYPE_OBJECT_DELETED`, after finalizer processing confirms that the `BareMetalInstance` has been removed and archived. The event payload remains the resource representation immediately before deletion; `deletion_completion_time` is the authoritative completion instant and is distinct from `Metadata.deletion_timestamp`, which records the deletion request.
+
+**Ordering:** Fulfillment emits `OBJECT_DELETED` only after finalizer completion and sets `deletion_completion_time` before publication. Metering closes active intervals at that timestamp before publishing the deletion audit event.
+
+**Replay:** The durable history/cursor record stores the field with the original event ID, resource payload, and event type. Replaying the event therefore reproduces the same completion timestamp and deterministic suspension IDs.
+
+**Version skew:** Consumers that do not use the optional field may ignore it. BMaaS metering treats an `OBJECT_DELETED` event without `deletion_completion_time` as incomplete, retains it for retry, and never substitutes deletion-request time or event-receipt time.
+
+**Tracking:** [OSAC-5096](https://redhat.atlassian.net/browse/OSAC-5096) tracks the fulfillment-service API change. BMaaS billing remains disabled until this dependency is implemented and verified.
+
+**Impact:** Allocation closes at the actual deletion-completion instant, including finalizer time, and deletion cannot silently underbill the teardown interval.
 
 ```go
 type BMaaSMeterIntervals struct {
@@ -593,7 +607,7 @@ Existing metrics (`osac_metering_reconciliation_corrections_total`, `osac_meteri
 | **Dual-meter decomposition complexity** — the per-meter decomposer is a novel pattern not used by VMaaS or CaaS, increasing maintenance burden | The decomposer is self-contained in `bare_metal_instance.go` and isolated behind the `EventDecomposer` interface. Unit tests cover all (from, to, meter) combinations via the two transition tables.                                                                            |
 | **Blocking release gate: durable fulfillment transition history/cursor** — the current `Events.Watch` stream does not guarantee delivery or order and cannot replay events missed during disconnects | Fulfillment-service team must provide the ordered replay contract described in the Reconciliation section. BMaaS billing remains disabled until it is available. |
 | **OSAC-1201 dependency** — BareMetalInstanceTypes must be defined and referenced before BMaaS metering is useful                                  | [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201) must define the `BareMetalInstanceType` resource and populate the `BareMetalInstance.spec.instance_type.id` reference. Whether that reference is immutable remains an open question; if updates are allowed, the separate dimension-rollover contract described above must be resolved before those updates can be metered. |
-| **Deletion completion timestamp dependency** — metadata records deletion requested, not deletion completed | Fulfillment-service team must add `deletion_completion_time` to `OBJECT_DELETED` and durable history, populated after finalizers complete. Metering closes allocation at that timestamp and waits for it when absent. |
+| **Deletion completion timestamp dependency** — metadata records deletion requested, not deletion completed | [OSAC-5096](https://redhat.atlassian.net/browse/OSAC-5096) tracks the fulfillment-service change to add `deletion_completion_time` to `OBJECT_DELETED` and durable history after finalizers complete. Metering closes allocation at that timestamp and waits for it when absent. |
 | **Parent attribution/query dependency** — the current canonical event schema, child-meter designs, and Usage Query API do not yet define the parent relationship contract | The Part 1 metering-service team must add the optional parent fields; OSAC-3141 and OSAC-3145 must populate them for attachment-bounded child intervals; the Metering team must implement the parent query contract. CAP-5 remains blocked until these contracts are available. |
 | **Part 1 not yet deployed** — BMaaS metering depends on the metering-service infrastructure from OSAC-985                                      | Part 1 design is complete; implementation is in progress. BMaaS metering code can be developed in parallel but cannot be deployed or tested end-to-end until Part 1 infrastructure is operational.                                                                              |
 
