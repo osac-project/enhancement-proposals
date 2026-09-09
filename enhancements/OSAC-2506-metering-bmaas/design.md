@@ -230,7 +230,7 @@ The resolver performs exact `(from, to)` lookups. The following is the complete 
 | `STOPPING`     | `FAILED`       | Suspended                             |
 | `STOPPING`     | `DELETING`     | Suspended                             |
 | `FAILED`       | `FAILED`       | Skip                                  |
-| `FAILED`       | `RUNNING`      | `billableStart`                       |
+| `FAILED`       | `RUNNING`      | `billableResume`                      |
 | `FAILED`       | `DELETING`     | Skip                                  |
 | `DELETING`     | `DELETING`     | Skip                                  |
 
@@ -297,6 +297,24 @@ The meter-specific application rules are:
 | An allocation-billable state → `FAILED` | Clear `BillableSince` and any active consumption timestamp; set `IsBillable=false` | Suspend each meter that was active |
 
 `started.v1` is reserved for the first opening of each meter interval. `resumed.v1` is used when that same meter opens again after suspension. A missing creation event is handled by reconciliation using the current state and its authoritative `state_transition_time`: `RUNNING` seeds both meters and marks both first-use flags, allocation-billable non-`RUNNING` states seed allocation only, and `FAILED` seeds neither. Reconciliation emits correction events with the same meter-specific effects and IDs. A state snapshot cannot infer a completed stop/start cycle; replayable durable history is therefore a release prerequisite for the exact billing guarantee.
+
+#### BMaaS Watch Consumer State Application
+
+The generic Watch Consumer's projection-only handling for transient states is not sufficient for BMaaS. The BMaaS handler loads the previous `ResourceState`, resolves the exact `(from, to)` pair, applies both meter effects, and persists the projection and deterministic lifecycle events as one idempotent transition. A transition that leaves one meter unchanged still updates `CurrentState` so the heartbeat generator sees the correct power state.
+
+The meter-specific application rules are:
+
+| Transition | Projection update | Lifecycle events |
+| --- | --- | --- |
+| `PROVISIONING` → `RUNNING` | Set `BillableSince` and `ComponentBillableSince["consumption"]` to `state_transition_time`; set `IsBillable=true` | `started.v1` for allocation and consumption |
+| `PROVISIONING` → `STOPPED` | Set `BillableSince` to `state_transition_time`; leave consumption inactive; set `IsBillable=true` | `started.v1` for allocation |
+| `STOPPED`/`STARTING` → `RUNNING` | Preserve `BillableSince`; set `ComponentBillableSince["consumption"]` to `state_transition_time` | `resumed.v1` for consumption |
+| `FAILED` → `RUNNING` | Set both active timestamps to `state_transition_time`; set `IsBillable=true` | `resumed.v1` for allocation and consumption |
+| `RUNNING` → `STOPPING` | Preserve `BillableSince`; clear the consumption timestamp; keep `IsBillable=true` | `suspended.v1` for consumption |
+| `STOPPING` → `STOPPED`, or `STOPPED` → `STARTING` | Preserve the allocation timestamp and consumption inactivity; keep `IsBillable=true` | No lifecycle event |
+| An allocation-billable state → `FAILED` | Clear `BillableSince` and any active consumption timestamp; set `IsBillable=false` | Suspend each meter that was active |
+
+`started.v1` is reserved for the first opening of a meter interval. `resumed.v1` is used when a previously suspended interval opens again. A missing creation event is handled by reconciliation using the current state and its authoritative `state_transition_time`: `RUNNING` seeds both meters, allocation-billable non-`RUNNING` states seed allocation only, and `FAILED` seeds neither. Reconciliation emits correction events with the same meter-specific effects and IDs. A state snapshot cannot infer a completed stop/start cycle; that limitation is covered by the deferred durable-history dependency above.
 
 #### BareMetalInstanceType Resolution
 
@@ -612,7 +630,9 @@ Durable fulfillment transition history with cursor-based replay is a release-blo
   - `RUNNING` → `DELETING`: 2 events (allocation suspended + consumption suspended)
   - `STOPPED` → `DELETING`: 1 event (allocation suspended)
   - `RUNNING` → `FAILED`: 2 events (allocation suspended + consumption suspended)
-  - `FAILED` → `RUNNING`: 2 events (allocation started + consumption started)
+  - `FAILED` → `RUNNING`: 2 events (allocation resumed + consumption resumed)
+  - `PROVISIONING` → `STOPPED`: 1 event (allocation started; consumption remains inactive)
+  - `STOPPED` → `STARTING`: 0 events (allocation remains active; consumption remains inactive)
   - `OBJECT_DELETED` with both intervals active: 2 suspensions plus 1 deletion audit event, with stable IDs on redelivery
   - `OBJECT_DELETED` with no active intervals: deletion audit event only
   - `STOPPED` → `STOPPED`: 0 events
