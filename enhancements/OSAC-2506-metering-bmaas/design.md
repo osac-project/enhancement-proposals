@@ -4,6 +4,7 @@ authors:
   - amoren@redhat.com
 creation-date: 2026-08-19
 last-updated: 2026-09-09
+target-milestone: 0.3
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2506
 prd:
@@ -157,7 +158,8 @@ Key observations:
 
 - `PROVISIONING` → `STARTING` establishes provisioning complete and produces one allocation `started.v1` event; the later `STARTING` → `RUNNING` transition opens consumption.
 - `PROVISIONING` → `RUNNING` produces two `started.v1` events (both meters start simultaneously)
-- `RUNNING` → `STOPPING` produces one `suspended.v1` (consumption stops; allocation continues — no event needed)
+- `RUNNING` → `STARTING`, `STOPPING`, or direct `STOPPED` produces one `suspended.v1` for consumption; allocation continues
+- `STOPPING` → `RUNNING` reopens consumption with `started.v1` or `resumed.v1` according to the per-meter first-use flag
 - `STOPPED` → `RUNNING` produces one `resumed.v1` (consumption resumes; allocation unchanged)
 - Any transition into `FAILED` suspends every active meter; a host in `FAILED` state produces no allocation or consumption heartbeats and accrues no charges
 - `OBJECT_DELETED` closes each currently active meter independently, then produces one `deleted.v1` audit event. A meter that is already inactive (for example after `FAILED`) produces no synthetic suspension.
@@ -242,7 +244,52 @@ The resolver performs exact `(from, to)` lookups. The following is the complete 
 
 An absent projection is represented as `""`. Watch processing uses the exact transition event and its authoritative timestamp. Reconciliation must replay durable history before initializing an absent projection: for a resource first observed in `RUNNING` after `PROVISIONING` → `STARTING` → `RUNNING`, it derives allocation from the first billable transition and consumption from the later `RUNNING` transition. It must not use the current-state timestamp as the allocation boundary. If durable history is unavailable or incomplete, reconciliation holds the correction and emits no guessed billable event. Once history has established the transition sequence, `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, and `DELETING` seed allocation; `RUNNING` also seeds consumption at its own transition timestamp. `PROVISIONING`, `FAILED`, and `UNSPECIFIED` seed neither meter. The `DELETING` seed remains allocation-billable until `OBJECT_DELETED` supplies `deletion_completion_time`.
 
-**Consumption transition table** — billable state: `RUNNING` only. It registers the same complete pair set above. `PROVISIONING`, `STOPPED`, `STARTING`, and `FAILED` → `RUNNING` open a consumption interval; every `RUNNING` → `STOPPING`, `STOPPED`, `FAILED`, or `DELETING` pair closes it; all remaining registered pairs are `Skip`. The `RUNNING` → `STOPPING` boundary is intentional: consumption ends when the stop operation begins, while allocation continues through the transient state.
+**Consumption transition table** — billable state: `RUNNING` only. It registers the same complete pair set as the allocation table. `billableStart` opens consumption and resolves to `started.v1` or `resumed.v1` from the per-meter first-use state; `suspended` closes consumption at the transition timestamp. Every other registered pair is an explicit `Skip`.
+
+| From           | To             | Consumption Effect |
+| -------------- | -------------- | ------------------ |
+| "" (initial)   | `PROVISIONING` | Skip               |
+| ""             | `RUNNING`      | `billableStart`    |
+| ""             | `STOPPED`      | Skip               |
+| ""             | `STARTING`     | Skip               |
+| ""             | `STOPPING`     | Skip               |
+| ""             | `FAILED`       | Skip               |
+| ""             | `DELETING`     | Skip               |
+| ""             | `UNSPECIFIED`  | Skip               |
+| `PROVISIONING` | `PROVISIONING` | Skip               |
+| `PROVISIONING` | `RUNNING`      | `billableStart`    |
+| `PROVISIONING` | `STOPPED`      | Skip               |
+| `PROVISIONING` | `STARTING`     | Skip               |
+| `PROVISIONING` | `STOPPING`     | Skip               |
+| `PROVISIONING` | `FAILED`       | Skip               |
+| `PROVISIONING` | `DELETING`     | Skip               |
+| `RUNNING`      | `RUNNING`      | Skip               |
+| `RUNNING`      | `STOPPED`      | `suspended`        |
+| `RUNNING`      | `STARTING`     | `suspended`        |
+| `RUNNING`      | `STOPPING`     | `suspended`        |
+| `RUNNING`      | `FAILED`       | `suspended`        |
+| `RUNNING`      | `DELETING`     | `suspended`        |
+| `STOPPED`      | `STOPPED`      | Skip               |
+| `STOPPED`      | `RUNNING`      | `billableStart`    |
+| `STOPPED`      | `STARTING`     | Skip               |
+| `STOPPED`      | `FAILED`       | Skip               |
+| `STOPPED`      | `DELETING`     | Skip               |
+| `STARTING`     | `STARTING`     | Skip               |
+| `STARTING`     | `RUNNING`      | `billableStart`    |
+| `STARTING`     | `STOPPED`      | Skip               |
+| `STARTING`     | `FAILED`       | Skip               |
+| `STARTING`     | `DELETING`     | Skip               |
+| `STOPPING`     | `STOPPING`     | Skip               |
+| `STOPPING`     | `STOPPED`      | Skip               |
+| `STOPPING`     | `RUNNING`      | `billableStart`    |
+| `STOPPING`     | `FAILED`       | Skip               |
+| `STOPPING`     | `DELETING`     | Skip               |
+| `FAILED`       | `FAILED`       | Skip               |
+| `FAILED`       | `RUNNING`      | `billableStart`    |
+| `FAILED`       | `DELETING`     | Skip               |
+| `DELETING`     | `DELETING`     | Skip               |
+
+The `RUNNING` → `STOPPING`, `RUNNING` → `STARTING`, and direct `RUNNING` → `STOPPED` transitions all close consumption while allocation remains active. `STOPPING` → `RUNNING` opens consumption again at that transition timestamp; the event is `started.v1` if consumption has never opened and `resumed.v1` otherwise. This explicitly handles a cancelled stop without leaving the consumption meter closed.
 
 The decomposer evaluates both tables for each Watch event and produces one CloudEvent per meter that crosses a billing boundary. Transitions where neither meter crosses a boundary (_e.g._, `STOPPED` → `STOPPED`) produce no lifecycle events. Every lifecycle event receives the transition timestamp and the active interval for its own meter; the allocation and consumption intervals are never calculated from one shared timestamp.
 
@@ -353,7 +400,7 @@ The shared `ResourceState` projection gains one optional field for independent m
 | `BillingDimensions`      | BM instance type, catalog item, and other BMaaS-specific dimensions                                                                                          |
 | `FulfillmentVersion`     | Highest contiguous per-resource version accepted by the metering mapper (currently sourced from `BareMetalInstance.metadata.version`); persisted with the projection and its outbox records |
 
-The Watch Consumer carries both timestamps and the per-meter first-use flags from the projection into `StateContext` and then into the decomposer. The consumption meter's `duration_seconds` on `suspended.v1` events is computed from `ComponentBillableSince["consumption"]`; the allocation meter uses `BillableSince`. On `RUNNING` → `STOPPING`, consumption is closed and its active timestamp is cleared while its `ComponentEverStarted["consumption"]` flag remains true. On a later transition to `RUNNING`, a new consumption timestamp is set at that transition time and the event is `resumed.v1`; the allocation interval continues.
+The Watch Consumer carries both timestamps and the per-meter first-use flags from the projection into `StateContext` and then into the decomposer. The consumption meter's `duration_seconds` on `suspended.v1` events is computed from `ComponentBillableSince["consumption"]`; the allocation meter uses `BillableSince`. On `RUNNING` → `STARTING`, `STOPPING`, or `STOPPED`, consumption is closed and its active timestamp is cleared while its `ComponentEverStarted["consumption"]` flag remains true. On a later transition to `RUNNING`, including `STOPPING` → `RUNNING`, a new consumption timestamp is set at that transition time and the event is `started.v1` or `resumed.v1` according to that flag; the allocation interval continues.
 
 The field is additive and optional for existing resource types. VMaaS and CaaS retain their current `EverBillable` and component behavior, and their handlers ignore the BMaaS-only keys. The projection migration initializes the map empty for existing rows. BMaaS sets `ComponentEverStarted["allocation"]` or `ComponentEverStarted["consumption"]` atomically when the corresponding meter first opens, and chooses `started.v1` or `resumed.v1` from that flag. The projection update and corresponding outbox records are committed idempotently together; Kafka publication occurs after the PostgreSQL transaction commits.
 
@@ -376,7 +423,8 @@ The meter-specific application rules are:
 | `PROVISIONING` → `STOPPED` | Set `BillableSince` to `state_transition_time`; set `ComponentEverStarted["allocation"]`; leave consumption inactive; set `IsBillable=true` | `started.v1` for allocation |
 | `STOPPED`/`STARTING` → `RUNNING` | Preserve `BillableSince`; set `ComponentBillableSince["consumption"]` to `state_transition_time`; set `ComponentEverStarted["consumption"]` if false | `started.v1` for a first consumption opening, otherwise `resumed.v1` |
 | `FAILED` → `RUNNING` | Set active timestamps to `state_transition_time` for meters that open; set `IsBillable=true`; preserve and update each `ComponentEverStarted` flag | `started.v1` or `resumed.v1` independently for each meter, based on its flag |
-| `RUNNING` → `STOPPING` | Preserve `BillableSince`; clear the consumption timestamp; keep `IsBillable=true` | `suspended.v1` for consumption |
+| `RUNNING` → `STARTING`/`STOPPING`/`STOPPED` | Preserve `BillableSince`; clear the consumption timestamp; keep `IsBillable=true` | `suspended.v1` for consumption |
+| `STOPPING` → `RUNNING` | Preserve `BillableSince`; set `ComponentBillableSince["consumption"]` to `state_transition_time`; keep `IsBillable=true` and update the consumption first-use flag | `started.v1` for the first consumption opening, otherwise `resumed.v1` |
 | `STOPPING` → `STOPPED`, or `STOPPED` → `STARTING` | Preserve the allocation timestamp and consumption inactivity; keep `IsBillable=true` | No lifecycle event |
 | `RUNNING`/`STOPPED`/`STARTING`/`STOPPING` → `DELETING` | Preserve `BillableSince`; clear the consumption timestamp if active; keep `IsBillable=true` until `OBJECT_DELETED` | Suspend consumption if active; allocation remains open |
 | An allocation-billable state → `FAILED` | Clear `BillableSince` and any active consumption timestamp; set `IsBillable=false` | Suspend each meter that was active |
@@ -488,7 +536,9 @@ stateDiagram-v2
 
     PROVISIONING --> RUNNING : provisioning complete\n→ osac.resource.started.v1 (consumption)
 
+    RUNNING --> STARTING : restart requested\n→ osac.resource.suspended.v1 (consumption; allocation continues)
     RUNNING --> STOPPING : stop requested\n→ osac.resource.suspended.v1 (consumption; allocation continues)
+    RUNNING --> STOPPED : direct stop\n→ osac.resource.suspended.v1 (consumption; allocation continues)
     RUNNING --> FAILED : hardware failure\n→ osac.resource.suspended.v1 (consumption)
     RUNNING --> DELETING : delete requested\n→ osac.resource.suspended.v1 (consumption)
 
@@ -497,6 +547,7 @@ stateDiagram-v2
         60s heartbeat (consumption)
     end note
 
+    STOPPING --> RUNNING : stop cancelled\n→ osac.resource.started.v1 or resumed.v1 (consumption)
     STOPPING --> STOPPED : confirmed stopped
 
     STOPPED --> STARTING : start requested\n(transient)
@@ -509,7 +560,7 @@ stateDiagram-v2
     DELETING --> [*] : confirmed deleted
 ```
 
-Consumption-billable state: `RUNNING` only. The consumption interval ends when `STOPPING` begins, so the transient `STOPPING` and terminal `STOPPED` states produce allocation heartbeats only. `FAILED` is non-billable, so the consumption meter is suspended on entry and produces no heartbeats until recovery to `RUNNING`. Structurally identical to the VMaaS `ComputeInstance` pattern.
+Consumption-billable state: `RUNNING` only. The consumption interval ends whenever the resource leaves `RUNNING`, including transitions to `STARTING`, `STOPPING`, `STOPPED`, `FAILED`, or `DELETING`. Those states produce allocation heartbeats only. A transition back to `RUNNING` opens a new consumption interval. `FAILED` is non-billable, so no time in `FAILED` is included until recovery to `RUNNING`.
 
 #### Reconciliation
 
@@ -773,7 +824,10 @@ BMaaS metering remains disabled until all release gates below pass.
 - Redelivery of one fulfillment event reproduces the same lifecycle IDs; two distinct stop/start source events produce distinct allocation and consumption IDs
 - `DecomposeBMIEvents()` produces 0, 1, or 2 events per transition based on meter boundary crossings:
   - `PROVISIONING → RUNNING`: 2 events (allocation started + consumption started)
+- `RUNNING` → `STARTING`: 1 event (consumption suspended)
 - `RUNNING` → `STOPPING`: 1 event (consumption suspended)
+- `RUNNING` → `STOPPED`: 1 event (consumption suspended)
+- `STOPPING` → `RUNNING`: 1 event (consumption started or resumed)
   - `STOPPED` → `RUNNING`: 1 event (consumption resumed)
   - `RUNNING` → `DELETING`: 1 event (consumption suspended; allocation remains active)
   - `STOPPED`/`STARTING`/`STOPPING` → `DELETING`: 0 events (allocation remains active)
