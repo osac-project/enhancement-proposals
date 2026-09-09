@@ -762,6 +762,8 @@ BMaaS metering may graduate to Dev Preview only when:
 - Reconciliation replays a `RUNNING` → `STOPPING` transition when the projection has `RUNNING` and fulfillment has `STOPPED`, emitting a correction for the consumption meter only; allocation remains billable
 - Release gate: reconciliation replays a complete `RUNNING` → `STOPPED` → `RUNNING` cycle during a simulated Watch outage and restores the stopped interval from the replayed transitions before BMaaS billing is enabled.
 - Watch delivers BMaaS events out of order; the handler holds the newer event, replays the missing version, applies both in order, and emits no duplicate events on redelivery.
+- Durable history replays a direct `OBJECT_DELETED` event without a preceding `DELETING` update; the integration test verifies allocation and consumption closure at `deletion_completion_time`, not `Metadata.deletion_timestamp` or receipt time, and verifies stable IDs on replay.
+- An `OBJECT_DELETED` event without `deletion_completion_time` is held without suspension, deletion-audit, or projection-closure outbox records; retrying after the timestamp becomes available emits the closure exactly once.
 - Reconciliation detects a BareMetalInstance in projection but absent from fulfillment and emits `missed_deletion` correction
 - Stale heartbeat detection generates synthetic heartbeats for allocation-billable BMaaS resources with correct meter decomposition
 - Disabling `bmaas_metering_enabled` suppresses BMaaS Watch handling, heartbeats, reconciliation corrections, deletion cleanup, and outbox publication while retaining projections and queued records; re-enabling resumes replay and drains the retained outbox before heartbeats.
