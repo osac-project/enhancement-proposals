@@ -76,7 +76,7 @@ The design introduces four changes to the metering-service codebase:
 3. **Extended reconciliation** — a `BareMetalInstancesClient` and loader for the hourly reconciliation loop, with a billability checker that uses the allocation meter's state set
 4. **M360 adapter route** — a `/bmaas/event` endpoint that passes the `meter_type` billing dimension through to the M360 Usage API
 
-No new Kafka topics, no State Projection schema changes, no new deployment artifacts. The existing `osac.metering.lifecycle`, `osac.metering.heartbeat`, and `osac.metering.corrections` topics carry BMaaS events alongside VMaaS and CaaS events, differentiated by the `osacresourcetype` extension attribute (`bare_metal_instance`). Kafka's 30-day retention replays BMaaS events after they have been published, but cannot recover a transition that the fulfillment `Events.Watch` stream never delivered. Provider adapters persist published usage data for at least 13 months via their respective storage backends.
+No new Kafka topics or deployment artifacts are required. The shared State Projection gains one additive per-meter first-use field. The existing `osac.metering.lifecycle`, `osac.metering.heartbeat`, and `osac.metering.corrections` topics carry BMaaS events alongside VMaaS and CaaS events, differentiated by the `osacresourcetype` extension attribute (`bare_metal_instance`). Kafka's 30-day retention replays BMaaS events after they have been published, but cannot recover a transition that the fulfillment `Events.Watch` stream never delivered. Provider adapters persist published usage data for at least 13 months via their respective storage backends.
 
 ### Workflow Description
 
@@ -297,18 +297,19 @@ type EventBuilder func(BMaaSEventBuildRequest) (cloudevents.Event, error)
 
 #### State Projection
 
-The existing `ResourceState` struct is sufficient without schema changes:
+The shared `ResourceState` projection gains one optional field for independent meter history. This is a Metering Service infrastructure extension owned by the Metering Service team; it does not change the VMaaS or CaaS billing model:
 
 | Field                    | BMaaS Usage                                                                                                                                                   |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `IsBillable`             | Allocation-billable (true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, `DELETING` until `OBJECT_DELETED`)                                                   |
-| `EverBillable`           | True once the host has ever been allocation-billable                                                                                                          |
+| `EverBillable`           | Existing single-meter history retained for VMaaS/CaaS compatibility; BMaaS uses `ComponentEverStarted` for independent meter history                                  |
 | `BillableSince`          | Start of the active allocation interval. It is set when allocation becomes billable and cleared after allocation suspension.                                  |
 | `ComponentBillableSince` | `{"consumption": <time>}` — start of the active consumption interval. It is set on entry to `RUNNING` and cleared when consumption stops.               |
+| `ComponentEverStarted`   | Optional persistent map, for example `{"allocation": true, "consumption": false}`. Each meter becomes true the first time its interval opens and remains true after suspension. |
 | `CurrentState`           | BareMetalInstance state (`PROVISIONING`, `RUNNING`, `STOPPED`, _etc._)                                                                                        |
 | `BillingDimensions`      | BM instance type, catalog item, and other BMaaS-specific dimensions                                                                                          |
 
-The Watch Consumer carries both timestamps from the projection into `StateContext` and then into the decomposer. The consumption meter's `duration_seconds` on `suspended.v1` events is computed from `ComponentBillableSince["consumption"]`; the allocation meter uses `BillableSince`. On `RUNNING` → `STOPPING`, consumption is closed and its timestamp is cleared while the allocation timestamp remains unchanged. On a later transition to `RUNNING`, a new consumption timestamp is set at that transition time while the allocation interval continues.
+The Watch Consumer carries both timestamps and the per-meter first-use flags from the projection into `StateContext` and then into the decomposer. The consumption meter's `duration_seconds` on `suspended.v1` events is computed from `ComponentBillableSince["consumption"]`; the allocation meter uses `BillableSince`. On `RUNNING` → `STOPPING`, consumption is closed and its active timestamp is cleared while its `ComponentEverStarted["consumption"]` flag remains true. On a later transition to `RUNNING`, a new consumption timestamp is set at that transition time and the event is `resumed.v1`; the allocation interval continues.
 
 The field is additive and optional for existing resource types. VMaaS and CaaS retain their current `EverBillable` and component behavior, and their handlers ignore the BMaaS-only keys. The projection migration initializes the map empty for existing rows. BMaaS sets `ComponentEverStarted["allocation"]` or `ComponentEverStarted["consumption"]` atomically when the corresponding meter first opens, and chooses `started.v1` or `resumed.v1` from that flag. The projection update and emitted events are committed idempotently together.
 
@@ -333,25 +334,6 @@ The meter-specific application rules are:
 | An allocation-billable state → `FAILED` | Clear `BillableSince` and any active consumption timestamp; set `IsBillable=false` | Suspend each meter that was active |
 
 `started.v1` is reserved for the first opening of each meter interval. `resumed.v1` is used when that same meter opens again after suspension. A missing creation event is handled by reconciliation using the current state and its authoritative `state_transition_time`: `RUNNING` seeds both meters and marks both first-use flags, allocation-billable non-`RUNNING` states seed allocation only, and `FAILED` seeds neither. Reconciliation emits correction events with the same meter-specific effects and IDs. A state snapshot cannot infer a completed stop/start cycle; replayable durable history is therefore a release prerequisite for the exact billing guarantee.
-
-#### BMaaS Watch Consumer State Application
-
-The generic Watch Consumer's projection-only handling for transient states is not sufficient for BMaaS. The BMaaS handler loads the previous `ResourceState`, resolves the exact `(from, to)` pair, applies both meter effects, and persists the projection and deterministic lifecycle events as one idempotent transition. A transition that leaves one meter unchanged still updates `CurrentState` so the heartbeat generator sees the correct power state.
-
-The meter-specific application rules are:
-
-| Transition | Projection update | Lifecycle events |
-| --- | --- | --- |
-| `PROVISIONING` → `RUNNING` | Set `BillableSince` and `ComponentBillableSince["consumption"]` to `state_transition_time`; set `IsBillable=true` | `started.v1` for allocation and consumption |
-| `PROVISIONING` → `STOPPED` | Set `BillableSince` to `state_transition_time`; leave consumption inactive; set `IsBillable=true` | `started.v1` for allocation |
-| `STOPPED`/`STARTING` → `RUNNING` | Preserve `BillableSince`; set `ComponentBillableSince["consumption"]` to `state_transition_time` | `resumed.v1` for consumption |
-| `FAILED` → `RUNNING` | Set both active timestamps to `state_transition_time`; set `IsBillable=true` | `resumed.v1` for allocation and consumption |
-| `RUNNING` → `STOPPING` | Preserve `BillableSince`; clear the consumption timestamp; keep `IsBillable=true` | `suspended.v1` for consumption |
-| `STOPPING` → `STOPPED`, or `STOPPED` → `STARTING` | Preserve the allocation timestamp and consumption inactivity; keep `IsBillable=true` | No lifecycle event |
-| `RUNNING`/`STOPPED`/`STARTING`/`STOPPING` → `DELETING` | Preserve `BillableSince`; clear the consumption timestamp if active; keep `IsBillable=true` until `OBJECT_DELETED` | Suspend consumption if active; allocation remains open |
-| An allocation-billable state → `FAILED` | Clear `BillableSince` and any active consumption timestamp; set `IsBillable=false` | Suspend each meter that was active |
-
-`started.v1` is reserved for the first opening of a meter interval. `resumed.v1` is used when a previously suspended interval opens again. A missing creation event is handled by reconciliation using the current state and its authoritative `state_transition_time`: `RUNNING` seeds both meters, allocation-billable non-`RUNNING` states seed allocation only, and `FAILED` seeds neither. Reconciliation emits correction events with the same meter-specific effects and IDs. A state snapshot cannot infer a completed stop/start cycle; that limitation is covered by the deferred durable-history dependency above.
 
 #### BareMetalInstanceType Resolution
 
