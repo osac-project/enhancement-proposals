@@ -235,30 +235,43 @@
 
 ##### Steps
 
-1. When the operator writes the Released milestone, assert the `BareMetalInstance`
-   finalizer is **still present** and no `osac.openshift.io/timeline-persisted`
-   acknowledgment is set yet.
-2. Issue `GET /api/fulfillment/v1/baremetal_instances/{id}` and read both
-   `status.provisioning_phases` and `status.deprovisioning_phases`.
-3. Let the reconciler sync the terminal timeline to the DB and write the
-   `osac.openshift.io/timeline-persisted` acknowledgment back onto the CR; assert
-   the operator then removes the finalizer.
-4. Let fulfillment soft-delete and archive the record to `archived_<table>`, then
+1. When the operator writes the Released milestone, **block the reconciler's
+   terminal DB commit** so persistence has not yet happened. Assert the
+   `BareMetalInstance` finalizer is **still present** and no
+   `osac.openshift.io/timeline-persisted` annotation is set yet. Issue
+   `GET /api/fulfillment/v1/baremetal_instances/{id}` and confirm the DB still
+   serves the **pre-persistence** deprovisioning state (Cleaning, no `Released`
+   entry) — the terminal timeline has not reached the DB.
+2. While the commit is still blocked, assert **neither** the `timeline-persisted`
+   acknowledgment **nor** finalizer removal has occurred.
+3. Unblock the reconciler: let it durably commit the terminal timeline to the DB
+   and write the `osac.openshift.io/timeline-persisted` annotation back onto the
+   CR. Now issue the same `GET` and read both `status.provisioning_phases` and
+   `status.deprovisioning_phases`.
+4. Assert the operator observes the acknowledgment and only then removes the
+   finalizer.
+5. Let fulfillment soft-delete and archive the record to `archived_<table>`, then
    issue the same `GET` again.
 
 ##### Expected Results
 
-- Step 1: the finalizer is retained — the operator does not remove it before the
-  reconciler acknowledges persistence.
-- Step 2: the response retains **both** timelines — the four completed
-  `provisioning_phases` (all `SUCCEEDED`) **and** the three
-  `deprovisioning_phases` (Teardown Initiated, Cleaning `SUCCEEDED`, Released) —
-  served from the DB independent of the CR. The provisioning history is retained
+- Step 1: the finalizer is retained and the API still returns the pre-`Released`
+  deprovisioning state — the operator does not remove the finalizer, and the DB
+  does not expose the terminal timeline, before the reconciler acknowledges
+  persistence.
+- Step 2: with the commit blocked, no `timeline-persisted` annotation is written
+  and the finalizer is not removed — the handshake does not advance without a
+  durable commit.
+- Step 3: after the commit and acknowledgment, the response retains **both**
+  timelines — the four completed `provisioning_phases` (all `SUCCEEDED`) **and**
+  the three `deprovisioning_phases` (Teardown Initiated, Cleaning `SUCCEEDED`,
+  Released `SUCCEEDED`) — served from the DB independent of the CR, and this is
+  observable **before** finalizer removal. The provisioning history is retained
   through teardown, not discarded.
-- Step 3: only after the `timeline-persisted` acknowledgment is observed does the
+- Step 4: only after the `timeline-persisted` acknowledgment is observed does the
   operator remove the finalizer (host returned to the pool: `available`,
   `consumerRef` cleared, reusable).
-- Step 4: returns 404 — the released record has been archived and there is no
+- Step 5: returns 404 — the released record has been archived and there is no
   archive-read path, so FR-4 is bounded to the life of the live record
   (matching VMaaS/CaaS).
 
@@ -333,36 +346,52 @@
 
 ### NFR-1: Progress reflects backend state within approximately 5 seconds
 
-#### TC-NFR1-01: A hub CR phases change reaches the API within the freshness window via the feedback→Signal path
+#### TC-NFR1-01: A hub CR phases change reaches the API within the freshness window via the feedback→Signal path (both timeline fields)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
 | IC-4 | high | automated |
 
+This case is **parameterized over both timeline fields** — IC-4 extends the
+feedback `Signal` trigger to fire on a change to **either** array, so both must be
+proven, not just the provisioning one.
+
 ##### Preconditions
 
 - Fulfillment reconciler and the osac-operator feedback controller running
-  against a kind cluster, with an instance whose CR is at Provisioning, at steady
-  state (no in-flight proto diff).
+  against a kind cluster, at steady state (no in-flight proto diff), for each
+  variant:
+  - **Variant A (provisioning):** an instance whose CR is at Provisioning.
+  - **Variant B (deprovisioning):** an instance under teardown whose CR is at
+    Cleaning (`deprovisioning_phases` non-empty).
 
 ##### Steps
 
-1. Record `t0`, then update the `BareMetalInstance` CR `ProvisioningProgress` on
-   the hub to advance to Network Setup.
+For each variant:
+
+1. Record `t0`, then update the `BareMetalInstance` CR on the hub:
+   - **Variant A:** advance `ProvisioningProgress` to Network Setup.
+   - **Variant B:** advance `DeprovisioningProgress` from Cleaning to the
+     `Released` milestone.
 2. Poll `GET /api/fulfillment/v1/baremetal_instances/{id}` at a sub-second
-   cadence and record `t1` — the first response that reflects Network Setup
-   `RUNNING`.
+   cadence and record `t1` — the first response that reflects the new state
+   (Variant A: Network Setup `RUNNING`; Variant B: `Released` in
+   `deprovisioning_phases`).
 
 ##### Expected Results
 
-- The feedback controller fires `Signal(id)` on the `ProvisioningProgress`
-  change, the reconciler re-reads the CR and updates the DB, and the API reflects
-  Network Setup `RUNNING`. The assertion is **bounded**: `t1 - t0` ≤ the NFR-1 freshness
-  deadline (single-digit seconds; ~5s soft target), and the update arrives
-  **before** the periodic full-resync interval would fire (i.e. freshness comes
-  from the `Signal` path, not the resync fallback) and without any new
-  watch/informer. To isolate the `Signal` path, the periodic full-resync
-  interval is configured well above the asserted bound for this case.
+- In **both** variants the feedback controller fires `Signal(id)` on the changed
+  timeline field (`ProvisioningProgress` for A, `DeprovisioningProgress` for B),
+  the reconciler re-reads the CR and updates the DB, and the API reflects the new
+  state. The assertion is **bounded**: `t1 - t0` ≤ the NFR-1 freshness deadline
+  (single-digit seconds; ~5s soft target), and the update arrives **before** the
+  periodic full-resync interval would fire (i.e. freshness comes from the
+  `Signal` path, not the resync fallback) and without any new watch/informer. To
+  isolate the `Signal` path, the periodic full-resync interval is configured well
+  above the asserted bound for both variants.
+- Variant B proves a `DeprovisioningProgress` change propagates within the same
+  bound as a `ProvisioningProgress` change, so teardown freshness is not left
+  unverified.
 
 #### TC-NFR1-02: The detail view reflects an API timeline change within the bounded UI poll interval
 
@@ -383,8 +412,15 @@
 2. Update the mock API to return Network Setup `RUNNING`, then advance fake
    timers by the dedicated ~5s `refetchInterval` (no user interaction).
 3. Inspect the stepper.
-4. Drive the instance to a terminal state (`Ready`), let one more interval
-   elapse, then update the mock API again and advance timers.
+4. Drive the instance to a resting terminal state (`Ready` `SUCCEEDED`,
+   `deprovisioning_phases` empty), let one more interval elapse, then update the
+   mock API again and advance timers.
+5. Simulate deletion: update the mock API so `deprovisioning_phases` is now
+   non-empty (Teardown Initiated milestone, Cleaning `RUNNING`) while the four
+   `provisioning_phases` remain `SUCCEEDED`, and trigger a single refetch
+   (query invalidation, as the delete mutation would cause).
+6. Advance fake timers by another ~5s interval, then update the mock API to
+   advance Cleaning → Released and advance timers again.
 
 ##### Expected Results
 
@@ -393,9 +429,16 @@
   dedicated per-page ~5s poll, not the global ~10s default. This complements
   TC-NFR1-01, which measures the CR→API (DB) leg; together they bound
   end-to-end freshness.
-- After step 4, once the instance is terminal the query **stops refetching**: the
-  later mock-API change is not picked up, confirming polling halts at terminal
-  state.
+- After step 4, while the instance is at a resting `Ready` with no teardown the
+  query **stops refetching**: the later mock-API change is not picked up,
+  confirming polling halts when the current timeline is terminal.
+- After step 5, once `deprovisioning_phases` becomes non-empty the query
+  **resumes** its ~5s cadence — the historical `Ready` `SUCCEEDED` does not
+  suppress teardown polling — and the second stepper renders the teardown
+  timeline.
+- After step 6, the teardown advance to `Released` is reflected within one ~5s
+  interval; once `Released` `SUCCEEDED` is the terminal deprovisioning state the
+  query stops refetching again.
 
 ### NFR-2: The progress and failure display is read-only
 

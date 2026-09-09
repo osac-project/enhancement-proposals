@@ -316,8 +316,8 @@ The concrete interface changes (referenced by the testplan as IC-N):
 
   | Phase | Failure reason (from failing condition/job) | Exact `message` on `FAILED` |
   |-------|---------------------------------------------|-----------------------------|
-  | Host Allocation | `NoMatchingHosts` (no available host matched the profile) | "No bare metal host matched the requested profile; contact support if this persists." |
-  | Host Allocation | `HostAllocationFailed` (host search/claim error other than no-match) | "Host allocation failed; contact support if this persists." |
+  | Host Allocation | `NoMatchingHosts` (no available host matched the profile) | "No bare metal host matched the requested profile." |
+  | Host Allocation | `HostAllocationFailed` (host search/claim error other than no-match) | "Host allocation failed." |
   | Provisioning | `ProvisionJobFailed` (the `osac-create-bare-metal-instance` job failed) | "OS installation and configuration did not complete; the provisioning job failed." |
   | Network Setup | `NetworkAttachmentFailed` | "Network attachment did not complete." |
   | Network Setup | `NetworkHandoffFailed` | "Network handoff (reboot) did not complete." |
@@ -515,9 +515,11 @@ itself as it drives the lifecycle.
 > 1. The operator writes the `Released` milestone to the CR but **keeps the
 >    finalizer**.
 > 2. The fulfillment reconciler syncs the final timeline (both arrays, with
->    `Released` `SUCCEEDED`) to the DB, then **acknowledges** by writing a
->    `osac.openshift.io/timeline-persisted` acknowledgment back onto the CR (an
->    annotation/status marker the operator already has RBAC to read).
+>    `Released` `SUCCEEDED`) to the DB, then **acknowledges** by writing the
+>    `osac.openshift.io/timeline-persisted` **annotation** back onto the hub CR.
+>    This is a coordination annotation (not observed state, so it is an annotation
+>    rather than a status field); writing it is the reconciler's only new write to
+>    the CR and requires a small RBAC addition — see RBAC / Tenancy.
 > 3. Only after the operator observes that acknowledgment on a subsequent
 >    reconcile does it remove the finalizer and let the CR be deleted. If the
 >    acknowledgment never appears (reconciler down, Signal lost), the operator
@@ -526,13 +528,19 @@ itself as it drives the lifecycle.
 >    before removal. Finalizer removal never proceeds without a confirmed,
 >    durably-persisted terminal timeline.
 >
-> **`Released` semantics:** `Released` means the host has been returned to the
-> pool (`BareMetalHost` back to `available`, `consumerRef` cleared) and is
-> reusable, *and* the finalizer has been removed so the CR is deleted. The host
-> becomes reusable at the same handshake that removes the finalizer, so there is
-> no window where a "released" host is still pinned by a live CR. This resolves
-> the former Open Question 1. This is a small, in-scope operator + reconciler
-> change — no AAP or metal3 change is involved.
+> **`Released` semantics:** `Released` is the **host-release milestone** — it
+> means the host has been returned to the pool (`BareMetalHost` back to
+> `available`, `consumerRef` cleared) and is reusable. It is written (step 1)
+> while the finalizer is still held, so `Released` in the timeline reflects only
+> that the host is released, not that the CR is gone. **Finalizer removal is a
+> separate, later lifecycle step** (step 3), gated on the persistence
+> acknowledgment; it is not part of the `Released` phase definition. Because the
+> host is already back to `available` when `Released` is written and the finalizer
+> is removed only after the terminal timeline is durably persisted, there is no
+> window where a "released" host is still pinned *and* no window where the CR is
+> deleted with the DB behind. This resolves the former Open Question 1. This is a
+> small, in-scope operator + reconciler change — no AAP or metal3 change is
+> involved.
 
 The operator monitors two concrete backend sources, both **polled on each
 reconcile** (it does not watch either — it re-reads and requeues, default ~30s):
@@ -697,6 +705,21 @@ bounded to ~5s rather than ~10s, and **stops refetching once the instance is
 terminal** [Codebase: osac-ui/apps/app-frontend/src/main.tsx]. The same component
 renders the persisted timelines for finished instances.
 
+The terminal predicate is evaluated against the **currently active** timeline, not
+against any historical phase, so a resting `Ready` does not suppress teardown
+updates:
+
+- If `deprovisioning_phases` is **empty** (no teardown), the instance is terminal
+  iff the last provisioning phase is terminal — `Ready` `SUCCEEDED`, or a
+  provisioning phase in `FAILED`. Polling stops.
+- If `deprovisioning_phases` is **non-empty** (teardown in progress or done), the
+  instance is terminal iff the deprovisioning timeline is terminal — `Released`
+  `SUCCEEDED`, or a deprovisioning phase in `FAILED`. While teardown is still
+  running, the instance is **non-terminal even though provisioning ended at
+  `Ready` `SUCCEEDED`**, so a historical `Ready` never stops polling once
+  deprovisioning has begun — the query resumes its ~5s cadence for the teardown
+  timeline.
+
 ### Security Considerations
 
 This feature inherits the existing security model without changes. Both phase
@@ -737,13 +760,22 @@ also avoids leaking implementation detail across the tenant boundary.
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes are required. Both phase-timeline fields
+No tenancy changes are required. Both phase-timeline fields
 (`provisioning_phases` and `deprovisioning_phases`) are added to an existing
 tenant-scoped resource and served through the same authorization path;
 visibility follows the instance's existing tenant scoping. No new
 resources are introduced, so no new `osac.openshift.io/tenant` or
 `osac.openshift.io/owner-reference` metadata is needed — the existing annotations
 on `BareMetalInstance` are unaffected [Codebase: bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_types.go].
+
+One small RBAC addition is required: the Released handshake has the fulfillment
+reconciler write the `osac.openshift.io/timeline-persisted` acknowledgment
+annotation back onto the hub `BareMetalInstance`. Today the reconciler reads CRs
+and writes only to the DB, so it must be granted `patch` on `baremetalinstances`
+(the object, for its metadata/annotations) on the hub to record that
+acknowledgment. This is the only new permission; it grants no additional read
+visibility and does not affect tenant scoping. The operator already has the read
+permission it needs to observe the annotation on a subsequent reconcile.
 
 ### Observability and Monitoring
 
@@ -837,12 +869,12 @@ and reused by future services.
 
 None. The former open question — the exact "Released" ordering guarantee — is
 resolved by the reconciler-gated finalizer handshake (see the Released note in
-the Proposal): Released means the host is returned to the pool (`available`,
-`consumerRef` cleared, reusable) *and* the finalizer is removed only after the
-reconciler has durably persisted the terminal timeline to the DB and
-acknowledged it on the CR (`osac.openshift.io/timeline-persisted`), with the
-periodic full-resync backstop guaranteeing convergence if the acknowledgment is
-delayed.
+the Proposal): `Released` is the host-release milestone (host returned to the
+pool — `available`, `consumerRef` cleared, reusable). Finalizer removal is a
+separate, later step, performed only after the reconciler has durably persisted
+the terminal timeline to the DB and acknowledged it on the CR with the
+`osac.openshift.io/timeline-persisted` annotation, with the periodic full-resync
+backstop guaranteeing convergence if the acknowledgment is delayed.
 
 ## Test Plan
 
@@ -960,6 +992,6 @@ e2e) cover the change.
 ## Provenance
 
 Authored: respond @ design 0.9.0 - 562b610, workspace main @ d27d7951b
-Phases: draft, revise, revise, revise, revise, revise, revise, revise, respond, respond
+Phases: draft, revise, revise, revise, revise, revise, revise, revise, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"d27d7951b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","research","revise","revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"d27d7951b","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","research","revise","revise","revise","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
