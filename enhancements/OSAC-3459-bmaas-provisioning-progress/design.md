@@ -406,6 +406,59 @@ lifecycle conditions are the authoritative source.
 | Network Setup | `NetworkAttachmentsReady` → `NetworkHandoffComplete` → `IPDiscoveryComplete` | `PROVISIONED` reason `NetworkSetup`; on completion `PROVISIONED` `True` |
 | Ready | `PowerSynced` → instance available (absorbs readiness/verification) | `READY` `True`, reason `Ready` |
 
+The happy-path sequence below shows what triggers each condition update — the
+metal3 `BareMetalHost` and the AAP job templates the operator drives — and how the
+fulfillment reconciler folds the **furthest-advanced True** lifecycle condition
+into the single `PROVISIONED` `reason` (and, at completion, into `READY`). Only the
+success path is shown; failure (a driving condition/job error setting its condition
+`False`) and no-work / skipped stages are covered in the behavior notes below, not
+here.
+
+```mermaid
+sequenceDiagram
+    participant M3 as metal3 BareMetalHost
+    participant AAP as AAP job templates
+    participant Op as bare-metal operator
+    participant CR as BareMetalInstance conditions
+    participant Rec as fulfillment reconciler
+
+    Note over Rec: no lifecycle condition True yet
+    Rec->>Rec: PROVISIONED reason = HostAllocation
+
+    Op->>M3: list and claim an available host
+    M3-->>Op: host claimed
+    Op->>CR: set Allocated True
+    Rec->>Rec: furthest True Allocated, so PROVISIONED reason = Provisioning
+
+    Op->>AAP: launch osac-create-bare-metal-instance (OS install plus config)
+    AAP-->>Op: job successful
+    Op->>CR: set ProvisionTemplateComplete True
+    Rec->>Rec: furthest True ProvisionTemplateComplete, so PROVISIONED reason = NetworkSetup
+
+    Op->>AAP: launch osac-move-network-attachment
+    AAP-->>Op: job successful
+    Op->>CR: set NetworkAttachmentsReady True
+    Op->>M3: set reboot annotation, poll power
+    M3-->>Op: poweredOn true
+    Op->>CR: set NetworkHandoffComplete True
+    Op->>AAP: launch osac-query-dhcp-lease
+    AAP-->>Op: DHCP lease artifacts
+    Op->>CR: set IPDiscoveryComplete True
+    Rec->>Rec: network conditions all True, so PROVISIONED True reason Provisioned
+
+    Op->>M3: poll poweredOn vs spec.online
+    M3-->>Op: power converged
+    Op->>CR: set PowerSynced True
+    Rec->>Rec: instance available, so READY True reason Ready
+```
+
+This second diagram is the source-side counterpart to the UI-to-backend flow
+above: it details the backend triggers that advance the conditions, whereas the
+first shows how those advances reach the user. The reconciler never invents a
+stage — each `PROVISIONED` `reason` is a pure function of which lifecycle
+conditions are True, selected order-independently, exactly as CaaS derives its
+`PROGRESSING` reason.
+
 Behavior for the cases the PRD asks the design to define [PRD: Assumptions]:
 
 - **Milestone vs. running:** each of the four steps is derived from the current
