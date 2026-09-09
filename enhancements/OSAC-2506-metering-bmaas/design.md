@@ -3,7 +3,7 @@ title: metering-bmaas
 authors:
   - amoren@redhat.com
 creation-date: 2026-08-19
-last-updated: 2026-09-08
+last-updated: 2026-09-09
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2506
 prd:
@@ -665,6 +665,21 @@ Durable fulfillment transition history with cursor-based replay is a release-blo
 
 **Owner:** OSAC-1201/fulfillment-service team and Metering Service team
 **Impact:** BMaaS instance-type dimension behavior cannot be finalized until this choice is resolved.
+
+## Graduation Criteria
+
+BMaaS metering may graduate to Dev Preview only when:
+
+1. The consumed fulfillment-service version includes [OSAC-4969](https://redhat.atlassian.net/browse/OSAC-4969) and populates `state_transition_time`.
+2. Fulfillment provides ordered, replayable transition history with cursor semantics, retention, stable event IDs, and authoritative transition timestamps.
+3. Fulfillment provides `deletion_completion_time`; allocation closure uses it instead of deletion-request or event-receipt time.
+4. The `spec.instance_type` contract is finalized and the dimension-rollover behavior is implemented and tested if the reference can change.
+5. Unit tests cover every accepted transition pair, independent allocation and consumption intervals, `FAILED` handling, deletion closure, and replay idempotency.
+6. Integration tests pass for Watch recovery, complete stop/start replay, missed creation, missed deletion, and stale-heartbeat correction.
+7. E2E tests pass for the full BMaaS lifecycle and verify meter-specific durations within the defined tolerance.
+8. Existing VMaaS and CaaS metering tests pass without regression.
+9. BMaaS metrics, alerts, tenant attribution, and failure runbooks are available.
+10. [CAP-5](https://redhat.atlassian.net/browse/CAP-5) is implemented through the parent usage query contract or explicitly deferred from the target release.
 
 ## Test Plan
 
