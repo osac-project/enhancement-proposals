@@ -3,9 +3,9 @@
 ## Overview
 
 - **Feature:** OSAC-3459 — BMaaS Provisioning Progress and Step Visibility
-- **Total test cases:** 14
+- **Total test cases:** 15
 - **Requirements covered:** 8 of 8
-- **Interface changes covered:** 5 of 5
+- **Interface changes covered:** 6 of 6
 
 > The PRD does not use numbered `FR-N`/`NFR-N` IDs. The requirement IDs below are
 > derived from the PRD's In Scope items, User Stories, and Out of Scope
@@ -148,6 +148,47 @@
 - The derivation advances past Network Setup (it is treated as satisfied) rather
   than lingering on `reason = NetworkSetup`; `PROVISIONED` reaches `True`.
 - The UI renders the Network Setup step as `success`, not stuck `pending`.
+
+#### TC-FR2-04: The CR→stage derivation is exhaustive over the operator condition constants, so a CR-condition change breaks a test rather than the proto
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-6 | high | automated |
+
+##### Preconditions
+
+- The bare-metal-fulfillment-operator `api/v1alpha1` package, which exports the
+  `HostCondition*` constants and the pure `DeriveProvisioningProgress` derivation
+  used by the fulfillment reconciler. This is an operator-package unit test (it
+  guards the contract at the source, next to the constants), not a
+  fulfillment-service test.
+
+##### Steps
+
+1. Enumerate the exported `HostCondition*` condition-type constants in the package
+   (via the package's declared list of known conditions that the test asserts
+   against the exported constants — see expected results).
+2. For each constant, assert `DeriveProvisioningProgress` classifies it — it either
+   selects a provisioning stage, marks provisioning complete / ready, maps to a
+   failure classification, or appears in the derivation's explicit
+   "intentionally not surfaced" list.
+3. Feed the derivation a synthetic, unknown condition type and a fixture missing a
+   previously-mapped condition, and observe the classification result.
+
+##### Expected Results
+
+- Every exported `HostCondition*` constant is classified (mapped or explicitly
+  not-surfaced); no constant is left unhandled. The set of constants the test
+  iterates is derived from the exported constants themselves, so **adding** a new
+  `HostCondition*` without classifying it fails this test.
+- **Renaming or removing** a `HostCondition*` that the derivation references fails
+  to compile or fails this test (the constant the derivation names no longer
+  exists / no longer matches), surfacing the CR→proto coupling as a build/test
+  failure in the operator repo — not as a silently wrong or empty proto `reason`
+  observed later by the fulfillment reconciler.
+- The synthetic unknown condition is ignored (does not select a stage) and its
+  presence is flagged as unclassified by the exhaustiveness assertion, confirming
+  the guard fires for an unrecognised condition.
 
 ### FR-3: The progress view auto-refreshes approximately every 5 seconds without user action
 
@@ -408,18 +449,19 @@ here) and are intentionally not covered.
 
 All interface changes are exercised by test cases (IC-1: TC-FR1-02, TC-FR4-01,
 TC-FR4-02; IC-2: TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-NFR3-01; IC-3: TC-NFR1-01;
-IC-4: TC-FR1-01, TC-FR3-01, TC-NFR1-02, TC-NFR2-01; IC-5: TC-FR5-01, TC-FR5-02).
+IC-4: TC-FR1-01, TC-FR3-01, TC-NFR1-02, TC-NFR2-01; IC-5: TC-FR5-01, TC-FR5-02;
+IC-6: TC-FR2-04).
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 14 |
+| Total test cases | 15 |
 | Critical | 3 |
-| High | 8 |
+| High | 9 |
 | Medium | 3 |
 | Low | 0 |
-| Automated | 14 |
+| Automated | 15 |
 | Manual | 0 |
 | Requirements with test cases | 8 / 8 |
-| Interface changes with test cases | 5 / 5 |
+| Interface changes with test cases | 6 / 6 |

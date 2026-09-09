@@ -23,16 +23,23 @@ superseded-by:
 
 This design surfaces bare metal provisioning progress by populating the existing
 `BareMetalInstance` conditions — it adds **no new status fields**. The
-fulfillment reconciler derives the furthest-advanced provisioning stage from the
-operator's existing lifecycle conditions and stamps it onto the single
-`PROVISIONED` condition as a fixed-vocabulary `reason` plus a curated,
-non-internal-leaking `message`; `READY` remains the terminal condition. This is
-the same coarse-condition, staged-`reason`/`message` shape CaaS just adopted for
-its `PROGRESSING` condition (OSAC-4441 / PR #646), so BMaaS becomes consistent
-with the rest of OSAC rather than introducing a BMaaS-specific construct. The UI
-renders a read-only `ProgressStepper` computed from the current stage. The DB copy
-stays fresh within seconds via the existing osac-operator feedback→`Signal` path
-(no new watch, no new proto or CRD field).
+bare-metal-fulfillment-operator owns the mapping from its own lifecycle
+conditions to the furthest-advanced provisioning stage, exposed as a pure,
+dependency-light function (`DeriveProvisioningProgress`) in its `api/v1alpha1`
+package. The fulfillment reconciler — which already imports that package — calls
+it and applies the presentation layer: it stamps the derived stage onto the
+single `PROVISIONED` condition as a fixed-vocabulary `reason` plus a curated,
+non-internal-leaking `message`; `READY` remains the terminal condition. Keeping
+the condition→stage semantics next to the conditions themselves means the
+operator's conditions and the code that interprets them live and are tested
+together, so a CR-condition change that would otherwise silently break the proto
+stage is caught at the source (see IC-6). This is the same coarse-condition,
+staged-`reason`/`message` shape CaaS just adopted for its `PROGRESSING` condition
+(OSAC-4441 / PR #646), so BMaaS becomes consistent with the rest of OSAC rather
+than introducing a BMaaS-specific construct. The UI renders a read-only
+`ProgressStepper` computed from the current stage. The DB copy stays fresh within
+seconds via the existing osac-operator feedback→`Signal` path (no new watch, no
+new proto or CRD field).
 
 Scope note (this iteration): **provisioning progress only**. Deprovisioning
 progress, a durable ordered per-phase timeline with per-phase durations, and
@@ -139,19 +146,35 @@ deferred so this iteration ships the consistent, low-risk core:
 
 ## Proposal
 
-The change spans two components in dependency order; there is **no proto or CRD
+The change spans three components in dependency order; there is **no proto or CRD
 schema change**.
 
-1. **fulfillment-service reconciler.** Extend `syncStatus()` to derive the
-   furthest-advanced provisioning stage from the operator's existing lifecycle
-   conditions and set the `PROVISIONED` condition's `reason` to a fixed stage
-   value and its `message` to a curated, non-internal-leaking string; flip
-   `PROVISIONED` to `True` when provisioning completes; set `READY` to the
-   terminal reason/message when the instance is available; and on failure set the
-   relevant condition `False` with a fixed failure `reason` and its curated
-   `message`. This replaces today's empty-reason ratchet.
+1. **bare-metal-fulfillment-operator (`api/v1alpha1`).** Add a pure,
+   dependency-light function, `DeriveProvisioningProgress(conds
+   []metav1.Condition) ProvisioningProgress`, co-located with the `HostCondition*`
+   constants it reads. It maps the operator's existing lifecycle conditions to the
+   furthest-advanced provisioning stage (order-independently) and reports whether
+   provisioning is complete, the instance is ready, or a stage failed (with a fixed
+   failure classification). This is additive — a new function and a small typed
+   stage/result, no CRD field and no change to any generated type — so
+   `make manifests generate` is not required; the package stays apimachinery-only
+   (no controller-runtime import) so the fulfillment reconciler can depend on it.
+   The operator owns the *technical* condition→stage contract; the exhaustiveness
+   of that contract is guarded by a co-located test (see IC-6).
 
-2. **osac-ui.** Add a read-only `BareMetalProgressStepper` to the instance detail
+2. **fulfillment-service reconciler.** Extend `syncStatus()` to call
+   `DeriveProvisioningProgress` and apply the *presentation* layer: set the
+   `PROVISIONED` condition's `reason` to the derived fixed stage value and its
+   `message` to a curated, non-internal-leaking string; flip `PROVISIONED` to
+   `True` when the result reports provisioning complete; set `READY` to the
+   terminal reason/message when it reports ready; and on a reported stage failure
+   set the relevant condition `False` with the fixed failure `reason` and its
+   curated `message`. This replaces today's empty-reason ratchet. The reconciler
+   already imports the operator's `api/v1alpha1` module (`require` + local
+   `replace` in `go.mod`), and the operator does not depend on fulfillment-service,
+   so there is no import cycle.
+
+3. **osac-ui.** Add a read-only `BareMetalProgressStepper` to the instance detail
    view that computes the four user-facing steps (Host Allocation → Provisioning
    → Network Setup → Ready) from the current `PROVISIONED` `reason` and the
    `READY` condition: earlier steps `success`, the current stage `running`, later
@@ -245,7 +268,7 @@ sequenceDiagram
     Hub-->>FB: watch event (status changed)
     FB->>Rec: Signal(id) [existing RPC]
     Rec->>Hub: Get CR (fresh)
-    Rec->>Rec: derive furthest-advanced stage into PROVISIONED reason/message, plus READY terminal
+    Rec->>Rec: DeriveProvisioningProgress(conds) [operator-owned], then stamp PROVISIONED reason/message plus READY terminal
     Rec->>DB: write instance status (conditions)
     loop every ~5s while instance non-terminal
         UI->>API: GET baremetal_instances/{id}
@@ -269,7 +292,10 @@ This enhancement changes **no** API schema: it adds no gRPC services, webhooks,
 aggregated API servers, proto messages, enums, or fields, and no CRD fields. It
 populates the existing `reason` and `message` fields of the existing
 `BareMetalInstanceCondition` and does not read or modify resources owned by other
-teams (in particular, it does not depend on metal3 CRD internals).
+teams (in particular, it does not depend on metal3 CRD internals). It does add one
+exported Go function (`DeriveProvisioningProgress`) and a small result type to the
+bare-metal operator's `api/v1alpha1` package — a code-level contract between two
+OSAC components, not an external API schema change (see IC-2 and IC-6).
 
 The concrete interface changes (referenced by the testplan as IC-N):
 
@@ -278,16 +304,18 @@ The concrete interface changes (referenced by the testplan as IC-N):
   (fixed stage vocabulary) and `message` (curated prose) of the `PROVISIONED`
   `BareMetalInstanceCondition`, and the terminal `reason`/`message` on `READY`.
   No proto/CRD change. Requirements: FR-1, FR-2, NFR-3.
-- **IC-2 — Reconciler stage derivation + curated messages (`syncStatus`).** Extend
-  the fulfillment reconciler's `syncStatus()` to derive the furthest-advanced
-  provisioning stage from the operator's existing lifecycle conditions
-  (`Allocated`, `ProvisionTemplateComplete`, network/power conditions) — using a
-  fixed, order-independent stage list as CaaS does — and stamp
-  `PROVISIONED.reason`/`message`; flip `PROVISIONED` `True` at provisioning
-  completion and `READY` `True` at readiness; extend `sanitizeConditionMessage` to
-  cover the in-progress stage vocabulary (today it returns text only for
-  `status == True`). Fixes the current empty-reason ratchet. Requirements: FR-1,
-  FR-2, FR-5.
+- **IC-2 — Stage derivation (operator-owned) + fulfillment presentation
+  (`syncStatus`).** The condition→stage mapping is owned by the
+  bare-metal-fulfillment-operator as a pure function, `DeriveProvisioningProgress`,
+  over its existing lifecycle conditions (`Allocated`,
+  `ProvisionTemplateComplete`, network/power conditions) using a fixed,
+  order-independent stage list as CaaS does (the derivation contract itself is
+  IC-6). The fulfillment reconciler's `syncStatus()` calls it and applies
+  presentation: stamp `PROVISIONED.reason`/`message`; flip `PROVISIONED` `True` at
+  provisioning completion and `READY` `True` at readiness; extend
+  `sanitizeConditionMessage` to cover the in-progress stage vocabulary (today it
+  returns text only for `status == True`). Fixes the current empty-reason ratchet.
+  Requirements: FR-1, FR-2, FR-5.
 - **IC-3 — Freshness via the existing feedback→`Signal` path.** The osac-operator
   feedback `Signal(id)` already fires on `BareMetalInstance` status (condition)
   changes; confirm it fires on `PROVISIONED`/`READY` `reason`/`message`
@@ -316,6 +344,17 @@ The concrete interface changes (referenced by the testplan as IC-N):
   These strings are the complete vocabulary; the reconciler never copies a raw
   operator/AAP/metal3 error string into `message`, and no other message value is
   emitted. Requirements: FR-5.
+- **IC-6 — CR→stage derivation contract (`DeriveProvisioningProgress`).** The
+  shared function is the contract between the operator's CR conditions and the
+  proto stage the fulfillment reconciler surfaces. It is **exhaustive over the
+  operator's `HostCondition*` constants**: every condition is either mapped to a
+  stage / terminal / failure classification or explicitly listed as intentionally
+  not surfaced. A co-located unit test enumerates the exported condition constants
+  and fails if any one is unclassified — so adding, renaming, or removing a CR
+  condition without updating the derivation surfaces as a failing test in the
+  operator repo rather than a silently wrong (or empty) proto `reason`. Because the
+  test lives in the operator package next to the constants, it breaks in the same
+  change that edits the conditions. Requirements: FR-2, NFR-3.
 
 Operational impact: if the operator is down, the stage stops advancing but the
 last-synced conditions remain served from the DB. If the fulfillment reconciler
@@ -358,20 +397,31 @@ fulfillment-service/proto/private/osac/private/v1/baremetal_instance_type.proto]
 and the existing operator lifecycle conditions [Codebase:
 bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_types.go]. This is
 the central simplification over the earlier two-array design and the reason the
-change is additive and low-risk.
+change is additive and low-risk. The only new code artifact is the pure
+`DeriveProvisioningProgress` function (and its small result type) in the operator's
+`api/v1alpha1` package — no generated type changes, so no `make manifests generate`.
 
 #### Reconciler stage derivation
 
-The fulfillment reconciler's `syncStatus()` is the single place that derives the
-stage. It mirrors the CaaS `applyProgressingStageDetail` pattern [Codebase:
+The condition→stage mapping is a pure function,
+`DeriveProvisioningProgress(conds []metav1.Condition) ProvisioningProgress`, owned
+by the bare-metal-fulfillment-operator and co-located with its `HostCondition*`
+constants in `api/v1alpha1`. The fulfillment reconciler's `syncStatus()` calls it
+and applies presentation. Placing the mapping in the operator keeps the semantics
+of the conditions next to their definitions (the operator is the *technical
+interface*; fulfillment is the *presentation layer*) and lets an exhaustiveness
+test guard the contract at the source (IC-6). The function returns the derived
+stage plus `provisioned` / `ready` / `failed` (with a fixed failure
+classification); `syncStatus()` maps that result onto the proto conditions. The
+mapping mirrors the CaaS `applyProgressingStageDetail` pattern [Codebase:
 osac-operator/internal/controller/feedback_controller.go]:
 
-- A fixed, ordered stage list keyed off the operator's existing lifecycle
-  conditions; the **furthest-advanced** True condition selects the stage, so the
-  result is order-independent (does not depend on the order conditions appear in
-  the CR).
-- While `PROVISIONED` is not yet `True`, its `reason` is set to the current stage
-  value and its `message` to the curated string for that stage.
+- Inside the function, a fixed, ordered stage list keyed off the operator's
+  existing lifecycle conditions; the **furthest-advanced** True condition selects
+  the stage, so the result is order-independent (does not depend on the order
+  conditions appear in the CR).
+- While `PROVISIONED` is not yet `True`, `syncStatus()` sets its `reason` to the
+  current stage value and its `message` to the curated string for that stage.
 - When all provisioning/network conditions are True, `PROVISIONED` is set `True`
   with the terminal `Provisioned` reason/message.
 - When the instance is available (powered-on ready), `READY` is set `True` with
@@ -381,9 +431,10 @@ osac-operator/internal/controller/feedback_controller.go]:
 
 `sanitizeConditionMessage` is extended to return curated text for the in-progress
 stages (today it returns a message only for `status == True`), so a provisioning
-instance carries a non-empty `message`. The reconciler owns the message
-vocabulary (single, testable source), exactly as CaaS humanizes stage reasons in
-one function.
+instance carries a non-empty `message`. The reconciler owns the curated message
+vocabulary (presentation), while the operator function owns the condition→stage /
+failure classification (technical interface) — a single, testable source on each
+side, exactly as CaaS humanizes stage reasons in one function.
 
 Current mis-wiring being fixed: `PROVISIONED` is set `True` with an empty
 `reason`/`message` when `HostConditionProvisionTemplateComplete == True`, and
@@ -422,6 +473,7 @@ sequenceDiagram
     participant CR as BareMetalInstance conditions
     participant Rec as fulfillment reconciler
 
+    Note over Rec: each derivation below is bmiv1alpha1.DeriveProvisioningProgress(conds), owned by the bare-metal operator
     Note over Rec: no lifecycle condition True yet
     Rec->>Rec: PROVISIONED reason = HostAllocation
 
@@ -592,9 +644,16 @@ later without a schema change.
 - **Reason/message vs. coarse state divergence.** Mitigation: the reconciler
   derives the stage in one place from the operator conditions, so the stage and
   the coarse `state` cannot drift.
-- **Stage-mapping drift as the operator lifecycle evolves.** Mitigation: the
-  mapping lives in one reconciler function with unit tests over condition/job
-  fixtures, mirroring CaaS's tested `applyProgressingStageDetail`.
+- **CR-condition change silently breaking the proto stage.** Because the derived
+  proto `reason` is a function of the operator's CR conditions, a CR condition that
+  is added, renamed, or removed can silently break the surfaced stage — and the two
+  live in different packages/repos. Mitigation: the mapping is **one pure function
+  co-located with the condition constants** in the operator package, and an
+  **exhaustiveness test** (IC-6) enumerates the `HostCondition*` constants and
+  fails if any is unclassified, so the break surfaces as a failing operator unit
+  test in the same change that edits the conditions — not as a runtime regression
+  in the proto. This mirrors CaaS's tested `applyProgressingStageDetail` but moves
+  the mapping to the side that owns the conditions.
 - **Refresh cost.** Bounded to a single-instance GET on an open detail page while
   non-terminal (~5s poll), stopping at terminal.
 
@@ -635,6 +694,37 @@ adds no new proto/CRD fields, no new persistence, and no new freshness path.
   today [Research: loop-back Domain 8]. Rejected: this design reuses the existing
   `Signal` path.
 
+Placement of the condition→stage derivation was also weighed (this design puts it
+in an operator-owned shared function):
+
+- **Derivation authored and executed entirely in the fulfillment reconciler (no
+  shared function).** Keep the mapping as private code in `syncStatus`, reading the
+  operator's condition constants directly (an earlier shape of this design). Pros:
+  one component to change; no new exported operator surface. Cons: the mapping
+  lives in a different repo from the conditions it interprets, so a CR condition
+  rename/removal only breaks at runtime (an empty or wrong proto `reason`), with no
+  co-located-test signal. Rejected in favour of an operator-owned shared function
+  so the contract and its exhaustiveness test sit next to the conditions (IC-6).
+- **Operator writes a coarse `Provisioned`/`Ready` CR condition; fulfillment copies
+  it verbatim (VMaaS-style).** VMaaS's `ComputeInstance` CR conditions already match
+  the proto vocabulary 1:1, so its feedback controller copies them directly. Cons:
+  BMaaS's CR conditions are deliberately fine-grained (`Allocated`,
+  `ProvisionTemplateComplete`, `NetworkAttachmentsReady`, `IPDiscoveryComplete`,
+  `NetworkHandoffComplete`, `PowerSynced`); collapsing them into a coarse
+  `Provisioned`/`Ready` CR condition would add a CRD field, require
+  `make manifests generate`, and duplicate state the fine-grained conditions
+  already carry. Rejected — the aggregation is derivation, not storage; the shared
+  function performs it without a CRD change.
+- **Convert BMaaS status feedback from pull to push (feedback `Bridge`).** Make the
+  osac-operator BMI feedback controller derive the stage and push it to fulfillment
+  via a gRPC `Update`, as CaaS/VMaaS do with `feedback.Bridge`, instead of the
+  fulfillment reconciler pulling the CR. Pros: co-locates derivation with the
+  operator that watches the CR. Cons: a substantially larger change — it reworks the
+  BMaaS status path (today the osac-operator BMI feedback controller is
+  `Signal`-only and fulfillment pulls) and gives up the existing, working pull path
+  for no functional gain here. Rejected for scope; the shared function gets the
+  ownership benefit without changing the transport.
+
 ## Open Questions
 
 - **Should `PROVISIONED` continue to be set `True` at `ProvisionTemplateComplete`,
@@ -653,10 +743,18 @@ mapped to the requirement/interface-change matrix, are enumerated in
 
 ### Unit Tests
 
-- Stage-derivation function: each operator lifecycle-condition / AAP job-status
-  fixture maps to the correct `PROVISIONED.reason` and `message`, selecting the
-  furthest-advanced stage order-independently; `PROVISIONED` flips `True` at
-  completion and `READY` `True` at readiness.
+- Stage-derivation function (`DeriveProvisioningProgress`, bare-metal operator):
+  each operator lifecycle-condition / AAP job-status fixture maps to the correct
+  stage / terminal / failure result, selecting the furthest-advanced stage
+  order-independently; provisioning-complete and ready are reported at the right
+  instants.
+- Derivation exhaustiveness (operator, IC-6): a test enumerates the exported
+  `HostCondition*` constants and fails if any is neither mapped nor explicitly
+  listed as not-surfaced, so a CR-condition change that would break the proto stage
+  fails here first.
+- `syncStatus` presentation (fulfillment): the derived stage is stamped onto
+  `PROVISIONED.reason`/`message`, `PROVISIONED` flips `True` at completion and
+  `READY` `True` at readiness.
 - `sanitizeConditionMessage`: returns the curated in-progress message for each
   stage and never emits raw error text.
 - Failure vocabulary: each failure reason produces its defined human-readable
