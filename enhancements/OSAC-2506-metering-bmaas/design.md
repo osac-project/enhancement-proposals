@@ -45,11 +45,11 @@ The Part 1 design states that "_the canonical event model supports future resour
 
 ## Terminology
 
-**Allocation Meter** — A billing stream that tracks capacity commitment for a bare metal host from provisioning complete (`RUNNING`, `STOPPED`, `STARTING`, `STOPPING` states) until the host enters `FAILED` or is deleted. Runs continuously across power cycles while the host is not `FAILED`. Represents the physical rack space, power port, and networking infrastructure reserved by the provider for the tenant.
+**Allocation Meter** — A billing stream that tracks capacity commitment for a bare metal host from provisioning complete (`RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, and in-progress `DELETING` states) until the host enters `FAILED` or is confirmed deleted. Runs continuously across power cycles and deletion finalization while the host is not `FAILED`. Represents the physical rack space, power port, and networking infrastructure reserved by the provider for the tenant.
 
 **Consumption Meter** — A billing stream that tracks actual compute usage for a bare metal host. Runs only when the host is powered on (`RUNNING` state). Independent of allocation; enables providers to charge separately for reserved capacity vs. active consumption.
 
-**Billable State** — A resource state that incurs metering charges. Distinct per meter: allocation-billable states are `RUNNING`, `STOPPED`, `STARTING`, `STOPPING` (the host is provisioned); consumption-billable state is `RUNNING` only (the host is powered on). `FAILED` is non-billable for both meters, so no metering charges accrue while a host is in `FAILED` state.
+**Billable State** — A resource state that incurs metering charges. Distinct per meter: allocation-billable states are `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, and in-progress `DELETING` (the host remains reserved); consumption-billable state is `RUNNING` only (the host is powered on). `FAILED` is non-billable for both meters, so no metering charges accrue while a host is in `FAILED` state.
 
 **Transition Table** — A state machine table defining which state transitions trigger meter events (started, suspended, resumed). Independent transition table per meter; evaluated for each Watch event to determine which CloudEvents to produce.
 
@@ -158,7 +158,7 @@ Key observations:
 - `STOPPED` → `RUNNING` produces one `resumed.v1` (consumption resumes; allocation unchanged)
 - Any transition into `FAILED` suspends every active meter; a host in `FAILED` state produces no allocation or consumption heartbeats and accrues no charges
 - `OBJECT_DELETED` closes each currently active meter independently, then produces one `deleted.v1` audit event. A meter that is already inactive (for example after `FAILED`) produces no synthetic suspension.
-- Heartbeats vary by state: `RUNNING` produces two (allocation + consumption), `STOPPED`/`STARTING`/`STOPPING` produce one (allocation only). Allocation heartbeat duration is measured from `BillableSince`; a `RUNNING` consumption heartbeat is measured from `ComponentBillableSince["consumption"]`.
+- Heartbeats vary by state: `RUNNING` produces two (allocation + consumption), `STOPPED`/`STARTING`/`STOPPING`/`DELETING` produce one (allocation only). Allocation heartbeat duration is measured from `BillableSince`; a `RUNNING` consumption heartbeat is measured from `ComponentBillableSince["consumption"]`.
 
 ### API Extensions
 
@@ -166,6 +166,7 @@ The Metering Service introduces no new CRDs, webhooks, or API surfaces. It consu
 
 - `Events.Watch` — the existing fulfillment event stream. BMaaS events are carried in `Event.bare_metal_instance` (field 3); field 15 is `secret`. The metering-service Watch filter must include the `bare_metal_instance` payload so these events reach the BMaaS mapper.
 - `PrivateBareMetalInstancesService.List` — used by the Reconciliation Loop for drift detection
+- The fulfillment deletion event contract must add `deletion_completion_time` to `OBJECT_DELETED`. Fulfillment sets it only after the BareMetalInstance has been removed and its finalizers have completed; `Metadata.deletion_timestamp` records the deletion request and is not a completion timestamp. The field must be retained by the durable history/cursor API.
 
 **CloudEvent changes:** No new extension attributes. The existing `osacresourcetype` carries `bare_metal_instance`. The new `meter_type` value lives in `billing_dimensions`, not as a CloudEvent extension — it is a billing attribute, not an infrastructure routing key.
 
@@ -185,7 +186,7 @@ Two independent transition tables define each meter's billing boundaries:
 
 `FAILED` is explicitly non-billable for both meters. Entering `FAILED` closes any active allocation and consumption intervals, and the heartbeat generator emits no events while the host remains in `FAILED`. Recovery from `FAILED` starts or resumes metering only after the host reaches a billable state (`RUNNING`); no time spent in `FAILED` is included in either meter.
 
-**Allocation transition table** — billable states: `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`
+**Allocation transition table** — billable states: `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, `DELETING` until the `OBJECT_DELETED` event confirms removal.
 
 The resolver performs exact `(from, to)` lookups. The following is the complete accepted pair set; repeated snapshots are included explicitly and every row represents one registered pair. No wildcard transition is permitted. Pairs outside this set are invalid controller transitions and should be reported as configuration errors rather than silently interpreted.
 
@@ -213,32 +214,34 @@ The resolver performs exact `(from, to)` lookups. The following is the complete 
 | `RUNNING`      | `STARTING`     | Transient (still allocation-billable) |
 | `RUNNING`      | `STOPPING`     | Transient (still allocation-billable) |
 | `RUNNING`      | `FAILED`       | Suspended                             |
-| `RUNNING`      | `DELETING`     | Suspended                             |
+| `RUNNING`      | `DELETING`     | Skip (allocation continues until deletion) |
 | `STOPPED`      | `STOPPED`      | Skip                                  |
 | `STOPPED`      | `RUNNING`      | Skip (still allocation-billable)      |
 | `STOPPED`      | `STARTING`     | Transient (still allocation-billable) |
 | `STOPPED`      | `FAILED`       | Suspended                             |
-| `STOPPED`      | `DELETING`     | Suspended                             |
+| `STOPPED`      | `DELETING`     | Skip (allocation continues until deletion) |
 | `STARTING`     | `STARTING`     | Transient                             |
 | `STARTING`     | `RUNNING`      | Skip (still allocation-billable)      |
 | `STARTING`     | `STOPPED`      | Skip (still allocation-billable)      |
 | `STARTING`     | `FAILED`       | Suspended                             |
-| `STARTING`     | `DELETING`     | Suspended                             |
+| `STARTING`     | `DELETING`     | Skip (allocation continues until deletion) |
 | `STOPPING`     | `STOPPING`     | Transient                             |
 | `STOPPING`     | `STOPPED`      | Skip (still allocation-billable)      |
 | `STOPPING`     | `RUNNING`      | Skip (still allocation-billable)      |
 | `STOPPING`     | `FAILED`       | Suspended                             |
-| `STOPPING`     | `DELETING`     | Suspended                             |
+| `STOPPING`     | `DELETING`     | Skip (allocation continues until deletion) |
 | `FAILED`       | `FAILED`       | Skip                                  |
 | `FAILED`       | `RUNNING`      | `billableResume`                      |
 | `FAILED`       | `DELETING`     | Skip                                  |
-| `DELETING`     | `DELETING`     | Skip                                  |
+| `DELETING`     | `DELETING`     | Skip (allocation continues until deletion) |
 
 **Consumption transition table** — billable state: `RUNNING` only. It registers the same complete pair set above. `PROVISIONING`, `STOPPED`, `STARTING`, and `FAILED` → `RUNNING` open a consumption interval; every `RUNNING` → `STOPPING`, `STOPPED`, `FAILED`, or `DELETING` pair closes it; all remaining registered pairs are `Skip`. The `RUNNING` → `STOPPING` boundary is intentional: consumption ends when the stop operation begins, while allocation continues through the transient state.
 
 The decomposer evaluates both tables for each Watch event and produces one CloudEvent per meter that crosses a billing boundary. Transitions where neither meter crosses a boundary (_e.g._, `STOPPED` → `STOPPED`) produce no lifecycle events. Every lifecycle event receives the transition timestamp and the active interval for its own meter; the allocation and consumption intervals are never calculated from one shared timestamp.
 
-`OBJECT_CREATED` and `OBJECT_DELETED` are fixed resource-level events and bypass the transition table. `OBJECT_DELETED` must nevertheless close active meter intervals before removing the projection row: it emits an allocation suspension only when `BillableSince` is present, a consumption suspension only when `ComponentBillableSince["consumption"]` is present, and then the audit deletion event. The suspension duration uses the authoritative deletion timestamp carried by the event; if that timestamp is absent, the consumer holds the closure for retry rather than using receipt time. The suspension IDs are `{baseID}/allocation` and `{baseID}/consumption`, and the deletion ID is `{baseID}`. Replayed or duplicated deletion notifications therefore resolve to the same IDs and cannot create duplicate billing intervals. A preceding `DELETING` update is not required for closure.
+`OBJECT_CREATED` and `OBJECT_DELETED` are fixed resource-level events and bypass the transition table. `OBJECT_DELETED` must nevertheless close active meter intervals before removing the projection row: it emits an allocation suspension only when `BillableSince` is present, a consumption suspension only when `ComponentBillableSince["consumption"]` is present, and then the audit deletion event. The fulfillment-service team must add `deletion_completion_time` to this event and set it only after deletion has completed, including finalizer processing. `Metadata.deletion_timestamp` is the deletion-request time and must not be used for billing closure. The suspension duration uses `deletion_completion_time`; if it is absent, the consumer holds the closure for retry rather than using metadata deletion time or receipt time. The suspension IDs are `{baseID}/allocation` and `{baseID}/consumption`, and the deletion ID is `{baseID}`. Replayed or duplicated deletion notifications therefore resolve to the same IDs and cannot create duplicate billing intervals. A preceding `DELETING` update is not required for closure.
+
+**Deletion completion contract:** **Owner:** fulfillment-service team. **Implementation:** when finalizer processing confirms that the BareMetalInstance is gone, fulfillment records that instant as `deletion_completion_time` and includes it in the `OBJECT_DELETED` event and every durable-history replay record. This field is distinct from `Metadata.deletion_timestamp`, which marks the deletion request. **Impact:** metering closes the allocation interval at the actual deletion-completion instant; it retains the closure for retry when the completion timestamp is unavailable and never substitutes event receipt time.
 
 ```go
 type BMaaSMeterIntervals struct {
@@ -265,7 +268,7 @@ The existing `ResourceState` struct is sufficient without schema changes:
 
 | Field                    | BMaaS Usage                                                                                                                                                   |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `IsBillable`             | Allocation-billable (true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`)                                                                                   |
+| `IsBillable`             | Allocation-billable (true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, `DELETING` until `OBJECT_DELETED`)                                                   |
 | `EverBillable`           | True once the host has ever been allocation-billable                                                                                                          |
 | `BillableSince`          | Start of the active allocation interval. It is set when allocation becomes billable and cleared after allocation suspension.                                  |
 | `ComponentBillableSince` | `{"consumption": <time>}` — start of the active consumption interval. It is set on entry to `RUNNING` and cleared when consumption stops.               |
@@ -312,6 +315,7 @@ The meter-specific application rules are:
 | `FAILED` → `RUNNING` | Set both active timestamps to `state_transition_time`; set `IsBillable=true` | `resumed.v1` for allocation and consumption |
 | `RUNNING` → `STOPPING` | Preserve `BillableSince`; clear the consumption timestamp; keep `IsBillable=true` | `suspended.v1` for consumption |
 | `STOPPING` → `STOPPED`, or `STOPPED` → `STARTING` | Preserve the allocation timestamp and consumption inactivity; keep `IsBillable=true` | No lifecycle event |
+| `RUNNING`/`STOPPED`/`STARTING`/`STOPPING` → `DELETING` | Preserve `BillableSince`; clear the consumption timestamp if active; keep `IsBillable=true` until `OBJECT_DELETED` | Suspend consumption if active; allocation remains open |
 | An allocation-billable state → `FAILED` | Clear `BillableSince` and any active consumption timestamp; set `IsBillable=false` | Suspend each meter that was active |
 
 `started.v1` is reserved for the first opening of a meter interval. `resumed.v1` is used when a previously suspended interval opens again. A missing creation event is handled by reconciliation using the current state and its authoritative `state_transition_time`: `RUNNING` seeds both meters, allocation-billable non-`RUNNING` states seed allocation only, and `FAILED` seeds neither. Reconciliation emits correction events with the same meter-specific effects and IDs. A state snapshot cannot infer a completed stop/start cycle; that limitation is covered by the deferred durable-history dependency above.
@@ -376,7 +380,7 @@ stateDiagram-v2
 
     RUNNING --> STOPPING : stop requested\n(transient — allocation continues)
     RUNNING --> FAILED : hardware failure\n→ osac.resource.suspended.v1 (allocation)
-    RUNNING --> DELETING : delete requested\n→ osac.resource.suspended.v1 (allocation)
+    RUNNING --> DELETING : delete requested\n(allocation continues until confirmed deletion)
 
     note right of RUNNING
         ALLOCATION-BILLABLE
@@ -392,17 +396,22 @@ stateDiagram-v2
 
     STOPPED --> STARTING : start requested\n(transient — allocation continues)
     STOPPED --> FAILED : hardware failure\n→ osac.resource.suspended.v1 (allocation)
-    STOPPED --> DELETING : delete requested\n→ osac.resource.suspended.v1 (allocation)
+    STOPPED --> DELETING : delete requested\n(allocation continues until confirmed deletion)
 
     STARTING --> RUNNING : power on confirmed
 
     FAILED --> RUNNING : recovery\n→ osac.resource.resumed.v1 (allocation)
     FAILED --> DELETING : delete requested
 
-    DELETING --> [*] : confirmed deleted\n→ osac.resource.deleted.v1
+    note right of DELETING
+        ALLOCATION-BILLABLE
+        60s heartbeat (allocation)
+    end note
+
+    DELETING --> [*] : confirmed deleted\n→ allocation suspended + osac.resource.deleted.v1
 ```
 
-Allocation-billable states: `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`. The meter runs continuously across power cycles. `FAILED` and `DELETING` stop it, and no allocation charges accrue while the host is in either state.
+Allocation-billable states: `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, and `DELETING` while deletion is in progress. The meter runs continuously across power cycles and deletion finalization. `FAILED` stops it immediately; `OBJECT_DELETED` closes it at the confirmed deletion timestamp.
 
 #### BMaaS State Machine — Consumption Meter
 
@@ -446,7 +455,7 @@ type BareMetalInstancesClient interface {
 }
 ```
 
-The `billabilityCheckers` map gains an entry for `bare_metal_instance` that returns true for allocation-billable states (`RUNNING`, `STOPPED`, `STARTING`, `STOPPING`).
+The `billabilityCheckers` map gains an entry for `bare_metal_instance` that returns true for allocation-billable states (`RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, `DELETING`).
 
 Reconciliation corrections for BMaaS resources use the same decomposer as the Watch Consumer — a state drift correction that moves from `RUNNING` to `STOPPING` produces a consumption `suspended.v1` correction but no allocation correction. The correction uses the fulfillment transition timestamp; it cannot use the time at which the snapshot was read.
 
@@ -476,6 +485,7 @@ The heartbeat decomposer for BMaaS checks `ResourceState.CurrentState`:
 | `STOPPED`  | 1: allocation only          |
 | `STARTING` | 1: allocation only          |
 | `STOPPING` | 1: allocation only          |
+| `DELETING` | 1: allocation only          |
 | `FAILED`   | 0                           |
 
 Each heartbeat carries its own `meter_type` in billing dimensions and a deterministic event ID: `{base-hb-id}/allocation` and `{base-hb-id}/consumption`.
@@ -652,8 +662,8 @@ Durable fulfillment transition history with cursor-based replay is a release-blo
   - `PROVISIONING → RUNNING: 2 events (allocation started + consumption started)
 - `RUNNING` → `STOPPING`: 1 event (consumption suspended)
   - `STOPPED` → `RUNNING`: 1 event (consumption resumed)
-  - `RUNNING` → `DELETING`: 2 events (allocation suspended + consumption suspended)
-  - `STOPPED` → `DELETING`: 1 event (allocation suspended)
+  - `RUNNING` → `DELETING`: 1 event (consumption suspended; allocation remains active)
+  - `STOPPED`/`STARTING`/`STOPPING` → `DELETING`: 0 events (allocation remains active)
   - `RUNNING` → `FAILED`: 2 events (allocation suspended + consumption suspended)
   - `FAILED` → `RUNNING`: 2 events (allocation resumed + consumption resumed)
   - `PROVISIONING` → `STOPPED`: 1 event (allocation started; consumption remains inactive)
@@ -661,7 +671,7 @@ Durable fulfillment transition history with cursor-based replay is a release-blo
   - `OBJECT_DELETED` with both intervals active: 2 suspensions plus 1 deletion audit event, with stable IDs on redelivery
   - `OBJECT_DELETED` with no active intervals: deletion audit event only
   - `STOPPED` → `STOPPED`: 0 events
-- Heartbeat decomposer produces 2 heartbeats for `RUNNING`, 1 for `STOPPED`/`STARTING`/`STOPPING`, and 0 for `FAILED`
+- Heartbeat decomposer produces 2 heartbeats for `RUNNING`, 1 for `STOPPED`/`STARTING`/`STOPPING`/`DELETING`, and 0 for `FAILED`
 - Reconciliation billability checker uses allocation-billable states
 - Correction event decomposer produces per-meter corrections matching the state drift direction
 
