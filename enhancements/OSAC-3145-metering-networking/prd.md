@@ -143,11 +143,8 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Authored: respond @ prd 0.6.3 - 6ec8c11, workspace main @ 78853cd
-Final: revise @ prd 0.8.0 - 7efcedb, workspace HEAD @ 6e8f396
+Committed: commit @ prd 0.9.0 - 562b610, workspace main @ 1095dc5d3
 
-> Context changed between respond and revise.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"1095dc5d3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

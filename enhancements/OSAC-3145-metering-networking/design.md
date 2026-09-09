@@ -214,3 +214,13 @@ Check feature gauges, transaction failures, operator forbidden-write logs, child
 
 ## Infrastructure Needed
 Existing Postgres, Kafka/AMQ Streams, fulfillment Watch, metering, and M360 are required. No new service is proposed. Helm documentation covers `METERING_DEPLOYMENT_ID`, topic provisioning, event fields, support, and retention. Add transaction-conflict, callback, pagination, deployment, correction, and M360 networking fixtures. Raw events retain at least seven days and aggregates at least thirteen months.
+
+---
+
+## Provenance
+
+Committed: commit @ design 0.9.0 - 562b610, workspace main @ 1095dc5d3
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"1095dc5d3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
