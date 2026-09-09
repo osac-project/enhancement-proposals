@@ -262,6 +262,39 @@ func DecomposeBMIEvents(
 
 The decomposer receives the resolved CloudEvent types for each meter (or empty string if no boundary), plus the two active interval timestamps from `StateContext`. It computes `duration_seconds` as `transitionTime - intervals.AllocationSince` for allocation events and `transitionTime - intervals.ConsumptionSince` for consumption events. A consumer must not calculate one duration from `ResourceState.BillableSince` and reuse it for both meters. It builds independent events with deterministic IDs: `{baseID}/allocation` and `{baseID}/consumption`.
 
+#### BMaaS Pipeline Integration Contract
+
+The BMaaS decomposer is an explicit resource-type handler in the existing Metering Service pipeline. The shared Watch, heartbeat, and reconciliation components call this handler through the following contract:
+
+| Pipeline component | BMaaS integration contract |
+| --- | --- |
+| Watch filter and dispatcher | Subscribe to `Events.Watch` with `bare_metal_instance` enabled. Route `Event.bare_metal_instance` events to the BMaaS mapper and handler based on `osacresourcetype`; do not send them through a generic single-meter transition path. `OBJECT_DELETED` enters the BMaaS closure handler before the projection row is removed. |
+| Mapper | Extract the BareMetalInstance resource ID, tenant/project metadata, the string `spec.instance_type`, catalog item, current state, and authoritative `state_transition_time`. For `OBJECT_UPDATED`, load the previous state and per-meter interval timestamps from the projection. |
+| Transition handler | Resolve the exact `(previous_state, current_state)` pair in both BMaaS tables, update `CurrentState` and both meter intervals, and pass the resulting meter event specifications to `DecomposeBMIEvents`. Persist the projection update and all generated events as one idempotent operation. |
+| Event builder | Build each CloudEvent from the meter-specific event type, meter type, transition timestamp, duration, resource identity, and billing dimensions supplied by the decomposer. The allocation and consumption records use independent event IDs and never share a calculated duration. |
+| Heartbeat generator | Query allocation-billable BMaaS projection rows, inspect `CurrentState`, and invoke the BMaaS heartbeat decomposer. It builds one allocation heartbeat for `STOPPED`, `STARTING`, `STOPPING`, and `DELETING`, and allocation plus consumption heartbeats for `RUNNING`, using each meter's own interval timestamp. |
+| Reconciliation loop | Use the same mapper, transition tables, decomposer, event builder, and `OBJECT_DELETED` closure handler as Watch processing. A correction carries the authoritative fulfillment transition timestamp; it does not use reconciliation read time. Durable history replay is applied through this same path before snapshot drift correction. |
+
+The event-builder contract is internal to the Metering Service and has the inputs required to reach the canonical CloudEvent schema:
+
+```go
+type BMaaSEventBuildRequest struct {
+    EventType         string
+    MeterType         string
+    BaseID            string
+    ResourceID        string
+    PreviousState     string
+    CurrentState      string
+    TransitionTime    time.Time
+    DurationSeconds   *int64
+    BillingDimensions map[string]any
+}
+
+type EventBuilder func(BMaaSEventBuildRequest) (cloudevents.Event, error)
+```
+
+`DecomposeBMIEvents` creates one build request for each meter boundary, setting `DurationSeconds` from that meter's interval timestamp and setting the CloudEvent type to `started.v1`, `suspended.v1`, `resumed.v1`, or the applicable correction type. The dispatcher, heartbeat generator, and reconciliation loop must use this contract so `meter_type`, event type, transition timestamp, and meter-specific duration reach every emitted event.
+
 #### State Projection
 
 The existing `ResourceState` struct is sufficient without schema changes:
