@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-3702 — LVMS Node-Local Storage Backend for VMaaS (single-node)
-- **Total test cases:** 23
+- **Total test cases:** 24
 - **Requirements covered:** 9 of 9 (R1–R9)
 - **Interface changes covered:** 8 of 8 (IC-1–IC-8)
 
@@ -379,6 +379,25 @@ T-order:
 
 - `LvmsVendorProvisioner` returns `codes.ResourceExhausted` (not a generic error), propagated by the CSI controller and surfaced as a PVC provisioning event; no LV is carved and no partial inventory record remains.
 
+#### TC-R7-02: Immediate retry after a capacity failure leaves exactly one CR and one inventory record
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | high | automated |
+
+##### Preconditions
+
+- A node whose VG fails the first `CreateVolume` with `ResourceExhausted` (fault-injected), then has capacity for a retry.
+
+##### Steps
+
+1. Issue `CreateVolume` for a `local`-tier Volume; the first attempt returns `ResourceExhausted` and the provisioner deletes the `LogicalVolume` CR it created.
+2. Immediately issue a retry `CreateVolume` for the same request, before the deleted CR has necessarily finished terminating.
+
+##### Expected Results
+
+- The retry succeeds with no `AlreadyExists` collision: because the CR is created with `generateName`, the fresh attempt never reuses a name still held by a `Terminating` CR. Exactly one `LogicalVolume` CR and one fulfillment Volume inventory record exist for the request; no orphaned CR or duplicate inventory remains.
+
 ### R8: Interfaces via the same console/CLI channels (no LVMS-specific UI)
 
 #### TC-R8-01: The topology field is private and produces no tenant-facing UI diff
@@ -499,12 +518,12 @@ T-order:
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 23 |
+| Total test cases | 24 |
 | Critical | 7 |
 | High | 11 |
 | Medium | 4 |
 | Low | 0 |
-| Automated | 23 |
+| Automated | 24 |
 | Manual | 0 |
 | Requirements with test cases | 9 / 9 |
 | Interface changes with test cases | 8 / 8 |
