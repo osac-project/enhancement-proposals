@@ -200,10 +200,10 @@ The resolver performs exact `(from, to)` lookups. The following is the complete 
 | "" (initial)   | `PROVISIONING` | Skip                                  |
 | ""             | `RUNNING`      | `billableStart`                       |
 | ""             | `STOPPED`      | `billableStart`                       |
-| ""             | `STARTING`     | Transient                             |
-| ""             | `STOPPING`     | Transient                             |
+| ""             | `STARTING`     | `billableStart`                       |
+| ""             | `STOPPING`     | `billableStart`                       |
 | ""             | `FAILED`       | Skip                                  |
-| ""             | `DELETING`     | Skip                                  |
+| ""             | `DELETING`     | `billableStart`                       |
 | ""             | `UNSPECIFIED`  | Skip                                  |
 | `PROVISIONING` | `PROVISIONING` | Skip                                  |
 | `PROVISIONING` | `RUNNING`      | `billableStart`                       |
@@ -237,6 +237,8 @@ The resolver performs exact `(from, to)` lookups. The following is the complete 
 | `FAILED`       | `RUNNING`      | `billableResume`                      |
 | `FAILED`       | `DELETING`     | Skip                                  |
 | `DELETING`     | `DELETING`     | Skip (allocation continues until deletion) |
+
+An absent projection is represented as `""` and uses the same seed behavior during Watch processing and reconciliation. For an initial or reconciled state of `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, or `DELETING`, the handler sets `BillableSince` to that state's authoritative `state_transition_time`, sets `IsBillable=true`, and makes the projection eligible for allocation heartbeats. `RUNNING` additionally seeds the consumption interval at the same timestamp. `PROVISIONING`, `FAILED`, and `UNSPECIFIED` do not seed either meter. The `DELETING` seed remains allocation-billable until `OBJECT_DELETED` supplies `deletion_completion_time`.
 
 **Consumption transition table** — billable state: `RUNNING` only. It registers the same complete pair set above. `PROVISIONING`, `STOPPED`, `STARTING`, and `FAILED` → `RUNNING` open a consumption interval; every `RUNNING` → `STOPPING`, `STOPPED`, `FAILED`, or `DELETING` pair closes it; all remaining registered pairs are `Skip`. The `RUNNING` → `STOPPING` boundary is intentional: consumption ends when the stop operation begins, while allocation continues through the transient state.
 
@@ -363,7 +365,7 @@ The meter-specific application rules are:
 | `RUNNING`/`STOPPED`/`STARTING`/`STOPPING` → `DELETING` | Preserve `BillableSince`; clear the consumption timestamp if active; keep `IsBillable=true` until `OBJECT_DELETED` | Suspend consumption if active; allocation remains open |
 | An allocation-billable state → `FAILED` | Clear `BillableSince` and any active consumption timestamp; set `IsBillable=false` | Suspend each meter that was active |
 
-`started.v1` is reserved for the first opening of each meter interval. `resumed.v1` is used when that same meter opens again after suspension. A missing creation event is handled by reconciliation using the current state and its authoritative `state_transition_time`: `RUNNING` seeds both meters and marks both first-use flags, allocation-billable non-`RUNNING` states seed allocation only, and `FAILED` seeds neither. Reconciliation emits correction events with the same meter-specific effects and IDs. A state snapshot cannot infer a completed stop/start cycle; replayable durable history is therefore a release prerequisite for the exact billing guarantee.
+`started.v1` is reserved for the first opening of each meter interval. `resumed.v1` is used when that same meter opens again after suspension. A missing creation event is handled by reconciliation through the same seed path as an initial Watch event, using the current state's authoritative `state_transition_time`: `RUNNING` seeds both meters and marks both first-use flags; `STOPPED`, `STARTING`, `STOPPING`, and `DELETING` seed allocation, set `BillableSince`, set `IsBillable`, and make the projection eligible for allocation heartbeats; and `FAILED` seeds neither. Reconciliation emits correction events with the same meter-specific effects and IDs. A state snapshot cannot infer a completed stop/start cycle; replayable durable history is therefore a release prerequisite for the exact billing guarantee.
 
 #### BareMetalInstanceType Resolution
 
@@ -720,6 +722,7 @@ BMaaS metering may graduate to Dev Preview only when:
 - `PROVISIONING` → `STARTING`/`STOPPING` sets only `ComponentEverStarted["allocation"]` and emits allocation `started.v1`
 - The first `STOPPED` → `RUNNING` sets `ComponentEverStarted["consumption"]` and emits consumption `started.v1`; a later stop/start cycle emits consumption `resumed.v1`
 - `IsAllocationBillableState()` returns true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, `DELETING`; false for `PROVISIONING`, `FAILED`, `UNSPECIFIED`
+- Initial reconciliation of `STARTING`, `STOPPING`, and `DELETING` seeds `BillableSince`, sets `IsBillable`, and produces allocation heartbeats; initial reconciliation of `PROVISIONING`, `FAILED`, and `UNSPECIFIED` does not seed allocation
 - `IsConsumptionBillableState()` returns true for `RUNNING` only
 - Allocation transition table registers every pair in the explicit accepted transition set, including repeated snapshots and all provisioning/transient paths
 - Consumption transition table registers the same complete pair set with the correct meter-specific effect
