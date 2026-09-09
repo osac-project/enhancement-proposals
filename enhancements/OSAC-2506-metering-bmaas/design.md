@@ -57,7 +57,7 @@ The Part 1 design states that "_the canonical event model supports future resour
 
 **Meter Type** — A billing dimension (`meter_type`) that discriminates between allocation and consumption events. Enables downstream systems to filter, aggregate, and price each meter independently. Carried in CloudEvent `billing_dimensions`, not as a CloudEvent extension attribute.
 
-**Billing Dimensions** — Structured metadata attached to CloudEvents that describe resource attributes for billing purposes. BMaaS includes: `meter_type` (allocation or consumption), `bm_instance_type` (e.g., gpu-large), `catalog_item` (e.g., bmi-gpu-workstation).
+**Billing Dimensions** — Structured metadata attached to CloudEvents that describe resource attributes for billing purposes. BMaaS includes: `meter_type` (allocation or consumption), `bm_instance_type` (the BareMetalInstanceType resource ID, e.g., bmi-type-gpu-large), and `catalog_item` (e.g., bmi-gpu-workstation).
 
 **State Projection** — A PostgreSQL-backed runtime view of resource state. Tracks `IsBillable`, `CurrentState`, `BillableSince`, and per-component billable timestamps (`ComponentBillableSince`). Used by the Heartbeat Generator to determine which resources are metering and the Watch Consumer to detect transitions.
 
@@ -272,7 +272,7 @@ The BMaaS decomposer is an explicit resource-type handler in the existing Meteri
 | Pipeline component | BMaaS integration contract |
 | --- | --- |
 | Watch filter and dispatcher | Subscribe to `Events.Watch` with `bare_metal_instance` enabled. Route `Event.bare_metal_instance` events to the BMaaS mapper and handler based on `osacresourcetype`; do not send them through a generic single-meter transition path. `OBJECT_DELETED` enters the BMaaS closure handler before the projection row is removed. |
-| Mapper | Extract the BareMetalInstance resource ID, tenant/project metadata, the string `spec.instance_type`, catalog item, current state, and authoritative `state_transition_time`. For `OBJECT_UPDATED`, load the previous state and per-meter interval timestamps from the projection. |
+| Mapper | Extract the BareMetalInstance resource ID, tenant/project metadata, the `spec.instance_type.id` from the `BareMetalInstanceTypeLocalReference`, catalog item, current state, and authoritative `state_transition_time`. For `OBJECT_UPDATED`, load the previous state, billing dimensions, and per-meter interval timestamps from the projection. |
 | Transition handler | Resolve the exact `(previous_state, current_state)` pair in both BMaaS tables, update `CurrentState` and both meter intervals, and pass the resulting meter event specifications to `DecomposeBMIEvents`. Persist the projection update and all generated events as one idempotent operation. |
 | Event builder | Build each CloudEvent from the meter-specific event type, meter type, transition timestamp, duration, resource identity, and billing dimensions supplied by the decomposer. The allocation and consumption records use independent event IDs and never share a calculated duration. |
 | Heartbeat generator | Query allocation-billable BMaaS projection rows, inspect `CurrentState`, and invoke the BMaaS heartbeat decomposer. It builds one allocation heartbeat for `STOPPED`, `STARTING`, `STOPPING`, and `DELETING`, and allocation plus consumption heartbeats for `RUNNING`, using each meter's own interval timestamp. |
@@ -342,14 +342,14 @@ The meter-specific application rules are:
 
 #### BareMetalInstanceType Resolution
 
-The PRD's primary metering dimension is the `BareMetalInstanceType` selected for the host. OSAC-1201 exposes `spec.instance_type` as a non-empty string containing the `BareMetalInstanceType` name. The canonical `bm_instance_type` value is that string as carried by the fulfillment API; the metering service does not dereference or rewrite it. OSAC-1201 adds the field to `BareMetalInstance`; the Watch stream carries it with the resource:
+The PRD's primary metering dimension is the `BareMetalInstanceType` selected for the host. OSAC-1201 exposes `spec.instance_type` as a `BareMetalInstanceTypeLocalReference` containing `id` and `name`. The canonical `bm_instance_type` value is the reference `id`, because it is the stable resource identity; the metering service does not dereference or rewrite it. The reference `name` is descriptive and is not used as the aggregation key. OSAC-1201 adds the field to `BareMetalInstance`; the Watch stream carries it with the resource:
 
 ```go
 func BareMetalInstanceBillingDimensions(bmi *privatev1.BareMetalInstance) map[string]any {
     dims := map[string]any{}
     if spec := bmi.GetSpec(); spec != nil {
-        if instanceType := spec.GetInstanceType(); instanceType != "" {
-            dims["bm_instance_type"] = instanceType
+        if instanceType := spec.GetInstanceType(); instanceType != nil && instanceType.GetId() != "" {
+            dims["bm_instance_type"] = instanceType.GetId()
         }
         if ci := spec.GetCatalogItem(); ci != nil {
             dims["catalog_item"] = ci.GetName()
@@ -359,7 +359,7 @@ func BareMetalInstanceBillingDimensions(bmi *privatev1.BareMetalInstance) map[st
 }
 ```
 
-The metering service does not resolve hardware metadata through `BareMetalInstanceType` List/Get calls and does not maintain a type cache or watch the type resource. The `spec.instance_type` value identifies the billing dimension for each meter interval. Whether OSAC-1201 makes this field immutable is an open question. Immutability is the simpler contract. If updates remain permitted, a separate contract must define an authoritative dimension-change timestamp, durable old and new interval storage, deterministic close-and-reopen events, and heartbeat attribution rules before metering can support those updates. No heartbeat or lifecycle event may silently change dimensions within an existing interval. Changes to descriptive or hardware metadata do not rewrite historical metering events. BMaaS metering requires this field to be populated; legacy catalog-item-only resources must be migrated before they can satisfy the BMaaS metering dimension requirement. An empty `instance_type` string is a configuration error and must prevent billable BMaaS events from being published until reconciliation can resolve the configuration.
+The metering service does not resolve hardware metadata through `BareMetalInstanceType` List/Get calls and does not maintain a type cache or watch the type resource. The reference `id` identifies the billing dimension for each meter interval. Whether OSAC-1201 permits this reference to change remains an open question; immutability is an API policy, not a metering requirement. If fulfillment permits an update, the `OBJECT_UPDATED` event is a dimension boundary: active intervals close at the authoritative update timestamp with the old ID, and still-billable meters reopen at that timestamp with the new ID. No heartbeat or lifecycle event may silently change dimensions within an existing interval. Changes to descriptive or hardware metadata do not rewrite historical metering events. BMaaS metering requires a populated `instance_type.id`; a missing ID is a configuration error and must prevent billable BMaaS events from being published until reconciliation can resolve the configuration.
 
 #### BMaaS Billing Dimensions
 
@@ -370,17 +370,17 @@ BMaaS CloudEvents carry the following billing dimensions. Each event includes a 
 ```json
 {
   "meter_type": "allocation",
-  "bm_instance_type": "gpu-large",
+  "bm_instance_type": "bmi-type-gpu-large",
   "catalog_item": "bmi-gpu-workstation"
 }
 ```
 
-Here `gpu-large` is the string value carried in `spec.instance_type`.
+Here `bmi-type-gpu-large` is the `id` value carried in `spec.instance_type`.
 
 ```json
 {
   "meter_type": "consumption",
-  "bm_instance_type": "gpu-large",
+  "bm_instance_type": "bmi-type-gpu-large",
   "catalog_item": "bmi-gpu-workstation"
 }
 ```
@@ -592,7 +592,7 @@ Existing metrics (`osac_metering_reconciliation_corrections_total`, `osac_meteri
 | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Dual-meter decomposition complexity** — the per-meter decomposer is a novel pattern not used by VMaaS or CaaS, increasing maintenance burden | The decomposer is self-contained in `bare_metal_instance.go` and isolated behind the `EventDecomposer` interface. Unit tests cover all (from, to, meter) combinations via the two transition tables.                                                                            |
 | **Blocking release gate: durable fulfillment transition history/cursor** — the current `Events.Watch` stream does not guarantee delivery or order and cannot replay events missed during disconnects | Fulfillment-service team must provide the ordered replay contract described in the Reconciliation section. BMaaS billing remains disabled until it is available. |
-| **OSAC-1201 dependency** — BareMetalInstanceTypes must be defined and referenced before BMaaS metering is useful                                  | [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201) must define the `BareMetalInstanceType` resource and populate the `BareMetalInstance.spec.instance_type` string. Whether that field is immutable remains an open question; if updates are allowed, the separate dimension-rollover contract described above must be resolved before those updates can be metered. |
+| **OSAC-1201 dependency** — BareMetalInstanceTypes must be defined and referenced before BMaaS metering is useful                                  | [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201) must define the `BareMetalInstanceType` resource and populate the `BareMetalInstance.spec.instance_type.id` reference. Whether that reference is immutable remains an open question; if updates are allowed, the separate dimension-rollover contract described above must be resolved before those updates can be metered. |
 | **Deletion completion timestamp dependency** — metadata records deletion requested, not deletion completed | Fulfillment-service team must add `deletion_completion_time` to `OBJECT_DELETED` and durable history, populated after finalizers complete. Metering closes allocation at that timestamp and waits for it when absent. |
 | **Parent attribution/query dependency** — the current canonical event schema, child-meter designs, and Usage Query API do not yet define the parent relationship contract | The Part 1 metering-service team must add the optional parent fields; OSAC-3141 and OSAC-3145 must populate them for attachment-bounded child intervals; the Metering team must implement the parent query contract. CAP-5 remains blocked until these contracts are available. |
 | **Part 1 not yet deployed** — BMaaS metering depends on the metering-service infrastructure from OSAC-985                                      | Part 1 design is complete; implementation is in progress. BMaaS metering code can be developed in parallel but cannot be deployed or tested end-to-end until Part 1 infrastructure is operational.                                                                              |
@@ -663,7 +663,7 @@ Durable fulfillment transition history with cursor-based replay is a release-blo
 
 ### 3. BareMetalInstance.spec.instance_type Immutability
 
-**STATUS: OPEN** — OSAC-1201 currently requires a non-empty string but does not settle whether `spec.instance_type` is immutable. Immutability avoids billing-dimension rollover. Allowing changes requires an authoritative dimension-change timestamp, durable old and new interval handling, deterministic close-and-reopen events, and heartbeat attribution rules. Which contract should fulfillment provide?
+**STATUS: OPEN** — OSAC-1201 currently exposes `spec.instance_type` as a `BareMetalInstanceTypeLocalReference` with `id` and `name`, and marks the reference immutable. BMaaS uses `id` as the canonical `bm_instance_type` dimension. Immutability is not required by metering; if fulfillment permits reference changes, the `OBJECT_UPDATED` event and its authoritative timestamp must close old-dimension intervals and reopen still-billable meters with the new ID. Which fulfillment contract should apply to reference changes?
 
 **Owner:** OSAC-1201/fulfillment-service team and Metering Service team
 **Impact:** BMaaS instance-type dimension behavior cannot be finalized until this choice is resolved.
@@ -688,8 +688,8 @@ BMaaS metering may graduate to Dev Preview only when:
 ### Unit Tests
 
 - `bareMetalInstanceMapper` extracts resource type, ID, tenant, project, catalog item, instance type, and state from a `BareMetalInstance` proto
-- `BareMetalInstanceBillingDimensions()` populates `bm_instance_type` from the non-empty `spec.instance_type` string and populates `catalog_item` from the BareMetalInstance spec
-- `BareMetalInstanceBillingDimensions()` does not emit a billable dimension for a missing `spec.instance_type` and records the configuration error
+- `BareMetalInstanceBillingDimensions()` populates `bm_instance_type` from the non-empty `spec.instance_type.id` reference and populates `catalog_item` from the BareMetalInstance spec
+- `BareMetalInstanceBillingDimensions()` does not emit a billable dimension for a missing `spec.instance_type.id` and records the configuration error
 - A changed `spec.instance_type` closes active meter intervals at the authoritative dimension-change timestamp and reopens still-billable meters with the new dimension; historical events retain the old value
 - `PROVISIONING` → `STOPPED` sets only `ComponentEverStarted["allocation"]` and emits allocation `started.v1`
 - `PROVISIONING` → `STARTING`/`STOPPING` sets only `ComponentEverStarted["allocation"]` and emits allocation `started.v1`
