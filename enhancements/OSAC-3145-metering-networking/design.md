@@ -90,7 +90,7 @@ message NATGatewayStatus {
   google.protobuf.Timestamp state_transition_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 ```
-`endpoint` is required only for `cluster`, and is `UNSPECIFIED` otherwise. `attached` remains a derived output-only exclusivity bit; NATGateway may set it for allocation exclusivity but never appears in `ExternalIPAttribution`. NATGateway attribution is its own meter dimensions, including `spec.virtual_network`, `spec.external_ip`, and the configured deployment identity.
+`endpoint` is required only for `cluster`, and is `UNSPECIFIED` otherwise. `attached` is true only for a settled `ExternalIPAttachment`; NATGateway exclusivity does not set it. NATGateway attribution is its own meter dimensions, including `spec.virtual_network`, `spec.external_ip`, and the configured deployment identity.
 
 Only fulfillment handlers write `attribution`, `attached`, and timestamps. Public callers may update metadata only; `spec.*`, attribution, attached, and timestamps are rejected in update masks. The trusted operator feedback path may request a child `status.state` transition; the server compares the stored state and derives parent output fields. No caller may supply the parent output fields. Delete handlers must preserve the existing `metadata.deletion_timestamp` as the source used by the mapper, reconciler, and correction interval.
 
