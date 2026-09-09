@@ -107,7 +107,7 @@ sequenceDiagram
     WC->>KP: osac.resource.started.v1 (meter_type=consumption)
     KP->>K: publish → osac.metering.lifecycle (2 records)
 
-    Note over FS,WC: A PROVISIONING → STARTING update starts allocation; STARTING → RUNNING then starts consumption
+    Note over FS,WC: A PROVISIONING → STARTING update starts allocation, then STARTING → RUNNING starts consumption
 
     loop Every 60 seconds while RUNNING
         HG->>SP: query(is_billable=true)
@@ -147,8 +147,8 @@ sequenceDiagram
     FS->>WC: OBJECT_DELETED
     WC->>SP: read allocation and consumption interval timestamps
     Note right of WC: Close each active meter independently
-    WC->>KP: osac.resource.suspended.v1 (meter_type=allocation, duration_seconds; if allocation active)
-    WC->>KP: osac.resource.suspended.v1 (meter_type=consumption, duration_seconds; if consumption active)
+    WC->>KP: osac.resource.suspended.v1 (meter_type=allocation, duration_seconds, if allocation active)
+    WC->>KP: osac.resource.suspended.v1 (meter_type=consumption, duration_seconds, if consumption active)
     WC->>KP: osac.resource.deleted.v1
     KP->>K: publish → osac.metering.lifecycle (up to 3 records)
     WC->>SP: delete(resource_id)
