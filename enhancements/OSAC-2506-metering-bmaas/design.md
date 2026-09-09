@@ -550,6 +550,8 @@ Each heartbeat carries its own `meter_type` in billing dimensions and a determin
 
 The heartbeat builder calculates `duration_seconds` independently for each emitted record: `now - ResourceState.BillableSince` for allocation and `now - ResourceState.ComponentBillableSince["consumption"]` for a `RUNNING` consumption heartbeat. It never uses `BillableSince` for the consumption record. A consumption heartbeat is suppressed when the consumption timestamp is absent; an allocation heartbeat is suppressed when the allocation timestamp is absent. This preserves the separate intervals across stop/start cycles.
 
+**Heartbeat consumer contract:** `duration_seconds` is a cumulative snapshot from the start of the active meter interval to the heartbeat timestamp; it is not a delta from the previous heartbeat. Consumers must deduplicate by CloudEvent ID and must not sum repeated heartbeat snapshots. For an active interval, consumers retain the greatest accepted cumulative duration and ignore an older snapshot. The meter-specific lifecycle suspension event is the authoritative close for that interval; a subsequent interval starts a new cumulative series and may reset its heartbeat duration to zero. This contract applies independently to allocation and consumption heartbeats.
+
 #### M360 Adapter
 
 The M360 adapter adds a `/bmaas/event` route alongside the existing `/vmaas/event`, `/caas/event`, and `/maas/event` routes. BMaaS events are translated to M360's flat payload format with `meter_type` passed through as a field. The M360 API treats allocation and consumption events identically — the `meter_type` is metadata for M360's own aggregation and pricing logic.
@@ -750,6 +752,7 @@ BMaaS metering may graduate to Dev Preview only when:
   - `OBJECT_DELETED` with no active intervals: deletion audit event only
   - `STOPPED` → `STOPPED`: 0 events
 - Heartbeat decomposer produces 2 heartbeats for `RUNNING`, 1 for `STOPPED`/`STARTING`/`STOPPING`/`DELETING`, and 0 for `FAILED`
+- Repeated allocation and consumption heartbeats for the same active interval have nondecreasing cumulative durations; consumers deduplicate and do not aggregate them as deltas
 - Reconciliation billability checker uses allocation-billable states
 - Correction event decomposer produces per-meter corrections matching the state drift direction
 
