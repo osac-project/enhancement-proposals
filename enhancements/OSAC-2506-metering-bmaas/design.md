@@ -759,6 +759,7 @@ BMaaS metering may graduate to Dev Preview only when:
 - Watch delivers BMaaS events out of order; the handler holds the newer event, replays the missing version, applies both in order, and emits no duplicate events on redelivery.
 - Reconciliation detects a BareMetalInstance in projection but absent from fulfillment and emits `missed_deletion` correction
 - Stale heartbeat detection generates synthetic heartbeats for allocation-billable BMaaS resources with correct meter decomposition
+- Disabling `bmaas_metering_enabled` suppresses BMaaS Watch handling, heartbeats, reconciliation corrections, deletion cleanup, and outbox publication while retaining projections and queued records; re-enabling resumes replay and drains the retained outbox before heartbeats.
 
 ### E2E Tests
 
@@ -783,9 +784,16 @@ The metering-service is a standalone deployment — it does not run alongside a 
 - `osac_metering_bmi_events_total` flatlines while `BareMetalInstance` lifecycle changes are occurring → Watch Consumer is not receiving BMaaS events
 - `osac_metering_reconciliation_corrections_total{resource_type="bare_metal_instance"}` consistently > 0 → Watch Consumer is missing events; investigate Watch stream connectivity
 
-**Disabling BMaaS metering:** Remove `bare_metal_instance` from the metering-service's Watch subscription filter (configurable via Helm values). Existing BMaaS projection rows remain in PostgreSQL but are cleaned up by the next reconciliation cycle (missed_deletion). No impact on VMaaS/CaaS metering.
+**BMaaS metering feature gate:** `bmaas_metering_enabled` is evaluated at every BMaaS emission path and is independent of VMaaS/CaaS processing:
 
-**Re-enabling:** Restore the Watch subscription filter. Startup reconciliation seeds the projection with current BareMetalInstance state. Brief gap until reconciliation completes; heartbeats resume immediately after.
+- The Watch dispatcher does not acknowledge new BMaaS events for metering while the gate is disabled; it leaves them for durable-history replay after re-enablement.
+- The heartbeat generator excludes BMaaS rows from `ListBillable()` processing.
+- The reconciliation loop skips BMaaS snapshot comparison, correction generation, missed-deletion cleanup, and projection closure.
+- The outbox publisher leaves queued BMaaS records pending. It does not publish, delete, or synthesize BMaaS records while the gate is disabled.
+
+Disabling BMaaS metering is therefore a pause. Existing BMaaS projection rows and queued outbox records are retained; no new lifecycle, heartbeat, correction, or deletion-closure events are generated. Events already published before disablement are not withdrawn. VMaaS/CaaS processing continues normally.
+
+**Re-enabling:** Set `bmaas_metering_enabled=true`. The metering service resumes durable history from the last acknowledged cursor, drains the retained BMaaS outbox, runs BMaaS reconciliation, and only then resumes BMaaS heartbeats. This preserves open intervals and allows deletion closure to use the authoritative completion timestamp after a pause.
 
 ## Infrastructure Needed
 
