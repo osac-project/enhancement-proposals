@@ -95,13 +95,25 @@ message ExternalIPAttribution {
 The proposed private API additions are:
 ```protobuf
 message ExternalIPStatus {
-  ExternalIPAttribution attribution = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
-  google.protobuf.Timestamp attachment_transition_time = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
-  google.protobuf.Timestamp state_transition_time = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  ExternalIPAttribution attribution = 7 [
+    (cleanapi.field).private = true,
+    (google.api.field_behavior) = OUTPUT_ONLY
+  ];
+  google.protobuf.Timestamp attachment_transition_time = 8 [
+    (cleanapi.field).private = true,
+    (google.api.field_behavior) = OUTPUT_ONLY
+  ];
+  google.protobuf.Timestamp state_transition_time = 9 [
+    (cleanapi.field).private = true,
+    (google.api.field_behavior) = OUTPUT_ONLY
+  ];
 }
 
 message NATGatewayStatus {
-  google.protobuf.Timestamp state_transition_time = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp state_transition_time = 4 [
+    (cleanapi.field).private = true,
+    (google.api.field_behavior) = OUTPUT_ONLY
+  ];
 }
 ```
 `endpoint` is required only for `cluster`, and is `UNSPECIFIED` otherwise. `attached` is true only for a settled `ExternalIPAttachment`; NATGateway exclusivity does not set it. NATGateway attribution is its own meter dimensions, including `spec.virtual_network`, `spec.external_ip`, and the configured deployment identity.
