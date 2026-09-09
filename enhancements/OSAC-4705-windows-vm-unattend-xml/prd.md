@@ -41,7 +41,7 @@ itself.
   the guest as an answer file
 - The `user-data` field remains optional; if omitted on a Windows VM, the VM
   boots without an answer file — no platform-generated default is substituted
-- Answer file content supplied via `user-data` is treated as sensitive:
+- All `user-data` content is treated as sensitive, regardless of guest OS family:
   - Not returned in default list, get, or create responses for the
     ComputeInstance
   - Excluded from watch/event payloads, audit records, logs, and error
@@ -51,12 +51,10 @@ itself.
     configured parser that rejects DTD declarations and disables external
     entity resolution
   - Empty payloads are rejected when the field is present
-  - Maximum size of 64 KB (65,536 bytes) is enforced, consistent with the
-    existing `user-data` limit
 - The CLI and UI supply Unattend.xml through their existing `user-data`
   mechanisms (file-path flag in the CLI, text input in the UI creation form)
-- API and user-facing documentation: Unattend.xml usage via `user-data`, the
-  64 KB size limit, and sensitive-content handling
+- API and user-facing documentation: Unattend.xml usage via `user-data` and
+  sensitive-content handling
 
 ## Out of Scope
 
@@ -79,13 +77,13 @@ itself.
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want `user-data` content on Windows VMs treated
-  as sensitive so that answer files containing passwords or product keys are
-  not exposed in list, get, create, watch, or audit responses.
+- As a Cloud Provider Admin, I want all `user-data` content treated as
+  sensitive — regardless of guest OS family — so that credentials, product
+  keys, or other secrets in cloud-init scripts or Unattend.xml answer files
+  are not exposed in list, get, create, watch, or audit responses.
 - As a Cloud Provider Admin, I want `user-data` validated as well-formed XML
   when the ComputeInstance's DiskImage is Windows, and rejected when the
-  payload is empty or exceeds 64 KB, so that tenants cannot
-  attach invalid or unbounded answer files.
+  payload is empty, so that tenants cannot attach invalid answer files.
 
 ### Cloud Infrastructure Admin
 
@@ -101,8 +99,8 @@ itself.
   ComputeInstance without supplying `user-data` so that an
   already-customized golden image boots without an extra answer file.
 - As a Tenant Admin or Tenant User, I want creation to fail with a clear
-  message if my `user-data` content is not well-formed XML, is empty, or
-  exceeds 64 KB on a Windows VM, so that I can correct the problem
+  message if my `user-data` content is not well-formed XML or is empty on a
+  Windows VM, so that I can correct the problem
   before re-submitting.
 - As a Tenant Admin or Tenant User, I want to provide Unattend.xml content
   through the existing `user-data` input in the CLI and UI so that no new
