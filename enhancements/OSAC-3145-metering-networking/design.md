@@ -38,6 +38,7 @@ VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and U
 | Gate | Owner | Required artifact | Test evidence | Graduation gate |
 |---|---|---|---|---|
 | Part 1 | OSAC platform/metering | Operational projection, Kafka, retention, adapter API | Part 1 integration/retention tests | Required before events |
+| Part 1 correctness | OSAC platform/metering | Version guard before publication (#818), canonical correction identity (#826), durable heartbeat idempotency (OSAC-5097), and failed-state correction/read-model/provider contract (OSAC-4287, OSAC-4285) | stale-event, replay/idempotency, and failed-state E2E tests | Required before Part 2 graduation |
 | Networking API | Fulfillment/operator owners | ExternalIP attribution, attachment/state timestamps, NATGateway state timestamp, matching CRD status fields, `METERING_DEPLOYMENT_ID`, real `OUTPUT_ONLY`/`cleanapi.field.private` annotations, and an acyclic shared proto | buf/CRD generation, public-API exposure, feedback, and delayed-event tests | Required before networking events |
 | Transaction ordering | Fulfillment owners | Shared parent/child helper with one lock order: ExternalIP, then attachment/NATGateway, then target | concurrent attach/delete and rollback tests | Required before networking events |
 | OSAC-983 | OSAC platform team | Durable outbox and resume cursor | outage replay E2E | Exact outage recovery |
