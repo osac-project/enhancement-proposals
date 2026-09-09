@@ -138,9 +138,8 @@ This PRD is part of the Metering Part 2 family, which was split from a combined 
 
 ## Provenance
 
-Authored: respond @ prd 0.6.0 - 7b6dfe0, workspace main @ 3100993
-Final: respond @ prd 0.6.2 - 75ae801, workspace main @ f30bca2
+Committed: commit @ design 0.9.1 - f121df6, workspace feat/OSAC-2506-metering-design @ e77a1aa (dirty)
 
-> Context changed between respond and respond.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.2","ai_workflows":"75ae801","source_repo":"f30bca2","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.1","ai_workflows":"f121df6","source_repo":"e77a1aa (dirty)","source_repo_branch":"feat/OSAC-2506-metering-design","commits_behind_main":0,"commits_ahead_main":47,"main_ref":"main","phases":["commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

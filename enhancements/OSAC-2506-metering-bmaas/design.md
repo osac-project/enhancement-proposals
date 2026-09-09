@@ -894,3 +894,13 @@ Disabling BMaaS metering is therefore a pause. Existing BMaaS projection rows an
 ## Infrastructure Needed
 
 No new metering deployment artifacts are required. BMaaS metering depends on the fulfillment-service durable transition history/cursor and deletion completion timestamp contracts described above, in addition to the existing metering-service binary, Kafka topics, PostgreSQL State Projection, and Provider Adapter framework.
+
+---
+
+## Provenance
+
+Committed: commit @ design 0.9.1 - f121df6, workspace feat/OSAC-2506-metering-design @ e77a1aa
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.1","ai_workflows":"f121df6","source_repo":"e77a1aa","source_repo_branch":"feat/OSAC-2506-metering-design","commits_behind_main":0,"commits_ahead_main":47,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
