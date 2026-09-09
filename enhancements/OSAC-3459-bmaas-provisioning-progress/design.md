@@ -569,6 +569,10 @@ current stage:
   → `info` with a spinner and `isCurrent`.
 - Steps after the current stage → `pending`.
 - On a failing condition → the failing step `danger` with the curated `message`.
+- `PROVISIONED` `True` but `READY` not yet `True` (provisioning finished, awaiting
+  the powered-on ready state) → Host Allocation, Provisioning, and Network Setup
+  render `success` and the **Ready** step becomes the current running step (`info`
+  with a spinner and `isCurrent`).
 - `PROVISIONED` `True` + `READY` `True` → all steps `success`.
 
 Each step's `description` shows the curated `message` for the current/failed step;

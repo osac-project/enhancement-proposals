@@ -281,21 +281,27 @@
 
 ##### Preconditions
 
-- Reconciler test harness; a Provisioning failure is injected via
-  `ProvisionJobFailed` (the `osac-create-bare-metal-instance` job fails).
+- Reconciler test harness with a table of fixtures, one per IC-5 failure reason
+  (`NoMatchingHosts`, `HostAllocationFailed`, `ProvisionJobFailed`,
+  `NetworkAttachmentFailed`, `NetworkHandoffFailed`, `IPDiscoveryFailed`,
+  `ReadyTimeout`), each injecting that stage's failure into the failing condition.
 
 ##### Steps
 
-1. Run `syncStatus()` on the failed fixture.
-2. Read the `PROVISIONED` condition `message` from the API.
+1. For each IC-5 reason, run `syncStatus()` on its fixture.
+2. Read the failing condition's `reason`/`message` from the API.
+3. Render the stepper for that failed instance and read the failed step's
+   `description`.
 
 ##### Expected Results
 
-- `PROVISIONED.message` equals the exact IC-5 string for `ProvisionJobFailed`:
-  "OS installation and configuration did not complete; the provisioning job
-  failed." (byte-for-byte; the mapping is fixed and deterministic — one message
-  per reason).
-- The same message renders verbatim in the stepper's failed step description.
+- For every IC-5 reason, the failing condition's `message` equals that reason's
+  exact IC-5 string byte-for-byte (e.g. `ProvisionJobFailed` → "OS installation
+  and configuration did not complete; the provisioning job failed."). The **full
+  IC-5 failure vocabulary is exercised** — one message per reason — and no other
+  value is emitted; the mapping is fixed and deterministic.
+- For each reason, the same message renders verbatim in the stepper's failed step
+  description.
 
 #### TC-FR5-02: Raw internal error text is not surfaced in the conditions
 
@@ -311,7 +317,8 @@
 ##### Steps
 
 1. Inject the backend failure with a raw internal error.
-2. Read the `PROVISIONED` condition `reason` and `message`.
+2. Read the failing condition's `reason`/`message` and inspect **every** condition
+   in the API `status.conditions` payload.
 
 ##### Expected Results
 
@@ -371,9 +378,12 @@
 2. Update the mock API to return `PROVISIONED.reason = NetworkSetup`, then advance
    fake timers by the dedicated ~5s `refetchInterval` (no user interaction).
 3. Inspect the stepper.
-4. Drive the instance to a resting terminal state (`PROVISIONED = True`,
-   `READY = True`), let one more interval elapse, then update the mock API again
-   and advance timers.
+4. Drive the instance to a resting **successful** terminal state (`PROVISIONED =
+   True`, `READY = True`), let one more interval elapse, then update the mock API
+   again and advance timers.
+5. Repeat with a **failed** terminal fixture: drive the instance to a provisioning
+   condition `False` with a failure `reason`, let one more interval elapse, update
+   the mock API again, and advance timers.
 
 ##### Expected Results
 
@@ -381,9 +391,12 @@
   without any click or reload — the DB→UI leg is bounded to the dedicated per-page
   ~5s poll, not the global ~10s default. This complements TC-NFR1-01, which
   measures the CR→API (DB) leg; together they bound end-to-end freshness.
-- After step 4, once the instance is terminal (`READY = True`) the query **stops
-  refetching**: the later mock-API change is not picked up, confirming polling
-  halts at a terminal state.
+- After step 4, once the instance is at the successful terminal state (`READY =
+  True`) the query **stops refetching**: the later mock-API change is not picked
+  up.
+- After step 5, a **failed** terminal instance (a provisioning condition `False`
+  with a failure reason) likewise **stops refetching**: polling halts at both the
+  successful and failed terminal states, matching the design's terminal-stop rule.
 
 ### NFR-2: The progress and failure display is read-only
 
