@@ -39,7 +39,7 @@ The Part 1 design states that "_the canonical event model supports future resour
 ### Non-Goals
 
 - Storage and networking metering for resources attached to bare metal hosts ([OSAC-3141](https://redhat.atlassian.net/browse/OSAC-3141), [OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145))
-- Usage Query API or tenant-facing usage views
+- Usage Query API implementation or tenant-facing usage views; this design defines the event contract and unified-footprint semantics that a query implementation consumes
 - Costing, billing, or quota enforcement
 - Changes to the `BareMetalInstance` provisioning or lifecycle workflow
 
@@ -497,7 +497,28 @@ The PRD requires storage volumes and public IPs attached to a bare metal host to
 - OSAC-2506 owns the bare metal host-resource meters and the unified bare metal host footprint view that rolls already-metered child usage into the host view.
 - [OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145) owns the public-IP/networking meter, including for resources attached to bare metal hosts.
 
-OSAC-2506 does not emit a second block-volume or public-IP meter event. Child-resource events owned by OSAC-3141 and OSAC-3145 carry `parent_resource_id` pointing to the `BareMetalInstance`; the usage query layer uses that relationship to include the child usage in the host's unified view without double-counting it.
+OSAC-2506 does not emit a second block-volume or public-IP meter event. Child-resource events owned by OSAC-3141 and OSAC-3145 carry the parent relationship in the canonical event data:
+
+```json
+{
+  "resource_id": "volume-123",
+  "resource_type": "block_volume",
+  "parent_resource_id": "bmi-456",
+  "parent_resource_type": "bare_metal_instance"
+}
+```
+
+`parent_resource_id` is the direct parent's stable resource ID and `parent_resource_type` identifies its resource kind. These are optional top-level event-data fields, rather than CloudEvent extension attributes or billing dimensions. Parent host events omit both fields. The canonical event schema and field semantics are owned by the Part 1 metering-service team.
+
+OSAC-3141 and OSAC-3145 are responsible for discovering attachment ownership and populating the parent fields for the portion of a child meter interval during which the attachment exists. An attach or detach operation closes the prior child interval and opens a new one at its authoritative attachment timestamp. A child resource can have only one direct parent in an event; nested roll-ups are the responsibility of the query layer.
+
+The parent-child contract has two parts. At the event level, each child meter event retains its owning resource, meter type, units, and direct parent fields; the parent host events retain the host `resource_id` and omit parent fields. At the usage level, the Usage Query API accepts `parent_resource_type`, `parent_resource_id`, a time range, and the caller's tenant/project scope. It returns the host-resource meters plus the already-metered child usage attributed to that parent, preserving each child's resource ID, meter type, unit, and attachment-bounded interval without emitting or counting a duplicate child meter.
+
+**Owner:** Metering team, with the Part 1 metering-service team owning the canonical event fields and OSAC-3141/OSAC-3145 owning attachment discovery and child-meter attribution.
+
+**Implementation:** The Metering team implements the Usage Query API contract, including the parent filters, authorization, pagination, and response shape. The [OSAC-985 metering design](../OSAC-985-metering-and-usage-tracking/design.md) identifies this API as a planned companion design; no dedicated Usage Query API design exists yet in this workspace. OSAC-3141 and OSAC-3145 populate attachment-bounded `parent_resource_id` and `parent_resource_type` fields in their child events. No duplicate child meter is emitted.
+
+**Impact:** The unified-footprint acceptance criterion (CAP-5) remains blocked until the canonical parent fields, child attribution, and Usage Query API are available. The query returns host-resource meters and already-metered child usage without double-counting it.
 
 ### Security Considerations
 
@@ -544,7 +565,7 @@ Existing metrics (`osac_metering_reconciliation_corrections_total`, `osac_meteri
 | **Blocking release gate: durable fulfillment transition history/cursor** — the current `Events.Watch` stream does not guarantee delivery or order and cannot replay events missed during disconnects | Fulfillment-service team must provide the ordered replay contract described in the Reconciliation section. BMaaS billing remains disabled until it is available. |
 | **OSAC-1201 dependency** — BareMetalInstanceTypes must be defined and referenced before BMaaS metering is useful                                  | [OSAC-1201](https://redhat.atlassian.net/browse/OSAC-1201) must define the `BareMetalInstanceType` resource and populate the `BareMetalInstance.spec.instance_type` string. Whether that field is immutable remains an open question; if updates are allowed, the separate dimension-rollover contract described above must be resolved before those updates can be metered. |
 | **Deletion completion timestamp dependency** — metadata records deletion requested, not deletion completed | Fulfillment-service team must add `deletion_completion_time` to `OBJECT_DELETED` and durable history, populated after finalizers complete. Metering closes allocation at that timestamp and waits for it when absent. |
-| **Parent attribution/query dependency** — the current canonical event schema, child-meter designs, and Usage Query API do not yet define the parent relationship contract | The Part 1 metering-service team must add the optional parent fields; OSAC-3141 and OSAC-3145 must populate them for attachment-bounded child intervals; Usage Query API owners must implement the parent query contract. CAP-5 remains blocked until these contracts are available. |
+| **Parent attribution/query dependency** — the current canonical event schema, child-meter designs, and Usage Query API do not yet define the parent relationship contract | The Part 1 metering-service team must add the optional parent fields; OSAC-3141 and OSAC-3145 must populate them for attachment-bounded child intervals; the Metering team must implement the parent query contract. CAP-5 remains blocked until these contracts are available. |
 | **Part 1 not yet deployed** — BMaaS metering depends on the metering-service infrastructure from OSAC-985                                      | Part 1 design is complete; implementation is in progress. BMaaS metering code can be developed in parallel but cannot be deployed or tested end-to-end until Part 1 infrastructure is operational.                                                                              |
 
 
