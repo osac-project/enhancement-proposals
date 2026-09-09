@@ -290,7 +290,7 @@ The BMaaS decomposer is an explicit resource-type handler in the existing Meteri
 | Pipeline component | BMaaS integration contract |
 | --- | --- |
 | Watch filter and dispatcher | Subscribe to `Events.Watch` with `bare_metal_instance` enabled. Route `Event.bare_metal_instance` events to the BMaaS mapper and handler based on `osacresourcetype`; do not send them through a generic single-meter transition path. `OBJECT_DELETED` enters the BMaaS closure handler before the projection row is removed. |
-| Mapper | Extract the BareMetalInstance resource ID, tenant/project metadata, the `spec.instance_type.id` from the `BareMetalInstanceTypeLocalReference`, catalog item, current state, authoritative `state_transition_time`, and `metadata.version`. For `OBJECT_UPDATED`, load the previous state, billing dimensions, per-meter interval timestamps, and last accepted metadata version from the projection. |
+| Mapper | Extract the BareMetalInstance resource ID, tenant/project metadata, the `spec.instance_type.id` from the `BareMetalInstanceTypeLocalReference`, catalog item, current state, authoritative `state_transition_time`, and `metadata.version`. For `OBJECT_UPDATED`, load the previous state, billing dimensions, per-meter interval timestamps, and last accepted metadata version from the projection. `BareMetalInstanceBillingDimensions` returns an error when the instance-type reference or its ID is missing; the handler records the configuration error, does not advance the projection, and emits no billable lifecycle, heartbeat, correction, or outbox record. |
 | Transition handler | Lock the projection before processing. For `OBJECT_CREATED` and `OBJECT_UPDATED`, if `metadata.version` is less than or equal to the stored version, acknowledge the event as a stale or duplicate no-op; if it is greater than the stored version by more than one, hold the event and resume durable history from the missing version. Only the next contiguous version may resolve the exact `(previous_state, current_state)` pair in both BMaaS tables, update `CurrentState` and both meter intervals, and pass the resulting meter event specifications to `DecomposeBMIEvents`. `OBJECT_DELETED` bypasses the numeric comparison, requires `deletion_completion_time`, and is applied once using its stable event ID and deletion tombstone. Persist the accepted version or tombstone, projection update, processed-event record, and outbox records in one PostgreSQL transaction; Kafka publication occurs after that transaction commits. |
 | Event builder | Build each CloudEvent from the meter-specific event type, meter type, transition timestamp, duration, resource identity, and billing dimensions supplied by the decomposer. The allocation and consumption records use independent event IDs and never share a calculated duration. |
 | Heartbeat generator | Query allocation-billable BMaaS projection rows, inspect `CurrentState`, and invoke the BMaaS heartbeat decomposer. It builds one allocation heartbeat for `STOPPED`, `STARTING`, `STOPPING`, and `DELETING`, and allocation plus consumption heartbeats for `RUNNING`, using each meter's own interval timestamp. |
@@ -377,21 +377,23 @@ The meter-specific application rules are:
 The PRD's primary metering dimension is the `BareMetalInstanceType` selected for the host. OSAC-1201 exposes `spec.instance_type` as a `BareMetalInstanceTypeLocalReference` containing `id` and `name`. The canonical `bm_instance_type` value is the reference `id`, because it is the stable resource identity; the metering service does not dereference or rewrite it. The reference `name` is descriptive and is not used as the aggregation key. OSAC-1201 adds the field to `BareMetalInstance`; the Watch stream carries it with the resource:
 
 ```go
-func BareMetalInstanceBillingDimensions(bmi *privatev1.BareMetalInstance) map[string]any {
+func BareMetalInstanceBillingDimensions(
+    bmi *privatev1.BareMetalInstance,
+) (map[string]any, error) {
     dims := map[string]any{}
-    if spec := bmi.GetSpec(); spec != nil {
-        if instanceType := spec.GetInstanceType(); instanceType != nil && instanceType.GetId() != "" {
-            dims["bm_instance_type"] = instanceType.GetId()
-        }
-        if ci := spec.GetCatalogItem(); ci != nil {
-            dims["catalog_item"] = ci.GetName()
-        }
+    spec := bmi.GetSpec()
+    if spec == nil || spec.GetInstanceType() == nil || spec.GetInstanceType().GetId() == "" {
+        return nil, fmt.Errorf("missing spec.instance_type.id")
     }
-    return dims
+    dims["bm_instance_type"] = spec.GetInstanceType().GetId()
+    if ci := spec.GetCatalogItem(); ci != nil {
+        dims["catalog_item"] = ci.GetName()
+    }
+    return dims, nil
 }
 ```
 
-The metering service does not resolve hardware metadata through `BareMetalInstanceType` List/Get calls and does not maintain a type cache or watch the type resource. The reference `id` identifies the billing dimension for each meter interval. Whether OSAC-1201 permits this reference to change remains an open question; immutability is an API policy, not a metering requirement. If fulfillment permits an update, the `OBJECT_UPDATED` event is a dimension boundary: active intervals close at the authoritative update timestamp with the old ID, and still-billable meters reopen at that timestamp with the new ID. No heartbeat or lifecycle event may silently change dimensions within an existing interval. Changes to descriptive or hardware metadata do not rewrite historical metering events. BMaaS metering requires a populated `instance_type.id`; a missing ID is a configuration error and must prevent billable BMaaS events from being published until reconciliation can resolve the configuration.
+The metering service does not resolve hardware metadata through `BareMetalInstanceType` List/Get calls and does not maintain a type cache or watch the type resource. The reference `id` identifies the billing dimension for each meter interval. Whether OSAC-1201 permits this reference to change remains an open question; immutability is an API policy, not a metering requirement. If fulfillment permits an update, the `OBJECT_UPDATED` event is a dimension boundary: active intervals close at the authoritative update timestamp with the old ID, and still-billable meters reopen at that timestamp with the new ID. No heartbeat or lifecycle event may silently change dimensions within an existing interval. Changes to descriptive or hardware metadata do not rewrite historical metering events. BMaaS metering requires a populated `instance_type.id`; a missing ID is a configuration error, and the mapper must return that error before the event can enter the billable pipeline.
 
 #### BMaaS Billing Dimensions
 
@@ -721,7 +723,7 @@ BMaaS metering may graduate to Dev Preview only when:
 
 - `bareMetalInstanceMapper` extracts resource type, ID, tenant, project, catalog item, instance type, and state from a `BareMetalInstance` proto
 - `BareMetalInstanceBillingDimensions()` populates `bm_instance_type` from the non-empty `spec.instance_type.id` reference and populates `catalog_item` from the BareMetalInstance spec
-- `BareMetalInstanceBillingDimensions()` does not emit a billable dimension for a missing `spec.instance_type.id` and records the configuration error
+- `BareMetalInstanceBillingDimensions()` returns a configuration error for a missing `spec.instance_type.id`; the handler emits no billable event or outbox record
 - A changed `spec.instance_type` closes active meter intervals at the authoritative dimension-change timestamp and reopens still-billable meters with the new dimension; historical events retain the old value
 - `PROVISIONING` → `STOPPED` sets only `ComponentEverStarted["allocation"]` and emits allocation `started.v1`
 - `PROVISIONING` → `STARTING`/`STOPPING` sets only `ComponentEverStarted["allocation"]` and emits allocation `started.v1`
