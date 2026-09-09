@@ -32,7 +32,7 @@ The event proto carries ExternalIP, ExternalIPAttachment, and NATGateway, but `B
 - Define exact usage, correction, pagination, feature-gate, tenancy, failure, and adapter contracts.
 
 ### Non-Goals
-VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and UI. NATGateway is not an ExternalIPAttachment target. Its meter uses its own NATGateway ID, ExternalIP reference, VirtualNetwork reference, tenant, project, and region once defined. Deployment is not a substitute for the PRD `region`; CAP-6 remains a Part 1 dependency.
+VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and UI. NATGateway is not an ExternalIPAttachment target. Its meter uses its own NATGateway ID, ExternalIP reference, VirtualNetwork reference, tenant, project, and deployment identity. CAP-6 remains a Part 1 dependency.
 
 ## Prerequisites and Gates
 | Gate | Owner | Required artifact | Test evidence | Graduation gate |
@@ -43,7 +43,7 @@ VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and U
 | OSAC-984 | Storage API team | N/A to networking; no dependency claimed | scope test confirms no Volume join | No networking gate |
 | Resize | Storage/CSI owners | N/A to networking; Volume-only dependency | storage gate tracked separately | No networking gate |
 | M360 | Billing integration owner | `/networking/event` and initial flat payload | adapter HTTP contract test | Route/correction accepted |
-| Region | OSAC networking/API owners | immutable region field or PRD amendment | API and dimension E2E test | CAP-2 satisfied |
+| Deployment | OSAC networking/API owners | required `METERING_DEPLOYMENT_ID` configuration | API and dimension E2E test | CAP-2 satisfied |
 | CAP-6 | Part 1 owner | runtime configurable meter registry/reload without redeploy | add meter without rebuild/restart test | PRD config story |
 
 ## Proposal
@@ -81,7 +81,7 @@ message ExternalIPStatus {
   google.protobuf.Timestamp state_transition_time = 9; // OUTPUT_ONLY
 }
 ```
-`endpoint` is required only for `cluster`, and is `UNSPECIFIED` otherwise. `attached` remains a derived output-only exclusivity bit; NATGateway may set it for allocation exclusivity but never appears in `ExternalIPAttribution`. NATGateway attribution is its own meter dimensions, including `spec.virtual_network`, `spec.external_ip`, and the eventual region.
+`endpoint` is required only for `cluster`, and is `UNSPECIFIED` otherwise. `attached` remains a derived output-only exclusivity bit; NATGateway may set it for allocation exclusivity but never appears in `ExternalIPAttribution`. NATGateway attribution is its own meter dimensions, including `spec.virtual_network`, `spec.external_ip`, and the configured deployment identity.
 
 Only fulfillment handlers write `attribution`, `attached`, and timestamps. Public callers may update metadata only; `spec.*`, attribution, attached, and timestamps are rejected in update masks. The trusted operator feedback path may request a child `status.state` transition; the server compares the stored state and derives parent output fields. No caller may supply the parent output fields. Delete handlers must preserve the existing `metadata.deletion_timestamp` as the source used by the mapper, reconciler, and correction interval.
 
@@ -97,7 +97,7 @@ The helper covers every direct auto path, not only defaults: `private_compute_in
 
 The existing attachment spec is the authoritative input oneof: `external_ip`, exactly one of `compute_instance|cluster|baremetal_instance`, and `target_endpoint` only for cluster (`fulfillment-service/proto/private/osac/private/v1/external_ip_attachment_type.proto:63-103`). It is immutable. State updates use the private update mask; parent output fields are never accepted in that mask. The mapper reads settled ExternalIP output, never joins attachment streams.
 
-IP family comes from an ExternalIPPool lookup by immutable pool ID; a cache miss is an error. ExternalIP dimensions are resource ID, tenant, project, region, IP family, pool, `attached`, settled attribution, `auto_created`, and `undeletable`. Empty project means tenant default. NATGateway dimensions are resource ID, virtual-network reference, external-IP reference, tenant, project, and region once defined. No VirtualNetwork join is needed for metering.
+IP family comes from an ExternalIPPool lookup by immutable pool ID; a cache miss is an error. ExternalIP dimensions are resource ID, tenant, project, deployment, IP family, pool, `attached`, settled attribution, `auto_created`, and `undeletable`. Empty project means tenant default. NATGateway dimensions are resource ID, virtual-network reference, external-IP reference, tenant, project, and deployment. No VirtualNetwork join is needed for metering.
 
 ### Usage and Correction Contract
 Current `schema.LifecycleData` has only `duration_seconds`, current `correction.go` emits v1 corrections with a nil affected interval, and `m360-adapter/translate.go` has no correction or networking route. Current code is insufficient.
@@ -135,7 +135,7 @@ Add `osac_metering_feature_enabled` Gauge `{resource_type}`; alert when expected
 - NATGateway must not enter the ExternalIPAttachment target oneof; its own meter and VirtualNetwork dimensions prevent double attribution.
 - Leaving operator parent writes or direct DAO writes outside the helper creates races; remove them and test rollback.
 - Missing mapper/table/checker/loader/filter/gate/route can reconnect-loop the shared consumer; preflight fails startup.
-- Region has no current ExternalIP/NAT field; block graduation rather than billing deployment as region.
+- Deployment identity is not a resource field; require `METERING_DEPLOYMENT_ID` and fail closed when it is absent.
 - CAP-6 configuration is not implemented by current hard-coded maps; it remains a Part 1 gate.
 
 ### Drawbacks
@@ -146,7 +146,7 @@ This changes fulfillment transaction boundaries and removes convenient operator 
 - Put NATGateway in the attachment oneof: contradicts the current API and PRD target set.
 - Keep operator parent writes: they race fulfillment and are not authoritative.
 - Meter attachments: they consume no separate allocation.
-- Use deployment as region: contradicts the PRD.
+- Use NetworkClass as locality: it is a provider capability resource, not the installation identity required by the PRD.
 - Add a new service/configurable registry here: Part 1 owns CAP-6 and shared infrastructure.
 
 ## Test Plan
@@ -159,7 +159,7 @@ Assert attachment READY and Delete transitions update both rows atomically; forc
 Exercise unattached ExternalIP, ComputeInstance/Cluster API/Ingress/BareMetal attachments, detach, NATGateway with VirtualNetwork dimensions, excluded VirtualNetwork/Subnet/SecurityGroup negative cases, failures/retries, duplicate replay, Kafka/DLQ, gate reload/disable/re-enable, and resource-seconds totals.
 
 ## Graduation Criteria
-Target release 0.3. Graduation requires Part 1, OSAC-983, the initial correction/read-model/M360 consumers, region, CAP-6, and heartbeat sizing gates close. Then require exact allocation totals, transactionally consistent attribution, no NAT attachment target, all event IDs, pagination confirmation, correction replay, ExternalIP FAILED-age alerting, the negative test for excluded network objects, retention/dedup parity, and no existing meter regression.
+Target release 0.3. Graduation requires Part 1, OSAC-983, the initial correction/read-model/M360 consumers, deployment identity, CAP-6, and heartbeat sizing gates close. Then require exact allocation totals, transactionally consistent attribution, no NAT attachment target, all event IDs, pagination confirmation, correction replay, ExternalIP FAILED-age alerting, the negative test for excluded network objects, retention/dedup parity, and no existing meter regression.
 
 ## Upgrade / Downgrade Strategy
 The 0.3 release ships the fulfillment fields/helper, removes operator writers, adds generated clients and metering registrations, confirms the M360 contract, and enables resource tokens. This is the initial event contract; no existing event data requires migration.
@@ -171,4 +171,4 @@ All 0.3 components use the same initial event contract and transaction helper. A
 Check feature gauges, transaction failures, operator forbidden-write logs, child/parent versions, pool cache, list progress, projection dimensions, correction IDs/signs, heartbeat lag, Kafka/DLQ, and M360 responses. Disable the resource token, not only the Watch filter, and record the gap. Never edit parent output state or remove finalizers manually.
 
 ## Infrastructure Needed
-Existing Postgres, Kafka/AMQ Streams, fulfillment Watch, metering, and M360 are required. No new service is proposed. Helm documentation covers topic provisioning, event fields, support, and retention. Add transaction-conflict, callback, pagination, region, correction, and M360 networking fixtures. Raw events retain at least seven days and aggregates at least thirteen months.
+Existing Postgres, Kafka/AMQ Streams, fulfillment Watch, metering, and M360 are required. No new service is proposed. Helm documentation covers `METERING_DEPLOYMENT_ID`, topic provisioning, event fields, support, and retention. Add transaction-conflict, callback, pagination, deployment, correction, and M360 networking fixtures. Raw events retain at least seven days and aggregates at least thirteen months.
