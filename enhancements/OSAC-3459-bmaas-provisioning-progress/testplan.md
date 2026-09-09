@@ -142,6 +142,7 @@
 
 1. Run `syncStatus()` through to completion.
 2. Inspect the derived stage progression.
+3. Render the stepper for the completed instance.
 
 ##### Expected Results
 
