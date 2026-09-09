@@ -106,6 +106,8 @@ sequenceDiagram
     WC->>KP: osac.resource.started.v1 (meter_type=consumption)
     KP->>K: publish → osac.metering.lifecycle (2 records)
 
+    Note over FS,WC: A PROVISIONING → STARTING update starts allocation; STARTING → RUNNING then starts consumption
+
     loop Every 60 seconds while RUNNING
         HG->>SP: query(is_billable=true)
         SP-->>HG: [resource_id, state=RUNNING]
@@ -153,6 +155,7 @@ sequenceDiagram
 
 Key observations:
 
+- `PROVISIONING` → `STARTING` establishes provisioning complete and produces one allocation `started.v1` event; the later `STARTING` → `RUNNING` transition opens consumption.
 - `PROVISIONING` → `RUNNING` produces two `started.v1` events (both meters start simultaneously)
 - `RUNNING` → `STOPPING` produces one `suspended.v1` (consumption stops; allocation continues — no event needed)
 - `STOPPED` → `RUNNING` produces one `resumed.v1` (consumption resumes; allocation unchanged)
@@ -205,8 +208,8 @@ The resolver performs exact `(from, to)` lookups. The following is the complete 
 | `PROVISIONING` | `PROVISIONING` | Skip                                  |
 | `PROVISIONING` | `RUNNING`      | `billableStart`                       |
 | `PROVISIONING` | `STOPPED`      | `billableStart`                       |
-| `PROVISIONING` | `STARTING`     | Transient                             |
-| `PROVISIONING` | `STOPPING`     | Transient                             |
+| `PROVISIONING` | `STARTING`     | `billableStart`                       |
+| `PROVISIONING` | `STOPPING`     | `billableStart`                       |
 | `PROVISIONING` | `FAILED`       | Skip                                  |
 | `PROVISIONING` | `DELETING`     | Skip                                  |
 | `RUNNING`      | `RUNNING`      | Skip                                  |
@@ -390,7 +393,9 @@ Base event fields (`tenant_id`, `project_id`, `catalog_item_id`, `template_id`) 
 stateDiagram-v2
     [*] --> PROVISIONING : resource created\n→ osac.resource.created.v1
 
-    PROVISIONING --> RUNNING : provisioning complete\n→ osac.resource.started.v1 (allocation)
+    PROVISIONING --> STARTING : provisioning complete\n→ osac.resource.started.v1 (allocation)
+    STARTING --> RUNNING : power on confirmed
+    PROVISIONING --> RUNNING : provisioning complete\n→ osac.resource.started.v1 (allocation + consumption)
     PROVISIONING --> FAILED : provisioning failure
 
     RUNNING --> STOPPING : stop requested\n(transient — allocation continues)
@@ -670,6 +675,7 @@ Durable fulfillment transition history with cursor-based replay is a release-blo
 - `BareMetalInstanceBillingDimensions()` does not emit a billable dimension for a missing `spec.instance_type` and records the configuration error
 - A changed `spec.instance_type` closes active meter intervals at the authoritative dimension-change timestamp and reopens still-billable meters with the new dimension; historical events retain the old value
 - `PROVISIONING` → `STOPPED` sets only `ComponentEverStarted["allocation"]` and emits allocation `started.v1`
+- `PROVISIONING` → `STARTING`/`STOPPING` sets only `ComponentEverStarted["allocation"]` and emits allocation `started.v1`
 - The first `STOPPED` → `RUNNING` sets `ComponentEverStarted["consumption"]` and emits consumption `started.v1`; a later stop/start cycle emits consumption `resumed.v1`
 - `IsAllocationBillableState()` returns true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, `DELETING`; false for `PROVISIONING`, `FAILED`, `UNSPECIFIED`
 - `IsConsumptionBillableState()` returns true for `RUNNING` only
