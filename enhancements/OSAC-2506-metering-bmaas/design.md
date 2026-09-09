@@ -318,7 +318,7 @@ The meter-specific application rules are:
 
 #### BareMetalInstanceType Resolution
 
-The PRD's primary metering dimension is the `BareMetalInstanceType` selected for the host. OSAC-1201 adds `spec.instance_type` to `BareMetalInstance`; the Watch stream carries that reference with the resource:
+The PRD's primary metering dimension is the `BareMetalInstanceType` selected for the host. OSAC-1201 exposes `spec.instance_type` as a non-empty string containing the `BareMetalInstanceType` name. The canonical `bm_instance_type` value is that string as carried by the fulfillment API; the metering service does not dereference or rewrite it. OSAC-1201 adds the field to `BareMetalInstance`; the Watch stream carries it with the resource:
 
 ```go
 func BareMetalInstanceBillingDimensions(bmi *privatev1.BareMetalInstance) map[string]any {
@@ -335,7 +335,7 @@ func BareMetalInstanceBillingDimensions(bmi *privatev1.BareMetalInstance) map[st
 }
 ```
 
-The metering service does not resolve hardware metadata through `BareMetalInstanceType` List/Get calls and does not maintain a type cache or watch the type resource. The `spec.instance_type` reference is the stable billing identity for the lifetime of a `BareMetalInstance`; the field must therefore be immutable after creation. Changes to descriptive or hardware metadata do not rewrite historical metering events. A new billing identity requires a new `BareMetalInstanceType` reference. BMaaS metering requires this reference to be populated; legacy catalog-item-only resources must be migrated before they can satisfy the BMaaS metering dimension requirement. An empty reference is a configuration error and must prevent billable BMaaS events from being published until reconciliation can resolve the configuration.
+The metering service does not resolve hardware metadata through `BareMetalInstanceType` List/Get calls and does not maintain a type cache or watch the type resource. The `spec.instance_type` value identifies the billing dimension for each meter interval. Whether OSAC-1201 makes this field immutable is an open question. Immutability is the simpler contract. If updates remain permitted, a separate contract must define an authoritative dimension-change timestamp, durable old and new interval storage, deterministic close-and-reopen events, and heartbeat attribution rules before metering can support those updates. No heartbeat or lifecycle event may silently change dimensions within an existing interval. Changes to descriptive or hardware metadata do not rewrite historical metering events. BMaaS metering requires this field to be populated; legacy catalog-item-only resources must be migrated before they can satisfy the BMaaS metering dimension requirement. An empty `instance_type` string is a configuration error and must prevent billable BMaaS events from being published until reconciliation can resolve the configuration.
 
 #### BMaaS Billing Dimensions
 
@@ -350,6 +350,8 @@ BMaaS CloudEvents carry the following billing dimensions. Each event includes a 
   "catalog_item": "bmi-gpu-workstation"
 }
 ```
+
+Here `gpu-large` is the string value carried in `spec.instance_type`.
 
 ```json
 {
@@ -612,14 +614,24 @@ Durable fulfillment transition history with cursor-based replay is a release-blo
 **Owner:** OSAC-2506 product/design owners and the fulfillment-service team
 **Impact:** BMaaS deployment and billing remain blocked until the durable replay contract is implemented and verified.
 
+### 3. BareMetalInstance.spec.instance_type Immutability
+
+**STATUS: OPEN** — OSAC-1201 currently requires a non-empty string but does not settle whether `spec.instance_type` is immutable. Immutability avoids billing-dimension rollover. Allowing changes requires an authoritative dimension-change timestamp, durable old and new interval handling, deterministic close-and-reopen events, and heartbeat attribution rules. Which contract should fulfillment provide?
+
+**Owner:** OSAC-1201/fulfillment-service team and Metering Service team
+**Impact:** BMaaS instance-type dimension behavior cannot be finalized until this choice is resolved.
+
 ## Test Plan
 
 ### Unit Tests
 
 - `bareMetalInstanceMapper` extracts resource type, ID, tenant, project, catalog item, instance type, and state from a `BareMetalInstance` proto
-- `BareMetalInstanceBillingDimensions()` populates `bm_instance_type` from `spec.instance_type` and `catalog_item` from the BareMetalInstance spec
+- `BareMetalInstanceBillingDimensions()` populates `bm_instance_type` from the non-empty `spec.instance_type` string and populates `catalog_item` from the BareMetalInstance spec
 - `BareMetalInstanceBillingDimensions()` does not emit a billable dimension for a missing `spec.instance_type` and records the configuration error
-- `IsAllocationBillableState()` returns true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`; false for `PROVISIONING`, `FAILED`, `DELETING`, `UNSPECIFIED`
+- A changed `spec.instance_type` closes active meter intervals at the authoritative dimension-change timestamp and reopens still-billable meters with the new dimension; historical events retain the old value
+- `PROVISIONING` → `STOPPED` sets only `ComponentEverStarted["allocation"]` and emits allocation `started.v1`
+- The first `STOPPED` → `RUNNING` sets `ComponentEverStarted["consumption"]` and emits consumption `started.v1`; a later stop/start cycle emits consumption `resumed.v1`
+- `IsAllocationBillableState()` returns true for `RUNNING`, `STOPPED`, `STARTING`, `STOPPING`, `DELETING`; false for `PROVISIONING`, `FAILED`, `UNSPECIFIED`
 - `IsConsumptionBillableState()` returns true for `RUNNING` only
 - Allocation transition table registers every pair in the explicit accepted transition set, including repeated snapshots and all provisioning/transient paths
 - Consumption transition table registers the same complete pair set with the correct meter-specific effect
