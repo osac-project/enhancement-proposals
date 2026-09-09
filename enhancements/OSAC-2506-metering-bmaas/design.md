@@ -316,6 +316,8 @@ The Watch Consumer carries both timestamps and the per-meter first-use flags fro
 
 The field is additive and optional for existing resource types. VMaaS and CaaS retain their current `EverBillable` and component behavior, and their handlers ignore the BMaaS-only keys. The projection migration initializes the map empty for existing rows. BMaaS sets `ComponentEverStarted["allocation"]` or `ComponentEverStarted["consumption"]` atomically when the corresponding meter first opens, and chooses `started.v1` or `resumed.v1` from that flag. The projection update and emitted events are committed idempotently together.
 
+`ComponentEverStarted` is intentionally retained because `BillableSince` and `ComponentBillableSince["consumption"]` describe only active intervals; they cannot distinguish the first consumption opening after `STOPPED` from a later resumed interval. `EverBillable` is resource-wide allocation history and cannot represent that distinction.
+
 `ListBillable()` returns BMaaS resources that are allocation-billable. The heartbeat decomposer checks `CurrentState` to determine whether to produce one heartbeat (allocation only, for `STOPPED`/`STARTING`/`STOPPING`/`DELETING`) or two (allocation + consumption, for `RUNNING`).
 
 #### BMaaS Watch Consumer State Application
@@ -731,7 +733,7 @@ BMaaS metering may graduate to Dev Preview only when:
 
 This is a new metering capability with no upgrade impact on existing VMaaS/CaaS metering. The metering-service binary gains BMaaS support — on upgrade, it begins consuming BareMetalInstance Watch events and producing CloudEvents. On downgrade, BMaaS events stop being produced; no cleanup is needed since Kafka topics are shared and BMaaS events are differentiated by `osacresourcetype`.
 
-The State Projection schema does not change — `ComponentBillableSince` is an existing JSONB column that gains a `"consumption"` key for BMaaS resources. Downgrade leaves orphaned `"consumption"` keys in the JSONB column, which are harmless (ignored by VMaaS/CaaS code paths).
+The State Projection adds an optional `ComponentEverStarted` JSONB field alongside the existing `ComponentBillableSince` field. Existing rows with no map deserialize as an empty map; BMaaS reconciliation seeds the flags according to the documented current-state rules, and missing `consumption` is treated as `false`. BMaaS updates the map atomically with the projection and outbox records. VMaaS and CaaS ignore the optional field, and readers that do not use BMaaS leave it untouched, so the field is safe for mixed-version storage and rollback.
 
 ## Version Skew Strategy
 
