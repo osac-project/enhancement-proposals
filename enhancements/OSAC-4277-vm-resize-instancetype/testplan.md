@@ -90,6 +90,31 @@
   (matching InstanceType "medium")
 - No `RestartRequired` condition is set (change applied during start)
 
+#### TC-FR1-03: Concurrent resize requests use last-write-wins
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1 | medium | automated |
+
+##### Preconditions
+
+- A ComputeInstance exists in RUNNING state with instance_type "small"
+- InstanceTypes "medium" and "large" exist in ACTIVE state
+
+##### Steps
+
+1. Call `UpdateComputeInstance` with target instance_type = "medium"
+2. Immediately call `UpdateComputeInstance` with target instance_type =
+   "large" (before reconciliation of the first request completes)
+3. Wait for `ConfigurationApplied` condition to become True
+
+##### Expected Results
+
+- The ComputeInstance's `spec.instance_type` is "large" (last write wins)
+- The CRD's `spec.cores` and `spec.memoryGiB` reflect InstanceType "large"
+- Only one provisioning cycle completes with the final spec (the
+  config-version mechanism coalesces intermediate changes)
+
 ### FR-2: Both increasing and decreasing InstanceType selections supported
 
 #### TC-FR2-01: Resize to a smaller InstanceType (downsize)
@@ -305,33 +330,6 @@
 - The VM now runs with the new CPU/memory values matching the target
   InstanceType
 - `lastRestartedAt` is updated to reflect the restart
-
-### FR-1 (continued): Concurrent resize behavior
-
-#### TC-FR1-03: Concurrent resize requests use last-write-wins
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | medium | automated |
-
-##### Preconditions
-
-- A ComputeInstance exists in RUNNING state with instance_type "small"
-- InstanceTypes "medium" and "large" exist in ACTIVE state
-
-##### Steps
-
-1. Call `UpdateComputeInstance` with target instance_type = "medium"
-2. Immediately call `UpdateComputeInstance` with target instance_type =
-   "large" (before reconciliation of the first request completes)
-3. Wait for `ConfigurationApplied` condition to become True
-
-##### Expected Results
-
-- The ComputeInstance's `spec.instance_type` is "large" (last write wins)
-- The CRD's `spec.cores` and `spec.memoryGiB` reflect InstanceType "large"
-- Only one provisioning cycle completes with the final spec (the
-  config-version mechanism coalesces intermediate changes)
 
 ### NFR-1: E2E tests for InstanceType resize scenarios
 
