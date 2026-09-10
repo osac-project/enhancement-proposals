@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-4277 — VM Resize via InstanceType Selection
-- **Total test cases:** 15
+- **Total test cases:** 16
 - **Requirements covered:** 8 of 8 (FR-1 through FR-6, NFR-1, NFR-2)
 - **Interface changes covered:** 4 of 4 (IC-1 through IC-4)
 
@@ -114,6 +114,31 @@
 - The CRD's `spec.cores` and `spec.memoryGiB` reflect InstanceType "large"
 - Only one provisioning cycle completes with the final spec (the
   config-version mechanism coalesces intermediate changes)
+
+#### TC-FR1-04: Resize to InstanceType with different GPU is rejected
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1 | critical | automated |
+
+##### Preconditions
+
+- A ComputeInstance exists in RUNNING state with a non-GPU InstanceType
+- An InstanceType "gpu-type" exists in ACTIVE state with GPU spec
+  (pciDeviceSelector, resourceName, count)
+
+##### Steps
+
+1. Call `UpdateComputeInstance` with update mask `spec.instance_type` and
+   target instance_type = "gpu-type"
+2. Wait for the CRD update attempt
+
+##### Expected Results
+
+- The CRD rejects the update because `spec.gpu` is protected by a CEL
+  XValidation rule (`self == oldSelf`)
+- The ComputeInstance's `spec.instance_type` remains unchanged
+- No reconciliation or re-provisioning is triggered
 
 ### FR-2: Both increasing and decreasing InstanceType selections supported
 
@@ -451,12 +476,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 15 |
-| Critical | 5 |
+| Total test cases | 16 |
+| Critical | 6 |
 | High | 7 |
 | Medium | 3 |
 | Low | 0 |
-| Automated | 13 |
+| Automated | 14 |
 | Manual | 2 |
 | Requirements with test cases | 8 / 8 |
 | Interface changes with test cases | 4 / 4 |
