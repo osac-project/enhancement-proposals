@@ -1,5 +1,5 @@
 ---
-title: k8s-manager-ovn-evpn-phase-1
+title: cudn-evpn-k8s-manager-phase-1-networking
 authors:
   - Benny Kopilov
 creation-date: 2026-09-03
@@ -23,7 +23,7 @@ superseded-by:
   - "N/A"
 ---
 
-# K8s Manager — OVN EVPN Phase 1: Single-Cluster VM-to-Fabric Bridging
+# CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
 
 ## Summary
 

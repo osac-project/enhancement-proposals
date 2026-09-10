@@ -2,7 +2,7 @@
 
 ## Overview
 
-- **Feature:** OSAC-4291 — K8s Manager — OVN EVPN Phase 1: Single-Cluster VM-to-Fabric Bridging
+- **Feature:** OSAC-4291 — CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
 - **Total test cases:** 17
 - **Requirements covered:** 9 of 9 (R1-R9)
 - **Interface changes covered:** 6 of 6 (IC-1 through IC-6)
