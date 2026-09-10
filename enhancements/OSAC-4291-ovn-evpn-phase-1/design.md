@@ -175,7 +175,7 @@ sequenceDiagram
 **Error Paths:**
 
 - **Second subnet creation when VMs exist:** API returns 400 Bad Request. First subnet has running VMs, cannot add additional subnets (Phase 1 limitation). Tenant must delete VMs or create new VirtualNetwork for bare-metal workloads.
-- **VM creation when multiple subnets exist:** VMaaS blocks VM placement with error. Only single subnet per VirtualNetwork supports VMs (CUDN). Multiple subnets = all fabric-only (no CUDN). Tenant must delete extra subnets or create new VirtualNetwork for VMs.
+- **VM creation when multiple subnets exist:** VMaaS blocks VM placement with error. Only single-subnet VirtualNetworks support VMs. Multiple subnets → VMs blocked in ALL subnets (first subnet's CUDN persists but VM creation blocked by validation). Tenant must delete extra subnets or create new VirtualNetwork for VMs.
 - **Subnet deletion when VMs exist:** Operator blocks deletion, emits "DeletionBlocked" event. Subnet with CUDN cannot be deleted while VMs running. Tenant must delete VMs first (ComputeInstance CRs), controller requeues every 30s.
 - **Fabric job failure:** Controller requeues, does not start k8s job until fabric succeeds
 - **VNI missing in fabric output:** Controller marks Subnet as Failed, user must check fabric manager logs
@@ -190,7 +190,7 @@ sequenceDiagram
 - **Subnet annotation `osac.openshift.io/skip-k8s-manager: "true"`** — optional annotation to explicitly skip k8s manager (fabric-only). If omitted, operator auto-detects: first subnet gets CUDN, second+ subnets are fabric-only.
 
 **Modified:**
-- osac-operator Subnet controller: sequential provisioning instead of parallel, auto-skips k8s manager for second+ subnets under same VirtualNetwork (honors explicit skip annotation if present)
+- osac-operator Subnet controller: sequential provisioning instead of parallel, auto-detects subnet count to skip k8s manager for second+ subnets under same VirtualNetwork (first subnet's CUDN persists, honors explicit skip annotation if present)
 
 **External CRDs Used (not created by OSAC):**
 - `ClusterUserDefinedNetwork` (k8s.ovn.org/v1, OVN-Kubernetes) — created by k8s manager
@@ -201,10 +201,10 @@ sequenceDiagram
 
 **Annotation Semantics:**
 
-The `osac.openshift.io/skip-k8s-manager` annotation is **optional** and provides explicit control over k8s manager provisioning. When omitted, the operator automatically determines provisioning behavior based on subnet count: single subnet gets CUDN (for VMs), multiple subnets = all fabric-only (no CUDN).
+The `osac.openshift.io/skip-k8s-manager` annotation is **optional** and provides explicit control over k8s manager provisioning. When omitted, the operator automatically determines provisioning behavior based on subnet count.
 
 ```yaml
-# Single Subnet - creates Netris VNet + CUDN (auto-detected, VMs allowed)
+# First Subnet - creates Netris VNet + CUDN (auto-detected, VMs allowed)
 apiVersion: osac.openshift.io/v1
 kind: Subnet
 metadata:
@@ -214,8 +214,8 @@ spec:
   ipv4CIDR: 10.0.1.0/24
 
 ---
-# Adding second Subnet - changes ALL subnets to fabric-only (no CUDN for either)
-# Phase 1 limitation: VMs blocked in any subnet when multiple subnets exist
+# Adding second Subnet - first Subnet's CUDN persists, but no CUDN for second
+# Phase 1 limitation: VMs blocked in ALL subnets when multiple subnets exist
 apiVersion: osac.openshift.io/v1
 kind: Subnet
 metadata:
@@ -223,15 +223,18 @@ metadata:
 spec:
   virtualNetwork: vpc-1  # Same VPC
   ipv4CIDR: 10.0.2.0/24
+# Result: vm-subnet's CUDN persists, baremetal-subnet gets fabric-only (no CUDN)
+# VMaaS blocks VM creation in BOTH subnets (subnet count > 1)
 ```
 
 **Provisioning behavior:**
-- **Single subnet:** Operator provisions fabric + k8s manager (CUDN), VMs allowed
-- **Multiple subnets (2+):** Operator provisions fabric-only for ALL subnets (no CUDN for any), VMs blocked
+- **First subnet (alone):** Operator provisions fabric + k8s manager (CUDN), VMs allowed
+- **Second+ subnets:** Operator provisions fabric-only (no CUDN), first subnet's CUDN persists
+- **Multiple subnets (2+):** VMs blocked in ALL subnets by VMaaS validation (subnet count > 1)
 - **Explicit annotation:** skip k8s manager even if this is the only subnet (fabric-only by choice)
 - Dispatcher only provisions fabric manager target for fabric-only subnets
 - Netris role creates VNet under same VPC (VPC created by first Subnet, or new if none exists)
-- No CUDN, no namespace, no k8s resources created for fabric-only subnets
+- No CUDN, no namespace, no k8s resources created for second+ subnets
 
 **Important:** If VMs exist in the single subnet, API blocks creation of second subnet (see fulfillment-service validation above)
 
@@ -386,8 +389,8 @@ When a tenant attempts to create a VM in a VirtualNetwork with multiple subnets:
 
 ```
 Error: Cannot create VM in Subnet "subnet-1": VirtualNetwork "vpc-1" has 2 subnets.
-Phase 1 limitation: VMs require single subnet per VirtualNetwork (CUDN provisioning).
-Multiple subnets = all fabric-only (bare-metal workloads only).
+Phase 1 limitation: VMs require single subnet per VirtualNetwork.
+Multiple subnets → VMs blocked in all subnets (bare-metal workloads only).
 
 Solution: Delete extra subnets or create new VirtualNetwork with single subnet for VMs.
 ```
