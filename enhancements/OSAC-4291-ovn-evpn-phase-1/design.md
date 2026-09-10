@@ -557,10 +557,10 @@ func (r *SubnetReconciler) shouldSkipK8sManager(ctx context.Context, subnet *osa
         return true, nil
     }
 
-    // Auto-detect: check if another Subnet already has CUDN under this VirtualNetwork
-    // Phase 1 limitation: one CUDN per VirtualNetwork
-    // - First subnet → CUDN provisioned (VM-enabled)
-    // - Second+ subnets → fabric-only (no CUDN)
+    // Auto-detect: count total Subnets under this VirtualNetwork
+    // Phase 1 limitation: only single-subnet VirtualNetworks support VMs (CUDN provisioning)
+    // - First subnet (alone) → CUDN provisioned
+    // - Second+ subnets → no CUDN provisioned (fabric-only)
     var subnetList osacv1.SubnetList
     if err := r.List(ctx, &subnetList, client.MatchingLabels{
         "osac.openshift.io/virtual-network": subnet.Spec.VirtualNetwork,
@@ -568,29 +568,15 @@ func (r *SubnetReconciler) shouldSkipK8sManager(ctx context.Context, subnet *osa
         return false, err
     }
 
-    // Count Subnets with CUDN (namespace existence indicates CUDN was provisioned)
-    cudnCount := 0
-    for _, s := range subnetList.Items {
-        // Skip self
-        if s.Name == subnet.Name {
-            continue
-        }
-        // Check if this Subnet has CUDN (namespace exists)
-        ns := &corev1.Namespace{}
-        nsName := s.Name  // Namespace name = Subnet name
-        if err := r.Get(ctx, client.ObjectKey{Name: nsName}, ns); err == nil {
-            // Namespace exists → this Subnet has CUDN
-            cudnCount++
-        }
+    subnetCount := len(subnetList.Items)
+
+    // If multiple subnets exist, skip k8s manager (fabric-only)
+    // First subnet's CUDN persists, but no new CUDNs provisioned
+    if subnetCount > 1 {
+        return true, nil  // Skip k8s manager (second+ subnet, fabric-only)
     }
 
-    // If another Subnet already has CUDN, skip k8s manager for this one (fabric-only)
-    // Preserves first CUDN when adding second+ fabric-only VNets
-    if cudnCount > 0 {
-        return true, nil  // Skip k8s manager (fabric-only)
-    }
-
-    // No CUDN exists yet → provision CUDN for this Subnet (first VM-enabled VNet)
+    // First subnet (alone) → provision CUDN
     return false, nil  // Do not skip k8s manager
 }
 
@@ -603,10 +589,11 @@ func getNetworkClassID(subnet *osacv1.Subnet) string {
 ```
 
 **Rationale:**
-- Auto-detection: first Subnet gets CUDN (VM-enabled), second+ are fabric-only
-- **Preserves first CUDN** when adding fabric-only VNets (does NOT make all fabric-only)
+- Auto-detection: only first Subnet (when alone) gets CUDN provisioned
+- Subnet count check (simple and predictable): count > 1 → skip k8s manager for all new subnets
+- **First subnet's CUDN persists** when second+ subnets added (operator doesn't delete it)
+- Second+ subnets: operator skips k8s manager entirely (fabric-only, no CUDN provisioned)
 - Explicit skip annotation overrides auto-detection (for first-subnet fabric-only case)
-- Namespace existence check determines if a Subnet provisioned CUDN (reliable state indicator)
 - Sequential logic in provisioning package (not controller) makes it reusable for ANY future fabric→k8s dependency
 - Controllers declaratively specify dependencies via `DependsOn` and `ExtraVarsFrom` fields
 - ConfigMap data path is explicit and verified (not an assumption like AAP Job CR status.extraVars)
