@@ -161,6 +161,9 @@ restart.
   resize proceeds normally.
 - **Not found**: The API returns `NotFound` if the target InstanceType does
   not exist.
+- **GPU mismatch**: The API returns `FailedPrecondition` if the target
+  InstanceType has a different GPU spec than the current one. GPU is
+  immutable — this check prevents persisting a change the CRD would reject.
 - **No-op (same InstanceType)**: The API returns success immediately. No
   change is persisted, no reconciliation triggered. The no-op check takes
   precedence over lifecycle validation — a request targeting the current
@@ -242,7 +245,13 @@ runs only when the update mask includes `spec.instance_type`:
    - `FailedPrecondition` error for OBSOLETE targets
    - `NotFound` error for missing targets
 
-3. **Attach deprecation warning**: If `validateInstanceTypeState()` returns
+3. **GPU compatibility check**: Compare the current InstanceType's GPU spec
+   with the target InstanceType's GPU spec. If they differ, return
+   `FailedPrecondition` — GPU is immutable and the CRD's CEL rule would
+   reject the change downstream. Validating at the API boundary prevents
+   persisting a change that cannot be applied.
+
+4. **Attach deprecation warning**: If `validateInstanceTypeState()` returns
    a warning, attach it to the Update response using the same mechanism as
    Create.
 
@@ -340,6 +349,15 @@ cluster topology.
   rule that prevents scheduling the migration target on the same node.
   Single-node clusters always fall back to `RestartRequired`.
 
+**VM eligibility:** Even with hot-plug enabled on a multi-node cluster,
+live migration is not available for every VM. VM-level factors that
+prevent migration include: PCI passthrough devices (e.g., GPU), local
+non-migratable storage, and host-model CPU pinning. VMs that are
+ineligible for live migration fall back to `RestartRequired` — the same
+path as a cluster without hot-plug. No special handling is needed; the
+operator syncs KubeVirt's `VirtualMachineRestartRequired` condition
+regardless of the reason.
+
 [PRD: FR-5, FR-6]
 
 #### osac-installer: Hot-Plug Enablement
@@ -383,8 +401,8 @@ This feature inherits the existing security model without changes:
   existing Update RPC.
 - **Tenant isolation**: The Update path validates that network references
   belong to the caller's tenant. InstanceType lookup uses the same
-  tenant-scoped resolution as Create. No cross-tenant data exposure is
-  introduced.
+  globally-scoped resolution as Create (InstanceTypes are global, visible
+  to all organizations). No cross-tenant data exposure is introduced.
 - **Input validation**: The target InstanceType is validated via the
   existing `validateInstanceTypeState()` helper — the same validation
   applied during Create. Invalid or incompatible targets are rejected
@@ -413,8 +431,9 @@ restarts.
 
 No RBAC or tenancy changes required. The existing `ComputeInstances/Update`
 permission covers resize. Tenant isolation is enforced by the existing
-Update path validation — the InstanceType lookup is tenant-scoped, and no
-cross-tenant resources are accessed.
+Update path validation. InstanceTypes are globally scoped (visible to all
+organizations per the InstanceType contract), so no tenant filtering is
+applied to the lookup.
 
 ### Observability and Monitoring
 
@@ -555,14 +574,13 @@ Resolved: yes. The OSAC installer already owns the KubeVirt CR setup
 added alongside the existing l2bridge patch. No per-VM template changes
 needed. See §Hot-Plug Enablement.
 
-### 9.2 Should resize of stopped VMs be explicitly documented?
+### ~~9.2 Should resize of stopped VMs be explicitly documented?~~
 
-- **Owner:** Ygal Blum
-- **Impact:** §Workflow Description, documentation. The PRD user stories
-  reference "running VM" resize, but the design allows resize in any
-  updateable state (including STOPPED). A stopped VM's resize applies on
-  next start with no hot-plug concern. This broadens the PRD scope
-  slightly — confirm this is intended.
+Resolved: yes, stopped-VM resize is in scope. The Update RPC does not
+restrict by VM state — resize works in any updateable state. A stopped
+VM's resize applies on next start with no hot-plug concern. The PRD user
+stories reference "running VM" resize as the primary scenario, not as an
+exclusion.
 
 ## Test Plan
 
@@ -577,13 +595,15 @@ needed. See §Hot-Plug Enablement.
   current InstanceType
 - No-op check takes precedence over lifecycle validation: same InstanceType
   that is OBSOLETE returns nil
+- `validateInstanceTypeResize()` rejects target InstanceType with different
+  GPU spec with `FailedPrecondition`
+- `validateInstanceTypeResize()` allows target InstanceType with same GPU
+  spec (GPU unchanged, only cores/memory differ)
 - `validateTemplateImmutability()` no longer blocks `spec.instance_type`
   changes
 - `validateTemplateImmutability()` still blocks changes to `template`,
   `template_parameters`, `catalog_item`, `disk_image`,
   `auto_external_ip_attachment`
-- Reconciler does not modify GPU when InstanceType changes (GPU remains
-  immutable)
 
 ### Integration Tests
 
@@ -609,7 +629,6 @@ needed. See §Hot-Plug Enablement.
 - Resize to the current InstanceType — verify no-op (no state change, no
   re-provisioning)
 - Resize a STOPPED ComputeInstance — verify the change applies on next start
-  (if Open Question 9.2 confirms this is in scope)
 - (Single-node automated) Resize a running ComputeInstance — verify
   `RestartRequired` is set (hot-plug unavailable on single node), restart
   the VM, verify new resources apply

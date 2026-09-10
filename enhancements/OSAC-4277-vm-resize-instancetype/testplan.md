@@ -112,8 +112,9 @@
 
 - The ComputeInstance's `spec.instance_type` is "large" (last write wins)
 - The CRD's `spec.cores` and `spec.memoryGiB` reflect InstanceType "large"
-- Only one provisioning cycle completes with the final spec (the
-  config-version mechanism coalesces intermediate changes)
+- `ConfigurationApplied` eventually reaches True with the final spec
+- No stale intermediate state persists — the VM runs with InstanceType
+  "large" resources, not "medium"
 
 #### TC-FR1-04: Resize to InstanceType with different GPU is rejected
 
@@ -131,13 +132,13 @@
 
 1. Call `UpdateComputeInstance` with update mask `spec.instance_type` and
    target instance_type = "gpu-type"
-2. Wait for the CRD update attempt
 
 ##### Expected Results
 
-- The CRD rejects the update because `spec.gpu` is protected by a CEL
-  XValidation rule (`self == oldSelf`)
-- The ComputeInstance's `spec.instance_type` remains unchanged
+- The Update RPC returns gRPC `FailedPrecondition` (HTTP 400) — GPU
+  compatibility is validated at the API boundary before persistence
+- The ComputeInstance's `spec.instance_type` remains unchanged in the
+  database
 - No reconciliation or re-provisioning is triggered
 
 ### FR-2: Both increasing and decreasing InstanceType selections supported
@@ -401,7 +402,9 @@
 
 - A multi-node cluster with KubeVirt hot-plug enabled
   (`vmRolloutStrategy: LiveUpdate`, `workloadUpdateMethods: [LiveMigrate]`)
-- A fully provisioned ComputeInstance in RUNNING state
+- A fully provisioned ComputeInstance in RUNNING state with a
+  migration-eligible configuration (no PCI passthrough devices, no local
+  non-migratable storage, no host-model CPU pinning)
 - Multiple InstanceTypes exist with different cores/memory configurations
 
 ##### Steps
@@ -420,6 +423,10 @@
 - The VM remains accessible throughout the migration (no restart)
 - `RestartRequired` is not set — the resize was applied via hot-plug
 - The KubeVirt VM's CPU and memory match InstanceType B
+
+**Note:** VMs that are ineligible for live migration (e.g., VMs with GPU
+passthrough devices) fall back to `RestartRequired` on the same
+multi-node cluster. This path is covered by TC-FR5-01.
 
 ### NFR-2: Documentation for InstanceType resize operations
 
