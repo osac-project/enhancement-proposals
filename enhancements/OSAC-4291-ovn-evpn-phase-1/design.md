@@ -232,7 +232,7 @@ func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, sub
         // Not EVPN-bridged, use regular placement logic
         return nil
     }
-    
+
     // For cudn_evpn subnets: verify CUDN namespace exists
     namespace := &corev1.Namespace{}
     nsName := subnet.Name  // Namespace name = Subnet name
@@ -246,7 +246,7 @@ func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, sub
         }
         return err
     }
-    
+
     // Namespace exists → CUDN provisioned → VM placement allowed
     return nil
 }
