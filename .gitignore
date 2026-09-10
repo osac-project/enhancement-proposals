@@ -3,3 +3,6 @@ __pycache__/
 
 # Workflow artifacts (bugfix, implement)
 .artifacts/
+
+# Linked git worktrees
+.worktrees/
