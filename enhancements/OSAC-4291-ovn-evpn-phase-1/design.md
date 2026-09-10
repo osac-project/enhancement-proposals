@@ -247,7 +247,7 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
         // If at least one subnet exists, check if it has VMs (via k8s API)
         if len(listResp.GetSubnets()) > 0 {
             firstSubnet := listResp.GetSubnets()[0]
-            
+
             // Check if first subnet has CUDN namespace with VMs
             hasVMs, err := s.checkSubnetHasVMs(ctx, firstSubnet.GetMetadata().GetName())
             if err != nil {
@@ -263,7 +263,7 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
                     vnetResp.GetVirtualNetwork().GetMetadata().GetName(),
                     firstSubnet.GetMetadata().GetName())
             }
-            
+
             // First subnet exists but has no VMs → allow second subnet (will be fabric-only)
         }
     }
