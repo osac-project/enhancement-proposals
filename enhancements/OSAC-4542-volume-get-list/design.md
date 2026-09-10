@@ -45,8 +45,15 @@ have no operational visibility. This enhancement adds the minimal read surface �
 ### Non-Goals
 
 - Volume lifecycle through the public API (create/update/delete/resize) — deferred
-  to later OSAC-984 phases.
-- Volume attach/detach, snapshots/clones, file storage (OSAC-4515), object storage.
+  to later [OSAC-984](https://redhat.atlassian.net/browse/OSAC-984) phases.
+- Volume expansion, snapshots, clones, and restore —
+  [OSAC-48](https://redhat.atlassian.net/browse/OSAC-48).
+- Volume attach/detach —
+  [OSAC-4884](https://redhat.atlassian.net/browse/OSAC-4884).
+- Volume identifiability / provenance — deferred to
+  [OSAC-4793](https://redhat.atlassian.net/browse/OSAC-4793).
+- File storage ([OSAC-4515](https://redhat.atlassian.net/browse/OSAC-4515))
+  and object storage.
 
 ## Proposal
 
@@ -59,7 +66,11 @@ Enumerated changes, all in `fulfillment-service`:
    on the private proto — cleanapi excludes annotated fields from the generated
    public message, so a private field can only reach the public schema if someone
    both adds it and forgets the annotation. A generated-schema test guards against
-   that (see Test Plan). `StorageProtocol`/`storage_common_type` stay fully private.
+   that (see Test Plan). The following private Volume fields carry
+   `[(cleanapi.field).private = true]` annotations on the private proto and are
+   excluded from the generated public message: `vendor_volume_id`, `backend`,
+   `protocol`, `hub`, and `vendor_context`.
+   `StorageProtocol`/`storage_common_type` stay fully private.
 2. **Public `VolumesServer`** (`internal/servers/volumes_server.go`): delegates
    `List`/`Get` to `PrivateVolumesServer`, maps private→public (dropping internal
    fields), and sets the CEL filter descriptor to the public `Volume` so callers
@@ -139,6 +150,10 @@ UI-side action is regenerating types after this lands. (Confirmed with the UI ow
   exposure vector today. If server-side ordering is implemented later, it must be
   translated against the same public descriptor as the filter so it cannot reference
   hidden fields — called out here so the constraint is not lost.
+  The `order` parameter is validated against the public Volume schema; field names
+  not present in the public descriptor (e.g. private fields like `status.backend`)
+  are rejected. The GenericDAO currently sorts by `id` regardless of the requested
+  order — this is a known, documented limitation.
 - **cleanapi import pruning (tooling note):** cleanapi v0.0.8 copies imports
   verbatim and does not prune those that become unused after fields/methods are
   stripped (`storage_common_type` in the public `volume_type`, `field_mask` in the
@@ -172,7 +187,7 @@ Scoping is inherited, not reimplemented. OPA (`authz.rego`) gates *method* acces
 this EP adds `Volumes/Get` and `Volumes/List` to the tenant-client allowlist.
 *Row* scoping comes from `GenericServer`/`GenericDAO` via
 `DefaultTenancyLogic.DetermineVisibleTenants`, which restricts results to the
-caller's tenants (plus shared). This is **tenant-level** scoping — the same model
+caller's tenants (plus shared). This is **tenant- and project-level** scoping — the same model
 every other resource uses; role does not change which rows are visible, only which
 methods may be called.
 
@@ -233,6 +248,11 @@ None.
   contains *only* the intended public fields — i.e. none of `backend`, `protocol`,
   `hub`, `vendor_volume_id` appear — so a future private field added without the
   `private = true` annotation fails the build rather than silently leaking.
+  The generated-schema guard test uses an exact-field allowlist: it asserts the
+  public `Volume` descriptor contains precisely the expected set of fields (`id`,
+  `metadata`, `spec.storage_tier`, `spec.size_gib`, `spec.access_mode`,
+  `status.state`, `status.message`). A future private field added without
+  `[(cleanapi.field).private = true]` fails the build rather than silently leaking.
 - CEL filter over a public field (`status.state`) returns the expected subset.
 - **CEL filter over a private field is rejected:** a filter referencing
   `status.backend` returns `InvalidArgument` (proves `SetFilterDesc` restricts the
@@ -254,7 +274,7 @@ None.
 
 ## Graduation Criteria
 
-Ships as part of the public Volume API (v0.2). No separate maturity ladder; the
+Ships as part of the public Volume API (0.3). No separate maturity ladder; the
 read endpoints graduate with the rest of the public API. Later OSAC-984 phases add
 the mutating lifecycle.
 
