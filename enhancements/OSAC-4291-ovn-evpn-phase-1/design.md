@@ -236,9 +236,9 @@ spec:
 **Important:** If VMs exist in the single subnet, API blocks creation of second subnet (see fulfillment-service validation above)
 
 **Deletion behavior:**
-- Subnet controller checks: did this Subnet provision a CUDN? (tracked in status or absence of namespace)
-- **Skips k8s manager deprovision** if no CUDN exists (fabric-only Subnet)
-- Runs fabric manager deprovision (deletes Netris VNet)
+- Subnet controller checks: did this Subnet provision a CUDN? (checks if namespace exists, namespace name = subnet name)
+- **First Subnet (has CUDN):** k8s deprovision (CUDN + namespace) → fabric deprovision (Netris VNet)
+- **Second+ Subnets (no CUDN):** skip k8s deprovision → fabric deprovision only (Netris VNet)
 - VirtualNetwork deletion waits for ALL child Subnets deleted before deleting Netris VPC
 
 
@@ -959,16 +959,22 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subn
 - Namespace delete safe after CUDN gone (no finalizer race)
 - **Stale VRF recovery (if needed):** See Support Procedures — manual troubleshooting step, not automated (ovnkube-node restart affects all VMs on node, too disruptive for routine delete)
 
-**VirtualNetwork Deletion with Mixed Subnets:**
+**VirtualNetwork Deletion with Multiple Subnets:**
 
-When a VirtualNetwork has multiple Subnets (some with `skip-k8s-manager` annotation, some without), deletion must follow this order:
+When a VirtualNetwork has multiple Subnets, deletion must follow this order:
 
 1. **User deletes VirtualNetwork CR**
 2. **VirtualNetwork controller blocks deletion** until all child Subnets are deleted (enforced via Kubernetes finalizer)
 3. **Subnets must be deleted individually first:**
-   - Subnet WITHOUT annotation: k8s manager deprovision (CUDN + namespace) → fabric deprovision (Netris VNet)
-   - Subnet WITH `skip-k8s-manager`: fabric deprovision only (Netris VNet)
+   - **First Subnet (has CUDN):** k8s manager deprovision (CUDN + namespace) → fabric deprovision (Netris VNet)
+   - **Second+ Subnets (no CUDN):** fabric deprovision only (Netris VNet, no k8s resources to clean up)
+   - **Any Subnet with `skip-k8s-manager` annotation:** fabric deprovision only (Netris VNet)
 4. **After all Subnets deleted:** VirtualNetwork finalizer clears, fabric manager deprovision runs (deletes Netris VPC)
+
+**Deletion Detection:**
+- Controller checks if namespace exists (namespace name = subnet name)
+- If namespace exists → Subnet has CUDN → run k8s deprovision job
+- If namespace not found → Subnet is fabric-only → skip k8s deprovision, run fabric deprovision only
 
 **Critical constraint:** Netris API rejects VPC deletion if any VNets exist under it. The VirtualNetwork fabric manager playbook must validate no child VNets exist before deleting VPC:
 
