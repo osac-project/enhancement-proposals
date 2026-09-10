@@ -22,14 +22,15 @@ superseded-by:
 
 This design enables Tenant Users and Tenant Admins to change a running
 ComputeInstance's InstanceType through the existing Update RPC, allowing
-CPU, memory, and GPU scaling without VM recreation. The change propagates
-through the existing fulfillment-service → osac-operator → AAP → KubeVirt
-pipeline by lifting three layers of immutability (API validation, CRD CEL
-rules, and CRD field constraints) and reusing the operator's config-version
-hash mechanism for change detection and re-provisioning. GPU changes follow
-the same pipeline but always require a VM restart — KubeVirt does not
-support hot-plugging PCI passthrough devices. See [PRD](prd.md) for
-detailed requirements.
+CPU and memory scaling without VM recreation. The change propagates through
+the existing fulfillment-service → osac-operator → AAP → KubeVirt pipeline
+by lifting three layers of immutability (API validation, CRD CEL rules,
+and CRD field constraints) and reusing the operator's config-version hash
+mechanism for change detection and re-provisioning. Whether the resize
+applies live or requires a VM restart depends on the KubeVirt deployment
+configuration; when hot-plug is enabled, KubeVirt applies CPU/memory
+changes via live migration to a new pod. See [PRD](prd.md) for detailed
+requirements.
 
 ## Motivation
 
@@ -64,41 +65,32 @@ exists — it is blocked only by immutability constraints.
   feedback.
 - Apply the same InstanceType lifecycle-state validation (ACTIVE /
   DEPRECATED / OBSOLETE) to resize as to creation.
-- Keep the InstanceType → cores/memoryGiB/gpu resolution boundary in the
+- Keep the InstanceType → cores/memoryGiB resolution boundary in the
   fulfillment-service reconciler — the operator receives concrete values.
-- Surface that GPU changes always require a restart — KubeVirt does not
-  support GPU hot-plug.
 
 ### Non-Goals
 
 - Disk resize — storage is unaffected by an InstanceType change.
+- GPU resize — GPU immutability is retained.
 - Quota enforcement on InstanceType changes.
 - Automatic VM restart after resize — the user restarts manually when
   `RestartRequired` is set.
 - Automatic scaling or auto-resize — InstanceType changes are explicit
   user actions only.
-- Live migration during resize — a VM restart is the fallback when
-  hot-plug is not supported.
 - Audit or tracking of InstanceType changes.
 
 ## Proposal
 
-Four immutability constraints are lifted to enable InstanceType changes:
+Three immutability constraints are lifted to enable InstanceType changes:
 
 1. **fulfillment-service API validation** — remove `instance_type` from the
    `validateTemplateImmutability()` check and add resize-specific validation
    (no-op detection, lifecycle-state validation).
 
-2. **osac-operator CRD (cores/memory)** — remove the `self == oldSelf` CEL
-   XValidation rules from `Cores` and `MemoryGiB` fields.
+2. **osac-operator CRD** — remove the `self == oldSelf` CEL XValidation
+   rules from `Cores` and `MemoryGiB` fields.
 
-3. **osac-operator CRD (GPU)** — remove the GPU immutability CEL
-   XValidation rule from `ComputeInstanceSpec` that enforces
-   `has(self.gpu) == has(oldSelf.gpu) && (!has(self.gpu) || self.gpu == oldSelf.gpu)`.
-   This allows adding, removing, or changing GPU configuration when the
-   InstanceType changes.
-
-4. **CRD field constraints** — no additional changes needed. The AAP
+3. **CRD field constraints** — no additional changes needed. The AAP
    playbook already uses `apply: true` and the operator's config-version
    mechanism already triggers re-provisioning on spec changes.
 
@@ -201,10 +193,9 @@ target InstanceType is appropriate for their workload.
 **Modified CRDs:**
 
 - `ComputeInstance` (osac-operator) — removes `self == oldSelf` CEL
-  XValidation from `Cores` (int32) and `MemoryGiB` (int32) fields, and
-  removes the GPU immutability CEL XValidation from `ComputeInstanceSpec`.
-  All three become mutable, allowing the reconciler to update them when
-  the InstanceType changes.
+  XValidation from `Cores` (int32) and `MemoryGiB` (int32) fields. These
+  fields become mutable, allowing the reconciler to update them when the
+  InstanceType changes. GPU immutability is retained.
 
 **No new CRDs, webhooks, finalizers, or aggregated API servers.**
 
@@ -280,11 +271,11 @@ is automatic with no code changes.
 
 #### osac-operator: CRD Field Mutability
 
-Remove CEL XValidation immutability rules from three locations in
+Remove CEL XValidation immutability rules from two fields in
 `computeinstance_types.go`:
 
 ```go
-// Before (Cores and MemoryGiB fields):
+// Before:
 // +kubebuilder:validation:XValidation:rule="self == oldSelf",message="cores is immutable"
 Cores int32 `json:"cores"`
 
@@ -295,12 +286,9 @@ MemoryGiB int32 `json:"memoryGiB"`
 // Min/Max validation remains (Cores: 1-128, MemoryGiB: 1+).
 ```
 
+GPU immutability is retained — enforced at the spec level:
 ```go
-// Before (ComputeInstanceSpec level):
-// +kubebuilder:validation:XValidation:rule="has(self.gpu) == has(oldSelf.gpu) && (!has(self.gpu) || self.gpu == oldSelf.gpu)",message="gpu is immutable"
-
-// After: remove the GPU XValidation annotation from ComputeInstanceSpec.
-// GpuSpec field validation (PciDeviceSelector, ResourceName, Count 1-16) remains.
+// +kubebuilder:validation:XValidation:rule="has(self.gpu) == has(oldSelf.gpu) && ..."
 ```
 
 #### osac-operator: Controller — No Changes
@@ -339,53 +327,51 @@ apply semantics.
 #### KubeVirt Hot-Plug Behavior
 
 Whether CPU and memory changes apply live (hot-plug) or require a VM
-restart depends on the KubeVirt deployment configuration:
+restart depends on two factors: the KubeVirt CR configuration and the
+cluster topology.
 
-- **With `VMLiveUpdateFeatures` feature gate enabled and appropriate VM
-  template settings** (`maxSockets`, memory hot-plug limits): KubeVirt
-  applies CPU/memory changes to the running VM without restart.
-- **Without hot-plug configuration**: KubeVirt accepts the spec change but
-  sets the `VirtualMachineRestartRequired` condition. The VM continues
-  running with old resources until the user restarts it.
+- **Without hot-plug configuration** (current OSAC default): KubeVirt
+  accepts the spec change but sets the `VirtualMachineRestartRequired`
+  condition. The VM continues running with old resources until the user
+  restarts it.
+- **With hot-plug enabled**: KubeVirt applies CPU/memory changes by
+  live-migrating the VM to a new pod with updated resource limits. This
+  requires a multi-node cluster — KubeVirt inserts a `podAntiAffinity`
+  rule that prevents scheduling the migration target on the same node.
+  Single-node clusters always fall back to `RestartRequired`.
 
-OSAC does not configure KubeVirt's hot-plug feature gates — this is a
-deployment-level decision managed by the infrastructure admin. OSAC's role
-is to propagate the spec change and surface the `RestartRequired` condition.
 [PRD: FR-5, FR-6]
 
-#### KubeVirt GPU Change Behavior
+#### osac-installer: Hot-Plug Enablement
 
-GPU passthrough (`hostDevices`) is fundamentally different from CPU/memory
-changes. GPU devices are bound via VFIO/IOMMU at the host kernel level and
-allocated by the kubelet at pod scheduling time. KubeVirt does not support
-hot-plugging PCI passthrough devices — `VMLiveUpdateFeatures` covers CPU
-sockets and memory only.
+The OSAC installer already owns the KubeVirt CR setup
+(`osac-installer/charts/osac-devstack/files/install-virt.sh`). It applies
+the stock `kubevirt-cr.yaml` and patches in the `l2bridge` network binding.
+To enable hot-plug for resize, add a KubeVirt CR patch in `install-virt.sh`
+after the existing l2bridge patch:
 
-A GPU change (adding, removing, or switching GPU type) always requires a
-full VM restart: the VM pod must be destroyed and rescheduled so that the
-kubelet can allocate the new PCI device. Unlike CPU/memory resize where
-`RestartRequired` depends on the deployment's hot-plug configuration, GPU
-changes set `RestartRequired` unconditionally.
+```yaml
+spec:
+  configuration:
+    vmRolloutStrategy: "LiveUpdate"
+  workloadUpdateStrategy:
+    workloadUpdateMethods:
+      - LiveMigrate
+```
 
-After restart, the VM may land on a different node if the target GPU device
-is not available on the current node. The VM retains its identity (name,
-network attachments, volumes).
+- `vmRolloutStrategy: LiveUpdate` — propagates VM spec changes to the
+  running VMI without requiring a restart.
+- `workloadUpdateMethods: [LiveMigrate]` — triggers automatic live
+  migration when a spec change requires a new pod.
 
-#### osac-aap: GPU Device Registration — No Changes
+No per-VM template changes are needed — `maxSockets` and `maxGuest`
+default to sensible values when not set (e.g., `maxSockets` defaults to
+4× the initial socket count).
 
-The AAP playbook's `configure_permitted_host_devices.yaml` registers GPU
-PCI devices in the KubeVirt HyperConverged CR's
-`permittedHostDevices.pciHostDevices` on create. When a resize changes the
-GPU, the create playbook re-runs (via `apply: true`) and registers the new
-device type if not already present.
-
-The previous device entry remains in the HyperConverged CR. This is by
-design — the HyperConverged CR is a cluster-wide singleton and its
-`permittedHostDevices.pciHostDevices` is an allowlist, not a resource
-reservation. Entries declare that a PCI device type *may* be used by VMs
-on the cluster; they do not hold devices or consume resources. The delete
-flow similarly does not remove entries. No changes are needed here for
-resize.
+On single-node clusters (including the Kind dev environment), hot-plug
+is unavailable regardless of this configuration — KubeVirt requires a
+migration target on a different node. The resize still works but always
+sets `RestartRequired`.
 
 ### Security Considerations
 
@@ -417,9 +403,7 @@ This feature inherits the existing security model without changes:
 | **KubeVirt apply failure** | AAP job reports failure; operator retries | Same as AAP failure |
 | **Controller restart mid-resize** | Controller re-reads CRD state on startup; config-version hash is recomputed; pending re-provisioning resumes | Transparent to user; resize may take longer |
 | **Concurrent resize requests** | Each Update overwrites `instance_type` in the DB; reconciler resolves the latest value; operator's config-version hash reflects the final spec | The last-write-wins; intermediate InstanceType changes may not be provisioned if superseded before reconciliation |
-| **GPU change — target device not on current node** | VM restart succeeds but pod is rescheduled to a node with the target GPU; if no node has the device, the pod stays Pending | ComputeInstance shows `RestartRequired=True`; after restart, VM may be Pending until a node with the target GPU is available |
-| **GPU removal (GPU → no-GPU InstanceType)** | Reconciler sets `gpu` to nil on the CRD; AAP re-provisions the VM spec without `hostDevices`; VM restart required | `RestartRequired=True`; VM runs without GPU after restart |
-| **GPU addition (no-GPU → GPU InstanceType)** | Reconciler sets `gpu` on the CRD; AAP registers the device in HyperConverged CR and adds `hostDevices` to VM spec; VM restart required | `RestartRequired=True`; VM gains GPU after restart, may move to a different node |
+| **Live migration failure during hot-plug** | KubeVirt cannot migrate the VM (e.g., single-node cluster, insufficient resources on target node) | `RestartRequired` is set; the user restarts the VM manually to apply the change |
 
 All operations are idempotent. The config-version mechanism ensures
 convergence to the desired state regardless of intermediate failures or
@@ -449,9 +433,8 @@ No new observability changes. Existing monitoring mechanisms apply:
 |---|---|---|
 | **Memory pressure on downsize** | Selecting a smaller InstanceType while the VM uses more memory than the target allows may cause OOM or instability inside the guest | OSAC does not manage guest-level resource pressure. This is the same risk as under-provisioning at creation time. Document that the user is responsible for ensuring the target InstanceType is appropriate for their workload. |
 | **AAP job contention** | Rapid successive resize requests could queue multiple AAP jobs | The config-version mechanism coalesces changes — only the final spec state triggers provisioning. An in-flight job that completes with a stale config version triggers a new job with the current spec. |
-| **CRD immutability removal is broad** | Removing `self == oldSelf` from `Cores`/`MemoryGiB` and the GPU CEL rule allows any controller or admin with CRD write access to change these fields, not just the fulfillment-service reconciler | The CRD is an internal API surface — tenant access is mediated through the fulfillment-service. RBAC on the CRD restricts write access to the osac-operator service account and cluster admins. |
-| **GPU resize always requires restart** | Unlike CPU/memory which may hot-plug, GPU changes always require a full VM restart and may cause the VM to reschedule to a different node | The `RestartRequired` condition surfaces this to the user. The restart behavior is a KubeVirt constraint, not an OSAC limitation. Document that GPU changes require a restart in all deployments. |
-| **No GPU-capable node available after resize** | A GPU change may target a device type not present on any node, leaving the VM pod Pending after restart | This is the same risk as GPU provisioning at creation time. The user selects an InstanceType whose GPU is available in their deployment. |
+| **CRD immutability removal is broad** | Removing `self == oldSelf` from `Cores`/`MemoryGiB` allows any controller or admin with CRD write access to change these fields, not just the fulfillment-service reconciler | The CRD is an internal API surface — tenant access is mediated through the fulfillment-service. RBAC on the CRD restricts write access to the osac-operator service account and cluster admins. |
+| **Hot-plug depends on multi-node cluster** | Single-node deployments cannot live-migrate, so hot-plug is unavailable and all resizes require a restart | Document the multi-node requirement for live resize. Single-node deployments still support resize via the restart path. |
 
 ### Drawbacks
 
@@ -463,16 +446,10 @@ justified because resize is a core user need, the CRD is an internal
 API surface (not tenant-facing), and the config-version mechanism
 provides auditability of spec changes.
 
-The design relies on KubeVirt's hot-plug support being configured at
-the deployment level rather than managing it within OSAC. This means
-the CPU/memory resize experience varies by deployment — some deployments
-require a restart, while others support live changes. GPU changes always
-require a restart regardless of deployment configuration, because
-KubeVirt does not support hot-plugging PCI passthrough devices. After a
-GPU resize restart, the VM may be rescheduled to a different node if the
-target GPU is not available on the current one. These are KubeVirt
-constraints, not OSAC limitations — OSAC surfaces the deployment's
-capability rather than prescribing it.
+Hot-plug requires live migration, which requires a multi-node cluster.
+Single-node deployments (including the Kind dev environment) always
+require a restart for resize. This is a KubeVirt constraint — OSAC
+enables the configuration but cannot change the migration requirement.
 
 ## Interface Changes
 
@@ -570,14 +547,13 @@ changes.
 
 ## Open Questions
 
-### 9.1 Should OSAC configure KubeVirt's hot-plug feature gates?
+### ~~9.1 Should OSAC configure KubeVirt's hot-plug feature gates?~~
 
-- **Owner:** To be determined (platform/infrastructure team)
-- **Impact:** §Implementation Details (KubeVirt Hot-Plug Behavior). If OSAC
-  manages hot-plug configuration, the AAP playbook needs to set
-  `maxSockets` and memory limits on the VM template. If not, hot-plug
-  availability is a deployment-level concern documented for infrastructure
-  admins.
+Resolved: yes. The OSAC installer already owns the KubeVirt CR setup
+(`install-virt.sh`). Hot-plug enablement is a KubeVirt CR patch
+(`vmRolloutStrategy: LiveUpdate` + `workloadUpdateMethods: [LiveMigrate]`)
+added alongside the existing l2bridge patch. No per-VM template changes
+needed. See §Hot-Plug Enablement.
 
 ### 9.2 Should resize of stopped VMs be explicitly documented?
 
@@ -606,8 +582,8 @@ changes.
 - `validateTemplateImmutability()` still blocks changes to `template`,
   `template_parameters`, `catalog_item`, `disk_image`,
   `auto_external_ip_attachment`
-- Reconciler resolves GPU from new InstanceType and sets it on the CRD spec
-- Reconciler clears GPU on the CRD spec when new InstanceType has no GPU
+- Reconciler does not modify GPU when InstanceType changes (GPU remains
+  immutable)
 
 ### Integration Tests
 
@@ -621,11 +597,7 @@ changes.
   detected) → True (provisioning complete)
 - Verify `RestartRequired` condition is mirrored when KubeVirt sets it
 - CRD accepts updated `cores` and `memoryGiB` values (XValidation removed)
-- CRD accepts updated `gpu` values — adding, removing, and changing GPU
-  (XValidation removed)
-- Verify the operator detects the config-version change when only GPU
-  changes and triggers re-provisioning
-- Verify `RestartRequired` is set unconditionally after a GPU change
+- CRD still rejects GPU changes (XValidation retained)
 
 ### E2E Tests
 
@@ -636,15 +608,15 @@ changes.
 - Resize to an OBSOLETE InstanceType — verify rejection
 - Resize to the current InstanceType — verify no-op (no state change, no
   re-provisioning)
-- Resize from a non-GPU InstanceType to a GPU InstanceType — verify GPU
-  is added to the VM spec and `RestartRequired` is set
-- Resize from a GPU InstanceType to a non-GPU InstanceType — verify GPU
-  is removed from the VM spec and `RestartRequired` is set
-- Resize from one GPU InstanceType to another with a different GPU —
-  verify the VM spec reflects the new GPU device and `RestartRequired`
-  is set
 - Resize a STOPPED ComputeInstance — verify the change applies on next start
   (if Open Question 9.2 confirms this is in scope)
+- (Single-node automated) Resize a running ComputeInstance — verify
+  `RestartRequired` is set (hot-plug unavailable on single node), restart
+  the VM, verify new resources apply
+- (Multi-node manual) Resize a running ComputeInstance on a cluster with
+  hot-plug enabled (`vmRolloutStrategy: LiveUpdate`,
+  `workloadUpdateMethods: [LiveMigrate]`) — verify the VM live-migrates
+  to a new pod and the new CPU/memory apply without user-initiated restart
 
 ## Graduation Criteria
 
@@ -655,15 +627,15 @@ feedback.
 ## Upgrade / Downgrade Strategy
 
 **Upgrade:** The CRD schema change (removing `self == oldSelf` from `Cores`
-and `MemoryGiB`, and removing the GPU immutability CEL rule from
-`ComputeInstanceSpec`) is applied via `make manifests` and CRD reapply.
+and `MemoryGiB`) is applied via `make manifests` and CRD reapply. The
+KubeVirt CR patch for hot-plug enablement is applied by the installer.
 Existing ComputeInstances are unaffected — their specs do not change. The
 fulfillment-service code change (lifting immutability) deploys with the
 normal release cycle.
 
-**Downgrade:** Reverting the CRD restores immutability on `Cores`,
-`MemoryGiB`, and GPU. Any ComputeInstance whose spec was modified during
-the upgrade window retains its current values — the CRD validation only
+**Downgrade:** Reverting the CRD restores immutability on `Cores` and
+`MemoryGiB`. Any ComputeInstance whose spec was modified during the
+upgrade window retains its current values — the CRD validation only
 prevents future changes, not existing state. Reverting the
 fulfillment-service restores the `instance_type` immutability check.
 ComputeInstances resized during the upgrade window keep their new
@@ -676,16 +648,15 @@ During version skew:
 
 - **New fulfillment-service, old operator:** The API accepts
   `instance_type` changes and the reconciler resolves new
-  `cores`/`memoryGiB`/`gpu` values, but the old CRD rejects the update
-  (`self == oldSelf` on cores/memory, GPU immutability CEL rule). The
-  reconciler logs the rejection and retries. No data loss — the API-level
-  change is persisted, and reconciliation succeeds once the operator is
-  updated.
+  `cores`/`memoryGiB` values, but the old CRD rejects the update
+  (`self == oldSelf`). The reconciler logs the rejection and retries.
+  No data loss — the API-level change is persisted, and reconciliation
+  succeeds once the operator is updated.
 
 - **Old fulfillment-service, new operator:** The API rejects
   `instance_type` changes (`InvalidArgument`). The new CRD accepts
-  `cores`/`memoryGiB`/`gpu` changes but none are attempted because the
-  API blocks them. No impact.
+  `cores`/`memoryGiB` changes but none are attempted because the API
+  blocks them. No impact.
 
 **Recommended deployment order:** osac-operator CRD first (to accept the
 new values), then fulfillment-service (to allow the changes).
@@ -733,13 +704,3 @@ The following documentation deliverables are required: [PRD: NFR-2]
 ## Infrastructure Needed
 
 None.
-
----
-
-## Provenance
-
-Committed: commit @ design 0.9.1 - f121df6, workspace main @ cf8208d18
-
-> Authoring phases not recorded this session (commit-time snapshot only).
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.1","ai_workflows":"f121df6","source_repo":"cf8208d18","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

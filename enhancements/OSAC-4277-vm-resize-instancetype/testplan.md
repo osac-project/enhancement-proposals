@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-4277 — VM Resize via InstanceType Selection
-- **Total test cases:** 17
+- **Total test cases:** 15
 - **Requirements covered:** 8 of 8 (FR-1 through FR-6, NFR-1, NFR-2)
 - **Interface changes covered:** 4 of 4 (IC-1 through IC-4)
 
@@ -306,96 +306,6 @@
   InstanceType
 - `lastRestartedAt` is updated to reflect the restart
 
-### GPU Resize Scenarios
-
-#### TC-GPU-01: Resize from non-GPU to GPU InstanceType
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | critical | automated |
-
-##### Preconditions
-
-- A ComputeInstance exists in RUNNING state with a non-GPU InstanceType
-- An InstanceType "gpu-type" exists in ACTIVE state with GPU spec
-  (pciDeviceSelector, resourceName, count)
-- Existing GPU e2e patterns in `test_compute_instance_gpu.py`
-
-##### Steps
-
-1. Call `UpdateComputeInstance` with update mask `spec.instance_type` and
-   target instance_type = "gpu-type"
-2. Wait for `ConfigurationApplied` condition to become True
-3. Verify `RestartRequired` condition is True
-4. Restart the VM via `restart_requested_at`
-5. Wait for the VM to reach RUNNING state
-
-##### Expected Results
-
-- The CRD's `spec.gpu` is set with the target GPU configuration
-- `RestartRequired` is set unconditionally (GPU changes never hot-plug)
-- After restart, the KubeVirt VM spec includes `hostDevices` matching
-  the GPU resourceName
-- The GPU PCI device is registered in the HyperConverged CR's
-  `permittedHostDevices.pciHostDevices`
-
-#### TC-GPU-02: Resize from GPU to non-GPU InstanceType
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | critical | automated |
-
-##### Preconditions
-
-- A ComputeInstance exists in RUNNING state with a GPU InstanceType
-- An InstanceType "no-gpu-type" exists in ACTIVE state without GPU spec
-
-##### Steps
-
-1. Call `UpdateComputeInstance` with update mask `spec.instance_type` and
-   target instance_type = "no-gpu-type"
-2. Wait for `ConfigurationApplied` condition to become True
-3. Verify `RestartRequired` condition is True
-4. Restart the VM via `restart_requested_at`
-5. Wait for the VM to reach RUNNING state
-
-##### Expected Results
-
-- The CRD's `spec.gpu` is cleared (nil)
-- `RestartRequired` is set unconditionally
-- After restart, the KubeVirt VM spec does not include `hostDevices`
-
-#### TC-GPU-03: Resize from one GPU InstanceType to a different GPU
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
-
-##### Preconditions
-
-- A ComputeInstance exists in RUNNING state with GPU InstanceType "gpu-a"
-  (e.g., resourceName "nvidia.com/A100")
-- An InstanceType "gpu-b" exists in ACTIVE state with a different GPU
-  (e.g., resourceName "nvidia.com/H100")
-
-##### Steps
-
-1. Call `UpdateComputeInstance` with update mask `spec.instance_type` and
-   target instance_type = "gpu-b"
-2. Wait for `ConfigurationApplied` condition to become True
-3. Verify `RestartRequired` condition is True
-4. Restart the VM via `restart_requested_at`
-5. Wait for the VM to reach RUNNING state
-
-##### Expected Results
-
-- The CRD's `spec.gpu` reflects the new GPU configuration
-- `RestartRequired` is set unconditionally
-- After restart, the KubeVirt VM spec's `hostDevices` references the new
-  GPU resourceName
-- Both old and new GPU device types are registered in the HyperConverged
-  CR's `permittedHostDevices.pciHostDevices` (additive registration)
-
 ### FR-1 (continued): Concurrent resize behavior
 
 #### TC-FR1-03: Concurrent resize requests use last-write-wins
@@ -425,7 +335,7 @@
 
 ### NFR-1: E2E tests for InstanceType resize scenarios
 
-#### TC-NFR1-01: End-to-end resize lifecycle
+#### TC-NFR1-01: End-to-end resize lifecycle (single-node)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -435,30 +345,58 @@
 
 - A fully provisioned ComputeInstance in RUNNING state
 - Multiple InstanceTypes exist with different cores/memory configurations
-  and at least one with GPU
 - Follows patterns in `tests/e2e/vmaas/regression/test_compute_instance_instance_type.py`
-  and `tests/e2e/vmaas/regression/test_compute_instance_gpu.py`
+- E2E environment is single-node (hot-plug via live migration is not
+  available; all resizes produce `RestartRequired`)
 
 ##### Steps
 
-1. Resize from InstanceType A (no GPU) to InstanceType B (no GPU, different
-   cores/memory)
-2. Verify the VM reflects the new compute resources
-3. If `RestartRequired` is True, restart the VM and verify resources again
-4. Resize from InstanceType B to InstanceType C (with GPU)
-5. Verify `RestartRequired` is True (GPU change)
-6. Restart the VM and verify GPU is attached
-7. Resize back from InstanceType C to InstanceType A (GPU removal)
-8. Verify `RestartRequired` is True
-9. Restart the VM and verify GPU is removed
+1. Resize from InstanceType A to InstanceType B (different cores/memory)
+2. Verify `ConfigurationApplied` = True and `RestartRequired` = True
+3. Restart the VM via `restart_requested_at`
+4. Verify the VM runs with the new CPU/memory values
+5. Resize from InstanceType B to InstanceType C (another cores/memory combo)
+6. Verify `ConfigurationApplied` = True and `RestartRequired` = True
+7. Restart the VM and verify updated resources
 
 ##### Expected Results
 
 - All resize operations complete with `ConfigurationApplied` = True
-- The KubeVirt VM's CPU, memory, and hostDevices match the selected
-  InstanceType after each resize (and restart if required)
-- GPU transitions (add/remove) always set `RestartRequired` = True
+- `RestartRequired` = True after each resize (single-node, no live
+  migration available)
+- After each restart, the KubeVirt VM's CPU and memory match the
+  selected InstanceType
 - The ComputeInstance transitions through expected states without errors
+
+#### TC-NFR1-02: Hot-plug resize via live migration (multi-node)
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| — | high | manual |
+
+##### Preconditions
+
+- A multi-node cluster with KubeVirt hot-plug enabled
+  (`vmRolloutStrategy: LiveUpdate`, `workloadUpdateMethods: [LiveMigrate]`)
+- A fully provisioned ComputeInstance in RUNNING state
+- Multiple InstanceTypes exist with different cores/memory configurations
+
+##### Steps
+
+1. Note the node the VM pod is running on
+2. Resize from InstanceType A to InstanceType B (different cores/memory)
+3. Wait for `ConfigurationApplied` condition to become True
+4. Observe that KubeVirt triggers a live migration (VM pod moves to a
+   different node)
+5. Verify the VM remains available during migration (no downtime)
+6. Verify `RestartRequired` is NOT set (hot-plug succeeded)
+
+##### Expected Results
+
+- The VM live-migrates to a different node with updated resource limits
+- The VM remains accessible throughout the migration (no restart)
+- `RestartRequired` is not set — the resize was applied via hot-plug
+- The KubeVirt VM's CPU and memory match InstanceType B
 
 ### NFR-2: Documentation for InstanceType resize operations
 
@@ -496,9 +434,7 @@
 
 ### Requirement Coverage Gaps
 
-All PRD requirements have test cases. GPU resize scenarios (added to
-the design but not yet in the PRD) are covered by TC-GPU-01 through
-TC-GPU-03.
+All PRD requirements have test cases.
 
 ### Interface Change Coverage Gaps
 
@@ -509,19 +445,20 @@ All interface changes are exercised by test cases.
 - `GRPCClient` in `tests/e2e/core/grpc_client.py` does not yet have an
   `update_compute_instance_instance_type()` method — must be added
   following the pattern of `update_compute_instance_run_strategy()`
-- GPU resize e2e tests depend on a cluster with at least two different
-  GPU device types available; test environment availability TBD
+- TC-NFR1-02 (hot-plug via live migration) requires a multi-node cluster
+  and cannot run in the single-node E2E environment — must be validated
+  manually on a multi-node deployment
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 17 |
-| Critical | 7 |
+| Total test cases | 15 |
+| Critical | 5 |
 | High | 7 |
 | Medium | 3 |
 | Low | 0 |
-| Automated | 16 |
-| Manual | 1 |
+| Automated | 13 |
+| Manual | 2 |
 | Requirements with test cases | 8 / 8 |
 | Interface changes with test cases | 4 / 4 |
