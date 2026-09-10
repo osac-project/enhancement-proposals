@@ -73,15 +73,29 @@ OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabri
 
 ## Proposal
 
-This design introduces a new k8s manager (`cudn_evpn`) registered via osac-installer ConfigMap, used when a NetworkClass declares `k8s_manager: "cudn_evpn"`. Subnet provisioning sequence:
+This design introduces a new k8s manager (`cudn_evpn`) registered via osac-installer ConfigMap, used when a NetworkClass declares `k8s_manager: "cudn_evpn"`.
 
-1. **Fabric manager** (Netris) provisions VNet, allocates L2 VNI (macVRF) and L3 VNI (ipVRF), writes output to ConfigMap
-2. **Subnet controller** extracts VNI from fabric manager ConfigMap
-3. **K8s manager** (cudn_evpn) provisions CUDN with EVPN transport; OVN-Kubernetes auto-updates FRRConfiguration when CUDN appears
+**Provisioning Trigger:** CUDN is created at **Subnet** provisioning time (not VirtualNetwork creation).
+
+**Subnet provisioning sequence:**
+
+1. **Fabric manager** (Netris) runs when Subnet is created:
+   - Creates or gets Netris VPC for parent VirtualNetwork (idempotent, allocates L3 VNI if new)
+   - Creates Netris VNet for this Subnet (allocates L2 VNI)
+   - Extracts both VNIs (L2 from VNet, L3 from VPC)
+   - Writes output to ConfigMap: `{l2_vni, l3_vni, fabric_reserved_range}`
+2. **Subnet controller** extracts VNI data from fabric manager ConfigMap
+3. **K8s manager** (cudn_evpn) provisions CUDN with both VNIs:
+   - `spec.network.evpn.macVRF.vni = l2_vni` (from Netris VNet)
+   - `spec.network.evpn.ipVRF.vni = l3_vni` (from Netris VPC)
+   - OVN-Kubernetes auto-updates FRRConfiguration when CUDN appears
+
+**Important:** VirtualNetwork creation does NOT trigger Netris VPC creation or CUDN provisioning. Both happen when the first Subnet is created.
 
 Key resources:
+- **VirtualNetwork** (fulfillment-service): API object only, no fabric provisioning until Subnet created
 - **NetworkClass** (fulfillment-service): extended with `k8s_manager` field (already exists)
-- **Subnet** (fulfillment-service + osac-operator CRD): validation blocks second subnet per VirtualNetwork when k8s manager requires it
+- **Subnet** (fulfillment-service + osac-operator CRD): triggers fabric (VPC + VNet) and k8s (CUDN) provisioning
 - **ClusterUserDefinedNetwork** (OVN-Kubernetes CRD): k8s manager creates with EVPN transport, macVRF/ipVRF VNI (route targets auto-generated in Phase 1, may be explicit in Phase 2)
 - **FRRConfiguration** (FRR operator CRD): installation prerequisite (not created by k8s manager), auto-updated by OVN-Kubernetes when CUDN appears
 
@@ -116,10 +130,11 @@ sequenceDiagram
     Note over Controller: Sequential: fabric → k8s
 
     Controller->>AAP: Create fabric Job (netris role)
-    AAP->>AAP: Provision Netris VNet, allocate VNI
-    AAP-->>Controller: Job Complete (VNI in status)
+    AAP->>AAP: Create/get Netris VPC (L3 VNI)<br/>Create Netris VNet (L2 VNI)
+    Note over AAP: VPC created idempotently<br/>(first Subnet creates, second+ reuse)
+    AAP-->>Controller: Job Complete (ConfigMap with both VNIs)
 
-    Controller->>Controller: Extract L2 VNI, L3 VNI
+    Controller->>Controller: Extract L2 VNI, L3 VNI from ConfigMap
     Controller->>K8s: Create k8s Job (cudn_evpn role)<br/>extra_vars: {l2_vni, l3_vni, ...}
 
     K8s->>OVN: Create CUDN (EVPN transport, VNI)
@@ -675,9 +690,11 @@ capabilities:
 ```
 
 **Rationale:**
+- **Provisioning timing:** Both VPC and VNet created during Subnet provisioning (not VirtualNetwork provisioning)
 - Netris VPC (ipVRF) maps to VirtualNetwork (L3 VNI for cross-subnet routing via fabric)
 - Netris VNet (macVRF) maps to Subnet (L2 VNI for same-subnet bridging)
-- VPC is created/fetched idempotently (multiple Subnets under same VirtualNetwork reuse VPC)
+- **VPC created idempotently:** First Subnet creates VPC + VNet, second+ Subnets reuse existing VPC (create/get pattern)
+- **Both VNIs extracted:** L2 VNI from VNet creation, L3 VNI from VPC creation/get → both passed to CUDN
 - **ConfigMap data path** (not set_stats → AAP Job CR) — verified approach, set_stats does not populate Job CR status.extraVars
 - Generic field names (`fabric_reserved_range`, not `netris_reserved_range`) make output contract reusable for future fabric managers (OpenStack Neutron, Cisco ACI)
 - Route targets not returned in Phase 1 - CUDN auto-generates as "AS:VNI"
@@ -876,7 +893,7 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subn
     namespaceName := subnet.GetName()  // Namespace name = Subnet name
     namespace := &corev1.Namespace{}
     hasCUDN := false
-    
+
     if err := r.Get(ctx, client.ObjectKey{Name: namespaceName}, namespace); err == nil {
         // Namespace exists → this Subnet has CUDN
         hasCUDN = true
@@ -884,7 +901,7 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subn
         // Unexpected error (not NotFound)
         return reconcile.Result{}, err
     }
-    
+
     // If CUDN exists, check for VMs before allowing deletion
     if hasCUDN {
         vmList := &kubevirtv1.VirtualMachineList{}
@@ -899,7 +916,7 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subn
             // Requeue - ComputeInstance controller will delete VMs when their CRs are deleted
             return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
         }
-        
+
         // No VMs → safe to proceed with CUDN + fabric deprovision
         // Run k8s deprovision job (CUDN delete → namespace delete)
         // Then trigger fabric deprovision (Netris VNet delete) only after CUDN fully deleted
