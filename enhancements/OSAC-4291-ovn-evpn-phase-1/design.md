@@ -135,6 +135,7 @@ sequenceDiagram
 
 - **Second subnet creation when VMs exist:** API returns 400 Bad Request. First subnet has running VMs, cannot add additional subnets (Phase 1 limitation). Tenant must delete VMs or create new VirtualNetwork for bare-metal workloads.
 - **VM creation when multiple subnets exist:** VMaaS blocks VM placement with error. Only single subnet per VirtualNetwork supports VMs (CUDN). Multiple subnets = all fabric-only (no CUDN). Tenant must delete extra subnets or create new VirtualNetwork for VMs.
+- **Subnet deletion when VMs exist:** Operator blocks deletion, emits "DeletionBlocked" event. Subnet with CUDN cannot be deleted while VMs running. Tenant must delete VMs first (ComputeInstance CRs), controller requeues every 30s.
 - **Fabric job failure:** Controller requeues, does not start k8s job until fabric succeeds
 - **VNI missing in fabric output:** Controller marks Subnet as Failed, user must check fabric manager logs
 - **CUDN creation failure:** K8s job fails, controller requeues, Subnet status shows Failed with AAP job reference
@@ -866,35 +867,57 @@ capabilities:
 
 **Subnet Controller Pre-Delete Validation:**
 
-The Subnet controller (not the playbook) enforces deletion ordering:
+The Subnet controller (not the playbook) enforces deletion ordering and VM validation:
 
 ```go
 // internal/controller/subnet_controller.go
 func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subnet) (reconcile.Result, error) {
-    // Check for ComputeInstances in the Subnet's namespace before deprov job
-    namespace := subnet.GetName()  // Namespace name = Subnet name
-    vmList := &kubevirtv1.VirtualMachineList{}
-    if err := r.List(ctx, vmList, client.InNamespace(namespace)); err != nil {
+    // Check if this Subnet has CUDN (k8s networking)
+    namespaceName := subnet.GetName()  // Namespace name = Subnet name
+    namespace := &corev1.Namespace{}
+    hasCUDN := false
+    
+    if err := r.Get(ctx, client.ObjectKey{Name: namespaceName}, namespace); err == nil {
+        // Namespace exists → this Subnet has CUDN
+        hasCUDN = true
+    } else if !apierrors.IsNotFound(err) {
+        // Unexpected error (not NotFound)
         return reconcile.Result{}, err
     }
+    
+    // If CUDN exists, check for VMs before allowing deletion
+    if hasCUDN {
+        vmList := &kubevirtv1.VirtualMachineList{}
+        if err := r.List(ctx, vmList, client.InNamespace(namespaceName)); err != nil {
+            return reconcile.Result{}, err
+        }
 
-    if len(vmList.Items) > 0 {
-        r.Recorder.Event(subnet, corev1.EventTypeWarning, "DeletionBlocked",
-            fmt.Sprintf("Cannot delete Subnet while %d VMs exist in namespace %s. Delete VMs first.", len(vmList.Items), namespace))
-        // Requeue - ComputeInstance controller will delete VMs when their CRs are deleted
-        return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
+        if len(vmList.Items) > 0 {
+            r.Recorder.Event(subnet, corev1.EventTypeWarning, "DeletionBlocked",
+                fmt.Sprintf("Cannot delete Subnet with CUDN: %d VMs still running in namespace %s. "+
+                    "Delete VMs first (VMs must be deleted before Subnet).", len(vmList.Items), namespaceName))
+            // Requeue - ComputeInstance controller will delete VMs when their CRs are deleted
+            return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
+        }
+        
+        // No VMs → safe to proceed with CUDN + fabric deprovision
+        // Run k8s deprovision job (CUDN delete → namespace delete)
+        // Then trigger fabric deprovision (Netris VNet delete) only after CUDN fully deleted
+    } else {
+        // Fabric-only subnet (no CUDN) → proceed directly to fabric deprovision
+        // No VM check needed (VMs cannot exist without CUDN namespace)
     }
 
-    // Safe to proceed - no VMs in namespace
-    // Run deprovision job (CUDN delete → namespace delete)
-    // Then trigger fabric deprovision (Netris VNet delete) only after CUDN fully deleted
     return r.runDeprovisionJob(ctx, subnet)
 }
 ```
 
 **Deletion Rationale:**
+- **CUDN check first:** Determines if subnet has k8s networking (namespace exists)
+- **VM validation (CUDN subnets only):** Block deletion if VMs running — enforces correct deletion order (VMs → Subnet)
 - **Controller validation** (not playbook) enforces VM deletion prerequisite — separation of concerns (ComputeInstance controller owns VM lifecycle)
-- Playbook deletes: CUDN → wait fully deleted → namespace
+- **Fabric-only subnets:** Skip VM check (no CUDN = no VMs possible), proceed directly to fabric deprovision
+- **CUDN subnets:** Playbook deletes CUDN → wait fully deleted → namespace, then fabric deprovision
 - **CUDN wait for full deletion** (not just deletionTimestamp) ensures OVN has released VNI before fabric deprovision
 - **Fabric deprovision after CUDN deleted** mitigates VNI reuse race (Netris may reuse VNI if VNet deleted while CUDN still exists)
 - Namespace delete safe after CUDN gone (no finalizer race)
@@ -1305,6 +1328,9 @@ Where is the authoritative MAC value? Does Netris VNet gateway MAC come from a p
   - Sequential provisioning: k8s job receives VNI data and reserved range in extraVars
   - Parallel provisioning fallback when only fabric manager exists (no k8s manager in NetworkClass)
   - Controller restart mid-provisioning resumes from fabric job complete state
+  - **Deletion validation (CUDN subnet with VMs):** deletion blocked, emits DeletionBlocked event, requeues
+  - **Deletion validation (CUDN subnet no VMs):** deletion proceeds, deprovision job runs
+  - **Deletion validation (fabric-only subnet):** deletion proceeds directly, no VM check
 
 **VMaaS (Go + Ginkgo):**
 
