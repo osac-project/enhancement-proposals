@@ -13,6 +13,7 @@ Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.
 | Term | Definition |
 |------|-----------|
 | **Allocation metering** | Metering that runs from the point a resource is allocated until deletion, regardless of whether the resource is actively in use. Reflects the provider's physical capacity reservation. |
+| **Deployment** | A discrete OSAC installation identified by the metering configuration. |
 
 ## 1. Problem Statement
 
@@ -78,7 +79,7 @@ VirtualNetwork, Subnet, and SecurityGroup are available on all three services bu
 ### 5.1 Networking Resource Allocation Metering
 
 - **CAP-1:** Billable networking resources (ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion.
-- **CAP-2:** Networking usage is queryable by resource type, IP family (IPv4/IPv6 for ExternalIP), region, tenant, and project.
+- **CAP-2:** Networking usage is queryable by resource type, IP family (IPv4/IPv6 for ExternalIP), deployment, tenant, and project.
 
 ### 5.2 Unattached IP Metering
 
@@ -92,7 +93,7 @@ VirtualNetwork, Subnet, and SecurityGroup are available on all three services bu
 
 This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
 
-Each metered networking resource type has a flat allocation meter. Usage is queryable by resource type, region, tenant, and project; ExternalIPs additionally use IP family and attachment status (see CAP-2 and CAP-3).
+Each metered networking resource type has a flat allocation meter. Usage is queryable by resource type, deployment, tenant, and project; ExternalIPs additionally use IP family and attachment status (see CAP-2 and CAP-3).
 
 | Resource | Meter | Unit | Example (30 days) |
 |----------|-------|------|-------------------|
@@ -104,7 +105,7 @@ Each metered networking resource type has a flat allocation meter. Usage is quer
 - [ ] Each billable networking resource (ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
 - [ ] An allocated-but-unattached ExternalIP generates usage data
 - [ ] VirtualNetwork, Subnet, and SecurityGroup generate no metering usage data
-- [ ] Networking usage can be broken down by resource type, region, tenant, and project; ExternalIPs additionally expose IP family and attachment status
+- [ ] Networking usage can be broken down by resource type, deployment, tenant, and project; ExternalIPs additionally expose IP family and attachment status
 - [ ] ExternalIPs attached to a parent resource (ComputeInstances/Clusters/BareMetalInstances) can be attributed to the parent in a unified usage view
 - [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
 - [ ] Networking usage data maintains per-second granularity, deduplication, and retention consistent with Part 1 metering
@@ -125,12 +126,9 @@ Each metered networking resource type has a flat allocation meter. Usage is quer
 - **Owner:** OSAC platform team
 - **Mitigation:** All Part 2c meters depend on the metering infrastructure (event pipeline, provider adapters) established by Part 1 (OSAC-985). Part 2c implementation cannot begin until Part 1 infrastructure is deployed.
 
-## 11. Open Questions
+## 11. Resolved Decision: Allocation Metering Start Point
 
-### 11.1 Should allocation metering start at PENDING or READY?
-
-- **Owner:** OSAC platform team
-- **Impact:** CAP-1. The current model starts metering at READY/ALLOCATED because that is when the resource is usable by the tenant. However, a resource may already consume scarce provider capacity while PENDING (e.g., an ExternalIP reserved from the pool before it becomes attachable). Starting at PENDING aligns with the BMaaS allocation model (metering from provisioning start). Starting at READY aligns with what the tenant can observe and use. This applies to all metered networking resources with a PENDING-to-READY transition.
+ExternalIP usage starts at `ALLOCATED`, and NATGateway usage starts at `READY`, matching CAP-1. Time spent in `PENDING`, including provider capacity reserved before the resource becomes usable, is not metered.
 
 ## Related PRDs
 
@@ -145,11 +143,8 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Authored: respond @ prd 0.6.3 - 6ec8c11, workspace main @ 78853cd
-Final: revise @ prd 0.8.0 - 7efcedb, workspace HEAD @ 6e8f396
+Committed: commit @ prd 0.9.0 - 562b610, workspace main @ 1095dc5d3
 
-> Context changed between respond and revise.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"6e8f396","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"1095dc5d3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

@@ -4,12 +4,19 @@
 
 This repository contains design documents (enhancement proposals) for the OSAC project. It is a documentation-only repository with no build dependencies.
 
-**Do not create PRDs or design documents directly in this repo.** Use the osac-workspace AI workflows instead:
+**Do not create PRDs or design documents directly in this repo.** Use the PRD
+and design workflows from a bootstrapped checkout of `osac-project/osac`
+instead. Start the agent from that repository's root—the directory containing
+`tools/bootstrap.sh` and `skills/`—not from this documentation repository.
 
 - **PRD workflow**: `/prd:ingest` → `/prd:clarify` → `/prd:draft` → `/prd:publish`
 - **Design workflow**: `/design:ingest` → `/design:draft` → `/design:publish`
 
-These workflows handle template selection, feature dimensions context, section guidance, and publishing. See `osac-workspace/AGENTS.md` for full instructions.
+Run `tools/bootstrap.sh` in that OSAC checkout if the workflows are not
+installed. These workflows handle template selection, feature dimensions
+context, section guidance, provenance, and publishing; the relevant publish
+command writes the resulting documents to this `enhancement-proposals`
+checkout. See the OSAC repository's `AGENTS.md` for the full instructions.
 
 ## Enhancement Proposals
 
