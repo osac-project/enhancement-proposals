@@ -53,12 +53,12 @@ OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabri
 
 - Reuse NetworkClass dispatcher pattern and two-manager architecture from OSAC-1433
 - Sequential provisioning pattern reusable for future fabric-to-k8s dependencies
-- **One VM-enabled VNet per VPC (Phase 1 limitation):**
-  - First Subnet per VirtualNetwork gets CUDN (VM-enabled)
-  - Second+ Subnets are fabric-only (participate in IP-VRF, no CUDN)
-  - **First CUDN persists** when adding fabric-only VNets
+- **Single-subnet-for-VMs constraint:**
+  - Only single-subnet VirtualNetworks support VMs (CUDN provisioning)
+  - First Subnet gets CUDN immediately (on Subnet provisioning, not VM creation)
+  - CUDN persists when adding subnets, but VMs blocked in all subnets
   - API validation: Block second subnet creation if first has VMs (preserves VM topology)
-  - VMaaS validation: Block VM creation in fabric-only subnets (no CUDN namespace)
+  - VMaaS validation: Block VM creation if subnet count > 1 (enforces single-subnet constraint)
 - K8s manager playbook creates CUDN as Kubernetes-native resource (no external API calls)
 - FRRConfiguration for BGP underlay peering is installation prerequisite (auto-updated by OVN-Kubernetes, not by k8s manager)
 - Installation prerequisites documented for Cloud Infrastructure Admin
@@ -76,7 +76,7 @@ OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabri
 
 **Central Design Statement:**
 
-Phase 1 extends an existing Netris VPC and its VNets into OpenShift. **One VNet per VPC may be VM-enabled through a primary EVPN CUDN.** Additional VNets may participate in the same fabric IP-VRF but remain fabric-only until secondary CUDN/multi-NIC support is available.
+Phase 1 extends an existing Netris VPC and its VNets into OpenShift. **Only single-subnet VirtualNetworks support VMs.** The first Subnet gets a CUDN immediately (on provisioning, not VM creation). If additional Subnets are added, the CUDN persists but VMaaS blocks VMs in all Subnets. Multi-subnet VirtualNetworks are fabric-only until secondary CUDN/multi-NIC support is available.
 
 This design introduces a new k8s manager (`cudn_evpn`) registered via osac-installer ConfigMap, used when a NetworkClass declares `k8s_manager: "cudn_evpn"`.
 
@@ -85,13 +85,14 @@ This design introduces a new k8s manager (`cudn_evpn`) registered via osac-insta
 | OSAC Resource | Netris Resource | OVN-K Resource | VM Support |
 |---------------|-----------------|----------------|------------|
 | VirtualNetwork | Netris VPC (L3 ipVRF) | — | — |
-| First Subnet | Netris VNet (L2 macVRF) | CUDN (primary) | ✅ VMs allowed |
-| Second+ Subnets | Netris VNet (L2 macVRF) | — | ❌ Fabric-only (bare-metal) |
+| First Subnet (alone) | Netris VNet (L2 macVRF) | CUDN (primary) | ✅ VMs allowed |
+| First Subnet (with second+) | Netris VNet (L2 macVRF) | CUDN (persists) | ❌ VMs blocked |
+| Second+ Subnets | Netris VNet (L2 macVRF) | — | ❌ Fabric-only |
 
 - **One CUDN per VirtualNetwork** (Phase 1 limitation - OVN-K lacks secondary CUDN support)
 - **Multiple VNets per VPC** (Netris fabric capability - all share same IP-VRF)
-- **First Subnet = VM-enabled** (CUDN created, persists even when adding fabric-only VNets)
-- **Second+ Subnets = fabric-only** (participate in IP-VRF, no CUDN, bare-metal workloads)
+- **First Subnet CUDN created immediately** (on Subnet provisioning, not VM creation)
+- **CUDN persists when adding subnets** (but VMaaS blocks VMs in all subnets if multiple exist)
 
 **Provisioning Trigger:** CUDN is created at **first Subnet** provisioning time (not VirtualNetwork creation).
 
@@ -111,11 +112,11 @@ This design introduces a new k8s manager (`cudn_evpn`) registered via osac-insta
    - Gateway IP owned by Netris SVI (CUDN has no logical router port - fabric routes L3)
    - OVN-Kubernetes auto-updates FRRConfiguration when CUDN appears
 
-**Important:** 
+**Important:**
 - VirtualNetwork creation does NOT trigger Netris VPC or CUDN provisioning
-- First Subnet triggers VPC + VNet + CUDN
+- First Subnet triggers VPC + VNet + CUDN (CUDN created immediately, not on VM creation)
 - Second+ Subnets trigger only VNet (fabric-only, no CUDN)
-- First Subnet CUDN persists when adding fabric-only VNets
+- **CUDN persists when adding subnets**, but VMaaS blocks VMs in all subnets when multiple exist
 
 Key resources:
 - **VirtualNetwork** (fulfillment-service): API object only, no fabric provisioning until Subnet created
@@ -329,13 +330,13 @@ func (s *SubnetServer) checkSubnetHasVMs(ctx context.Context, subnetName string)
 #### VMaaS: VM Placement Validation
 
 **Summary:**
-- ✅ **First subnet** (VM-enabled with CUDN) → **VMs allowed**
-- ❌ **Second+ subnets** (fabric-only, no CUDN) → **VMs blocked** by VMaaS validation
-- ✅ **First subnet CUDN persists** when adding fabric-only VNets
+- ✅ **Single subnet** under VirtualNetwork → **VMs allowed**
+- ❌ **Multiple subnets** under VirtualNetwork → **VMs blocked in ALL subnets** by VMaaS validation
+- CUDN persists (not deleted) when second subnet added, but VMs blocked by subnet count validation
 
 **VM Creation Validation Logic:**
 
-VMaaS enforces CUDN presence validation before allowing VM placement in EVPN-bridged subnets. Only the first Subnet (VM-enabled with CUDN) supports VMs.
+VMaaS enforces subnet count validation before allowing VM placement in EVPN-bridged subnets. Only single-subnet VirtualNetworks support VMs.
 
 ```go
 // VMaaS ComputeInstance controller (pseudo-code)
@@ -347,34 +348,37 @@ func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, sub
         return nil
     }
 
-    // For cudn_evpn: verify THIS subnet has CUDN (namespace exists)
-    namespace := &corev1.Namespace{}
-    nsName := subnet.Name  // Namespace name = Subnet name
-    if err := r.Get(ctx, client.ObjectKey{Name: nsName}, namespace); err != nil {
-        if apierrors.IsNotFound(err) {
-            // No namespace → this is a fabric-only subnet (second+ VNet)
-            return fmt.Errorf(
-                "Cannot create VM in Subnet %q: subnet is fabric-only (no CUDN). "+
-                "Phase 1 limitation: only first Subnet per VirtualNetwork is VM-enabled. "+
-                "This Subnet participates in fabric IP-VRF (L3 routing) but has no k8s networking. "+
-                "Solution: Create VM in first (VM-enabled) Subnet, or use this Subnet for bare-metal workloads.",
-                subnet.Name)
-        }
+    // For cudn_evpn: count total subnets under this VirtualNetwork
+    var subnetList osacv1.SubnetList
+    if err := r.List(ctx, &subnetList, client.MatchingLabels{
+        "osac.openshift.io/virtual-network": subnet.Spec.VirtualNetwork,
+    }); err != nil {
         return err
     }
 
-    // Namespace exists → CUDN provisioned → VM placement allowed
+    subnetCount := len(subnetList.Items)
+    if subnetCount > 1 {
+        return fmt.Errorf(
+            "Cannot create VM in Subnet %q: VirtualNetwork %q has %d subnets. "+
+            "Phase 1 limitation: VMs require single subnet per VirtualNetwork. "+
+            "Multiple subnets = all fabric-only (bare-metal workloads only). "+
+            "Solution: Delete extra subnets or create new VirtualNetwork with single subnet for VMs.",
+            subnet.Name, subnet.Spec.VirtualNetwork, subnetCount)
+    }
+
+    // Single subnet → VM placement allowed
     return nil
 }
 ```
 
 **Placement Behavior:**
 
-| Scenario | Subnet Count | CUDN Provisioned | Namespace Exists | VM Placement |
-|----------|--------------|------------------|------------------|--------------|
-| Single subnet under VPC | 1 | ✅ Yes | ✅ Yes | ✅ **Allowed** - Creates VM in CUDN namespace |
-| Multiple subnets under VPC (any subnet) | 2+ | ❌ No (all fabric-only) | ❌ No | ❌ **Blocked** - VMaaS validation: requires single subnet for VMs |
-| Single subnet with skip annotation | 1 | ❌ No (explicit fabric-only) | ❌ No | ❌ **Blocked** - VMaaS validation: no CUDN |
+| Scenario | Subnet Count | CUDN Provisioned | VM Placement |
+|----------|--------------|------------------|--------------|
+| Single subnet under VPC | 1 | ✅ Yes (first subnet) | ✅ **Allowed** - Creates VM in CUDN namespace |
+| First subnet with VMs, second+ added | 2+ | ✅ Yes (persists) | ❌ **Blocked** - VMaaS validation: subnet count > 1 |
+| Multiple subnets, no VMs | 2+ | ✅ Yes (first subnet, persists) | ❌ **Blocked** - VMaaS validation: subnet count > 1 |
+| Single subnet with skip annotation | 1 | ❌ No (explicit fabric-only) | ❌ **Blocked** - No CUDN to place VM into |
 
 **Error Messages:**
 
