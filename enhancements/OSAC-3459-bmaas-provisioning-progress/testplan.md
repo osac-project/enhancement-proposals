@@ -234,8 +234,11 @@
 
 ##### Steps
 
-1. Open the completed instance's detail page and inspect the stepper.
-2. Issue `GET /api/fulfillment/v1/baremetal_instances/{id}` and read
+1. With the instance at readiness, make the source `BareMetalInstance` CR
+   unavailable (delete/detach it on the hub) while the fulfillment record remains
+   live, so any subsequent response must be served from the DB rather than the CR.
+2. Open the completed instance's detail page and inspect the stepper.
+3. Issue `GET /api/fulfillment/v1/baremetal_instances/{id}` and read
    `status.conditions`.
 
 ##### Expected Results
@@ -243,7 +246,8 @@
 - All four steps render `success`; no running spinner and no step marked current;
   no per-step duration is asserted (none is shown this iteration).
 - The API returns `PROVISIONED = True` and `READY = True` with their terminal
-  reasons/messages, served from the DB.
+  reasons/messages, served from the DB independent of the now-unavailable CR — a
+  CR-backed response could not have produced this result.
 
 #### TC-FR4-02: Failed instance persists the failing condition, then archives to 404
 
@@ -258,17 +262,22 @@
 
 ##### Steps
 
-1. Issue `GET /api/fulfillment/v1/baremetal_instances/{id}` and read
+1. With the instance's Provisioning stage failed, make the source
+   `BareMetalInstance` CR unavailable (delete/detach it on the hub) while the
+   fulfillment record remains live, before the first `GET`.
+2. Issue `GET /api/fulfillment/v1/baremetal_instances/{id}` and read
    `status.conditions`.
-2. Let fulfillment soft-delete and archive the record to `archived_<table>` (on
-   finalizer removal), then issue the same `GET` again.
+3. Only after that assertion, let fulfillment soft-delete and archive the record
+   to `archived_<table>` (on finalizer removal), then issue the same `GET` again.
 
 ##### Expected Results
 
-- Step 1: the response retains the failing `PROVISIONED` condition
-  (`False`, `reason = ProvisionJobFailed`, curated `message`) served from the DB
-  independent of the CR, so the failure remains viewable after completion.
-- Step 2: returns 404 — the released record has been archived and there is no
+- Step 2 (source CR already unavailable): the response retains the failing
+  `PROVISIONED` condition (`False`, `reason = ProvisionJobFailed`, curated
+  `message`) served from the DB independent of the CR, so the failure remains
+  viewable after the CR is gone — a CR-backed response could not have produced this
+  result.
+- Step 3: returns 404 — the released record has been archived and there is no
   archive-read path, so FR-4 is bounded to the life of the live record (matching
   VMaaS/CaaS).
 
@@ -290,8 +299,9 @@
 ##### Steps
 
 1. For each IC-5 reason, run `syncStatus()` on its fixture.
-2. Read the failing condition's `reason`/`message` from the API.
-3. Render the stepper for that failed instance and read the failed step's
+2. Read the failing condition's `reason`/`message` from the API, and record
+   **which** condition carries the failure (`PROVISIONED` vs `READY`).
+3. Render the stepper for that failed instance and read the failed step's name and
    `description`.
 
 ##### Expected Results
@@ -301,8 +311,15 @@
   and configuration did not complete; the provisioning job failed."). The **full
   IC-5 failure vocabulary is exercised** — one message per reason — and no other
   value is emitted; the mapping is fixed and deterministic.
-- For each reason, the same message renders verbatim in the stepper's failed step
-  description.
+- For every IC-5 reason, the failure is carried by the condition IC-5 names: the
+  six provisioning-stage reasons (`NoMatchingHosts`, `HostAllocationFailed`,
+  `ProvisionJobFailed`, `NetworkAttachmentFailed`, `NetworkHandoffFailed`,
+  `IPDiscoveryFailed`) on `PROVISIONED`, and `ReadyTimeout` on `READY`. The test
+  asserts the expected carrier per reason.
+- For each reason, the stepper marks the IC-5 **Failed step** for that reason
+  (`ReadyTimeout` → Ready; the provisioning reasons → Host Allocation,
+  Provisioning, or Network Setup per the IC-5 table) as `danger`, and the same
+  message renders verbatim in that failed step's description.
 
 #### TC-FR5-02: Raw internal error text is not surfaced in the conditions
 

@@ -237,8 +237,8 @@ CR exists on the hub.
    condition. Per-step *durations* are **not** shown in this iteration (the single
    condition retains only the current stage's `lastTransitionTime`) — a durable
    per-phase timeline is deferred.
-3. While the instance is non-terminal, the detail query re-fetches on a bounded
-   ~5s polling interval (a per-page interval, not the global ~10s default); the
+3. While the instance is non-terminal, the detail view polls on a fixed 5-second
+   `refetchInterval` (a per-page override of the global ~10s default); the
    operator updates the CR conditions, the osac-operator feedback controller
    signals fulfillment, which re-syncs the DB within seconds, and the next poll
    shows the advanced stage without any user action.
@@ -246,9 +246,12 @@ CR exists on the hub.
    phase-specific, human-readable `message` (for example, "OS installation and
    configuration did not complete; the provisioning job failed."); no raw internal
    error is shown, and no retry control is offered.
-5. When provisioning completes, `PROVISIONED` is `True` and `READY` is `True`; all
+5. When provisioning completes, `PROVISIONED` flips `True` while `READY` is not yet
+   `True`: the first three steps show succeeded and the **Ready** step becomes the
+   current running step; the query keeps polling.
+6. When the instance reaches its powered-on ready state, `READY` flips `True`; all
    four steps show succeeded and refetching stops.
-6. After the instance is released and its CR removed, the detail view continues to
+7. After the instance is released and its CR removed, the detail view continues to
    serve the last persisted conditions (terminal or failure `reason`/`message`)
    from the fulfillment DB until the instance record is archived on finalizer
    removal, after which the public `GET` returns 404 as for any released instance.
@@ -328,18 +331,21 @@ The concrete interface changes (referenced by the testplan as IC-N):
 - **IC-5 — Failure message mapping.** Define the exact human-readable failure
   `message` the reconciler writes into the failing condition. The mapping is
   **fixed and deterministic**: each failure reason maps to exactly one message
-  string, so a consumer or test can assert one expected `message` per reason.
+  string, so a consumer or test can assert one expected `message` per reason. The
+  **Condition carrier** column names which condition holds the failure —
+  `PROVISIONED` for the provisioning stages, `READY` for the Ready stage — and the
+  **Failed step** column names the UI step IC-4 renders in the `danger` variant.
   (Deprovisioning failures are out of scope this iteration.)
 
-  | Stage | Failure reason (from failing condition/job) | Exact `message` |
-  |-------|---------------------------------------------|-----------------|
-  | Host Allocation | `NoMatchingHosts` (no available host matched the profile) | "No bare metal host matched the requested profile." |
-  | Host Allocation | `HostAllocationFailed` (host search/claim error other than no-match) | "Host allocation failed." |
-  | Provisioning | `ProvisionJobFailed` (the `osac-create-bare-metal-instance` job failed) | "OS installation and configuration did not complete; the provisioning job failed." |
-  | Network Setup | `NetworkAttachmentFailed` | "Network attachment did not complete." |
-  | Network Setup | `NetworkHandoffFailed` | "Network handoff (reboot) did not complete." |
-  | Network Setup | `IPDiscoveryFailed` | "IP address discovery did not complete." |
-  | Ready | `ReadyTimeout` (host did not reach powered-on ready state) | "The instance did not reach its powered-on ready state." |
+  | Stage | Failure reason (from failing condition/job) | Condition carrier | Failed step | Exact `message` |
+  |-------|---------------------------------------------|-------------------|-------------|-----------------|
+  | Host Allocation | `NoMatchingHosts` (no available host matched the profile) | `PROVISIONED` | Host Allocation | "No bare metal host matched the requested profile." |
+  | Host Allocation | `HostAllocationFailed` (host search/claim error other than no-match) | `PROVISIONED` | Host Allocation | "Host allocation failed." |
+  | Provisioning | `ProvisionJobFailed` (the `osac-create-bare-metal-instance` job failed) | `PROVISIONED` | Provisioning | "OS installation and configuration did not complete; the provisioning job failed." |
+  | Network Setup | `NetworkAttachmentFailed` | `PROVISIONED` | Network Setup | "Network attachment did not complete." |
+  | Network Setup | `NetworkHandoffFailed` | `PROVISIONED` | Network Setup | "Network handoff (reboot) did not complete." |
+  | Network Setup | `IPDiscoveryFailed` | `PROVISIONED` | Network Setup | "IP address discovery did not complete." |
+  | Ready | `ReadyTimeout` (host did not reach powered-on ready state) | `READY` | Ready | "The instance did not reach its powered-on ready state." |
 
   These strings are the complete vocabulary; the reconciler never copies a raw
   operator/AAP/metal3 error string into `message`, and no other message value is
@@ -847,9 +853,8 @@ e2e) cover the change.
 
 ## Provenance
 
-Authored: draft @ design 0.9.0 - 562b610, workspace main @ d27d7951b
-Final: revise @ design 0.9.0 - 562b610, workspace main @ 770f353d1
+Committed: commit @ design 0.9.1 - f121df6, workspace design/OSAC-3459 @ f7803f3 (dirty)
 
-> Context changed between draft and revise.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"770f353d1","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","research","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.1","ai_workflows":"f121df6","source_repo":"f7803f3 (dirty)","source_repo_branch":"design/OSAC-3459","commits_behind_main":0,"commits_ahead_main":127,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
