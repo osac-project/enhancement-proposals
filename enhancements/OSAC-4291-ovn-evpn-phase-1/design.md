@@ -129,7 +129,7 @@ sequenceDiagram
 
 **Error Paths:**
 
-- **Second subnet with CUDN:** Operator auto-skips k8s manager (fabric-only provisioning). VMaaS validation prevents VM placement in fabric-only subnets.
+- **VM creation in second+ subnet:** VMaaS blocks VM placement with error. Only first subnet has CUDN (k8s networking). Second+ subnets are fabric-only (bare-metal only). Tenant must create VM in first subnet or create new VirtualNetwork.
 - **Fabric job failure:** Controller requeues, does not start k8s job until fabric succeeds
 - **VNI missing in fabric output:** Controller marks Subnet as Failed, user must check fabric manager logs
 - **CUDN creation failure:** K8s job fails, controller requeues, Subnet status shows Failed with AAP job reference
@@ -212,6 +212,73 @@ The single-subnet constraint is **not enforced** at the fulfillment-service API 
 - API should allow flexible subnet creation for both workload types
 - Operator auto-detects: first subnet gets CUDN, second+ subnets are fabric-only
 - VMaaS validation prevents VM placement in fabric-only subnets (no CUDN namespace)
+
+#### VMaaS: VM Placement Validation
+
+**Summary:**
+- ✅ **Single subnet (or first subnet)** under a VirtualNetwork → provisions both Netris VNet + CUDN → **VMs allowed**
+- ❌ **Second+ subnets** under a VirtualNetwork → provisions Netris VNet only (fabric-only) → **VMs blocked** by VMaaS validation
+
+**VM Creation Validation Logic:**
+
+VMaaS enforces CUDN presence validation before allowing VM placement in EVPN-bridged subnets. This prevents VMs from being placed in fabric-only subnets (second+ subnets that have no k8s networking).
+
+```go
+// VMaaS ComputeInstance controller (pseudo-code)
+func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, subnet *osacv1.Subnet) error {
+    // Check if subnet has cudn_evpn k8s manager
+    networkClass := getNetworkClass(ctx, subnet)
+    if networkClass.Spec.KubernetesManager != "cudn_evpn" {
+        // Not EVPN-bridged, use regular placement logic
+        return nil
+    }
+    
+    // For cudn_evpn subnets: verify CUDN namespace exists
+    namespace := &corev1.Namespace{}
+    nsName := subnet.Name  // Namespace name = Subnet name
+    if err := r.Get(ctx, client.ObjectKey{Name: nsName}, namespace); err != nil {
+        if apierrors.IsNotFound(err) {
+            return fmt.Errorf(
+                "Cannot create VM in Subnet %q: subnet is fabric-only (no CUDN). "+
+                "VMs can only be placed in the first subnet under VirtualNetwork %q (which has CUDN). "+
+                "Fabric-only subnets are for bare-metal workloads only.",
+                subnet.Name, subnet.Spec.VirtualNetwork)
+        }
+        return err
+    }
+    
+    // Namespace exists → CUDN provisioned → VM placement allowed
+    return nil
+}
+```
+
+**Placement Behavior:**
+
+| Scenario | Subnet Type | CUDN Provisioned | Namespace Exists | VM Placement |
+|----------|-------------|------------------|------------------|--------------|
+| Single subnet under VPC | First (only) | ✅ Yes | ✅ Yes | ✅ **Allowed** - Creates VM in CUDN namespace |
+| First subnet under VPC (multiple subnets) | First | ✅ Yes | ✅ Yes | ✅ **Allowed** - Creates VM in CUDN namespace |
+| Second+ subnet under VPC | Fabric-only | ❌ No | ❌ No | ❌ **Blocked** - VMaaS validation error |
+| First subnet with skip annotation | Fabric-only (explicit) | ❌ No | ❌ No | ❌ **Blocked** - VMaaS validation error |
+
+**Error Message:**
+
+When a tenant attempts to create a VM in a fabric-only subnet:
+
+```
+Error: Cannot create VM in Subnet "subnet-2": subnet is fabric-only (no CUDN).
+VMs can only be placed in the first subnet under VirtualNetwork "vpc-1" (which has CUDN).
+Fabric-only subnets are for bare-metal workloads only.
+
+Solution: Create VM in subnet "subnet-1" (first subnet with CUDN), or create a new
+VirtualNetwork for VM workloads.
+```
+
+**Rationale:**
+- CUDN namespace existence is a reliable indicator of k8s networking availability
+- Fail-fast validation prevents VM provisioning errors (no namespace = no network attachment)
+- Clear error message guides tenant to correct subnet for VM placement
+- Single subnet case works seamlessly (first subnet always gets CUDN)
 
 #### osac-operator: Sequential Provisioning
 
