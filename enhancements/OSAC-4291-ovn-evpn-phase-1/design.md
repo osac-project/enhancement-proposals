@@ -53,7 +53,11 @@ OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabri
 
 - Reuse NetworkClass dispatcher pattern and two-manager architecture from OSAC-1433
 - Sequential provisioning pattern reusable for future fabric-to-k8s dependencies
-- Single-subnet constraint enforced at operator level — first subnet under a VirtualNetwork gets CUDN; second+ subnets auto-skip k8s manager (fabric-only). VMaaS validates CUDN presence before VM placement.
+- **Single-subnet-for-VMs constraint:**
+  - Only one subnet per VirtualNetwork can have CUDN (k8s networking for VMs)
+  - API validation: If first subnet has VMs, block second subnet creation
+  - Operator auto-detection: Only first subnet gets CUDN; second+ subnets are fabric-only (no CUDN)
+  - VMaaS validation: Block VM creation if multiple subnets exist (no CUDN available)
 - K8s manager playbook creates CUDN as Kubernetes-native resource (no external API calls)
 - FRRConfiguration for BGP underlay peering is installation prerequisite (auto-updated by OVN-Kubernetes, not by k8s manager)
 - Installation prerequisites documented for Cloud Infrastructure Admin
@@ -129,7 +133,8 @@ sequenceDiagram
 
 **Error Paths:**
 
-- **VM creation in second+ subnet:** VMaaS blocks VM placement with error. Only first subnet has CUDN (k8s networking). Second+ subnets are fabric-only (bare-metal only). Tenant must create VM in first subnet or create new VirtualNetwork.
+- **Second subnet creation when VMs exist:** API returns 400 Bad Request. First subnet has running VMs, cannot add additional subnets (Phase 1 limitation). Tenant must delete VMs or create new VirtualNetwork for bare-metal workloads.
+- **VM creation when multiple subnets exist:** VMaaS blocks VM placement with error. Only single subnet per VirtualNetwork supports VMs (CUDN). Multiple subnets = all fabric-only (no CUDN). Tenant must delete extra subnets or create new VirtualNetwork for VMs.
 - **Fabric job failure:** Controller requeues, does not start k8s job until fabric succeeds
 - **VNI missing in fabric output:** Controller marks Subnet as Failed, user must check fabric manager logs
 - **CUDN creation failure:** K8s job fails, controller requeues, Subnet status shows Failed with AAP job reference
@@ -154,10 +159,10 @@ sequenceDiagram
 
 **Annotation Semantics:**
 
-The `osac.openshift.io/skip-k8s-manager` annotation is **optional** and provides explicit control over k8s manager provisioning. When omitted, the operator automatically determines provisioning behavior: first Subnet under a VirtualNetwork receives CUDN (for VMs), second+ Subnets are fabric-only (for bare-metal).
+The `osac.openshift.io/skip-k8s-manager` annotation is **optional** and provides explicit control over k8s manager provisioning. When omitted, the operator automatically determines provisioning behavior based on subnet count: single subnet gets CUDN (for VMs), multiple subnets = all fabric-only (no CUDN).
 
 ```yaml
-# First Subnet - creates Netris VNet + CUDN (auto-detected, no annotation needed)
+# Single Subnet - creates Netris VNet + CUDN (auto-detected, VMs allowed)
 apiVersion: osac.openshift.io/v1
 kind: Subnet
 metadata:
@@ -167,26 +172,26 @@ spec:
   ipv4CIDR: 10.0.1.0/24
 
 ---
-# Second Subnet - Netris VNet only (auto-detected as fabric-only)
-# Annotation optional but can be set for explicit intent
+# Adding second Subnet - changes ALL subnets to fabric-only (no CUDN for either)
+# Phase 1 limitation: VMs blocked in any subnet when multiple subnets exist
 apiVersion: osac.openshift.io/v1
 kind: Subnet
 metadata:
   name: baremetal-subnet
-  annotations:
-    osac.openshift.io/skip-k8s-manager: "true"  # Optional - explicit fabric-only
 spec:
   virtualNetwork: vpc-1  # Same VPC
   ipv4CIDR: 10.0.2.0/24
 ```
 
-**Provisioning behavior (auto or explicit skip):**
-- Operator counts existing Subnets under VirtualNetwork with CUDN (k8s manager provisioned)
-- If count > 0, auto-skips k8s manager for new Subnet (fabric-only)
-- Explicit annotation overrides: skip k8s manager even if this is the first Subnet
-- Dispatcher only provisions fabric manager target
+**Provisioning behavior:**
+- **Single subnet:** Operator provisions fabric + k8s manager (CUDN), VMs allowed
+- **Multiple subnets (2+):** Operator provisions fabric-only for ALL subnets (no CUDN for any), VMs blocked
+- **Explicit annotation:** skip k8s manager even if this is the only subnet (fabric-only by choice)
+- Dispatcher only provisions fabric manager target for fabric-only subnets
 - Netris role creates VNet under same VPC (VPC created by first Subnet, or new if none exists)
-- No CUDN, no namespace, no k8s resources created
+- No CUDN, no namespace, no k8s resources created for fabric-only subnets
+
+**Important:** If VMs exist in the single subnet, API blocks creation of second subnet (see fulfillment-service validation above)
 
 **Deletion behavior:**
 - Subnet controller checks: did this Subnet provision a CUDN? (tracked in status or absence of namespace)
@@ -203,25 +208,92 @@ spec:
 
 #### fulfillment-service: Subnet Validation
 
-**No API-Level Constraint**
+**API-Level VM Constraint**
 
-The single-subnet constraint is **not enforced** at the fulfillment-service API level. Tenants can create multiple Subnets under a VirtualNetwork without restriction, regardless of NetworkClass k8s_manager. The constraint is enforced at the operator level during provisioning (see Subnet Controller section below).
+When a NetworkClass has `k8s_manager: "cudn_evpn"`, fulfillment-service enforces a constraint: **if the first Subnet under a VirtualNetwork has VMs running, block creation of additional Subnets**.
+
+```go
+// internal/servers/subnet_server.go
+func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) (*v1.CreateSubnetResponse, error) {
+    // ... existing validation ...
+
+    // Fetch parent VirtualNetwork to get NetworkClass
+    vnetResp, err := s.virtualNetworkServer.Get(ctx, &v1.GetVirtualNetworkRequest{
+        Id: req.GetSubnet().GetSpec().GetVirtualNetwork(),
+    })
+    if err != nil {
+        return nil, status.Errorf(codes.Internal, "failed to fetch parent VirtualNetwork: %v", err)
+    }
+
+    // Fetch NetworkClass to check k8s_manager
+    ncResp, err := s.networkClassServer.Get(ctx, &v1.GetNetworkClassRequest{
+        Id: vnetResp.GetVirtualNetwork().GetSpec().GetNetworkClass(),
+    })
+    if err != nil {
+        return nil, status.Errorf(codes.Internal, "failed to fetch NetworkClass: %v", err)
+    }
+
+    // Enforce single-subnet-with-VMs constraint for cudn_evpn
+    k8sManager := ncResp.GetNetworkClass().GetKubernetesManager()
+    if k8sManager == "cudn_evpn" {
+        // List existing Subnets under this VirtualNetwork
+        listResp, err := s.List(ctx, &v1.ListSubnetsRequest{
+            Filter: fmt.Sprintf("spec.virtualNetwork='%s'", vnetResp.GetVirtualNetwork().GetId()),
+        })
+        if err != nil {
+            return nil, status.Errorf(codes.Internal, "failed to list existing subnets: %v", err)
+        }
+
+        // If at least one subnet exists, check if it has VMs (via k8s API)
+        if len(listResp.GetSubnets()) > 0 {
+            firstSubnet := listResp.GetSubnets()[0]
+            
+            // Check if first subnet has CUDN namespace with VMs
+            hasVMs, err := s.checkSubnetHasVMs(ctx, firstSubnet.GetMetadata().GetName())
+            if err != nil {
+                return nil, status.Errorf(codes.Internal, "failed to check VMs in first subnet: %v", err)
+            }
+
+            if hasVMs {
+                return nil, status.Errorf(codes.FailedPrecondition,
+                    "Cannot create additional subnets under VirtualNetwork %q: "+
+                    "first subnet %q has running VMs. "+
+                    "Phase 1 limitation: cudn_evpn supports only one subnet per VirtualNetwork when VMs are present. "+
+                    "To add subnets for bare-metal workloads, delete VMs first or create a new VirtualNetwork.",
+                    vnetResp.GetVirtualNetwork().GetMetadata().GetName(),
+                    firstSubnet.GetMetadata().GetName())
+            }
+            
+            // First subnet exists but has no VMs → allow second subnet (will be fabric-only)
+        }
+    }
+
+    // ... continue with normal create flow ...
+}
+
+func (s *SubnetServer) checkSubnetHasVMs(ctx context.Context, subnetName string) (bool, error) {
+    // Query k8s for VirtualMachines in namespace (namespace name = subnet name)
+    // Returns true if any VMs exist, false otherwise
+    // Implementation uses k8s client to list VMs in namespace
+}
+```
 
 **Rationale:**
-- Tenant intent (VMs vs bare-metal) is unknown at Subnet creation time
-- API should allow flexible subnet creation for both workload types
-- Operator auto-detects: first subnet gets CUDN, second+ subnets are fabric-only
-- VMaaS validation prevents VM placement in fabric-only subnets (no CUDN namespace)
+- **Single subnet (no VMs):** Allow second subnet creation → second subnet is fabric-only (bare-metal)
+- **Single subnet (with VMs):** Block second subnet creation → Phase 1 limitation, VMs lock subnet topology
+- Fail-fast at API level prevents confusion (clear error before provisioning starts)
+- Once VMs exist, topology is locked (cannot add fabric-only subnets for bare-metal)
+- Tenant must choose: VMs-only VirtualNetwork OR delete VMs to add bare-metal subnets OR create new VirtualNetwork
 
 #### VMaaS: VM Placement Validation
 
 **Summary:**
-- ✅ **Single subnet (or first subnet)** under a VirtualNetwork → provisions both Netris VNet + CUDN → **VMs allowed**
-- ❌ **Second+ subnets** under a VirtualNetwork → provisions Netris VNet only (fabric-only) → **VMs blocked** by VMaaS validation
+- ✅ **Single subnet** under a VirtualNetwork → provisions Netris VNet + CUDN → **VMs allowed**
+- ❌ **Multiple subnets** under a VirtualNetwork → all subnets are fabric-only (no CUDN) → **VMs blocked** by VMaaS validation
 
 **VM Creation Validation Logic:**
 
-VMaaS enforces CUDN presence validation before allowing VM placement in EVPN-bridged subnets. This prevents VMs from being placed in fabric-only subnets (second+ subnets that have no k8s networking).
+VMaaS enforces subnet count validation before allowing VM placement in EVPN-bridged subnets. Only single-subnet VirtualNetworks support VMs (CUDN provisioning).
 
 ```go
 // VMaaS ComputeInstance controller (pseudo-code)
@@ -233,52 +305,78 @@ func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, sub
         return nil
     }
 
-    // For cudn_evpn subnets: verify CUDN namespace exists
+    // For cudn_evpn: count subnets under this VirtualNetwork
+    var subnetList osacv1.SubnetList
+    if err := r.List(ctx, &subnetList, client.MatchingLabels{
+        "osac.openshift.io/virtual-network": subnet.Spec.VirtualNetwork,
+    }); err != nil {
+        return err
+    }
+
+    subnetCount := len(subnetList.Items)
+    if subnetCount > 1 {
+        return fmt.Errorf(
+            "Cannot create VM in Subnet %q: VirtualNetwork %q has %d subnets. "+
+            "Phase 1 limitation: VMs require single subnet per VirtualNetwork (CUDN provisioning). "+
+            "Multiple subnets = all fabric-only (bare-metal workloads only). "+
+            "Solution: Delete extra subnets or create new VirtualNetwork with single subnet for VMs.",
+            subnet.Name, subnet.Spec.VirtualNetwork, subnetCount)
+    }
+
+    // Single subnet → verify CUDN namespace exists
     namespace := &corev1.Namespace{}
     nsName := subnet.Name  // Namespace name = Subnet name
     if err := r.Get(ctx, client.ObjectKey{Name: nsName}, namespace); err != nil {
         if apierrors.IsNotFound(err) {
             return fmt.Errorf(
-                "Cannot create VM in Subnet %q: subnet is fabric-only (no CUDN). "+
-                "VMs can only be placed in the first subnet under VirtualNetwork %q (which has CUDN). "+
-                "Fabric-only subnets are for bare-metal workloads only.",
-                subnet.Name, subnet.Spec.VirtualNetwork)
+                "Cannot create VM in Subnet %q: CUDN namespace not found (provisioning may be in progress). "+
+                "Wait for subnet provisioning to complete.",
+                subnet.Name)
         }
         return err
     }
 
-    // Namespace exists → CUDN provisioned → VM placement allowed
+    // Single subnet + namespace exists → CUDN provisioned → VM placement allowed
     return nil
 }
 ```
 
 **Placement Behavior:**
 
-| Scenario | Subnet Type | CUDN Provisioned | Namespace Exists | VM Placement |
-|----------|-------------|------------------|------------------|--------------|
-| Single subnet under VPC | First (only) | ✅ Yes | ✅ Yes | ✅ **Allowed** - Creates VM in CUDN namespace |
-| First subnet under VPC (multiple subnets) | First | ✅ Yes | ✅ Yes | ✅ **Allowed** - Creates VM in CUDN namespace |
-| Second+ subnet under VPC | Fabric-only | ❌ No | ❌ No | ❌ **Blocked** - VMaaS validation error |
-| First subnet with skip annotation | Fabric-only (explicit) | ❌ No | ❌ No | ❌ **Blocked** - VMaaS validation error |
+| Scenario | Subnet Count | CUDN Provisioned | Namespace Exists | VM Placement |
+|----------|--------------|------------------|------------------|--------------|
+| Single subnet under VPC | 1 | ✅ Yes | ✅ Yes | ✅ **Allowed** - Creates VM in CUDN namespace |
+| Multiple subnets under VPC (any subnet) | 2+ | ❌ No (all fabric-only) | ❌ No | ❌ **Blocked** - VMaaS validation: requires single subnet for VMs |
+| Single subnet with skip annotation | 1 | ❌ No (explicit fabric-only) | ❌ No | ❌ **Blocked** - VMaaS validation: no CUDN |
 
-**Error Message:**
+**Error Messages:**
 
-When a tenant attempts to create a VM in a fabric-only subnet:
+When a tenant attempts to create a VM in a VirtualNetwork with multiple subnets:
 
 ```
-Error: Cannot create VM in Subnet "subnet-2": subnet is fabric-only (no CUDN).
-VMs can only be placed in the first subnet under VirtualNetwork "vpc-1" (which has CUDN).
-Fabric-only subnets are for bare-metal workloads only.
+Error: Cannot create VM in Subnet "subnet-1": VirtualNetwork "vpc-1" has 2 subnets.
+Phase 1 limitation: VMs require single subnet per VirtualNetwork (CUDN provisioning).
+Multiple subnets = all fabric-only (bare-metal workloads only).
 
-Solution: Create VM in subnet "subnet-1" (first subnet with CUDN), or create a new
-VirtualNetwork for VM workloads.
+Solution: Delete extra subnets or create new VirtualNetwork with single subnet for VMs.
+```
+
+When a tenant attempts to add a second subnet while VMs exist:
+
+```
+Error (API): Cannot create additional subnets under VirtualNetwork "vpc-1":
+first subnet "subnet-1" has running VMs.
+Phase 1 limitation: cudn_evpn supports only one subnet per VirtualNetwork when VMs are present.
+
+Solution: Delete VMs first or create a new VirtualNetwork for bare-metal workloads.
 ```
 
 **Rationale:**
-- CUDN namespace existence is a reliable indicator of k8s networking availability
-- Fail-fast validation prevents VM provisioning errors (no namespace = no network attachment)
-- Clear error message guides tenant to correct subnet for VM placement
-- Single subnet case works seamlessly (first subnet always gets CUDN)
+- Subnet count check is the primary validation (multiple subnets = no VMs)
+- CUDN namespace existence is secondary (provisioning in progress vs complete)
+- Fail-fast validation prevents VM provisioning errors
+- Clear error messages guide tenant to correct topology
+- Single subnet topology works seamlessly (CUDN always provisioned)
 
 #### osac-operator: Sequential Provisioning
 
@@ -428,8 +526,7 @@ func (r *SubnetReconciler) shouldSkipK8sManager(ctx context.Context, subnet *osa
         return true, nil
     }
 
-    // Auto-detect: count existing Subnets with CUDN under same VirtualNetwork
-    // (A Subnet has CUDN if it successfully created a namespace — tracked in status or namespace existence)
+    // Auto-detect: count total Subnets under same VirtualNetwork (including self)
     var subnetList osacv1.SubnetList
     if err := r.List(ctx, &subnetList, client.MatchingLabels{
         "osac.openshift.io/virtual-network": subnet.Spec.VirtualNetwork,
@@ -437,24 +534,19 @@ func (r *SubnetReconciler) shouldSkipK8sManager(ctx context.Context, subnet *osa
         return false, err
     }
 
-    // Count Subnets that provisioned CUDN (have corresponding namespace)
-    cudnCount := 0
-    for _, s := range subnetList.Items {
-        // Skip self
-        if s.Name == subnet.Name {
-            continue
-        }
-        // Check if this Subnet created a namespace (indicates CUDN was provisioned)
-        ns := &corev1.Namespace{}
-        nsName := s.Name  // Namespace name = Subnet name
-        if err := r.Get(ctx, client.ObjectKey{Name: nsName}, ns); err == nil {
-            // Namespace exists — this Subnet has CUDN
-            cudnCount++
-        }
+    subnetCount := len(subnetList.Items)
+
+    // Phase 1 limitation: only single-subnet VirtualNetworks support VMs (CUDN provisioning)
+    // - If exactly 1 subnet exists → provision CUDN (k8s manager)
+    // - If multiple subnets exist → skip CUDN for ALL subnets (all fabric-only)
+    if subnetCount > 1 {
+        // Multiple subnets → all are fabric-only (no CUDN)
+        // VMaaS will block VM creation in any subnet
+        return true, nil  // Skip k8s manager
     }
 
-    // If another Subnet already has CUDN, skip k8s manager for this one (fabric-only)
-    return cudnCount > 0, nil
+    // Single subnet → provision CUDN (k8s manager)
+    return false, nil  // Do not skip k8s manager
 }
 
 func getNetworkClassID(subnet *osacv1.Subnet) string {
@@ -466,7 +558,7 @@ func getNetworkClassID(subnet *osacv1.Subnet) string {
 ```
 
 **Rationale:**
-- Auto-detection: first Subnet under VirtualNetwork gets CUDN, second+ are fabric-only
+- Auto-detection: only single-subnet VirtualNetworks get CUDN; multiple subnets = all fabric-only
 - Explicit skip annotation overrides auto-detection (for first-subnet fabric-only case)
 - Namespace existence check determines if a Subnet provisioned CUDN (reliable state indicator)
 - Sequential logic in provisioning package (not controller) makes it reusable for ANY future fabric→k8s dependency
@@ -1194,22 +1286,33 @@ Where is the authoritative MAC value? Does Netris VNet gateway MAC come from a p
 **fulfillment-service (Go + Ginkgo):**
 
 - `internal/servers/subnet_server_test.go`:
-  - Subnet creation succeeds for first subnet under VirtualNetwork (no validation block)
-  - Subnet creation succeeds for second subnet under VirtualNetwork (no validation block)
+  - Subnet creation succeeds for first subnet under VirtualNetwork (no existing subnets)
+  - Subnet creation succeeds for second subnet under VirtualNetwork when first has no VMs
+  - Subnet creation fails (400 Bad Request) when first subnet has VMs (FailedPrecondition code)
+  - Error message includes "first subnet has running VMs" and "delete VMs first or create new VirtualNetwork"
   - Subnet creation succeeds with skip-k8s-manager annotation
 
 **osac-operator (Go + Ginkgo):**
 
 - `internal/controller/subnet_controller_test.go`:
-  - Auto-detection: first subnet under VirtualNetwork provisions fabric + k8s manager (CUDN created)
-  - Auto-detection: second subnet under VirtualNetwork provisions fabric-only (no CUDN, namespace check determines skip)
-  - Explicit skip annotation: subnet provisions fabric-only even if first subnet
+  - Auto-detection (single subnet): provisions fabric + k8s manager (CUDN created)
+  - Auto-detection (multiple subnets): all subnets provision fabric-only (no CUDN for any)
+  - Auto-detection: subnet count check determines skip (count > 1 → skip k8s manager)
+  - Explicit skip annotation: subnet provisions fabric-only even if single subnet
   - Sequential provisioning: fabric job runs first, k8s job waits for fabric completion
   - Sequential provisioning: VNI extraction from fabric ConfigMap extracts correct l2_vni, l3_vni, fabric_reserved_range
   - Sequential provisioning: VNI extraction fails if fabric ConfigMap missing data, reconcile returns error with VNIExtractionFailed event
   - Sequential provisioning: k8s job receives VNI data and reserved range in extraVars
   - Parallel provisioning fallback when only fabric manager exists (no k8s manager in NetworkClass)
   - Controller restart mid-provisioning resumes from fabric job complete state
+
+**VMaaS (Go + Ginkgo):**
+
+- `internal/controller/computeinstance_controller_test.go`:
+  - VM creation succeeds when single subnet under VirtualNetwork (CUDN exists)
+  - VM creation fails (validation error) when multiple subnets exist (no CUDN)
+  - Error message includes subnet count and "requires single subnet for VMs"
+  - VM creation fails when namespace doesn't exist (provisioning in progress)
 
 **osac-aap (Ansible + ansible-test):**
 
