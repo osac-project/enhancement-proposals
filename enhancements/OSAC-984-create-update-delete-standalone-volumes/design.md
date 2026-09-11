@@ -3,7 +3,7 @@ title: volume-cud-public-api
 authors:
   - Akshay Nadkarni
 creation-date: 2026-09-11
-last-updated: 2026-09-11
+last-updated: 2026-09-12
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2685
 prd:
@@ -47,8 +47,11 @@ compute.
   (`backend`, `protocol`, `hub`, `vendor_volume_id`, `vendor_context`) private.
 - Validate that the resolved storage tier uses the block protocol; reject NFS
   tiers with a clear error until file-storage support ships.
-- Reject delete requests for volumes with active attachments via
-  `FailedPrecondition`, documenting the cross-dependency with OSAC-4884.
+- Guard delete requests for volumes with active attachments via
+  `FailedPrecondition`. The guard is a no-op in this release (no attachment
+  query mechanism exists); it is tracked by
+  [OSAC-5189](https://redhat.atlassian.net/browse/OSAC-5189) as a follow-up
+  dependency on OSAC-4884.
 - Auto-populate `display_name` for CSI-provisioned volumes with
   `{pvc-name}.{namespace}` for traceability.
 - Introduce no schema change — reuse the OSAC-2872 `volumes` table.
@@ -321,18 +324,23 @@ The public Delete API must return `FailedPrecondition` if the volume has active
 attachments. However, the attachment query mechanism does not exist until
 OSAC-4884 (attach/detach) ships.
 
-**Initial implementation:** Delete delegates directly to the private server
-without an attachment check. The private server's finalizer-based deletion
-handles cleanup.
+**Initial implementation (this design):** Delete delegates directly to the
+private server without an attachment check — the guard is a **no-op** until
+OSAC-4884 provides the attachment query mechanism. The private server's
+finalizer-based deletion handles cleanup, so deletion is safe even without the
+pre-check; the UX is suboptimal (the user is not warned before deleting an
+attached volume) but there is no data loss.
 
-**After OSAC-4884:** The public `VolumesServer.Delete` must be updated to query
-the attachment state before delegating. This is called out as a **mandatory
-follow-up** in OSAC-4884's definition of done.
+**Follow-up ([OSAC-5189](https://redhat.atlassian.net/browse/OSAC-5189)):**
+The public `VolumesServer.Delete` must be updated to query the attachment state
+before delegating. This follow-up is tracked by OSAC-5189 and is a **mandatory
+prerequisite** before OSAC-4884 (attach/detach) can ship — without the guard,
+users could delete volumes from under running workloads.
 
 Design constraint for OSAC-4884: the attach/detach feature must provide a
-mechanism for the volume delete path to query whether a volume has active
-attachments. Options include a DB query, a gRPC call, or a shared function.
-The Volume CUD API will use whatever interface OSAC-4884 provides.
+mechanism (DB query, gRPC call, or shared function) for the volume delete path
+to query whether a volume has active attachments. The Volume CUD API will use
+whatever interface OSAC-4884 provides.
 
 #### CSI Driver display_name Auto-Population
 
@@ -462,7 +470,7 @@ lifecycle state transitions (CREATING -> AVAILABLE, CREATING -> FAILED,
 | Future capability | Impact on this design |
 |---|---|
 | **NFS/file-storage support (OSAC-4515)** | Remove the block-protocol check in the public server. No API contract change — protocol is not in the public schema. |
-| **Attach/detach (OSAC-4884)** | Add attachment pre-check to Delete. Add `force` delete flag. No API contract change — the Delete request can add an optional `force` field additively. |
+| **Attach/detach (OSAC-4884)** | Enable the attachment guard on Delete ([OSAC-5189](https://redhat.atlassian.net/browse/OSAC-5189)). Add `force` delete flag. No API contract change — the Delete request can add an optional `force` field additively. |
 | **Volume expansion** | Add a separate `Resize` RPC. No change to Update — size remains immutable in Update. |
 | **Volume snapshots/clones** | New RPCs and types. No change to existing CUD. |
 | **Project-scoped ownership** | Enforced at the GenericServer/DAO level. No change to the Volume proto or server. |
@@ -508,26 +516,64 @@ discussions.
 
 ## Test Plan
 
-**Test infrastructure:** Tests follow the existing OSAC Go test patterns.
-Unit tests use `testify/assert` and `testify/require` with mocked gRPC
-servers and tier resolvers (follow `compute_instances_server_test.go` for the
-`ComputeInstances` wrapper pattern). OPA authorization tests use
-`grpc_authz_interceptor_test.go` with pre-built test clients. Integration
-tests run against the kind `osac-dev` cluster using authenticated gRPC
-clients (`it_public_volumes_test.go`, following the `it_compute_instances_test.go`
-pattern). E2E tests use the `e2e/` test harness with `wait_for_state` polling
-helpers.
+### Requirement Traceability
+
+| PRD Requirement | Test Cases | Type |
+|---|---|---|
+| Create requires name, storage_tier, size_gib, access_mode | TC-C1, TC-C2, TC-C3, TC-C4, TC-C5, TC-IT1 | Unit, Integration |
+| Name unique within tenant, immutable | TC-C7, TC-U2, TC-U2c, TC-IT3, TC-IT5 | Unit, Integration |
+| Immutable fields: storage_tier, size_gib, access_mode | TC-U2, TC-U2a, TC-U2b, TC-IT3 | Unit, Integration |
+| Mutable fields: display_name, description, labels, annotations | TC-U1, TC-IT2 | Unit, Integration |
+| Status set by server, client input ignored | TC-C8 | Unit |
+| Lifecycle: creating -> available / failed | TC-C1, TC-C9, TC-IT1, E2E-1 | Unit, Integration, E2E |
+| Failed is terminal; not retried in place | TC-C9 | Unit |
+| Available/failed -> deleting -> deleted | TC-D1, TC-IT4, E2E-1 | Unit, Integration, E2E |
+| Idempotent delete (already deleting) | TC-D3 | Unit |
+| Archived volume returns not found | TC-D4, TC-IT4 | Unit, Integration |
+| Name reserved until deletion complete | TC-IT4 | Integration |
+| Tenant-scoped; Tenant Admins manage all | TC-A1, TC-IT5, TC-IT5a | Unit, Integration |
+| Cloud Provider Admin cross-tenant access | TC-IT5b | Integration |
+| Clear error for invalid/unauthorized/duplicate | TC-C2--C7, TC-U2--U4 | Unit |
+| Optimistic locking | TC-U3 | Unit |
+| Block-protocol validation | TC-C6 | Unit |
+| Delete with active attachments returns FailedPrecondition | TC-D5 (gated on OSAC-4884 / OSAC-5189) | Unit |
+| Private fields never exposed in public API | TC-MAP1, TC-MAP2, TC-IT6 | Unit, Integration |
+| CSI display_name auto-population | TC-CSI1--4, E2E-2 | Unit, E2E |
+
+**Coverage summary:** 19 PRD requirements mapped to 30+ test cases across
+unit, integration, and E2E tiers.
+
+### Test Infrastructure
+
+Tests follow the existing OSAC Go test patterns using `testify/assert` and
+`testify/require`. Key references in the osac repo:
+
+- **Unit test pattern:** `fulfillment-service/internal/servers/compute_instances_server_test.go`
+  — mock gRPC server, mock tier resolver, `testify` assertions. Follow for
+  `volumes_server_test.go`.
+- **OPA authorization:** `fulfillment-service/internal/auth/grpc_authz_interceptor_test.go`
+  — pre-built test clients with tenant/admin/CSI identities.
+- **Integration tests:** `fulfillment-service/it/it_compute_instances_test.go`
+  — authenticated gRPC client against kind `osac-dev` cluster. Follow for
+  `it_public_volumes_test.go`.
+- **E2E tests:** `e2e/` harness with `wait_for_state` polling helpers.
+- **Fixtures:** Mock tier resolver returns
+  `TierResolution{Backend: "test-backend", Protocol: STORAGE_PROTOCOL_BLOCK}`;
+  tenant context configured via test gRPC metadata.
 
 ### Unit Tests
 
-**Public server (`volumes_server_test.go`):**
+**Public server (`fulfillment-service/internal/servers/volumes_server_test.go`):**
 - TC-C1: `Create` with valid input (`name="analytics-data"`,
   `storage_tier="standard-block"`, `size_gib=100`,
   `access_mode=READ_WRITE_ONCE`) returns a public Volume in CREATING state
   with spec fields populated and no private status fields.
 - TC-C2: `Create` with missing `metadata.name` returns `InvalidArgument`.
 - TC-C3: `Create` with missing `spec.storage_tier` returns `InvalidArgument`.
-- TC-C4: `Create` with missing `spec.size_gib` (or <= 0) returns `InvalidArgument`.
+- TC-C4: `Create` with missing `spec.size_gib` (or `size_gib=0`) returns
+  `InvalidArgument`: "field 'spec.size_gib' must be greater than zero".
+- TC-C4a: `Create` with `size_gib=-1` returns `InvalidArgument`: "field
+  'spec.size_gib' must be greater than zero".
 - TC-C5: `Create` with missing `spec.access_mode` returns `InvalidArgument`.
 - TC-C6: `Create` with an NFS-protocol tier returns `InvalidArgument` with
   protocol-specific message.
@@ -547,7 +593,12 @@ helpers.
   `InvalidArgument`.
 - TC-U2b: `Update` that changes `spec.access_mode` from `READ_WRITE_ONCE` to
   `READ_ONLY_MANY` returns `InvalidArgument`.
+- TC-U2c: `Update` that changes `metadata.name` from `"analytics-data"` to
+  `"renamed-volume"` returns `InvalidArgument`: "field 'metadata.name' is
+  immutable and cannot be changed after creation".
 - TC-U3: `Update` with `lock=true` and stale version returns `Aborted`.
+  After the rejection, `Get` the volume and assert that all fields and
+  `metadata.version` are unchanged from the pre-update state.
 - TC-U4: `Update` on a volume in DELETING state returns `FailedPrecondition`.
 - TC-D1: `Delete` of an available volume returns success (empty response).
 - TC-D2: `Delete` of a non-existent volume returns `NotFound`.
@@ -561,34 +612,43 @@ helpers.
   Fails the build if a private field leaks into the public proto.
 - TC-MAP2: Field mapping: public response carries `spec` (tier/size/access_mode)
   and `status` (state/message); private fields (`vendor_volume_id`, `backend`,
-  `protocol`, `hub`, `vendor_context`) are absent by type.
+  `protocol`, `hub`, `vendor_context`) are absent by type. Additionally, assert
+  at the descriptor level that `vendor_volume_id` does not appear in the public
+  `Volume`, `VolumesCreateRequest`, or `VolumesUpdateRequest` message
+  descriptors — preventing accidental exposure through request types.
 - TC-MAP3: `List` forwards `order` parameter to delegate (spy/mock assertion on
   `SetOrder`).
 
-**OPA authorization (`grpc_authz_interceptor_test.go`):**
+**OPA authorization (`fulfillment-service/internal/auth/grpc_authz_interceptor_test.go`):**
 - TC-A1: Tenant client is allowed on `Volumes/Create`, `/Update`, `/Delete`,
   `/Get`, `/List`.
-- TC-A2: Tenant client calling the private-only `PrivateVolumes/Create` RPC
-  receives `PermissionDenied` (private RPCs are not in the public allowlist).
+- TC-A2: Tenant client calling `Signal` on the public `Volumes` service
+  receives `Unimplemented` — `Signal` is a private-only RPC that is not
+  registered on the public server, so gRPC returns `Unimplemented` before OPA
+  is reached.
 - TC-A3: CSI driver is denied on public `Volumes/Create` (CSI uses private API).
 
-**CSI driver (`controller_test.go`, `grpc_client_test.go`):**
+**CSI driver (`osac-csi-driver/pkg/driver/controller_test.go`,
+`osac-csi-driver/pkg/fulfillment/grpc_client_test.go`):**
 - TC-CSI1: `CreateVolume` extracts PVC name and namespace from parameters and
   populates `CreateVolumeParams.PVCName` and `.PVCNamespace`.
 - TC-CSI2: `grpcVolumeClient.CreateVolume` sets `display_name` to
   `{pvc-name}.{namespace}`.
 - TC-CSI3: When PVC name + namespace exceeds 63 characters, `display_name` is
-  truncated to exactly 63 characters by simple prefix truncation. E.g.,
-  `PVCName="a]x60"` (60 chars) + `PVCNamespace="production"` → combined
-  `"aaa...aaa.production"` (71 chars) is truncated to the first 63 characters,
-  preserving the namespace within the 63-char window.
+  truncated to exactly 63 characters by simple prefix truncation.
+  `PVCName="my-database-volume-with-a-very-long-name-that-needs-truncat0"`
+  (60 chars) + `PVCNamespace="production"` → combined
+  `"my-database-volume-with-a-very-long-name-that-needs-truncat0.production"`
+  (71 chars) → expected `display_name` =
+  `"my-database-volume-with-a-very-long-name-that-needs-truncat0.pr"`
+  (63 chars).
 - TC-CSI4: When PVC name or namespace is missing, `display_name` is not set.
   Covers three sub-cases: PVC name missing, namespace missing, and namespace
   empty string.
 
 ### Integration Tests
 
-**Against the kind `osac-dev` cluster (`it_public_volumes_test.go`):**
+**Against the kind `osac-dev` cluster (`fulfillment-service/it/it_public_volumes_test.go`):**
 - TC-IT1: Create a volume via the public gRPC endpoint with a valid storage
   tier. Assert the returned Volume has the expected spec, CREATING state,
   and no private status fields.
@@ -634,7 +694,8 @@ helpers.
 Ships as part of the public Volume API in milestone 0.3. Graduation
 requirements:
 - All TC-* unit tests pass (TC-C1 through TC-MAP3, TC-A1 through TC-A3,
-  TC-CSI1 through TC-CSI4).
+  TC-CSI1 through TC-CSI4), **excluding** TC-D5 which is gated on
+  OSAC-4884 / [OSAC-5189](https://redhat.atlassian.net/browse/OSAC-5189).
 - All TC-IT* integration tests pass against the kind cluster.
 - Both E2E scenarios (E2E-1, E2E-2) pass.
 - No regressions in existing volume or ComputeInstances tests.
@@ -712,5 +773,8 @@ ComputeInstances; proto changes are largely generated code)
 
 ## Provenance
 
-Authored: draft @ design 0.10.1, workspace main
-Phases: ingest, research, draft
+Authored: draft @ design 0.10.1, enhancement-proposals main @ 51d7e06
+
+Phases: ingest, research, draft, revise
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.10.1","source_repo":"51d7e06","source_repo_branch":"main","phases":["ingest","research","draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
