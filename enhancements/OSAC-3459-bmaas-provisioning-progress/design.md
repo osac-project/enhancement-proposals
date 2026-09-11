@@ -36,8 +36,9 @@ together, so a CR-condition change that would otherwise silently break the proto
 stage is caught at the source (see IC-6). This is the same coarse-condition,
 staged-`reason`/`message` shape CaaS just adopted for its `PROGRESSING` condition
 (OSAC-4441 / PR #646), so BMaaS becomes consistent with the rest of OSAC rather
-than introducing a BMaaS-specific construct. The UI renders a read-only
-`ProgressStepper` computed from the current stage. The DB copy stays fresh within
+than introducing a BMaaS-specific construct. The UI renders a read-only progress
+view of the stage on the instance detail page (its visual design is deferred to a
+UI-focused design). The DB copy stays fresh within
 seconds via the existing osac-operator feedback→`Signal` path (no new watch, no
 new proto or CRD field).
 
@@ -102,8 +103,9 @@ cross-service progress experience consistent with CaaS (OSAC-1604) and VMaaS
 - Reuse the existing osac-operator feedback→`Signal` freshness path so the stage
   reflected in the API tracks backend changes within seconds — no new hub-side
   watch is introduced.
-- Introduce a single reusable read-only `ProgressStepper` UI computed from the
-  current stage, usable later by VMaaS/CaaS without a model change.
+- Introduce a read-only progress view on the instance detail page, computed from
+  the current stage and reusable later by VMaaS/CaaS without a model change; its
+  visual/interaction design is left to a UI-focused design.
 
 ### Non-Goals
 
@@ -174,13 +176,14 @@ schema change**.
    `replace` in `go.mod`), and the operator does not depend on fulfillment-service,
    so there is no import cycle.
 
-3. **osac-ui.** Add a read-only `BareMetalProgressStepper` to the instance detail
-   view that computes the four user-facing steps (Host Allocation → Provisioning
-   → Network Setup → Ready) from the current `PROVISIONED` `reason` and the
-   `READY` condition: earlier steps `success`, the current stage `running`, later
-   steps `pending`, and — on failure — the failing step `danger` with the curated
-   `message`. It auto-refreshes while the instance is non-terminal and stops once
-   terminal.
+3. **osac-ui.** Add a read-only progress view to the instance detail view that
+   derives the four user-facing steps (Host Allocation → Provisioning → Network
+   Setup → Ready) from the current `PROVISIONED` `reason` and the `READY`
+   condition: it shows which step is complete, which is in progress, and — on
+   failure — which step failed together with the curated `message`. It
+   auto-refreshes while the instance is non-terminal and stops once terminal. The
+   concrete visual and interaction design (layout, component choice, per-step
+   presentation) is deferred to a UI-focused design (see Open Questions).
 
 The existing coarse `state` and `conditions` remain the single source of status;
 this design only enriches the `reason`/`message` the reconciler already had the
@@ -226,31 +229,30 @@ Starting state: a bare metal instance has been ordered and its `BareMetalInstanc
 CR exists on the hub.
 
 1. The user opens the instance detail page. The page issues a
-   `GET /api/fulfillment/v1/baremetal_instances/{id}` and renders a vertical
-   stepper of the four known steps — Host Allocation → Provisioning → Network
-   Setup → Ready — computing each step's state from `status.conditions`: the
-   `PROVISIONED` `reason` names the current running stage (earlier steps
-   `success`, current `running`, later `pending`), and `READY` `True` marks the
-   terminal step done.
-2. Each step shows its state (pending, running with a spinner, succeeded, or
-   failed); the current step shows the curated `message` from the driving
-   condition. Per-step *durations* are **not** shown in this iteration (the single
-   condition retains only the current stage's `lastTransitionTime`) — a durable
-   per-phase timeline is deferred.
-3. While the instance is non-terminal, the detail view polls on a fixed 5-second
-   `refetchInterval` (a per-page override of the global ~10s default); the
+   `GET /api/fulfillment/v1/baremetal_instances/{id}` and derives the four known
+   steps — Host Allocation → Provisioning → Network Setup → Ready — from
+   `status.conditions`: the `PROVISIONED` `reason` names the current stage (earlier
+   steps are complete, later steps are not yet started), and `READY` `True` marks
+   the terminal step done.
+2. The view shows, per step, whether it is complete, in progress, not yet started,
+   or failed, and shows the curated `message` from the driving condition for the
+   current step. Per-step *durations* are **not** shown in this iteration (the
+   single condition retains only the current stage's `lastTransitionTime`) — a
+   durable per-phase timeline is deferred.
+3. While the instance is non-terminal, the detail view auto-refreshes on a fixed
+   ~5-second interval (a per-page override of the global ~10s default); the
    operator updates the CR conditions, the osac-operator feedback controller
-   signals fulfillment, which re-syncs the DB within seconds, and the next poll
+   signals fulfillment, which re-syncs the DB within seconds, and the next refresh
    shows the advanced stage without any user action.
-4. On failure, the failing step renders in the danger variant with a
+4. On failure, the view marks the failing step as failed and shows a
    phase-specific, human-readable `message` (for example, "OS installation and
    configuration did not complete; the provisioning job failed."); no raw internal
    error is shown, and no retry control is offered.
 5. When provisioning completes, `PROVISIONED` flips `True` while `READY` is not yet
-   `True`: the first three steps show succeeded and the **Ready** step becomes the
-   current running step; the query keeps polling.
+   `True`: the first three steps are complete and the **Ready** step becomes the
+   current step; the view keeps refreshing.
 6. When the instance reaches its powered-on ready state, `READY` flips `True`; all
-   four steps show succeeded and refetching stops.
+   four steps are complete and auto-refresh stops.
 7. After the instance is released and its CR removed, the detail view continues to
    serve the last persisted conditions (terminal or failure `reason`/`message`)
    from the fulfillment DB until the instance record is archived on finalizer
@@ -265,7 +267,7 @@ sequenceDiagram
     participant Rec as fulfillment reconciler
     participant FB as osac-operator feedback ctrl
     participant Hub as BareMetalInstance CR (hub)
-    participant Op as bare-metal operator
+    participant Op as bare-metal-fulfillment-operator
 
     Op->>Hub: update status conditions (stage advances)
     Hub-->>FB: watch event (status changed)
@@ -278,7 +280,7 @@ sequenceDiagram
         API->>DB: read status
         DB-->>API: conditions (PROVISIONED reason/message, READY)
         API-->>UI: conditions
-        UI->>User: render ProgressStepper (derived from stage)
+        UI->>User: render progress view (derived from stage)
     end
 ```
 
@@ -297,7 +299,7 @@ populates the existing `reason` and `message` fields of the existing
 `BareMetalInstanceCondition` and does not read or modify resources owned by other
 teams (in particular, it does not depend on metal3 CRD internals). It does add one
 exported Go function (`DeriveProvisioningProgress`) and a small result type to the
-bare-metal operator's `api/v1alpha1` package — a code-level contract between two
+bare-metal-fulfillment-operator's `api/v1alpha1` package — a code-level contract between two
 OSAC components, not an external API schema change (see IC-2 and IC-6).
 
 The concrete interface changes (referenced by the testplan as IC-N):
@@ -324,17 +326,19 @@ The concrete interface changes (referenced by the testplan as IC-N):
   changes; confirm it fires on `PROVISIONED`/`READY` `reason`/`message`
   transitions so the reconciler re-syncs the DB within seconds. No new watch or
   informer. Requirements: NFR-1.
-- **IC-4 — UI progress stepper.** Add the read-only `BareMetalProgressStepper` to
-  the instance detail view, deriving the four steps from the `PROVISIONED`
-  `reason` and `READY` condition, rendering the curated `message`, auto-refreshing,
-  with an `aria-live` region. Requirements: FR-1, FR-3, FR-5, NFR-2.
+- **IC-4 — UI progress view.** Add a read-only progress view to the instance
+  detail view, deriving the four steps from the `PROVISIONED` `reason` and `READY`
+  condition, showing the curated `message`, and auto-refreshing while non-terminal.
+  The concrete visual/interaction design (layout, component, accessibility
+  affordances) is owned by a UI-focused design (see Open Questions). Requirements:
+  FR-1, FR-3, FR-5, NFR-2.
 - **IC-5 — Failure message mapping.** Define the exact human-readable failure
   `message` the reconciler writes into the failing condition. The mapping is
   **fixed and deterministic**: each failure reason maps to exactly one message
   string, so a consumer or test can assert one expected `message` per reason. The
   **Condition carrier** column names which condition holds the failure —
   `PROVISIONED` for the provisioning stages, `READY` for the Ready stage — and the
-  **Failed step** column names the UI step IC-4 renders in the `danger` variant.
+  **Failed step** column names the UI step IC-4 marks as failed.
   (Deprovisioning failures are out of scope this iteration.)
 
   | Stage | Failure reason (from failing condition/job) | Condition carrier | Failed step | Exact `message` |
@@ -377,7 +381,7 @@ imports the instance type from generated protobuf types and already exposes
 `lastTransitionTime`, `reason`, `message`). **This EP adds no new fields to that
 type** — the UI reads the `reason`/`message` that already exist on
 `status.conditions[]`. No `pnpm gen-types` migration is required for new fields;
-the only UI work is the new component that computes the stepper from existing
+the only UI work is the new progress view that computes the steps from existing
 condition data.
 
 | UI field (`@temp-api` TypeScript) | Proto field | Notes / deviation |
@@ -475,11 +479,11 @@ here.
 sequenceDiagram
     participant M3 as metal3 BareMetalHost
     participant AAP as AAP job templates
-    participant Op as bare-metal operator
+    participant Op as bare-metal-fulfillment-operator
     participant CR as BareMetalInstance conditions
     participant Rec as fulfillment reconciler
 
-    Note over Rec: each derivation below is bmiv1alpha1.DeriveProvisioningProgress(conds), owned by the bare-metal operator
+    Note over Rec: each derivation below is bmiv1alpha1.DeriveProvisioningProgress(conds), owned by the bare-metal-fulfillment-operator
     Note over Rec: no lifecycle condition True yet
     Rec->>Rec: PROVISIONED reason = HostAllocation
 
@@ -526,8 +530,8 @@ Behavior for the cases the PRD asks the design to define [PRD: Assumptions]:
 - **No work to do (e.g. no network attachment):** the reconciler treats a stage
   with no work as already satisfied — the derivation advances past it (the
   furthest-advanced True condition already reflects completion), so the instance
-  never lingers on `NetworkSetup` when there is nothing to attach. The UI renders
-  that step `success` rather than leaving it stuck. (A distinct `SKIPPED` visual
+  never lingers on `NetworkSetup` when there is nothing to attach. The UI shows
+  that step as complete rather than leaving it stuck. (A distinct `SKIPPED` state
   is not modelled, since there is no per-phase state field.)
 - **Retried:** retries within a stage (the AAP job) do not change the derived
   stage; `PROVISIONED` stays on that stage's `reason` until the driving condition
@@ -566,31 +570,35 @@ archive-read path) [Research: loop-back Domain 9].
 
 #### UI
 
-`BareMetalProgressStepper` (osac-ui) renders a vertical PatternFly
-`ProgressStepper` of the four fixed steps, computing each step's variant from the
-current stage:
+The instance detail view (osac-ui) adds a read-only progress view derived from
+the same conditions the API already serves. Its inputs and behavior are the
+contract this design fixes; its concrete visual and interaction design is deferred
+to a UI-focused design (see Open Questions), so the following describes *what* it
+derives, not *how* it is laid out.
 
-- Steps before the current stage → `success`.
+Derivation of each of the four fixed steps from the conditions:
+
+- Steps before the current stage are complete.
 - The current stage (from `PROVISIONED.reason`, while `PROVISIONED` is not `True`)
-  → `info` with a spinner and `isCurrent`.
-- Steps after the current stage → `pending`.
-- On a failing condition → the failing step `danger` with the curated `message`.
+  is in progress.
+- Steps after the current stage are not yet started.
+- On a failing condition, the failing step is marked failed and carries the
+  curated `message`.
 - `PROVISIONED` `True` but `READY` not yet `True` (provisioning finished, awaiting
   the powered-on ready state) → Host Allocation, Provisioning, and Network Setup
-  render `success` and the **Ready** step becomes the current running step (`info`
-  with a spinner and `isCurrent`).
-- `PROVISIONED` `True` + `READY` `True` → all steps `success`.
+  are complete and the **Ready** step is the current in-progress step.
+- `PROVISIONED` `True` + `READY` `True` → all steps complete.
 
-Each step's `description` shows the curated `message` for the current/failed step;
-**no per-step duration is shown** (deferred). The component is read-only (no
-actions) and pairs the stepper with a visually hidden `aria-live="polite"` region
-restating the current step so poll-driven updates are announced. It uses the
-`useBareMetalInstance` query with a **dedicated ~5s `refetchInterval` while the
-instance is non-terminal** (a per-page override of the global ~10s default), and
-**stops refetching once the instance is terminal** — `READY` `True`, or a
-provisioning condition `False` with a failure reason [Codebase:
-osac-ui/apps/app-frontend/src/main.tsx]. The same component renders the persisted
-terminal/failure state for finished instances.
+The current or failed step shows the curated `message`; **no per-step duration is
+shown** (deferred). The view is read-only (no actions). It auto-refreshes on a
+dedicated ~5s interval while the instance is non-terminal (a per-page override of
+the global ~10s default) and **stops refreshing once the instance is terminal** —
+`READY` `True`, or a provisioning condition `False` with a failure reason
+[Codebase: osac-ui/apps/app-frontend/src/main.tsx]. The same view renders the
+persisted terminal/failure state for finished instances. Presentation details such
+as component choice, step layout, iconography/coloring, and accessibility
+affordances (e.g. a live region announcing refresh-driven changes) are left to the
+UI-focused design.
 
 ### Security Considerations
 
@@ -607,7 +615,7 @@ leaking implementation detail across the tenant boundary.
 
 - **A provisioning stage fails.** The reconciler sets the relevant condition
   `False` with a fixed failure `reason` and curated `message` and stops advancing;
-  the UI renders the danger variant on that step. Later steps remain `pending`.
+  the UI marks that step as failed. Later steps remain not-yet-started.
   Recovery is out of scope (read-only) — the user deletes and re-orders.
 - **Operator down mid-stage.** The CR stops advancing; the DB serves the last
   conditions. On restart the operator resumes reconciliation and the derived stage
@@ -737,13 +745,19 @@ in an operator-owned shared function):
 
 ## Open Questions
 
-- **Should `PROVISIONED` continue to be set `True` at `ProvisionTemplateComplete`,
-  or only at full provisioning completion (post-network)?** This design proposes
-  the latter (fixing the mis-wiring), but if a current consumer depends on the
-  earlier True-instant, the stage vocabulary can instead flip `PROVISIONED` `True`
-  at `Allocated` and carry later stages differently. **Impact:** affects the exact
-  True-instant of one condition; the coarse `state` is unaffected. To be confirmed
-  against current `PROVISIONED` readers during implementation.
+- **Visual and interaction design of the UI progress view.** This design fixes the
+  data contract (the four steps derived from `PROVISIONED` `reason` / `READY`), the
+  read-only behavior, the ~5s auto-refresh with stop-at-terminal, and the curated
+  failure messages, but intentionally leaves the concrete UI — component choice,
+  layout, per-step presentation, and accessibility affordances — to a separate
+  UI-focused design (owner: @rawagner). Raised in review of PR #268.
+
+Resolved during review: the earlier open question about the `PROVISIONED`
+True-instant (flip at `ProvisionTemplateComplete` vs. at full provisioning
+completion) is settled in favor of flipping at full provisioning completion, per
+the proposal; the change to that one condition's exact True-instant is tracked as
+a risk with an implementation-time audit of current `PROVISIONED` readers (see
+Risks and Mitigations). The coarse `state` is unaffected.
 
 ## Test Plan
 
@@ -753,7 +767,7 @@ mapped to the requirement/interface-change matrix, are enumerated in
 
 ### Unit Tests
 
-- Stage-derivation function (`DeriveProvisioningProgress`, bare-metal operator):
+- Stage-derivation function (`DeriveProvisioningProgress`, bare-metal-fulfillment-operator):
   each operator lifecycle-condition / AAP job-status fixture maps to the correct
   stage / terminal / failure result, selecting the furthest-advanced stage
   order-independently; provisioning-complete and ready are reported at the right
@@ -784,9 +798,10 @@ mapped to the requirement/interface-change matrix, are enumerated in
 
 - pytest (`tests/e2e/`): order a bare metal instance and assert the API exposes
   the advancing `PROVISIONED` reason and terminal `READY`.
-- osac-ui (Vitest + RTL / Cypress): the detail view renders the stepper with
-  correct variants for pending/running/succeeded/failed, shows a failure message
-  on a failed step, exposes no retry control, and updates on refetch.
+- osac-ui (Vitest + RTL / Cypress): the detail view renders the progress view with
+  the correct per-step state for not-started/in-progress/complete/failed, shows a
+  failure message on a failed step, exposes no retry control, and updates on
+  refresh.
 
 ## Graduation Criteria
 
@@ -795,7 +810,7 @@ gates per stage are:
 
 - **Dev Preview:** `PROVISIONED` reason/message advances end-to-end for the happy
   path; stage-derivation unit tests cover every operator condition / AAP
-  job-status fixture; the UI stepper renders the four steps against a kind
+  job-status fixture; the UI progress view renders the four steps against a kind
   cluster.
 - **Tech Preview:** all testplan cases pass (FR-1…FR-5, NFR-1…NFR-3), including
   the failure (FR-5/IC-5) and freshness (TC-NFR1-01) scenarios; NFR-1 freshness is
@@ -806,7 +821,7 @@ gates per stage are:
   CR, and the failure-message vocabulary has been reviewed with support.
 
 **Documentation.** User-facing change is limited to the instance detail view; the
-new stepper needs a short help/legend entry (step meanings, state colors). There
+new progress view needs a short help/legend entry (step meanings, states). There
 is **no** API-surface documentation change (no new fields/endpoints) — the
 `reason`/`message` fields are already documented on the condition. No runbook
 change beyond the Support notes below.
@@ -836,8 +851,8 @@ present. No new fields and no CRD version migration are involved.
   that never updates in the UI while the CR advances indicates a feedback-path or
   reconciler problem — check the fulfillment reconciler logs and `Signal`/DB-sync
   events.
-- **Disabling:** the feature has no feature gate; to suppress the UI, the stepper
-  component can be hidden without backend changes. The enriched `reason`/`message`
+- **Disabling:** the feature has no feature gate; to suppress the UI, the progress
+  view can be hidden without backend changes. The enriched `reason`/`message`
   are inert if unread. Disabling has no effect on provisioning itself (observation
   only).
 - **Recovery:** restarting the fulfillment reconciler re-syncs CRs via its
@@ -853,8 +868,9 @@ e2e) cover the change.
 
 ## Provenance
 
-Committed: commit @ design 0.9.1 - f121df6, workspace design/OSAC-3459 @ f7803f3 (dirty)
+Authored: draft @ design 0.9.0 - 562b610, workspace main @ d27d7951b
+Final: respond @ design 0.10.1 - a7f4aa1, workspace main @ 770f353d1
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.1","ai_workflows":"f121df6","source_repo":"f7803f3 (dirty)","source_repo_branch":"design/OSAC-3459","commits_behind_main":0,"commits_ahead_main":127,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.10.1","ai_workflows":"a7f4aa1","source_repo":"770f353d1","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","research","revise","revise","revise","revise","revise","revise","respond","respond","respond","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
