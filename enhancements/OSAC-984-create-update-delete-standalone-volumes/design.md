@@ -623,7 +623,8 @@ Tests follow the existing OSAC Go test patterns using `testify/assert` and
   `READ_ONLY_MANY` returns `InvalidArgument`.
 - TC-U2c: `Update` that changes `metadata.name` from `"analytics-data"` to
   `"renamed-volume"` returns `InvalidArgument`: "field 'metadata.name' is
-  immutable and cannot be changed after creation".
+  immutable and cannot be changed after creation". After the rejection, `Get`
+  the volume and assert that `metadata.name` is still `"analytics-data"`.
 - TC-U3: `Update` with `lock=true` and stale version returns `Aborted`.
   After the rejection, `Get` the volume and assert that all fields and
   `metadata.version` are unchanged from the pre-update state.
