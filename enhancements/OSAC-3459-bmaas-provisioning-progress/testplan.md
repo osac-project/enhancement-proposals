@@ -26,7 +26,7 @@
 
 ### FR-1: The bare metal instance detail view shows the current provisioning stage and a human-readable message, computed from the instance conditions
 
-#### TC-FR1-01: Progress stepper renders the four steps derived from the PROVISIONED reason
+#### TC-FR1-01: Progress view renders the four steps derived from the PROVISIONED reason
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -41,15 +41,15 @@
 ##### Steps
 
 1. Open the instance detail page.
-2. Inspect the rendered `ProgressStepper`.
+2. Inspect the rendered progress view.
 
 ##### Expected Results
 
 - Four ordered steps appear: Host Allocation, Provisioning, Network Setup, Ready.
-- Host Allocation shows the `success` variant; Provisioning shows `info` with a
-  spinner and is marked current; Network Setup and Ready show `pending`.
-- The current (Provisioning) step's description shows the curated `message` from
-  the `PROVISIONED` condition; no per-step duration is shown.
+- Host Allocation is shown as complete; Provisioning is shown as the current
+  in-progress step; Network Setup and Ready are shown as not started.
+- The current (Provisioning) step shows the curated `message` from the
+  `PROVISIONED` condition; no per-step duration is shown.
 
 #### TC-FR1-02: API returns PROVISIONED with the stage reason and curated message; READY terminal
 
@@ -142,13 +142,14 @@
 
 1. Run `syncStatus()` through to completion.
 2. Inspect the derived stage progression.
-3. Render the stepper for the completed instance.
+3. Render the progress view for the completed instance.
 
 ##### Expected Results
 
 - The derivation advances past Network Setup (it is treated as satisfied) rather
   than lingering on `reason = NetworkSetup`; `PROVISIONED` reaches `True`.
-- The UI renders the Network Setup step as `success`, not stuck `pending`.
+- The UI shows the Network Setup step as complete, not stuck as not-started or
+  in-progress.
 
 #### TC-FR2-04: The CR→stage derivation is exhaustive over the operator condition constants, so a CR-condition change breaks a test rather than the proto
 
@@ -207,13 +208,14 @@
 ##### Steps
 
 1. Render the detail page and let the query refetch (no user action).
-2. Observe the stepper after the refetch resolves.
+2. Observe the progress view after the refetch resolves.
 
 ##### Expected Results
 
-- Without any click or reload, the Provisioning step transitions to `success` and
-  Network Setup becomes the current running step.
-- The `aria-live="polite"` region announces the new current step.
+- Without any click or reload, the Provisioning step transitions to complete and
+  Network Setup becomes the current in-progress step.
+- The change of current step is announced to assistive technology (the new
+  current step is conveyed without relying on color alone).
 
 ### FR-4: The terminal or failure state (which stage the instance reached or failed at, and its message) persists for the life of the fulfillment instance record
 
@@ -237,14 +239,14 @@
 1. With the instance at readiness, make the source `BareMetalInstance` CR
    unavailable (delete/detach it on the hub) while the fulfillment record remains
    live, so any subsequent response must be served from the DB rather than the CR.
-2. Open the completed instance's detail page and inspect the stepper.
+2. Open the completed instance's detail page and inspect the progress view.
 3. Issue `GET /api/fulfillment/v1/baremetal_instances/{id}` and read
    `status.conditions`.
 
 ##### Expected Results
 
-- All four steps render `success`; no running spinner and no step marked current;
-  no per-step duration is asserted (none is shown this iteration).
+- All four steps are shown as complete; no step is shown as in-progress or
+  current; no per-step duration is asserted (none is shown this iteration).
 - The API returns `PROVISIONED = True` and `READY = True` with their terminal
   reasons/messages, served from the DB independent of the now-unavailable CR — a
   CR-backed response could not have produced this result.
@@ -301,8 +303,8 @@
 1. For each IC-5 reason, run `syncStatus()` on its fixture.
 2. Read the failing condition's `reason`/`message` from the API, and record
    **which** condition carries the failure (`PROVISIONED` vs `READY`).
-3. Render the stepper for that failed instance and read the failed step's name and
-   `description`.
+3. Render the progress view for that failed instance and read the failed step's
+   name and message.
 
 ##### Expected Results
 
@@ -316,10 +318,10 @@
   `ProvisionJobFailed`, `NetworkAttachmentFailed`, `NetworkHandoffFailed`,
   `IPDiscoveryFailed`) on `PROVISIONED`, and `ReadyTimeout` on `READY`. The test
   asserts the expected carrier per reason.
-- For each reason, the stepper marks the IC-5 **Failed step** for that reason
-  (`ReadyTimeout` → Ready; the provisioning reasons → Host Allocation,
-  Provisioning, or Network Setup per the IC-5 table) as `danger`, and the same
-  message renders verbatim in that failed step's description.
+- For each reason, the progress view marks the IC-5 **Failed step** for that
+  reason (`ReadyTimeout` → Ready; the provisioning reasons → Host Allocation,
+  Provisioning, or Network Setup per the IC-5 table) as failed, and the same
+  message renders verbatim for that failed step.
 
 #### TC-FR5-02: Raw internal error text is not surfaced in the conditions
 
@@ -395,7 +397,7 @@
    stage.
 2. Update the mock API to return `PROVISIONED.reason = NetworkSetup`, then advance
    fake timers by the dedicated ~5s `refetchInterval` (no user interaction).
-3. Inspect the stepper.
+3. Inspect the progress view.
 4. Drive the instance to a resting **successful** terminal state (`PROVISIONED =
    True`, `READY = True`), let one more interval elapse, then update the mock API
    again and advance timers.
@@ -405,8 +407,8 @@
 
 ##### Expected Results
 
-- After step 2's single ~5s interval, the stepper reflects Network Setup running
-  without any click or reload — the DB→UI leg is bounded to the dedicated per-page
+- After step 2's single ~5s interval, the progress view reflects Network Setup
+  in progress without any click or reload — the DB→UI leg is bounded to the dedicated per-page
   ~5s poll, not the global ~10s default. This complements TC-NFR1-01, which
   measures the CR→API (DB) leg; together they bound end-to-end freshness.
 - After step 4, once the instance is at the successful terminal state (`READY =
@@ -431,13 +433,13 @@
 ##### Steps
 
 1. Open the failed instance's detail page.
-2. Query the stepper region for interactive controls.
+2. Query the progress view region for interactive controls.
 
 ##### Expected Results
 
 - No retry, re-provision, or other mutating button/link is present in the progress
   region.
-- The steps expose no click/select behavior (display-only stepper).
+- The steps expose no click/select behavior (display-only progress view).
 
 ### NFR-3: Progress reuses the OSAC coarse-condition staged reason/message pattern for cross-service consistency
 
