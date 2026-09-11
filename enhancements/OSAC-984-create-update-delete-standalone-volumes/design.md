@@ -250,11 +250,16 @@ visible through Get/List; the public CUD API adds the second path.
 | `spec.storage_tier` | Immutable | `InvalidArgument` | "field 'spec.storage_tier' is immutable and cannot be changed after creation" |
 | `spec.size_gib` | Immutable | `InvalidArgument` | "field 'spec.size_gib' is immutable and cannot be changed after creation" |
 | `spec.access_mode` | Immutable | `InvalidArgument` | "field 'spec.access_mode' is immutable and cannot be changed after creation" |
-| Volume state | Rejected if `DELETING` or `DELETED` | `FailedPrecondition` | "volume in state '{state}' cannot be updated" |
+| Volume state | Rejected only if `DELETING` or `DELETED`; accepted in `CREATING`, `AVAILABLE`, and `FAILED` | `FailedPrecondition` | "volume in state '{state}' cannot be updated" |
 | Version conflict | When `lock=true`, `metadata.version` must match current | `Aborted` | "optimistic lock failure: version mismatch" |
 
 Mutable fields: `metadata.display_name`, `metadata.description`,
-`metadata.labels`, `metadata.annotations`.
+`metadata.labels`, `metadata.annotations`. Metadata updates are accepted in
+**all lifecycle states except `DELETING` and `DELETED`** — this means a user
+can tag or label a volume while it is still `CREATING` or after it has moved
+to `FAILED`, without waiting for provisioning to complete. Spec field
+immutability (`storage_tier`, `size_gib`, `access_mode`) is enforced
+regardless of state.
 
 #### Delete Validation
 
@@ -375,7 +380,15 @@ possible. No StorageClass or Helm chart changes are needed.
 
 #### Update State Validation
 
-Updates to volumes in terminal or transitional delete states are rejected at
+Following the `ComputeInstancesServer` pattern, metadata-only updates
+(`display_name`, `description`, `labels`, `annotations`) are accepted in
+**all lifecycle states except `DELETING` and `DELETED`**. This means
+`CREATING` and `FAILED` volumes accept metadata updates — the user does not
+need to wait for provisioning to complete before tagging or labeling a volume.
+Spec field immutability (`storage_tier`, `size_gib`, `access_mode`) is
+enforced regardless of state.
+
+Updates to volumes in delete states (`DELETING`, `DELETED`) are rejected at
 two levels for defence in depth:
 
 1. **Public pre-check (clear client error).** The public server fetches the
@@ -443,6 +456,7 @@ if state == privatev1.VolumeState_VOLUME_STATE_DELETING ||
 | **Create — backend failure** | Volume created in DB with `CREATING` state. Backend reconciler retries. If retries exhausted, state moves to `FAILED`. |
 | **Update — version conflict** | Returns `Aborted`. No change applied. Client retries with fresh version. |
 | **Update — immutable field** | Returns `InvalidArgument`. No change applied. |
+| **Update — creating/failed** | Metadata-only updates accepted; spec immutability still enforced. |
 | **Update — deleting/deleted** | Returns `FailedPrecondition`. No change applied. |
 | **Delete — not found/archived** | Returns `NotFound`. |
 | **Delete — active attachments** | Returns `FailedPrecondition` (after OSAC-4884). |
@@ -537,6 +551,7 @@ discussions.
 | Name unique within tenant, immutable | TC-C7, TC-U2, TC-U2c, TC-IT3, TC-IT5 | Unit, Integration |
 | Immutable fields: storage_tier, size_gib, access_mode | TC-U2, TC-U2a, TC-U2b, TC-IT3 | Unit, Integration |
 | Mutable fields: display_name, description, labels, annotations | TC-U1, TC-IT2 | Unit, Integration |
+| Metadata updates accepted while creating, available, or failed | TC-U5, TC-U6 | Unit |
 | Status set by server, client input ignored | TC-C8 | Unit |
 | Lifecycle: creating -> available / failed | TC-C1, TC-C9, TC-IT1, E2E-1 | Unit, Integration, E2E |
 | Failed is terminal; not retried in place | TC-C9 | Unit |
@@ -553,7 +568,7 @@ discussions.
 | Private fields never exposed in public API | TC-MAP1, TC-MAP2, TC-IT6 | Unit, Integration |
 | CSI display_name auto-population | TC-CSI1--4, E2E-2 | Unit, E2E |
 
-**Coverage summary:** 19 PRD requirements mapped to 30+ test cases across
+**Coverage summary:** 20 PRD requirements mapped to 30+ test cases across
 unit, integration, and E2E tiers.
 
 ### Test Infrastructure
@@ -613,6 +628,12 @@ Tests follow the existing OSAC Go test patterns using `testify/assert` and
   After the rejection, `Get` the volume and assert that all fields and
   `metadata.version` are unchanged from the pre-update state.
 - TC-U4: `Update` on a volume in DELETING state returns `FailedPrecondition`.
+- TC-U5: `Update` metadata (`display_name="tagged-early"`) on a volume in
+  CREATING state succeeds — the user can tag a volume before provisioning
+  completes.
+- TC-U6: `Update` metadata (`description="failed volume notes"`) on a volume
+  in FAILED state succeeds — the user can annotate a failed volume before
+  deleting it.
 - TC-D1: `Delete` of an available volume returns success (empty response).
 - TC-D2: `Delete` of a non-existent volume returns `NotFound`.
 - TC-D3: `Delete` of an already-deleting volume is idempotent (no error).
@@ -755,7 +776,8 @@ None.
 - Extend `VolumesServer` with `inMapper`, `Create`, `Update`, `Delete` methods
   following the `ComputeInstancesServer` pattern.
 - Add block-protocol validation on Create.
-- Add update state validation (reject DELETING/DELETED).
+- Add update state validation (reject DELETING/DELETED; accept CREATING/FAILED
+  for metadata-only updates, following ComputeInstances pattern).
 - Register CUD RPCs on gRPC server and REST gateway (already done in PR #743;
   verify and adjust).
 - Add OPA policy entries for the three new public methods.
