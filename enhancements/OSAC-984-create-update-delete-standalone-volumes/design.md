@@ -402,9 +402,22 @@ if state == privatev1.VolumeState_VOLUME_STATE_DELETING ||
    private write could allow a stale metadata update. To close this race, the
    DAO update must include a lifecycle predicate (e.g., a SQL `WHERE state NOT
    IN ('DELETING', 'DELETED')` clause) so that the write is rejected
-   atomically if the volume was concurrently deleted. The pre-check is
-   retained for the clear `FailedPrecondition` error message; the DAO
-   predicate is the correctness guarantee.
+   atomically if the volume was concurrently deleted.
+
+   **Zero-row disambiguation.** When the DAO lifecycle predicate causes the
+   `UPDATE` to affect zero rows, the caller cannot distinguish between three
+   failure modes from the row count alone. The update path must perform a
+   follow-up read to disambiguate:
+
+   | Follow-up read result | Meaning | gRPC error |
+   |---|---|---|
+   | Volume exists with state `DELETING` or `DELETED` | Concurrent delete won the race | `FailedPrecondition` ("volume in state '...' cannot be updated") |
+   | Volume not found | Volume was deleted and archived between the pre-check and the write | `NotFound` |
+   | Volume exists with a different `metadata.version` | Concurrent update won; the lifecycle predicate passed but the version predicate failed | `Aborted` ("optimistic lock failure: version mismatch") |
+
+   The pre-check (step 1) is retained for the common-path clear error message;
+   the DAO predicate plus follow-up read is the correctness guarantee for the
+   race window.
 
 ### Security Considerations
 
