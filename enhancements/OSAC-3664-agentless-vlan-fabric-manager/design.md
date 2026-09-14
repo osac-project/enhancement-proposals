@@ -590,6 +590,15 @@ operations consume the current ExternalIP status address when programming
 rules. Creating the pool does not allocate an address and does not create DNAT
 or SNAT rules.
 
+The status fields have disjoint owners: fulfillment-service owns
+`status.total`, `status.allocated`, and `status.available`; the
+ExternalIPPoolReconciler owns `status.phase`, `status.conditions`, and
+provisioning-job fields. Fulfillment-service updates only its capacity fields
+inside the pool-row lock. The reconciler uses a field-scoped status patch or
+read-modify-write that preserves the capacity fields, retries on
+`resourceVersion` conflict, and recomputes its owned fields from the latest
+object. Neither writer replaces the full status with a stale snapshot. [NFR-2]
+
 ##### ExternalIP
 
 ~~~yaml
@@ -1372,4 +1381,4 @@ Final: respond @ design 0.11.0 - fd98907, workspace main @ b9575896d (dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.0","ai_workflows":"fd98907","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.0","ai_workflows":"fd98907","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
