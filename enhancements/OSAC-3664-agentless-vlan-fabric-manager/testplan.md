@@ -4,7 +4,7 @@
 
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
 - **Design task:** OSAC-4307
-- **Total test cases:** 27
+- **Total test cases:** 28
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 6 of 6
 
@@ -246,6 +246,32 @@
 - OVN supplies the VM address.
 - AgentlessNet does not create a fabric-side DHCP address for the VM.
 - The attachment contract remains available for the downstream VMaaS flow.
+
+#### TC-FR4-04: Reject duplicate SubnetRef attachments
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-3 | high | automated |
+
+##### Preconditions
+
+- `subnet-a` is Ready.
+- The BareMetalInstance request contains two physical interfaces that both
+  reference `subnet-a`.
+
+##### Steps
+
+1. Submit the BareMetalInstance request through the BMaaS API/CR path.
+2. Inspect the validation result and any networking or DHCP-discovery jobs.
+
+##### Expected Results
+
+- The request is rejected as an invalid duplicate `subnetRef` attachment before
+  network handoff or DHCP discovery begins.
+- No AAP network-attachment or DHCP-lease job is launched for the invalid
+  request.
+- A valid multi-NIC BareMetalInstance uses a distinct SubnetRef for each
+  attachment, and a Subnet remains usable by other BareMetalInstances.
 
 ### FR-5: Inbound external access
 
@@ -675,12 +701,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 27 |
+| Total test cases | 28 |
 | Critical | 11 |
-| High | 15 |
+| High | 16 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 26 |
+| Automated | 27 |
 | Manual | 1 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 6 / 6 |
