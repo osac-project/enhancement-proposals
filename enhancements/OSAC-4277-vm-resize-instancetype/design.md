@@ -251,6 +251,10 @@ runs only when the update mask includes `spec.instance_type`:
    - `FailedPrecondition` error for OBSOLETE targets
    - `NotFound` error for missing targets
 
+   The Update handler translates `NotFound` to `InvalidArgument` before
+   returning — the InstanceType is a reference field on the request, not
+   the target resource of the RPC.
+
 3. **GPU compatibility check**: Compare the current InstanceType's GPU spec
    with the target InstanceType's GPU spec. If they differ, return
    `FailedPrecondition` — GPU is immutable and the CRD's CEL rule would
