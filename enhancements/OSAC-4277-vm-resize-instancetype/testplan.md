@@ -255,7 +255,7 @@
 
 ##### Expected Results
 
-- The Update RPC returns gRPC `NotFound` (HTTP 404)
+- The Update RPC returns gRPC `InvalidArgument` (HTTP 400)
 - The ComputeInstance's `spec.instance_type` remains "current" (unchanged)
 
 ### FR-4: No-op detection for same InstanceType
@@ -375,21 +375,26 @@
 
 ##### Steps
 
-1. Resize from InstanceType A to InstanceType B (different cores/memory)
-2. Verify `ConfigurationApplied` = True and `RestartRequired` = True
-3. Restart the VM via `restart_requested_at`
-4. Verify the VM runs with the new CPU/memory values
-5. Resize from InstanceType B to InstanceType C (another cores/memory combo)
-6. Verify `ConfigurationApplied` = True and `RestartRequired` = True
-7. Restart the VM and verify updated resources
+1. Verify the KubeVirt VM uses socket-based CPU topology
+   (`sockets: N, cores: 1, threads: 1`)
+2. Resize up: InstanceType A → InstanceType B (increase cores/memory)
+3. Verify `ConfigurationApplied` = True and `RestartRequired` = True
+4. Restart the VM via `restart_requested_at`
+5. Verify the VM runs with the new CPU/memory values and socket topology
+6. Resize down: InstanceType B → InstanceType A (decrease cores/memory)
+7. Verify `ConfigurationApplied` = True and `RestartRequired` = True
+8. Restart the VM and verify updated resources
 
 ##### Expected Results
 
+- The KubeVirt VM uses socket-based CPU topology (`sockets: N, cores: 1,
+  threads: 1`) — required for hot-plug compatibility
 - All resize operations complete with `ConfigurationApplied` = True
 - `RestartRequired` = True after each resize (single-node, no live
   migration available)
 - After each restart, the KubeVirt VM's CPU and memory match the
   selected InstanceType
+- Both increase and decrease directions succeed
 - The ComputeInstance transitions through expected states without errors
 
 #### TC-NFR1-02: Hot-plug resize via live migration (multi-node)
@@ -410,19 +415,26 @@
 ##### Steps
 
 1. Note the node the VM pod is running on
-2. Resize from InstanceType A to InstanceType B (different cores/memory)
+2. Resize up: InstanceType A → InstanceType B (increase cores/memory)
 3. Wait for `ConfigurationApplied` condition to become True
 4. Observe that KubeVirt triggers a live migration (VM pod moves to a
    different node)
 5. Verify the VM remains available during migration (no downtime)
 6. Verify `RestartRequired` is NOT set (hot-plug succeeded)
+7. Verify the KubeVirt VM's CPU and memory match InstanceType B
+8. Resize down: InstanceType B → InstanceType A (decrease cores/memory)
+9. Wait for `ConfigurationApplied` condition to become True
+10. Verify live migration occurs and `RestartRequired` is NOT set
+11. Verify the KubeVirt VM's CPU and memory match InstanceType A
 
 ##### Expected Results
 
-- The VM live-migrates to a different node with updated resource limits
-- The VM remains accessible throughout the migration (no restart)
-- `RestartRequired` is not set — the resize was applied via hot-plug
-- The KubeVirt VM's CPU and memory match InstanceType B
+- Both increase and decrease resizes apply via live migration without
+  user-initiated restart
+- The VM remains accessible throughout each migration
+- `RestartRequired` is not set after either resize
+- The KubeVirt VM's CPU and memory match the target InstanceType after
+  each resize
 
 **Note:** VMs that are ineligible for live migration (e.g., VMs with GPU
 passthrough devices) fall back to `RestartRequired` on the same

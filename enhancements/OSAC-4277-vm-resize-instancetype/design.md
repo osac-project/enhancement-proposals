@@ -325,19 +325,47 @@ condition (because hot-plug is not supported for the change), the
 operator syncs it to the ComputeInstance CRD, and the feedback controller
 propagates it to the fulfillment-service.
 
-#### osac-aap: Playbook — No Changes
+#### osac-aap: Playbook — CPU Topology Change
 
 The AAP create playbook (`playbook_osac_create_compute_instance.yml`) uses
 `kubernetes.core.k8s` with `apply: true`, which performs a Kubernetes
 server-side apply. This already handles updates — it patches the existing
-KubeVirt VirtualMachine if one exists with the same name. The playbook
-extracts `vm_cpu_cores` from `compute_instance.spec.cores` and `vm_memory`
-from `compute_instance.spec.memoryGiB` on every invocation, so updated
-values propagate automatically.
+KubeVirt VirtualMachine if one exists with the same name. No separate
+update playbook is needed. The provisioning lifecycle re-runs the create
+playbook for spec changes, which works because of server-side apply
+semantics.
 
-No separate update playbook is needed. The provisioning lifecycle re-runs
-the create playbook for spec changes, which works because of server-side
-apply semantics.
+**CPU topology mapping:** KubeVirt CPU hot-plug operates on **sockets**,
+not cores. The total vCPU count is `sockets × cores × threads`. Changing
+the `cores` field is a topology change that always requires a restart,
+regardless of hot-plug configuration.
+
+The current playbook (`create_build_spec.yaml`) maps `vm_cpu_cores`
+directly to `cpu.cores` (Linux) or to `cpu.cores` with `sockets: 1,
+threads: 1` (Windows). To enable live CPU resize, the topology must
+express the InstanceType's core count as sockets:
+
+```yaml
+# Before (Linux):
+cpu:
+  cores: "{{ vm_cpu_cores }}"
+
+# After (both Linux and Windows):
+cpu:
+  sockets: "{{ vm_cpu_cores }}"
+  cores: 1
+  threads: 1
+```
+
+This maps each InstanceType vCPU to one socket, making CPU changes a
+socket count change — the path KubeVirt can hot-plug. The total vCPU
+count is unchanged (`N × 1 × 1 = N`).
+
+Both increase (e.g., 2→4 sockets) and decrease (e.g., 4→2 sockets) use
+the same mapping. When live update is unavailable (single-node cluster,
+GPU passthrough, hot-plug not configured), KubeVirt sets
+`VirtualMachineRestartRequired` and the osac-operator mirrors it to the
+ComputeInstance status.
 
 #### KubeVirt Hot-Plug Behavior
 
@@ -641,13 +669,21 @@ tests belong in the regression suite, not sanity.
 - Resize to the current InstanceType — verify no-op (no state change, no
   re-provisioning)
 - Resize a STOPPED ComputeInstance — verify the change applies on next start
-- (Single-node automated) Resize a running ComputeInstance — verify
-  `RestartRequired` is set (hot-plug unavailable on single node), restart
-  the VM, verify new resources apply
-- (Multi-node manual) Resize a running ComputeInstance on a cluster with
-  hot-plug enabled (`vmRolloutStrategy: LiveUpdate`,
+- Verify the KubeVirt VM uses the socket-based CPU topology
+  (`sockets: N, cores: 1, threads: 1`)
+- (Single-node automated) Increase a running ComputeInstance's InstanceType
+  (e.g., 2→4 vCPUs) — verify `RestartRequired` is set (hot-plug unavailable
+  on single node), restart the VM, verify new resources apply
+- (Single-node automated) Decrease a running ComputeInstance's InstanceType
+  (e.g., 4→2 vCPUs) — verify `RestartRequired` is set, restart the VM,
+  verify new resources apply
+- (Multi-node manual) Increase a running ComputeInstance's InstanceType on
+  a cluster with hot-plug enabled (`vmRolloutStrategy: LiveUpdate`,
   `workloadUpdateMethods: [LiveMigrate]`) — verify the VM live-migrates
   to a new pod and the new CPU/memory apply without user-initiated restart
+- (Multi-node manual) Decrease a running ComputeInstance's InstanceType on
+  a cluster with hot-plug enabled — verify the VM live-migrates and the
+  reduced CPU/memory apply without user-initiated restart
 
 ## Graduation Criteria
 
