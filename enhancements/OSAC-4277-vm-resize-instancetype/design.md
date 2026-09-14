@@ -524,7 +524,7 @@ This feature inherits the existing security model without changes:
 
 | Failure Mode | Behavior | User Observation |
 |---|---|---|
-| **InstanceType not found** | API returns `NotFound` before persist | Immediate error; no state change |
+| **InstanceType not found** | API returns `InvalidArgument` before persist | Immediate error; no state change |
 | **OBSOLETE InstanceType** | API returns `FailedPrecondition` before persist | Immediate error; no state change |
 | **DB write failure** | API returns internal error; no downstream effects | Retry the request |
 | **Reconciler fails to resolve InstanceType** | Reconciler retries on next cycle; CRD not updated | ComputeInstance shows stale spec; `ConfigurationApplied` remains True (no CRD change yet) |
@@ -758,10 +758,14 @@ tests belong in the regression suite, not sanity.
 - (Multi-node manual) Increase a running ComputeInstance's InstanceType on
   a cluster with hot-plug enabled (`vmRolloutStrategy: LiveUpdate`,
   `workloadUpdateMethods: [LiveMigrate]`) — verify the VM live-migrates
-  to a new pod and the new CPU/memory apply without user-initiated restart
+  to a new pod and the new CPU/memory apply without user-initiated restart.
+  After migration completes, verify the VMI status
+  (`status.currentCPUTopology`) reflects the target resources, not just
+  the VM spec
 - (Multi-node manual) Decrease a running ComputeInstance's InstanceType on
   a cluster with hot-plug enabled — verify the VM live-migrates and the
-  reduced CPU/memory apply without user-initiated restart
+  reduced CPU/memory apply without user-initiated restart. Verify VMI
+  status reflects the reduced resources after migration completes
 
 ## Graduation Criteria
 
