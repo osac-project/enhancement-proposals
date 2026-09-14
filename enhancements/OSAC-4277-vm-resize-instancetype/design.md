@@ -307,7 +307,10 @@ Regenerate via `make manifests generate && make helm-crds`.
 
 **AAP playbook** (`create_validate.yaml`): read
 `compute_instance.spec.vcpus` instead of `compute_instance.spec.cores`.
-The internal Ansible variable `vm_cpu_cores` is unchanged.
+Rename the internal Ansible variable `vm_cpu_cores` to `vm_cpu_sockets`
+— the value now maps to `cpu.sockets` in the KubeVirt VM spec, not
+`cpu.cores`. Update references in `create_build_spec.yaml`,
+`create_wait_annotate.yaml`, and `tests/test.yml`.
 
 **CLI** (`describe_instancetype_cmd.go`, `create_instancetype_cmd.go`):
 update flag names and display labels from `cores` to `vcpus`.
@@ -330,7 +333,8 @@ update flag names and display labels from `cores` to `vcpus`.
 - `migrate_subnetrefs_test.go`: update `"cores"` key in the `ciSpec()`
   fixture map to `"vcpus"`.
 - AAP role tests (`ocp_virt_vm/tests/test.yml`): update `spec.cores`
-  references in assertion fail messages to `spec.vcpus`.
+  references to `spec.vcpus` and `vm_cpu_cores` to `vm_cpu_sockets` in
+  assertions and fail messages.
 - CLI tests (`create_instancetype_cmd_test.go`,
   `describe_instancetype_cmd_test.go`): update flag and output
   references from `cores` to `vcpus`.
