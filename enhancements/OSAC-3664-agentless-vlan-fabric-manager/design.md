@@ -347,8 +347,11 @@ failure message in the existing provisioning history and status condition.
    remains a separate resource and is not released implicitly.
 5. For a SecurityGroup, remove only the iptables chains and rules generated for
    that SecurityGroup after existing API dependency checks permit deletion.
-6. For a Subnet, remove DHCP, its VLAN subinterface, gateway IP, and
-   SecurityGroup-owned iptables rules, then release the VLAN ID.
+6. For a Subnet, remove only DHCP, its VLAN subinterface, gateway IP, and
+   Subnet-owned switch/VLAN state, then release the VLAN ID after confirmed
+   cleanup. SecurityGroup-owned iptables/netfilter chains and rules remain
+   under SecurityGroup reconciliation; that reconciliation removes only rules
+   that are obsolete after the Subnet disappears.
 7. For a VirtualNetwork, remove remaining child fabric state, external boundary,
    and namespace after children are gone.
 8. Remove the finalizer only after the fabric manager reports the desired
@@ -740,7 +743,14 @@ is:
    fabric VLAN-ID pool. The VLAN number is separate from the Subnet UID, and
    the usable 802.1Q range is approximately 4094 IDs per physical fabric.
 3. VLAN ID -> one VLAN subinterface moved into the VirtualNetwork namespace.
-4. Subnet CIDR -> gateway address and DHCP scope in that namespace.
+4. Subnet CIDR -> gateway address and DHCP scope in that namespace. For the
+   IPv4-only milestone, the backend selects the first usable IPv4 address in
+   the Subnet CIDR as `gateway_ipv4` (for example, `10.20.1.1` for
+   `10.20.1.0/24`), assigns it to the Subnet VLAN interface, and advertises it
+   as the DHCP default gateway. This address is backend data-plane state, not
+   an ExternalIP or a separate Kubernetes object. Subnet deletion removes the
+   DHCP scope and gateway address before deleting the VLAN interface and
+   releasing the VLAN.
 5. VirtualNetwork namespace -> one uplink boundary used for routing and external
    NAT.
 
@@ -1321,4 +1331,4 @@ Final: respond @ design 0.11.0 - fd98907, workspace main @ b9575896d (dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.0","ai_workflows":"fd98907","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.0","ai_workflows":"fd98907","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

@@ -550,19 +550,31 @@
 
 ##### Preconditions
 
-- Two VirtualNetworks have independent Subnets, VLANs, namespaces, and test
-  attachments.
+- The first VirtualNetwork has two Ready Subnets, each with VLAN and namespace
+  state, and a SecurityGroup policy that applies to both Subnets.
+- The second VirtualNetwork has an independent Subnet, VLAN, namespace, and
+  test attachment.
 
 ##### Steps
 
-1. Delete the Subnet and VirtualNetwork in the first VirtualNetwork.
-2. Inspect state-file entries, switch VLANs, namespace interfaces, and the
-   second VirtualNetwork.
+1. Delete one Subnet from the first VirtualNetwork and wait for its finalizer
+   cleanup to complete.
+2. Inspect state-file entries, DHCP state, switch VLANs, namespace interfaces,
+   gateway state, and the SecurityGroup policy for the remaining Subnet.
+3. Verify permitted traffic for the remaining Subnet, then delete the first
+   VirtualNetwork and inspect the second VirtualNetwork.
 
 ##### Expected Results
 
-- The first VirtualNetwork's child state, VLAN, interfaces, routes, and owned
-  firewall rules are removed in dependency order.
+- The deleted Subnet's DHCP state, VLAN, interfaces, gateway, and
+  Subnet-owned state are removed in dependency order, and its VLAN is not
+  released before cleanup is confirmed.
+- The SecurityGroup-owned chain remains after Subnet deletion; its rules for
+  the remaining Subnet continue to permit the configured traffic, while
+  SecurityGroup reconciliation removes only obsolete rules for the deleted
+  Subnet.
+- After the first VirtualNetwork is deleted, its remaining child state and
+  SecurityGroup rules are removed in dependency order.
 - The second VirtualNetwork's namespace, VLAN, and connectivity remain present.
 - The deleted resources' finalizers are removed only after cleanup feedback.
 
