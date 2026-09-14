@@ -95,10 +95,11 @@ NetworkClass and dispatcher contracts. A provider registers an
 'agentless_net' fabric-manager ConfigMap through Helm values and selects it in
 the existing deployment configuration. The fulfillment-service and operator
 own API validation, tenancy, CRDs, status, finalizers, dependency checks, and
-controller-owned ExternalIPPool/ExternalIP allocation. AgentlessNet owns only
-data-plane operations: VirtualNetwork/Subnet/SecurityGroup realization, BMF
-port binding, DNAT, and SNAT. It reads `ExternalIP.status.address` but does
-not allocate or persist ExternalIP ranges or addresses. [PRD: FR-1, FR-2]
+ExternalIPPool capacity accounting. AgentlessNet owns provider-side pool and
+ExternalIP address allocation in its locked state file, as well as
+VirtualNetwork/Subnet/SecurityGroup realization, BMF port binding, DNAT, and
+SNAT. It publishes the allocated address through the AAP job result and the
+operator exposes it as `ExternalIP.status.address`. [PRD: FR-1, FR-2]
 
 The flow below shows the ownership boundary. The operator selects the
 implementation strategy and starts generic AAP jobs; the agentless template
@@ -258,14 +259,24 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
 #### ExternalIP and inbound access
 
 1. A Cloud Infrastructure Admin creates an ExternalIPPool containing IPv4
-   ranges through the existing API.
+   ranges through the existing API. The fulfillment-service records the
+   pool's capacity counters, and the agentless `create_external_ip_pool` AAP
+   job registers the pool CIDRs in the locked AgentlessNet state file.
 2. Creating the ExternalIPPool defines capacity; it does not allocate an
-   address or create a traffic rule. The fulfillment-service validates that a
-   referenced pool is Ready and has capacity when an ExternalIP is created,
-   reserves the address in the controller-owned API state, and exposes the
-   assigned address through ExternalIP status. AgentlessNet does not receive or
-   persist the pool range or the allocation. The ExternalIP becomes ALLOCATED
-   but still carries no DNAT rule.
+   address or create a traffic rule. When an ExternalIP is created, the
+   fulfillment-service validates that the referenced pool is Ready and has
+   capacity, then reserves one capacity slot in its API state. The agentless
+   `create_external_ip` AAP job reads the pool entry from the locked state
+   file, reuses an existing allocation for the ExternalIP UID when retrying,
+   or selects and persists the first available IPv4 address. It publishes the
+   selected address as an `external_ip_address` AAP job artifact through
+   `ansible.builtin.set_stats`; the operator
+   validates that artifact and writes the address to
+   `ExternalIP.status.address`. The ExternalIP becomes ALLOCATED only after
+   the AAP job succeeds and still carries no DNAT rule.
+   `ExternalIP` readiness means that a concrete address is allocated; it does
+   not mean that inbound traffic is usable. Inbound readiness is represented by
+   the separate ExternalIPAttachment resource.
 3. The Tenant Admin creates an ExternalIPAttachment that references the
    allocated ExternalIP and targets a supported resource. A Tenant User may
    request this through an authorized workload workflow, but the Networking
@@ -275,13 +286,17 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    controller does not dispatch an AAP attachment job.
 5. Once the target address is available, the controller dispatches the
    agentless `create_external_ip_attachment` operation. The role creates only
-   the owned DNAT mapping from the controller-assigned ExternalIP address to
+   the owned DNAT mapping from the address in `ExternalIP.status.address` to
    the target address. The VirtualNetwork default-deny baseline and
    SecurityGroup rules are reconciled independently by their own lifecycles;
    the attachment operation does not create or update SecurityGroup rules.
-6. The attachment reaches Ready only after the AAP job and status feedback
-   confirm the DNAT operation. Traffic not permitted by the already-applied
-   default-deny/SecurityGroup policy is dropped. [PRD: FR-5]
+6. The attachment remains Pending or Progressing until both the parent
+   ExternalIP address and the target address are current. It reaches Ready only
+   after the DNAT AAP job succeeds and status feedback confirms the DNAT
+   operation. If allocation succeeds but DNAT fails, the ExternalIPAttachment
+   remains non-ready and the parent ExternalIP is not marked attached. Traffic
+   not permitted by the already-applied default-deny/SecurityGroup policy is
+   dropped. [PRD: FR-5]
 
 ExternalIP is an allocated address resource independent of any VirtualNetwork.
 ExternalIPAttachment is the separate binding that gives that address an
@@ -368,8 +383,9 @@ reconciliation lifecycles. This feature creates no default networking resources.
 
 No new public gRPC service, REST resource, protobuf field, CRD kind, or webhook
 is introduced. Existing fabric-facing resources receive the agentless backend;
-ExternalIPPool and ExternalIP retain their controller-owned allocation
-lifecycle, while ExternalIPAttachment and NATGateway use the assigned address
+fulfillment-service retains ExternalIPPool validation and capacity accounting,
+the agentless AAP roles allocate provider-side pool addresses, and
+ExternalIPAttachment and NATGateway use the resulting `ExternalIP.status.address`
 for DNAT/SNAT. Existing status and condition fields carry observed readiness
 and diagnostic failures. [Locked: D3, D5, D9]
 
@@ -380,8 +396,8 @@ The implementation changes the following existing surfaces:
 | IC-1 | Installer values, manager ConfigMap, NetworkClass selection | Register and select 'agentless_net' as a fabric manager with IPv4 capability | FR-1, NFR-1 |
 | IC-2 | VirtualNetwork, Subnet, SecurityGroup API/CR lifecycle | Route existing fabric resources through the agentless dispatcher and realize VLAN, namespace, iptables rule, and cleanup state | FR-2, FR-3, FR-11, NFR-2, NFR-3 |
 | IC-3 | Fabric network-attachment and DHCP feedback path | Attach BM/CaaS/VM targets through the existing generic contract and surface fabric-assigned IPs for BM/CaaS | FR-4, FR-8 |
-| IC-4 | ExternalIPPool, ExternalIP, and ExternalIPAttachment lifecycle | Preserve controller-owned pool/address allocation and apply inbound DNAT using the assigned address | FR-5, FR-7, FR-11, NFR-2, NFR-3 |
-| IC-5 | NATGateway lifecycle | Apply outbound SNAT using the controller-approved ExternalIP; existing forwarding policy controls eligibility | FR-6, NFR-2, NFR-3 |
+| IC-4 | ExternalIPPool, ExternalIP, and ExternalIPAttachment lifecycle | Preserve service-owned pool capacity, allocate provider-side addresses through the locked AAP state file, and apply inbound DNAT using the resulting status address | FR-5, FR-7, FR-11, NFR-2, NFR-3 |
+| IC-5 | NATGateway lifecycle | Apply outbound SNAT using the address in `ExternalIP.status.address`; existing forwarding policy controls eligibility | FR-6, NFR-2, NFR-3 |
 | IC-6 | Resource status, conditions, events, and job history | Surface manager registration, provisioning, DHCP, switch, iptables rule, NAT, and cleanup failures with diagnostic reasons | FR-10, NFR-2 |
 
 #### Existing resource and metadata constraints
@@ -567,11 +583,12 @@ The fulfillment-service calculates `status.total` and the initial
 deleted, fulfillment-service locks the pool record and adjusts
 `status.allocated` and `status.available` atomically. The
 ExternalIPPoolReconciler separately reports the controller-level pool phase; it
-does not own capacity accounting. AgentlessNet does
-not receive or persist the pool range, and it does not update these counters.
-Its ExternalIPAttachment and NATGateway operations consume the current
-ExternalIP status address when programming rules. Creating the pool does not
-allocate an address and does not create DNAT or SNAT rules.
+does not own capacity accounting. AgentlessNet registers the pool CIDRs and
+maintains concrete ExternalIP allocations in the locked state file; it does
+not update the API capacity counters. Its ExternalIPAttachment and NATGateway
+operations consume the current ExternalIP status address when programming
+rules. Creating the pool does not allocate an address and does not create DNAT
+or SNAT rules.
 
 ##### ExternalIP
 
@@ -602,12 +619,18 @@ or by AgentlessNet. `status.address` is the allocated IPv4 address,
 `status.state` reports allocation, and `status.attached` reports whether an
 ExternalIPAttachment is currently using it.
 
-The fulfillment-service/controller allocates the address, publishes it in
-`status.address`, and maintains the allocation across reconciliation.
-AgentlessNet does not mirror the pool or allocation in its state file.
-Allocation alone creates no traffic rule; the controller-assigned address is
-consumed later by an ExternalIPAttachment or a NATGateway, subject to the
-existing dependency and exclusivity checks.
+The fulfillment-service validates the pool and reserves capacity, but the
+agentless AAP job selects the concrete address from the provider state file.
+The job publishes the address as an `external_ip_address` artifact; the
+operator validates the job result and publishes it in `status.address`.
+Allocation alone creates no traffic rule; the address is consumed later by an
+ExternalIPAttachment or a NATGateway, subject to the existing dependency and
+exclusivity checks.
+
+The preferred future architecture is for fulfillment-service/controller to
+select the concrete address and pass it as an input to the backend, making the
+backend a pure realization layer. That change is intentionally deferred; this
+milestone follows the existing Netris provider-side allocation pattern.
 
 ##### ExternalIPAttachment
 
@@ -641,7 +664,7 @@ The ExternalIPAttachment controller waits for the target's primary IPv4 address
 from the existing DHCP lease/status feedback path. If the address is missing
 or stale, it keeps the attachment pending and does not dispatch the AAP job.
 Once the target address is current, AgentlessNet creates an owned DNAT rule
-from the controller-assigned ExternalIP address to that target. The
+from `ExternalIP.status.address` to that target. The
 VirtualNetwork default-deny baseline and SecurityGroup rules are maintained by
 the VirtualNetwork and SecurityGroup lifecycles, not by the attachment role.
 
@@ -673,8 +696,8 @@ duplicate the referenced address.
 
 The NATGateway controller validates the referenced ExternalIP allocation,
 tenant scope, and exclusivity before dispatching the backend operation.
-AgentlessNet consumes the controller-approved address in
-`ExternalIP.status.address` and installs owned SNAT rules; it does not repeat
+AgentlessNet consumes the address in `ExternalIP.status.address` and installs
+owned SNAT rules; it does not repeat
 those validation checks or evaluate SecurityGroup egress policy. Deleting the
 NATGateway removes its SNAT rules but does not release the ExternalIP;
 ExternalIP deletion remains a separate Tenant Admin operation.
@@ -768,9 +791,10 @@ client-supplied Subnet API remains an open question. [Codebase: fulfillment-serv
 
 The JSON state file used by the agentless net node becomes versioned and
 resource-oriented. Its logical sections are lists of entries keyed by stable
-resource identifiers. The state file tracks only data-plane resources and
-rules owned by AgentlessNet; ExternalIPPool and ExternalIP allocation remain
-fulfillment-service/controller state.
+resource identifiers. The state file tracks data-plane resources, provider-side
+pool registration, and concrete ExternalIP allocations owned by AgentlessNet;
+fulfillment-service remains authoritative for API objects and capacity
+counters.
 
 ##### State structure
 
@@ -792,6 +816,14 @@ security_groups:
     rule_generation: <generation>
     ingress_chain: <owned-chain-name>
     egress_chain: <owned-chain-name>
+external_ip_pools:
+  - uid: <external-ip-pool-uid>
+    cidrs: [<ipv4-cidr>]
+    ip_family: ipv4
+external_ips:
+  - uid: <external-ip-uid>
+    pool_uid: <external-ip-pool-uid>
+    address_ipv4: <address>
 attachments:
   - uid: <external-ip-attachment-uid>
     external_ip_uid: <uid>
@@ -809,9 +841,13 @@ port_bindings:
     interface: <logical-interface>
 ~~~
 
-The `attachments` and `nat_gateways` entries identify the API resource whose
-DNAT or SNAT rules are owned by the backend; the role reads the current
-ExternalIP status when it reconciles those rules. `port_bindings` tracks the
+The `external_ip_pools` entries register provider-side pool CIDRs and the
+`external_ips` entries record concrete addresses allocated from those pools.
+The AAP roles allocate under the state-file lock and reuse an existing
+ExternalIP UID entry on retry. The `attachments` and `nat_gateways` entries
+identify the API resource whose DNAT or SNAT rules are owned by the backend;
+the role reads the current ExternalIP status when it reconciles those rules.
+`port_bindings` tracks the
 temporary BMF-to-Subnet attachment operation because the current milestone
 invokes the generic attachment playbook directly; a future SubnetAttachment
 CRD could replace this integration boundary. The existing low-level IPAM
@@ -829,10 +865,10 @@ changes. [Codebase: osac-aap/collections/ansible_collections/agentless_net/ipam]
 | VirtualNetwork create/update/delete | Add or reconcile one `virtual_networks` entry; remove it after child entries are gone | Create or repair the namespace, uplink, and default-deny baseline; remove them during ordered cleanup |
 | Subnet create/update/delete | Add or reuse one `subnets` entry and its `vlan_id`; remove it and release the VLAN after dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, and DHCP scope; no host access-port binding during Subnet provisioning |
 | SecurityGroup create/update/delete | Add or replace the `security_groups` entry and rule generation; remove its owned chains on delete | Compile or remove only that SecurityGroup's iptables/netfilter rules; preserve the VN default-deny baseline |
-| ExternalIPPool create/delete | No AgentlessNet state entry | Controller/API capacity and readiness only; no backend address allocation |
-| ExternalIP create/delete | No AgentlessNet state entry | Controller/API allocation and release only; no data-plane rule |
-| ExternalIPAttachment create/delete | Add, replace, or remove one `attachments` entry | Read the controller-assigned ExternalIP address and target status, then create or remove the owned DNAT rule |
-| NATGateway create/delete | Add or remove one `nat_gateways` entry | Read the controller-approved ExternalIP address and create or remove the owned SNAT rule |
+| ExternalIPPool create/delete | Add or reconcile one `external_ip_pools` entry; remove it after child ExternalIP entries are gone | Register or remove provider-side pool CIDRs under the state-file lock; fulfillment-service remains authoritative for capacity counters |
+| ExternalIP create/delete | Add or reuse one `external_ips` entry keyed by ExternalIP UID; remove it after dependent bindings are gone | Select and persist an available IPv4 address under the state-file lock, publish it as the AAP result, and release it during ordered cleanup |
+| ExternalIPAttachment create/delete | Add, replace, or remove one `attachments` entry | Read the address from `ExternalIP.status.address` and target status, then create or remove the owned DNAT rule |
+| NATGateway create/delete | Add or remove one `nat_gateways` entry | Read the address from `ExternalIP.status.address` and create or remove the owned SNAT rule |
 | BMF attachment bind/unbind | Add or remove one `port_bindings` entry keyed by machine, interface, and Subnet | Move the Cumulus access port to or from the Subnet VLAN through the generic attachment playbook |
 
 Every transition is applied under the state-file lock and is persisted before
@@ -884,13 +920,15 @@ failed desired generation in status.
 
 #### ExternalIP, DNAT, and SNAT
 
-ExternalIPPool CIDRs and ExternalIP allocation are controller-owned API state.
-AgentlessNet consumes the allocated address from ExternalIP status and does
-not maintain a second pool or allocation database. ExternalIP release remains
-blocked while an ExternalIPAttachment still owns the inbound mapping.
+ExternalIPPool API objects and capacity counters remain fulfillment-service
+state. AgentlessNet also maintains provider-side pool and concrete ExternalIP
+allocation entries in its locked state file. The AAP allocation job publishes
+the selected address, and the operator copies it to `ExternalIP.status.address`.
+ExternalIP release remains blocked while an ExternalIPAttachment still owns the
+inbound mapping.
 
-ExternalIPAttachment creates a destination translation from the controller-
-assigned ExternalIP to the target's primary private address. It never changes
+ExternalIPAttachment creates a destination translation from the address in
+`ExternalIP.status.address` to the target's primary private address. It never changes
 the NATGateway SNAT rule. NATGateway creates a source translation for packets
 that pass the independently reconciled forwarding policy, using its associated
 ExternalIP. These operations use separate state sections, role entrypoints,
@@ -909,10 +947,12 @@ The agentless implementation must provide:
   'template_type: network', 'fabric_manager: agentless_net', and IPv4-only
   capabilities.
 - Generic network resource entrypoints for VirtualNetwork, Subnet,
-  SecurityGroup, ExternalIPAttachment, and NATGateway. ExternalIPPool and
-  ExternalIP capacity/allocation remain fulfillment-service/controller
-  responsibilities; the backend only consumes their status when programming
-  DNAT or SNAT.
+  SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
+  NATGateway. fulfillment-service owns ExternalIPPool/API validation and
+  capacity counters; the ExternalIPPool and ExternalIP roles register CIDRs,
+  allocate concrete addresses in the locked state file, and publish the
+  `external_ip_address` AAP result. Attachment and NAT roles consume the
+  resulting `ExternalIP.status.address` when programming DNAT or SNAT.
 - Generic network attachment entrypoints for create/delete or equivalent
   attach/detach operations. The AgentlessNet implementation must add
   `osac-aap/collections/ansible_collections/osac/templates/roles/agentless_net/tasks/move_network_attachment.yaml`
@@ -988,12 +1028,15 @@ across VNs or installing a shared route between overlapping VNs violates NFR-3.
 | Invalid NetworkClass or unsupported IPv6 request | API/controller validation rejects before provisioning | Invalid argument or failed condition names address family |
 | VLAN state lock unavailable | Retry with backoff; preserve existing allocation | Provisioning remains pending with lock diagnostic |
 | VLAN allocation exhausted or already owned | Do not reuse an allocated ID; fail the requested generation | Failed condition identifies VLAN allocation exhaustion/conflict |
+| ExternalIP state lock unavailable or pool has no free address | Retry without changing an existing UID allocation; do not publish an address | ExternalIP remains non-ready with an allocation diagnostic |
+| ExternalIP allocation artifact is missing, stale, or mismatched | Ignore the artifact and retry the current generation; do not set `status.address` | ExternalIP remains Pending/Progressing with an allocation condition |
 | Switch VLAN or access-port operation fails | Retry idempotently; leave existing applied state untouched when possible | AAP failure and resource status contain switch error |
 | Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
 | DHCP lease absent or ambiguous | Requery; do not update status or create DNAT until identity/freshness checks pass | Condition identifies lease-unavailable/ambiguous |
 | AAP lease artifact is stale or job failed | Ignore artifact, retain current status, retry current generation | Job failure and resource condition remain visible |
 | iptables rule compilation fails | Keep last known policy where safe; retry desired generation | SecurityGroup/VN condition identifies policy error |
 | DNAT/SNAT operation partially fails | Compare desired state with owned rules and repair; never release an IP before DNAT removal | Attachment/NAT condition and job history identify failure |
+| ExternalIP allocation succeeds but DNAT does not | Keep ExternalIP allocated but keep ExternalIPAttachment non-ready and `status.attached` false; retry DNAT | Attachment condition identifies DNAT failure |
 | Delete is interrupted | Finalizer re-enters the ordered cleanup phases after restart | Resource remains terminating with cleanup reason |
 | Net node restarts | Rehydrate state from the versioned state file and reconcile actual interfaces/rules | Existing resource statuses remain non-ready until observed state converges |
 
@@ -1205,9 +1248,8 @@ not a substitute for that testplan.
 
 - Render manager ConfigMap and NetworkClass selection with Helm values.
 - Reconcile VirtualNetwork, multiple Subnets, and SecurityGroup through
-  envtest/fake AAP providers; verify controller-owned ExternalIP allocation and
-  DNAT/SNAT consumers use the assigned status address without backend allocation
-  state.
+  envtest/fake AAP providers; verify provider-side ExternalIP allocation
+  artifacts populate status and DNAT/SNAT consumers use that address.
 - Verify tenant and owner annotations survive the service-to-CR path.
 - Exercise generic DHCP job artifact consumption for multi-NIC instances using
   distinct Subnets, and reject duplicate SubnetRefs before lease discovery.
@@ -1255,9 +1297,8 @@ NetworkClass and are not migrated automatically.
 
 The agentless state file uses a schema version. An upgrade must migrate state
 additively before new reconciliation begins, preserve existing VLAN,
-namespace, firewall, DNAT, and SNAT mappings, and refuse to start a destructive
-migration when the state cannot be parsed. ExternalIP allocation remains
-controller-owned and is not migrated through the AgentlessNet state file. There
+namespace, firewall, provider-side ExternalIP, DNAT, and SNAT mappings, and
+refuse to start a destructive migration when the state cannot be parsed. There
 is no in-place OSAC upgrade guarantee; deployment operators must retain a
 backup of the state file and network inventory.
 
@@ -1294,9 +1335,9 @@ Support personnel diagnose failures in this order:
    'agentless_net' ConfigMap.
 3. Inspect AAP job status, 'leases' artifacts, and the agentless role logs.
 4. Check the lock-protected state file for the resource UID, VLAN,
-   gateway/DHCP, namespace, and owned NAT/DNAT rule mapping. Read the current
-   ExternalIP status for any external address; it is not mirrored in the
-   AgentlessNet state file.
+   gateway/DHCP, namespace, provider-side ExternalIP allocation, and owned
+   NAT/DNAT rule mapping. Compare any ExternalIP address with
+   `ExternalIP.status.address` and the AAP allocation artifact.
 5. Verify Cumulus VLAN/trunk/access-port state and the net-node namespace,
    interfaces, routes, iptables rules, and conntrack state.
 
@@ -1331,4 +1372,4 @@ Final: respond @ design 0.11.0 - fd98907, workspace main @ b9575896d (dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.0","ai_workflows":"fd98907","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.0","ai_workflows":"fd98907","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
