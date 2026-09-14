@@ -284,6 +284,79 @@ them on the CRD spec. When `instance_type` changes in the API, the
 reconciler resolves the new values and patches the CRD — this propagation
 is automatic with no code changes.
 
+#### Rename `cores` → `vcpus` Across the Stack
+
+The `cores` field is renamed to `vcpus` end-to-end. Each InstanceType vCPU
+maps to one KubeVirt socket (see
+[CPU Topology Change](#osac-aap-playbook--cpu-topology-change)), not a
+physical core. The rename aligns the API and CRD with this semantic.
+
+**InstanceType proto** (`instance_type_type.proto`): rename `cores` to
+`vcpus` in `InstanceTypeSpec`. The proto field number is unchanged
+(`int32 vcpus = 1`), preserving wire compatibility. Run
+`uv run dev.py build protos && buf generate` in `fulfillment-service/`,
+then `buf generate` in each consumer (`osac-operator/`,
+`osac-metering/metering-service/`).
+
+**CRD types** (`computeinstance_types.go`): rename `Cores int32
+json:"cores"` to `VCPUs int32 json:"vcpus"` on `ComputeInstanceSpec`.
+Regenerate via `make manifests generate && make helm-crds`.
+
+**Reconciler** (`computeinstance_reconciler_function.go`): update
+`spec.Cores = itSpec.GetCores()` to `spec.VCPUs = itSpec.GetVcpus()`.
+
+**AAP playbook** (`create_validate.yaml`): read
+`compute_instance.spec.vcpus` instead of `compute_instance.spec.cores`.
+The internal Ansible variable `vm_cpu_cores` is unchanged.
+
+**CLI** (`describe_instancetype_cmd.go`, `create_instancetype_cmd.go`):
+update flag names and display labels from `cores` to `vcpus`.
+
+**Rendering tables** (`osac.private.v1.InstanceType.yaml`,
+`osac.public.v1.InstanceType.yaml`): update column references from
+`cores` to `vcpus`.
+
+**Tests:**
+
+- `computeinstance_types_test.go`: update `spec.Cores` references to
+  `spec.VCPUs`.
+- `computeinstance_validation_test.go`: update `instance.Spec.Cores`,
+  `createValidInstance` fixture (`Cores:` field), and the
+  `"cores is immutable"` assertion string.
+- `computeinstance_reconciler_function_test.go`: update `spec.Cores`
+  assertions and `field.NewPath("spec", "cores")` error path references.
+- `migrate_subnetrefs_test.go`: update `"cores"` key in the `ciSpec()`
+  fixture map to `"vcpus"`.
+- AAP role tests (`ocp_virt_vm/tests/test.yml`): update `spec.cores`
+  references in assertion fail messages to `spec.vcpus`.
+- CLI tests (`create_instancetype_cmd_test.go`,
+  `describe_instancetype_cmd_test.go`): update flag and output
+  references from `cores` to `vcpus`.
+- Integration tests (`it_private_instance_types_test.go`,
+  `it_public_instance_types_test.go`): update field references.
+
+**Documentation:** update `fulfillment-service/docs/API.md` references
+from `cores` to `vcpus` where they describe InstanceType fields or
+ComputeInstance CRD spec. In `osac-docs/`, update the following guides:
+- `guides/developer/instancetype-guide.md`: CLI flag names (`--cores` →
+  `--vcpus`), JSON examples, field descriptions, and prose references.
+- `guides/developer/computeinstance-guide.md`: InstanceType listing
+  output description.
+- `guides/developer/computeinstance-catalogitem-guide.md`: InstanceType
+  description prose.
+- `guides/developer/tenant-setup.md`: CRD spec example (`cores:` →
+  `vcpus:`).
+
+The `osac-docs/` changes are committed in a separate PR against that
+repository.
+
+This is a breaking change to both the InstanceType proto and the
+ComputeInstance CRD schema. The proto field number is preserved so the
+gRPC wire format is compatible, but the JSON field name changes. Existing
+ComputeInstance CRs require migration (field rename in the stored spec).
+The rename, CRD reapply, and migration are applied during the same
+upgrade window as the immutability lift below.
+
 #### osac-operator: CRD Field Mutability
 
 Remove CEL XValidation immutability rules from two fields in
