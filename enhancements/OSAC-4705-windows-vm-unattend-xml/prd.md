@@ -37,8 +37,7 @@ itself.
   `user_data` field — the same open-text field already used for Linux
   cloud-init data — or through the existing `user_data_secret` field, which
   references a tenant-owned secret containing the content; no new API
-  parameters are introduced (`user_data_secret` was added in a prior change,
-  PR #736, and is leveraged here as-is)
+  parameters are introduced
 - When the ComputeInstance's DiskImage has a Windows guest OS family, the
   platform interprets `user_data` (or the content referenced by
   `user_data_secret`) as Unattend.xml content and delivers it to the guest as
@@ -50,26 +49,38 @@ itself.
   method:
   - Inline `user_data` is returned as-is in GET responses
   - When `user_data_secret` is used, only the secret reference is returned,
-    not the content — following the same pattern as KubeVirt's
-    cloudInitNoCloud `userData` vs `userDataSecretRef`
+    not the content
   - `user_data_secret` is the recommended path for sensitive content (product
     keys, admin credentials) since it keeps the data opaque in API responses
-  - Content is excluded from watch/event payloads, audit records, logs, and
-    error messages
+  - Both inline `user_data` content and resolved `user_data_secret` content
+    are excluded from watch/event payloads, audit records, logs, and error
+    messages
+  - The UI MUST NOT persist inline `user_data` content in browser caches,
+    local storage, or session storage; API responses containing inline
+    `user_data` are served with `Cache-Control: no-store` to prevent
+    intermediate and browser caching of sensitive content
 - Validation at creation time when the DiskImage guest OS family is Windows,
   regardless of delivery method:
-  - Content must be well-formed XML, parsed with a securely configured parser
-    that rejects DTD declarations and disables external entity resolution
+  - Content must be well-formed XML; XML containing DTD declarations or
+    external entity references is rejected
   - When `user_data_secret` is used, the platform resolves the secret and
     validates the `userdata` entry the same way it validates inline
     `user_data`
   - Empty payloads are rejected when the field is present
+  - If the Secret referenced by `user_data_secret` does not exist or is
+    inaccessible, ComputeInstance creation fails before persistence with a
+    client-facing error that identifies the missing reference without exposing
+    secret content
 - Immutability: both `user_data` and `user_data_secret` are fully immutable
   after ComputeInstance creation — whichever field is set at create time is
   final; no migration from inline to secret or vice versa is supported
+- `user_data` and `user_data_secret` are mutually exclusive — ComputeInstance
+  creation fails with a validation error when both fields are supplied
 - When `user_data_secret` is used, the platform reads the secret content at
   ComputeInstance creation time only; subsequent modifications to the
   referenced secret's content do not propagate to the running VM
+- Deletion of, or access revocation on, the referenced Secret after
+  ComputeInstance creation does not affect the already-created VM
 - Secret constraints: shared-tenant secrets are rejected for
   `user_data_secret`; tenant-owned secrets may be reused across multiple
   ComputeInstances
@@ -95,6 +106,9 @@ itself.
   user's own answer file contains
 - Updating Unattend.xml on an existing VM after creation — this feature covers
   create-time only
+- Creation and lifecycle management of the Kubernetes Secret referenced by
+  `user_data_secret` — tenants are responsible for creating secrets before
+  referencing them
 - Image upload, scanning, and DiskImage CRUD (covered by OSAC-2540 and
   OSAC-979)
 
