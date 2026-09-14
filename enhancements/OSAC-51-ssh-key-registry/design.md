@@ -37,6 +37,8 @@ The fulfillment-service already stores raw SSH public keys inline on ComputeInst
 - Resolve SSH key references at reconciliation time in the ComputeInstance controller via `SshKeys.Get` using the canonical `id` (auto-populated by the interceptor at create time).
 - Enforce referential integrity between `SshKey` and `ComputeInstance` using dual-layer defense: the `ReferenceValidator` gRPC interceptor provides immediate API feedback at create time, while a PostgreSQL `check_compute_instance_ssh_key_ref` trigger (SQLSTATE `Z0002`, `SELECT ... FOR SHARE`) provides concurrency-safe defense-in-depth validation. Deletion protection uses the `check_ssh_key_not_in_use` trigger (SQLSTATE `Z0003`).
 - Support the feature via API, CLI (`osac create/get/delete sshkey`), and UI.
+- Remove the existing raw `spec.ssh_public_key` field from `ComputeInstanceSpec`. SSH key provisioning is exclusively via registered `SshKeyReference` — there is no inline raw-key path. This is a breaking change; see the Migration Path section for the transition plan.
+- Extend the osac-operator `ComputeInstance` CRD to accept the resolved SSH key material in `spec.SSHKey` (no CRD schema change required — the field already exists; the change is in how the controller populates it).
 
 ### Non-Goals
 
@@ -53,7 +55,7 @@ Three components change:
 
 1. **New `SshKey` resource** (fulfillment-service): A tenant-scoped resource with GenericServer integration. Public API exposes List, Get, Create, and Delete. Update and Signal are private-only (Update returns `Unimplemented`; Signal delegates to `generic.Signal`). Stores the SSH public key material in PostgreSQL. Validated with `ssh.ParseAuthorizedKey` on create. Names are unique per tenant (including during pending deletion, per the standard platform contract). Rejects non-empty `metadata.project` (SshKey is tenant-scoped, not project-scoped).
 
-2. **`ComputeInstance` field addition** (fulfillment-service): A new `SshKeyReference ssh_key` field (field 21) on `ComputeInstanceSpec` references a registered key using a tenant-only typed reference (`id` + `name` message). Mutually exclusive with the existing `spec.ssh_public_key` (field 7). The `ssh_key` reference is immutable after creation. The existing raw `ssh_public_key` field remains mutable to preserve backward compatibility. The `ReferenceValidator` gRPC interceptor validates user-provided references via the registered tenant-only `ReferenceLookupFunc` and auto-populates the `id` from `name` (or vice versa) at create time. The server enforces mutual exclusivity. The controller resolves the key at reconciliation time via `SshKeys.Get` using `spec.ssh_key.id`.
+2. **`ComputeInstance` field change** (fulfillment-service): A new `SshKeyReference ssh_key` field (field 21) on `ComputeInstanceSpec` references a registered key using a tenant-only typed reference (`id` + `name` message). The `ssh_key` reference is immutable after creation. The existing raw `ssh_public_key` field (field 7) is removed — `SshKeyReference` is the only way to provide an SSH key on a ComputeInstance. The `ReferenceValidator` gRPC interceptor validates user-provided references via the registered tenant-only `ReferenceLookupFunc` and auto-populates the `id` from `name` (or vice versa) at create time. The controller always resolves the SSH key reference at reconciliation time via `SshKeys.Get` using `spec.ssh_key.id`.
 
 3. **CLI extension** (fulfillment-service): A new `osac create sshkey` subcommand with `--name` and `--public-key`/`--public-key-file` flags. The existing `osac create computeinstance` command gains an `--ssh-key` flag. Generic `osac get`/`osac delete` commands auto-discover the new type via reflection.
 
@@ -82,10 +84,9 @@ The osac-operator receives the raw key in `spec.SSHKey` as before and needs no c
 1. **Tenant User** calls `ComputeInstances.Create` with `spec.ssh_key = {name: "my-laptop"}` (the registered key name). The user may provide `name`, `id`, or both.
 2. **`ReferenceValidator` interceptor** (gRPC unary interceptor) validates the `SshKeyReference` field via the registered tenant-only `ReferenceLookupFunc`, auto-populating the missing `id` (if the user provided only `name`) or `name` (if the user provided only `id`). If the SSH key does not exist, the interceptor returns `InvalidArgument` before the request reaches the server handler. Note: unlike `SecretLocalReference`, `SshKeyReference` uses a custom name (without the `Local` suffix) to avoid the `isLocalReference()` project-scoped lookup — see the lookup registration section for details.
 3. **Fulfillment-service** validates (in order):
-   a. Mutual exclusivity: `spec.ssh_key` and `spec.ssh_public_key` cannot both be set (`InvalidArgument`).
-   b. Guest OS compatibility: if the catalog item resolves to a Windows guest, `ssh_key` is rejected (`InvalidArgument`).
-   c. User data type compatibility: if `user_data_secret` is set and the catalog item indicates ignition-type user data (not cloud-init), `ssh_key` is rejected (`InvalidArgument: SSH key injection requires cloud-init; ignition user data is not compatible`). **Platform note**: All currently supported Linux images in the OSAC platform use cloud-init for first-boot configuration. Ignition-based images (e.g., Fedora CoreOS, RHCOS) are not yet supported as catalog items. This check is a forward-compatibility guard — if ignition-based images are added in a future milestone, this validation prevents SSH key references from being silently ignored (ignition does not consume cloud-init SSH key injection). If the platform adds ignition support before SshKey reaches GA, the injection mechanism must be extended to support ignition's `passwd.users[].sshAuthorizedKeys` path.
-4. **Fulfillment-service** persists the ComputeInstance. The database trigger `check_compute_instance_ssh_key_ref` re-validates the SSH key reference at INSERT time with a `SELECT ... FOR SHARE` lock, preventing a concurrent deletion race (TOCTOU). If the key was deleted between the interceptor check and the INSERT, the trigger raises `Z0002`. Both `id` and `name` are populated in the stored record (auto-populated by the interceptor). The raw key is **not** copied into `spec.ssh_public_key` — spec is user-controlled (API.md).
+   a. Guest OS compatibility: if `ssh_key` is set and the catalog item resolves to a Windows guest, `ssh_key` is rejected (`InvalidArgument`).
+   b. User data type compatibility: if `ssh_key` is set and `user_data_secret` is set and the catalog item indicates ignition-type user data (not cloud-init), `ssh_key` is rejected (`InvalidArgument: SSH key injection requires cloud-init; ignition user data is not compatible`). **Platform note**: All currently supported Linux images in the OSAC platform use cloud-init for first-boot configuration. Ignition-based images (e.g., Fedora CoreOS, RHCOS) are not yet supported as catalog items. This check is a forward-compatibility guard — if ignition-based images are added in a future milestone, this validation prevents SSH key references from being silently ignored (ignition does not consume cloud-init SSH key injection). If the platform adds ignition support before SshKey reaches GA, the injection mechanism must be extended to support ignition's `passwd.users[].sshAuthorizedKeys` path.
+4. **Fulfillment-service** persists the ComputeInstance. The database trigger `check_compute_instance_ssh_key_ref` re-validates the SSH key reference at INSERT time with a `SELECT ... FOR SHARE` lock, preventing a concurrent deletion race (TOCTOU). If the key was deleted between the interceptor check and the INSERT, the trigger raises `Z0002`. Both `id` and `name` are populated in the stored record (auto-populated by the interceptor).
 5. **ComputeInstance controller** resolves `spec.ssh_key` at reconciliation time: calls `SshKeys.Get` (private API) using `spec.ssh_key.id` (the canonical ID auto-populated by the interceptor at create time). Extracts `spec.public_key` and passes it to the osac-operator CRD as `spec.SSHKey`.
 6. **osac-operator** injects the key into the VM via KubeVirt/cloud-init on first boot.
 
@@ -119,7 +120,7 @@ sequenceDiagram
     API->>DB: Lookup SshKey by name in tenant (ReferenceLookupFunc)
     DB-->>API: {id:"abc-123", name:"my-laptop"}
     Note over API: Interceptor populates spec.ssh_key.id
-    API->>API: Validate mutual exclusivity + not Windows
+    API->>API: Validate not Windows + cloud-init compatible
     API->>DB: INSERT compute_instances (ssh_key={id:"abc-123",name:"my-laptop"})
     Note over DB: Trigger: FOR SHARE lock on ssh_key, verify active
     DB-->>API: OK
@@ -156,7 +157,7 @@ sequenceDiagram
 
 **Event payload**: The `Event` message's `payload` oneof in `event_type.proto` must include an `SshKey` entry at the next available field number (36) so that event notifications carry the SshKey payload. Without this, SshKey events would silently drop their payload.
 
-**Modified gRPC service**: `ComputeInstances` — the `Create` method gains SSH key mutual exclusivity and guest OS validation. Reference validation is handled by the `ReferenceValidator` interceptor (not custom server logic). No new RPC methods.
+**Modified gRPC service**: `ComputeInstances` — the `Create` method gains SSH key guest OS and user data type validation. Reference validation is handled by the `ReferenceValidator` interceptor (not custom server logic). The `ssh_public_key` field is removed from the proto (see Migration Path). No new RPC methods.
 
 **Modified proto message**: `ComputeInstanceSpec` gains `SshKeyReference ssh_key = 21` in both public and private APIs. Field 20 is already allocated to `SecretLocalReference user_data_secret = 20`. The `user_data_secret` field provides the precedent for typed reference messages on `ComputeInstanceSpec`. Note: `SshKeyReference` deliberately does not use the `LocalReference` suffix — see the lookup registration section for why. Coordinate the exact field number at implementation time — use the next available number after the highest allocated field in `ComputeInstanceSpec`.
 
@@ -178,7 +179,7 @@ No `@temp-api` file exists for `SshKey` in `osac-ux/libs/ui-components/src/api/v
 - Creating `libs/ui-components/src/api/v1/ssh-key.ts` with `useApiQuery`/`useMutation` hooks for SshKey CRUD after `pnpm gen-types` runs.
 - Registering `ssh-keys` in the `ApiRoute` type (`libs/ui-components/src/api/types.ts`).
 - Adding SSH key management pages (list, create, delete) under the tenant section.
-- Refactoring the existing `SshKeyField.tsx` (multiline paste textarea) to a key-selection dropdown that lists registered keys from `SshKeys.List`, with an option to fall back to raw key paste for backward compatibility.
+- Replacing the existing `SshKeyField.tsx` (multiline paste textarea) with a key-selection dropdown that lists registered keys from `SshKeys.List`. Raw key paste is no longer supported — users must register keys first via the SshKey management pages.
 
 ### Implementation Details/Notes/Constraints
 
@@ -232,14 +233,18 @@ message ComputeInstanceSpec {
   // registered lookup function and auto-populates id from name (or vice
   // versa) at create time. SshKeyReference is registered explicitly (not
   // auto-discovered by "LocalReference" suffix) with a tenant-only lookup.
-  // Mutually exclusive with ssh_public_key. Immutable after creation.
+  // Typed reference to a registered SSH key. Immutable after creation.
+  // The only way to provide an SSH key on a ComputeInstance — the former
+  // raw ssh_public_key field (field 7) has been removed.
   // Only valid for cloud-init instances; rejected for Windows instances
   // and ignition-based user data.
   SshKeyReference ssh_key = 21 [(google.api.field_behavior) = IMMUTABLE];
+
+  // Field 7 (ssh_public_key) is removed. See Migration Path.
+  // reserved 7;
+  // reserved "ssh_public_key";
 }
 ```
-
-Mutual exclusivity of `ssh_public_key` (field 7) and `ssh_key` (field 21) is enforced in server-side Go code, not in proto annotations, because cross-field validation with optional fields requires runtime logic.
 
 #### Server Implementation
 
@@ -256,9 +261,8 @@ Mutual exclusivity of `ssh_public_key` (field 7) and `ssh_key` (field 21) is enf
 
 **`PrivateComputeInstancesServer.Create` update**: After existing catalog-item and template validation, add (in order):
 
-1. **Mutual exclusivity**: If both `ssh_key` and `ssh_public_key` are set, return `InvalidArgument: spec.ssh_key and spec.ssh_public_key are mutually exclusive`.
-2. **Guest OS validation**: If `ssh_key` (or `ssh_public_key`) is set and the catalog item resolves to a Windows guest OS (`GuestOSFamily == "windows"`), return `InvalidArgument: SSH key injection is not supported for Windows instances`.
-3. **User data type validation**: If `ssh_key` is set and the instance's user data type is ignition (not cloud-init), return `InvalidArgument: SSH key injection requires cloud-init; ignition user data is not compatible`. Note: all currently supported Linux catalog items use cloud-init; this is a forward-compatibility guard for potential future ignition-based images.
+1. **Guest OS validation**: If `ssh_key` is set and the catalog item resolves to a Windows guest OS (`GuestOSFamily == "windows"`), return `InvalidArgument: SSH key injection is not supported for Windows instances`.
+2. **User data type validation**: If `ssh_key` is set and the instance's user data type is ignition (not cloud-init), return `InvalidArgument: SSH key injection requires cloud-init; ignition user data is not compatible`. Note: all currently supported Linux catalog items use cloud-init; this is a forward-compatibility guard for potential future ignition-based images.
 
 **SSH key reference validation (two-layer defense)**: Two complementary mechanisms validate SSH key references:
 
@@ -306,9 +310,7 @@ validator.Register(
 
 **Why `SshKeyReference` instead of `SshKeyLocalReference`**: The `reference_validator.go` `isLocalReference()` function checks whether a message type name ends with `LocalReference` and, if so, uses the caller's project for scoped lookup. Since `SshKey` is tenant-scoped (not project-scoped), using `SshKeyLocalReference` would trigger incorrect project-scoped behavior. By naming the message `SshKeyReference` (without the `Local` suffix), we avoid the `isLocalReference()` semantic and register a custom lookup function that ignores the project parameter entirely. No changes to `reference_validator.go` are required — the validator passes `callerTenant` and `callerProject` by default, and our lookup function simply doesn't use `project`.
 
-The server does **not** copy the resolved key into `spec.ssh_public_key` — API.md mandates that spec is exclusively user-controlled.
-
-**`PrivateComputeInstancesServer.validateImmutability` update**: Add immutability enforcement for `spec.ssh_key` only:
+**`PrivateComputeInstancesServer.validateImmutability` update**: Add immutability enforcement for `spec.ssh_key`:
 
 ```go
 updatingSshKey := updateIncludesField(mask, "spec.ssh_key")
@@ -319,13 +321,11 @@ if updatingSshKey && !proto.Equal(existingSpec.GetSshKey(), newSpec.GetSshKey())
 }
 ```
 
-Note: `spec.ssh_key` comparison uses `proto.Equal` because `SshKeyReference` is a message type, not a string.
+Note: `spec.ssh_key` comparison uses `proto.Equal` because `SshKeyReference` is a message type, not a string. The `ssh_key` reference is immutable because changing it without re-provisioning creates a VM whose injected key does not match the spec — the osac-operator injects the key only on first boot via cloud-init, so a post-creation reference change would have no effect on the running VM.
 
-**Immutability asymmetry**: The existing raw `ssh_public_key` field remains mutable to preserve backward compatibility. The `ssh_key` reference is immutable because changing it without re-provisioning creates a VM whose injected key does not match the spec — the osac-operator injects the key only on first boot via cloud-init, so a post-creation reference change would have no effect on the running VM. This asymmetry is intentional: `ssh_public_key` mutability is an existing contract that callers may depend on; `ssh_key` immutability is a new constraint on a new field.
+**ComputeInstance controller update**: The `addExplicitFields` function is extended to resolve the SSH key reference at reconciliation time. Since `SshKeyReference` is now the only way to provide an SSH key, the controller always resolves `spec.ssh_key` when present — there is no fallback to a raw `ssh_public_key` field:
 
-**ComputeInstance controller update**: The `addExplicitFields` function is extended to resolve `spec.ssh_key` at reconciliation time:
-
-1. If `spec.ssh_key` is set (the message is non-nil), call `SshKeys.Get` (private API) using `spec.ssh_key.id`. The `id` is always available because the `ReferenceValidator` interceptor auto-populated it from `name` at create time. Using `Get`-by-ID is a direct single-row lookup — no CEL filter, tenant scoping, or result-count assertion needed. Tenant isolation is guaranteed by the interceptor at create time (the lookup function is scoped to the tenant).
+1. If `spec.ssh_key` is set (the message is non-nil), call `SshKeys.Get` (private API) using `spec.ssh_key.id`. The `id` is always available because the `ReferenceValidator` interceptor auto-populated it from `name` at create time. Using `Get`-by-ID is a direct single-row lookup — no CEL filter, tenant scoping, or result-count assertion needed. Tenant isolation is guaranteed by the interceptor at create time (the lookup function is scoped to the tenant). The existing `HasSshPublicKey()` check in the reconciler is removed — SSH key presence is determined solely by whether `spec.ssh_key` is non-nil.
 2. **gRPC error classification**: The controller classifies gRPC errors from the `SshKeys.Get` call using typed errors to set specific `status.state` and condition `reason` values, bypassing the hardcoded `ReconciliationFailed` reason. See the classification table below.
 3. On success, extract `spec.public_key` from the resolved SshKey and set `spec.SSHKey` on the osac-operator CRD.
 
@@ -652,7 +652,7 @@ This follows the Secret reference pattern from migration 111 (which uses both th
   - Both `--public-key` and `--public-key-file` support the `~/.ssh/id_*.pub` convention.
   - Registered in `internal/cmd/cli/create/create_cmd.go`.
   - Help text uses Markdown with `{{ bt }}` for inline code per CLI conventions.
-- **`osac create computeinstance`**: Add `--ssh-key` flag (mutually exclusive with existing `--ssh-public-key`). Set `spec.ssh_key = {name: "<value>"}` on the request object. The `ReferenceValidator` interceptor auto-populates the `id` field — the CLI does not need to resolve name→id. API responses return `spec.ssh_key = {id: "...", name: "..."}` instead of a bare string.
+- **`osac create computeinstance`**: The existing `--ssh-public-key` flag is removed. A new `--ssh-key` flag replaces it, accepting a registered key name. Set `spec.ssh_key = {name: "<value>"}` on the request object. The `ReferenceValidator` interceptor auto-populates the `id` field — the CLI does not need to resolve name→id. API responses return `spec.ssh_key = {id: "...", name: "..."}` instead of a bare string.
 - **`osac get sshkey`** / **`osac delete sshkey`**: Work automatically via reflection — no code needed.
 
 ### Security Considerations
@@ -676,7 +676,6 @@ SSH public keys are **not sensitive data** — they are designed to be shared pu
 | **Create ComputeInstance with non-existent SSH key** | `ReferenceValidator` interceptor's `ReferenceLookupFunc` returns not-found; interceptor returns `InvalidArgument` before the request reaches the server handler | "SshKey 'my-laptop' not found in this tenant" |
 | **Create ComputeInstance with SSH key on Windows** | Server detects Windows guest OS; returns `InvalidArgument` | "SSH key injection is not supported for Windows instances" |
 | **Create ComputeInstance with SSH key on ignition instance** | Server detects ignition user data type; returns `InvalidArgument` | "SSH key injection requires cloud-init; ignition user data is not compatible" |
-| **Create ComputeInstance with both ssh_key and ssh_public_key** | Server rejects; returns `InvalidArgument` | "spec.ssh_key and spec.ssh_public_key are mutually exclusive" |
 | **Update ComputeInstance attempts to change ssh_key** | Immutability check rejects; returns `InvalidArgument` | "cannot change spec.ssh_key: ssh_key is immutable after creation" |
 | **Concurrent delete + ComputeInstance create** | Two-layer defense: `ReferenceValidator` interceptor provides first check (no lock); `check_compute_instance_ssh_key_ref` trigger acquires `FOR SHARE` lock on SSH key row at INSERT, serializing against concurrent soft-delete | No race: either the ComputeInstance is created with the key (trigger lock blocks delete), or the trigger detects deleted key and raises Z0002 |
 | **Controller: SshKey not found (`NotFound` — permanent)** | Controller sets `status.state` to failed, adds condition with `reason=SshKeyNotFound`; instance will be re-reconciled on next event or periodic sync but will re-fail if key is still missing | Instance enters Failed state; user must delete and recreate the instance with a valid SSH key reference (see Support Procedures) |
@@ -778,11 +777,11 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 - `PrivateSshKeysServer.Delete` succeeds when no ComputeInstance references the key.
 - `PrivateSshKeysServer.Delete` fails with `ErrInUse` when a ComputeInstance references the key.
 - `PrivateSshKeysServer.Update` returns `Unimplemented`.
-- `PrivateComputeInstancesServer.Create` rejects both `ssh_key` and `ssh_public_key` set simultaneously.
 - `PrivateComputeInstancesServer.Create` rejects `ssh_key` for Windows instances.
 - `PrivateComputeInstancesServer.Create` rejects `ssh_key` when user data type is ignition (not cloud-init).
+- `PrivateComputeInstancesServer.Create` rejects requests that set the removed `ssh_public_key` field (proto reserved field — should fail at deserialization or be silently dropped; verify no data leaks through).
 - `PrivateComputeInstancesServer.Update` rejects changes to `spec.ssh_key` (immutability, using `proto.Equal` for message comparison).
-- `PrivateComputeInstancesServer.Update` allows changes to `spec.ssh_public_key` (remains mutable for backward compatibility).
+- Migration: existing ComputeInstances with `ssh_public_key` set are handled correctly by the controller (see Migration Path).
 - `ReferenceValidator` interceptor resolves `SshKeyReference` by name → populates `id` using the tenant-only lookup function (which ignores the project parameter).
 - `ReferenceValidator` interceptor rejects `SshKeyReference` when the SSH key does not exist (`InvalidArgument`).
 - `ReferenceValidator` interceptor resolves `SshKeyReference` by id → populates `name`.
@@ -853,7 +852,7 @@ Expected stages: Dev Preview -> Tech Preview -> GA.
 
 ## Upgrade / Downgrade Strategy
 
-This is a new API with no upgrade impact. The `SshKey` resource and the `ComputeInstanceSpec.ssh_key` field are additive — existing ComputeInstances with `ssh_public_key` set continue to work unchanged.
+This is a **breaking change** for users of the existing `spec.ssh_public_key` field. The `SshKey` resource is additive, but the removal of `ssh_public_key` requires migration. See the Migration Path section below for the required steps.
 
 **Rollout** is controlled by the `EnableSshKeyReference` feature gate (see Version Skew Strategy below). This gate decouples the binary rollout from feature activation, preventing silent SSH key loss during mixed-version windows.
 
@@ -865,7 +864,7 @@ osac get computeinstances --filter "this.spec.ssh_key.id != ''"
 ```
 If this returns any results, **the downgrade is blocked**. The operator must resolve all active SSH key references before proceeding.
 
-**Destructive escape hatch** (not a normal rollback path): If the downgrade is urgent and active references exist, the operator must delete the affected ComputeInstances through the API and recreate them with `spec.ssh_public_key` (raw key). Do **not** clear `spec.ssh_key` via direct DB update — this bypasses audit logging, validation, and can leave inconsistent state. This is a destructive procedure that causes VM downtime; it is not a seamless rollback.
+**Destructive escape hatch** (not a normal rollback path): If the downgrade is urgent and active references exist, the operator must delete the affected ComputeInstances through the API and recreate them without an SSH key reference (SSH keys would need to be managed out-of-band until the feature is re-enabled). Do **not** clear `spec.ssh_key` via direct DB update — this bypasses audit logging, validation, and can leave inconsistent state. This is a destructive procedure that causes VM downtime; it is not a seamless rollback.
 
 **Downgrade procedure** (after pre-downgrade validation passes):
 1. Disable the `EnableSshKeyReference` feature gate (new ComputeInstances can no longer reference SSH keys).
@@ -955,6 +954,50 @@ Simple rollout ordering ("deploy API before controller") is insufficient because
 
 - **Disabling the feature**: Set `features.enableSshKeyReference: false` in Helm values and redeploy. New ComputeInstances can no longer set `spec.ssh_key` (admission rejects it). For existing ComputeInstances that have `spec.ssh_key` set but have not yet been fully reconciled, the controller returns a **blocking error** and leaves the instance in its current state — it does **not** skip resolution or write the CRD without an SSH key (consistent with Stage 1 behavior). Instances that were fully reconciled before the gate was disabled continue to function — their CRD already has `spec.SSHKey` set and the controller does not re-resolve on every reconciliation. SshKey CRUD (register, list, delete) remains operational so tenants can manage their keys in preparation for re-enablement. For a full removal, additionally remove the `SshKeys` gRPC service registration from `register_servers.go` and the OPA allowlist entries from `authz.rego`.
 
+## Migration Path
+
+The removal of `spec.ssh_public_key` from `ComputeInstanceSpec` is a **breaking change**. Users who currently create ComputeInstances with raw SSH public keys must migrate to the `SshKeyReference` model. This aligns with the register-once-reference-by-name pattern used by AWS EC2 key pairs, GCP, and GitHub — users must register SSH keys before referencing them.
+
+### Proto field removal
+
+Field 7 (`ssh_public_key`) is marked as `reserved` in the `ComputeInstanceSpec` proto to prevent field number reuse:
+
+```protobuf
+message ComputeInstanceSpec {
+  // ... existing fields ...
+  reserved 7;
+  reserved "ssh_public_key";
+  // ...
+  SshKeyReference ssh_key = 21 [(google.api.field_behavior) = IMMUTABLE];
+}
+```
+
+### Migration procedure for existing ComputeInstances
+
+Existing ComputeInstances that were created with `spec.ssh_public_key` require a migration path:
+
+1. **Pre-migration**: A database migration adds a `ssh_public_key_migrated` status flag (or similar) to track which instances have been migrated.
+2. **Automated migration job** (recommended): A one-time migration job scans all active ComputeInstances with `data->'spec'->>'ssh_public_key'` set and:
+   a. Registers the raw key as an SshKey resource (auto-generating a name from instance metadata, e.g., `migrated-<instance-id-prefix>`).
+   b. Sets `spec.ssh_key = {id: "<new-ssh-key-id>", name: "<auto-name>"}` on the ComputeInstance.
+   c. Clears the legacy `ssh_public_key` field from the JSONB `data` column.
+3. **Manual migration** (alternative): Users register their SSH keys via `osac create sshkey`, then delete and recreate affected ComputeInstances with `--ssh-key <name>`.
+
+### API client impact
+
+- **CLI**: The `--ssh-public-key` flag on `osac create computeinstance` is removed. Users must use `--ssh-key <name>` instead.
+- **API clients**: Requests that set `spec.ssh_public_key` will have the field silently dropped (proto reserved field behavior). Clients must update to use `spec.ssh_key`.
+- **UI**: The existing `SshKeyField.tsx` (multiline paste textarea) is replaced by a key-selection dropdown that lists registered keys from `SshKeys.List`.
+
+### Backward compatibility timeline
+
+The migration must be completed **before** the proto field reservation takes effect. The recommended rollout is:
+
+1. Deploy SshKey CRUD support (register, list, delete) — users can start registering keys.
+2. Run the automated migration job to convert existing `ssh_public_key` references.
+3. Deploy the proto change that removes field 7 and adds the `reserved` directive.
+4. Enable the `EnableSshKeyReference` feature gate.
+
 ## Infrastructure Needed
 
 None.
@@ -974,4 +1017,5 @@ Revision 8: design:revise — addressed 5 auto-fixable findings from Review 7: (
 Revision 7: design:revise — addressed 2 critical, 4 important, and 6 smaller findings from Review 6: (CRITICAL 1) Restored dual-layer defense model — Z0002 `check_compute_instance_ssh_key_ref` trigger re-added alongside `ReferenceValidator` interceptor to close TOCTOU race between interceptor lookup (no row lock) and concurrent SSH key deletion; trigger uses `SELECT ... FOR SHARE` lock on active ssh_key row, matching `check_secret_ref_exists` pattern from migration 111. (CRITICAL 2) Catalog-injected reference validation — `validateAndTransformCatalogItem` runs after interceptor, so catalog-defaulted `ssh_key` references bypass interceptor validation; Z0002 trigger serves as integrity boundary for these references; tests added for missing/cross-tenant/valid catalog defaults. (IMPORTANT 3) Fixed scoped lookup — replaced `RegisterDAOLookup`/`NewDAOLookupFunc` (unscoped) with `NewScopedDAOLookupFunc` matching SecretLocalReference pattern at `reference_lookups.go:305-312`. (IMPORTANT 4) Feature gate wiring to controller — specified flag registration in both `services/flags.go` (gRPC server) and `start/controller/start_controller_cmd.go` (controller binary); flag threaded to reconciler via `FunctionBuilder.SetEnableSshKeyReference`. (IMPORTANT 5) Reconciler sentinel errors — defined `errSshKeyTransient` and `errSshKeyFeatureDisabled` sentinel types recognized by reconciler's error handler (line 157) to skip `setReconciliationFailed` for transient/gate-disabled cases, preserving instance status. (IMPORTANT 6) Downgrade safety — replaced unsafe "clear spec.ssh_key via direct DB update" with supported migration path: pre-downgrade validation query, delete-and-recreate through API, not raw SQL. (SMALLER) Fixed support filter to use `this.spec.ssh_key.name`/`.id`; fixed support text to explain controller resolves by ID (re-registering same name produces new ID); fixed risk index path to nested `data->'spec'->'ssh_key'->>'id'`; corrected field number from 20 to 21 (field 20 is `user_data_secret`); fixed date to 2026-09-11; added OSAC-4510 to tracking-link.
 Revision 9: design:revise — resolved 2 team decisions (C1 and C2 from Review 7/8): (C1) Renamed `SshKeyLocalReference` to `SshKeyReference` throughout — the `LocalReference` suffix implies project-scoped lookup via `isLocalReference()` in `reference_validator.go`, but SshKeys are tenant-scoped; using `SshKeyReference` (without `Local`) avoids this semantic conflict. Registered a tenant-only lookup function that receives `(ctx, tenant, project, id, name)` but ignores the `project` parameter, resolving by `(tenant, id)` or `(tenant, name)` only. No changes to `reference_validator.go` required. Added explicit documentation that `SshKeyReference` is a tenant-scoped exception to the standard `Reference`/`LocalReference` convention. Added code-level catalog restriction: global catalog items must not contain `ssh_key.id` in defaults (name-only references resolved per-tenant). (C2) Replaced per-path catalog-injected reference validation with a unified SSH key normalizer that runs after catalog defaults are merged. Normalizer rules: resolve name-only → `{id, name}`, allow id+name only when matching, reject id-only, reject empty present references, reject mismatched/cross-tenant/inactive keys. Enhanced Z0002 DB trigger to also reject id-without-name and inconsistent name (id points to key with different name) as defense in depth. Specified normalizer scope: runs during Create; must also run during Update if immutability is relaxed in future. Documented interceptor interaction: interceptor runs first for user refs, normalizer runs second for all refs (including catalog-injected). Updated test plan with normalizer unit tests, catalog restriction tests, and tenant-only resolution tests. Updated feature gate description to clarify the gate controls whether the API server accepts ssh_key references (gate disabled = interceptor, normalizer, and catalog SSH key defaults all bypassed).
 Revision 10: design:revise — final revision incorporating 5 changes from rev9 review and user scoping decision: (1) Removed all catalog/template SSH key default support — the unified SSH key normalizer, `SshKeyReferenceFieldPolicy`, catalog field policy references, catalog normalization path, global catalog restriction logic, and related test cases were all removed. SSH key references are provided exclusively through the ComputeInstance create request; catalog integration is explicitly out of scope for this milestone. (2) Kept `ssh_public_key` mutable — only `ssh_key` (the new typed reference) is immutable; removed `ssh_public_key` from immutability enforcement and documented the asymmetry (backward compatibility for the existing field; immutability for the new field because changing a reference without re-provisioning creates a VM whose injected key does not match the spec). (3) Fixed reconciler error ownership — the ComputeInstance reconciler now returns `nil` after handling SSH key resolution errors (both permanent and transient), preventing the generic reconciler from overwriting the typed failure reason; eliminated `errSshKeyTransient` and `errSshKeyFeatureDisabled` sentinel types in favor of returning `nil` directly. (4) Reframed downgrade as blocked while active SSH key references exist — pre-downgrade validation rejects the downgrade; the delete-and-recreate procedure is a destructive escape hatch, not a normal rollback path. (5) Simplified validation model from three-layer to two-layer (interceptor + DB trigger) — no normalizer layer needed since catalog-injected refs are out of scope.
+Revision 11: design:revise — per ygalblum review feedback: (1) Removed `ssh_public_key` entirely — `SshKeyReference` is now the only way to provide an SSH key on a ComputeInstance, consistent with AWS/GCP/GitHub register-first model. Removed all mutual exclusivity logic, the "Immutability asymmetry" section, dual-field test cases, and `--ssh-public-key` CLI flag. (2) Added Migration Path section specifying proto field reservation, automated migration job, API client impact, and backward compatibility timeline. (3) Controller always resolves `spec.ssh_key` — no fallback to raw `ssh_public_key`; `HasSshPublicKey()` check replaced by `ssh_key` reference check. (4) Updated test plan with migration and reserved-field tests. (5) Added ComputeInstance CRD support scope to Goals (addresses ygalblum's line 39 comment about missing ComputeInstance scope). (6) Updated upgrade/downgrade strategy to reflect breaking change.
 Inputs: [prd.md](prd.md), [clarifications.md](clarifications.md), [design-context.md](design-context.md) (ingest), [research-findings.md](research-findings.md) (research)
