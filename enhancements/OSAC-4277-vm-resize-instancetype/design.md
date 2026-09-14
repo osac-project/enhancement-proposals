@@ -159,8 +159,8 @@ restart.
 - **DEPRECATED target**: The API persists the change and returns a
   deprecation warning (replacement InstanceType and obsolescence date). The
   resize proceeds normally.
-- **Not found**: The API returns `NotFound` if the target InstanceType does
-  not exist.
+- **Not found**: The API returns `InvalidArgument` if the target InstanceType
+  does not exist.
 - **GPU mismatch**: The API returns `FailedPrecondition` if the target
   InstanceType has a different GPU spec than the current one. GPU is
   immutable — this check prevents persisting a change the CRD would reject.
@@ -190,8 +190,14 @@ target InstanceType is appropriate for their workload.
 **Modified gRPC services:**
 
 - `ComputeInstances.Update` (fulfillment-service) — lifts the
-  `instance_type` immutability constraint. No new fields, no new RPCs.
-  The update mask `spec.instance_type` is accepted and processed.
+  `instance_type` immutability constraint. The update mask
+  `spec.instance_type` is accepted and processed.
+
+**Modified proto messages:**
+
+- `ComputeInstancesUpdateResponse` — add `repeated string warnings = 2`
+  to match `ComputeInstancesCreateResponse`. Required to surface
+  deprecation warnings when resizing to a DEPRECATED InstanceType.
 
 **Modified CRDs:**
 
@@ -480,9 +486,10 @@ The existing `ComputeInstances.Update` RPC accepts `spec.instance_type`
 in the update mask. When the target InstanceType differs from the current
 value, the change is persisted and propagated through the reconciliation
 pipeline. Both increasing and decreasing InstanceType selections are
-supported — the API does not restrict the direction of change. See §API
-Extensions for the modified RPC and §Implementation Details for the
-validation flow.
+supported — the API does not restrict the direction of change. See
+[API Extensions](#api-extensions) for the modified RPC and
+[Implementation Details](#implementation-detailsnotesconstraints) for
+the validation flow.
 
 ### IC-2: Lifecycle-state validation on resize targets
 
@@ -493,7 +500,8 @@ ACTIVE targets succeed, DEPRECATED targets succeed with a deprecation
 warning (including replacement InstanceType and obsolescence date), and
 OBSOLETE targets are rejected with `FailedPrecondition`. The validation
 uses the existing `validateInstanceTypeState()` shared helper. See
-§Implementation Details for the validation sequence.
+[Implementation Details](#implementation-detailsnotesconstraints) for
+the validation sequence.
 
 ### IC-3: No-op detection for same InstanceType
 
@@ -515,8 +523,9 @@ to True on the ComputeInstance status. This uses the existing condition
 plumbing — the osac-operator mirrors KubeVirt's
 `VirtualMachineRestartRequired` condition, and the feedback controller
 syncs it to the fulfillment-service. The user restarts the VM manually
-via the existing `restart_requested_at` mechanism. See §Implementation
-Details for the KubeVirt hot-plug behavior.
+via the existing `restart_requested_at` mechanism. See
+[Implementation Details](#implementation-detailsnotesconstraints) for
+the KubeVirt hot-plug behavior.
 
 ## Alternatives (Not Implemented)
 
@@ -572,7 +581,7 @@ Resolved: yes. The OSAC installer already owns the KubeVirt CR setup
 (`install-virt.sh`). Hot-plug enablement is a KubeVirt CR patch
 (`vmRolloutStrategy: LiveUpdate` + `workloadUpdateMethods: [LiveMigrate]`)
 added alongside the existing l2bridge patch. No per-VM template changes
-needed. See §Hot-Plug Enablement.
+needed. See [Hot-Plug Enablement](#osac-installer-hot-plug-enablement).
 
 ### ~~9.2 Should resize of stopped VMs be explicitly documented?~~
 
@@ -620,6 +629,9 @@ exclusion.
 - CRD still rejects GPU changes (XValidation retained)
 
 ### E2E Tests
+
+Resize is a feature-specific operation, not a core lifecycle path. These
+tests belong in the regression suite, not sanity.
 
 - Create a ComputeInstance with InstanceType "A", resize to InstanceType
   "B", verify the VM's CPU and memory reflect InstanceType "B"
