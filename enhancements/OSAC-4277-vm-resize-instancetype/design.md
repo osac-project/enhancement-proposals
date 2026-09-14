@@ -320,9 +320,11 @@ update flag names and display labels from `cores` to `vcpus`.
 
 - `computeinstance_types_test.go`: update `spec.Cores` references to
   `spec.VCPUs`.
-- `computeinstance_validation_test.go`: update `instance.Spec.Cores`,
-  `createValidInstance` fixture (`Cores:` field), and the
-  `"cores is immutable"` assertion string.
+- `computeinstance_validation_test.go`: replace the `"should reject
+  changing cores"` and `"should reject changing memoryGiB"` tests with
+  tests that verify VCPUs and memory updates are accepted. Retain the
+  GPU immutability test. Update the `createValidInstance` fixture
+  (`Cores:` → `VCPUs:`).
 - `computeinstance_reconciler_function_test.go`: update `spec.Cores`
   assertions and `field.NewPath("spec", "cores")` error path references.
 - `migrate_subnetrefs_test.go`: update `"cores"` key in the `ciSpec()`
@@ -352,10 +354,9 @@ repository.
 
 This is a breaking change to both the InstanceType proto and the
 ComputeInstance CRD schema. The proto field number is preserved so the
-gRPC wire format is compatible, but the JSON field name changes. Existing
-ComputeInstance CRs require migration (field rename in the stored spec).
-The rename, CRD reapply, and migration are applied during the same
-upgrade window as the immutability lift below.
+gRPC wire format is compatible, but the JSON field name changes. No
+migration is needed — the project is pre-GA with no production data to
+migrate.
 
 #### osac-operator: CRD Field Mutability
 
