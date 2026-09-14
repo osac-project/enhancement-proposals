@@ -47,7 +47,7 @@ itself.
   platform-generated default is substituted
 - User data content handling, regardless of guest OS family or delivery
   method:
-  - Inline `user_data` is returned as-is in GET responses
+  - Inline `user_data` is returned as-is in list, get, and create responses
   - When `user_data_secret` is used, only the secret reference is returned,
     not the content
   - `user_data_secret` is the recommended path for sensitive content (product
@@ -66,6 +66,11 @@ itself.
   - When `user_data_secret` is used, the platform resolves the secret and
     validates the `userdata` entry the same way it validates inline
     `user_data`
+  - The referenced OSAC secret MUST contain a non-empty entry under the key
+    `userdata`; a missing or empty `userdata` entry is rejected at creation
+    time
+  - Validation errors for `user_data_secret` do not expose secret content in
+    error messages
   - Empty payloads are rejected when the field is present
   - If the Secret referenced by `user_data_secret` does not exist or is
     inaccessible, ComputeInstance creation fails before persistence with a
@@ -81,9 +86,11 @@ itself.
   referenced secret's content do not propagate to the running VM
 - Deletion of, or access revocation on, the referenced Secret after
   ComputeInstance creation does not affect the already-created VM
-- Secret constraints: shared-tenant secrets are rejected for
-  `user_data_secret`; tenant-owned secrets may be reused across multiple
-  ComputeInstances
+- Secret constraints: the `user_data_secret` reference is project-scoped —
+  the referenced secret must reside in the same project as the
+  ComputeInstance; shared-tenant secrets are rejected for `user_data_secret`;
+  tenant-owned secrets may be reused across multiple ComputeInstances within
+  the same project
 - The CLI and UI offer both delivery options: inline content through the
   existing `user_data` mechanism (file-path flag in the CLI, text input in
   the UI creation form) and secret reference through the `user_data_secret`
