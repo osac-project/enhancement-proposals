@@ -4,7 +4,7 @@
 
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
 - **Design task:** OSAC-4307
-- **Total test cases:** 28
+- **Total test cases:** 29
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 6 of 6
 
@@ -91,7 +91,7 @@
 
 ##### Preconditions
 
-- A controller-owned ExternalIP has an address in status.
+- An allocated ExternalIP has an address in status.
 - A target resource has a primary private address.
 
 ##### Steps
@@ -103,8 +103,8 @@
 ##### Expected Results
 
 - The requests contain no backend-specific fields.
-- ExternalIPAttachment reports the assigned external address and Ready phase
-  through the existing status path.
+- ExternalIPAttachment reports the assigned external address through the
+  existing status path and reaches Ready only after DNAT succeeds.
 - NATGateway reports Ready after its SNAT job reaches a terminal success state.
 
 ### FR-3: Multiple Subnets per VirtualNetwork
@@ -300,7 +300,10 @@
   absent.
 - The attachment remains Pending or Progressing with no unknown DNAT target.
 - After the address appears, the controller dispatches the DNAT operation.
-- Permitted traffic reaches the target and the attachment becomes Ready.
+- The attachment remains non-ready if ExternalIP allocation succeeds but the
+  DNAT operation fails.
+- Permitted traffic reaches the target and the attachment becomes Ready only
+  after DNAT success and status feedback confirmation.
 
 #### TC-FR5-02: Block denied inbound traffic and remove DNAT on deletion
 
@@ -375,7 +378,7 @@
 
 ### FR-7: External IP pools
 
-#### TC-FR7-01: Allocate an ExternalIP from a controller-owned pool
+#### TC-FR7-01: Allocate an ExternalIP from the agentless state-file pool
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -390,14 +393,18 @@
 
 1. Wait for the pool to reach Ready.
 2. Create an ExternalIP through the existing API.
-3. Read pool and ExternalIP status.
+3. Wait for the ExternalIP AAP job to succeed and inspect its
+   `external_ip_address` artifact.
+4. Read pool and ExternalIP status and inspect the agentless state file.
 
 ##### Expected Results
 
 - Pool status.total and status.available reflect the configured CIDR capacity.
 - ExternalIP status.state is Allocated and status.address contains an address
   from the pool.
-- The AgentlessNet state file contains no pool or ExternalIP allocation entry.
+- The AAP artifact, `ExternalIP.status.address`, and the state-file
+  `external_ips` entry contain the same address keyed by the ExternalIP UID.
+- The state-file `external_ip_pools` entry records the provider-side pool CIDR.
 
 #### TC-FR7-02: Reject exhausted capacity and restore it on release
 
@@ -413,13 +420,43 @@
 
 1. Attempt to create another ExternalIP from the exhausted pool.
 2. Delete an existing ExternalIP.
-3. Create another ExternalIP from the pool.
+3. Wait for the state-file allocation to be removed and create another
+   ExternalIP from the pool.
 
 ##### Expected Results
 
 - The first create request fails with a capacity/precondition error.
 - Pool status.available increases after the deletion is persisted.
-- The subsequent create request receives a newly allocated address.
+- The subsequent create request receives a newly allocated address, and the
+  state file contains exactly one allocation for the new ExternalIP UID.
+
+#### TC-FR7-03: Preserve pool status during concurrent allocation and reconciliation
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | high | automated |
+
+##### Preconditions
+
+- An ExternalIPPool has `status.total=2`, `status.allocated=0`,
+  `status.available=2`, and `status.phase=Ready`.
+- The fulfillment-service capacity update and ExternalIPPoolReconciler phase
+  update can run concurrently.
+
+##### Steps
+
+1. Start an ExternalIP creation and an ExternalIPPool reconciliation that
+   updates the phase/conditions at the same time.
+2. Wait for both operations to complete, then read the pool status and the
+   ExternalIP AAP allocation artifact.
+
+##### Expected Results
+
+- The pool retains `allocated=1` and `available=1` from the capacity update.
+- The reconciler's phase and conditions are also present; neither writer
+  overwrites fields owned by the other.
+- The ExternalIP address in status matches the AAP artifact and its state-file
+  allocation, with no duplicate allocation after conflict retries.
 
 ### FR-8: Networking across all services
 
@@ -685,7 +722,8 @@
 ##### Preconditions
 
 - Two overlapping VirtualNetworks have an ExternalIPAttachment and a
-  NATGateway configured through controller-approved ExternalIPs.
+  NATGateway configured through allocated ExternalIPs with populated status
+  addresses.
 - SecurityGroup rules permit the intended external flow.
 
 ##### Steps
@@ -713,12 +751,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 28 |
+| Total test cases | 29 |
 | Critical | 11 |
-| High | 16 |
+| High | 17 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 27 |
+| Automated | 28 |
 | Manual | 1 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 6 / 6 |
