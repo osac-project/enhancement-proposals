@@ -42,7 +42,7 @@ Deferred to later work (this release is read-only Get/List only):
 ### Tenant Admin / Tenant User
 
 - As a tenant member, I want to get the details of a specific storage volume — its size, tier, and state — so that I can understand its configuration and verify its availability.
-- As a tenant member, I want to list the storage volumes in my tenant, so that I can find a volume and navigate storage inventory in the console. Tenant User and Tenant Admin have the same read scope in this release (both see all volumes in the tenant), consistent with OSAC-2872, where both roles share the same storage capabilities.
+- As a tenant member, I want to list all volumes visible within my tenant and project scope, so that I can find a volume and navigate storage inventory in the console. Tenant User and Tenant Admin have the same read scope in this release (both see all volumes in the tenant), consistent with OSAC-2872, where both roles share the same storage capabilities.
 
 ### Cloud Infrastructure Admin
 
@@ -65,7 +65,7 @@ Deferred to later work (this release is read-only Get/List only):
 
 - **Identifier.** `List` items and `Get` both key on the immutable `id`; a `Get` by the `id` of a visible volume returns it, and a `Get` by an id outside the caller's tenants returns `not found` (indistinguishable from a non-existent id, so existence is not leaked across tenants).
 - **Inventory states.** `List` and `Get` return volumes in every non-archived state tracked by OSAC-2872 (`creating`, `available`, `deleting`). Once a volume is fully deprovisioned its record is archived (`deleted`) and no longer appears through `List`/`Get`. There is no other implicit state filter — callers filter by `status.state` for a subset.
-- **Isolation.** A caller never receives a volume outside their entitled tenants through either `List` or `Get`, and this is covered by an automated tenant-isolation test.
+- **Isolation.** A caller never receives a volume outside their entitled tenants and projects through either `List` or `Get`, and this is covered by automated tenant- and project-isolation tests.
 
 ---
 
