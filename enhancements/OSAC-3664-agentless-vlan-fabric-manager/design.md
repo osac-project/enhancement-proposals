@@ -3,7 +3,7 @@ title: agentless-vlan-fabric-manager
 authors:
   - yonibettan@gmail.com
 creation-date: 2026-09-08
-last-updated: 2026-09-10
+last-updated: 2026-09-14
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3664
   - https://redhat.atlassian.net/browse/OSAC-4307
@@ -216,6 +216,10 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
 1. The bare-metal-fulfillment-operator resolves the BareMetalInstance network
    attachments, host interface names, and Subnet references. It resolves NIC
    MAC addresses from the management backend when available.
+   The BMaaS attachment contract permits each `subnetRef` at most once within
+   one BareMetalInstance; a Subnet may still be used by many BareMetalInstances.
+   Multi-NIC BareMetalInstances therefore use distinct Subnets, and duplicate
+   `subnetRef` values are rejected before network handoff or DHCP discovery.
 2. After host provisioning, the BMF flow starts the generic
    `playbook_osac_move_network_attachment.yml` AAP job. The playbook resolves
    each `subnetRef` and dispatches the backend-specific
@@ -229,16 +233,21 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    relay is not supported in this milestone. [PRD: FR-4] [Locked: D13] [User]
    [Research: Local DHCP presence per broadcast domain]
 4. The generic 'playbook_osac_query_dhcp_lease.yml' invokes the selected
-   template's 'query_dhcp_lease' task for each network attachment. The agentless
-   task matches the attachment identity and Subnet to the lease store and
-   publishes the existing 'leases' AAP artifact through 'set_stats'.
+   template's 'query_dhcp_lease' task for each network attachment. Because each
+   `subnetRef` is unique within the BareMetalInstance, the agentless task uses
+   that reference together with the existing attachment fields to match the
+   lease store and publishes one lease entry per requested Subnet through
+   'set_stats'.
 5. The operator validates the artifact's job status, attachment identity, MAC or
    interface identity, Subnet reference, address family, and freshness before
-   writing the observed address to the resource status.
+   writing the observed address to the resource status. The artifact must
+   contain exactly one entry for each requested SubnetRef; duplicate,
+   unexpected, or missing references fail IP discovery.
 6. The bare-metal operator retrieves the completed AAP job, parses
-   DHCPLeaseResult.Leases, maps each lease by SubnetRef, validates the IP
-   address, and writes Status.NetworkAttachmentStatuses. If a lease is missing
-   or invalid, IP discovery remains failed and reconciliation retries.
+   DHCPLeaseResult.Leases, maps each lease by the unique SubnetRef, validates
+   the IP address, and writes Status.NetworkAttachmentStatuses. If a lease is
+   missing, duplicated, unexpected, or invalid, IP discovery remains failed and
+   reconciliation retries.
 7. The osac-operator BareMetalInstance feedback controller watches the CR status
    change and calls the fulfillment-service BareMetalInstances.Signal RPC.
    fulfillment-service persists the status, after which ExternalIPAttachment
@@ -1190,7 +1199,8 @@ not a substitute for that testplan.
   DNAT/SNAT consumers use the assigned status address without backend allocation
   state.
 - Verify tenant and owner annotations survive the service-to-CR path.
-- Exercise generic DHCP job artifact consumption and multi-NIC lease mapping.
+- Exercise generic DHCP job artifact consumption for multi-NIC instances using
+  distinct Subnets, and reject duplicate SubnetRefs before lease discovery.
 - Exercise AAP role argument validation and idempotent create/delete for the
   Cumulus support contract.
 - Verify controller restart/requeue behavior and ordered finalizer cleanup.
@@ -1305,10 +1315,10 @@ existing mono-repo and tests/e2e patterns.
 ## Provenance
 
 Authored: revise @ design 0.9.0 - 562b610, workspace main @ 0ae795e37
-Final: draft @ design 0.9.1 - f121df6, workspace main @ 0ae795e37
+Final: respond @ design 0.11.0 - fd98907, workspace main @ b9575896d (dirty)
 
-> Context changed between revise and draft.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.9.1","ai_workflows":"f121df6","source_repo":"0ae795e37","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.0","ai_workflows":"fd98907","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
