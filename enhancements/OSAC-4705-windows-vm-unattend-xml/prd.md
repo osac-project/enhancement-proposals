@@ -106,7 +106,7 @@ itself.
   user's own answer file contains
 - Updating Unattend.xml on an existing VM after creation — this feature covers
   create-time only
-- Creation and lifecycle management of the Kubernetes Secret referenced by
+- Creation and lifecycle management of the OSAC secret referenced by
   `user_data_secret` — tenants are responsible for creating secrets before
   referencing them
 - Image upload, scanning, and DiskImage CRUD (covered by OSAC-2540 and
