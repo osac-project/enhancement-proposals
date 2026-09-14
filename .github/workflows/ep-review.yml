@@ -100,7 +100,19 @@ jobs:
 
       - name: Clone skills
         run: |
+          set -euo pipefail
           git clone --depth 1 https://github.com/osac-project/osac-ai-skills /opt/skills
+          skills_sha="$(git -C /opt/skills rev-parse --verify "HEAD^{commit}")"
+          if ! [[ "$skills_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::osac-ai-skills resolved to an invalid commit SHA: $skills_sha"
+            exit 1
+          fi
+          echo "Resolved osac-ai-skills commit: ${skills_sha}"
+          {
+            echo "### OSAC AI skills"
+            echo
+            echo "Resolved osac-ai-skills commit: ${skills_sha}"
+          } >> "$GITHUB_STEP_SUMMARY"
           for s in prd-review design-review; do
             if [[ ! -f "/opt/skills/skills/$s/SKILL.md" ]]; then
               echo "::error::skills/$s/SKILL.md missing from osac-ai-skills"

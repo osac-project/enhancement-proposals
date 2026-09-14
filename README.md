@@ -34,8 +34,9 @@ A PRD (Product Requirements Document) defines **what** a feature delivers and
 For detailed guidance on writing PRDs, the PRD vs design EP boundary, personas,
 and good/bad examples, see [guidelines/prd_guide.md](guidelines/prd_guide.md).
 
-The recommended way to create a PRD is using the `/prd` skill in an AI-assisted
-development tool (Claude Code, Cursor, or similar):
+The recommended way to create a PRD is using the `/prd` skill from a
+bootstrapped checkout of [osac-project/osac](https://github.com/osac-project/osac)
+in an AI-assisted development tool (Claude Code, Cursor, or similar):
 
 1. Run `/prd:ingest` with your Jira ticket to gather requirements.
 2. Run `/prd:clarify` to resolve ambiguities through guided Q&A.
@@ -65,14 +66,19 @@ directory. See "How do I create an enhancement proposal?" below.
 
 OSAC uses a two-document flow: a **PRD** (Product Requirements Document) describes WHAT and WHY, and a **design document** describes HOW.
 
-### Recommended: AI-assisted workflow (osac-workspace)
+### Recommended: AI-assisted workflow
 
-The [osac-workspace](https://github.com/osac-project/osac-workspace) provides AI-assisted workflows that guide you through the process:
+The [osac-project/osac](https://github.com/osac-project/osac) repository
+provides AI-assisted workflows that guide you through the process. Run
+`tools/bootstrap.sh` there, then start the agent from that repository's root
+(the directory containing `tools/bootstrap.sh` and `skills/`), not from this
+documentation repository:
 
 1. **PRD**: Run `/prd:ingest` to start a PRD, then `/prd:clarify`, `/prd:draft`, and `/prd:publish` to create it in this repo as `enhancements/OSAC-NNNN-feature-slug/prd.md`.
 2. **Design**: Run `/design:ingest` to start the design, then `/design:draft` and `/design:publish` to create it as `enhancements/OSAC-NNNN-feature-slug/design.md`.
 
-See the osac-workspace [AGENTS.md](https://github.com/osac-project/osac-workspace/blob/main/AGENTS.md) for full workflow details.
+See the OSAC [AGENTS.md](https://github.com/osac-project/osac/blob/main/AGENTS.md)
+for full workflow details.
 
 ### Manual workflow
 
