@@ -14,7 +14,7 @@
 - **Framework:** Ginkgo v2 + Gomega
 - **Runner:** `ginkgo run internal/servers` (server tests), `ginkgo run internal/controllers/computeinstance` (reconciler tests)
 - **Server tests:** `internal/servers/private_compute_instances_server_test.go` — existing immutability tests at lines 767-810 (`Rejects changing template on update`), Update pattern at lines 615-664, InstanceType lifecycle validation at lines 2914+
-- **Reconciler tests:** `internal/controllers/computeinstance/computeinstance_reconciler_function_test.go` — `buildSpec` tests cover explicit field resolution (cores, memoryGiB, GPU from InstanceType)
+- **Reconciler tests:** `internal/controllers/computeinstance/computeinstance_reconciler_function_test.go` — `buildSpec` tests cover explicit field resolution (vcpus, memoryGiB, GPU from InstanceType)
 - **Helpers:** `internal/testing/compute_instance_scenario.go` (YAML-driven test data), `internal/testing/testdata/compute-instance-scenario.yaml` (fixtures)
 
 ### Integration tests (fulfillment-service)
@@ -32,7 +32,7 @@
 - **Existing restart tests:** `tests/e2e/vmaas/regression/test_compute_instance_restart.py`
 - **Client helpers:** `tests/e2e/core/grpc_client.py` — `GRPCClient` with `create_compute_instance()`, `update_compute_instance_run_strategy()`, `update_restart()`, `get_compute_instance()`, `create_instance_type()`
 - **Wait helpers:** `tests/e2e/core/helpers.py` — `wait_for_cr()`, `wait_for_provision()`, `wait_for_running()`, `wait_for_restart()`
-- **Fixtures:** `tests/e2e/vmaas/conftest.py` — `k8s_virt_client`, `vm_template`, `default_subnet`, `DEFAULT_IT_CORES=2`, `DEFAULT_IT_MEMORY_GIB=4`
+- **Fixtures:** `tests/e2e/vmaas/conftest.py` — `k8s_virt_client`, `vm_template`, `default_subnet`, `DEFAULT_IT_VCPUS=2`, `DEFAULT_IT_MEMORY_GIB=4`
 - **Note:** `update_compute_instance_instance_type()` does not exist yet on `GRPCClient` — must be added following the pattern of `update_compute_instance_run_strategy()`
 
 ## Test Cases
@@ -48,8 +48,8 @@
 ##### Preconditions
 
 - A ComputeInstance exists in RUNNING state with instance_type "small"
-  (e.g., 2 cores, 4 GiB)
-- An InstanceType "medium" exists in ACTIVE state (e.g., 4 cores, 8 GiB)
+  (e.g., 2 vCPUs, 4 GiB)
+- An InstanceType "medium" exists in ACTIVE state (e.g., 4 vCPUs, 8 GiB)
 
 ##### Steps
 
@@ -61,7 +61,7 @@
 
 - The Update RPC returns HTTP 200 / gRPC OK
 - The ComputeInstance's `spec.instance_type` reference changes to "medium"
-- The CRD's `spec.cores` updates to 4 and `spec.memoryGiB` updates to 8
+- The CRD's `spec.vcpus` updates to 4 and `spec.memoryGiB` updates to 8
 - `ConfigurationApplied` transitions False → True after AAP re-provisioning
 
 #### TC-FR1-02: Resize a stopped ComputeInstance
@@ -86,7 +86,7 @@
 ##### Expected Results
 
 - The Update RPC returns HTTP 200 / gRPC OK
-- After starting, the KubeVirt VM runs with 4 cores and 8 GiB memory
+- After starting, the KubeVirt VM runs with 4 vCPUs and 8 GiB memory
   (matching InstanceType "medium")
 - No `RestartRequired` condition is set (change applied during start)
 
@@ -111,7 +111,7 @@
 ##### Expected Results
 
 - The ComputeInstance's `spec.instance_type` is "large" (last write wins)
-- The CRD's `spec.cores` and `spec.memoryGiB` reflect InstanceType "large"
+- The CRD's `spec.vcpus` and `spec.memoryGiB` reflect InstanceType "large"
 - `ConfigurationApplied` eventually reaches True with the final spec
 - No stale intermediate state persists — the VM runs with InstanceType
   "large" resources, not "medium"
@@ -152,8 +152,8 @@
 ##### Preconditions
 
 - A ComputeInstance exists in RUNNING state with instance_type "medium"
-  (4 cores, 8 GiB)
-- An InstanceType "small" exists in ACTIVE state (2 cores, 4 GiB)
+  (4 vCPUs, 8 GiB)
+- An InstanceType "small" exists in ACTIVE state (2 vCPUs, 4 GiB)
 
 ##### Steps
 
@@ -164,7 +164,7 @@
 ##### Expected Results
 
 - The Update RPC returns HTTP 200 / gRPC OK
-- The CRD's `spec.cores` updates to 2 and `spec.memoryGiB` updates to 4
+- The CRD's `spec.vcpus` updates to 2 and `spec.memoryGiB` updates to 4
 - `ConfigurationApplied` transitions False → True after AAP re-provisioning
 
 #### TC-FR2-02: Resize with mixed direction (increase CPU, decrease memory)
@@ -175,8 +175,8 @@
 
 ##### Preconditions
 
-- A ComputeInstance exists with instance_type "a" (2 cores, 8 GiB)
-- An InstanceType "b" exists in ACTIVE state (4 cores, 4 GiB)
+- A ComputeInstance exists with instance_type "a" (2 vCPUs, 8 GiB)
+- An InstanceType "b" exists in ACTIVE state (4 vCPUs, 4 GiB)
 
 ##### Steps
 
@@ -187,7 +187,7 @@
 ##### Expected Results
 
 - The Update RPC returns HTTP 200 / gRPC OK
-- The CRD's `spec.cores` updates to 4 and `spec.memoryGiB` updates to 4
+- The CRD's `spec.vcpus` updates to 4 and `spec.memoryGiB` updates to 4
 - The API does not reject the request based on direction of change
 
 ### FR-3: Resize target eligibility follows InstanceType lifecycle-state rules
@@ -317,7 +317,7 @@
 - A ComputeInstance exists in RUNNING state
 - KubeVirt deployment does not support CPU/memory hot-plug for the
   requested change (or `VMLiveUpdateFeatures` is not enabled)
-- A target InstanceType with different cores/memory exists in ACTIVE state
+- A target InstanceType with different vCPUs/memory exists in ACTIVE state
 
 ##### Steps
 
@@ -368,7 +368,7 @@
 ##### Preconditions
 
 - A fully provisioned ComputeInstance in RUNNING state
-- Multiple InstanceTypes exist with different cores/memory configurations
+- Multiple InstanceTypes exist with different vCPUs/memory configurations
 - Follows patterns in `tests/e2e/vmaas/regression/test_compute_instance_instance_type.py`
 - E2E environment is single-node (hot-plug via live migration is not
   available; all resizes produce `RestartRequired`)
@@ -377,11 +377,11 @@
 
 1. Verify the KubeVirt VM uses socket-based CPU topology
    (`sockets: N, cores: 1, threads: 1`)
-2. Resize up: InstanceType A → InstanceType B (increase cores/memory)
+2. Resize up: InstanceType A → InstanceType B (increase vCPUs/memory)
 3. Verify `ConfigurationApplied` = True and `RestartRequired` = True
 4. Restart the VM via `restart_requested_at`
 5. Verify the VM runs with the new CPU/memory values and socket topology
-6. Resize down: InstanceType B → InstanceType A (decrease cores/memory)
+6. Resize down: InstanceType B → InstanceType A (decrease vCPUs/memory)
 7. Verify `ConfigurationApplied` = True and `RestartRequired` = True
 8. Restart the VM and verify updated resources
 
@@ -410,19 +410,19 @@
 - A fully provisioned ComputeInstance in RUNNING state with a
   migration-eligible configuration (no PCI passthrough devices, no local
   non-migratable storage, no host-model CPU pinning)
-- Multiple InstanceTypes exist with different cores/memory configurations
+- Multiple InstanceTypes exist with different vCPUs/memory configurations
 
 ##### Steps
 
 1. Note the node the VM pod is running on
-2. Resize up: InstanceType A → InstanceType B (increase cores/memory)
+2. Resize up: InstanceType A → InstanceType B (increase vCPUs/memory)
 3. Wait for `ConfigurationApplied` condition to become True
 4. Observe that KubeVirt triggers a live migration (VM pod moves to a
    different node)
 5. Verify the VM remains available during migration (no downtime)
 6. Verify `RestartRequired` is NOT set (hot-plug succeeded)
 7. Verify the KubeVirt VM's CPU and memory match InstanceType B
-8. Resize down: InstanceType B → InstanceType A (decrease cores/memory)
+8. Resize down: InstanceType B → InstanceType A (decrease vCPUs/memory)
 9. Wait for `ConfigurationApplied` condition to become True
 10. Verify live migration occurs and `RestartRequired` is NOT set
 11. Verify the KubeVirt VM's CPU and memory match InstanceType A
