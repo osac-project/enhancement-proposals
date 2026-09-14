@@ -1,7 +1,7 @@
 ---
 title: ssh-key-registry
 authors:
-  - yblum@redhat.com
+  - clobrano@redhat.com
 creation-date: 2026-09-08
 last-updated: 2026-09-11
 tracking-link:
@@ -21,7 +21,7 @@ superseded-by:
 
 ## Summary
 
-Introduce a new `SshKey` resource in the fulfillment-service that lets tenants register named SSH public keys and reference them by name when creating a ComputeInstance. The `ComputeInstanceSpec` gains an `SshKeyReference ssh_key` field (message with `id` + `name`). `SshKeyReference` is a tenant-scoped exception to the standard `Reference`/`LocalReference` convention (API.md §References) — the registered lookup function ignores the project parameter because SshKeys are tenant-wide. The `ReferenceValidator` gRPC interceptor validates user-provided references at API create time. A PostgreSQL `check_compute_instance_ssh_key_ref` trigger provides defense-in-depth validation with `FOR SHARE` locking. Catalog and template SSH key defaults are out of scope for this milestone. SSH key references are provided exclusively through the ComputeInstance create request. The ComputeInstance controller resolves the key at reconciliation time via `SshKeys.Get` using the canonical `id` and passes the raw public key material to the osac-operator CRD for cloud-init injection on first boot. See [PRD](prd.md) for detailed requirements.
+Introduce a new `SshKey` resource in the fulfillment-service that lets tenants register named SSH public keys and reference them when creating a ComputeInstance. The `ComputeInstanceSpec` gains an `SshKeyReference ssh_key` field (message with `id` + `name`). `SshKeyReference` is a tenant-scoped exception to the standard `Reference`/`LocalReference` convention (API.md §References) — the registered lookup function ignores the project parameter because SshKeys are tenant-wide. The `ReferenceValidator` gRPC interceptor validates user-provided references at API create time. A PostgreSQL `check_compute_instance_ssh_key_ref` trigger provides defense-in-depth validation with `FOR SHARE` locking. Catalog and template SSH key defaults are out of scope for this milestone. SSH key references are provided exclusively through the ComputeInstance create request. The ComputeInstance controller resolves the key at reconciliation time via `SshKeys.Get` using the canonical `id` and passes the raw public key material to the osac-operator CRD for cloud-init injection on first boot. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
