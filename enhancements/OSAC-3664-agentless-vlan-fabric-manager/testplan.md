@@ -131,7 +131,7 @@
 - ARP resolves without a routed hop.
 - IPv4 traffic reaches the peer while the Subnet remains a single L2 domain.
 
-#### TC-FR3-02: Route permitted and deny unpermitted cross-Subnet traffic
+#### TC-FR3-02: Route cross-Subnet traffic by default and enforce SecurityGroup restrictions
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -140,18 +140,23 @@
 ##### Preconditions
 
 - One Ready VirtualNetwork contains two Ready Subnets.
-- Test interfaces are bound to different Subnets.
+- Test interfaces are bound to different Subnets and have no applicable
+  SecurityGroup initially.
 
 ##### Steps
 
-1. Create a SecurityGroup rule permitting the test flow.
-2. Send traffic between the Subnets.
-3. Remove the allow rule and repeat the traffic attempt.
+1. Send traffic between the Subnets with no applicable SecurityGroup.
+2. Attach or reconcile a SecurityGroup whose rules exclude the test flow.
+3. Repeat the traffic attempt.
+4. Add a matching SecurityGroup rule and repeat the traffic attempt.
 
 ##### Expected Results
 
-- With the rule present, the VN namespace routes the flow between Subnets.
-- Without an allow rule, the default-deny forwarding policy drops the flow.
+- With no applicable SecurityGroup, the permit-all baseline routes the flow
+  between Subnets.
+- While the restrictive SecurityGroup is applicable, the excluded flow is
+  dropped by its policy.
+- After a matching rule is added, the VN namespace routes the flow again.
 - SecurityGroup rule changes update only the owned iptables/netfilter rules.
 
 #### TC-FR3-03: Isolate overlapping VirtualNetworks on the internal fabric
@@ -285,7 +290,8 @@
 
 - An ExternalIP is Allocated with status.address populated.
 - The target has no primary private address at first, then receives one.
-- A SecurityGroup rule permits the inbound test flow.
+- No applicable SecurityGroup is attached to the target, so the baseline permits
+  the inbound test flow.
 
 ##### Steps
 
@@ -302,10 +308,11 @@
 - After the address appears, the controller dispatches the DNAT operation.
 - The attachment remains non-ready if ExternalIP allocation succeeds but the
   DNAT operation fails.
-- Permitted traffic reaches the target and the attachment becomes Ready only
-  after DNAT success and status feedback confirmation.
+- Inbound traffic reaches the target under the permit-all baseline, and the
+  attachment becomes Ready only after DNAT success and status feedback
+  confirmation.
 
-#### TC-FR5-02: Block denied inbound traffic and remove DNAT on deletion
+#### TC-FR5-02: Enforce SecurityGroup restriction and remove DNAT on deletion
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -314,7 +321,8 @@
 ##### Preconditions
 
 - An ExternalIPAttachment is Ready and its target has a primary IP.
-- No SecurityGroup rule permits the test inbound flow.
+- An applicable SecurityGroup is attached to the target and has no matching
+  ingress rule for the test flow.
 
 ##### Steps
 
@@ -324,7 +332,8 @@
 
 ##### Expected Results
 
-- The denied packet is dropped by the existing forwarding policy.
+- The packet is dropped by the applicable SecurityGroup restriction rather than
+  by the permit-all baseline.
 - The DNAT rule is removed before the attachment finalizer is cleared.
 - ExternalIP status.attached becomes false after feedback.
 
@@ -340,7 +349,8 @@
 
 - An ExternalIP is Allocated with status.address populated.
 - A NATGateway references that ExternalIP and a Ready VirtualNetwork.
-- A SecurityGroup rule permits the test egress flow.
+- No applicable SecurityGroup is attached, so the permit-all baseline permits
+  the test egress flow.
 
 ##### Steps
 
@@ -353,7 +363,7 @@
 - The SNAT rule is present in the owned state mapping.
 - NATGateway status.phase is Ready.
 
-#### TC-FR6-02: Apply forwarding policy before SNAT
+#### TC-FR6-02: Apply SecurityGroup restriction before SNAT
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -362,7 +372,8 @@
 ##### Preconditions
 
 - A NATGateway has an owned SNAT rule.
-- The VN default-deny policy has no SecurityGroup allow rule for the test flow.
+- An applicable SecurityGroup is attached and has no matching egress rule for
+  the test flow.
 
 ##### Steps
 
@@ -371,7 +382,8 @@
 
 ##### Expected Results
 
-- The first flow is dropped in the forwarding policy and does not reach SNAT.
+- The first flow is dropped by the applicable SecurityGroup restriction and
+  does not reach SNAT.
 - The second flow reaches POSTROUTING and the external endpoint observes the
   NATGateway ExternalIP.
 - The NATGateway role does not add or modify SecurityGroup rules.
