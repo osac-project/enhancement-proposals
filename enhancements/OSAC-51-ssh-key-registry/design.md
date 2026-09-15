@@ -3,7 +3,7 @@ title: ssh-key-registry
 authors:
   - clobrano@redhat.com
 creation-date: 2026-09-08
-last-updated: 2026-09-11
+last-updated: 2026-09-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-51
   - https://redhat.atlassian.net/browse/OSAC-4510
@@ -165,7 +165,7 @@ sequenceDiagram
 
 | File | Change |
 |------|--------|
-| `register_servers.go` | Build and register `SshKeysServer` (public) and `PrivateSshKeysServer` (private) in the shared (always-registered) block — SshKey CRUD is not feature-gated. The `EnableSshKeyReference` feature gate (see Version Skew Strategy) controls only whether `ComputeInstance.spec.ssh_key` references are accepted by admission, not whether the SshKey service itself is available |
+| `register_servers.go` | Build and register `SshKeysServer` (public) and `PrivateSshKeysServer` (private) in the shared (always-registered) block — SshKey CRUD is always available. No feature gate is required |
 | `unknown_service_handler.go` | Not required — SshKey is shared infrastructure, not VMaaS-gated. It is always registered regardless of VMaaS/CaaS/BMaaS flags |
 | `start_rest_gateway_cmd.go` | Add `publicv1.RegisterSshKeysHandler` and `privatev1.RegisterSshKeysHandler` to the shared (always-registered) handler list |
 | `authz.rego` | Add SshKey method entries (see RBAC / Tenancy section) |
@@ -379,11 +379,6 @@ if err != nil && errors.As(err, &sshKeyErr) {
     return nil // handled — do not propagate to generic reconciler
 }
 
-// Feature gate disabled: return nil to preserve current status.
-if !enableSshKeyReference && spec.GetSshKey() != nil {
-    logger.Warn("SSH key reference feature is disabled, skipping resolution")
-    return nil // handled — do not propagate to generic reconciler
-}
 ```
 
 The generic reconciler's error-handling block (`computeinstance_reconciler_function.go:157`) does **not** need modification for SSH key errors — it never sees them. Only non-SSH-key errors (e.g., instance-type resolution failures, K8s errors) reach the generic reconciler's `setReconciliationFailed` handler:
@@ -397,7 +392,7 @@ if reconcileErr != nil && !errors.Is(reconcileErr, errTransientK8sError) {
 }
 ```
 
-Tests must verify: (a) `SshKeyResolutionError` with `Permanent=false` is caught by `errors.As` in the SSH key resolution block, logged as warning, and returns `nil` — the generic reconciler never calls `setReconciliationFailed`, (b) `SshKeyResolutionError` with `Permanent=true` is caught by `errors.As`, calls `setReconciliationFailedWithReason` with the typed `Reason`, returns `nil`, and the generic reconciler does not see the error (no double-handling), (c) feature gate disabled with `spec.ssh_key` set returns `nil` — preserves status and does not write CRD, (d) non-SSH-key errors (e.g., instance-type resolution failures) still reach the generic reconciler's `setReconciliationFailed` unchanged.
+Tests must verify: (a) `SshKeyResolutionError` with `Permanent=false` is caught by `errors.As` in the SSH key resolution block, logged as warning, and returns `nil` — the generic reconciler never calls `setReconciliationFailed`, (b) `SshKeyResolutionError` with `Permanent=true` is caught by `errors.As`, calls `setReconciliationFailedWithReason` with the typed `Reason`, returns `nil`, and the generic reconciler does not see the error (no double-handling), (c) non-SSH-key errors (e.g., instance-type resolution failures) still reach the generic reconciler's `setReconciliationFailed` unchanged.
 
 **gRPC Error Classification Table:**
 
@@ -405,10 +400,10 @@ Tests must verify: (a) `SshKeyResolutionError` with `Permanent=false` is caught 
 |---|---|---|
 | `NotFound` | Permanent | Set `status.state` to failed state, add condition with reason `SshKeyNotFound`. |
 | `InvalidArgument` | Permanent | Set `status.state` to failed state, add condition with reason `SshKeyInvalid`. |
-| `PermissionDenied` | Transient (rollout) | Log warning, do not change status (see rollout note below). |
+| `PermissionDenied` | Transient | Log warning, do not change status. May indicate a configuration or authorization problem if persistent. |
 | `Unavailable` | Transient | Log warning, do not change status. |
 | `DeadlineExceeded` | Transient | Log warning, do not change status. |
-| `Unimplemented` | Transient (rollout) | Log warning, do not change status (see rollout note below). |
+| `Unimplemented` | Transient | Log warning, do not change status. May indicate a deployment or configuration problem if persistent. |
 | `Aborted` | Transient | Log warning, do not change status. Indicates a database deadlock retry; safe to retry. |
 | `Internal` | Transient | Log warning, do not change status. Indicates a generic server-side failure; alert if persistent. |
 | `Canceled` | Stop | Do not change status, do not retry. Context was canceled (e.g., controller shutdown). |
@@ -420,7 +415,7 @@ Tests must verify: (a) `SshKeyResolutionError` with `Permanent=false` is caught 
 
 **Reconciliation retry model**: The reconciler does **not** have an automatic requeue or exponential backoff mechanism. When a transient error occurs, the controller logs the warning and returns without changing instance status. The error is retried only when the next reconciliation is triggered by a future event (e.g., a watch event on the ComputeInstance or SshKey) or by the **1-hour periodic full sync**. This means transient errors may take up to 1 hour to self-resolve in the absence of new events.
 
-**Rollout-transient codes**: `PermissionDenied` and `Unimplemented` are classified as transient because they occur naturally during the staged feature gate rollout (Stage 1 → Stage 3) — the SshKey service may not yet be fully authorized or the RPC may not be registered on all pods. Once the feature gate is enabled (Stage 3) and the rollout is complete, persistent `PermissionDenied` or `Unimplemented` errors indicate a genuine configuration or deployment problem. **Recommendation**: set up alerting for these codes if they persist for more than 2 periodic sync cycles (>2 hours) after gate enablement.
+**Persistent transient codes**: `PermissionDenied` and `Unimplemented` are classified as transient to avoid prematurely failing instances during deployment. Persistent occurrences of these codes indicate a genuine configuration or deployment problem. **Recommendation**: set up alerting for these codes if they persist for more than 2 periodic sync cycles (>2 hours) after deployment.
 
 This resolution pattern follows the same approach as `InstanceTypes.Get` for resolving cores/memory from `spec.instance_type` — direct ID-based lookup with the ID pre-populated at create time by the `ReferenceValidator` interceptor.
 
@@ -682,7 +677,7 @@ SSH public keys are **not sensitive data** — they are designed to be shared pu
 | **Controller: SshKey not found (`NotFound` — permanent)** | Controller sets `status.state` to failed, adds condition with `reason=SshKeyNotFound`; instance will be re-reconciled on next event or periodic sync but will re-fail if key is still missing | Instance enters Failed state; user must delete and recreate the instance with a valid SSH key reference (see Support Procedures) |
 | **Controller: invalid SSH key reference (`InvalidArgument` — permanent)** | Controller sets `status.state` to failed, adds condition with `reason=SshKeyInvalid`; re-reconciled on next sync | Instance enters Failed state with specific reason |
 | **Controller: fulfillment-service unavailable (`Unavailable`/`DeadlineExceeded` — transient)** | Controller logs warning; does **not** automatically requeue — retries on next event or 1-hour periodic sync | Instance remains in current state; resolves when service recovers and next sync fires |
-| **Controller: permission/implementation gap (`PermissionDenied`/`Unimplemented` — transient during rollout)** | Controller logs warning; retries on next event or 1-hour periodic sync | Expected during staged rollout (gate disabled on some pods); alert if persistent post-gate |
+| **Controller: permission/implementation gap (`PermissionDenied`/`Unimplemented` — transient)** | Controller logs warning; retries on next event or 1-hour periodic sync | May occur during deployment; alert if persistent |
 | **Controller: database deadlock (`Aborted` — transient)** | Controller logs warning; retries on next event or 1-hour periodic sync | Transient database contention; self-resolves |
 | **Controller: internal server error (`Internal` — transient)** | Controller logs warning; retries on next event or 1-hour periodic sync | Alert if persistent — indicates a server-side bug or infrastructure issue |
 | **Controller: context canceled (`Canceled` — stop)** | Controller does not change instance status; reconciliation resumes on next controller start or next event | No user-visible impact |
@@ -796,7 +791,6 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 - Database trigger `check_compute_instance_ssh_key_ref` accepts empty reference: both `id` and `name` are empty or null — returns new (no SSH key configured). Note: the server rejects empty `SshKeyReference{}` at the API layer before it reaches the trigger; this trigger behavior covers the "no ssh_key field set" case in the JSONB data.
 - Database trigger `check_compute_instance_ssh_key_ref` accepts valid `{id, name}` reference: both fields populated, `id` references an active key in the same tenant, and name matches — succeeds.
 - Reconciler: transient SSH key resolution error (e.g., `Unavailable`) returns `nil` — generic reconciler never calls `setReconciliationFailed`, instance status preserved.
-- Reconciler: feature gate disabled with `spec.ssh_key` set returns `nil` — preserves instance status and does not write CRD.
 - Reconciler: permanent SSH key errors (`SshKeyNotFound`, `SshKeyInvalid`) call `setReconciliationFailedWithReason` with typed conditions, then return `nil` (no double-handling by generic reconciler).
 - ComputeInstance controller resolves `spec.ssh_key` to raw key material via `SshKeys.Get` using `spec.ssh_key.id` and sets CRD `spec.SSHKey`.
 - ComputeInstance controller sets `status.state` to failed with condition `reason=SshKeyNotFound` when `SshKeys.Get` returns `NotFound`.
@@ -805,7 +799,6 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 - ComputeInstance controller treats unknown/unexpected gRPC error codes as transient (logs warning, does not change status).
 - ComputeInstance controller logs warning and does not change status for transient gRPC errors (`Unavailable`, `DeadlineExceeded`, `PermissionDenied`, `Unimplemented`) — recovery via next event or 1-hour periodic sync.
 - ComputeInstance controller does not change status and does not retry on `Canceled` (context cancellation).
-- ComputeInstance controller returns blocking error when `EnableSshKeyReference` feature gate is disabled and `spec.ssh_key` is set.
 - `GenericMapper` correctly maps SshKey and SshKeyReference between public and private types.
 - OPA policy allows SshKey methods for authenticated clients (`grpc_authz_interceptor_test.go`).
 
@@ -839,8 +832,8 @@ Expected stages: Dev Preview -> Tech Preview -> GA.
 | **Transient controller errors** | Transient SSH key resolution errors preserve instance status and re-reconcile on next sync | Unit tests: `SshKeyResolutionError{Permanent: false}` → status unchanged, no CRD write; instance re-reconciled on next periodic sync (1-hour) or watch event |
 
 **Tech Preview exit criteria** (additional, in production environment):
-- Feature gate enabled in at least one staging/production environment for ≥2 weeks without regression.
-- No persistent `PermissionDenied` or `Unimplemented` errors after gate enablement (monitored via existing Prometheus metrics).
+- Deployed in at least one staging/production environment for ≥2 weeks without regression.
+- No persistent `PermissionDenied` or `Unimplemented` errors after deployment (monitored via existing Prometheus metrics).
 - CLI (`osac create sshkey`, `osac create computeinstance --ssh-key`) validated by ≥2 internal users.
 - UI SSH key management pages functional and reviewed by UX.
 
@@ -854,8 +847,6 @@ Expected stages: Dev Preview -> Tech Preview -> GA.
 
 The `spec.ssh_public_key` field is removed. OSAC is pre-GA with no production workloads, so no migration path is needed — the field is simply removed with `reserved 7; reserved "ssh_public_key";` for proto schema hygiene. The `SshKey` resource and `ComputeInstanceSpec.ssh_key` field are the only SSH key mechanism.
 
-**Rollout** is controlled by the `EnableSshKeyReference` feature gate (see Version Skew Strategy below). This gate decouples the binary rollout from feature activation, preventing silent SSH key loss during mixed-version windows.
-
 **Downgrade is blocked while active SSH key references exist.** The pre-downgrade validation rejects the downgrade if any ComputeInstance references an SSH key — the old controller cannot reconcile them, and silently dropping the reference would create VMs without the expected SSH key.
 
 **Pre-downgrade validation** (must pass before proceeding):
@@ -867,76 +858,39 @@ If this returns any results, **the downgrade is blocked**. The operator must res
 **Destructive escape hatch** (not a normal rollback path): If the downgrade is urgent and active references exist, the operator must delete the affected ComputeInstances through the API and recreate them without an SSH key reference (SSH keys would need to be managed out-of-band until the feature is re-enabled). Do **not** clear `spec.ssh_key` via direct DB update — this bypasses audit logging, validation, and can leave inconsistent state. This is a destructive procedure that causes VM downtime; it is not a seamless rollback.
 
 **Downgrade procedure** (after pre-downgrade validation passes):
-1. Disable the `EnableSshKeyReference` feature gate (new ComputeInstances can no longer reference SSH keys).
-2. Revert the controller first (so it stops trying to resolve `ssh_key` references).
-3. Revert the fulfillment-service binary.
-4. Drop the `ssh_keys` table and remove the database triggers via a down migration.
+1. Revert the controller first (so it stops trying to resolve `ssh_key` references).
+2. Revert the fulfillment-service binary.
+3. Drop the `ssh_keys` table and remove the database triggers via a down migration.
 
 ## Version Skew Strategy
 
 The cross-component dependency is the fulfillment-service controller resolving `spec.ssh_key` via `SshKeys.Get` (using `spec.ssh_key.id`) and passing the raw key to the osac-operator CRD as `spec.SSHKey`. The osac-operator itself is unchanged — it receives a raw SSH key string as before.
 
-A **staged feature gate** (`EnableSshKeyReference`) prevents silent SSH key loss during mixed-version rollout. Without this gate, a newer fulfillment-service API could accept `spec.ssh_key` references that an older controller silently ignores (protobuf unknown field handling), creating VMs without the expected SSH key — a silent degradation the user cannot detect.
+OSAC is pre-GA with no production workloads, so no feature gate is needed. The SshKey resource and the `ComputeInstanceSpec.ssh_key` reference are deployed together as part of a standard Helm release. All three fulfillment-service Deployments (`fulfillment-grpc-server`, `fulfillment-controller`, `fulfillment-rest-gateway`) are updated atomically from the same Helm chart, so mixed-version windows are limited to the rolling-update window of each Deployment.
 
-### Feature Gate Implementation
+### Deployment Verification
 
-The feature gate follows the existing service-tier flag pattern in `flags.go` (`--enable-caas`, `--enable-vmaas`, etc.) but controls a single feature rather than a service tier:
+After deploying the new Helm release, verify that all pods are running the new version:
 
-| Aspect | Value |
-|---|---|
-| **Helm chart value** | `features.enableSshKeyReference` (boolean, default `false`) |
-| **Command-line flag** | `--enable-ssh-key-reference` — registered in **two** binaries: `services/flags.go` for the gRPC server (alongside `--enable-caas`, `--enable-vmaas`) and `start/controller/start_controller_cmd.go` for the controller (which has its own cobra flag registration at line 86). The flag value is threaded to the reconciler function via the `FunctionBuilder` (e.g., `.SetEnableSshKeyReference(flags.EnableSshKeyReference)`) |
-| **Default** | `false` — SSH key references are disabled until explicitly enabled |
-| **Consuming deployments** | `fulfillment-grpc-server` (admission validation in the gRPC interceptor chain) and `fulfillment-controller` (controller resolution in `addExplicitFields`). The `fulfillment-rest-gateway` does not need the flag — it proxies gRPC calls to the grpc-server, which enforces the gate. |
+1. **Deployment rollout status** (all three Deployments):
+   ```
+   kubectl rollout status deployment/fulfillment-controller -n <namespace>
+   kubectl rollout status deployment/fulfillment-grpc-server -n <namespace>
+   kubectl rollout status deployment/fulfillment-rest-gateway -n <namespace>
+   ```
+   All three must report all replicas updated and available.
+2. **Pod image digest** (verify identical image across all pods using the actual Helm chart `app` labels):
+   ```
+   kubectl get pods -l app=fulfillment-controller \
+     -o jsonpath='{.items[*].status.containerStatuses[0].imageID}' -n <namespace>
+   kubectl get pods -l app=fulfillment-grpc-server \
+     -o jsonpath='{.items[*].status.containerStatuses[0].imageID}' -n <namespace>
+   kubectl get pods -l app=fulfillment-rest-gateway \
+     -o jsonpath='{.items[*].status.containerStatuses[0].imageID}' -n <namespace>
+   ```
+   All image digests must match the expected release image.
 
-The Helm chart templates for `fulfillment-grpc-server` and `fulfillment-controller` pass the flag via container args:
-
-```yaml
-# In charts/service/templates/grpc-server/deployment.yaml and controller/deployment.yaml:
-args:
-  - --enable-ssh-key-reference={{ .Values.features.enableSshKeyReference | default false }}
-```
-
-### Staged Rollout Procedure
-
-**Stage 1 — Deploy with gate DISABLED** (default):
-- Deploy the new fulfillment-service binary (API server + controller) with `--enable-ssh-key-reference=false` (the default).
-- SshKey CRUD is fully operational — tenants can register, list, get, and delete SSH keys.
-- The `PrivateComputeInstancesServer.Create` admission logic **rejects** any `ComputeInstance` request that sets `spec.ssh_key` with `InvalidArgument: SSH key references are not yet enabled; the EnableSshKeyReference feature gate is disabled`. The gate controls whether the API server accepts SSH key references on ComputeInstance — when disabled, the interceptor is effectively bypassed because the admission check runs before it.
-- The controller's `addExplicitFields` path for `spec.ssh_key` is also gated — if encountered (e.g., direct DB insertion bypassing admission), the controller returns a **blocking error**: it logs a warning and leaves the instance in its current state without writing the CRD. The instance will be re-reconciled on the next event or periodic sync; once the gate is enabled, the controller resolves references normally. This prevents silent SSH key loss — skipping resolution would write the CRD without an SSH key, creating a VM the user cannot access.
-
-**Stage 2 — Verify full rollout**:
-- The operator must verify that **all** API server and controller pods are running the new version before enabling the gate. The fulfillment-service Helm chart deploys three separate Deployments; all three must be verified:
-  1. **Deployment rollout status** (all three Deployments):
-     ```
-     kubectl rollout status deployment/fulfillment-controller -n <namespace>
-     kubectl rollout status deployment/fulfillment-grpc-server -n <namespace>
-     kubectl rollout status deployment/fulfillment-rest-gateway -n <namespace>
-     ```
-     All three must report all replicas updated and available.
-  2. **Pod image digest** (verify identical image across all pods using the actual Helm chart `app` labels):
-     ```
-     kubectl get pods -l app=fulfillment-controller \
-       -o jsonpath='{.items[*].status.containerStatuses[0].imageID}' -n <namespace>
-     kubectl get pods -l app=fulfillment-grpc-server \
-       -o jsonpath='{.items[*].status.containerStatuses[0].imageID}' -n <namespace>
-     kubectl get pods -l app=fulfillment-rest-gateway \
-       -o jsonpath='{.items[*].status.containerStatuses[0].imageID}' -n <namespace>
-     ```
-     All image digests must match the expected release image.
-- Both signals should be checked: rollout status confirms all replicas are updated, image digest confirms no stale cached images.
-
-**Stage 3 — Enable the gate**:
-- Update the Helm values to set `features.enableSshKeyReference: true` and redeploy. This passes `--enable-ssh-key-reference=true` to the `fulfillment-grpc-server` and `fulfillment-controller` deployments.
-- `ComputeInstance.Create` now accepts `spec.ssh_key` references. The two-layer validation activates: the `ReferenceValidator` interceptor validates user-provided references and auto-populates `id` from `name`, and the DB trigger provides defense-in-depth concurrency safety.
-- The controller resolves `spec.ssh_key` via `SshKeys.Get` using `spec.ssh_key.id` as described in the controller update section.
-
-### Why a Feature Gate Instead of Rollout Ordering
-
-Simple rollout ordering ("deploy API before controller") is insufficient because:
-1. Rolling deployments create a **mixed-version window** where old and new pods coexist — the old controller pod may process a ComputeInstance with `spec.ssh_key` before it is replaced.
-2. The old controller silently ignores `ssh_key` (protobuf unknown field handling), creating a VM without an SSH key. The user has no indication the key was lost.
-3. The feature gate eliminates this window entirely: no `ssh_key` references can enter the system until **all** pods can handle them.
+Both signals should be checked: rollout status confirms all replicas are updated, image digest confirms no stale cached images.
 
 ## Support Procedures
 
@@ -952,7 +906,7 @@ Simple rollout ordering ("deploy API before controller") is insufficient because
   - **Diagnosis**: The controller could not resolve `spec.ssh_key.id` via `SshKeys.Get`. The SshKey was deleted outside the trigger protection (e.g., direct DB manipulation) or was never created due to a race. This is an invariant violation — the database triggers should prevent this state under normal operation.
   - **Resolution**: Delete the affected ComputeInstance and recreate it with a valid SSH key reference. Note: the controller resolves by `id`, not `name`. Re-registering an SSH key with the same name produces a **new ID** — existing ComputeInstances still reference the old ID and will continue to fail with `SshKeyNotFound` (correct behavior, since the old key material is gone). If many ComputeInstances are affected, treat this as an incident requiring controlled repair (identify the root cause of the invariant violation before recreating instances).
 
-- **Disabling the feature**: Set `features.enableSshKeyReference: false` in Helm values and redeploy. New ComputeInstances can no longer set `spec.ssh_key` (admission rejects it). For existing ComputeInstances that have `spec.ssh_key` set but have not yet been fully reconciled, the controller returns a **blocking error** and leaves the instance in its current state — it does **not** skip resolution or write the CRD without an SSH key (consistent with Stage 1 behavior). Instances that were fully reconciled before the gate was disabled continue to function — their CRD already has `spec.SSHKey` set and the controller does not re-resolve on every reconciliation. SshKey CRUD (register, list, delete) remains operational so tenants can manage their keys in preparation for re-enablement. For a full removal, additionally remove the `SshKeys` gRPC service registration from `register_servers.go` and the OPA allowlist entries from `authz.rego`.
+- **Removing the feature**: To fully remove SSH key support, follow the downgrade procedure in the Upgrade / Downgrade Strategy section. This requires that no active ComputeInstances reference SSH keys (pre-downgrade validation must pass). Remove the `SshKeys` gRPC service registration from `register_servers.go`, the OPA allowlist entries from `authz.rego`, and run the database down migrations to drop the `ssh_keys` table and associated triggers.
 
 ## Infrastructure Needed
 
@@ -975,4 +929,5 @@ Revision 9: design:revise — resolved 2 team decisions (C1 and C2 from Review 7
 Revision 10: design:revise — final revision incorporating 5 changes from rev9 review and user scoping decision: (1) Removed all catalog/template SSH key default support — the unified SSH key normalizer, `SshKeyReferenceFieldPolicy`, catalog field policy references, catalog normalization path, global catalog restriction logic, and related test cases were all removed. SSH key references are provided exclusively through the ComputeInstance create request; catalog integration is explicitly out of scope for this milestone. (2) Kept `ssh_public_key` mutable — only `ssh_key` (the new typed reference) is immutable; removed `ssh_public_key` from immutability enforcement and documented the asymmetry (backward compatibility for the existing field; immutability for the new field because changing a reference without re-provisioning creates a VM whose injected key does not match the spec). (3) Fixed reconciler error ownership — the ComputeInstance reconciler now returns `nil` after handling SSH key resolution errors (both permanent and transient), preventing the generic reconciler from overwriting the typed failure reason; eliminated `errSshKeyTransient` and `errSshKeyFeatureDisabled` sentinel types in favor of returning `nil` directly. (4) Reframed downgrade as blocked while active SSH key references exist — pre-downgrade validation rejects the downgrade; the delete-and-recreate procedure is a destructive escape hatch, not a normal rollback path. (5) Simplified validation model from three-layer to two-layer (interceptor + DB trigger) — no normalizer layer needed since catalog-injected refs are out of scope.
 Revision 11: design:revise — per ygalblum review feedback: (1) Removed `ssh_public_key` entirely — `SshKeyReference` is now the only way to provide an SSH key on a ComputeInstance, consistent with AWS/GCP/GitHub register-first model. Removed all mutual exclusivity logic, the "Immutability asymmetry" section, dual-field test cases, and `--ssh-public-key` CLI flag. (2) Added Migration Path section specifying proto field reservation, automated migration job, API client impact, and backward compatibility timeline. (3) Controller always resolves `spec.ssh_key` — no fallback to raw `ssh_public_key`; `HasSshPublicKey()` check replaced by `ssh_key` reference check. (4) Updated test plan with migration and reserved-field tests. (5) Added ComputeInstance CRD support scope to Goals (addresses ygalblum's line 39 comment about missing ComputeInstance scope). (6) Updated upgrade/downgrade strategy to reflect breaking change.
 Revision 12: design:revise — per ygalblum review feedback: OSAC is pre-GA with no production workloads, so removed the entire Migration Path section (automated migration job, backward-compat timeline, old-client cutover). Simplified breaking change description. Removed migration-related test cases. Retained proto field reservation (`reserved 7; reserved "ssh_public_key"`) for schema hygiene. Fixed `// reserved` comments to be executable `reserved` directives in the proto snippet (coderabbitai feedback).
+Revision 13: design:revise — removed the `EnableSshKeyReference` feature gate entirely. OSAC is pre-GA with no production workloads, so the staged rollout mechanism is unnecessary — all fulfillment-service Deployments are updated atomically from the same Helm chart. Removed: Feature Gate Implementation section, Staged Rollout Procedure section, Why a Feature Gate section, gate-disabled code paths in the reconciler, gate-related test cases, gate references in server registration/graduation criteria/upgrade-downgrade/support procedures. Simplified Version Skew Strategy to standard deployment verification. Reclassified `PermissionDenied` and `Unimplemented` gRPC errors from "rollout-transient" to plain "transient". Simplified downgrade procedure from 4 steps to 3 (no gate to disable).
 Inputs: [prd.md](prd.md), [clarifications.md](clarifications.md), [design-context.md](design-context.md) (ingest), [research-findings.md](research-findings.md) (research)
