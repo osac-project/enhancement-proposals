@@ -61,8 +61,10 @@ itself.
     intermediate and browser caching of sensitive content
 - Validation at creation time when the DiskImage guest OS family is Windows,
   regardless of delivery method:
-  - Content must be well-formed XML; XML containing DTD declarations or
-    external entity references is rejected
+  - Content must be well-formed XML. The parser MUST be configured before
+    parsing to disable external entity expansion, prohibit network and
+    local-file access, and reject DTD declarations — ensuring untrusted XML
+    cannot trigger external resource resolution during parsing
   - When `user_data_secret` is used, the platform resolves the secret and
     validates the `userdata` entry the same way it validates inline
     `user_data`
