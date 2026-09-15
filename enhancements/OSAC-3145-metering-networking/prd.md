@@ -25,6 +25,9 @@ Without metering for the billable networking resources, Cloud Provider Admins ha
 
 ## 2. In Scope
 
+The networking resources covered by this PRD use IPv4 addresses only. IPv6 and
+dual-stack networking are not supported.
+
 ### 2.1 Services
 
 Metered networking resources are service-agnostic — an ExternalIP or NATGateway is metered regardless of which service (VMaaS, CaaS, BMaaS) consumes it.
@@ -79,7 +82,8 @@ VirtualNetwork, Subnet, and SecurityGroup are available on all three services bu
 ### 5.1 Networking Resource Allocation Metering
 
 - **CAP-1:** Billable networking resources (ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion.
-- **CAP-2:** Networking usage is queryable by resource type, IP family (IPv4/IPv6 for ExternalIP), deployment, tenant, and project.
+- **CAP-2:** Networking usage is queryable by resource type, deployment, tenant,
+  and project. ExternalIP usage is IPv4-only.
 
 ### 5.2 Unattached IP Metering
 
@@ -93,7 +97,7 @@ VirtualNetwork, Subnet, and SecurityGroup are available on all three services bu
 
 This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
 
-Each metered networking resource type has a flat allocation meter. Usage is queryable by resource type, deployment, tenant, and project; ExternalIPs additionally use IP family and attachment status (see CAP-2 and CAP-3).
+Each metered networking resource type has a flat allocation meter. Usage is queryable by resource type, deployment, tenant, and project; ExternalIPs additionally use attachment status (see CAP-2 and CAP-3).
 
 | Resource | Meter | Unit | Example (30 days) |
 |----------|-------|------|-------------------|
@@ -105,7 +109,7 @@ Each metered networking resource type has a flat allocation meter. Usage is quer
 - [ ] Each billable networking resource (ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
 - [ ] An allocated-but-unattached ExternalIP generates usage data
 - [ ] VirtualNetwork, Subnet, and SecurityGroup generate no metering usage data
-- [ ] Networking usage can be broken down by resource type, deployment, tenant, and project; ExternalIPs additionally expose IP family and attachment status
+- [ ] Networking usage can be broken down by resource type, deployment, tenant, and project; ExternalIPs additionally expose attachment status and are IPv4-only
 - [ ] ExternalIPs attached to a parent resource (ComputeInstances/Clusters/BareMetalInstances) can be attributed to the parent in a unified usage view
 - [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
 - [ ] Networking usage data maintains per-second granularity, deduplication, and retention consistent with Part 1 metering

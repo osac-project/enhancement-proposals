@@ -59,8 +59,8 @@ managed-switch infrastructure, limiting where the platform can run.
   [Clarify: D4]
 - DNS record creation is not part of this backend — DNS is a service-integration
   concern handled outside the networking API. [Clarify: D10]
-- IPv6 and dual-stack networking are not delivered in this milestone; the backend
-  supports IPv4, matching the Netris baseline. [Clarify: D11]
+- IPv6 and dual-stack networking are not supported; the backend supports IPv4.
+  [Clarify: D11]
 - Per-service integration and end-to-end validation for BMaaS, CaaS, and VMaaS are
   tracked as separate follow-up features (OSAC-1562, OSAC-1611, OSAC-3665), not
   delivered here. [Clarify: D1, D2]
@@ -203,7 +203,7 @@ managed-switch infrastructure, limiting where the platform can run.
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** The agentless VLAN backend provides networking for the IPv4 address
-  family. IPv6 and dual-stack are not supported in this milestone. [Clarify: D11]
+  family. IPv6 and dual-stack are not supported. [Clarify: D11]
 - **NFR-2:** Tenant-observable networking behavior — reachability, isolation,
   external access — is equivalent between the agentless VLAN and Netris backends;
   changing the deployment's backend does not change the tenant-facing API
@@ -218,6 +218,12 @@ managed-switch infrastructure, limiting where the platform can run.
 
 ## 5. Acceptance Criteria
 
+Agentless VLAN inherits the Unified Networking deployment baseline: unmatched
+traffic is permitted by the hard-coded `permit` baseline unless a more-
+specific tenant SecurityGroup rule matches. A matching tenant `deny` rule
+blocks the traffic. The criteria below use “not permitted” to mean denied by
+that effective rule evaluation, not merely absent from the tenant rule list.
+
 - [ ] With the agentless VLAN backend configured, a tenant creates a
   VirtualNetwork, Subnet, and SecurityGroup through the API and they reach a ready
   state.
@@ -225,13 +231,15 @@ managed-switch infrastructure, limiting where the platform can run.
   automatically receives an IP on that subnet, visible in its status.
 - [ ] A tenant attaches an ExternalIP to a machine; inbound traffic permitted by
   the machine's SecurityGroup rules reaches the machine.
-- [ ] Inbound traffic to a machine's ExternalIP that is not permitted by any
-  SecurityGroup rule is blocked.
+- [ ] Inbound traffic to a machine's ExternalIP that is denied by a matching,
+  more-specific SecurityGroup rule is blocked; traffic with no more-specific
+  deny remains permitted by the deployment baseline.
 - [ ] A tenant creates a NATGateway; a subnet machine's permitted outbound traffic
   reaches an external endpoint, which observes the NATGateway's external IP as the
   source address.
-- [ ] Outbound traffic not permitted by any SecurityGroup rule cannot leave through
-  the NATGateway.
+- [ ] Outbound traffic denied by a matching, more-specific SecurityGroup rule
+  cannot leave through the NATGateway; traffic with no more-specific deny
+  remains permitted by the deployment baseline.
 - [ ] A tenant creates a VirtualNetwork with two subnets: machines in the same
   subnet share a broadcast domain, machines in different subnets of that network
   can reach each other when permitted by SecurityGroup rules, and machines in a
@@ -242,8 +250,9 @@ managed-switch infrastructure, limiting where the platform can run.
   private subnet address remains directly unreachable.
 - [ ] Cross-subnet traffic within a VirtualNetwork that is **permitted** by a
   SecurityGroup rule succeeds.
-- [ ] Cross-subnet traffic within a VirtualNetwork that is **not permitted** by
-  any SecurityGroup rule is blocked.
+- [ ] Cross-subnet traffic within a VirtualNetwork that is denied by a
+  matching, more-specific SecurityGroup rule is blocked; traffic with no
+  more-specific deny remains permitted by the deployment baseline.
 - [ ] A bare-metal server provisions networking end-to-end through the agentless
   VLAN backend using the same networking API as with Netris (the reference
   validation path this milestone).

@@ -29,8 +29,8 @@ superseded-by:
 
 - **BareMetalInstance** provisioning (separate PRD)
 - **Template parameters**
-- **Multi-NIC** — wizard submits one `network_attachments` entry (one VN, one subnet, security groups); no add/remove NIC rows
-- **Cluster template `node_sets` defaults** — the wizard does **not** load, display, or apply `ClusterTemplate.spec.node_sets` (`host_type` or `size` defaults)
+- **VM networking** — wizard submits one list-shaped `network_attachments` entry carrying a `ComputeNetworkAttachment` with one Subnet; the effective NetworkACL is inherited from that Subnet and there are no add/remove NIC rows
+- **Tenant-defined cluster hardware** — the wizard does not create, remove, or replace node sets or their `baremetal_instance_type`; the resolved ClusterTemplate owns that structure. The wizard may collect node-set sizes according to Catalog Item policy.
 - **`spec.additional_disks`** — wizard scope undecided ([§5](#5-open-decisions)); default: boot disk only
 
 ## 2. Requirements
@@ -54,17 +54,22 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 | Configuration   | `spec.user_data`          | User data (cloud-init / Ignition)        | Text (multiline)                       | Optional |
 | Configuration   | `spec.boot_disk.size_gib` | Boot disk size (GiB)                     | Number                                 | ?        |
 | Configuration   | `spec.run_strategy`       | Run strategy                             | Select (`Always`, `Halted`)            | Required |
-| Networking      | `spec.network_attachments` | Virtual network, subnet, security groups | Pickers ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
+| Networking      | `spec.network_attachments` | Subnet; effective NetworkACL inherited from the Subnet | Picker ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
 
 **Notes:**
 
 - **`spec.user_data`**: plain multiline string (cloud-init or Ignition); omit from payload when empty. Stored as Secret → KubeVirt `cloudInitNoCloud`.
 - **`spec.image`**: wizard collects `source_ref` only; payload always sets `spec.image.source_type` to **`registry`**. Future: ComputeImage list picker ([OSAC-979](https://redhat.atlassian.net/browse/OSAC-979)).
 - **`spec.is_windows`**: Configuration-step **OS family** radio — **Linux** → `is_windows: false`; **Windows** → `is_windows: true`. Maps to the optional boolean added in [fulfillment-service PR #734](https://github.com/osac-project/fulfillment-service/pull/734) ([OSAC-13](https://redhat.atlassian.net/browse/OSAC-13)); the reconciler maps this to CR `guestOSFamily` for AAP provisioning. Required on the wizard; default selection **Linux** when no catalog `default` ([§2.1.2](#212-catalog-overlay-and-defaults)). The wizard always sends an explicit value.
-- **`spec.instance_type`**: Configuration-step **instance type** picker — tenant selects a named compute bundle (cores + memory) from [§2.1.5](#215-vm-instance-type-picker-api). Payload sends **`spec.instance_type` only** (instance type name); the wizard does **not** collect or send `spec.cores` or `spec.memory_gib` ([VM Instance Types EP](/enhancements/OSAC-46-vm-instance-types), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735) / OSAC-1217). The API validates the name and state; the reconciler resolves cores/memory on the CR. Catalog `field_definitions` for this path are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)).
+- **`spec.instance_type`**: Configuration-step **instance type** picker — tenant selects a named compute bundle (cores + memory) from [§2.1.5](#215-vm-instance-type-picker-api). Payload sends **`spec.instance_type` only** as a typed reference containing the selected name; the wizard does **not** collect or send `spec.cores` or `spec.memory_gib` ([VM Instance Types EP](/enhancements/OSAC-46-vm-instance-types), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735) / OSAC-1217). The API validates the name and state; the reconciler resolves cores/memory on the CR. Catalog `field_definitions` for this path are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)).
 - **Disks**: wizard collects `spec.boot_disk.size_gib` only unless [§5](#5-open-decisions) chooses `spec.additional_disks`.
 - **`spec.ssh_key`**: optional on the General step — prefill from catalog `default` when defined ([§2.1.2](#212-catalog-overlay-and-defaults)); tenant may edit when `editable: true` or clear the field. Omit from the client create payload only when the field is blank after catalog selection or user edits. Include the parsed plain string in the payload when the wizard holds a value (prefilled default or user entry).
 - **Networking**: pickers assemble a single `spec.network_attachments` entry; raw JSON not shown. Catalog `field_definitions` for this path (including nested paths) are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
+- The direct VM API permits an omitted or empty attachment list and applies the
+  normal tenant-default resolution. The v1 wizard intentionally requires a
+  picker selection and always emits one entry; it does not expose a separate
+  “use defaults” choice. This UI requirement does not change the API's zero-or-
+  one attachment contract.
 
 **Cluster**
 
@@ -75,13 +80,23 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 | General         | `spec.ssh_public_key`       | SSH public key                                                | Text (multiline)                     | Optional |
 | General         | `spec.pull_secret`          | Pull secret                                                   | Text (multiline, masked)             | Required |
 | Configuration   | `spec.release_image`        | OpenShift version (release image)                             | Text                                 | Required |
-| Configuration   | `spec.node_sets`            | Worker node sets                                              | Editable table (add/remove rows) | Required |
+| Configuration   | `spec.node_sets`            | Template-defined worker node sets                             | Template-backed table (size only) | Required |
 | Networking      | `spec.network.pod_cidr`     | Pod network CIDR                                              | Text                                 | ?        |
 | Networking      | `spec.network.service_cidr` | Service network CIDR                                          | Text                                 | ?        |
 
 **Notes:**
 
-- **`spec.node_sets`**: tenant-managed node sets on the Configuration step. The wizard **does not** read `ClusterTemplate.spec.node_sets`. Tenants **add** and **remove** rows. Each row collects only **`host_type`** (picker — [§2.1.6](#216-cluster-host-type-picker-api)) and **`size`** (number of nodes, must be > 0) per `ClusterNodeSet` — no separate name or map-key field in the UI. At least one row is required before leaving Configuration. **Each `host_type` may appear on at most one row** — duplicate host types are blocked by validation. The create payload is `spec.node_sets` as a map keyed by **host type id** (the map key equals `host_type` on each entry); each value is `{ host_type, size }` only. **v1:** catalog item `field_definitions` defaults for `spec.node_sets` (including `host_type` and `size`) **do not apply** — the node-sets table starts empty on catalog selection; tenants compose all rows manually ([§2.1.2](#212-catalog-overlay-and-defaults)).
+- **`spec.node_sets`**: after Catalog Item and Template resolution, the wizard loads `ClusterTemplate.spec.node_sets` with `ClusterTemplates.Get`. The template owns the node-set map keys and each node set's typed `baremetal_instance_type` reference; the wizard displays those values read-only. The Catalog Item may govern only the `size` value for an existing template node-set, using the policy defined in Catalog Items v2. The tenant may edit a size only when the effective policy permits it; the tenant cannot add/remove node sets or replace their hardware type. The create payload preserves the template node-set names and sends each `baremetal_instance_type` as a typed reference object, not a raw ID string.
+
+- **Cluster tenant networking:** the wizard does not expose the CaaS
+  `spec.network_attachment` or `spec.auto_external_ip_attachment` controls in
+  v1. It omits both fields from the create payload. The server applies the
+  normal Catalog/Template/default resolution for `network_attachment` (so the
+  tenant defaults are used when no higher-precedence value exists), and the
+  normal omitted-value behavior for `auto_external_ip_attachment` (normally
+  `false`). Tenants that need to select an explicit CaaS Subnet,
+  manage NetworkACLs, or request automatic external access use the direct
+  API/CLI.
 
 **Create payload:** Only paths in [§2.1.1](#211-static-wizard-fields) plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`; VM sends `spec.instance_type` and `spec.is_windows` explicitly, not `spec.cores` or `spec.memory_gib`.
 
@@ -89,7 +104,15 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 
 For each static **non-picker** field, match `field_definitions` by `path` (spec-relative paths such as `ssh_key`, `boot_disk.size_gib`, or `spec.image.source_ref` — fulfillment accepts both forms). **General basics** paths (`spec.ssh_key`, `spec.ssh_public_key`, `spec.pull_secret`) and **Configuration** / **Networking** non-picker paths participate in overlay. Non-matching paths are **ignored** (not on Review, not in payload).
 
-**Picker-backed fields (v1):** `spec.instance_type`, `spec.network_attachments` (including nested paths such as `spec.network_attachments.subnet`), and cluster `spec.node_sets` **host type** (per-row dropdown) load options from list APIs ([§2.1.5](#215-vm-instance-type-picker-api), [§2.1.4](#214-vm-networking-picker-apis), [§2.1.6](#216-cluster-host-type-picker-api)). Matching catalog `field_definitions` for these paths are **ignored** — wizard labels, editability, validation, and **defaults** come from wizard defaults and list-API behavior only. **Cluster `spec.node_sets` (v1):** no catalog item defaults apply — the wizard does not prefill node set rows from `field_definitions` on catalog selection; the table starts empty. Catalog overlay on picker fields is **deferred** to a later release ([§5](#5-open-decisions)).
+**Picker-backed fields (v1):** `spec.instance_type` and
+`spec.network_attachments` (including nested paths such as
+`spec.network_attachments[0].subnet`) load options from list APIs
+([§2.1.5](#215-vm-instance-type-picker-api),
+[§2.1.4](#214-vm-networking-picker-apis)). Cluster `spec.node_sets` is
+template-backed: `ClusterTemplates.Get` supplies the map and typed
+`baremetal_instance_type` references, while Catalog Item policy governs only
+the `size` values. There is no per-row BareMetalInstanceType picker and no
+tenant composition of node sets.
 
 | Aspect     | Matching entry (non-picker fields, including General basics)                | No matching entry     |
 | ---------- | --------------------------------------------------------------------------- | --------------------- |
@@ -110,7 +133,7 @@ Non-editable fields (`editable: false`) are **read-only** on the wizard step (Co
 | `spec.run_strategy` | Pre-select `Always` when no catalog `default`                                                                            |
 | OS family (VM)      | Pre-select **Linux** (`is_windows: false`) when no catalog `default`                                                     |
 | Instance type (VM)  | **Auto-select** when `InstanceTypes.List` returns exactly one option |
-| Networking pickers  | **Auto-select** when a list returns exactly one option (VN → subnet → SGs) |
+| Networking pickers  | **Auto-select** when a list returns exactly one option (VN → subnet) |
 
 #### 2.1.3 Open required fields
 
@@ -124,36 +147,37 @@ The wizard loads picker options from the **public** fulfillment APIs (`osac.publ
 | ------ | ---- | ---- | ------- |
 | Virtual network | `VirtualNetworks.List` | `GET /api/fulfillment/v1/virtual_networks` | Tenant-visible virtual networks |
 | Subnet | `Subnets.List` | `GET /api/fulfillment/v1/subnets` | Subnets in the selected virtual network |
-| Security groups | `SecurityGroups.List` | `GET /api/fulfillment/v1/security_groups` | Security groups in the selected virtual network |
+| NetworkACL handling | No picker API | None | The effective NetworkACL is inherited from the selected Subnet; the wizard does not select or send an ACL reference |
 
 **List request parameters** (all three): optional query `filter` (CEL), `limit`, `offset`, `order`. Tenant scope is implicit from the authenticated session.
 
-**Subnet and security group filters** (after virtual network selection):
+**Subnet filter** (after virtual network selection):
 
 ```text
-this.spec.virtual_network == "<vn-id>"
+this.spec.virtual_network.name == "<vn-name>"
 ```
 
 **Picker display and values:**
 
 | Picker | Option label | Selected value |
 | ------ | ------------ | -------------- |
-| Virtual network | `metadata.name` (fallback `id`) | VirtualNetwork `id` — drives subnet/SG list filters only |
-| Subnet | `metadata.name` (fallback `id`) | Subnet `id` |
-| Security group | `metadata.name` (fallback `id`) | SecurityGroup `id` (multi-select) |
+| Virtual network | `metadata.name` | VirtualNetwork name — drives the Subnet list filter only |
+| Subnet | `metadata.name` | `SubnetLocalReference` containing `name` |
 
 **Create payload assembly** — one `spec.network_attachments` element:
 
 ```json
 {
-  "subnet": "<subnet-id>",
-  "security_groups": ["<security-group-id>"]
+  "subnet": { "name": "<subnet-name>" }
 }
 ```
 
-Per `NetworkAttachment` in `compute_instance_type.proto`. The wizard does not send virtual network ID in `network_attachments`; placement is implied by the subnet (security groups must belong to the same virtual network).
+Per `ComputeNetworkAttachment` in `compute_instance_type.proto` and the
+typed-reference contract in OSAC-1330. The wizard does not send virtual
+network ID in `network_attachments`; placement is implied by the
+Subnet reference; the selected Subnet determines the effective NetworkACL.
 
-**Load order:** virtual network list → on selection, load filtered subnet and security group lists → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
+**Load order:** virtual network list → on selection, load the filtered Subnet list → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
 ### 2.1.5 VM instance type picker API
 
@@ -169,58 +193,69 @@ The Configuration step loads instance type options from the **public** fulfillme
 
 | Picker | Option label | Selected value |
 | ------ | ------------ | -------------- |
-| Instance type | `metadata.name` plus `spec.cores` and `spec.memory_gib` (e.g. `standard-4-16 — 4 vCPU, 16 GiB`); indicate **DEPRECATED** state in the label when `spec.state` is DEPRECATED | Instance type name (`metadata.name` / `id`) → `spec.instance_type` on create |
+| Instance type | `metadata.name` plus `spec.cores` and `spec.memory_gib` (e.g. `standard-4-16 — 4 vCPU, 16 GiB`); indicate **DEPRECATED** state in the label when `spec.state` is DEPRECATED | Instance type name (`metadata.name`) → typed `spec.instance_type` reference on create |
 
-**Create payload:** send only the instance type **name** string:
+**Create payload:** send only the typed instance-type reference, with the
+selected **name**:
 
 ```json
 {
-  "instance_type": "standard-4-16"
+  "instance_type": { "name": "standard-4-16" }
 }
 ```
 
-Do **not** send `cores` or `memory_gib` — they are mutually exclusive with `instance_type` at the API ([PR #735](https://github.com/osac-project/fulfillment-service/pull/735)).
+The reference must contain `name`; identifier-only references are rejected by
+OSAC-1330. Do **not** send `cores` or `memory_gib` — they are mutually
+exclusive with `instance_type` at the API ([PR #735](https://github.com/osac-project/fulfillment-service/pull/735)).
 
 **Deprecation handling:** if the selected type is DEPRECATED, create may succeed with **warnings** in the response; the wizard surfaces those warnings after submit (non-blocking). OBSOLETE types are not offered in the picker.
 
 **Load order:** load instance type list when entering Configuration → auto-select when the list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
-### 2.1.6 Cluster host type picker API
+### 2.1.6 Cluster template node-set API
 
-The Configuration step loads host type options from the **public** fulfillment API (`osac.public.v1`). The UI uses the generated OpenAPI client (REST); gRPC equivalent listed for reference.
+After the Catalog Item resolves its ClusterTemplate, the Configuration step
+loads that template from the **public** fulfillment API (`osac.public.v1`).
+The UI uses the generated OpenAPI client (REST); the gRPC equivalent is listed
+for reference.
 
-| Picker | gRPC | REST | Purpose |
+| Request | gRPC | REST | Purpose |
 | ------ | ---- | ---- | ------- |
-| Host type | `HostTypes.List` | `GET /api/fulfillment/v1/host_types` | Tenant-visible host types for node set selection |
+| Cluster template | `ClusterTemplates.Get` | `GET /api/fulfillment/v1/cluster_templates/{name}` | Resolve the authoritative node-set names, sizes, and typed BareMetalInstanceType references |
 
-**List request parameters:** optional query `filter` (CEL), `limit`, `offset`, `order`. Tenant scope is implicit from the authenticated session.
+The response's `spec.node_sets` map is the complete set of rows shown by the
+wizard. The wizard does not call `BareMetalInstanceTypes.List` for node-set
+hardware selection and does not permit a tenant to add, remove, or replace a
+template node set.
 
-**Picker display and values:**
-
-| Picker | Option label | Selected value |
-| ------ | ------------ | -------------- |
-| Host type | `title` or `metadata.name` (fallback `id`) | Host type `id` — used as both the row selection and the `spec.node_sets` **map key**; `host_type` on the entry value matches the key |
-
-**Create payload** — one map entry per wizard row; **map key = host type id** (same as `host_type` on the value):
+**Create payload** — preserve the Template node-set map keys and use typed
+references for the hardware profile:
 
 ```json
 {
   "node_sets": {
-    "acme_1tb": {
-      "host_type": "acme_1tb",
+    "workers": {
+      "baremetal_instance_type": { "name": "bm-standard" },
       "size": 3
     },
-    "acme_1tb_h100": {
-      "host_type": "acme_1tb_h100",
-      "size": 2
+    "infra": {
+      "baremetal_instance_type": { "name": "bm-infra" },
+      "size": 1
     }
   }
 }
 ```
 
-Per `ClusterNodeSet` in `cluster_type.proto` — each value has **`host_type`** and **`size`** only. The wizard enforces **unique host types** across rows (no duplicate keys). **v1:** catalog item `field_definitions` defaults for node sets do not apply — no prefill from the selected `ClusterCatalogItem`. Catalog `field_definitions` for `spec.node_sets` paths are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)) — node set composition is API-driven via the host type list, not template- or catalog-default-driven.
+Per `ClusterNodeSet` in `cluster_type.proto`, each value has the Template's
+typed `baremetal_instance_type` and the effective `size`. Catalog Item
+`node_sets` policies can default, lock, or permit editing of `size` only;
+they cannot change the map keys or `baremetal_instance_type` references.
 
-**Load order:** load host type list when entering Configuration (or when the node-sets table mounts). No auto-select from `ClusterTemplate`; tenants choose host type per row from the dropdown. Host types already selected on another row are excluded from (or blocked in) remaining row pickers.
+**Load order:** resolve the Catalog Item, fetch its ClusterTemplate, then load
+the template-defined node sets and apply the Catalog Item size policies. A
+missing or malformed template node set blocks Configuration and the create
+request; there is no fallback to a tenant-composed row or a separate hardware
+picker.
 
 ### 2.2 Wizard behavior
 
@@ -243,15 +278,15 @@ flowchart LR
 - Review shows the same values as on wizard step fields (blank, default-driven, or user-entered).
 - Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on Configuration and Networking **non-picker** fields and General **basics** fields; picker-backed paths ignore `field_definitions` in v1; catalog `default` prefills matching wizard fields on catalog selection; non-editable fields without `default` appear blank and read-only; non-editable fields with `default` appear read-only with value and are included in the client payload.
 - VM: single `network_attachments` entry assembled from picker APIs; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
-- Cluster: `node_sets` is tenant-composed on Configuration — add/remove rows; each row has `host_type` from `HostTypes.List` and `size` > 0 only (`ClusterNodeSet`); **unique host type per row**; map key = host type id; wizard does not load or apply `ClusterTemplate.spec.node_sets`; **catalog item defaults for `spec.node_sets` do not apply in v1** (empty table on catalog selection).
+- Cluster: `node_sets` comes from the resolved ClusterTemplate; the wizard displays template node-set names and typed `baremetal_instance_type` references read-only and applies Catalog Item policies only to `size`; it does not add/remove rows or select hardware from `BareMetalInstanceTypes.List`.
 - All **?** requiredness decisions resolved before release ([§5](#5-open-decisions)).
 - On Next click, validate all fields on the current step (including untouched fields); surface hidden inline errors; show an alert if invalid; do not advance until the step is valid.
 
 ## 4. Dependencies
 
 - `ComputeInstanceCatalogItem`, `ClusterCatalogItem` (with `field_definitions`)
-- `HostTypes.List` (cluster Configuration step — host type picker per node set row)
-- `VirtualNetworks.List`, `Subnets.List`, `SecurityGroups.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/virtual_networks`, `.../subnets`, `.../security_groups` ([§2.1.4](#214-vm-networking-picker-apis))
+- `ClusterTemplates.Get` (cluster Configuration step — authoritative node-set names, typed BareMetalInstanceType references, and template sizes)
+- `VirtualNetworks.List`, `Subnets.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/virtual_networks`, `.../subnets` ([§2.1.4](#214-vm-networking-picker-apis))
 - `InstanceTypes.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/instance_types` ([§2.1.5](#215-vm-instance-type-picker-api))
 - ComputeInstance and Cluster create APIs
 - `spec.instance_type` on ComputeInstance ([OSAC-1217](https://redhat.atlassian.net/browse/OSAC-1217), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735)) — required for VM instance type picker
@@ -271,13 +306,18 @@ Resolve before implementation.
 
 ### Catalog overlay on picker-backed fields (deferred)
 
-**Resolved for v1:** Ignore catalog `field_definitions` for picker-backed paths (`spec.instance_type`, `spec.network_attachments`, and nested networking paths). Picker UX is API-driven only; see [§2.1.2](#212-catalog-overlay-and-defaults).
+**Resolved for v1:** Ignore catalog `field_definitions` for VM picker-backed paths (`spec.instance_type`, `spec.network_attachments`, and nested networking paths). Cluster `spec.node_sets` is template-backed, not picker-backed; its Catalog policy applies to `size` as defined by Catalog Items v2.
 
 **Deferred:** Catalog overlay on picker fields (including `display_name`, `editable`, `default`, `validation_schema`, catalog-default vs auto-select precedence, and defaults not present in list API options) is out of scope for v1 and may be addressed in a later release.
 
-### Cluster `node_sets` composition
+### Cluster `node_sets` ownership
 
-**Resolved:** Tenant-managed node sets on Configuration. The wizard ignores `ClusterTemplate.spec.node_sets` entirely. Tenants add/remove rows; each row collects `host_type` (dropdown from `HostTypes.List`) and `size` only. Map key = host type id; duplicate host types are not allowed. **v1:** catalog item `field_definitions` defaults for `spec.node_sets` do not apply — node set rows are not prefilled from the selected catalog item. See [§2.1.1](#211-static-wizard-fields) and [§2.1.6](#216-cluster-host-type-picker-api).
+**Resolved:** The resolved `ClusterTemplate.spec.node_sets` is authoritative.
+The wizard fetches it with `ClusterTemplates.Get`, preserves each map key and
+typed `baremetal_instance_type`, and exposes only the effective `size` under
+the Catalog Item policy. Tenants cannot add/remove node sets or select a
+different BareMetalInstanceType. See [§2.1.1](#211-static-wizard-fields) and
+[§2.1.6](#216-cluster-template-node-set-api).
 
 ### Additional disks
 

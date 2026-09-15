@@ -2,444 +2,365 @@
 
 ## Overview
 
-- **Feature:** OSAC-4291 — CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
-- **Total test cases:** 17
-- **Requirements covered:** 9 of 9 (R1-R9)
-- **Interface changes covered:** 6 of 6 (IC-1 through IC-6)
-- **Additional operational tests:** 2 deletion lifecycle tests + 1 skip-k8s-manager annotation test
+- **Feature:** OSAC-4291 — CUDN EVPN K8s Manager Phase 1 Networking:
+  Single-Cluster VM-to-Fabric Bridging
+- **Source design:** [design.md](design.md)
+- **Shared contract:** [Unified Networking test plan](../OSAC-1433-unified-networking/testplan.md)
+- **Scope:** Provider registration, sequential fabric-to-CUDN provisioning,
+  first-subnet VM support, fabric-only additional Subnets, EVPN connectivity,
+  readiness, deletion, and Phase 1 failure recovery.
+- **Inherited boundary:** The shared Unified Networking plan owns IPv4-only,
+  connected single-hub admission, create/read/delete-only operations, and
+  tenant reference/defaulting validation.
+- **Manual prerequisites:** OCP with OVN-Kubernetes, FRR, NMState, VTEP,
+  RouteAdvertisements, BGP underlay, gateway MAC coordination, and a real
+  Netris fabric. These are installation prerequisites, not tenant API
+  features.
+- **Explicit limits:** IPv4 only; one CUDN/VM-capable Subnet per
+  VirtualNetwork; no VM placement after multiple Subnets exist; no automatic
+  VTEP or gateway-MAC provisioning; no multi-cluster, secondary-CUDN,
+  multi-NIC, same-cluster VM-to-VM inter-Subnet routing, or east-west feature.
 
-## Test Cases
+## Execution strategy
 
-### R1: K8s manager registration for EVPN fabric bridging (IPv4 only)
+- **Unit:** fulfillment-service topology validation, manager capability
+  resolution, operator phase/state logic, VNI/ConfigMap parsing, CUDN
+  readiness, VM placement, and deletion guards.
+- **Integration:** real PostgreSQL and validation path, envtest/Kind CRDs and
+  controllers, fake Netris/AAP jobs, documented ConfigMap data handoff, fake
+  CUDN/namespace/MetalLB readiness, failure injection, and race tests.
+- **E2E:** real OCP/OVN-K/FRR/Netris environment verifying CUDN, EVPN routes,
+  VM-to-fabric traffic, fabric-only Subnets, VM blocking, and cleanup.
 
-#### TC-R1-01: Register cudn_evpn k8s manager via ConfigMap
+## Test cases
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
+### R1: Provider manager registration and capability contract
 
-##### Preconditions
+#### TC-R1-01: Valid `cudn_evpn` registration is accepted
 
-- osac-installer deployed to cluster
-- No existing ConfigMap `k8s-manager-cudn-evpn` in osac namespace
-
-##### Steps
-
-1. Apply osac-installer Helm chart with cudn_evpn manager enabled
-2. Verify ConfigMap `k8s-manager-cudn-evpn` exists in osac namespace
-3. Verify ConfigMap data.manager = "cudn_evpn"
-4. Verify ConfigMap data.capabilities includes "supports_ipv4: true"
-5. Verify ConfigMap data.capabilities includes "supports_ipv6: false"
-
-##### Expected Results
-
-- ConfigMap created with label `osac.openshift.io/k8s-manager: "true"`
-- Capabilities reflect IPv4-only support
-- NetworkClass controller loads cudn_evpn as available k8s manager
-
-### R2: Fabric-to-k8s manager data dependency
-
-#### TC-R2-01: Sequential provisioning fabric then k8s manager
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | critical | automated |
-
-##### Preconditions
-
-- NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
-- VirtualNetwork created with this NetworkClass
-- Mocked Netris fabric returning VNI values
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-1 | Unit, integration, E2E-preflight | critical | automated |
 
 ##### Steps
 
-1. Create Subnet via fulfillment-service API
-2. Observe Subnet controller creates fabric AAP Job first
-3. Fabric job completes with VNI data in status.extraVars
-4. Observe controller does not create k8s job until fabric job status shows Successful
-5. Controller extracts l2_vni, l3_vni from fabric job
-6. Observe controller creates k8s AAP Job with VNI data in extra_vars
-7. Verify k8s job extra_vars contains: l2_vni, l3_vni (route targets not passed - CUDN auto-generates)
+1. Install the provider ConfigMap declaring `cudn_evpn`.
+2. Verify IPv4 support, IPv6 disabled, create/read/delete operations, and the
+   separate Phase 1 single-subnet VM-placement validation.
+3. Create a NetworkClass with `fabric_manager=netris` and
+   `k8s_manager=cudn_evpn`.
+4. With the Fabric Manager advertising NATGateway support, create a Ready
+   VirtualNetwork and an Allocated, unconsumed ExternalIP, then create a
+   NATGateway through the combined NetworkClass.
 
-##### Expected Results
+##### Expected results
 
-- Fabric job completes before k8s job starts (not concurrent)
-- K8s job receives VNI values extracted from fabric job status
-- Subnet.status.conditions shows "K8sManagerWaitingForFabric" event between jobs
+- Registration and capability loading succeed.
+- NetworkClass is accepted only after required installation prerequisites are
+  available.
+- `cudn_evpn` is not selected as Default Networking's default manager when
+  required manual prerequisites are absent.
+- In a combined NetworkClass, NATGateway is accepted through the configured
+  Fabric Manager when that manager advertises NAT support; `cudn_evpn` does
+  not need to advertise the NATGateway operation itself.
 
-#### TC-R2-02: VNI extraction failure when fabric job missing data
+#### TC-R1-02: Incomplete or tenant-controlled registration is rejected
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3 | high | automated |
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-1 | Unit, integration | critical | automated |
 
-##### Preconditions
+##### Cases
 
-- Subnet provisioning in progress, fabric job completed
-- Fabric AAP Job CR exists but status.extraVars missing VNI fields
+- unregistered/incomplete manager;
+- IPv6/dual-stack capability;
+- missing VTEP/FRR/BGP prerequisite;
+- tenant tries to select manager, VNI, VTEP, gateway MAC, or skip annotation;
+- NATGateway request in K8s-only mode;
+- NATGateway request in combined mode when the Fabric Manager does not
+  advertise NATGateway support.
 
-##### Steps
+##### Expected results
 
-1. Controller attempts to extract VNI from fabric job status
-2. Extraction fails (missing l2_vni field)
-3. Observe controller emits Kubernetes event "VNIExtractionFailed"
-4. Observe Subnet.status.phase = "Failed"
-5. Observe Subnet.status.conditions shows error message referencing fabric job
+- Provider misconfiguration or unsupported tenant input fails before backend
+  provisioning.
+- K8s-only NATGateway requests and combined-manager requests without Fabric
+  NATGateway support are rejected before persistence or dispatch.
 
-##### Expected Results
+### R2: Sequential fabric-to-CUDN provisioning
 
-- Subnet provisioning stops (k8s job never created)
-- Event message includes fabric job name for debugging
-- User can inspect fabric AAP job logs to diagnose
+#### TC-R2-01: First Subnet creates fabric and CUDN in order
 
-### R3: Automatic overlay network provisioning on hosting clusters
-
-#### TC-R3-01: CUDN provisioned with EVPN transport
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | critical | automated |
-
-##### Preconditions
-
-- Subnet created with NetworkClass k8s_manager="cudn_evpn"
-- K8s manager job running
-
-##### Steps
-
-1. Observe k8s manager playbook creates namespace with label `k8s.ovn.org/primary-user-defined-network`
-2. Observe playbook creates ClusterUserDefinedNetwork CR with:
-   - metadata.name = VirtualNetwork name
-   - spec.network.topology = "Layer2"
-   - spec.network.transport = "EVPN"
-   - spec.network.evpn.vtep = "tenant-vtep"
-   - spec.network.evpn.macVRF.vni = l2_vni from extra_vars
-   - spec.network.evpn.ipVRF.vni = l3_vni from extra_vars
-3. Wait for CUDN status.conditions Ready=True
-4. Verify CUDN status.vrfName is set (Linux VRF device name)
-
-##### Expected Results
-
-- CUDN CR exists with correct VNI values
-- CUDN status transitions to Ready within 60 seconds
-- OVN-Kubernetes provisions VXLAN interfaces on worker nodes
-
-### R4: VM-to-fabric connectivity (L2 same-subnet and L3 cross-subnet scenarios)
-
-#### TC-R4-01: L2 same-subnet VM to bare-metal connectivity
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5, IC-6 | critical | manual |
-
-##### Preconditions
-
-- CUDN provisioned with subnet 200.200.1.0/24
-- VirtualMachine deployed in CUDN namespace, IP 200.200.1.3
-- Bare-metal node provisioned on Netris fabric in same subnet, IP 200.200.1.10
-- FRR advertising EVPN routes to fabric
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-3, IC-5 | Unit, integration, E2E | critical | automated |
 
 ##### Steps
 
-1. Verify VM running: `oc get vmi -n <namespace>`
-2. Console into VM: `virtctl console <vm-name>`
-3. Ping bare-metal node: `ping 200.200.1.10`
-4. Verify FRR shows Type-2 route for VM MAC: `vtysh -c "show bgp l2vpn evpn" | grep <vm-mac>`
-5. Verify Netris fabric learned VM MAC via EVPN
+1. Create a VirtualNetwork; verify no fabric or CUDN provisioning occurs.
+2. Create its first Subnet.
+3. Observe fabric VPC/VNet job completion.
+4. Read the documented VNI ConfigMap output.
+5. Observe K8s manager CUDN/namespace/IPAddressPool creation.
+6. Wait for CUDN and Subnet readiness.
 
-##### Expected Results
+##### Expected results
 
-- Ping succeeds (RTT <10ms)
-- FRR advertises Type-2 EVPN route with VM MAC and IP
-- Netris leaf switch has VM MAC in EVPN table pointing to OCP VTEP
+- Fabric job runs before the K8s job.
+- `l2_vni`, `l3_vni`, and `fabric_reserved_range` are transferred through
+  the documented ConfigMap path.
+- CUDN uses EVPN Layer2 transport, correct VNI values, generated Phase 1
+  route targets, and reserved ranges.
+- Namespace, bridge, CUDN, and IPAddressPool are Ready before Subnet Ready.
 
-#### TC-R4-02: L3 cross-subnet VM to bare-metal connectivity
+#### TC-R2-02: Missing or invalid fabric output blocks CUDN
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5, IC-6 | critical | manual |
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-3 | Unit, integration | critical | automated |
 
-##### Preconditions
+##### Cases
 
-- CUDN provisioned with subnet 200.200.1.0/24
-- VirtualMachine deployed in CUDN namespace, IP 200.200.1.3
-- Bare-metal node provisioned on Netris fabric in different subnet 200.200.2.0/24, IP 200.200.2.10
-- Both subnets under same Netris VPC (shared ipVRF)
+- missing ConfigMap;
+- missing `l2_vni`, `l3_vni`, or `fabric_reserved_range`;
+- malformed VNI/range;
+- fabric job Pending or Failed.
 
-##### Steps
+##### Expected results
 
-1. Console into VM
-2. Ping bare-metal node in different subnet: `ping 200.200.2.10`
-3. Verify FRR shows Type-5 route for CUDN prefix: `vtysh -c "show bgp l2vpn evpn" | grep Type-5 | grep 200.200.1.0`
-4. Verify Netris VPC routing table includes both subnets
+- K8s manager job is not started when fabric is not successful.
+- Subnet is Pending/Failed with `VNIExtractionFailed` or the documented
+  manager condition.
+- No false Ready state or partial CUDN is reported.
+- Recovery retries the missing phase without duplicating the successful phase.
 
-##### Expected Results
+#### TC-R2-03: CUDN failure and restart recovery
 
-- Ping succeeds (routed via ipVRF)
-- FRR advertises Type-5 EVPN route for 200.200.1.0/24 prefix
-- Traffic encapsulated with L3 VNI (ipVRF), not L2 VNI (macVRF)
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-3, IC-5 | Integration, E2E-recovery | high | automated |
 
-### R5: Single-subnet-per-VirtualNetwork constraint for this k8s manager
+##### Expected results
 
-#### TC-R5-01: Second subnet creation rejected for cudn_evpn NetworkClass
+- Missing VTEP, invalid route data, non-Ready CUDN, or CUDN job failure leaves
+  Subnet non-Ready and requeues according to the design.
+- Controller restart after fabric completion, ConfigMap read, K8s job creation,
+  and CUDN readiness resumes idempotently.
+- No duplicate VNI, VNet, namespace, CUDN, or job is created.
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | critical | automated |
+### R3: First and additional Subnet topology
 
-##### Preconditions
+#### TC-R3-01: First Subnet is VM-capable
 
-- NetworkClass with k8s_manager="cudn_evpn"
-- VirtualNetwork created with this NetworkClass
-- One Subnet already exists under this VirtualNetwork
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-2, IC-5 | Unit, integration, E2E | critical | automated |
 
-##### Steps
+##### Expected results
 
-1. Attempt to create second Subnet under same VirtualNetwork via fulfillment-service API
-2. Observe API response
+- First Subnet receives the only CUDN for the VirtualNetwork.
+- VM placement is accepted only after CUDN/namespace readiness.
+- CUDN persists for the lifetime of the supported topology.
 
-##### Expected Results
+#### TC-R3-02: Additional Subnet is fabric-only while no VMs exist
 
-- API returns HTTP 400 Bad Request
-- Response code = `FailedPrecondition`
-- Error message includes: "NetworkClass with k8s_manager 'cudn_evpn' supports only one subnet per VirtualNetwork"
-- Error message includes: "OVN Connectors limitation"
-- Error message includes name of existing subnet
-
-#### TC-R5-02: Multiple subnets allowed for different k8s manager
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | high | automated |
-
-##### Preconditions
-
-- NetworkClass with k8s_manager="cudn_localnet" (not cudn_evpn)
-- VirtualNetwork created with this NetworkClass
-- One Subnet already exists under this VirtualNetwork
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-2, IC-3 | Unit, integration, E2E | critical | automated |
 
 ##### Steps
 
-1. Attempt to create second Subnet under same VirtualNetwork
-2. Observe API response
+1. Create first Subnet with no VM.
+2. Create a second Subnet under the same VirtualNetwork.
+3. Inspect dispatch, fabric VNet, first CUDN, and second namespace.
 
-##### Expected Results
+##### Expected results
 
-- API returns HTTP 201 Created
-- Second Subnet provisioned successfully
-- Single-subnet validation skipped (conditional on k8s_manager)
+- API accepts the second Subnet.
+- Only the fabric manager is dispatched for the second Subnet.
+- Second Subnet has no CUDN or namespace.
+- First Subnet's CUDN persists unchanged.
+- VMs are blocked in both Subnets once the VN has multiple Subnets.
 
-#### TC-R5-03: Second subnet allowed with skip-k8s-manager annotation (fabric-only)
+#### TC-R3-03: Additional Subnet is rejected after VM creation
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2 | high | automated |
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-2 | Unit, integration, E2E rejection | critical | automated |
 
-##### Preconditions
+##### Expected results
 
-- NetworkClass with k8s_manager="cudn_evpn"
-- VirtualNetwork created with this NetworkClass
-- One Subnet already exists under this VirtualNetwork (without skip annotation, CUDN created)
+- API returns `FailedPrecondition` before provisioning starts.
+- Error identifies the existing VM/first Subnet and explains the Phase 1
+  topology restriction.
+- No second VNet, CUDN, namespace, or job is created.
 
-##### Steps
+#### TC-R3-04: Explicit provider skip produces fabric-only Subnet
 
-1. Create second Subnet under same VirtualNetwork with annotation `osac.openshift.io/skip-k8s-manager: "true"`
-2. Observe API response
-3. Verify Subnet provisioning only dispatches to fabric manager (Netris)
-4. Verify no CUDN created for second Subnet
-5. Verify Netris VNet created under same VPC as first Subnet
-6. Verify first Subnet's CUDN remains unchanged
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-2, IC-3 | Unit, integration, E2E | high | automated |
 
-##### Expected Results
+##### Expected results
 
-- API returns HTTP 201 Created (validation excludes subnets with skip annotation)
-- Second Subnet status transitions to READY
-- Subnet job history shows only fabric manager job (no k8s manager job)
-- Netris VPC has two VNets (one from first Subnet, one from second)
-- First Subnet's CUDN namespace and resources unaffected
-- Second Subnet has no associated namespace or CUDN
+- Provider-only skip annotation produces fabric-only provisioning even for a
+  first/only Subnet.
+- Tenant cannot set or use the annotation as a hidden API input. Test both a
+  tenant-facing API request and a direct CR containing the annotation.
+- A provider-authenticated path with valid provenance may set the annotation;
+  a forged or tenant-owned annotation is rejected or ignored.
+- Deletion skips CUDN cleanup for the fabric-only Subnet.
 
-### R6: Non-conflicting IP address assignment
+#### TC-R3-05: Persisted Subnet identity determines first-Subnet behavior
 
-#### TC-R6-01: VM receives IP from OVN DHCP, Netris DHCP coexists safely
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-2, IC-3 | Unit, integration, E2E-stress | critical | automated |
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | high | manual |
+##### Cases
 
-##### Preconditions
+- Two Subnets are created concurrently and reconciliation observes them in
+  reverse list order.
+- The controller restarts after either Subnet is persisted but before its
+  CUDN decision is reconciled.
+- A later Subnet is reconciled before the earlier-created Subnet.
 
-- CUDN provisioned with subnet 200.200.1.0/24
-- Netris VNet configured with DHCP enabled (default), DHCP range 200.200.1.100-200.200.1.200
+##### Expected results
 
-##### Steps
+- The first Subnet is selected by stable persisted creation sequence, never by
+  unordered list position or reconciliation order.
+- Exactly that Subnet receives the CUDN; later Subnets are fabric-only unless
+  the explicit provider skip rule applies.
+- Restart and retry preserve the same identity without duplicate CUDNs, VNIs,
+  namespaces, or backend jobs.
 
-1. Verify CUDN `spec.network.layer2.reservedSubnets` includes fabric reserved range (REQUIRED)
-2. Verify k8s job extra_vars contains fabric_reserved_range from fabric job ConfigMap
-3. Deploy VirtualMachine in CUDN namespace
-4. Verify VM receives IP address via DHCP
-5. Check VM received IP from OVN DHCP (inside VM: check DHCP server IP in lease file)
-6. Verify VM IP is not in Netris DHCP range (not 200.200.1.100-200)
-7. Verify VM IP is not in fabric reserved range (reservedSubnets)
-8. Check Netris DHCP logs — verify no DHCP requests from VM MAC address
-9. Verify VM IP is in subnet CIDR (200.200.1.0/24)
+### R4: VM placement and connectivity
 
-##### Expected Results
+#### TC-R4-01: Single-subnet VM placement succeeds
 
-- CUDN `reservedSubnets` field is populated (k8s job fails if fabric_reserved_range missing from fabric job ConfigMap)
-- VM IP assigned by OVN-Kubernetes DHCP (not Netris DHCP)
-- VM DHCP lease shows OVN DHCP server IP (logical switch IP, not Netris SVI)
-- Netris DHCP logs show no requests from VM MAC (OVN intercepts DHCP inside logical switch)
-- **VM IP does not collide with fabric-managed IPs (gateway .1, SVIs, DHCP pool)**
-- OVN IPAM respects the reserved range (correctness requirement, not optional)
-- Both DHCP servers coexist without conflict (validated behavior)
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-5, IC-6 | Unit, integration, E2E | critical | automated |
 
-### R7: Installation prerequisites documentation
+##### Expected results
 
-#### TC-R7-01: Installation guide covers all manual prerequisites
+- VM has exactly one attachment/interface.
+- Template receives the selected Subnet's CUDN NAD and namespace.
+- OVN DHCP supplies an IPv4 address.
+- VM becomes Ready only after CUDN and namespace readiness.
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| — | high | manual |
+#### TC-R4-02: VM placement is rejected for unsupported topology
 
-##### Preconditions
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-2, IC-5 | Unit, integration, E2E rejection | critical | automated |
 
-- Access to osac-installer documentation
+##### Cases
 
-##### Steps
+- VN has multiple Subnets, including the first CUDN Subnet;
+- selected Subnet is fabric-only;
+- CUDN/namespace is missing or non-Ready;
+- VM has more than one attachment;
+- tenant attempts to select another Subnet as a fallback.
 
-1. Read installation guide for cudn_evpn k8s manager
-2. Verify guide documents:
-   - VTEP CR creation
-   - FRRConfiguration underlay BGP peering
-   - RouteAdvertisements CR
-   - BGP underlay connectivity (worker ↔ fabric switch)
-   - Gateway MAC coordination requirement
-3. Verify guide includes validation commands to check prerequisites complete
+##### Expected results
 
-##### Expected Results
+- VM create is rejected before persistence or template dispatch.
+- Deleting a VM does not automatically make an already multi-Subnet VN
+  VM-capable again.
+- No arbitrary first Subnet or alternate namespace is selected.
 
-- All manual prerequisites documented with examples
-- Validation commands provided (check VTEP exists, FRR BGP session up, etc.)
-- Guide warns against skipping gateway MAC coordination
+#### TC-R4-03: EVPN data-plane connectivity works
 
-### R8: Diagnostic tooling documentation
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-5, IC-6 | E2E | critical | automated/manual network validation |
 
-#### TC-R8-01: Diagnostic commands documented for troubleshooting
+##### Expected results
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| — | medium | manual |
+- Same-subnet VM-to-BM L2 ping succeeds.
+- VM MAC/IP is visible through EVPN Type-2 routes.
+- Cross-subnet VM-to-BM L3 ping succeeds through the configured fabric ipVRF
+  where that connectivity is part of the installation.
+- VM-to-VM inter-Subnet routing on the same cluster remains unsupported.
 
-##### Preconditions
+### R5: Deletion and dependency guards
 
-- Access to osac documentation
+#### TC-R5-01: CUDN Subnet deletion waits for VMs
 
-##### Steps
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection | critical | automated |
 
-1. Read troubleshooting guide for cudn_evpn
-2. Verify guide documents:
-   - FRR VNI status check: `vtysh -c "show evpn vni"`
-   - BGP EVPN routes check: `vtysh -c "show bgp l2vpn evpn"`
-   - CUDN status check: `oc get clusteruserdefinednetwork`
-   - Netris VNet query via API
-   - Packet capture for VXLAN traffic
+##### Expected results
 
-##### Expected Results
+- Delete is blocked while VMs/VMIs exist.
+- `DeletionBlocked` event/condition is emitted and controller requeues.
+- CUDN and fabric VNet remain intact.
 
-- Diagnostic commands cover VNI mismatch detection
-- Commands cover gateway MAC comparison
-- Commands cover BGP session verification
-- Known failure modes documented with symptoms and fixes
+#### TC-R5-02: First and later Subnet deletion ordering
 
-### R9: Gateway MAC coordination prerequisite
+| Test type | Priority | Automation |
+|---|---|---|
+| Integration, E2E | critical | automated |
 
-#### TC-R9-01: Gateway MAC documented as manual prerequisite
+##### Expected results
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| — | high | manual |
+- First Subnet: VMs → CUDN → namespace → fabric VNet.
+- Fabric-only Subnet: fabric VNet only; no CUDN call.
+- VirtualNetwork/VPC is deleted only after every child VNet/Subnet is gone.
+- CUDN deletion failure prevents fabric deletion and leaves a visible failed
+  deletion state.
 
-##### Preconditions
+### R6: Concurrency, isolation, and unsupported Phase 1 features
 
-- Access to installation guide
+#### TC-R6-01: Concurrent topology operations are race-safe
 
-##### Steps
+| Test type | Priority | Automation |
+|---|---|---|
+| Integration, E2E-stress | critical | automated |
 
-1. Read installation prerequisites
-2. Verify guide documents gateway MAC coordination requirement
-3. Verify guide explains consequences of mismatch (L3 traffic fails, ARP flapping)
-4. Verify guide provides commands to check gateway MAC on both sides
+##### Cases
 
-##### Expected Results
+- two second-Subnet creates concurrently;
+- VM create concurrent with second-Subnet create;
+- delete/recreate around CUDN deletion and VNI reuse.
 
-- Gateway MAC coordination listed as prerequisite
-- Guide explains why MACs must match
-- Guide provides diagnostic commands to compare CUDN gateway MAC with Netris VNet gateway MAC
+##### Expected results
 
-### Subnet Deletion: Ordered cleanup prevents stale VRFs
+- Database/API locking allows only a supported topology.
+- No duplicate CUDN/VNI or unsupported VM placement occurs.
+- Deletion ordering prevents VNI reuse before CUDN is gone.
 
-#### TC-DELETE-01: Subnet deletion with running VMs
+#### TC-R6-02: Phase 1 non-goals are not exposed
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | high | automated |
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection/preflight | high | automated where user-visible |
 
-##### Preconditions
+##### Cases
 
-- CUDN provisioned with subnet
-- VirtualMachine running in CUDN namespace
-- Subnet marked for deletion (finalizer present)
+- IPv6/dual-stack;
+- multi-cluster VM placement;
+- multi-NIC/secondary CUDN;
+- automatic VTEP provisioning;
+- automatic gateway-MAC coordination;
+- tenant setting provider-only topology controls;
+- CaaS private-worker EVPN port-move integration while transport support is
+  TBD;
+- update/patch/replace of network-owned fields;
+- NATGateway in a K8s-only NetworkClass whose only manager is `cudn_evpn`, or
+  an attempt to dispatch NATGateway directly to `cudn_evpn` instead of through
+  a capable Fabric Manager.
 
-##### Steps
+##### Expected results
 
-1. Delete Subnet CR
-2. Observe k8s manager delete playbook runs
-3. Verify VMs deleted before CUDN deletion attempted
-4. Verify playbook waits for all VMIs terminated (retries with timeout)
-5. Verify CUDN deleted after VMIs gone
-6. Verify namespace deleted after CUDN deleted
-7. Check for stale VRF on worker nodes (should not exist)
+- Capability is not advertised or request is rejected.
+- No unsupported manager/job/backend operation is dispatched.
 
-##### Expected Results
+## Graduation gate
 
-- Deletion order enforced: VMs → wait VMIs → CUDN → namespace
-- No stuck CUDN finalizer (deletion completes within timeout)
-- **Normal case:** No stale VRF devices persist after CUDN deleted
-- **Rare failure case:** Stale VRF requires manual recovery (see TC-DELETE-02 and Support Procedures)
-- Subnet CR finalizer removed, CR deleted successfully
-
-#### TC-DELETE-02: Stale VRF manual recovery (troubleshooting)
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| — | low | manual |
-
-##### Preconditions
-
-- CUDN deleted successfully (confirmed via `oc get clusteruserdefinednetwork`)
-- VRF device persists on worker node (observed rare race condition)
-- Cloud Infrastructure Admin troubleshooting connectivity issue
-
-##### Steps
-
-1. Detect stale VRF:
-   ```bash
-   oc debug node/<node-name> -- chroot /host ip link show type vrf
-   ```
-2. Verify CUDN is deleted: `oc get clusteruserdefinednetwork <vnet-name>` returns NotFound
-3. Follow manual recovery procedure from Support Procedures section
-4. Option 1: Restart ovnkube-node pod (impacts all VMs on node)
-5. Option 2: Direct VRF deletion via node debug (less disruptive)
-6. Verify VRF cleaned up after recovery
-
-##### Expected Results
-
-- VRF cleanup procedure documented in Support Procedures
-- **Automatic restart NOT performed by delete_subnet.yaml** (too disruptive for routine delete)
-- Manual recovery successful (VRF removed after procedure)
-- Documented impact: ovnkube-node restart affects all VMs on node (not just deleted namespace)
-
-## Gaps
-
-None identified. All requirements map to test cases, all interface changes exercised.
+- All Phase 1 validation bullets map to unit/integration tests.
+- First-Subnet CUDN/VM, additional fabric-only Subnet, VM blocking,
+  connectivity, deletion, concurrency, and recovery have E2E coverage.
+- Every Phase 1 limitation has a negative test or provider preflight check.

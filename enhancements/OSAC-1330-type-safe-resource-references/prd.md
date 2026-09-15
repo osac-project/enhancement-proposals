@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-When users create or update OSAC resources that reference other resources — a compute instance referencing a subnet, a cluster order referencing a template, an external IP attachment referencing a target — they provide raw identifier strings. The system cannot distinguish a subnet reference from a security group reference at the schema level; both are opaque strings. Users discover invalid or mismatched references only at runtime through downstream failures that may not clearly indicate which reference was wrong or why. References also carry no context about tenant or project, so users cannot reference shared resources (such as global cluster templates) without out-of-band knowledge of the target's identifier.
+When users create or update OSAC resources that reference other resources — a compute instance referencing a subnet, a cluster order referencing a template, an external IP attachment referencing a target — they provide raw identifier strings. The system cannot distinguish a subnet reference from a virtual-network reference at the schema level; both are opaque strings. Users discover invalid or mismatched references only at runtime through downstream failures that may not clearly indicate which reference was wrong or why. References also carry no context about tenant or project, so users cannot reference shared resources (such as global cluster templates) without out-of-band knowledge of the target's identifier.
 
 ## In Scope
 
@@ -41,11 +41,11 @@ When users create or update OSAC resources that reference other resources — a 
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create subnets and security groups that reference their parent virtual network by name so that I can set up networking using readable, meaningful names.
+- As a Tenant Admin, I want to create subnets and NetworkACLs with typed virtual-network and Subnet references by name so that I can set up networking using readable, meaningful names.
 
 ### Tenant User
 
-- As a Tenant User, I want to create a compute instance that references subnets and security groups by name in its network attachments so that I can provision VMs without looking up resource identifiers.
+- As a Tenant User, I want to create a compute instance that references a Subnet by name in its network attachment so that I can provision VMs without looking up resource identifiers; the effective NetworkACL is inherited from that Subnet.
 - As a Tenant User, I want to create a compute instance that references a catalog item or template by name so that I can order resources from the catalog using human-readable names.
 - As a Tenant User, I want to create an external IP attachment that references the external IP and target resource (compute instance, cluster, or bare metal instance) by name so that I can manage IP bindings without identifier lookup.
 - As a Tenant User, I want to receive a clear, immediate error when I reference a resource that doesn't exist or that I don't have access to so that I can fix my request without debugging downstream failures.

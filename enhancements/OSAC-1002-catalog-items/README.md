@@ -18,6 +18,11 @@ superseded-by:
 
 > **Status:** This proposal is superseded by [Catalog Items v2](../OSAC-3538-catalog-items-v2/design.md). It remains useful as historical background, but its `FieldDefinition`, dot-notation path, and JSON Schema API model are legacy and should not be treated as current behavior.
 
+> Historical networking examples in this document are also superseded. Use the
+> [Unified Networking attachment contract](../OSAC-1433-unified-networking/design.md#attachment-field-names-and-message-types)
+> and [Catalog Items v2](../OSAC-3538-catalog-items-v2/design.md) for the
+> current field/type pairs.
+
 ## Summary
 
 Today there is a 1:1 mapping between templates and ansible roles. A user sees a
