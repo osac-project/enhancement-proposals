@@ -4,7 +4,7 @@
 
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
 - **Design task:** OSAC-4307
-- **Total test cases:** 29
+- **Total test cases:** 30
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 6 of 6
 
@@ -645,6 +645,38 @@
 - The second VirtualNetwork's namespace, VLAN, and connectivity remain present.
 - The deleted resources' finalizers are removed only after cleanup feedback.
 
+#### TC-FR11-03: Delay parent-first ExternalIP release until attachment cleanup
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | high | automated |
+
+##### Preconditions
+
+- An ExternalIP is Allocated and its ExternalIPAttachment is Ready with an
+  owned DNAT mapping and attachment finalizer.
+- The test can request parent-first deletion or issue ExternalIP and
+  ExternalIPAttachment deletion concurrently.
+
+##### Steps
+
+1. Request ExternalIP deletion while the attachment still owns DNAT, or issue
+   both deletion requests concurrently.
+2. Observe ExternalIP status, pool capacity, attachment finalizer, DNAT state,
+   and cleanup job feedback.
+3. Allow DNAT cleanup feedback to complete and the attachment finalizer to be
+   removed.
+4. Reconcile the ExternalIP deletion and inspect pool capacity again.
+
+##### Expected Results
+
+- ExternalIP release is rejected or delayed while the attachment owns DNAT or
+  retains its finalizer.
+- The ExternalIP remains allocated and its pool capacity is not reusable while
+  attachment cleanup is incomplete.
+- After confirmed DNAT cleanup and finalizer removal, ExternalIP deletion
+  releases the address and only then increases pool capacity.
+
 ### NFR-1: IPv4-only capability
 
 #### TC-NFR1-01: Reject unsupported IPv6 and dual-stack requests
@@ -781,12 +813,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 29 |
+| Total test cases | 30 |
 | Critical | 11 |
-| High | 17 |
+| High | 18 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 28 |
+| Automated | 29 |
 | Manual | 1 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 6 / 6 |
