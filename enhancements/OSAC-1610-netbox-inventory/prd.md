@@ -3,7 +3,7 @@
 | Field       | Value   |
 |-------------|---------|
 | Author(s)   | Menny Aboush |
-| Jira        | https://redhat.atlassian.net/browse/OSAC-4346 |
+| Jira        | https://redhat.atlassian.net/browse/OSAC-1610 |
 | Date        | 2026-09-06 |
 
 ## Problem Statement
