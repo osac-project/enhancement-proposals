@@ -264,7 +264,7 @@
 - AgentlessNet does not create a fabric-side DHCP address for the VM.
 - The attachment contract remains available for the downstream VMaaS flow.
 
-#### TC-FR4-04: Reject duplicate SubnetRef attachments
+#### TC-FR4-04: Reject duplicate SubnetRef and preserve Subnet reuse
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -280,6 +280,9 @@
 
 1. Submit the BareMetalInstance request through the BMaaS API/CR path.
 2. Inspect the validation result and any networking or DHCP-discovery jobs.
+3. Submit a second valid BareMetalInstance with one attachment referencing
+   `subnet-a`.
+4. Observe the second request and its networking/DHCP status.
 
 ##### Expected Results
 
@@ -287,6 +290,7 @@
   network handoff or DHCP discovery begins.
 - No AAP network-attachment or DHCP-lease job is launched for the invalid
   request.
+- The second valid BareMetalInstance is accepted and can reuse `subnet-a`.
 - A valid multi-NIC BareMetalInstance uses a distinct SubnetRef for each
   attachment, and a Subnet remains usable by other BareMetalInstances.
 
