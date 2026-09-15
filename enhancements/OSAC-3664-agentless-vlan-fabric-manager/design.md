@@ -217,8 +217,11 @@ attachment workflows follow in OSAC-1611 and OSAC-3665; their workflows and
 service-specific input contracts are not expanded here. [Locked: D1, D2]
 
 1. The bare-metal-fulfillment-operator resolves the BareMetalInstance network
-   attachments, host interface names, and Subnet references. It resolves NIC
-   MAC addresses from the management backend when available.
+   attachments, host interface names, and Subnet references. For BMaaS, it
+   resolves the authoritative NIC MAC for each selected interface from the
+   BareMetalHost `osac.openshift.io/interface-macs` annotation. The logical
+   interface name selects the annotation entry and remains the port-move/status
+   identity; the MAC is the DHCP lease identity. [User]
    The BMaaS attachment contract permits each `subnetRef` at most once within
    one BareMetalInstance; a Subnet may still be used by many BareMetalInstances.
    Multi-NIC BareMetalInstances therefore use distinct Subnets, and duplicate
@@ -238,18 +241,23 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
 4. The generic 'playbook_osac_query_dhcp_lease.yml' invokes the selected
    template's 'query_dhcp_lease' task for each network attachment. Because each
    `subnetRef` is unique within the BareMetalInstance, the agentless task uses
-   that reference together with the existing attachment fields to match the
-   lease store and publishes one lease entry per requested Subnet through
-   'set_stats'.
-5. The operator validates the artifact's job status, attachment identity, MAC or
-   interface identity, Subnet reference, address family, and freshness before
-   writing the observed address to the resource status. The artifact must
-   contain exactly one entry for each requested SubnetRef; duplicate,
-   unexpected, or missing references fail IP discovery.
+   the authoritative BMaaS port MAC resolved from the
+   `osac.openshift.io/interface-macs` annotation together with `subnetRef` to
+   match the lease store and publishes one lease entry per requested Subnet
+   through 'set_stats'. Named fabric-server workflows may use their host
+   identity, but BMaaS does not use an interface name as the lease key.
+5. The operator validates the artifact's job status, attachment identity,
+   authoritative MAC, Subnet reference, address family, and freshness before
+   writing the observed address to the resource status. For BMaaS, each entry
+   must contain a `mac_address` matching the interface-macs annotation, the
+   expected `subnet_ref`, and the assigned IP. The artifact must contain exactly
+   one entry for each requested SubnetRef; duplicate, unexpected, missing, or
+   MAC-mismatched entries fail IP discovery.
 6. The bare-metal operator retrieves the completed AAP job, parses
-   DHCPLeaseResult.Leases, maps each lease by the unique SubnetRef, validates
-   the IP address, and writes Status.NetworkAttachmentStatuses. If a lease is
-   missing, duplicated, unexpected, or invalid, IP discovery remains failed and
+   DHCPLeaseResult.Leases, maps each lease by authoritative MAC plus the unique
+   SubnetRef, validates the IP address, and writes
+   Status.NetworkAttachmentStatuses. If a lease is missing, duplicated,
+   unexpected, MAC-mismatched, or invalid, IP discovery remains failed and
    reconciliation retries.
 7. The osac-operator BareMetalInstance feedback controller watches the CR status
    change and calls the fulfillment-service BareMetalInstances.Signal RPC.
@@ -901,13 +909,16 @@ milestone. [Locked: D13] [User] [Research: Local DHCP presence per broadcast dom
 
 The agentless 'query_dhcp_lease' role accepts the generic attachment inputs:
 
-- host identity;
-- logical interface name or MAC identity;
+- host identity for named fabric-server workflows;
+- authoritative port MAC for BMaaS, resolved from the
+  `osac.openshift.io/interface-macs` annotation; the logical interface name is
+  only the annotation lookup key;
 - Subnet reference;
 - requested address family, fixed to IPv4 for this milestone.
 
-It looks up the lease by attachment identity and Subnet, rejects an ambiguous
-or stale match, and publishes a list under the AAP 'leases' artifact. The
+It looks up a BMaaS lease by port MAC and Subnet, rejects an ambiguous, stale,
+or mismatched match, and publishes a list under the AAP 'leases' artifact.
+Named fabric-server workflows may use their host identity. The
 operator consumes only a successful job artifact whose identity matches the
 current resource generation. A missing lease causes a requeue and diagnostic
 condition; it does not create a DNAT rule with an empty target. [PRD: FR-4,
@@ -1203,9 +1214,9 @@ The existing dispatcher is the intended pluggability boundary. [Codebase: osac-o
 
 **Owner:** osac-operator and fulfillment-service maintainers
 
-**Question:** The BMaaS implementation currently consumes a 'leases' artifact
-whose entries contain 'subnet_ref', 'interface', 'ip_address', and
-'mac_address', then writes the accepted values into
+**Question:** The BMaaS implementation consumes a 'leases' artifact whose
+entries require 'subnet_ref', 'interface', authoritative 'mac_address', and
+'ip_address', then writes the accepted values into
 'Status.NetworkAttachmentStatuses'. Should this artifact shape and its
 generation/freshness validation become the shared contract for future CaaS and
 VMaaS consumers, or remain BMaaS-specific until those integrations are
@@ -1383,10 +1394,10 @@ existing mono-repo and tests/e2e patterns.
 ## Provenance
 
 Authored: revise @ design 0.9.0 - 562b610, workspace main @ 0ae795e37
-Final: revise @ design 0.11.1 - f1d6a4b, workspace main @ b9575896d (dirty)
+Final: respond @ design 0.11.1 - f1d6a4b, workspace main @ b9575896d (dirty)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
