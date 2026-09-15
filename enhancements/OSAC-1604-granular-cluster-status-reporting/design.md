@@ -95,8 +95,8 @@ The change spans two components in the `osac` mono-repo, in dependency order:
 
 1. **fulfillment-service (proto + CLI + tables).** Add two orthogonal
    `ClusterConditionType` values (`CONTROL_PLANE_AVAILABLE`, `WORKERS_READY`),
-   populate the `PROGRESSING` condition's `Reason` with the current provisioning
-   sub-stage, and extend `ClusterNodeSet` with desired/current/ready replica counts
+   populate the `PROGRESSING` condition's `Reason` with the current provisioning or
+   teardown sub-stage, and extend `ClusterNodeSet` with desired/current/ready replica counts
    and a per-set state. Render conditions, endpoints, and node-set status in
    `osac describe cluster`, and add STAGE/HEALTH columns to the list tables.
 2. **osac-operator (feedback + resource controllers).** Replace the
@@ -176,8 +176,10 @@ Variations:
   reason `Scaling`, while overall state stays `READY`.
 - **Deletion (AC-5).** On delete, state `DELETING`; `PROGRESSING` reason reflects
   the current teardown sub-stage (destroying cloud resources while HyperShift
-  `CloudResourcesDestroyed` is False, then final teardown). If teardown fails or
-  stalls, state `DELETE_FAILED` with a `FAILED` condition reason.
+  `CloudResourcesDestroyed` is False, then final teardown). An actual HyperShift
+  teardown failure sets state `DELETE_FAILED` with a `FAILED` condition reason.
+  A teardown that is slow or stalled remains `DELETING`; after its threshold,
+  `PROGRESSING.reason` becomes `Stalled`.
 
 ### API Extensions
 
@@ -286,8 +288,15 @@ silent `default`:
 Precedence when several inputs touch `PROGRESSING`: the reason reflects the
 **furthest-advanced sub-stage observed**, selected from the CR sub-stage
 conditions by their fixed rank (accepted → control-plane-created →
-control-plane-available), not by the order they happen to appear in status;
-teardown sub-stages apply only while `state=DELETING`. `Stalled` and `StageUnknown`
+control-plane-available), not by the order they happen to appear in status.
+Only a condition with `status=True` advances the rank: the stage-entry markers
+are `Accepted=True`, `ControlPlaneCreated=True`, and
+`ControlPlaneAvailable=True`. `False` and `Unknown` do not advance the rank or
+make the reason appear ahead of the observed lifecycle stage; they may still
+drive the corresponding orthogonal condition. Once a stage has been observed,
+its rank is retained until a later stage is observed, including when a signal
+temporarily becomes `False` or `Unknown`; teardown sub-stages apply only while
+`state=DELETING`. `Stalled` and `StageUnknown`
 override the sub-stage reason when their own trigger fires. Exactly one reason is
 written per reconcile, so there is no last-writer-wins ambiguity. The unit tests
 below assert this table row-by-row and assert `FAILED` and `DEGRADED` are each
@@ -494,8 +503,8 @@ In `clusterorder_controller.go`:
   | Control plane starting | `ControlPlaneCreated` | 30m |
   | Workers joining | `ControlPlaneAvailable` | 20m (per-host-type overridable) |
   | Scaling | none (persisted `(observedReason, since)` pair) | 20m (per-host-type overridable) |
-  | Destroying cloud resources | `CloudResourcesDestroyed` | 20m |
-  | Destroying control plane | `HostedClusterDestroyed` | 15m |
+  | Destroying cloud resources | `metadata.deletionTimestamp` (persisted deletion-entry marker) | 20m |
+  | Destroying control plane | transition of `CloudResourcesDestroyed=True` | 15m |
 
   Worker-join and scaling time scale with pool size and instance type (image pull,
   cloud provisioning latency), so those two thresholds are per-host-type overridable
@@ -507,7 +516,10 @@ In `clusterorder_controller.go`:
 - **Teardown stall vs `DELETE_FAILED`.** `DELETE_FAILED` is set only on an actual
   HyperShift teardown failure signal, never on slowness alone. On delete the controller
   watches `metadata.deletionTimestamp` + `CloudResourcesDestroyed` /
-  `HostedClusterDestroyed`; if HyperShift surfaces a teardown failure the state becomes
+  `HostedClusterDestroyed`; deletion timing starts at `metadata.deletionTimestamp`,
+  and the destroying-control-plane timer starts when `CloudResourcesDestroyed=True`
+  transitions. `HostedClusterDestroyed=True` marks completion of that stage. If
+  HyperShift surfaces a teardown failure the state becomes
   `DELETE_FAILED` with a `FAILED` condition reason. A teardown that is merely slow stays
   `DELETING` with a teardown `PROGRESSING` reason (the current teardown sub-stage)
   and is subject to the same
@@ -693,6 +705,13 @@ maintainable.
   stage; `StageUnknown` when signals are absent; `Stalled` when a stage exceeds
   its threshold (fake clock); `DEGRADED` on partial NodePool failure with control
   plane healthy.
+- Stage ranking: `Accepted=True`, `ControlPlaneCreated=True`, and
+  `ControlPlaneAvailable=True` advance the rank; `False` and `Unknown` do not,
+  and a previously observed rank is retained across temporary signal loss.
+- Teardown timing: the cloud-resource timer starts at deletion entry and the
+  control-plane timer starts on the `CloudResourcesDestroyed=True` transition;
+  stalled teardown remains `DELETING`, while an explicit HyperShift failure
+  becomes `DELETE_FAILED`.
 - Per-node-set: multiple NodePools attribute to the correct `ClusterNodeSet`;
   `desired`/`current`/`ready` derivation; `Scaling` state when desired ≠ ready.
 - Event emission guarded on prior value (no per-reconcile spam).
