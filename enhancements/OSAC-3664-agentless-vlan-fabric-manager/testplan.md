@@ -204,7 +204,9 @@
 ##### Expected Results
 
 - The host receives an IPv4 address inside the Subnet CIDR.
-- The lease artifact contains the matching SubnetRef, interface or MAC, and IP.
+- The lease artifact contains the authoritative port MAC from the
+  `osac.openshift.io/interface-macs` annotation, the matching SubnetRef, and IP;
+  the MAC matches the attachment's annotation mapping.
 - BareMetalInstance status contains the same IP in its network attachment status.
 - NetworkHandoffComplete and IPDiscoveryComplete become True.
 
@@ -217,18 +219,28 @@
 ##### Preconditions
 
 - A BareMetalInstance has two network attachments on different Subnets.
-- The lease artifact contains one entry for each interface and SubnetRef.
+- The BareMetalHost `osac.openshift.io/interface-macs` annotation maps each
+  attached interface to its authoritative MAC.
+- The lease artifact contains one entry for each interface and SubnetRef, and
+  each entry contains the matching MAC and IP.
 
 ##### Steps
 
 1. Submit the completed lease artifact to the feedback path.
 2. Observe the BareMetalInstance status.
+3. Submit a second artifact that keeps one interface name and SubnetRef but
+   replaces its MAC with a stale or another attachment's MAC.
+4. Observe the BareMetalInstance status and reconciliation condition.
 
 ##### Expected Results
 
-- Each status entry retains its original interface and SubnetRef.
-- Each IP address is assigned to the matching attachment.
-- No lease is assigned to a different interface or Subnet.
+- Each valid status entry retains its original interface and SubnetRef and is
+  backed by the matching authoritative MAC.
+- Each valid IP address is assigned to the attachment matching both MAC and
+  SubnetRef.
+- No lease is assigned to a different interface, MAC, or Subnet.
+- The MAC-mismatched artifact is rejected; status remains unchanged and IP
+  discovery retries instead of accepting the stale or reused interface name.
 
 #### TC-FR4-03: Keep VM address assignment outside AgentlessNet
 
