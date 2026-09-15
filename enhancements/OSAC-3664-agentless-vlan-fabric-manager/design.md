@@ -368,7 +368,12 @@ failure message in the existing provisioning history and status condition.
 
 1. The resource controller observes deletion and retains its finalizer.
 2. For an ExternalIPAttachment, remove DNAT and wait for confirmed removal.
-3. Release the ExternalIP only after its attachment is removed.
+3. For an ExternalIP, retain the fulfillment-service capacity reservation and
+   deletion finalizer while a provider allocation task or UID-keyed
+   `external_ips` entry exists. If an atomic provider-state commit never
+   occurred, release the API reservation after the allocation reaches terminal
+   failure. If a provider entry exists, remove it under the state-file lock and
+   confirm cleanup before releasing the API reservation. [User]
 4. For a NATGateway, remove its owned SNAT rules. The referenced ExternalIP
    remains a separate resource and is not released implicitly.
 5. For a SecurityGroup, remove only the iptables chains and rules generated for
@@ -897,15 +902,19 @@ changes. [Codebase: osac-aap/collections/ansible_collections/agentless_net/ipam]
 | Subnet create/update/delete | Add or reuse one `subnets` entry; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, and DHCP scope; no host access-port binding during Subnet provisioning |
 | SecurityGroup create/update/delete | Add or replace the `security_groups` entry and rule generation; remove its owned chains on delete | Compile or remove only that SecurityGroup's iptables/netfilter rules; preserve the VN permit-all baseline |
 | ExternalIPPool create/delete | Add or reconcile one `external_ip_pools` entry; remove it only when the ExternalIPPool object is deleted | Register or remove provider-side pool CIDRs under the state-file lock; fulfillment-service remains authoritative for capacity counters |
-| ExternalIP create/delete | Add or reuse one `external_ips` entry keyed by ExternalIP UID; remove it only when the ExternalIP object is deleted | Select and persist an available IPv4 address under the state-file lock, publish it as the AAP result, and release it during ordered cleanup |
+| ExternalIP create/delete | Create one idempotent fulfillment-service capacity reservation keyed by ExternalIP UID; add or reuse one complete `external_ips` entry keyed by the same UID; remove the provider entry before releasing the API reservation | Select and persist a complete IPv4 allocation atomically under the state-file lock, publish it as the AAP result, and release provider state before API capacity during ordered cleanup |
 | ExternalIPAttachment create/delete | Add, replace, or remove one `attachments` entry | Read the address from `ExternalIP.status.address` and target status, then create or remove the owned DNAT rule |
 | NATGateway create/delete | Add or remove one `nat_gateways` entry | Read the address from `ExternalIP.status.address` and create or remove the owned SNAT rule |
 | BMF attachment bind/unbind | Add or remove one `port_bindings` entry keyed by machine, interface, and Subnet | Move the Cumulus access port to or from the Subnet VLAN through the generic attachment playbook |
 
 Every transition is applied under the state-file lock and is persisted before
-the corresponding operation is reported successful. A retry reads the entry
-by stable UID or binding key and converges the desired data-plane state instead
-of allocating a second VLAN or creating duplicate owned rules. [User]
+the corresponding operation is reported successful. The fulfillment-service
+capacity reservation and provider `external_ips` entry use the ExternalIP UID
+as their idempotency key. The provider writes the complete entry atomically—an
+allocation either commits the full entry or commits nothing. A retry reuses a
+committed entry by UID instead of allocating a second address. A failed
+allocation with no committed entry keeps the same API reservation while it is
+retryable and releases it exactly once on terminal failure or deletion. [User]
 
 #### DHCP and lease feedback
 
@@ -956,12 +965,18 @@ failed desired generation in status.
 
 #### ExternalIP, DNAT, and SNAT
 
-ExternalIPPool API objects and capacity counters remain fulfillment-service
-state. AgentlessNet also maintains provider-side pool and concrete ExternalIP
-allocation entries in its locked state file. The AAP allocation job publishes
-the selected address, and the operator copies it to `ExternalIP.status.address`.
-ExternalIP release remains blocked while an ExternalIPAttachment still owns the
-inbound mapping.
+ExternalIPPool API objects, aggregate capacity counters, and UID-keyed capacity
+reservations remain fulfillment-service state. AgentlessNet maintains
+provider-side pool and concrete ExternalIP allocation entries in its locked
+state file. The AAP allocation job publishes the selected address only after
+the complete `external_ips` entry is atomically committed, and the operator
+copies it to `ExternalIP.status.address`. ExternalIP release remains blocked
+while an ExternalIPAttachment still owns the inbound mapping, while allocation
+is in progress, or while the provider entry has not been confirmed removed.
+If provider allocation fails before the atomic commit, no provider address
+exists and the retry uses the existing UID reservation; terminal failure or
+deletion compensates that reservation. If the provider entry is committed,
+cleanup removes it before the API reservation and pool capacity are released.
 
 ExternalIPAttachment creates a destination translation from the address in
 `ExternalIP.status.address` to the target's primary private address. It never changes
@@ -1066,6 +1081,8 @@ across VNs or installing a shared route between overlapping VNs violates NFR-3.
 | VLAN allocation exhausted or already owned | Do not reuse an allocated ID; fail the requested generation | Failed condition identifies VLAN allocation exhaustion/conflict |
 | ExternalIP state lock unavailable or pool has no free address | Retry without changing an existing UID allocation; do not publish an address | ExternalIP remains non-ready with an allocation diagnostic |
 | ExternalIP allocation artifact is missing, stale, or mismatched | Ignore the artifact and retry the current generation; do not set `status.address` | ExternalIP remains Pending/Progressing with an allocation condition |
+| ExternalIP allocation fails before atomic provider-state commit | Retry using the existing UID-keyed API reservation; if failure becomes terminal or the resource is deleted, release that reservation exactly once because no provider entry exists | ExternalIP remains non-ready during retry and reports the allocation failure; capacity is restored after compensation |
+| ExternalIP deletion races allocation or provider cleanup | Serialize operations by ExternalIP UID; remove a committed provider entry before releasing API capacity, or release the reservation directly when no entry was committed | No address becomes reusable until the provider state and API reservation agree |
 | Switch VLAN or access-port operation fails | Retry idempotently; leave existing applied state untouched when possible | AAP failure and resource status contain switch error |
 | Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
 | DHCP lease absent or ambiguous | Requery; do not update status or create DNAT until identity/freshness checks pass | Condition identifies lease-unavailable/ambiguous |
@@ -1277,6 +1294,9 @@ not a substitute for that testplan.
 - Validate DHCP lease artifact identity, address family, Subnet reference, and
   desired-generation freshness.
 - Verify DNAT/SNAT direction separation and deletion ordering.
+- Inject an ExternalIP state-file write failure and verify that no partial
+  `external_ips` entry is visible, retries reuse the same UID reservation, and
+  terminal failure compensates the API reservation.
 - Verify status condition reason/message mapping for AAP and controller-owned
   allocation errors.
 
@@ -1286,6 +1306,8 @@ not a substitute for that testplan.
 - Reconcile VirtualNetwork, multiple Subnets, and SecurityGroup through
   envtest/fake AAP providers; verify provider-side ExternalIP allocation
   artifacts populate status and DNAT/SNAT consumers use that address.
+- Exercise ExternalIP deletion during allocation and verify UID serialization,
+  provider cleanup, and delayed API capacity release.
 - Verify tenant and owner annotations survive the service-to-CR path.
 - Exercise generic DHCP job artifact consumption for multi-NIC instances using
   distinct Subnets, and reject duplicate SubnetRefs before lease discovery.
@@ -1408,4 +1430,4 @@ Final: respond @ design 0.11.1 - f1d6a4b, workspace main @ b9575896d (dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
