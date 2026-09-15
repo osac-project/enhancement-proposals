@@ -45,8 +45,9 @@ ExternalIP, ExternalIPAttachment, and NATGateway. [Codebase: osac-aap/collection
 The current agentless path allocates VLANs and creates a router namespace per
 cluster workflow. The unified networking model requires a namespace per
 VirtualNetwork, multiple VLAN-backed Subnets inside that namespace, routing
-between those Subnets subject to SecurityGroup policy, and no private routing
-between different VirtualNetworks. [Locked: D12] [Research: VLANs and Linux network isolation]
+between those Subnets by default, with applicable SecurityGroup policy able to
+restrict flows, and no private routing between different VirtualNetworks.
+[Locked: D12] [User] [Research: VLANs and Linux network isolation]
 
 Bare-metal nodes must obtain IPv4 addresses through fabric-side DHCP, and the
 lease must reach the resource status path before external access can be enabled.
@@ -175,9 +176,10 @@ The Tenant Admin creates and deletes the tenant's Networking API resources:
 VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, and
 NATGateway. A usable tenant network requires one VirtualNetwork with at least
 one Ready Subnet before a machine can attach. SecurityGroup is optional as an
-object, but the backend's deny-by-default policy requires an applicable
-SecurityGroup rule before traffic is permitted. Tenant Users consume these
-resources through their workload workflows.
+object. With no applicable SecurityGroup, the permit-all forwarding baseline
+allows supported traffic; when an attachment has an applicable SecurityGroup,
+its rule set restricts traffic in the governed direction. Tenant Users consume
+these resources through their workload workflows. [User]
 
 1. The Tenant Admin creates a VirtualNetwork, one or more Subnets, and any
    SecurityGroups through the existing gRPC/REST API or CLI.
@@ -190,7 +192,7 @@ resources through their workload workflows.
    playbook. The implementation strategy selects
    `osac.templates.agentless_net`.
 4. AgentlessNet reconciles the desired fabric state idempotently: one namespace
-   and default-deny baseline per VirtualNetwork, one VLAN/interface/gateway/
+   and permit-all forwarding baseline per VirtualNetwork, one VLAN/interface/gateway/
    DHCP binding per Subnet, and owned iptables/netfilter rules per
    SecurityGroup. Subnet reconciliation never binds a host access port.
 5. ExternalIPPool and ExternalIP remain controller-managed allocation
@@ -287,16 +289,16 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
 5. Once the target address is available, the controller dispatches the
    agentless `create_external_ip_attachment` operation. The role creates only
    the owned DNAT mapping from the address in `ExternalIP.status.address` to
-   the target address. The VirtualNetwork default-deny baseline and
+   the target address. The VirtualNetwork permit-all baseline and any applicable
    SecurityGroup rules are reconciled independently by their own lifecycles;
    the attachment operation does not create or update SecurityGroup rules.
 6. The attachment remains Pending or Progressing until both the parent
    ExternalIP address and the target address are current. It reaches Ready only
    after the DNAT AAP job succeeds and status feedback confirms the DNAT
    operation. If allocation succeeds but DNAT fails, the ExternalIPAttachment
-   remains non-ready and the parent ExternalIP is not marked attached. Traffic
-   not permitted by the already-applied default-deny/SecurityGroup policy is
-   dropped. [PRD: FR-5]
+   remains non-ready and the parent ExternalIP is not marked attached. If an
+   applicable SecurityGroup restricts the flow and no rule matches, the flow is
+   dropped; otherwise the permit-all baseline allows it. [PRD: FR-5] [User]
 
 ExternalIP is an allocated address resource independent of any VirtualNetwork.
 ExternalIPAttachment is the separate binding that gives that address an
@@ -319,8 +321,9 @@ not alter the NATGateway configuration. [Locked: D14]
    approved address in the referenced ExternalIP status. AgentlessNet does not
    repeat the allocation, tenant-scope, or exclusivity checks and does not
    introduce a separate hidden net-node address.
-4. The independently reconciled `filter/FORWARD` default-deny and
-   SecurityGroup rules determine which packets reach the SNAT path. The
+4. The independently reconciled `filter/FORWARD` permit-all baseline and any
+   applicable SecurityGroup rules determine which packets reach the SNAT path.
+   The
    NATGateway role does not evaluate or modify that policy; packets accepted by
    forwarding are translated in `POSTROUTING`, and established return traffic
    follows the stateful connection policy.
@@ -455,12 +458,13 @@ without exposing a Linux namespace name.
 
 AgentlessNet maps the VirtualNetwork UID to one deterministic Linux routing
 namespace, creates its uplink/external boundary, and initializes an owned
-default-deny iptables/netfilter policy on that namespace's `filter/FORWARD`
-path. The baseline permits established/related return traffic but no new
-routed tenant flow until an explicit policy allows it. Local DHCP traffic
+permit-all iptables/netfilter policy on that namespace's `filter/FORWARD` path.
+The baseline permits new routed tenant flow and established/related return
+traffic. An applicable SecurityGroup can add direction-specific allow-rule
+filtering; traffic unmatched by that policy is dropped. Local DHCP traffic
 terminates in the namespace and is not routed through this baseline. AgentlessNet
 records the mapping in the locked state file; it does not create tenant child
-resources or install private routes to another VirtualNetwork.
+resources or install private routes to another VirtualNetwork. [User]
 
 ##### Subnet
 
@@ -540,13 +544,15 @@ status:
 ~~~
 
 `spec.virtualNetwork` scopes the policy. `spec.ingressRules` and
-`spec.egressRules` are the existing allow-rule model; an empty or missing
-allow rule does not create an allow-by-default path. `status.phase`,
+`spec.egressRules` are the existing allow-rule model. An absent SecurityGroup
+leaves the permit-all baseline in place. When an applicable SecurityGroup is
+present, its rule semantics govern the attached direction and traffic matching
+no rule is restricted. `status.phase`,
 `status.conditions`, and `status.backendSecurityGroupId` report whether the
 policy was accepted and realized.
 
 AgentlessNet compiles the rules into owned iptables/netfilter chains at the
-VirtualNetwork routing boundary, including the required default-deny and
+VirtualNetwork routing boundary, including the permit-all baseline and
 established-connection behavior. It applies only the chains owned by this
 SecurityGroup and leaves other tenants' rules unchanged. Attachment workflows
 determine which SecurityGroups apply to a workload interface.
@@ -674,7 +680,7 @@ from the existing DHCP lease/status feedback path. If the address is missing
 or stale, it keeps the attachment pending and does not dispatch the AAP job.
 Once the target address is current, AgentlessNet creates an owned DNAT rule
 from `ExternalIP.status.address` to that target. The
-VirtualNetwork default-deny baseline and SecurityGroup rules are maintained by
+VirtualNetwork permit-all baseline and applicable SecurityGroup rules are maintained by
 the VirtualNetwork and SecurityGroup lifecycles, not by the attachment role.
 
 ##### NATGateway
@@ -813,7 +819,7 @@ virtual_networks:
   - uid: <virtual-network-uid>
     namespace_name: <deterministic-name>
     uplink: <interface-or-veth-identity>
-    default_deny: true
+    default_forward_policy: permit_all
 subnets:
   - uid: <subnet-uid>
     virtual_network_uid: <uid>
@@ -871,9 +877,9 @@ changes. [Codebase: osac-aap/collections/ansible_collections/agentless_net/ipam]
 
 | API action | State transition | AgentlessNet data-plane operation |
 |---|---|---|
-| VirtualNetwork create/update/delete | Add or reconcile one `virtual_networks` entry; remove it only when the VirtualNetwork object is deleted and its child entries are gone | Create or repair the namespace, uplink, and default-deny baseline; remove them during ordered cleanup |
+| VirtualNetwork create/update/delete | Add or reconcile one `virtual_networks` entry; remove it only when the VirtualNetwork object is deleted and its child entries are gone | Create or repair the namespace, uplink, and permit-all baseline; remove them during ordered cleanup |
 | Subnet create/update/delete | Add or reuse one `subnets` entry; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, and DHCP scope; no host access-port binding during Subnet provisioning |
-| SecurityGroup create/update/delete | Add or replace the `security_groups` entry and rule generation; remove its owned chains on delete | Compile or remove only that SecurityGroup's iptables/netfilter rules; preserve the VN default-deny baseline |
+| SecurityGroup create/update/delete | Add or replace the `security_groups` entry and rule generation; remove its owned chains on delete | Compile or remove only that SecurityGroup's iptables/netfilter rules; preserve the VN permit-all baseline |
 | ExternalIPPool create/delete | Add or reconcile one `external_ip_pools` entry; remove it only when the ExternalIPPool object is deleted | Register or remove provider-side pool CIDRs under the state-file lock; fulfillment-service remains authoritative for capacity counters |
 | ExternalIP create/delete | Add or reuse one `external_ips` entry keyed by ExternalIP UID; remove it only when the ExternalIP object is deleted | Select and persist an available IPv4 address under the state-file lock, publish it as the AAP result, and release it during ordered cleanup |
 | ExternalIPAttachment create/delete | Add, replace, or remove one `attachments` entry | Read the address from `ExternalIP.status.address` and target status, then create or remove the owned DNAT rule |
@@ -909,18 +915,20 @@ FR-10] [Codebase: osac-aap/playbook_osac_query_dhcp_lease.yml]
 
 #### SecurityGroup policy
 
-VirtualNetwork creation establishes the default-deny iptables/netfilter
-baseline in the namespace's `filter/FORWARD` path. SecurityGroup create,
-update, and delete operations only add, replace, or remove the rules owned by
-that SecurityGroup; they do not create or remove the baseline policy.
+VirtualNetwork creation establishes a permit-all iptables/netfilter baseline
+in the namespace's `filter/FORWARD` path. SecurityGroup create, update, and
+delete operations only add, replace, or remove the rules owned by that
+SecurityGroup; they do not create or remove the baseline policy.
 
 SecurityGroup rules are translated into owned iptables/netfilter rules at the
 VN routing boundary. The implementation uses the existing Netris behavior as
 the parity reference and must document the exact protocol, port, CIDR,
 direction, default, and established-connection semantics in the role contract.
-The PRD requires unpermitted inbound, cross-Subnet, and outbound traffic to be
-blocked; therefore an absent allow rule cannot produce an allow-by-default path.
-[PRD: FR-3, FR-5, FR-6] [Research: OpenStack Neutron routing and security model]
+Without an applicable SecurityGroup, the permit-all baseline allows new
+traffic. When an attachment has an applicable SecurityGroup, its existing
+allow-rule contract controls the governed direction: matching traffic is
+accepted and traffic matching no rule is restricted. [PRD: FR-3, FR-5, FR-6]
+[User] [Research: OpenStack Neutron routing and security model]
 
 The iptables rule compiler is idempotent. It replaces only rules owned by the target
 SecurityGroup/VN and does not modify another tenant's rules. A failed compile
@@ -1375,10 +1383,10 @@ existing mono-repo and tests/e2e patterns.
 ## Provenance
 
 Authored: revise @ design 0.9.0 - 562b610, workspace main @ 0ae795e37
-Final: respond @ design 0.11.0 - fd98907, workspace main @ b9575896d (dirty)
+Final: revise @ design 0.11.1 - f1d6a4b, workspace main @ b9575896d (dirty)
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.0","ai_workflows":"fd98907","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
