@@ -828,7 +828,6 @@ Expected stages: Dev Preview -> Tech Preview -> GA.
 | **API lifecycle** | SshKey CRUD (Create, List, Get, Delete) and ComputeInstance Signal complete end-to-end | Integration tests pass: create key, list, get by ID, delete; Signal delegates to `generic.Signal` without error |
 | **Tenant isolation** | Cross-tenant SSH key reference blocked at both API and database layers | Integration test: tenant-A ComputeInstance referencing tenant-B SshKey is rejected by `ReferenceValidator` interceptor (`InvalidArgument`) AND by Z0002 trigger (tenant mismatch) |
 | **First-boot injection** | SSH key is present and usable in the provisioned VM | E2E test: register key, create ComputeInstance, SSH into VM using the registered key — connection succeeds |
-| **Rollback blocking** | Downgrade is rejected when active SSH key references exist | Manual or automated verification: `osac get computeinstances --filter "this.spec.ssh_key.id != ''"` returns results → downgrade procedure blocks until references are cleared |
 | **Transient controller errors** | Transient SSH key resolution errors preserve instance status and re-reconcile on next sync | Unit tests: `SshKeyResolutionError{Permanent: false}` → status unchanged, no CRD write; instance re-reconciled on next periodic sync (1-hour) or watch event |
 
 **Tech Preview exit criteria** (additional, in production environment):
@@ -841,26 +840,12 @@ Expected stages: Dev Preview -> Tech Preview -> GA.
 - All Tech Preview criteria sustained for ≥4 weeks in production.
 - No open P1/P2 bugs against SshKey functionality.
 - Support procedures documented and validated by support engineering.
-- Downgrade procedure executed successfully in staging at least once.
 
 ## Upgrade / Downgrade Strategy
 
 The `spec.ssh_public_key` field is removed. OSAC is pre-GA with no production workloads, so no migration path is needed — the field is simply removed with `reserved 7; reserved "ssh_public_key";` for proto schema hygiene. The `SshKey` resource and `ComputeInstanceSpec.ssh_key` field are the only SSH key mechanism.
 
-**Downgrade is blocked while active SSH key references exist.** The pre-downgrade validation rejects the downgrade if any ComputeInstance references an SSH key — the old controller cannot reconcile them, and silently dropping the reference would create VMs without the expected SSH key.
-
-**Pre-downgrade validation** (must pass before proceeding):
-```
-osac get computeinstances --filter "this.spec.ssh_key.id != ''"
-```
-If this returns any results, **the downgrade is blocked**. The operator must resolve all active SSH key references before proceeding.
-
-**Destructive escape hatch** (not a normal rollback path): If the downgrade is urgent and active references exist, the operator must delete the affected ComputeInstances through the API and recreate them without an SSH key reference (SSH keys would need to be managed out-of-band until the feature is re-enabled). Do **not** clear `spec.ssh_key` via direct DB update — this bypasses audit logging, validation, and can leave inconsistent state. This is a destructive procedure that causes VM downtime; it is not a seamless rollback.
-
-**Downgrade procedure** (after pre-downgrade validation passes):
-1. Revert the controller first (so it stops trying to resolve `ssh_key` references).
-2. Revert the fulfillment-service binary.
-3. Drop the `ssh_keys` table and remove the database triggers via a down migration.
+**Downgrade**: OSAC is pre-GA with no production workloads, so a formal downgrade procedure is intentionally omitted. If the feature needs to be removed, the standard approach is to delete affected resources through the API and revert the deployment.
 
 ## Version Skew Strategy
 
@@ -906,7 +891,7 @@ Both signals should be checked: rollout status confirms all replicas are updated
   - **Diagnosis**: The controller could not resolve `spec.ssh_key.id` via `SshKeys.Get`. The SshKey was deleted outside the trigger protection (e.g., direct DB manipulation) or was never created due to a race. This is an invariant violation — the database triggers should prevent this state under normal operation.
   - **Resolution**: Delete the affected ComputeInstance and recreate it with a valid SSH key reference. Note: the controller resolves by `id`, not `name`. Re-registering an SSH key with the same name produces a **new ID** — existing ComputeInstances still reference the old ID and will continue to fail with `SshKeyNotFound` (correct behavior, since the old key material is gone). If many ComputeInstances are affected, treat this as an incident requiring controlled repair (identify the root cause of the invariant violation before recreating instances).
 
-- **Removing the feature**: To fully remove SSH key support, follow the downgrade procedure in the Upgrade / Downgrade Strategy section. This requires that no active ComputeInstances reference SSH keys (pre-downgrade validation must pass). Remove the `SshKeys` gRPC service registration from `register_servers.go`, the OPA allowlist entries from `authz.rego`, and run the database down migrations to drop the `ssh_keys` table and associated triggers.
+- **Removing the feature**: OSAC is pre-GA, so removing SSH key support is straightforward: delete any ComputeInstances referencing SSH keys through the API, remove the `SshKeys` gRPC service registration from `register_servers.go`, the OPA allowlist entries from `authz.rego`, and run the database down migrations to drop the `ssh_keys` table and associated triggers.
 
 ## Infrastructure Needed
 
