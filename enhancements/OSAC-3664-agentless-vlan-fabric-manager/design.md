@@ -797,6 +797,14 @@ is:
    an ExternalIP or a separate Kubernetes object. Subnet deletion removes the
    DHCP scope and gateway address before deleting the VLAN interface and
    releasing the VLAN.
+   AgentlessNet supports canonical IPv4 Subnet prefixes with a prefix length of
+   at most `/30` (subject to parent containment and sibling-overlap validation).
+   `/31` and `/32` are rejected before AAP or fabric provisioning because the
+   L2 gateway/DHCP model requires a gateway address and at least one separate
+   host address. `/30` is the smallest supported range: the first usable
+   address is the gateway and the remaining usable address is available to
+   DHCP. AgentlessNet does not implement Netris's separate `/31` L3VPN
+   point-to-point mode, where DHCP and anycast gateway are disabled. [User]
 5. VirtualNetwork namespace -> one uplink boundary used for routing and external
    NAT.
 
@@ -1053,7 +1061,7 @@ across VNs or installing a shared route between overlapping VNs violates NFR-3.
 | Failure | Recovery | Observable result |
 |---|---|---|
 | Manager ConfigMap missing or capability mismatch | Stop before AAP side effects; requeue after manager discovery changes | Resource condition identifies missing manager/capability |
-| Invalid NetworkClass or unsupported IPv6 request | API/controller validation rejects before provisioning | Invalid argument or failed condition names address family |
+| Invalid NetworkClass, unsupported IPv6 request, or Subnet prefix `/31`/`/32` | API/controller validation rejects before provisioning | Invalid argument or failed condition names the unsupported address family or prefix; no AAP job or fabric state is created |
 | VLAN state lock unavailable | Retry with backoff; preserve existing allocation | Provisioning remains pending with lock diagnostic |
 | VLAN allocation exhausted or already owned | Do not reuse an allocated ID; fail the requested generation | Failed condition identifies VLAN allocation exhaustion/conflict |
 | ExternalIP state lock unavailable or pool has no free address | Retry without changing an existing UID allocation; do not publish an address | ExternalIP remains non-ready with an allocation diagnostic |
@@ -1400,4 +1408,4 @@ Final: respond @ design 0.11.1 - f1d6a4b, workspace main @ b9575896d (dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

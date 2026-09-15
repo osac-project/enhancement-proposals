@@ -4,7 +4,7 @@
 
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
 - **Design task:** OSAC-4307
-- **Total test cases:** 30
+- **Total test cases:** 31
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 6 of 6
 
@@ -704,6 +704,34 @@
 - No fabric AAP job starts for the unsupported request.
 - No IPv6 or dual-stack state entry is created.
 
+#### TC-NFR1-02: Reject IPv4 /31 and /32 Subnet prefixes
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | high | automated |
+
+##### Preconditions
+
+- `agentless_net` is Ready with IPv4 capability.
+- A Ready VirtualNetwork has a supernet containing the candidate Subnet CIDRs.
+
+##### Steps
+
+1. Submit Subnet requests for `10.20.2.0/31` and `10.20.2.2/32`.
+2. Inspect each API response, resource condition, AAP job history, and
+   AgentlessNet state.
+3. Submit a valid `10.20.2.4/30` Subnet request and inspect its realized
+   gateway and DHCP state.
+
+##### Expected Results
+
+- The `/31` and `/32` requests are rejected or marked Failed with an
+  unsupported-prefix diagnostic before AAP dispatch.
+- The rejected requests create no VLAN, gateway, DHCP scope, state-file entry,
+  or other fabric side effect.
+- The `/30` request is accepted with `10.20.2.5` as the gateway and the
+  remaining usable address available to DHCP.
+
 ### NFR-2: Netris-equivalent tenant behavior
 
 #### TC-NFR2-01: Compare core API behavior with the Netris backend
@@ -817,12 +845,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 30 |
+| Total test cases | 31 |
 | Critical | 11 |
-| High | 18 |
+| High | 19 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 29 |
+| Automated | 30 |
 | Manual | 1 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 6 / 6 |
