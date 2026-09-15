@@ -515,18 +515,24 @@
 
 ##### Preconditions
 
-- Fixtures represent the generic attachment inputs for a cluster node and a
-  ComputeInstance.
+- Fixtures represent a CaaS cluster node and a VMaaS ComputeInstance whose
+  attachment omits the Subnet and SecurityGroup fields so tenant defaults must
+  be resolved.
 - A fake AAP provider captures the selected role arguments.
 
 ##### Steps
 
 1. Submit each fixture to the generic attachment and DHCP role contract.
-2. Inspect role argument validation and generated lease-query inputs.
+2. Inspect the resolved attachment fields, role argument validation, and
+   generated lease-query inputs.
 
 ##### Expected Results
 
-- Both inputs contain a supported Subnet reference and interface identity.
+- Both fixtures expand omitted Subnet and SecurityGroup fields to the tenant's
+  defaults.
+- The single CaaS `BareMetalNetworkAttachment` has `primary: true`.
+- The single VMaaS attachment is implicitly primary; generic
+  `query_dhcp_lease` arguments do not require a `primary` field.
 - The AgentlessNet role accepts the contract without a service-specific API
   change.
 - Full service provisioning remains assigned to OSAC-1611 and OSAC-3665.
