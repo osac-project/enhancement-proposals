@@ -261,8 +261,9 @@ message ComputeInstanceSpec {
 
 **`PrivateComputeInstancesServer.Create` update**: After existing catalog-item and template validation, add (in order):
 
-1. **Guest OS validation**: If `ssh_key` is set and the catalog item resolves to a Windows guest OS (`GuestOSFamily == "windows"`), return `InvalidArgument: SSH key injection is not supported for Windows instances`.
-2. **User data type validation**: If `ssh_key` is set and the instance's user data type is ignition (not cloud-init), return `InvalidArgument: SSH key injection requires cloud-init; ignition user data is not compatible`. Note: all currently supported Linux catalog items use cloud-init; this is a forward-compatibility guard for potential future ignition-based images.
+1. **Empty reference rejection**: If `ssh_key` is non-nil but both `id` and `name` are empty (i.e., the user sent `ssh_key: {}`), return `InvalidArgument: spec.ssh_key must include at least a name or id; empty SshKeyReference is not valid`. This runs before the `ReferenceValidator` interceptor, which would otherwise pass through an empty reference without performing a lookup.
+2. **Guest OS validation**: If `ssh_key` is set and the catalog item resolves to a Windows guest OS (`GuestOSFamily == "windows"`), return `InvalidArgument: SSH key injection is not supported for Windows instances`.
+3. **User data type validation**: If `ssh_key` is set and the instance's user data type is ignition (not cloud-init), return `InvalidArgument: SSH key injection requires cloud-init; ignition user data is not compatible`. Note: all currently supported Linux catalog items use cloud-init; this is a forward-compatibility guard for potential future ignition-based images.
 
 **SSH key reference validation (two-layer defense)**: Two complementary mechanisms validate SSH key references:
 
@@ -325,7 +326,7 @@ Note: `spec.ssh_key` comparison uses `proto.Equal` because `SshKeyReference` is 
 
 **ComputeInstance controller update**: The `addExplicitFields` function is extended to resolve the SSH key reference at reconciliation time. Since `SshKeyReference` is now the only way to provide an SSH key, the controller always resolves `spec.ssh_key` when present — there is no fallback to a raw `ssh_public_key` field:
 
-1. If `spec.ssh_key` is set (the message is non-nil), call `SshKeys.Get` (private API) using `spec.ssh_key.id`. The `id` is always available because the `ReferenceValidator` interceptor auto-populated it from `name` at create time. Using `Get`-by-ID is a direct single-row lookup — no CEL filter, tenant scoping, or result-count assertion needed. Tenant isolation is guaranteed by the interceptor at create time (the lookup function is scoped to the tenant). The existing `HasSshPublicKey()` check in the reconciler is removed — SSH key presence is determined solely by whether `spec.ssh_key` is non-nil.
+1. If `spec.ssh_key` is set and non-empty (the message is non-nil AND at least `id` is populated), call `SshKeys.Get` (private API) using `spec.ssh_key.id`. The `id` is always available because the `ReferenceValidator` interceptor auto-populated it from `name` at create time. Using `Get`-by-ID is a direct single-row lookup — no CEL filter, tenant scoping, or result-count assertion needed. Tenant isolation is guaranteed by the interceptor at create time (the lookup function is scoped to the tenant). The existing `HasSshPublicKey()` check in the reconciler is removed — SSH key presence is determined by whether `spec.ssh_key` is non-nil AND has a populated `id` (not by nil-check alone, since an empty `SshKeyReference{}` with both `id` and `name` empty is not a valid reference).
 2. **gRPC error classification**: The controller classifies gRPC errors from the `SshKeys.Get` call using typed errors to set specific `status.state` and condition `reason` values, bypassing the hardcoded `ReconciliationFailed` reason. See the classification table below.
 3. On success, extract `spec.public_key` from the resolved SshKey and set `spec.SSHKey` on the osac-operator CRD.
 
@@ -777,6 +778,7 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 - `PrivateSshKeysServer.Delete` succeeds when no ComputeInstance references the key.
 - `PrivateSshKeysServer.Delete` fails with `ErrInUse` when a ComputeInstance references the key.
 - `PrivateSshKeysServer.Update` returns `Unimplemented`.
+- `PrivateComputeInstancesServer.Create` rejects empty `SshKeyReference` (`ssh_key: {}` with both `id` and `name` empty) with `InvalidArgument`.
 - `PrivateComputeInstancesServer.Create` rejects `ssh_key` for Windows instances.
 - `PrivateComputeInstancesServer.Create` rejects `ssh_key` when user data type is ignition (not cloud-init).
 - `PrivateComputeInstancesServer.Update` rejects changes to `spec.ssh_key` (immutability, using `proto.Equal` for message comparison).
@@ -791,7 +793,7 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 - Database trigger `check_compute_instance_ssh_key_ref` rejects incomplete reference: `name` is non-empty but `id` is empty — raises Z0002 (`name-only reference, incomplete`).
 - Database trigger `check_compute_instance_ssh_key_ref` rejects incomplete reference: `id` is non-empty but `name` is empty — raises Z0002 (`id-only reference, incomplete`).
 - Database trigger `check_compute_instance_ssh_key_ref` rejects inconsistent name: `id` resolves to a key with a different name — raises Z0002 (`name mismatch`).
-- Database trigger `check_compute_instance_ssh_key_ref` accepts empty reference: both `id` and `name` are empty or null — returns new (no SSH key configured).
+- Database trigger `check_compute_instance_ssh_key_ref` accepts empty reference: both `id` and `name` are empty or null — returns new (no SSH key configured). Note: the server rejects empty `SshKeyReference{}` at the API layer before it reaches the trigger; this trigger behavior covers the "no ssh_key field set" case in the JSONB data.
 - Database trigger `check_compute_instance_ssh_key_ref` accepts valid `{id, name}` reference: both fields populated, `id` references an active key in the same tenant, and name matches — succeeds.
 - Reconciler: transient SSH key resolution error (e.g., `Unavailable`) returns `nil` — generic reconciler never calls `setReconciliationFailed`, instance status preserved.
 - Reconciler: feature gate disabled with `spec.ssh_key` set returns `nil` — preserves instance status and does not write CRD.
