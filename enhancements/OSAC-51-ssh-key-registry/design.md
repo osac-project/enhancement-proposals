@@ -361,6 +361,34 @@ func (e *SshKeyResolutionError) Unwrap() error { return e.Err }
 
 ```go
 // In addExplicitFields, after SshKeys.Get call:
+//
+// Convert raw gRPC status errors to SshKeyResolutionError so that
+// errors.As below always matches. Without this conversion, a raw
+// codes.NotFound or codes.InvalidArgument from SshKeys.Get would
+// fall through to the generic reconciler and produce a generic
+// "ReconciliationFailed" reason instead of the typed reason.
+if err != nil {
+    var sshKeyErr *SshKeyResolutionError
+    if !errors.As(err, &sshKeyErr) {
+        // Raw gRPC error — wrap it based on the status code.
+        code := status.Code(err)
+        switch code {
+        case codes.NotFound:
+            err = &SshKeyResolutionError{Permanent: true, Reason: "SshKeyNotFound", Err: err}
+        case codes.InvalidArgument:
+            err = &SshKeyResolutionError{Permanent: true, Reason: "SshKeyInvalid", Err: err}
+        case codes.Canceled:
+            // Context canceled — do not change status, do not retry.
+            logger.Info("SSH key resolution canceled (context done)", "error", err)
+            return nil
+        default:
+            // All other codes are transient (Unavailable, DeadlineExceeded,
+            // PermissionDenied, Unimplemented, Aborted, Internal, unknown).
+            err = &SshKeyResolutionError{Permanent: false, Reason: "", Err: err}
+        }
+    }
+}
+
 var sshKeyErr *SshKeyResolutionError
 if err != nil && errors.As(err, &sshKeyErr) {
     if sshKeyErr.Permanent {
@@ -558,10 +586,14 @@ begin
   ssh_key_id := new.data->'spec'->'ssh_key'->>'id';
   ref_name := new.data->'spec'->'ssh_key'->>'name';
 
-  -- On UPDATE of an active row, skip if the reference has not changed.
+  -- On UPDATE of an active row, skip if the complete reference has not changed.
+  -- Compare both id AND name to ensure a name-only change still reaches
+  -- the consistency check below (an update that changes only the name would
+  -- bypass the later name-consistency validation if we compared id alone).
   if tg_op = 'UPDATE' and old.deletion_timestamp = 'epoch' then
     old_ssh_key_id := old.data->'spec'->'ssh_key'->>'id';
-    if ssh_key_id is not distinct from old_ssh_key_id then
+    if ssh_key_id is not distinct from old_ssh_key_id
+       and ref_name is not distinct from (old.data->'spec'->'ssh_key'->>'name') then
       return new;
     end if;
   end if;
@@ -790,6 +822,11 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 - Database trigger `check_compute_instance_ssh_key_ref` rejects inconsistent name: `id` resolves to a key with a different name — raises Z0002 (`name mismatch`).
 - Database trigger `check_compute_instance_ssh_key_ref` accepts empty reference: both `id` and `name` are empty or null — returns new (no SSH key configured). Note: the server rejects empty `SshKeyReference{}` at the API layer before it reaches the trigger; this trigger behavior covers the "no ssh_key field set" case in the JSONB data.
 - Database trigger `check_compute_instance_ssh_key_ref` accepts valid `{id, name}` reference: both fields populated, `id` references an active key in the same tenant, and name matches — succeeds.
+- Database trigger `check_compute_instance_ssh_key_ref` UPDATE fast path compares both `id` and `name` — an UPDATE that changes only `ssh_key.name` (with `id` unchanged) does NOT skip validation (reaches the name-consistency check and raises Z0002 if inconsistent).
+- Reconciler: raw `codes.NotFound` from `SshKeys.Get` is converted to `SshKeyResolutionError{Permanent: true, Reason: "SshKeyNotFound"}` and handled by `errors.As` — calls `setReconciliationFailedWithReason`, returns `nil`.
+- Reconciler: raw `codes.InvalidArgument` from `SshKeys.Get` is converted to `SshKeyResolutionError{Permanent: true, Reason: "SshKeyInvalid"}` and handled by `errors.As` — calls `setReconciliationFailedWithReason`, returns `nil`.
+- Reconciler: raw `codes.Unavailable` from `SshKeys.Get` is converted to `SshKeyResolutionError{Permanent: false}` — logged as warning, status preserved, returns `nil`.
+- Reconciler: pre-wrapped `SshKeyResolutionError` is handled directly by `errors.As` without double-wrapping.
 - Reconciler: transient SSH key resolution error (e.g., `Unavailable`) returns `nil` — generic reconciler never calls `setReconciliationFailed`, instance status preserved.
 - Reconciler: permanent SSH key errors (`SshKeyNotFound`, `SshKeyInvalid`) call `setReconciliationFailedWithReason` with typed conditions, then return `nil` (no double-handling by generic reconciler).
 - ComputeInstance controller resolves `spec.ssh_key` to raw key material via `SshKeys.Get` using `spec.ssh_key.id` and sets CRD `spec.SSHKey`.
