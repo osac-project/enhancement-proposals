@@ -16,6 +16,7 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 
 - Block storage metering — allocation-based metering for standalone Volumes (OSAC-984) by storage tier and capacity (GiB-seconds), regardless of what the volume is attached to (including volumes attached to bare metal hosts)
 - Applies across VMaaS (block volumes on ComputeInstances) and CaaS (volumes on ClusterOrders); the volume meter also covers volumes attached to bare metal hosts, whose unified host footprint view is owned by OSAC-2506
+- Volume expansion through the existing dimension-update event path, with usage split at the committed effective timestamp
 
 ## Out of Scope
 
@@ -26,7 +27,6 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 - Network bandwidth metering — tracked separately ([OSAC-3149](https://redhat.atlassian.net/browse/OSAC-3149))
 - Costing, billing, quota enforcement, and budget alerts — deferred to a separate PRD
 - Parent-child attribution for attached Volumes — tracked as a follow-up with OSAC-4884
-- Volume expansion and resize — tracked as a follow-up storage API design
 - VM boot disk storage tier attribution — tracked separately
 - OSAC UI views for storage usage — downstream billing and usage systems provide presentation of the metering data
 - Workload-level metering inside tenant environments
@@ -54,6 +54,7 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 - [ ] Storage usage data appears alongside existing metering data without additional admin setup
 - [ ] Storage meters record usage at per-second granularity — a volume existing for 30 seconds appears in usage data
 - [ ] Storage usage totals are accurate — querying the same period twice returns consistent results
+- [ ] A successful volume expansion emits the committed new capacity and effective timestamp, and metering reports the old and new capacity intervals separately; failed or reverted expansions do not change usage
 - [ ] Raw storage metering events are retained for at least 7 days (configurable), per Part 1 metering requirements
 - [ ] Aggregated storage usage data is retained for at least 13 months (configurable), per Part 1 metering requirements
 - [ ] Enabling storage metering does not disrupt existing provisioning workflows
@@ -69,7 +70,7 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 ## Dependencies
 
 - **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Block storage metering extends but does not replace it.
-- **OSAC-984 (Storage Volume API):** A tenant-facing block storage Volume resource must exist before block storage metering can be implemented. Parent attribution and volume resize are follow-up capabilities and are not required for the core allocation meter.
+- **OSAC-984 (Storage Volume API):** A tenant-facing block storage Volume resource must exist before block storage metering can be implemented. Parent attribution remains a follow-up capability; resize uses the Volume API's dimension-update event path.
 
 ---
 
