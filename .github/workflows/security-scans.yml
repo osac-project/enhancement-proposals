@@ -1,0 +1,69 @@
+name: Security scans
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    name: CodeQL (Python)
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read  # CodeQL may read workflow metadata.
+      contents: read  # Checkout the repository source.
+      security-events: write  # Upload CodeQL SARIF results.
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          languages: python
+          build-mode: none
+
+      - name: Analyze with CodeQL
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          category: /language:python
+
+  osv-scheduled:
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      actions: read  # Required by the reusable workflow for SARIF upload.
+      contents: read  # Scan the repository contents.
+      security-events: write  # Upload OSV SARIF results.
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@a345acffa64b0eaede81a3d9aae6141214d9c8fc  # v2.6.0
+    with:
+      scan-args: |-
+        --include-git-root
+        -r
+        ./
+
+  osv-pr:
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    permissions:
+      actions: read  # Required by the reusable workflow for SARIF upload.
+      contents: read  # Scan the repository contents.
+      security-events: write  # Upload OSV SARIF results.
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@a345acffa64b0eaede81a3d9aae6141214d9c8fc  # v2.6.0
+    with:
+      scan-args: |-
+        --include-git-root
+        -r
+        ./

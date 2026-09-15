@@ -11,8 +11,9 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+
+from comment_upsert import find_bot_comment, write_comment
 
 PRD_KEYS = {"what", "why", "user_facing_focus", "right_sized", "testability"}
 DESIGN_KEYS = {"feasibility", "testability", "scope", "architecture"}
@@ -77,13 +78,11 @@ class EPHooks:
         """Return the id of this bot's existing comment carrying `tag`, or
         None. Matches on both bot login and the hidden tag so a human quoting
         the tag can't hijack the target comment."""
-        out = self._gh([
-            "api", f"repos/{self.repo}/issues/{pr_number}/comments",
-            "--paginate", "--jq",
-            f'[.[] | select(.user.login == "{self.bot_login}") '
-            f'| select(.body | contains("{tag}"))][0].id // empty'
-        ]).strip()
-        return out or None
+        comment = find_bot_comment(
+            self._gh, self.repo, pr_number, self.bot_login, tag,
+            include_body=False,
+        )
+        return str(comment["id"]) if comment else None
 
     def _upsert_comment(self, pr_number, tag, body):
         """PATCH the bot's existing tagged comment if present, else create one.
@@ -92,20 +91,9 @@ class EPHooks:
         which sidesteps shell/JSON escaping of the markdown body.
         """
         comment_id = self._find_comment_id(pr_number, tag)
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".md", delete=False) as f:
-            f.write(body)
-            path = f.name
-        try:
-            if comment_id:
-                self._gh(["api", "--method", "PATCH",
-                          f"repos/{self.repo}/issues/comments/{comment_id}",
-                          "-F", f"body=@{path}"], check=True)
-            else:
-                self._gh(["pr", "comment", pr_number, "--repo", self.repo,
-                          "--body-file", path], check=True)
-        finally:
-            os.unlink(path)
-        return comment_id is not None
+        return write_comment(
+            self._gh, self.repo, pr_number, body, comment_id,
+        )
 
     def _post_status(self, ticket_key, skill_name, title, status, message):
         """Upsert a short status comment (in-progress or failed) that shares
@@ -185,14 +173,12 @@ class EPHooks:
             # the design review's own and wrongly skip the design retry.
             skill_name = skill_name or ticket.get("_skill_name", "")
             tag = self._comment_tag(skill_name)
-            existing = self._gh([
-                "api", f"repos/{self.repo}/issues/{pr_number}/comments",
-                "--paginate", "--jq",
-                # An in-progress placeholder carries the tag but no SHA marker,
-                # so the head[:8] check below still lets the real review run.
-                f'[.[] | select(.user.login == "{self.bot_login}") '
-                f'| select(.body | contains("{tag}"))][0].body // empty'
-            ]).strip()
+            existing_comment = find_bot_comment(
+                self._gh, self.repo, pr_number, self.bot_login, tag,
+            )
+            # An in-progress placeholder carries the tag but no SHA marker,
+            # so the head[:8] check below still lets the real review run.
+            existing = existing_comment.get("body", "") if existing_comment else ""
             if existing and head and head[:8] in existing:
                 return f"Already reviewed at SHA {head[:8]}"
         return None
