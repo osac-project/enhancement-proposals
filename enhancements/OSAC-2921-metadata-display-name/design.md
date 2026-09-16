@@ -43,8 +43,10 @@ Two complementary naming features apply:
 - **This enhancement** adds non-unique `metadata.display_name` and
   `metadata.description` for natural-language labeling, and consolidates the
   existing per-type fields onto Metadata. They are mutable for resource APIs
-  that support metadata updates; networking resources governed by OSAC-1433
-  accept them only at creation. [Locked: D1, D2, D4]
+  that support metadata updates. Networking resources and workload
+  network-attachment fields governed by OSAC-1433 are excluded from this
+  metadata-update path and accept these values only at creation. [Locked: D1,
+  D2, D4]
 
 `metadata` fields are stored in dedicated SQL columns, not in the `data`
 JSONB document [Codebase: fulfillment-service/internal/database/dao/generic_dao.go].
@@ -56,8 +58,10 @@ changes, not proto-only edits.
 - Extend shared public and private `Metadata` with optional `display_name`
   (max 63) and `description` (max 256), validated via buf.validate. [Locked: D5, D7, D8]
 - Persist both fields as columns on all object and archive tables and wire
-  them through GenericDAO create/update/list/makeMetadata and FilterTranslator,
-  with Update behavior omitted for networking resources governed by OSAC-1433.
+  them through GenericDAO create/update/list/makeMetadata and FilterTranslator
+  for APIs and fields that support metadata updates. Networking resources and
+  workload network-attachment fields governed by OSAC-1433 are excluded from
+  this Update path and retain their create-time-only contract.
 - Implement List `order` plumbing end-to-end so clients can sort by
   `metadata.display_name` (and `metadata.name`, `id`). [Locked: D6]
 - Remove resource-level `title`/`description` from all twelve affected types
@@ -404,11 +408,13 @@ policy is tracked as a follow-up outside the server cutover.
 | Filter on `metadata.display_name` before FilterTranslator update | Translation error | Deploy DAO change with proto |
 | Old client sends removed `title` | Field ignored or rejected by new stubs | Client upgrade |
 
-Create/Update/List remain idempotent under retry for the same payload where those
-operations are supported. Networking resources use the OSAC-1433 create/read/delete
-contract. This enhancement adds no new controller reconciliation for metadata
-fields; existing networking controllers continue to reconcile networking
-resources, including the established SecurityGroup flow.
+For non-networking resources and fields that support them, Create/Update/List
+remain idempotent under retry for the same payload. Networking resources and
+workload network-attachment fields are excluded from this generic metadata
+behavior and use the OSAC-1433 create/read/delete contract. This enhancement
+adds no new controller reconciliation for metadata fields; existing networking
+controllers continue to reconcile networking resources, including the
+established SecurityGroup flow.
 
 ### RBAC / Tenancy
 
@@ -420,9 +426,10 @@ templates) remain visible under current platform rules.
 ### Observability and Monitoring
 
 No new Prometheus metrics or Kubernetes events. Existing gRPC and DAO
-operation duration metrics cover the supported Create/Update/List operations.
-Networking resources use Create/List/Get/Delete. Migration progress is observed via
-normal migration runner logs.
+operation duration metrics cover supported Create/Update/List operations for
+non-networking resources and fields. Networking resources and workload
+network-attachment fields use their OSAC-1433 Create/List/Get/Delete APIs.
+Migration progress is observed via normal migration runner logs.
 
 ### Risks and Mitigations
 

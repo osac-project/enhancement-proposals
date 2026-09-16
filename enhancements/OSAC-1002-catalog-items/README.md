@@ -311,10 +311,15 @@ Fields not listed in `fields` are not managed by the catalog item. The server
 rejects catalog items that reference fields not defined in the resource spec.
 
 Networking fields (`network_attachments`) are not shown in the catalog item
-creation wizard. Instead, the UI automatically includes `network_attachments`
-in the API payload as an editable field with no default value and no validation
-schema. This allows the tenant user to configure network attachments during
-provisioning without requiring the admin to explicitly manage them.
+creation wizard. The UI includes them in the Catalog Item payload as typed
+field policies: `ComputeNetworkAttachmentListFieldPolicy` for VM items and
+`BareMetalNetworkAttachmentListFieldPolicy` for Bare Metal items. An editable
+policy may omit its `default_value` or provide typed `items`. During
+provisioning, an omitted or explicitly empty tenant list is treated as no
+input, allowing the editable Catalog default and subsequent default-network
+injection; non-empty tenant values override an editable default. Empty locked
+or default policy values are rejected, and normal resource validation remains
+authoritative.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:

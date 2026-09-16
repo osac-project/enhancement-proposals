@@ -232,7 +232,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - If exactly 1 attachment with `interface` omitted: defaults to the first port with `role=fabric` from the BareMetalInstanceType (same rule as when `network_attachments` is omitted entirely)
      - If >1 attachment without `interface`, reject (explicit interface required when multi-homed)
      - Number of attachments ≤ number of available interfaces on template
-     - If multiple attachments, exactly one is `primary`; if single attachment, `primary` is implicit
+     - If multiple attachments, exactly one is `primary`; if a single attachment is present, `mutateBMI()` normalizes `primary` to `true` before persistence
    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-created: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
@@ -410,7 +410,7 @@ CEL validation rule:
 
 #### fulfillment-service Controller (mutateBMI)
 
-The `mutateBMI()` function in the fulfillment-service's BM reconciler currently sets TemplateID, TemplateParameters, RunStrategy on the K8s CR. It needs to also copy `network_attachments` from the proto spec to the K8s CR spec.
+The `mutateBMI()` function in the fulfillment-service's BM reconciler currently sets TemplateID, TemplateParameters, and RunStrategy on the K8s CR. It must also copy every `network_attachments` field from the proto spec to the K8s CR spec. Before persistence, it normalizes a single attachment to `primary: true` (the implicit-primary rule); a single attachment is never persisted with `primary: false`. For multiple attachments it preserves each supplied `primary` value and the validation rule below requires exactly one primary attachment.
 
 #### Server Validation Rules
 
@@ -422,7 +422,7 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 - If >1 attachment specified, each must have an explicit `interface` (multiple attachments without `interface` is invalid)
 - Number of attachments ≤ number of available interfaces on the template
 - If multiple attachments: exactly one must be `primary: true`
-- If single attachment: `primary` is implicit (true by default)
+- If single attachment: `mutateBMI()` normalizes `primary` to `true` before persistence; a single attachment is never persisted as non-primary
 - network_attachments are immutable after creation
 
 ### Implementation Details/Notes/Constraints

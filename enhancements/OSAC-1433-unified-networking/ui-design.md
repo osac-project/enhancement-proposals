@@ -47,11 +47,13 @@ Pure consumer of the existing private `ExternalIPPools` service
   **Available / Total** (`status.available`/`status.total`), **State**
   (`ExternalIpPoolStatusLabel`). Row action: **Delete**. A "Create pool" button
   routes to the create form.
-- **Create form** (`ExternalIpPoolFormPage`, Formik+Yup): **Name** (DNS label),
-  **IP family** (`IPv4`/`IPv6`), **CIDRs** (repeatable, ≥1, `FieldArray`). All fields
-  are immutable after creation. Create submits
-  `{ metadata: { name }, spec: { ipFamily, cidrs } }` via `useCreateExternalIPPool()`;
-  changes require deleting and recreating the pool.
+- **Create form** (`ExternalIpPoolFormPage`, Formik+Yup): **Name** (DNS label) and
+  one canonical **IPv4 CIDR**. The IP family is fixed to `IP_FAMILY_IPV4`; IPv6,
+  empty CIDRs, malformed CIDRs, and multiple CIDRs are rejected by client and
+  server validation. All fields are immutable after creation. Create submits
+  `{ metadata: { name }, spec: { ipFamily: "IP_FAMILY_IPV4", cidrs: [cidr] } }`
+  via `useCreateExternalIPPool()`; changes require deleting and recreating the
+  pool.
 - **Delete:** row action with confirmation, `useDeleteExternalIPPool()`.
 
 ### Tenant User and Admin
@@ -113,7 +115,8 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 | NAT Gateway detach fails | Server error shown in the confirmation modal; row's Detach stays available for retry. |
 | External IP create: pool exhausted | Server's `RESOURCE_EXHAUSTED`/`FAILED_PRECONDITION` shown as a form-level error. |
 | External IP delete fails | Server error shown inline; row's Delete stays available for retry. |
-| Pool create: invalid/overlapping CIDR | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
+| Pool create: non-IPv4 address family | Server's `INVALID_ARGUMENT` shown as a form-level error. |
+| Pool create: empty, malformed, multiple, or overlapping CIDRs | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
 
