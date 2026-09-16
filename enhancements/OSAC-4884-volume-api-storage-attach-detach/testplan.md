@@ -15,7 +15,8 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 - CSI adapter coverage uses standard Go tests in `osac/osac-csi-driver/pkg/driver/controller_test.go`; reuse the existing vendor-controller mocks and tests for `AlreadyExists`, `NotFound`, `Unimplemented`, no-op backends, and retry errors.
 - Operator controller coverage uses Ginkgo/Gomega/envtest under `osac/osac-operator/internal/controller/`; add `attachment_controller_test.go` beside `volume_controller_test.go` and target deletion tests beside `computeinstance_controller_test.go`.
 - E2E coverage belongs in `osac/tests/e2e/storage/test_volume_attachment_lifecycle.py`, using `storage/conftest.py`, `tests/e2e/core/grpc_client.py`, `tests/e2e/core/osac_cli.py`, `tests/e2e/core/k8s_client.py`, and `tests/e2e/core/runner.py::poll_until`; follow the lifecycle structure in `test_tenant_storage_lifecycle.py` and `test_caas_cluster_storage.py`.
-- The fake `AttachmentExecutor` must expose deterministic transient, terminal, delayed, no-op, inventory, stale-generation, and call-count controls for unit and integration tests.
+- VMaaS attachment tests must also inspect the AAP ComputeInstance provisioning input, the resulting PVC/PV and KubeVirt VM disk definition, following the storage flow in `osac/osac-operator/internal/controller/computeinstance_controller.go` and the storage roles under `osac/osac-aap/collections/ansible_collections/osac/`.
+- The fake operator attachment reconciler must expose deterministic AAP success/failure, PVC creation, VM disk wiring, CSI bind, detach, inventory, and call-count controls for unit and integration tests.
 
 ## Test Cases
 
@@ -107,12 +108,13 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 1. Create a VolumeAttachment for the BMaaS instance.
 2. Create a VolumeAttachment for the VMaaS ComputeInstance.
-3. Reconcile both attachments.
+3. Reconcile both attachment intents.
 
 ##### Expected Results
 
 - Each attachment contains the correct typed target reference.
-- Both relationships reach `READY` when the backend confirms attachment.
+- The BMaaS relationship reaches `READY` when its operator/backend workflow confirms attachment.
+- The VMaaS relationship creates an operator attachment intent and does not invoke vendor attach directly from the API path.
 - A CaaS cluster/node identifier supplied as a direct target is rejected.
 
 #### TC-FR2-02 [AC-FR2-02] [Story: Tenant Admin/User]: Attach VM boot and additional disks through the consuming workflow
@@ -127,13 +129,17 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Provision or update the VM workflow with a boot disk Volume and an additional disk Volume.
-2. Observe the resulting VolumeAttachment relationships.
+1. Create attachments for `vol-123` as the VM boot disk and `vol-456` as an additional disk on `ci-456`.
+2. Observe the operator attachment intent and AAP provisioning input.
+3. Observe the PVCs, PVs, and KubeVirt VM disk definition.
+4. Observe the CSI controller path for the annotated PVCs.
 
 ##### Expected Results
 
 - The boot and additional disk relationships reference the same VM target and distinct Volumes.
-- Each relationship reaches `READY` or exposes a concrete terminal error.
+- AAP creates PVCs with `osac.volume.id=vol-123` and `osac.volume.id=vol-456`, and references both PVCs from the KubeVirt VM.
+- CSI creates/binds PVs for the existing OSAC Volumes without calling fulfillment `CreateVolume`.
+- Each relationship reaches `READY` only after PVC/PV binding, VM disk wiring, and CSI publish complete, or exposes a concrete terminal error.
 
 ### FR-3: CaaS uses PVC/CSI and the Volume API adapter
 
