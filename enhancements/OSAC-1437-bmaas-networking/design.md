@@ -339,7 +339,7 @@ no internal IP.
 ```protobuf
 message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
   string interface = 3;                 // optional, immutable: physical interface
                                         // from BareMetalInstanceType
   bool primary = 4;                     // optional, immutable: default gateway
@@ -398,7 +398,9 @@ type BareMetalNetworkAttachmentStatus struct {
 }
 ```
 
-CEL immutability: `network_attachments` list is immutable after creation (subnet refs, interface, primary are all immutable). Only `securityGroupRefs` is mutable.
+CEL immutability: the `network_attachments` list and every field in each
+attachment are immutable after creation, including `subnetRef`,
+`securityGroupRefs`, `interface`, and `primary`.
 
 CEL validation rule:
 ```yaml
@@ -661,8 +663,8 @@ The bare-metal-fulfillment-operator needs additional RBAC permissions: get/list/
 All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
 - OPA policies enforce tenant-scoped operations according to each resource API;
-  networking resources use list/get/delete, while supported workload updates
-  remain available
+  networking resources use create/list/get/delete and do not expose
+  update/patch, while supported non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring

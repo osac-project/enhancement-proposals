@@ -44,7 +44,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 ### What Already Works
 
 - `network_attachments` field exists on ComputeInstanceSpec (field 14)
-- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL immutability rules (subnet refs immutable, security group refs mutable)
+- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL immutability rules (subnet refs, security group refs, and the attachment list are immutable)
 - Subnet-to-namespace resolution is implemented
 - The template creates VMs in the correct namespace
 - ExternalIPAttachment with `compute_instance` target works end-to-end
@@ -189,7 +189,7 @@ Replace the shared `NetworkAttachment` with `ComputeNetworkAttachment`:
 ```protobuf
 message ComputeNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
   bool primary = 3;                     // immutable, designates default gateway
 }
 
@@ -322,8 +322,8 @@ This feature inherits the existing security model:
 No RBAC or tenancy changes. All new resources (ComputeInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
 - OPA policies enforce tenant-scoped operations according to each resource API;
-  networking resources use list/get/delete, while supported workload updates
-  remain available
+  networking resources use create/list/get/delete and do not expose
+  update/patch, while supported non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
 
 ### Observability and Monitoring

@@ -60,6 +60,20 @@ The design covers three capabilities: default networking (including NATGateway) 
    SecurityGroup rules before tenant onboarding. NetworkClass changes follow
    the unified create/read/delete contract and require replacement.
 
+   **NetworkClass replacement lifecycle:** `VirtualNetwork.spec.network_class`
+   is required and immutable. The old NetworkClass cannot be deleted while any
+   VirtualNetwork references it; reverse-reference checks must block that
+   delete. To replace the deployment-wide class, create and validate the
+   replacement first, stop default-based tenant onboarding, recreate tenant
+   VirtualNetworks and their dependent Subnets, SecurityGroups, and NATGateways,
+   and drain/delete resources that still reference the old class. Existing
+   workload attachments are create-time-only and are not rebound; tenants must
+   recreate workloads that need the replacement network, while new workloads
+   use replacement attachments/defaults. Delete the old VirtualNetworks and
+   then the old NetworkClass only after all references are gone. The
+   ExternalIPPool does not reference NetworkClass in this design and is not
+   rebound by this transition.
+
 2. **Cloud Provider Admin creates Tenant:**
    ```bash
    osac create tenant --name acme-corp
@@ -181,6 +195,18 @@ The design covers three capabilities: default networking (including NATGateway) 
       cannot be edited in place.
     - Default resources cannot be deleted while any resource depends on them
       (subnet deletion is blocked if VMs reference it).
+    - Replacing a default Subnet or SecurityGroup is a coordinated transition:
+      pause default-based creates, drain or delete workloads attached to the old
+      default, delete the old default after reverse-reference checks pass, and
+      create the replacement with the same tenant scope and
+      `osac.openshift.io/default: "true"` label. Attachments are immutable, so
+      existing workloads are not rebound and the replacement applies to later
+      creates only.
+    - Defaults cannot be unlabeled in place because networking metadata is
+      immutable. Default selection considers only active, READY resources and
+      must find exactly one matching default; zero or multiple matches is a
+      configuration error. Default-based creates remain paused until the
+      replacement is READY.
 
 ### API Extensions
 
@@ -382,7 +408,8 @@ Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPA
 All default and auto-created resources inherit tenant annotation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/SG/NATGateway
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-created ExternalIP/ExternalIPAttachment
-- OPA policies enforce tenant-scoped list/get/delete; private controller status
+- OPA policies enforce tenant-scoped create/list/get/delete; update/patch is
+  not exposed for networking resources, and private controller status
   transitions remain internal
 
 #### CIDR Overlap Across Tenants
@@ -428,10 +455,11 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (default networking, auto-created ExternalIP) inherit tenant isolation:
 - `osac.openshift.io/tenant` annotation propagated from parent to all child resources
-- OPA policies enforce tenant-scoped list/get/delete; private controller status
+- OPA policies enforce tenant-scoped create/list/get/delete; update/patch is
+  not exposed for networking resources, and private controller status
   transitions remain internal
 - Tenant User can view default and auto-created resources and use the supported
-  create/delete operations subject to dependency protection
+  create/list/get/delete operations subject to dependency protection
 - Cloud Infrastructure Admin configures NetworkClass defaults (global, applies to all tenants)
 
 ### Observability and Monitoring

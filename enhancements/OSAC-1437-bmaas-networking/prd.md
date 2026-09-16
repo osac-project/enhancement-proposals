@@ -70,7 +70,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Specification
 
-- **FR-1:** Tenants can specify network attachments when creating a bare-metal server. Each attachment identifies a subnet (required, immutable), security groups (modifiable), which physical interface to use (optional, immutable), and whether this attachment provides the default gateway for multi-homed servers (immutable). [User]
+- **FR-1:** Tenants can specify network attachments when creating a bare-metal server. Each attachment identifies a subnet (required, immutable), security groups (immutable after creation), which physical interface to use (optional, immutable), and whether this attachment provides the default gateway for multi-homed servers (immutable). [User]
 
 #### Host Type Interface Discovery
 

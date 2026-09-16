@@ -406,7 +406,9 @@ policy is tracked as a follow-up outside the server cutover.
 
 Create/Update/List remain idempotent under retry for the same payload where those
 operations are supported. Networking resources use the OSAC-1433 create/read/delete
-contract. No controller reconciliation is involved.
+contract. This enhancement adds no new controller reconciliation for metadata
+fields; existing networking controllers continue to reconcile networking
+resources, including the established SecurityGroup flow.
 
 ### RBAC / Tenancy
 
