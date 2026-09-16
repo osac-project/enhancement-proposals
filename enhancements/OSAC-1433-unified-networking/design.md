@@ -34,8 +34,10 @@ The current OSAC networking contract supports connected deployments only.
 Air-gapped and disconnected networking deployments are outside the supported
 boundary and must not be advertised as supported profiles. A connected
 deployment has reachability among the provider-owned hub, selected network
-managers, and provider-controlled networking services. The provider owns this
-configuration; connectivity is not tenant selectable. The boundary applies to
+managers, provider-controlled networking services, and provider-controlled
+address infrastructure. The provider owns this configuration; connectivity is
+not tenant selectable, and these reachability prerequisites must hold before
+the deployment's NetworkClass is accepted. The boundary applies to
 Fabric-only, K8s-only, and combined manager profiles.
 
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a

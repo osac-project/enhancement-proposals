@@ -232,11 +232,11 @@ the cluster's VIPs are discovered (see
 The current OSAC networking contract supports connected deployments only.
 Air-gapped and disconnected networking deployments are not supported and must
 not be advertised as supported deployment profiles. The provider owns the
-connectivity configuration: the hub, selected network managers, and
-provider-controlled networking services must have connected reachability before
-the deployment's NetworkClass is accepted. Connectivity is not tenant
-selectable, and this boundary applies to Fabric-only, K8s-only, and combined
-manager profiles.
+connectivity configuration: the hub, selected network managers,
+provider-controlled networking services, and provider-controlled address
+infrastructure must have connected reachability before the deployment's
+NetworkClass is accepted. Connectivity is not tenant selectable, and this
+boundary applies to Fabric-only, K8s-only, and combined manager profiles.
 
 ### 2.2 Success Metrics
 
