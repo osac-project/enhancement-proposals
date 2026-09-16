@@ -6,6 +6,11 @@
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
 | Date        | 2026-07-02 |
 
+This PRD inherits the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
+default networking supports connected deployments only; air-gapped and
+disconnected networking deployments are not supported.
+
 ## 1. Problem Statement
 
 Creating a reachable resource in OSAC requires 6+ sequential API calls:

@@ -52,7 +52,7 @@ Helm provides:
 - **Separate OSAC installation from prerequisite deployment:** Helm chart installs OSAC components, with optional bundled PostgreSQL/Keycloak (non-HA) for simplified deployments, while prerequisite operators (AAP, cert-manager) must be installed separately
 - **Make installation available via OpenShift Software Catalog:** Provide form-based installation UI in the OpenShift console for ease of use
 - **Idempotent installation and upgrades:** Support `helm upgrade --install` and idempotent hooks (pre-install validation, db migration, AAP bootstrap) to enable safe re-runs on failure
-- **Support disconnected deployments:** Document mirroring of OCI charts and container images to internal registries for air-gapped environments
+- **Document constrained installation packaging:** Document mirroring of OCI charts and container images to internal registries; this packaging work does not change the [Unified Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary)
 - Provide Helm charts for all OSAC components (fulfillment-service, osac-operator, osac-aap)
 - Create an umbrella chart that composes component charts with proper dependency ordering
 - Support both development workflows (git submodules with `file://` chart references) and production workflows (OCI registry with versioned charts)
@@ -448,8 +448,12 @@ helm install fulfillment oci://ghcr.io/osac-project/charts/service \
   --version 1.2.3
 ```
 
-**Disconnected/Air-gapped deployments:**
-For environments without internet access (e.g., Enclave):
+**Constrained installation environments:**
+For environments without internet access (e.g., Enclave), provide an offline
+installation procedure using locally mirrored artifacts. This packaging
+procedure must not be interpreted as air-gapped OSAC networking support; the
+Unified Networking contract requires connected deployments.
+
 1. Mirror OCI charts to internal registry:
    ```bash
    helm pull oci://ghcr.io/osac-project/charts/osac --version 1.0.0

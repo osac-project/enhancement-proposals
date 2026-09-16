@@ -194,13 +194,15 @@ participants alongside BM servers. The current design does not address how
 VMs and bare-metal servers coexist in the same deployment, whether they can share
 a VirtualNetwork, or how traffic flows between them.
 
-#### Gap #8: Air-gapped environments not considered
+#### Gap #8: Deployment connectivity boundary
 
-ExternalIPPool and ExternalIP must work in air-gapped deployments where there
-are no internet-routable IPs. Tenants still need the same API primitives (IP
-allocation, inbound DNAT, outbound SNAT) for data-center-internal external
-access. "External" means external to the VirtualNetwork, not
-internet-routable.
+The current OSAC networking contract supports connected deployments only.
+Air-gapped and disconnected networking deployments are outside the supported
+boundary. In a supported deployment, the provider-owned hub, selected network
+managers, and OSAC networking services must be able to reach one another and
+the provider-controlled address infrastructure. "External" still means
+external to the VirtualNetwork; it does not by itself imply Internet
+reachability.
 
 #### Gap #9: CaaS has unique prerequisite ordering
 
@@ -222,8 +224,19 @@ the cluster's VIPs are discovered (see
 - Enable tenants to manage networking resources (VirtualNetworks, Subnets, SecurityGroups, ExternalIPs) without choosing implementation backends
 - Support pluggable networking backends that can be added without API changes
 - Enable VMs, clusters, and bare-metal servers to coexist in the same VirtualNetwork
-- Work in air-gapped environments using data-center-routable IPs
+- Support connected deployments using provider-routable IPs
 - Support per-interface network attachment for bare-metal servers with multiple physical interfaces
+
+### Deployment support boundary
+
+The current OSAC networking contract supports connected deployments only.
+Air-gapped and disconnected networking deployments are not supported and must
+not be advertised as supported deployment profiles. The provider owns the
+connectivity configuration: the hub, selected network managers, and
+provider-controlled networking services must have connected reachability before
+the deployment's NetworkClass is accepted. Connectivity is not tenant
+selectable, and this boundary applies to Fabric-only, K8s-only, and combined
+manager profiles.
 
 ### 2.2 Success Metrics
 
@@ -263,8 +276,8 @@ the cluster's VIPs are discovered (see
   VirtualNetwork
 - As a tenant, I want to attach ExternalIPs to my cluster's API server and
   ingress endpoints before provisioning
-- As a tenant, I want my cluster to work in air-gapped environments using
-  data-center-routable IPs
+- As a tenant, I want my cluster to work in the provider's connected network
+  using provider-routable IPs
 
 ### BMaaS-Specific Stories
 
@@ -360,7 +373,7 @@ _No non-functional requirements were specified in the original document._
 ### External Access
 
 - [ ] ExternalIP semantics do not depend on internet reachability
-- [ ] The API and workflow are identical for all deployment topologies (air-gapped, internet-connected, intranet-only)
+- [ ] The supported deployment topology is connected only; air-gapped and disconnected networking deployments are rejected before provisioning
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
 - [ ] ExternalIPAttachment handles inbound traffic only
 - [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity

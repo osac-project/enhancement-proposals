@@ -24,7 +24,7 @@ Default networking provides automatic resource provisioning at tenant onboarding
 
 ## Summary
 
-This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system provisions a default VirtualNetwork, IPv4 Subnet, IPv6 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration (dual-stack). Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
+This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. It inherits the [Unified Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary): default networking supports connected deployments only and does not support air-gapped or disconnected networking. When a tenant is created, the system provisions a default VirtualNetwork, IPv4 Subnet, IPv6 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration (dual-stack). Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 

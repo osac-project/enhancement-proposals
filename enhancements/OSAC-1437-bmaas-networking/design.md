@@ -24,7 +24,7 @@ BMaaS networking provides multi-NIC BaremetalInstance provisioning with tenant-s
 
 ## Summary
 
-This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how BMaaS consumes that architecture.
+This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture and [deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary); BMaaS networking supports connected deployments only and does not add air-gapped or disconnected networking support. This document defines how BMaaS consumes that architecture.
 
 BaremetalInstance supports `BareMetalNetworkAttachment` with explicit `interface` and `primary` fields. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures switch ports via dispatcher, and IP address feedback via CR status enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
 

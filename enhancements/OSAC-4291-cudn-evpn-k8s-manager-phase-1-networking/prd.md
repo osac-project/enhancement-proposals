@@ -6,6 +6,11 @@
 | Jira        | https://redhat.atlassian.net/browse/OSAC-4291 |
 | Date        | 2026-08-30 |
 
+This Phase 1 PRD inherits the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
+the deployment must be connected, and air-gapped or disconnected networking
+deployments are not supported.
+
 ## Problem Statement
 
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a pod whose networking is managed by OVN-Kubernetes. By default, VM IP addresses exist only within the OVN overlay and are not visible on the physical fabric. This prevents VMs from being first-class fabric participants — they cannot share the same L2 subnet with bare-metal servers, cannot be reached directly from the fabric, and cannot leverage the fabric's multi-tenancy and routing capabilities.

@@ -6,6 +6,12 @@
 | Jira        | [OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145) |
 | Date        | 2026-07-26           |
 
+This PRD observes the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
+networking-enabled deployments are connected only; air-gapped and disconnected
+networking deployments are not supported. This does not change the metering
+pipeline's independent deployment or retention requirements.
+
 ## Glossary
 
 Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.md) apply here. Additional terms:
