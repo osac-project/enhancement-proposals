@@ -3,7 +3,7 @@ title: caas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-16
+last-updated: 2026-07-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -287,7 +287,7 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 ```protobuf
 message ClusterNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, immutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
 }
 // Note: fabric_interface is system-populated ONCE on each node set definition
 // by the fulfillment-service at cluster creation (resolved from the node set's
@@ -425,8 +425,8 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Cluster to auto-created resources
-- OPA policies enforce tenant-scoped list/get/delete for networking resources; Cluster retains its own lifecycle authorization, while the network attachment field is create-time-only
-- Tenant User can view and delete auto-provisioned networking resources (labeled `osac.openshift.io/auto-created: "true"`) according to the create/read/delete contract
+- OPA policies enforce tenant-scoped list/get/update/delete
+- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
 

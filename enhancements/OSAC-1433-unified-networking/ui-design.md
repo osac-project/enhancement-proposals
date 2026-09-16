@@ -3,7 +3,7 @@ title: unified-networking-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-08-12
-last-updated: 2026-09-16
+last-updated: 2026-08-12
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2632
   - https://redhat.atlassian.net/browse/OSAC-1433
@@ -28,9 +28,7 @@ VirtualNetwork management (shipped under
 context, since the NAT Gateway field extends its list and detail pages — it is otherwise
 unchanged by this design. Subnet and SecurityGroup management
 ([OSAC-1899](https://redhat.atlassian.net/browse/OSAC-1899)) are unchanged and not
-covered here. All networking resources and workload network attachment fields
-follow the unified create/read/delete contract: read uses List/Get, and changes
-require delete and recreate.
+covered here.
 
 ## Proposal
 
@@ -45,14 +43,16 @@ Pure consumer of the existing private `ExternalIPPools` service
   `/admin/infrastructure/external-ip-pools` — alongside Storage and Instance types in the
   admin "Infrastructure" nav. Columns: **Name**, **IPv4 CIDR**,
   **Available / Total** (`status.available`/`status.total`), **State**
-  (`ExternalIpPoolStatusLabel`). Row action: **Delete**. A "Create pool" button
+  (`ExternalIpPoolStatusLabel`). Row actions: **Edit**, **Delete**. A "Create pool" button
   routes to the create form.
-- **Create form** (`ExternalIpPoolFormPage` at
-  `/admin/infrastructure/external-ip-pools/create`, Formik+Yup): **Name** (DNS label),
-  **IP family** (`IPv4`/`IPv6`), and **CIDRs** (repeatable, ≥1, `FieldArray`). Create
-  submits `{ metadata: { name }, spec: { ipFamily, cidrs } }` via
-  `useCreateExternalIPPool()`. All fields are immutable after creation; a change
-  requires deleting the pool and creating a replacement.
+- **Create/update form** (`ExternalIpPoolFormPage`, one shared component for both
+  `/admin/infrastructure/external-ip-pools/create` and
+  `/admin/infrastructure/external-ip-pools/:id/edit`, Formik+Yup): **Name** (DNS label),
+  **IP family** (`IPv4`/`IPv6`), **CIDRs** (repeatable, ≥1, `FieldArray`). In edit mode,
+  IP family and CIDRs are immutable server-side and render disabled for reference — only
+  **Name** is editable. Create submits
+  `{ metadata: { name }, spec: { ipFamily, cidrs } }` via `useCreateExternalIPPool()`;
+  update submits via `useUpdateExternalIPPool()` with `lock=true`.
 - **Delete:** row action with confirmation, `useDeleteExternalIPPool()`.
 
 ### Tenant User and Admin
@@ -94,9 +94,10 @@ indexes the results by `spec.virtual_network.id` for row rendering, avoiding an 
 per row. The detail page uses `useNatGatewayForVirtualNetwork(vnId)` (`NatGateways.List`,
 filtered `this.spec.virtual_network.id == "<vnId>"`, first result).
 
-`NATGatewaySpec.external_ip` and NAT Gateway metadata are immutable after creation —
-changing a VirtualNetwork's NAT Gateway to a different External IP is Detach (delete)
-followed by Attach (create) with the new External IP, not an in-place edit.
+`NATGatewaySpec.external_ip` is immutable server-side, and `NatGateways.Update` only covers
+metadata (labels/annotations) — changing a VirtualNetwork's NAT Gateway to a different
+External IP is Detach (delete) followed by Attach (create) with the new External IP, not an
+in-place edit.
 
 #### External IP Management
 
@@ -115,6 +116,7 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 | External IP create: pool exhausted | Server's `RESOURCE_EXHAUSTED`/`FAILED_PRECONDITION` shown as a form-level error. |
 | External IP delete fails | Server error shown inline; row's Delete stays available for retry. |
 | Pool create: invalid/overlapping CIDR | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
+| Pool update: concurrent write | Server's `FAILED_PRECONDITION`/`ABORTED` shown; admin re-fetches and retries. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
 
@@ -132,8 +134,8 @@ followed by Attach (create) with the new External IP, not an in-place edit.
   there).
 - **Admin hooks** (new `api/v1/private/external-ip-pools.ts`, following
   `storage-backends.ts`'s shape): `usePrivateExternalIPPools`, `usePrivateExternalIPPool`,
-  `useCreateExternalIPPool`, `useDeleteExternalIPPool`. Types from
-  `@osac/types/private`. Add
+  `useCreateExternalIPPool`, `useUpdateExternalIPPool` (name-only, `lock=true`),
+  `useDeleteExternalIPPool`. Types from `@osac/types/private`. Add
   `'v1/private/external_ip_pools'` to `ApiRoute`.
 - **Status labels:** `NatGatewayStatusLabel`, `ExternalIpStatusLabel`,
   `ExternalIpPoolStatusLabel` — thin wrappers around `ResourceStatusLabel`/`StatusKind`,

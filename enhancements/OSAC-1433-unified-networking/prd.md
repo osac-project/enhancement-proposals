@@ -377,6 +377,9 @@ the parent workload.
 
 Controller-owned status, condition, readiness, and IP-discovery updates are
 internal reconciliation and do not add a tenant/provider update operation.
+This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
+reference this PRD; those proposals inherit it and do not redefine networking
+operations.
 
 ### 4.2 Non-Functional Requirements
 

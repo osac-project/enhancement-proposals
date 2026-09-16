@@ -93,6 +93,9 @@ dependency guards. The network attachment fields on `ComputeInstance`,
 network attachment requires replacing the parent workload. Controllers may
 update status, conditions, readiness, and IP-discovery fields during
 reconciliation, but those internal writes are not additional API operations.
+This is the normative contract for the VMaaS, CaaS, and BMaaS designs that
+reference this document; those designs inherit it and do not redefine
+networking operations.
 
 ## Proposal
 

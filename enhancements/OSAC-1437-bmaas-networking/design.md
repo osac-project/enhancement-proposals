@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-16
+last-updated: 2026-07-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -339,7 +339,7 @@ no internal IP.
 ```protobuf
 message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, immutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
   string interface = 3;                 // optional, immutable: physical interface
                                         // from BareMetalInstanceType
   bool primary = 4;                     // optional, immutable: default gateway
@@ -398,9 +398,7 @@ type BareMetalNetworkAttachmentStatus struct {
 }
 ```
 
-CEL immutability: the complete `network_attachments` list and every field in
-each attachment (subnet, security groups, interface, and primary) are
-immutable after creation.
+CEL immutability: `network_attachments` list is immutable after creation (subnet refs, interface, primary are all immutable). Only `securityGroupRefs` is mutable.
 
 CEL validation rule:
 ```yaml
@@ -662,8 +660,8 @@ The bare-metal-fulfillment-operator needs additional RBAC permissions: get/list/
 
 All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
-- OPA policies enforce tenant-scoped list/get/delete for networking resources; BaremetalInstance retains its own lifecycle authorization, while network attachment fields are create-time-only
-- Tenant User can view and delete auto-provisioned networking resources (labeled `osac.openshift.io/auto-created: "true"`) according to the create/read/delete contract
+- OPA policies enforce tenant-scoped list/get/update/delete
+- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
 
@@ -831,7 +829,7 @@ Micro version upgrades (`x.y.N → x.y.N+2`):
 - No user action required
 
 Minor version upgrades (`x.N → x.N+1`):
-- Tenant User can use the new networking fields for newly created BaremetalInstances via the CLI (`osac-cli` supports the new `--network-attachment` flag with `--interface` and `--primary`); migrating an existing server requires delete and recreate
+- Tenant User encouraged to migrate to new networking fields via CLI update (`osac-cli` supports new `--network-attachment` flag with `--interface` and `--primary`)
 - No breaking changes — networking fields remain optional
 
 ### Downgrade
