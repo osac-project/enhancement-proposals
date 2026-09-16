@@ -11,6 +11,15 @@ boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-b
 default networking supports connected deployments only; air-gapped and
 disconnected networking deployments are not supported.
 
+It also inherits the [Unified Networking hub support
+boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
+
 ## 1. Problem Statement
 
 Creating a reachable resource in OSAC requires 6+ sequential API calls:

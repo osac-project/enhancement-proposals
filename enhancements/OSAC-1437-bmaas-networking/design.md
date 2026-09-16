@@ -29,6 +29,15 @@ Networking resources support only Create, List/Get, and Delete, and
 `BaremetalInstance` network attachment fields are immutable after creation;
 changes require delete and recreate.
 
+BMaaS networking also inherits the [Unified Networking hub support
+boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
+
 BaremetalInstance supports `BareMetalNetworkAttachment` with explicit `interface` and `primary` fields. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures switch ports via dispatcher, and IP address feedback via CR status enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation

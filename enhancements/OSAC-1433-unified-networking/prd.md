@@ -254,6 +254,15 @@ infrastructure must have connected reachability before the deployment's
 NetworkClass is accepted. Connectivity is not tenant selectable, and this
 boundary applies to Fabric-only, K8s-only, and combined manager profiles.
 
+### Networking hub support boundary
+
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
+
 ### 2.2 Success Metrics
 
 | Metric | Target | Baseline |
@@ -412,6 +421,7 @@ _No non-functional requirements were specified in the original document._
 - [ ] ExternalIPPool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4` and rejects `IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values before persistence
 - [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the
   repeated `cidrs` field and rejects empty or multiple entries
+- [ ] Supported networking deployments use exactly one provider-owned hub; multi-hub networking placement, cross-hub resource coordination, and cross-hub network connectivity are unsupported
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
 - [ ] ExternalIPAttachment handles inbound traffic only
 - [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity

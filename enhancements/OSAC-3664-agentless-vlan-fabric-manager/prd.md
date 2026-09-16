@@ -14,6 +14,15 @@
 > delivering that model on environments that use traditional managed switches
 > (without Netris). It adds a backend, not new API.
 
+This PRD also inherits the [Unified Networking hub support
+boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
+
 ## 1. Problem Statement
 
 Today OSAC's networking API is served by a single fabric manager (Netris). Cloud

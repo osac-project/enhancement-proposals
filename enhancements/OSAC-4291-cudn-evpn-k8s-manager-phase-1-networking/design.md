@@ -33,6 +33,15 @@ This manager inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
 Phase 1 supports connected deployments only and does not add air-gapped or
 disconnected networking support.
+This manager also inherits the [Unified Networking hub support
+boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
+
 ## Related Designs
 
 This design builds on and interacts with several networking designs:
