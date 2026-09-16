@@ -45,7 +45,8 @@ three classes of problems:
    requires out-of-band knowledge of the target's identifier.
 
 3. **Scattered, inconsistent validation.** Each server validates references
-   inline in its Create/Update methods using ad-hoc DAO lookups. Error codes
+   inline in its Create methods and any supported Update methods using ad-hoc DAO
+   lookups. Error codes
    are inconsistent -- some servers return `InvalidArgument`, others return
    `NotFound` for the same "referenced resource doesn't exist" condition.
    Business logic validation (CIDR containment, same-VirtualNetwork checks) is
@@ -62,6 +63,12 @@ This proposal replaces every reference field with a typed message that carries
 the referenced resource's name (and optionally tenant and project for
 cross-scope references), centralizes existence validation in an interceptor,
 and standardizes error reporting across all services. [Locked: D2]
+
+For networking resources and workload network attachment fields governed by
+[OSAC-1433](../OSAC-1433-unified-networking/design.md), typed references are
+create-time inputs under the Create/List/Get/Delete contract. Any Create/Update
+wording below refers only to resource APIs and fields that support Update; private
+controller status transitions are not tenant/provider resource updates.
 
 ### Goals
 
@@ -713,7 +720,8 @@ partial state changes).
 Resources are stored as JSON-serialized protobuf in a `data` column. Existing
 PL/pgSQL triggers serve two purposes:
 
-1. **Forward reference checks (Z0002):** On insert/update, verify the
+1. **Forward reference checks (Z0002):** On insert and any supported update,
+   verify the
    referenced resource exists using `SELECT ... FOR SHARE` (which also
    serializes concurrent inserts and deletes). The interceptor now handles
    the existence check, but whether to keep or remove these triggers depends
@@ -846,7 +854,8 @@ Status-level references in the private API fall into two categories:
 1. **System-managed `hub` fields** (13 fields across resource statuses):
    These reference the Hub resource and are set by controllers, not users. They
    use `HubLocalReference` for consistency, but the interceptor does not
-   validate them (status fields are not present in Create/Update requests).
+   validate them (status fields are not present in Create or supported Update
+   requests).
 
 2. **Status mirror fields** (pool mirrors in ExternalIP/PublicIP status, users
    sync in RoleBindingStatus): These duplicate spec-level references in status
@@ -922,7 +931,7 @@ users correcting multiple references.
 
 **Race condition: referenced resource deleted between validation and
 persistence.** The interceptor validates references within the same database
-transaction as the Create/Update operation. Under `READ COMMITTED`, a
+transaction as the Create or supported Update operation. Under `READ COMMITTED`, a
 concurrent delete of the referenced resource could commit after the
 interceptor's existence check but before the child insert commits. The
 current forward triggers use `SELECT ... FOR SHARE` on the parent row to
@@ -967,7 +976,7 @@ the controller layer. Existing controller events are unaffected.
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | Proto field number reuse causes wire incompatibility during incremental rollout | Medium | High | Each delivery chunk updates all consumers (server, CLI, UI) atomically. No mixed-version deployments within a chunk. CI validates proto compatibility within each chunk. |
-| Interceptor adds latency to every Create/Update request | Low | Medium | The interceptor replaces existing inline DAO lookups, not adding new ones. Net latency change is near zero. The `osac_reference_validation_duration_seconds` metric monitors this. [Locked: R2.Q4] |
+| Interceptor adds latency to every Create/Update request | Low | Medium | The interceptor applies to operations that support references and the relevant operation; it replaces existing inline DAO lookups, not adding new ones. Net latency change is near zero. The `osac_reference_validation_duration_seconds` metric monitors this. [Locked: R2.Q4] |
 | CEL filter breakage for existing API consumers | Medium | Medium | Breaking change is accepted per D1. Document the path changes in the API changelog. Each chunk's release notes list affected filter paths. |
 | Cross-chunk dependency: Chunk 2 (Compute) depends on Chunk 1 (Networking) for SubnetLocalReference | Low | Medium | Chunk ordering is fixed. Chunk 1 must merge before Chunk 2. CI enforces proto import resolution. |
 
@@ -988,7 +997,8 @@ type safety and is consistent with how other infrastructure APIs (Kubernetes,
 AWS CloudFormation) represent structured references.
 
 **Breaking change for all API consumers.** Every client that creates or
-updates a resource with references must update its request format. With no
+updates a resource with references where that operation is supported must update
+its request format. With no
 backward compatibility period [Locked: D1], all consumers must update per
 delivery chunk. This is mitigated by incremental delivery [Locked: D6] and
 by the fact that the REST/JSON change is mechanical (wrap string in object).

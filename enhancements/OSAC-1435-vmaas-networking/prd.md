@@ -41,7 +41,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 ### Tenant Admin Stories
 
-- As a Tenant Admin, I want to inspect and modify the default networking resources (subnet, security group) used when VMs are created without explicit network configuration
+- As a Tenant Admin, I want to inspect the default networking resources (subnet, security group) used when VMs are created without explicit network configuration and create replacements when different settings are needed
 - As a Tenant Admin, I want to see which subnet and security groups each VM is attached to, and the IP address allocated to each interface, so I can audit my organization's network topology
 
 ### Cloud Infrastructure Admin Stories

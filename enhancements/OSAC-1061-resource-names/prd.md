@@ -14,7 +14,7 @@ OSAC does not enforce naming discipline on resources. Resources can be created w
 ## In Scope
 
 - Mandatory name validation on all resource creation endpoints (tenant-scoped and platform-scoped)
-- Immutability enforcement — reject update requests that attempt to change a resource's name, tenant, or project
+- Immutability enforcement — for resource APIs that support Update, reject requests that attempt to change a resource's name, tenant, or project; networking resources follow OSAC-1433 and do not expose Update
 - Uniqueness enforcement for tenant-scoped resources within (Tenant, Project, ResourceType, Name) and for platform-scoped resources within (ResourceType, Name) globally
 - DNS/Kubernetes name format validation (RFC 1123 DNS labels) on all resource creation endpoints, including existing paths that currently accept names without validation
 - Kubernetes-style error messages for all validation failures
@@ -87,9 +87,11 @@ Resource names must conform to RFC 1123 DNS label rules:
 
 ### Immutability Rules
 
-The following fields are immutable after resource creation:
+The following fields are immutable after resource creation. For networking
+resources governed by OSAC-1433, the resource's complete specification and
+metadata are also create-time-only; changes require delete and recreate.
 
-- **Name** — update requests that specify a name different from the current value are rejected with a validation error
+- **Name** — for resource APIs that support Update, requests that specify a name different from the current value are rejected with a validation error
 - **Tenant association** — resources cannot be reassigned to a different tenant
 - **Project membership** — resources cannot be moved between projects
 
@@ -100,7 +102,7 @@ Validation errors follow Kubernetes conventions:
 - Duplicate name: the error states that a resource of the given type with that name already exists (no distinction between active and pending-deletion resources)
 - Missing name: the error states that a name is required
 - Invalid name format: the error states the format violation
-- Name change on update: the error states that the name field is immutable
+- Name change on update for a resource API that supports Update: the error states that the name field is immutable
 - Tenant/project change: the error states that the field is immutable
 
 The error experience is consistent across all personas. Platform-scoped resource errors omit tenant/project context but are otherwise identical.

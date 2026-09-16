@@ -13,7 +13,7 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 ## In Scope
 
 - Consistent, user-friendly resource naming across all OSAC resource types, all personas, and all client interfaces (API, CLI, Web UI) `[PR review: mhrivnak]`
-- Two new shared Metadata fields: `display_name` (optional, max 63 characters) and `description` (optional, max 256 characters) — both mutable, clearable, and not required to be unique `[Clarify: R2.Q1, R3.Q1, R4.Q4, PR review: sk-ilya]`
+- Two new shared Metadata fields: `display_name` (optional, max 63 characters) and `description` (optional, max 256 characters). They are mutable and clearable for resource APIs that support metadata updates; networking resources governed by OSAC-1433 accept them only at creation and require replacement for changes `[Clarify: R2.Q1, R3.Q1, R4.Q4, PR review: sk-ilya]`
 - Reconciliation of existing per-resource `title`/`description` fields — removed from all 12 resource types that currently have them: Project, Role, IdentityProvider, InstanceType (description only), ClusterTemplate, ComputeInstanceTemplate, BareMetalInstanceTemplate, NetworkClass, HostType, ComputeInstanceCatalogItem, BareMetalInstanceCatalogItem, ClusterCatalogItem `[Clarify: R1.Q1, PR review: sk-ilya, ygalblum]`
 - Filtering and sorting by `display_name` `[Clarify: R2.Q2]`
 
@@ -37,7 +37,7 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 ### Tenant Admin
 
 - As a Tenant Admin, I want all resource types I manage (VMs, virtual networks, public IPs, security groups, etc.) to support a friendly `display_name` and `description` so that I can give resources a natural-language name and description that are not constrained to DNS-label format. `[PR review: mhrivnak]`
-- As a Tenant Admin, I want to update or clear `display_name` and `description` on existing resources so that I can correct labels or remove outdated descriptions as resources evolve. `[Clarify: R3.Q1]`
+- As a Tenant Admin, I want to update or clear `display_name` and `description` on existing resources whose APIs support metadata updates so that I can correct labels or remove outdated descriptions as resources evolve. Networking resources follow the OSAC-1433 create/read/delete contract. `[Clarify: R3.Q1]`
 
 ### Tenant User
 

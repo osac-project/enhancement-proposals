@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-07-08
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -321,7 +321,9 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (ComputeInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
-- OPA policies enforce tenant-scoped list/get/update/delete
+- OPA policies enforce tenant-scoped operations according to each resource API;
+  networking resources use list/get/delete, while supported workload updates
+  remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -447,7 +449,8 @@ Micro version upgrades (`x.y.N → x.y.N+2`):
 
 Minor version upgrades (`x.N → x.N+1`):
 - Deprecation warning added for old `network_attachments` field (field 14) in fulfillment-service API responses
-- Tenant User encouraged to migrate to new field via CLI update (`osac-cli` supports new `--network-attachment` flag with `--primary`)
+- Tenant User encouraged to migrate to the new field by upgrading the CLI
+  (`osac-cli` supports the new `--network-attachment` flag with `--primary`)
 - No breaking changes — old field remains functional
 
 ### Downgrade

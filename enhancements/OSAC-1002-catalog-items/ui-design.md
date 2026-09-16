@@ -71,7 +71,7 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
 5. **Step 2 — Configuration:** A per-kind step component with static fields for the resource spec (excluding access and networking fields). Each field uses a shared field definition primitive (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that renders an editable toggle, a type-appropriate default value input, and type-specific validation options. Default values are pre-populated from the selected template. By default, fields are non-editable; non-editable fields require a default value. For Cluster, includes `NodeSetsFieldEditor` for setting a default `size` per node set defined in the selected template (host type is read-only, inherited from the template) and size constraints. For resource reference fields (`ResourceSelectorFieldDefinition`), the admin selects a default from a dropdown of existing resources — no validation constraints are configured.
 6. **Step 3 — Networking** (clusters only): `ClusterNetworkingStep` with `pod_cidr` and `service_cidr` as `StringFieldDefinition` fields. This step is not shown for VM or Bare Metal catalog items.
 7. **Step 4 — Access:** Per-kind access step component with `ssh_public_key`/`ssh_key` and `pull_secret` (clusters) as `StringFieldDefinition` fields. Both default to editable.
-   For VM catalog items, the UI automatically includes `network_attachments` in the API payload as an editable field with no default or validation — it is not shown in any wizard step. Bare Metal catalog items have no networking fields.
+   For VM catalog items, the UI automatically includes `network_attachments` in the API payload as a tenant-supplied create-time field with no default or validation — it is not shown in any wizard step. Bare Metal catalog items have no networking fields.
 8. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
 9. From the detail page or list page, the admin can publish the item by toggling the publish `Switch`.
@@ -350,7 +350,7 @@ Each resource type has its own configuration step component with static, hardcod
 
 **Step 3: Networking** (clusters only)
 
-`ClusterNetworkingStep` with `pod_cidr` and `service_cidr` as `StringFieldDefinition` fields. This step is not shown for VM or Bare Metal catalog items. For VM catalog items, `network_attachments` is automatically included in the API payload as an editable field with no default or validation (not shown in any wizard step). Bare Metal catalog items have no networking fields.
+`ClusterNetworkingStep` with `pod_cidr` and `service_cidr` as `StringFieldDefinition` fields. This step is not shown for VM or Bare Metal catalog items. For VM catalog items, `network_attachments` is automatically included in the API payload as a tenant-supplied create-time input with no default or validation (not shown in any wizard step). Bare Metal catalog items have no networking fields.
 
 **Step 4: Access** (per-kind step component)
 
@@ -510,7 +510,7 @@ const ClusterConfigurationStep = () => (
 );
 ```
 
-**Network attachments handling (VM only):** The `network_attachments` field is not shown in any wizard step. The UI automatically includes it in the API payload as an editable field with no default value and no validation schema. This allows tenant users to configure network attachments during VM provisioning without requiring the admin to explicitly manage them in the catalog item wizard.
+**Network attachments handling (VM only):** The `network_attachments` field is not shown in any wizard step. The UI automatically includes it in the API payload as a tenant-supplied create-time input with no default value and no validation schema. This allows tenant users to configure network attachments during VM provisioning without requiring the admin to explicitly manage them in the catalog item wizard; existing workload attachments are not updated in place.
 
 **NodeSetsFieldEditor (Cluster only) — revised 2026-07-27, template-driven:**
 
@@ -776,7 +776,7 @@ Testing strategy for the catalog management UI:
 - Scope selector: verify CSP Admin sees General/Organization options; verify Tenant Admin sees Organization/Project options; verify tenant dropdown appears for Organization scope; verify project dropdown appears for Project scope
 - Scope badge: verify badge renders correctly for all three scope levels (General, Organization, Project)
 - Unsupported schema detection: verify schemas with unsupported keywords show read-only "use CLI" message; schemas with only supported keywords show structured controls
-- Network attachments auto-inclusion (VM only): verify `network_attachments` is excluded from VM wizard but included in API payload as editable with no default or validation; verify Bare Metal has no networking fields; verify Cluster uses pod_cidr/service_cidr in Networking step
+- Network attachments auto-inclusion (VM only): verify `network_attachments` is excluded from VM wizard but included in the API payload as a create-time input with no default or validation; verify Bare Metal has no networking fields; verify Cluster uses pod_cidr/service_cidr in Networking step
 - NodeSetsFieldEditor: verify rows render one-per-template-node-set with host type read-only; verify no template selected shows an info message; verify template with no node sets shows an info message; verify size constraints serialization
 
 **Component-level tests (required):**

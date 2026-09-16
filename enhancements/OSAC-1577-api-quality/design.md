@@ -3,7 +3,7 @@ title: api-quality
 authors:
   - htayrie@redhat.com
 creation-date: 2026-07-26
-last-updated: 2026-07-26
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1577
 prd:
@@ -320,10 +320,10 @@ CREATE TABLE compute_instance_subnet_refs (
 );
 ```
 
-A trigger on `compute_instances` materializes the `subnet_id` from the JSONB `data` column into this ref table:
+A trigger on `compute_instances` materializes the `subnet_id` from the JSONB `data` column into this ref table. For ComputeInstance network attachments governed by [OSAC-1433](../OSAC-1433-unified-networking/design.md), the attachment is a create-time input; the update case below applies only to reference fields whose resource APIs support Update:
 
 - **INSERT** (active instance): extract `subnet_id` from JSONB `data`, insert into ref table
-- **UPDATE** (reference change): update ref table row with new `subnet_id`
+- **UPDATE** (where a reference change is supported): update ref table row with new `subnet_id`
 - **Soft-delete** (instance `deletion_timestamp` set): remove row from ref table — the instance is no longer an active child
 - **Undelete** (instance `deletion_timestamp` reset to epoch): re-insert ref row from JSONB `data`
 - **Hard-delete** (row deleted): `ON DELETE CASCADE` on `compute_instance_id` removes the ref row
