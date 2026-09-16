@@ -191,7 +191,7 @@ service FabricDomains {
 
 // NetworkClass extensions (existing resource, new fields)
 message NetworkClassCapabilities {
-  // existing: supports_ipv4, supports_ipv6, …
+  // Existing networking capability: IPv4 only.
   bool supports_east_west_ethernet = 5;
   bool supports_east_west_infiniband = 6;
   bool supports_nvlink = 7;

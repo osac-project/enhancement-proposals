@@ -56,9 +56,11 @@ This section defines key terms used throughout this document.
   traffic for resources. Rules specify allowed protocols, ports, and
   source/destination addresses.
 
-- **ExternalIPPool**: A provider-defined pool of IP addresses that are
-  routable outside the VirtualNetwork. "External" means external to the VN —
-  not necessarily internet-routable (see gap #8).
+- **ExternalIPPool**: A provider-defined pool containing exactly one canonical
+  IPv4 CIDR for addresses routable outside the VirtualNetwork. "External"
+  means external to the VN — not necessarily internet-routable (see gap #8).
+  The API's repeated `cidrs` field is retained for compatibility, but
+  validation rejects zero or multiple entries.
 
 - **ExternalIP**: An IP address allocated from an ExternalIPPool. Persists
   independently of the resources it's attached to.
@@ -119,6 +121,20 @@ each service type to implement networking independently:
 
 The result is fragmented networking with no consistency, no reuse, and no
 tenant-facing abstraction.
+
+### Supported Address-Family Boundary
+
+All networking resources and traffic described by this PRD use canonical IPv4
+CIDRs and IPv4 addresses. IPv6 and dual-stack networking are not supported;
+requests that contain them are rejected before persistence or backend
+dispatch.
+
+> **Implementation status:** This is the normative target contract for the
+> unified networking architecture. The current implementation still exposes
+> legacy IPv6/dual-stack schema fields and accepts family-agnostic manager
+> registrations and allocation defaults. Fulfillment-service and operator
+> enforcement—including IPv4-only validation and `IP_FAMILY_IPV4` selection—
+> must land before this contract is considered implemented.
 
 ### Gaps in the Current Design
 
@@ -374,6 +390,9 @@ _No non-functional requirements were specified in the original document._
 
 - [ ] ExternalIP semantics do not depend on internet reachability
 - [ ] The supported deployment topology is connected only; air-gapped and disconnected networking deployments are rejected before provisioning
+- [ ] ExternalIPPool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4` and rejects `IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values before persistence
+- [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the
+  repeated `cidrs` field and rejects empty or multiple entries
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
 - [ ] ExternalIPAttachment handles inbound traffic only
 - [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity

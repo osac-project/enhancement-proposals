@@ -66,6 +66,13 @@ The BMaaS integration is based on the `BaremetalInstance` resource defined in
 the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api),
 which provides a per-server resource aligned with ComputeInstance.
 
+All networking resources and manager integrations in this design use IPv4.
+IPv6 and dual-stack networking are not supported.
+
+> **Implementation status:** This is the normative target contract. Current
+> proto/CRD schemas and allocation paths still contain legacy IPv6/dual-stack
+> support; implementation work must enforce this contract before rollout.
+
 For user stories, goals, and non-goals, see the
 [Requirements Document (PRD)](prd.md).
 
@@ -125,9 +132,10 @@ metadata:
 spec:
   fabricManager: netris
   k8sManager: cudn_localnet
-status:
-  capabilities:
-    addressFamily: dualStack
+capabilities:
+  supportsIpv4: true
+  supportsIpv6: false
+  supportsDualStack: false
 ```
 
 **Neutron + CUDN (VMs and BM):**
@@ -140,9 +148,10 @@ metadata:
 spec:
   fabricManager: neutron
   k8sManager: cudn_localnet
-status:
-  capabilities:
-    addressFamily: ipv4
+capabilities:
+  supportsIpv4: true
+  supportsIpv6: false
+  supportsDualStack: false
 ```
 
 **BM-only deployment (no VMs):**
@@ -154,34 +163,32 @@ metadata:
   name: gpu-region-1
 spec:
   fabricManager: netris
-status:
-  capabilities:
-    addressFamily: ipv4
+capabilities:
+  supportsIpv4: true
+  supportsIpv6: false
+  supportsDualStack: false
 ```
 
 #### Capabilities
 
 Capabilities are **inferred from the assigned managers** and published in
-the NetworkClass status — the provider does not set them manually. The
-operator computes the intersection of capabilities declared by the fabric
-manager and k8sManager ConfigMaps and populates `status.capabilities`
-automatically.
+the NetworkClass `capabilities` field — the provider does not set them
+manually. The operator computes the intersection of capabilities declared by
+the assigned manager ConfigMaps and populates `capabilities` automatically. For
+a BM-only NetworkClass without a `k8sManager`, the absent manager is excluded
+from this intersection; only the configured `fabricManager` contributes
+capabilities.
 
-If the provider needs to restrict a capability that the managers support
-(e.g., disable IPv6 in a deployment even though the fabric manager supports
-it), they can set `spec.disableCapabilities`:
-
-```yaml
-spec:
-  fabricManager: netris
-  k8sManager: cudn_localnet
-  disableCapabilities:
-    - ipv6
-```
+The supported deployment boundary is IPv4-only. Managers must advertise the
+`ipv4` capability. IPv6 and dual-stack manager registrations are rejected,
+and NetworkClass capability output must be `supportsIpv4: true` with
+`supportsIpv6: false` and `supportsDualStack: false`.
 
 | Capability | Type | Meaning |
 |-----------|------|---------|
-| `addressFamily` | enum | `ipv4`, `ipv6`, or `dualStack` |
+| `supportsIpv4` | bool | IPv4 addressing is available; `true` for OSAC networking |
+| `supportsIpv6` | bool | IPv6 addressing; always `false` |
+| `supportsDualStack` | bool | IPv4 + IPv6 addressing; always `false` |
 | `dpuSupport` | bool | DPU-accelerated networking available |
 
 The set of capabilities is defined by the operator and is fixed — adding a
@@ -203,11 +210,11 @@ metadata:
   name: fabric-manager-netris
   namespace: osac
   labels:
-    osac.openshift.io/network/fabric-manager: "true"
+    osac.openshift.io/network-fabric-manager: "true"
 data:
   name: netris
   description: "Netris SDN — tenant isolation, ACL, IPAM, DNAT, SNAT"
-  capabilities: "addressFamily:ipv4"
+  capabilities: "ipv4"
 ```
 
 ```yaml
@@ -217,11 +224,11 @@ metadata:
   name: fabric-manager-neutron
   namespace: osac
   labels:
-    osac.openshift.io/network/fabric-manager: "true"
+    osac.openshift.io/network-fabric-manager: "true"
 data:
   name: neutron
   description: "OpenStack Neutron — tenant isolation, IPAM, floating IPs"
-  capabilities: "addressFamily:ipv4"
+  capabilities: "ipv4"
 ```
 
 **K8s managers:**
@@ -233,11 +240,11 @@ metadata:
   name: k8s-manager-cudn-localnet
   namespace: osac
   labels:
-    osac.openshift.io/network/k8s-manager: "true"
+    osac.openshift.io/network-k8s-manager: "true"
 data:
   name: cudn_localnet
   description: "CUDN with LocalNet — bridges OVN overlay to physical fabric"
-  capabilities: "addressFamily:dualStack"
+  capabilities: "ipv4"
 ```
 
 The operator discovers managers by listing ConfigMaps with the appropriate
@@ -365,6 +372,24 @@ disconnected networking deployments are not supported.
 
 ExternalIPPools are provider-managed and deployment-scoped. The fabric
 manager handles ExternalIP allocation — one pool serves all resource types.
+Each pool uses exactly one canonical IPv4 CIDR. The API's repeated `cidrs`
+field is retained for compatibility, but validation rejects an empty list or
+more than one entry; IPv6 and dual-stack pools are not supported.
+Pool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4`;
+`IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values are rejected before
+persistence.
+
+#### Address-Family and CIDR Contract
+
+All user-supplied network CIDRs use canonical dotted-decimal IPv4 notation
+(`a.b.c.d/prefix`) with host bits zero. A Subnet CIDR must be contained by its
+parent VirtualNetwork and sibling Subnet CIDRs must not overlap. Provider and
+controller-produced addresses are canonical IPv4 addresses without a CIDR
+suffix. Any IPv6, dual-stack, malformed, or non-canonical value is rejected
+before persistence or backend dispatch.
+All explicit and automatic ExternalIP allocation paths, including per-service
+auto-provisioning, must request `IP_FAMILY_IPV4`; `IP_FAMILY_UNSPECIFIED` is
+not a valid default for this contract.
 
 ### End-to-End Flows
 
@@ -767,8 +792,7 @@ in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 ```protobuf
 message VirtualNetworkSpec {
   string network_class = 1; // required, immutable
-  string ipv4_cidr = 2;     // optional, immutable
-  string ipv6_cidr = 3;     // optional, immutable
+  string ipv4_cidr = 2;     // required canonical IPv4 CIDR, immutable
 }
 ```
 

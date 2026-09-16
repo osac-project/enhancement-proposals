@@ -44,7 +44,7 @@ The following are explicitly deferred to Phase 2 (OSAC-3667, release 0.4):
 
 The following are out of scope for Phase 1:
 
-- **IPv6 and dual-stack support** — Phase 1 supports IPv4 only. IPv6 route advertisement via EVPN is untested and deferred to Phase 2. [Clarify: R2.Q4]
+- **IPv6 and dual-stack support** — not supported by the shared Unified Networking contract. [Clarify: R2.Q4]
 - **Standardized route-target format** — deferred until fabric manager implements it [Clarify: R1.Q3, D3, D7] [User]
 - **MetalLB IPAddressPool creation** — handled separately in OSAC-1436 (CaaS Networking) [Clarify: R3.Q3, D9]
 - **Physical infrastructure automation** — manual prerequisites remain manual for Phase 1 [Clarify: R2.Q1, R2.Q3, D5, D6]
