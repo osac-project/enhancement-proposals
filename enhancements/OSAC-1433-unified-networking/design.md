@@ -505,8 +505,8 @@ available network ports via the BareMetalInstanceType API — each
 BareMetalInstanceType lists its network ports with name, role, type, speed,
 and description (see
 [HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype)). Given the port identifiers, the tenant specifies which
-interface to attach to which subnet. Each
-`network_attachment` maps one physical interface to one subnet. If
+interface to attach to the subnet. The current BMaaS contract accepts one
+`network_attachment`, mapping one physical interface to one subnet. If
 `interface` is omitted, the fabric manager picks a default.
 
 Single interface (simple case):
@@ -538,16 +538,17 @@ osac create cluster --template ocp_4_17_small \
 
 For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
 are architecturally possible but deferred. The fulfillment-service resolves
-the interface from the HostType (`fabric_interface` — first interface with
-role `fabric`). The operator handles agent selection and network attachment
+the interface from the BareMetalInstanceType (`fabric_interface` — first port
+with role `fabric`). The operator handles agent selection and network attachment
 (switch port configuration) before triggering the provisioning template.
 See [CaaS Networking](/enhancements/OSAC-1436-caas-networking) for the detailed flow.
 
 Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
 (where the tenant specifies interfaces directly), for clusters the
-**system** resolves the interface from the HostType's interfaces list.
+**system** resolves the interface from each node set's BareMetalInstanceType
+`network_ports` list.
 The tenant specifies which subnet to use (one per cluster); the system maps it to the
-correct physical interfaces based on each node set's host type.
+correct physical interfaces based on each node set's BareMetalInstanceType.
 
 In all cases, the resource ends up on the fabric. The fabric manager sees
 all resources equally — there is no VM-vs-BM distinction.
@@ -818,10 +819,10 @@ No scope or service field — subnets are infrastructure-agnostic.
 
 #### HostType and BareMetalInstanceType
 
-**HostType** is a generic system-level resource that describes the network
-interfaces available on a class of hosts. It supports both BM and VM node
-sets. CaaS uses HostType for fabric interface resolution via
-`ClusterNodeSet.host_type`.
+**HostType** is a legacy system-level inventory resource. New BMaaS and CaaS
+network attachment resolution uses the tenant-facing `BareMetalInstanceType`
+and its `network_ports`; the workload networking contract does not use
+`HostType` as a second source of truth.
 
 ```protobuf
 message NetworkInterface {
@@ -831,9 +832,9 @@ message NetworkInterface {
 }
 ```
 
-BM host types have populated `interfaces`; VM host types have an empty
-list. This serves as the BM-vs-VM discriminator: if a HostType has
-interfaces → BM. If empty → VM.
+Existing HostType records may still expose `interfaces` for inventory and
+legacy consumers, but that list does not expand the tenant attachment
+cardinality or override `BareMetalInstanceType.network_ports`.
 
 Interfaces are ordered. When multiple interfaces share the same role
 (e.g., two `fabric` interfaces), the first one in the list is the default
@@ -854,12 +855,10 @@ message BareMetalNetworkPortSpec {
 }
 ```
 
-BareMetalInstanceType maps to a HostType via its
-`host_label_selector["hostType"]`. The `BareMetalNetworkPortSpec` on
-BareMetalInstanceType provides additional type and speed info beyond what
-HostType's NetworkInterface has. Both resources describe the same physical
-NICs — HostType is the operational config and BareMetalInstanceType is the
-discovery catalog.
+`BareMetalInstanceType` is the authoritative tenant-facing hardware and
+network-port catalog. Its `BareMetalNetworkPortSpec` entries provide the
+names, roles, types, and speeds used for BMaaS validation and CaaS interface
+resolution; no HostType reverse lookup is required for the workload contract.
 
 | Role | Meaning |
 |------|---------|
@@ -872,16 +871,15 @@ Roles are conventions, not enforced enums. Ports/interfaces with role
 `lifecycle` are used by the provisioning system (Ironic, Metal3) and
 should not appear in `network_attachments`.
 
-**CaaS** uses HostType: the fulfillment-service resolves the interface
-automatically (first `fabric`-role interface → stored as
+**CaaS** uses BareMetalInstanceType: the fulfillment-service resolves the
+interface automatically (first `fabric`-role port → stored as immutable
 `fabric_interface` on the node set definition).
 
 **BMaaS** uses BareMetalInstanceType: the tenant discovers interfaces
 from BareMetalInstanceType and specifies port names directly on
 `BareMetalNetworkAttachment.interface`, validated against the
-BareMetalInstanceType's network ports list. The `interface` field
-references port names that exist on both HostType and
-BareMetalInstanceType (they describe the same physical NICs).
+`BareMetalInstanceType.network_ports` list. The `interface` field references
+a port name from that list.
 
 #### Network Attachment Types
 
@@ -896,8 +894,8 @@ enforce a maximum of one entry. CaaS uses its existing singular field.
 
 ```protobuf
 message ComputeNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
+  string subnet = 1;                    // Subnet ID, optional on input; immutable after resolution
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional on input; immutable after resolution
 }
 ```
 
@@ -909,32 +907,33 @@ VMaaS attachment message has no primary field.
 
 ```protobuf
 message BareMetalNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
+  string subnet = 1;                    // Subnet ID, optional on input; immutable after resolution
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional on input; immutable after resolution
   string interface = 3;                 // optional, immutable: physical port name from BareMetalInstanceType
-  bool primary = 4;                     // optional, immutable: redundant with one attachment
+  optional bool primary = 4;            // omitted or true: implicit primary; false is rejected
 }
 ```
 
 The repeated field is retained for compatibility, but at most one entry is
 accepted. The `interface` field, when supplied, references a port name from
 the BareMetalInstanceType's network ports list; if omitted, the system picks
-the default fabric interface. The sole entry is the default route/primary
-attachment. A `primary: true` value is accepted for compatibility and is
-redundant.
+the default fabric interface. Omitted or empty attachment lists receive
+defaults, and a supplied entry receives defaults only for missing fields. The
+sole entry is the default route/primary attachment. A `primary: true` value is
+accepted for compatibility and is redundant; `primary: false` is rejected.
 
 **ClusterNetworkAttachment** (for Cluster):
 
 ```protobuf
 message ClusterNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
+  string subnet = 1;                    // Subnet ID, optional on input; immutable after resolution
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional on input; immutable after resolution
 }
 ```
 
 A single attachment applies to the whole cluster — all node sets share the same subnet.
 The `fabric_interface` is resolved by the fulfillment-service at creation time for each
-node set from its host type (first interface with role `fabric` — see [HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype))
+node set from its BareMetalInstanceType (first port with role `fabric`)
 and stored on the node set definition. The tenant does not set this field.
 
 #### Resource Specs
@@ -1190,9 +1189,13 @@ default and determines:
 **Validation and compatibility:**
 - Zero or one attachment is valid
 - If one BMaaS attachment exists, its existing `primary` field may be omitted
-  or set to `true`; both mean the same default-route behavior. VMaaS has no
-  primary field, and CaaS has no primary concept.
-- `primary` is immutable after creation
+  or set to `true`; both mean the same default-route behavior. `primary: false`
+  is rejected. VMaaS has no primary field, and CaaS has no primary concept.
+- Omitted or empty attachment lists receive defaults; a supplied attachment
+  receives defaults only for missing fields.
+- The complete resolved attachment list and every network-owned field are
+  immutable after creation; changing them requires deleting and recreating the
+  workload.
 
 **IP assignment:** All resource types receive IPs via DHCP. For VMs,
 OVN provides DHCP on the CUDN overlay. For BM servers and CaaS agents,

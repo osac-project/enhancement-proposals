@@ -242,8 +242,11 @@ for wire and API compatibility; the API validates that the list contains zero
 or one entry. CaaS retains its existing singular `network_attachment` field.
 With exactly one attachment, it is the default route/primary attachment. The
 BMaaS attachment retains its existing optional `primary` field; with one
-attachment, omitting it has the same meaning as `primary: true`. VMaaS has no
-primary field, and CaaS has no primary concept.
+attachment, omitting it has the same meaning as `primary: true`, while
+`primary: false` is rejected. VMaaS has no primary field, and CaaS has no
+primary concept. Omitted or empty attachment lists receive tenant defaults;
+partial supplied attachments receive defaults only for missing fields, and
+the resolved attachment list and fields are immutable after creation.
 Multi-NIC workload networking is future scope and is not enabled by the
 plural field shape.
 
@@ -452,9 +455,9 @@ _No non-functional requirements were specified in the original document._
 
 ### Resource-Specific (Bare Metal)
 
-- [ ] Host types describe available interfaces (name, role, description) for bare-metal servers
-- [ ] Bare-metal network attachments include an optional interface reference that identifies a named interface from the host type
-- [ ] A bare-metal network attachment may select one named interface from the host type
+- [ ] BareMetalInstanceTypes describe available network ports (name, role, type, speed) for bare-metal servers
+- [ ] Bare-metal network attachments include an optional interface reference that identifies a named port from the BareMetalInstanceType
+- [ ] A bare-metal network attachment may select one named port from the BareMetalInstanceType
 - [ ] Requests containing more than one bare-metal network attachment are rejected
 - [ ] The referenced subnet belongs to the same VirtualNetwork as its security groups
 

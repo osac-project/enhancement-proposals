@@ -28,7 +28,8 @@ VMaaS, BMaaS, and CaaS. VMaaS and BMaaS keep their plural
 entry; CaaS keeps its singular `network_attachment` field. When one
 attachment is present it is implicitly the primary/default route. The BMaaS
 attachment's existing optional `primary` field may be omitted or set to true;
-VMaaS has no primary field and CaaS has no primary concept.
+`primary: false` is rejected. VMaaS has no primary field and CaaS has no
+primary concept.
 
 ## Summary
 
@@ -121,9 +122,10 @@ The design covers three capabilities: default networking (including NATGateway) 
    osac create computeinstance --template ocp_virt_vm --name my-vm
    ```
    - fulfillment-service:
-     - Detects `network_attachments` field is omitted
+     - Detects `network_attachments` field is omitted or empty
      - Queries tenant's default Subnet and default SecurityGroup (labeled `osac.openshift.io/default: "true"`)
      - Populates `network_attachments` with default Subnet + default SecurityGroup
+     - For a supplied single attachment, defaults only missing subnet or security-group fields and preserves supplied values
      - Stores resolved attachments in spec
    - Creates ComputeInstance CR with resolved network_attachments
    - osac-operator reconciles normally (VM provisioned on default subnet)

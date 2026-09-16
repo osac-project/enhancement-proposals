@@ -65,6 +65,7 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 - **Disks**: wizard collects `spec.boot_disk.size_gib` only unless [§5](#5-open-decisions) chooses `spec.additional_disks`.
 - **`spec.ssh_key`**: optional on the General step — prefill from catalog `default` when defined ([§2.1.2](#212-catalog-overlay-and-defaults)); tenant may edit when `editable: true` or clear the field. Omit from the client create payload only when the field is blank after catalog selection or user edits. Include the parsed plain string in the payload when the wizard holds a value (prefilled default or user entry).
 - **Networking**: pickers assemble a single `spec.network_attachments` entry; raw JSON not shown. The API rejects a second entry. Catalog `field_definitions` for this path (including nested paths) are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
+- The direct VM API also permits an omitted or empty attachment list and applies normal tenant-default resolution. The v1 wizard intentionally requires one picker-selected entry and always emits one; this UI requirement does not change the API's zero-or-one contract.
 
 **Cluster**
 

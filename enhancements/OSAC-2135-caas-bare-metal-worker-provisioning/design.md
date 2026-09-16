@@ -85,7 +85,7 @@ This design replaces `HostType` with `BareMetalInstanceType` and the static agen
 | **ClusterVersionSpec (proto)** | No DiskImage reference | `disk_image: DiskImageReference` (owned by this design) |
 | **BMI Create call** | No `instance_type` field | `instance_type = 20` set by controller |
 | **Interface resolution** | HostType.interfaces[].role=fabric | BareMetalInstanceType.network_ports[].role=fabric |
-| **Network attachment source** | Cluster proto via private API callback | ClusterOrder CRD `networkAttachments[0]` (ClusterNetworkAttachment) |
+| **Network attachment source** | Cluster proto via private API callback | ClusterOrder CRD singular `networkAttachment` (ClusterNetworkAttachment) |
 | **Host selection** | HostType → Template → CatalogItem reverse lookup | BareMetalInstanceType.host_label_selector (direct, OSAC-1201) |
 | **Worker provisioning** | Static pre-boot pool + cron job + parking network | On-demand BMI creation via private API |
 | **Boot image** | Assisted image service ISO | RHCOS DiskImage (OCI artifact) linked to ClusterVersion |
@@ -224,7 +224,7 @@ The diagram shows the end-to-end provisioning flow. The controller waits for eac
    | `catalog_item` | System-owned pass-through | Required by private API; CaaS overrides all parameters |
    | `image` | `ClusterVersion.disk_image` → DiskImage ID | RHCOS boot image for discovery agent |
    | `user_data` | InfraEnv ignition (inline, ~15KB, max 64KB) | Discovery ignition to register with assisted-service |
-   | `network_attachments` | `networkAttachments[0]` + BareMetalInstanceType `network_ports` | The sole attachment from `ClusterNetworkAttachment`, interface from first `fabric` port, `primary: true` (see Network Attachment Enrichment); BMaaS rejects additional entries |
+   | `network_attachments` | `networkAttachment` + BareMetalInstanceType `network_ports` | The sole attachment from `ClusterNetworkAttachment`, interface from first `fabric` port, `primary: true` (see Network Attachment Enrichment); BMaaS rejects additional entries |
    | `tenant` | Always `"system"` | Hides CaaS BMIs from tenant APIs (see System Tenant Isolation) |
 
    BMaaS handles the physical networking — moving the host to the tenant subnet VLAN and assigning an IP via fabric DHCP — as part of BMI provisioning (dependency: OSAC-1437). If the host fails to join the tenant network, the agent will not register on the expected subnet, and the existing `AgentRegistrationTimeout` handles this failure mode. API and ingress VIPs are provisioned by the existing AAP template (MetalLB LoadBalancer Services) and are not managed by this controller.
@@ -291,7 +291,7 @@ On ClusterOrder deletion, deleting the HostedCluster cascades through HyperShift
 
 **Modified CRDs:**
 
-- `ClusterOrder` (osac-operator): new `workers` status field and aggregate counts (`desiredWorkers`, `currentWorkers`, `readyWorkers`) for tracking CaaS-managed worker resources. The `nodeRequests` element type (`NodeRequest`) is redesigned to carry the `BareMetalInstanceType` reference (see ClusterNodeSet Redesign). The `networkAttachments` field (plural `[]ClusterNetworkAttachment`, defined by OSAC-1436 and OSAC-1589) carries the tenant subnet reference — the `BareMetalWorkerReconciler` reads `networkAttachments[0]` from the ClusterOrder spec to build per-BMI `BareMetalNetworkAttachment` objects (see Network Attachment Enrichment below).
+- `ClusterOrder` (osac-operator): new `workers` status field and aggregate counts (`desiredWorkers`, `currentWorkers`, `readyWorkers`) for tracking CaaS-managed worker resources. The `nodeRequests` element type (`NodeRequest`) is redesigned to carry the `BareMetalInstanceType` reference (see ClusterNodeSet Redesign). The singular `networkAttachment` field (defined by OSAC-1436) carries the tenant subnet reference — the `BareMetalWorkerReconciler` reads it from the ClusterOrder spec and builds one-entry per-BMI `BareMetalNetworkAttachment` lists (see Network Attachment Enrichment below).
 
 **New CRs created at runtime (not new CRD definitions):**
 
@@ -640,12 +640,12 @@ After the first successful MAC match, the controller labels the Agent with `osac
 
 #### Network Attachment Enrichment
 
-The BM controller reads the cluster-level network attachment from
-`ClusterOrder.spec.networkAttachments[0]` (a `ClusterNetworkAttachment`
-carrying `subnetRef` + `securityGroupRefs`, defined by OSAC-1436) and enriches
-it into a per-BMI `BareMetalNetworkAttachment` for the private API call. The
-array is an internal compatibility shape and contains at most one cluster
-attachment; CaaS does not provide multi-NIC worker networking:
+The BM controller reads the singular cluster-level network attachment from
+`ClusterOrder.spec.networkAttachment` (a `ClusterNetworkAttachment` carrying
+typed subnet and security-group references, defined by OSAC-1436) and enriches
+it into a one-entry per-BMI `network_attachments` list for the private API
+call. The per-BMI list is an internal compatibility shape; CaaS does not
+provide multi-NIC worker networking:
 
 | ClusterNetworkAttachment (input) | BareMetalNetworkAttachment (output) | Source |
 |---|---|---|
@@ -654,7 +654,12 @@ attachment; CaaS does not provide multi-NIC worker networking:
 | — | `interface` | Resolved from `BareMetalInstanceType.network_ports[]` (first port with role `fabric`) |
 | — | `primary: true` | Always set — CaaS BM workers have a single network attachment |
 
-This enrichment is a read-only consumer of the ClusterOrder's `networkAttachments` field — the BM controller does not define or modify the field shape. The `networkAttachments` field uses `[]ClusterNetworkAttachment` (the cluster-specific attachment type per networking-decisions.md, not ComputeInstance's `NetworkAttachment`). This design requires the field to be present on the ClusterOrder CRD before the BM controller can read it.
+This enrichment is a read-only consumer of the ClusterOrder's singular
+`networkAttachment` field — the BM controller does not define or modify the
+field shape. The field uses the cluster-specific `ClusterNetworkAttachment`
+type, not ComputeInstance's `ComputeNetworkAttachment`. This design requires
+the field to be present on the ClusterOrder CRD before the BM controller can
+read it.
 
 The `interface` field is resolved at BMI creation time, not stored on the ClusterOrder. Different node sets in the same cluster can reference different `BareMetalInstanceType`s with different network port configurations — the interface is resolved per node set, not per cluster.
 

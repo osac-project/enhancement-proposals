@@ -53,7 +53,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 ### What Already Works
 
 - `network_attachments` field exists on ComputeInstanceSpec (field 14)
-- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL immutability rules (subnet refs, security group refs, and the attachment list are immutable)
+- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL cardinality and immutability rules; the complete resolved attachment is immutable
 - Subnet-to-namespace resolution is implemented
 - The template creates VMs in the correct namespace
 - ExternalIPAttachment with `compute_instance` target works end-to-end
@@ -126,7 +126,7 @@ ComputeInstance already participates in the networking API. Today's flow:
      --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
-     - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
+     - If `network_attachments` is omitted or empty: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD); a supplied single attachment receives defaults only for missing fields
      - Validates: at most one attachment; the subnet is Ready and the security groups belong to the same VN
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `network_attachments`
@@ -196,8 +196,8 @@ Use the existing `ComputeNetworkAttachment` field with a single-entry limit:
 
 ```protobuf
 message ComputeNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
+  string subnet = 1;                    // Subnet ID, optional on input; immutable after resolution
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional on input; immutable after resolution
 }
 
 message ComputeInstanceSpec {
@@ -286,8 +286,11 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 
 The existing repeated `network_attachments` field is retained unchanged for API
 compatibility. The server and operator validate that it contains at most one
-entry; no new singular field or dual-field migration is required. The sole VM
-attachment is implicitly primary/default.
+entry; omitted and empty lists invoke default resolution, while a supplied
+single entry receives defaults only for missing fields. No new singular field or
+dual-field migration is required. The sole VM attachment is implicitly
+primary/default, and changing any resolved attachment field requires deleting
+and recreating the VM.
 
 ### Security Considerations
 

@@ -72,7 +72,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Optional Network Configuration with Defaults
 
-- **FR-3:** Network configuration is optional when creating a VM. When omitted, the system uses the tenant's default subnet and default security group (see Default Networking PRD). The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
+- **FR-3:** Network configuration is optional when creating a VM. When the attachment list is omitted or empty, the system uses the tenant's default subnet and default security group (see Default Networking PRD). When a single attachment is supplied with a missing subnet or security-group list, only the missing field is defaulted; supplied values are preserved. The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -86,9 +86,9 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 - **FR-6:** When a VM is created, the platform validates that the target deployment supports virtualization. If the deployment only supports bare-metal servers, the create request fails with a clear error message explaining the limitation. [User]
 
-#### Backward Compatibility
+#### API Compatibility
 
-- **FR-7:** Existing VMs continue to work without changes. The platform accepts both old and new network configuration formats during a transition period. If both formats are provided, the create request fails with an error. If the old format is provided alone, it is converted to the new format automatically. [User]
+- **FR-7:** The existing repeated `network_attachments` field remains the only VM network-configuration field. No singular replacement field, parallel legacy field, or dual-field conversion period is introduced. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -104,8 +104,8 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's primary attachment IP
 - [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
-- [ ] Creating a VM using the old network configuration format succeeds and is internally converted to the new format
-- [ ] Creating a VM with both old and new configuration formats returns an error
+- [ ] Creating a VM with an omitted or empty attachment list receives the tenant defaults
+- [ ] Creating a VM with a partial single attachment defaults only its missing subnet or security-group fields
 
 ## 6. Assumptions
 
