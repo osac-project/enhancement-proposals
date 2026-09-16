@@ -297,7 +297,8 @@ explicitly specifies them.
 - DNS API for tenant-managed DNS zones (separate enhancement)
 - Advanced per-physical-interface configuration for BaremetalInstance (NIC
   bonding, VLAN trunking, etc. — basic per-interface subnet attachment is
-  supported via the `interface` field on NetworkAttachment)
+  supported for the sole attachment via the `interface` field on
+  BareMetalNetworkAttachment)
 - Load Balancer API
 - Internet Gateway API
 - Quota enforcement for networking resources

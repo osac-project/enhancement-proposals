@@ -340,8 +340,8 @@ no internal IP.
 
 ```protobuf
 message BareMetalNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, optional on input; immutable after resolution
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional on input; immutable after resolution
+  SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
+  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
   string interface = 3;                 // optional, immutable: physical interface
                                         // from BareMetalInstanceType
   optional bool primary = 4;            // omitted or true: implicit default gateway; false is rejected
@@ -368,7 +368,7 @@ message BareMetalNetworkAttachmentStatus {
   string interface = 1;
   string subnet_ref = 2;
   string ip_address = 3;  // Discovered after DHCP assignment, synced to fulfillment-service via feedback
-  bool primary = 4;
+  bool primary = 4;       // true for the sole resolved attachment; normalized from spec
 }
 ```
 
@@ -396,7 +396,7 @@ type BareMetalNetworkAttachmentStatus struct {
     Interface  string `json:"interface,omitempty"`
     SubnetRef  string `json:"subnetRef,omitempty"`
     IPAddress  string `json:"ipAddress,omitempty"` // Discovered after DHCP assignment
-    Primary    bool   `json:"primary,omitempty"`
+    Primary    bool   `json:"primary,omitempty"` // true for the sole resolved attachment
 }
 ```
 
@@ -567,7 +567,7 @@ After `reconcileProvisioning` completes and the host has received a DHCP lease f
 
 **MAC resolution — the `osac.openshift.io/interface-macs` contract.** Bare-metal servers are not registered as named fabric servers, so their DHCP leases appear in the fabric manager's IPAM as MAC-only host entries (no server name). To match a lease, the operator must know the selected NIC MAC. Inventory tooling annotates each `BareMetalHost` with a JSON map of OSAC interface name → NIC MAC, e.g. `{"eth9":"52:54:00:16:04:83"}`, under the `osac.openshift.io/interface-macs` annotation. During `reconcileIPDiscovery` the operator reads this annotation, resolves the sole attachment's interface to a MAC, and passes it to the job as an extra var. The `query_dhcp_lease` role matches the IPAM host by MAC (the fabric manager stores lease MACs lowercase; the role compares against the lowercased `mac[].address` values). When no MAC is supplied, the role falls back to matching by server name — the path named CaaS fabric servers use, which BMaaS is converging onto.
 
-The feedback controller syncs this to the fulfillment-service DB via the existing Signal / `syncStatus()` pattern. The ExternalIPAttachment controller reads the primary IP from CR status for DNAT creation.
+The operator writes both the discovered IP and `primary: true` to the status entry for the resolved attachment (the status-side reflection of the implicit-primary rule). The feedback controller syncs this to the fulfillment-service DB via the existing Signal / `syncStatus()` pattern, and the ExternalIPAttachment controller has one deterministic IP to read for DNAT creation.
 
 #### Component Responsibility Summary
 
@@ -751,6 +751,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 ### Unit Tests
 
 - fulfillment-service: max-one attachment and primary validation (accept single implicit primary, accept explicit primary)
+- fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
 - fulfillment-service: interface validation (reject an interface not in BareMetalInstanceType)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - bare-metal-fulfillment-operator: reconcileNetworking phase ordering (after provisioning, before reboot; inventory → provisioning → networking → reboot → IP discovery)
@@ -770,7 +771,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 
 ### Tricky Test Cases
 
-- BM with one attachment and omitted `primary` (verify the sole attachment is the default route)
+- BM with one attachment and omitted `primary` (verify the sole attachment is normalized to `primary: true` in the CR/status and is the default route)
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
 - IP address feedback latency (verify ExternalIPAttachment controller waits for IP to appear in status)

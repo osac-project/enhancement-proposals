@@ -896,8 +896,8 @@ enforce a maximum of one entry. CaaS uses its existing singular field.
 
 ```protobuf
 message ComputeNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, optional on input; immutable after resolution
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional on input; immutable after resolution
+  SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
+  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
 }
 ```
 
@@ -909,8 +909,8 @@ VMaaS attachment message has no primary field.
 
 ```protobuf
 message BareMetalNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, optional on input; immutable after resolution
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional on input; immutable after resolution
+  SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
+  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
   string interface = 3;                 // optional, immutable: physical port name from BareMetalInstanceType
   optional bool primary = 4;            // omitted or true: implicit primary; false is rejected
 }
@@ -928,8 +928,8 @@ accepted for compatibility and is redundant; `primary: false` is rejected.
 
 ```protobuf
 message ClusterNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, optional on input; immutable after resolution
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional on input; immutable after resolution
+  SubnetLocalReference subnet = 1;                         // Required after resolution; immutable after creation
+  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
 }
 ```
 
@@ -1058,7 +1058,7 @@ message BareMetalNetworkAttachmentStatus {
   string interface = 1;                 // Physical interface name (echoed from spec)
   string subnet_ref = 2;               // Subnet ID (echoed from spec)
   string ip_address = 3;               // Discovered via query_dhcp_lease role after provisioning (matches port MAC to DHCP lease)
-  bool primary = 4;                     // Echoed from spec
+  bool primary = 4;                     // true for the sole resolved attachment; normalized from spec
 }
 
 message BareMetalInstanceStatus {

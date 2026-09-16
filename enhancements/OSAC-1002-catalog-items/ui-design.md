@@ -75,8 +75,8 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
    Both VMaaS and BMaaS enforce the maximum of one resolved attachment; the
    catalog UI does not add or remove NIC rows.
 8. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
-8. The admin is redirected to the detail page for the newly created catalog item.
-9. From the detail page or list page, the admin can publish the item by toggling the publish `Switch`.
+9. The admin is redirected to the detail page for the newly created catalog item.
+10. From the detail page or list page, the admin can publish the item by toggling the publish `Switch`.
 
 #### Cloud Provider Admin — Edit, Publish/Unpublish, Delete
 
@@ -516,11 +516,6 @@ const ClusterConfigurationStep = () => (
 ```
 
 **Network attachments handling (VM and Bare Metal):** The `network_attachments` field is not shown in any wizard step. The Catalog Item create payload includes it as `fields.network_attachments`, using `ComputeNetworkAttachmentListFieldPolicy` for VM or `BareMetalNetworkAttachmentListFieldPolicy` for Bare Metal. An editable policy can carry `default_value: { items: [...] }`, but `default_value` can also be omitted. The provisioning request carries `catalog_item` and tenant-supplied `network_attachments`; an omitted or explicitly empty tenant list is treated as no input, while a non-empty list overrides an editable default. Fulfillment resolves the policy, applies default-network injection when the resolved list remains empty, rejects empty locked/default policy values, and performs final resource validation. Omitting a JSON `validation_schema` does not bypass typed policy checks or resource validation; existing workload attachments are not updated in place.
-**Network attachments handling (VM and Bare Metal):** The `network_attachments`
-field is not shown in any wizard step. Typed catalog policies may provide an
-optional default list, but the resolved VMaaS/BMaaS list is still limited to
-zero or one entry and the catalog UI does not add or remove NIC rows.
-
 **NodeSetsFieldEditor (Cluster only) — revised 2026-07-27, template-driven:**
 
 **Location:** `libs/ui-components/src/components/catalogManagement/fieldDefinitions/NodeSetsFieldEditor.tsx`
@@ -785,8 +780,7 @@ Testing strategy for the catalog management UI:
 - Scope selector: verify CSP Admin sees General/Organization options; verify Tenant Admin sees Organization/Project options; verify tenant dropdown appears for Organization scope; verify project dropdown appears for Project scope
 - Scope badge: verify badge renders correctly for all three scope levels (General, Organization, Project)
 - Unsupported schema detection: verify schemas with unsupported keywords show read-only "use CLI" message; schemas with only supported keywords show structured controls
-- Network attachments auto-inclusion (VM and Bare Metal): verify both wizards omit the field, VM uses `ComputeNetworkAttachmentListFieldPolicy`, Bare Metal uses `BareMetalNetworkAttachmentListFieldPolicy`, and both Catalog Item payloads support an optional `default_value.items`; verify omitted or explicitly empty tenant lists allow editable defaults and later default-network injection, while empty locked/default policies are rejected; verify omitted JSON `validation_schema` does not bypass typed policy or resource validation; verify Cluster uses pod_cidr/service_cidr in Networking step
-- Network attachments auto-inclusion (VM and Bare Metal): verify both typed policies preserve the zero-or-one service contract; verify omitted or explicitly empty tenant lists allow catalog/default-network resolution; verify Cluster uses pod_cidr/service_cidr in Networking step
+- Network attachments auto-inclusion (VM and Bare Metal): verify both wizards omit the field, use the resource-specific typed policy, support an optional `default_value.items`, preserve the zero-or-one service contract, and allow omitted or explicitly empty tenant lists to resolve through catalog/default-network defaults; verify empty locked/default policies are rejected, omitted JSON `validation_schema` does not bypass typed policy or resource validation, and Cluster uses `pod_cidr`/`service_cidr` in its Networking step
 - NodeSetsFieldEditor: verify rows render one-per-template-node-set with host type read-only; verify no template selected shows an info message; verify template with no node sets shows an info message; verify size constraints serialization
 
 **Component-level tests (required):**

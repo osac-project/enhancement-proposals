@@ -197,8 +197,8 @@ Use the existing `ComputeNetworkAttachment` field with a single-entry limit:
 
 ```protobuf
 message ComputeNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, optional on input; immutable after resolution
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional on input; immutable after resolution
+  SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
+  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
 }
 
 message ComputeInstanceSpec {
@@ -403,6 +403,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 - fulfillment-service: max-one validation (accept no attachment or one attachment)
 - fulfillment-service: max-one `network_attachments` validation
+- fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
 - fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (implicit single attachment)

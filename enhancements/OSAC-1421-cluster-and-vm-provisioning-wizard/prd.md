@@ -132,23 +132,23 @@ The wizard loads picker options from the **public** fulfillment APIs (`osac.publ
 **Subnet and security group filters** (after virtual network selection):
 
 ```text
-this.spec.virtual_network == "<vn-id>"
+this.spec.virtual_network.name == "<vn-name>"
 ```
 
 **Picker display and values:**
 
 | Picker | Option label | Selected value |
 | ------ | ------------ | -------------- |
-| Virtual network | `metadata.name` (fallback `id`) | VirtualNetwork `id` — drives subnet/SG list filters only |
-| Subnet | `metadata.name` (fallback `id`) | Subnet `id` |
-| Security group | `metadata.name` (fallback `id`) | SecurityGroup `id` (multi-select) |
+| Virtual network | `metadata.name` | VirtualNetwork `metadata.name` — drives subnet/SG list filters only |
+| Subnet | `metadata.name` | Subnet `metadata.name` |
+| Security group | `metadata.name` | SecurityGroup `metadata.name` (multi-select) |
 
 **Create payload assembly** — one `spec.network_attachments` element:
 
 ```json
 {
-  "subnet": "<subnet-id>",
-  "security_groups": ["<security-group-id>"]
+  "subnet": { "name": "<subnet-name>" },
+  "security_groups": [{ "name": "<security-group-name>" }]
 }
 ```
 

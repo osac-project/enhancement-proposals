@@ -67,7 +67,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Network Attachment Constraint
 
-- **FR-1:** A tenant can create a VM with zero or one network attachment. The sole attachment provides the default gateway, DNS, inbound external access target, and outbound NAT source. The repeated `network_attachments` field is retained for API compatibility, but a request with more than one entry is rejected. [User]
+- **FR-1:** A tenant can create a VM with zero or one network attachment. The sole attachment provides the default gateway, DNS, and inbound external access target; outbound SNAT, when configured, is provided by the VirtualNetwork's NATGateway. The repeated `network_attachments` field is retained for API compatibility, but a request with more than one entry is rejected. [User]
 - **FR-2:** When one network attachment is present, it is implicitly primary and provides the default route. VMaaS does not expose a `primary` field. [User]
 
 #### Optional Network Configuration with Defaults
