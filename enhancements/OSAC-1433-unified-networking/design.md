@@ -40,6 +40,15 @@ not tenant selectable, and these reachability prerequisites must hold before
 the deployment's NetworkClass is accepted. The boundary applies to
 Fabric-only, K8s-only, and combined manager profiles.
 
+### Networking Hub Support Boundary
+
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
+
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a
 pod. Pod networking is managed by OVN-Kubernetes, meaning VMs live inside an
 OVN overlay that is not directly visible on the physical fabric. The core
@@ -1236,18 +1245,17 @@ via the fabric.
 
 #### Hub Selection (CR Placement)
 
-The fulfillment-controller creates K8s CRs on a registered hub cluster.
-All networking resources (VirtualNetwork, Subnet, SecurityGroup,
-ExternalIPPool, ExternalIP, ExternalIPAttachment, NATGateway) select a
-hub randomly from the available hubs. Hub selection is sticky — once a
-resource is assigned to a hub via `status.hub`, subsequent reconciliations
-reuse the same hub.
+The fulfillment-controller creates K8s CRs on the single registered hub
+cluster in a supported networking deployment. All networking resources
+(VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP,
+ExternalIPAttachment, NATGateway) use that hub. Multi-hub networking
+placement, cross-hub resource coordination, and cross-hub network connectivity
+are unsupported. The hub assignment remains sticky through `status.hub` for
+resource lifecycle and reconciliation.
 
-This design assumes a single-hub deployment. Multi-hub resource placement
-(affinity between related resources, cross-hub CR visibility) is deferred
-as a future design concern. The fabric spans all hosting clusters, so
-AAP-dispatched operations reach the same infrastructure regardless of
-which hub triggers them.
+This boundary applies only to the networking area and does not define hub
+behavior for other OSAC areas. The fabric can still span multiple hosting
+clusters where the relevant networking feature supports that topology.
 
 #### Cross-VN Communication
 

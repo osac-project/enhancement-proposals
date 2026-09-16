@@ -23,6 +23,15 @@ superseded-by:
 ## Summary
 Meter ExternalIP and NATGateway allocation time through the existing pipeline. This design observes the [Unified Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary): networking metering covers connected deployments only and does not add air-gapped or disconnected networking support. The current code has no networking mapper, no initial quantity/correction consumer, no resource-level gate, and no M360 networking contract; those are required changes, not delivered behavior. See [PRD](prd.md) for detailed requirements.
 
+Networking metering also inherits the [Unified Networking hub support
+boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
+
 ## Motivation
 The event proto carries ExternalIP, ExternalIPAttachment, and NATGateway, but `BuildFilter` and `MapperForEvent` do not consume them. Fulfillment and the operator both currently write `ExternalIP.status.attached` (`fulfillment-service/internal/servers/private_external_ip_attachments_server.go:225-287`, `osac-operator/internal/controller/externalipattachment_controller.go:675-718`), so attribution can precede READY and race.
 
