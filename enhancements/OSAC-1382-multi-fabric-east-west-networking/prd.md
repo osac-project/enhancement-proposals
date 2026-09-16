@@ -19,6 +19,7 @@ boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-b
 east-west networking is supported only in connected deployments. Air-gapped
 and disconnected networking deployments are not supported, and east-west does
 not create an exception to that boundary.
+
 ## In Scope (Phase 1)
 
 - Declarative east-west connectivity on Ethernet-based fabrics.

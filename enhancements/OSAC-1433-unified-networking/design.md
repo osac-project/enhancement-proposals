@@ -174,8 +174,10 @@ capabilities:
 Capabilities are **inferred from the assigned managers** and published in
 the NetworkClass `capabilities` field — the provider does not set them
 manually. The operator computes the intersection of capabilities declared by
-the fabric manager and k8sManager ConfigMaps and populates `capabilities`
-automatically.
+the assigned manager ConfigMaps and populates `capabilities` automatically. For
+a BM-only NetworkClass without a `k8sManager`, the absent manager is excluded
+from this intersection; only the configured `fabricManager` contributes
+capabilities.
 
 The supported deployment boundary is IPv4-only. Managers must advertise the
 `ipv4` capability. IPv6 and dual-stack manager registrations are rejected,

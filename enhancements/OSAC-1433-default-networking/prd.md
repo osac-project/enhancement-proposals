@@ -90,7 +90,7 @@ dual-stack networking are not supported.
 #### Default Networking
 
 - **FR-1:** At tenant onboarding, the system provisions a default
-  VirtualNetwork, IPv4 Subnet, and SecurityGroup for the tenant. The tenant
+  VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway for the tenant. The tenant
   transitions to READY only after all
   default networking resources are also READY. If default networking
   provisioning fails, the tenant remains in a non-READY state with a
@@ -170,7 +170,7 @@ dual-stack networking are not supported.
   `--external-ip-attachment` and no explicit network attachments — the
   server is placed on the default subnet with an auto-provisioned
   ExternalIP
-- [ ] Default VirtualNetwork, IPv4 Subnet, and SecurityGroup
+- [ ] Default VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway
   exist and are READY before the tenant's first resource creation
 - [ ] Default resources appear in list views with a label identifying
   them as defaults

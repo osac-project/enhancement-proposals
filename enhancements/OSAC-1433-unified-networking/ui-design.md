@@ -118,7 +118,7 @@ in-place edit.
 | NAT Gateway detach fails | Server error shown in the confirmation modal; row's Detach stays available for retry. |
 | External IP create: pool exhausted | Server's `RESOURCE_EXHAUSTED`/`FAILED_PRECONDITION` shown as a form-level error. |
 | External IP delete fails | Server error shown inline; row's Delete stays available for retry. |
-| Pool create: missing/invalid/overlapping/non-IPv4 or multiple CIDRs | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
+| Pool create: missing/invalid/non-IPv4 or multiple CIDRs | Server's `INVALID_ARGUMENT` shown as a form-level error. |
 | Pool update: concurrent write | Server's `FAILED_PRECONDITION`/`ABORTED` shown; admin re-fetches and retries. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |

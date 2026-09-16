@@ -28,6 +28,7 @@ VMaaS inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
 VM networking supports connected deployments only and does not add air-gapped
 or disconnected networking support.
+
 ComputeInstance currently uses a shared `NetworkAttachment` message that lacks a `primary` field, preventing multi-NIC VM provisioning with a designated default gateway. This enhancement introduces `ComputeNetworkAttachment` with a `primary` field, makes the attachments field optional (populating with tenant defaults when omitted), and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
