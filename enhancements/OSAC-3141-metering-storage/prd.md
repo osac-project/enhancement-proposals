@@ -15,8 +15,8 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 ## In Scope
 
 - Block storage metering — allocation-based metering for standalone Volumes (OSAC-984) by storage tier and capacity (GiB-seconds), regardless of what the volume is attached to (including volumes attached to bare metal hosts)
-- Parent-child attribution so that block storage volumes attached to VMs or clusters can be attributed to the parent resource in a unified usage view
 - Applies across VMaaS (block volumes on ComputeInstances) and CaaS (volumes on ClusterOrders); the volume meter also covers volumes attached to bare metal hosts, whose unified host footprint view is owned by OSAC-2506
+- Volume expansion through the existing dimension-update event path, with usage split at the committed effective timestamp
 
 ## Out of Scope
 
@@ -26,6 +26,7 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 - Networking resource metering — tracked separately ([OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145))
 - Network bandwidth metering — tracked separately ([OSAC-3149](https://redhat.atlassian.net/browse/OSAC-3149))
 - Costing, billing, quota enforcement, and budget alerts — deferred to a separate PRD
+- Parent-child attribution for attached Volumes — tracked as a follow-up with OSAC-4884
 - VM boot disk storage tier attribution — tracked separately
 - OSAC UI views for storage usage — downstream billing and usage systems provide presentation of the metering data
 - Workload-level metering inside tenant environments
@@ -46,15 +47,14 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 
 ## Acceptance Criteria
 
-- [ ] A block storage volume generates usage data (GiB-seconds) for the period it holds allocated capacity — from when it becomes available for use until it is deleted — queryable per tenant, storage tier, and capacity
+- [ ] A block storage volume generates usage data (GiB-seconds) for the period it holds allocated capacity — from when it becomes available for use until it enters `FAILED` or the platform records the deletion request, whichever comes first — queryable per tenant, storage tier, and capacity
 - [ ] A block storage volume that fails to provision and never becomes available generates no usage data
-- [ ] When a block volume is resized, usage data reflects the new capacity from the point the resize takes effect; a resize that fails or is reverted leaves usage data unchanged
 - [ ] Storage usage can be broken down by storage tier, tenant, project, and individual volume
 - [ ] A block storage volume attached to a stopped VM continues generating usage data
-- [ ] A block storage volume attached to a VM or cluster can be attributed to the parent resource in a unified usage view
 - [ ] Storage usage data appears alongside existing metering data without additional admin setup
 - [ ] Storage meters record usage at per-second granularity — a volume existing for 30 seconds appears in usage data
 - [ ] Storage usage totals are accurate — querying the same period twice returns consistent results
+- [ ] A successful volume expansion emits the committed new capacity and effective timestamp, and metering reports the old and new capacity intervals separately; failed or reverted expansions do not change usage
 - [ ] Raw storage metering events are retained for at least 7 days (configurable), per Part 1 metering requirements
 - [ ] Aggregated storage usage data is retained for at least 13 months (configurable), per Part 1 metering requirements
 - [ ] Enabling storage metering does not disrupt existing provisioning workflows
@@ -65,11 +65,12 @@ Without metering for block storage, Cloud Provider Admins have no usage data to 
 - Storage metering is added to the existing Part 1 metering service without requiring separate tenant or administrator setup.
 - The tenant-facing block storage Volume API will be implemented before block storage metering.
 - The Part 1 metering service supports allocation-based metering for block storage.
+- Storage usage closes at the earlier of a terminal `FAILED` transition and the platform's durable deletion-request timestamp. Vendor cleanup may continue after that boundary and is not included in the initial usage interval.
 
 ## Dependencies
 
 - **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Block storage metering extends but does not replace it.
-- **OSAC-984 (Storage Volume API):** A tenant-facing block storage Volume resource must exist before block storage metering can be implemented, and must expose a stable association between a volume and its parent resource (VM or cluster) so usage can be attributed to that parent. The mechanism for this association is a design concern for OSAC-984 and this feature's enhancement proposal.
+- **OSAC-984 (Storage Volume API):** A tenant-facing block storage Volume resource must exist before block storage metering can be implemented. Parent attribution remains a follow-up capability; resize uses the Volume API's dimension-update event path.
 
 ---
 
