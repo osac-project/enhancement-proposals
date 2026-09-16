@@ -119,7 +119,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - fulfillment-service:
      - If `compute_network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
      - Validates: subnets exist, are Ready, same VN, primary rules
-     - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
+     - If `auto_external_ip_attachment == true`: auto-selects an IPv4 ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `compute_network_attachments`
 
 5. **osac-operator ComputeInstance controller:**
@@ -156,7 +156,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 #### External Access (optional, auto-provisioned when `auto_external_ip_attachment=true`)
 
 8. **fulfillment-service creates ExternalIP and ExternalIPAttachment:**
-   - Auto-selects ExternalIPPool (READY, most available capacity, matching IP family)
+   - Auto-selects an IPv4 ExternalIPPool (READY, most available capacity)
    - Creates ExternalIP from pool, labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <compute-instance-id>`
    - Creates ExternalIPAttachment binding ExternalIP to VM's primary subnet IP, labeled `osac.openshift.io/auto-provisioned: "true"`
    - Both start in **Pending** state. The ExternalIPAttachment controller checks two preconditions before dispatching (requeues if either is not met):
@@ -398,7 +398,8 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 - fulfillment-service: primary validation (reject >1 primary, accept single implicit primary, accept explicit primary)
 - fulfillment-service: dual-field validation (reject both old and new, convert old → new)
 - fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
-- fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
+- fulfillment-service: auto ExternalIP pool selection (pick READY IPv4 pool with most capacity)
+- fulfillment-service: IPv4 address-family validation rejects IPv6 and dual-stack network inputs before persistence
 - osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (explicit primary, implicit single-attachment)
 
 ### Integration Tests
@@ -407,6 +408,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 - E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance in BM-only deployment, verify error returned
+- E2E: create ComputeInstance with an IPv6 or dual-stack network input, verify validation fails before persistence or backend dispatch
 - E2E: create ComputeInstance with old `network_attachments` field, verify backward compat (internal conversion)
 
 ### Tricky Test Cases

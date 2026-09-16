@@ -28,6 +28,9 @@ for centralized reference validation, and updates the CLI, UI, database
 triggers, and CEL filter paths accordingly. See [PRD](prd.md) for detailed
 requirements.
 
+The networking schemas covered by this design use IPv4 CIDRs only. IPv6 and
+dual-stack networking are not supported.
+
 ## Motivation
 
 Every OSAC resource that points to another resource does so through a bare
@@ -497,8 +500,10 @@ message SubnetSpec {
     (google.api.field_behavior) = REQUIRED,
     (google.api.field_behavior) = IMMUTABLE
   ];
-  optional string ipv4_cidr = 2 [(google.api.field_behavior) = IMMUTABLE];
-  optional string ipv6_cidr = 3 [(google.api.field_behavior) = IMMUTABLE];
+  string ipv4_cidr = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.field_behavior) = IMMUTABLE
+  ];
 }
 ```
 
@@ -518,8 +523,10 @@ message SubnetSpec {
     (google.api.field_behavior) = REQUIRED,
     (google.api.field_behavior) = IMMUTABLE
   ];
-  optional string ipv4_cidr = 2 [(google.api.field_behavior) = IMMUTABLE];
-  optional string ipv6_cidr = 3 [(google.api.field_behavior) = IMMUTABLE];
+  string ipv4_cidr = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.field_behavior) = IMMUTABLE
+  ];
 }
 ```
 

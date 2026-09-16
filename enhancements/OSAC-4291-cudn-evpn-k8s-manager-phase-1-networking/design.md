@@ -628,9 +628,7 @@ The existing `meta/osac.yaml` already declares `fabric_manager: netris` with cap
 ---
 fabric_manager: netris
 capabilities:
-  supports_ipv4: true
-  supports_ipv6: false
-  supports_dual_stack: false
+  addressFamily: ipv4
 ```
 
 **tasks/create_subnet.yaml:**
@@ -750,9 +748,7 @@ collections/ansible_collections/osac/templates/roles/cudn_evpn/
 ---
 k8s_manager: cudn_evpn
 capabilities:
-  supports_ipv4: true
-  supports_ipv6: false
-  supports_dual_stack: false
+  addressFamily: ipv4
   dpu_support: false
 ```
 
@@ -1096,13 +1092,12 @@ metadata:
 data:
   name: cudn_evpn  # Field name 'name' per OSAC-1433 schema (not 'manager')
   description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)"
-  capabilities: "supports_ipv4:true,supports_ipv6:false,single_subnet_per_vn:true"  # Comma-separated string per OSAC-1433
+  capabilities: "addressFamily:ipv4,single_subnet_per_vn:true"  # Comma-separated string per OSAC-1433
   # template_role field removed - not in OSAC-1433 spec, dispatcher resolves role name from k8s_manager field
 ```
 
 **Capability Fields:**
-- `supports_ipv4:true` — IPv4 address family supported
-- `supports_ipv6:false` — IPv6 not supported in Phase 1
+- `addressFamily:ipv4` — IPv4 address family supported; IPv6 and dual-stack are not supported
 - `single_subnet_per_vn:true` — NEW capability: enforces single-subnet-per-VirtualNetwork constraint (checked by fulfillment-service validation)
 
 The `single_subnet_per_vn` capability is checked by fulfillment-service Subnet validation (see Subnet Validation section above) to make the constraint pluggable for future k8s managers.

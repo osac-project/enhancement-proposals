@@ -24,6 +24,11 @@ This design replaces `FieldDefinition` with typed policies for selected resource
 
 Provisioning continues through the standard `Create` RPC for ComputeInstance, Cluster, and BareMetalInstance. Each request selects exactly one source: a Catalog Item or a Template. Catalog-based creation applies policy, materializes `spec.template`, resolves all defaults, validates the final spec, and persists the resource.
 
+Networking fields governed by a Catalog Item inherit the Unified Networking
+IPv4-only contract. Catalog policy values and tenant-supplied network fields
+must use canonical IPv4 CIDRs and typed references; IPv6 and dual-stack values
+are rejected during materialization and final resource validation.
+
 `spec.catalog_item` remains as immutable weak provenance. Existing resources use their persisted Template reference and resolved fields throughout their lifecycle. Catalog Item changes apply only to future provisioning.
 
 Key decisions:

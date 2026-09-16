@@ -28,8 +28,8 @@
 1. Apply osac-installer Helm chart with cudn_evpn manager enabled
 2. Verify ConfigMap `k8s-manager-cudn-evpn` exists in osac namespace
 3. Verify ConfigMap data.manager = "cudn_evpn"
-4. Verify ConfigMap data.capabilities includes "supports_ipv4: true"
-5. Verify ConfigMap data.capabilities includes "supports_ipv6: false"
+4. Verify ConfigMap data.capabilities includes "addressFamily:ipv4"
+5. Verify IPv6 and dual-stack capability values are absent and rejected.
 
 ##### Expected Results
 
