@@ -638,10 +638,6 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
 
 ## Phase 1 limitations
 
-All IP addressing in this design is IPv4-only. IPv6 and dual-stack networking
-are not supported; east-west resources use the shared Unified Networking IPv4
-CIDR contract.
-
 - VirtualNetwork association required (exactly one); zero or many deferred.
 - **Membership is static.** Admin provides explicit hostnames at create time.
   Phase 2 should support inventory-driven membership (label selectors on

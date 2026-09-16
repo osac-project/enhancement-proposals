@@ -525,19 +525,17 @@ Resolved: Return error, no resource persisted.
 
 ### Unit Tests
 
-- fulfillment-service: NetworkClass defaults validation (valid canonical IPv4 CIDR, valid SecurityGroupRule fields)
-- fulfillment-service: NetworkClass defaults validation rejects IPv6, dual-stack, malformed, noncanonical, and host-bit-set CIDRs before persistence
+- fulfillment-service: NetworkClass defaults validation (valid CIDR, valid SecurityGroupRule fields)
 - fulfillment-service: network_attachments population (populate with defaults when omitted, skip when provided)
-- fulfillment-service: auto ExternalIP pool selection (pick READY IPv4 pool with most capacity)
+- fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
-- fulfillment-service: default resource creation at tenant onboarding (VN, IPv4 Subnet, SG, NATGateway with default label)
-- fulfillment-service: DefaultNetworkingReady condition tracking (true when all defaults including the Subnet and NATGateway are READY via feedback, false when any failed)
+- fulfillment-service: default resource creation at tenant onboarding (VN, IPv4 Subnet, IPv6 Subnet, SG, NATGateway with default label)
+- fulfillment-service: DefaultNetworkingReady condition tracking (true when all defaults including both Subnets and NATGateway READY via feedback, false when any failed)
 - osac-operator resource controllers: auto-created resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
 
 ### Integration Tests
 
-- E2E: create Tenant, verify default VN/IPv4 Subnet/SG/NATGateway created and labeled `osac.openshift.io/default: "true"`
-- E2E: submit IPv6 or dual-stack default CIDRs, verify validation fails before any default resource is persisted
+- E2E: create Tenant, verify default VN/IPv4 Subnet/IPv6 Subnet/SG/NATGateway created and labeled `osac.openshift.io/default: "true"`
 - E2E: create Tenant, default Subnet provisioning fails, verify Tenant remains non-READY with condition
 - E2E: create ComputeInstance without network_attachments, verify defaults populated in spec
 - E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional

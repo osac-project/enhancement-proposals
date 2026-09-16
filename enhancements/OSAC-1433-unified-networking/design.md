@@ -1340,16 +1340,7 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 ## Test Plan
 
-### IPv4 Boundary
-
-- Unit: validate canonical IPv4 CIDRs and addresses, rejecting IPv6, dual-stack,
-  malformed, noncanonical, and host-bit-set inputs.
-- Integration: verify VirtualNetwork, Subnet, ExternalIPPool, NetworkClass,
-  and manager capability inputs reject unsupported address families before
-  persistence or backend dispatch.
-- E2E: create valid IPv4 networking resources across VMaaS, CaaS, and BMaaS
-  flows and verify the resulting addresses remain IPv4 throughout
-  reconciliation and status feedback.
+*Section to be completed when targeted at a release.*
 
 ## Graduation Criteria
 

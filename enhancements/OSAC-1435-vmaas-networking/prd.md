@@ -8,9 +8,6 @@
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
 
-VMaaS networking uses IPv4 CIDRs and IPv4 addresses only. IPv6 and dual-stack
-networking are not supported.
-
 ## 1. Problem Statement
 
 Tenants cannot create VMs with multiple network interfaces or designate which interface provides the default gateway. Creating a VM with external access requires manual IP allocation and NAT configuration, forcing tenants to understand inbound and outbound routing before provisioning their first reachable VM. The default networking experience varies across resource types — some resources have simplified creation flows while VMs require explicit networking details on every create.
@@ -107,7 +104,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
 - **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
-- **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the IPv4 pool with the most available capacity
+- **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the pool with the most available capacity matching the IP family
 - **OSAC-1511 or OSAC-1717** — a virtualization platform integration must exist for the platform to provision overlay networks on hosting clusters
 - **OSAC-1457, OSAC-1458, OSAC-1460** — core provisioning infrastructure (in progress)
 - **OSAC-1459** — multi-job tracking (new, required for subnet provisioning to trigger multiple backend jobs)

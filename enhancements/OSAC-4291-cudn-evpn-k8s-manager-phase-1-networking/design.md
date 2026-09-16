@@ -33,7 +33,6 @@ This manager inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
 Phase 1 supports connected deployments only and does not add air-gapped or
 disconnected networking support.
-
 ## Related Designs
 
 This design builds on and interacts with several networking designs:
@@ -1489,7 +1488,7 @@ Graduation criteria will be defined when targeting a release. Expected stages:
 
 - **Dev Preview (0.3):** Single-cluster EVPN bridging with manual prerequisites, documented installation guide, E2E test in CI
 - **Tech Preview (0.4):** Multi-cluster support (OSAC-3667 Phase 2), gateway MAC auto-coordination, VTEP automation
-- **GA (0.5+):** IPv6/dual-stack support, OVN Connectors (inter-subnet routing), OVN-K secondary CUDN support (multi-NIC VMs), production SLA
+- **GA (0.5+):** OVN Connectors (inter-subnet routing), OVN-K secondary CUDN support (multi-NIC VMs), production SLA
 
 Success signals for GA:
 - 3+ customer deployments in production

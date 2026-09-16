@@ -23,9 +23,6 @@ superseded-by:
 ## Summary
 Meter ExternalIP and NATGateway allocation time through the existing pipeline. This design observes the [Unified Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary): networking metering covers connected deployments only and does not add air-gapped or disconnected networking support. The current code has no networking mapper, no initial quantity/correction consumer, no resource-level gate, and no M360 networking contract; those are required changes, not delivered behavior. See [PRD](prd.md) for detailed requirements.
 
-This design meters IPv4-only networking resources. IPv6 and dual-stack
-networking are outside the supported networking boundary.
-
 ## Motivation
 The event proto carries ExternalIP, ExternalIPAttachment, and NATGateway, but `BuildFilter` and `MapperForEvent` do not consume them. Fulfillment and the operator both currently write `ExternalIP.status.attached` (`fulfillment-service/internal/servers/private_external_ip_attachments_server.go:225-287`, `osac-operator/internal/controller/externalipattachment_controller.go:675-718`), so attribution can precede READY and race.
 
@@ -138,13 +135,7 @@ The helper covers every direct auto path, not only defaults: `private_compute_in
 
 The existing attachment spec is the authoritative input oneof: `external_ip`, exactly one of `compute_instance|cluster|baremetal_instance`, and `target_endpoint` only for cluster (`fulfillment-service/proto/private/osac/private/v1/external_ip_attachment_type.proto:63-103`). It is immutable. State updates use the private update mask; parent output fields are never accepted in that mask. The mapper reads settled ExternalIP output, never joins attachment streams.
 
-The IP family is fixed to IPv4 by the shared Unified Networking contract and is
-validated against the ExternalIPPool lookup by immutable pool ID; a cache miss
-is an error. ExternalIP dimensions are resource ID, tenant, project,
-deployment, IPv4 family, pool, `attached`, and settled attribution. Empty
-project means tenant default. NATGateway dimensions are resource ID,
-virtual-network reference, external-IP reference, tenant, project, and
-deployment. No VirtualNetwork join is needed for metering.
+IP family comes from an ExternalIPPool lookup by immutable pool ID; a cache miss is an error. ExternalIP dimensions are resource ID, tenant, project, deployment, IP family, pool, `attached`, and settled attribution. Empty project means tenant default. NATGateway dimensions are resource ID, virtual-network reference, external-IP reference, tenant, project, and deployment. No VirtualNetwork join is needed for metering.
 
 ### Usage and Correction Contract
 Current `schema.LifecycleData` has only `duration_seconds`, current `correction.go` emits v1 corrections with a nil affected interval, and `m360-adapter/translate.go` has no correction or networking route. Current code is insufficient.

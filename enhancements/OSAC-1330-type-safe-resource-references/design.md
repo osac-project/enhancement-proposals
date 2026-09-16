@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/OSAC-1433-unified-networking"
+  - "/enhancements/OSAC-356-networking"
   - "/enhancements/bare-metal-fulfillment"
 replaces:
   - N/A
@@ -27,9 +27,6 @@ and `<Type>LocalReference`), introduces a gRPC interceptor using protoreflect
 for centralized reference validation, and updates the CLI, UI, database
 triggers, and CEL filter paths accordingly. See [PRD](prd.md) for detailed
 requirements.
-
-The networking schemas covered by this design use IPv4 CIDRs only. IPv6 and
-dual-stack networking are not supported.
 
 ## Motivation
 
