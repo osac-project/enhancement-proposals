@@ -55,6 +55,9 @@ The BMaaS integration is based on the `BaremetalInstance` resource defined in
 the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api),
 which provides a per-server resource aligned with ComputeInstance.
 
+All networking resources and manager integrations in this design use IPv4.
+IPv6 and dual-stack networking are not supported.
+
 For user stories, goals, and non-goals, see the
 [Requirements Document (PRD)](prd.md).
 
@@ -116,7 +119,7 @@ spec:
   k8sManager: cudn_localnet
 status:
   capabilities:
-    addressFamily: dualStack
+    addressFamily: ipv4
 ```
 
 **Neutron + CUDN (VMs and BM):**
@@ -156,21 +159,13 @@ operator computes the intersection of capabilities declared by the fabric
 manager and k8sManager ConfigMaps and populates `status.capabilities`
 automatically.
 
-If the provider needs to restrict a capability that the managers support
-(e.g., disable IPv6 in a deployment even though the fabric manager supports
-it), they can set `spec.disableCapabilities`:
-
-```yaml
-spec:
-  fabricManager: netris
-  k8sManager: cudn_localnet
-  disableCapabilities:
-    - ipv6
-```
+The supported deployment boundary is IPv4-only. Managers must advertise the
+same address family, and the operator rejects IPv6 and dual-stack manager
+registrations or NetworkClass status.
 
 | Capability | Type | Meaning |
 |-----------|------|---------|
-| `addressFamily` | enum | `ipv4`, `ipv6`, or `dualStack` |
+| `addressFamily` | enum | `ipv4` only |
 | `dpuSupport` | bool | DPU-accelerated networking available |
 
 The set of capabilities is defined by the operator and is fixed — adding a
@@ -226,7 +221,7 @@ metadata:
 data:
   name: cudn_localnet
   description: "CUDN with LocalNet — bridges OVN overlay to physical fabric"
-  capabilities: "addressFamily:dualStack"
+  capabilities: "addressFamily:ipv4"
 ```
 
 The operator discovers managers by listing ConfigMaps with the appropriate
@@ -354,6 +349,17 @@ The API and flow are identical regardless of the deployment topology.
 
 ExternalIPPools are provider-managed and deployment-scoped. The fabric
 manager handles ExternalIP allocation — one pool serves all resource types.
+Each pool uses canonical IPv4 CIDRs; IPv6 and dual-stack pools are not
+supported.
+
+#### Address-Family and CIDR Contract
+
+All user-supplied network CIDRs use canonical dotted-decimal IPv4 notation
+(`a.b.c.d/prefix`) with host bits zero. A Subnet CIDR must be contained by its
+parent VirtualNetwork and sibling Subnet CIDRs must not overlap. Provider and
+controller-produced addresses are canonical IPv4 addresses without a CIDR
+suffix. Any IPv6, dual-stack, malformed, or non-canonical value is rejected
+before persistence or backend dispatch.
 
 ### End-to-End Flows
 
@@ -756,8 +762,7 @@ in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 ```protobuf
 message VirtualNetworkSpec {
   string network_class = 1; // required, immutable
-  string ipv4_cidr = 2;     // optional, immutable
-  string ipv6_cidr = 3;     // optional, immutable
+  string ipv4_cidr = 2;     // required canonical IPv4 CIDR, immutable
 }
 ```
 
@@ -1311,7 +1316,16 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 ## Test Plan
 
-*Section to be completed when targeted at a release.*
+### IPv4 Boundary
+
+- Unit: validate canonical IPv4 CIDRs and addresses, rejecting IPv6, dual-stack,
+  malformed, noncanonical, and host-bit-set inputs.
+- Integration: verify VirtualNetwork, Subnet, ExternalIPPool, NetworkClass,
+  and manager capability inputs reject unsupported address families before
+  persistence or backend dispatch.
+- E2E: create valid IPv4 networking resources across VMaaS, CaaS, and BMaaS
+  flows and verify the resulting addresses remain IPv4 throughout
+  reconciliation and status feedback.
 
 ## Graduation Criteria
 

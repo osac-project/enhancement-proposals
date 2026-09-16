@@ -201,7 +201,9 @@ What exact fields are in the ConfigMap?
 
 #### Answer
 
-NetworkClass ConfigMap should contain: `name: cudn_evpn` with capabilities `ipv4` or `dualstack` (same structure as other k8s managers, no additional EVPN-specific fields).
+NetworkClass ConfigMap should contain: `name: cudn_evpn` with the IPv4-only
+capability (same structure as other k8s managers, no additional EVPN-specific
+fields). IPv6 and dual-stack networking are not supported.
 
 #### Impact
 

@@ -17,6 +17,10 @@ Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.
 
 ## 1. Problem Statement
 
+The networking resources covered by this PRD use IPv4 addresses only. IPv6 and
+dual-stack networking are not supported; ExternalIP usage is therefore
+IPv4-only.
+
 OSAC provisions ExternalIPs and NAT Gateways that consume scarce provider infrastructure from allocation until deletion, but has no mechanism to report that consumption to billing. An ExternalIP consumes finite address pool space whether it is attached to a resource or not — the provider's pool is finite and each allocation reduces availability. A NAT Gateway consumes dedicated gateway capacity for as long as it exists. Metering exists to supply billing with usage data for resources that can incur cost — not to enforce quota, and not to inventory every networking object a tenant holds.
 
 VirtualNetworks, Subnets, and SecurityGroups are configuration metadata that will not incur cost — they are free across all surveyed hyperscalers and GPU/AI clouds, none of which meter them on an allocation basis — so metering does not report them.
@@ -79,7 +83,7 @@ VirtualNetwork, Subnet, and SecurityGroup are available on all three services bu
 ### 5.1 Networking Resource Allocation Metering
 
 - **CAP-1:** Billable networking resources (ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion.
-- **CAP-2:** Networking usage is queryable by resource type, IP family (IPv4/IPv6 for ExternalIP), deployment, tenant, and project.
+- **CAP-2:** Networking usage is queryable by resource type, deployment, tenant, and project. ExternalIP usage is IPv4-only.
 
 ### 5.2 Unattached IP Metering
 
