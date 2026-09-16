@@ -14,6 +14,9 @@ Today, provisioning east-west connectivity across heterogeneous fabrics (Etherne
 
 OSAC's unified networking model (EP #50) provides north-south connectivity and general workload support. Per-service networking extensions (CaaS in EP #107, with VMaaS and BMaaS planned) build on this foundation. However, none of these address automated east-west provisioning or unified multi-fabric tenant isolation.
 
+The north-south and east-west IP address space described by this PRD is IPv4
+only. IPv6 and dual-stack networking are not supported.
+
 ## In Scope (Phase 1)
 
 - Declarative east-west connectivity on Ethernet-based fabrics.

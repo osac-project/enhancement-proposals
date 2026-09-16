@@ -186,7 +186,7 @@ service FabricDomains {
 
 // NetworkClass extensions (existing resource, new fields)
 message NetworkClassCapabilities {
-  // existing: supports_ipv4, supports_ipv6, …
+  // Existing networking capability: IPv4 only.
   bool supports_east_west_ethernet = 5;
   bool supports_east_west_infiniband = 6;
   bool supports_nvlink = 7;
@@ -632,6 +632,10 @@ FabricDomain mitigates user confusion — the operational experience is
 equivalent to "create a Server Cluster in a VPC" with an additional resource.
 
 ## Phase 1 limitations
+
+All IP addressing in this design is IPv4-only. IPv6 and dual-stack networking
+are not supported; east-west resources use the shared Unified Networking IPv4
+CIDR contract.
 
 - VirtualNetwork association required (exactly one); zero or many deferred.
 - **Membership is static.** Admin provides explicit hostnames at create time.

@@ -20,6 +20,9 @@ where a single create command produces a reachable instance.
 
 ### 2.1 Goals
 
+All default networking resources use canonical IPv4 CIDRs. IPv6 and
+dual-stack networking are not supported.
+
 - A tenant can create a fully connected VM, bare-metal server, or cluster
   (inbound + outbound) with a single API call, without pre-creating any
   networking resources
@@ -82,19 +85,19 @@ where a single create command produces a reachable instance.
 #### Default Networking
 
 - **FR-1:** At tenant onboarding, the system provisions a default
-  VirtualNetwork, IPv4 Subnet, IPv6 Subnet, and SecurityGroup for the
-  tenant (dual-stack). The tenant transitions to READY only after all
+  VirtualNetwork, IPv4 Subnet, and SecurityGroup for the tenant. The tenant
+  transitions to READY only after all
   default networking resources are also READY. If default networking
   provisioning fails, the tenant remains in a non-READY state with a
   status condition describing the failure. The Cloud Provider Admin can
   inspect the failure and retry by deleting and re-creating the tenant.
   [User]
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
-  parameters (IPv4 CIDR, IPv6 CIDR, SecurityGroup rules) on the
+  parameters (IPv4 CIDRs and SecurityGroup rules) on the
   NetworkClass. Defaults are required — a NetworkClass without defaults
   is rejected at creation time. [User]
-- **FR-3:** All tenants receive the same default CIDR ranges (IPv4 and
-  IPv6) as configured on the NetworkClass. Tenants are isolated at the
+- **FR-3:** All tenants receive the same default IPv4 CIDR ranges as
+  configured on the NetworkClass. Tenants are isolated at the
   network level — the unified networking API provides VirtualNetworks
   with any IP subnet, and the system enforces isolation regardless of
   overlapping CIDRs between tenants. [User]
@@ -122,7 +125,7 @@ where a single create command produces a reachable instance.
   available ExternalIPPool with the most capacity, allocates an
   ExternalIP, and creates an ExternalIPAttachment binding it to the
   resource. The system selects the pool with the most available capacity
-  matching the requested IP family (defaulting to IPv4). When multiple
+  using IPv4. When multiple
   pools have equal capacity, selection is deterministic but unspecified.
   [User]
 - **FR-9:** Cluster supports `--external-ip-attachment`. When enabled,
@@ -162,7 +165,7 @@ where a single create command produces a reachable instance.
   `--external-ip-attachment` and no explicit network attachments — the
   server is placed on the default subnet with an auto-provisioned
   ExternalIP
-- [ ] Default VirtualNetwork, Subnets (IPv4 + IPv6), and SecurityGroup
+- [ ] Default VirtualNetwork, IPv4 Subnet, and SecurityGroup
   exist and are READY before the tenant's first resource creation
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
@@ -177,6 +180,8 @@ where a single create command produces a reachable instance.
   returns an error and the resource is not persisted
 - [ ] A resource created without explicit network attachments shows the
   resolved default attachments when retrieved via the API
+- [ ] An IPv6 or dual-stack default CIDR is rejected when NetworkClass defaults
+  are validated, and no default resource is persisted from the invalid input
 
 ## 6. Dependencies
 

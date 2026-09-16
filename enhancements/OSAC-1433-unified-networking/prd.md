@@ -121,6 +121,13 @@ each service type to implement networking independently:
 The result is fragmented networking with no consistency, no reuse, and no
 tenant-facing abstraction.
 
+### Supported Address-Family Boundary
+
+All networking resources and traffic described by this PRD use canonical IPv4
+CIDRs and IPv4 addresses. IPv6 and dual-stack networking are not supported;
+requests that contain them are rejected before persistence or backend
+dispatch.
+
 ### Gaps in the Current Design
 
 #### Gap #1: CaaS and BMaaS have no networking API

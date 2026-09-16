@@ -159,7 +159,7 @@ option (cleanapi.file).package = "osac.public.v1";
 
 message VirtualNetworkSpec {
   string network_class = 1 [(buf.validate.field).string.min_len = 1];
-  string ipv4_cidr = 2;
+  string ipv4_cidr = 2; // required canonical IPv4 CIDR, immutable
   string region = 3 [(cleanapi.field).private = true];
   string implementation_strategy = 4 [(cleanapi.field).private = true];
 }

@@ -23,6 +23,9 @@ superseded-by:
 ## Summary
 Meter ExternalIP and NATGateway allocation time through the existing pipeline. The current code has no networking mapper, no initial quantity/correction consumer, no resource-level gate, and no M360 networking contract; those are required changes, not delivered behavior. See [PRD](prd.md) for detailed requirements.
 
+This design meters IPv4-only networking resources. IPv6 and dual-stack
+networking are outside the supported networking boundary.
+
 ## Motivation
 The event proto carries ExternalIP, ExternalIPAttachment, and NATGateway, but `BuildFilter` and `MapperForEvent` do not consume them. Fulfillment and the operator both currently write `ExternalIP.status.attached` (`fulfillment-service/internal/servers/private_external_ip_attachments_server.go:225-287`, `osac-operator/internal/controller/externalipattachment_controller.go:675-718`), so attribution can precede READY and race.
 

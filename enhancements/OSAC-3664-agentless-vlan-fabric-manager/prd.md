@@ -59,7 +59,7 @@ managed-switch infrastructure, limiting where the platform can run.
   [Clarify: D4]
 - DNS record creation is not part of this backend — DNS is a service-integration
   concern handled outside the networking API. [Clarify: D10]
-- IPv6 and dual-stack networking are not delivered in this milestone; the backend
+- IPv6 and dual-stack networking are not supported; the backend
   supports IPv4, matching the Netris baseline. [Clarify: D11]
 - Per-service integration and end-to-end validation for BMaaS, CaaS, and VMaaS are
   tracked as separate follow-up features (OSAC-1562, OSAC-1611, OSAC-3665), not
@@ -203,7 +203,7 @@ managed-switch infrastructure, limiting where the platform can run.
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** The agentless VLAN backend provides networking for the IPv4 address
-  family. IPv6 and dual-stack are not supported in this milestone. [Clarify: D11]
+  family. IPv6 and dual-stack are not supported. [Clarify: D11]
 - **NFR-2:** Tenant-observable networking behavior — reachability, isolation,
   external access — is equivalent between the agentless VLAN and Netris backends;
   changing the deployment's backend does not change the tenant-facing API
