@@ -3,7 +3,7 @@ title: caas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-07-08
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -24,6 +24,9 @@ CaaS networking provides tenant-controlled cluster node networking via VirtualNe
 ## Summary
 
 This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture and [deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary); CaaS networking supports connected deployments only and does not add air-gapped or disconnected networking support. This document defines how CaaS consumes that architecture.
+Networking resources support only Create, List/Get, and Delete, and the
+`Cluster` network attachment is immutable after creation; changes require
+delete and recreate.
 
 Cluster provisioning uses the OSAC Networking API for all networking lifecycle — tenants place clusters on their VirtualNetworks via `network_attachment`, the `BareMetalWorkerReconciler` creates on-demand `BareMetalInstance` objects via the BMaaS private gRPC API (BMaaS owns the fabric port move and IP assignment as part of BMI provisioning), and a VIP feedback loop enables auto-provisioned external access for cluster API and ingress endpoints. See [PRD](prd.md) for detailed requirements and [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full provisioning design.
 
@@ -284,7 +287,7 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 ```protobuf
 message ClusterNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
 }
 // Note: fabric_interface is system-populated ONCE on each node set definition
 // by the fulfillment-service at cluster creation (resolved from the node set's
@@ -422,7 +425,9 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Cluster to auto-created resources
-- OPA policies enforce tenant-scoped list/get/update/delete
+- OPA policies enforce tenant-scoped operations according to each resource API;
+  networking resources use create/list/get/delete and do not expose
+  update/patch, while supported non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring

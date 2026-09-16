@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-06-10
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -363,6 +363,24 @@ Bare-metal servers have multiple physical interfaces. Tenants must be able to
 attach different interfaces to different Subnets based on the interface
 descriptions provided by the template.
 
+#### FR-8: Create/read/delete networking contract (R8)
+
+The networking resources defined by this PRD — `NetworkClass`,
+`VirtualNetwork`, `Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
+`ExternalIPAttachment`, and `NATGateway` — support only create, read, and
+delete operations. Read includes `List` and `Get`. Their specification and
+metadata are fixed after creation; changing a networking resource requires
+deleting it and creating a replacement. The network attachment fields on
+`ComputeInstance`, `Cluster`, and `BaremetalInstance` are also set at parent
+creation time and cannot be changed in place; changing them requires replacing
+the parent workload.
+
+Controller-owned status, condition, readiness, and IP-discovery updates are
+internal reconciliation and do not add a tenant/provider update operation.
+This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
+reference this PRD; those proposals inherit it and do not redefine networking
+operations.
+
 ### 4.2 Non-Functional Requirements
 
 _No non-functional requirements were specified in the original document._
@@ -385,6 +403,7 @@ _No non-functional requirements were specified in the original document._
 - [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., bare-metal servers support per-interface attachment, clusters use a single shared attachment)
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
+- [ ] Networking resources support only Create, List/Get, and Delete; changing a networking resource or a workload network attachment requires delete and recreate
 
 ### External Access
 

@@ -26,6 +26,10 @@ Provisioning continues through the standard `Create` RPC for ComputeInstance, Cl
 
 `spec.catalog_item` remains as immutable weak provenance. Existing resources use their persisted Template reference and resolved fields throughout their lifecycle. Catalog Item changes apply only to future provisioning.
 
+For networking attachment fields, “editable” means that the tenant may supply a
+value during resource Create; it does not permit updating network attachments on
+an existing workload. Catalog Item updates affect only future provisioning.
+
 Key decisions:
 
 - Typed `oneof` policies represent field identity and behavior.
@@ -1112,7 +1116,7 @@ Infrastructure: fulfillment-service Ginkgo suite (`ginkgo run -r internal`), whi
 - Locked policy with an omitted tenant list applies the locked value.
 - Locked policy with an explicitly empty tenant list applies the locked value.
 - Locked policy with a non-empty tenant list returns `InvalidArgument`.
-- Empty `locked` value or empty editable default is rejected at Catalog Item Create and Update for `network_attachments`, whose resource semantics treat empty as unset.
+- Empty `locked` value or empty editable default is rejected at Catalog Item Create and Update operations for `network_attachments`, whose resource semantics treat empty as unset.
 - Default network injection runs after Catalog resolution and triggers whenever the resolved list is still empty after tenant input, Catalog policy, and Template defaults, including an editable policy with no Catalog default that the tenant did not supply.
 
 **Authoring validation and references.**

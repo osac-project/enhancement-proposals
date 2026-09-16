@@ -7,6 +7,9 @@
 | Date        | 2026-07-08 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
+Networking resources support only Create, List/Get, and Delete, and the
+Cluster network attachment field is create-time-only; changes require delete
+and recreate.
 
 ## 1. Problem Statement
 
@@ -62,7 +65,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 #### Network Configuration
 
-- **FR-1:** Cluster creation supports a single network attachment configuration specifying a subnet (required, immutable) and security groups (mutable). The attachment applies to the entire cluster — all node sets share the same subnet. The system determines which physical network interface to use for each node set based on its host type's interface configuration. [User]
+- **FR-1:** Cluster creation supports a single network attachment configuration specifying a subnet (required, immutable) and security groups (immutable after creation). The attachment applies to the entire cluster — all node sets share the same subnet. The system determines which physical network interface to use for each node set based on its host type's interface configuration. [User]
 
 #### Optional Network Configuration with Defaults
 

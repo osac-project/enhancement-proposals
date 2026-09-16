@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-07-08
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -25,6 +25,9 @@ BMaaS networking provides multi-NIC BaremetalInstance provisioning with tenant-s
 ## Summary
 
 This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture and [deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary); BMaaS networking supports connected deployments only and does not add air-gapped or disconnected networking support. This document defines how BMaaS consumes that architecture.
+Networking resources support only Create, List/Get, and Delete, and
+`BaremetalInstance` network attachment fields are immutable after creation;
+changes require delete and recreate.
 
 BaremetalInstance supports `BareMetalNetworkAttachment` with explicit `interface` and `primary` fields. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures switch ports via dispatcher, and IP address feedback via CR status enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
 
@@ -229,7 +232,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - If exactly 1 attachment with `interface` omitted: defaults to the first port with `role=fabric` from the BareMetalInstanceType (same rule as when `network_attachments` is omitted entirely)
      - If >1 attachment without `interface`, reject (explicit interface required when multi-homed)
      - Number of attachments ≤ number of available interfaces on template
-     - If multiple attachments, exactly one is `primary`; if single attachment, `primary` is implicit
+     - If multiple attachments, exactly one is `primary`; if a single attachment is present, `mutateBMI()` normalizes `primary` to `true` before persistence
    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-created: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
@@ -336,7 +339,7 @@ no internal IP.
 ```protobuf
 message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
   string interface = 3;                 // optional, immutable: physical interface
                                         // from BareMetalInstanceType
   bool primary = 4;                     // optional, immutable: default gateway
@@ -395,7 +398,9 @@ type BareMetalNetworkAttachmentStatus struct {
 }
 ```
 
-CEL immutability: `network_attachments` list is immutable after creation (subnet refs, interface, primary are all immutable). Only `securityGroupRefs` is mutable.
+CEL immutability: the `network_attachments` list and every field in each
+attachment are immutable after creation, including `subnetRef`,
+`securityGroupRefs`, `interface`, and `primary`.
 
 CEL validation rule:
 ```yaml
@@ -405,7 +410,7 @@ CEL validation rule:
 
 #### fulfillment-service Controller (mutateBMI)
 
-The `mutateBMI()` function in the fulfillment-service's BM reconciler currently sets TemplateID, TemplateParameters, RunStrategy on the K8s CR. It needs to also copy `network_attachments` from the proto spec to the K8s CR spec.
+The `mutateBMI()` function in the fulfillment-service's BM reconciler currently sets TemplateID, TemplateParameters, and RunStrategy on the K8s CR. It must also copy every `network_attachments` field from the proto spec to the K8s CR spec. Before persistence, it normalizes a single attachment to `primary: true` (the implicit-primary rule); a single attachment is never persisted with `primary: false`. For multiple attachments it preserves each supplied `primary` value and the validation rule below requires exactly one primary attachment.
 
 #### Server Validation Rules
 
@@ -417,7 +422,7 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 - If >1 attachment specified, each must have an explicit `interface` (multiple attachments without `interface` is invalid)
 - Number of attachments ≤ number of available interfaces on the template
 - If multiple attachments: exactly one must be `primary: true`
-- If single attachment: `primary` is implicit (true by default)
+- If single attachment: `mutateBMI()` normalizes `primary` to `true` before persistence; a single attachment is never persisted as non-primary
 - network_attachments are immutable after creation
 
 ### Implementation Details/Notes/Constraints
@@ -657,7 +662,9 @@ The bare-metal-fulfillment-operator needs additional RBAC permissions: get/list/
 
 All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
-- OPA policies enforce tenant-scoped list/get/update/delete
+- OPA policies enforce tenant-scoped operations according to each resource API;
+  networking resources use create/list/get/delete and do not expose
+  update/patch, while supported non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -826,7 +833,9 @@ Micro version upgrades (`x.y.N → x.y.N+2`):
 - No user action required
 
 Minor version upgrades (`x.N → x.N+1`):
-- Tenant User encouraged to migrate to new networking fields via CLI update (`osac-cli` supports new `--network-attachment` flag with `--interface` and `--primary`)
+- Tenant User encouraged to migrate to new networking fields by upgrading the
+  CLI (`osac-cli` supports the new `--network-attachment` flag with `--interface`
+  and `--primary`)
 - No breaking changes — networking fields remain optional
 
 ### Downgrade

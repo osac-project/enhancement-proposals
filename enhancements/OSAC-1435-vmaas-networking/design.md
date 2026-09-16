@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-07-08
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -44,7 +44,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 ### What Already Works
 
 - `network_attachments` field exists on ComputeInstanceSpec (field 14)
-- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL immutability rules (subnet refs immutable, security group refs mutable)
+- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL immutability rules (subnet refs, security group refs, and the attachment list are immutable)
 - Subnet-to-namespace resolution is implemented
 - The template creates VMs in the correct namespace
 - ExternalIPAttachment with `compute_instance` target works end-to-end
@@ -189,7 +189,7 @@ Replace the shared `NetworkAttachment` with `ComputeNetworkAttachment`:
 ```protobuf
 message ComputeNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
   bool primary = 3;                     // immutable, designates default gateway
 }
 
@@ -321,7 +321,9 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (ComputeInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
-- OPA policies enforce tenant-scoped list/get/update/delete
+- OPA policies enforce tenant-scoped operations according to each resource API;
+  networking resources use create/list/get/delete and do not expose
+  update/patch, while supported non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -447,7 +449,8 @@ Micro version upgrades (`x.y.N → x.y.N+2`):
 
 Minor version upgrades (`x.N → x.N+1`):
 - Deprecation warning added for old `network_attachments` field (field 14) in fulfillment-service API responses
-- Tenant User encouraged to migrate to new field via CLI update (`osac-cli` supports new `--network-attachment` flag with `--primary`)
+- Tenant User encouraged to migrate to the new field by upgrading the CLI
+  (`osac-cli` supports the new `--network-attachment` flag with `--primary`)
 - No breaking changes — old field remains functional
 
 ### Downgrade

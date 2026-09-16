@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-06-10
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -75,6 +75,27 @@ IPv6 and dual-stack networking are not supported.
 
 For user stories, goals, and non-goals, see the
 [Requirements Document (PRD)](prd.md).
+
+### API operation constraint
+
+The unified networking API supports only create, read, and delete operations
+for networking resources. Read means `List` and `Get`; there is no tenant or
+provider `Update`/`Patch` operation for a networking resource's specification
+or metadata. The affected resources are `NetworkClass`, `VirtualNetwork`,
+`Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
+`ExternalIPAttachment`, and `NATGateway`.
+
+All networking resource specification and metadata fields are immutable after
+creation. A change requires deleting the resource and creating a replacement,
+subject to the normal
+dependency guards. The network attachment fields on `ComputeInstance`,
+`Cluster`, and `BaremetalInstance` are create-time-only as well; changing a
+network attachment requires replacing the parent workload. Controllers may
+update status, conditions, readiness, and IP-discovery fields during
+reconciliation, but those internal writes are not additional API operations.
+This is the normative contract for the VMaaS, CaaS, and BMaaS designs that
+reference this document; those designs inherit it and do not redefine
+networking operations.
 
 ## Proposal
 
@@ -878,7 +899,7 @@ resource.
 ```protobuf
 message ComputeNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
   bool primary = 3;                     // optional, immutable: designates default gateway
 }
 ```
@@ -892,7 +913,7 @@ primary designation and default gateway semantics.
 ```protobuf
 message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
   string interface = 3;                 // optional, immutable: physical port name from BareMetalInstanceType
   bool primary = 4;                     // optional, immutable: designates default gateway
 }
@@ -911,7 +932,7 @@ discovery and multi-interface examples.
 ```protobuf
 message ClusterNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
+  repeated string security_groups = 2;  // SecurityGroup IDs, optional, immutable
 }
 ```
 
@@ -1343,6 +1364,11 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
     type has a different selector concept (virtual NIC, physical interface,
     node set) — a shared type with optional fields would accumulate
     dead weight per resource type.
+
+12. **Create/read/delete networking API.** Networking resource specifications,
+    metadata, and workload network attachment fields are immutable after
+    creation. The supported change path is delete and recreate; controller
+    status reconciliation is internal and does not expose an update operation.
 
 ## Test Plan
 

@@ -33,8 +33,8 @@ dual-stack networking are not supported.
   networking resources
 - Tenants who need custom networking retain the full explicit workflow —
   simplified creation is additive, not a replacement
-- Auto-provisioned networking resources are visible, editable, and follow
-  the same lifecycle as manually created ones
+- Auto-provisioned networking resources are visible and follow the unified
+  networking create/read/delete lifecycle; changes require replacement
 
 ### 2.2 Non-Goals
 
@@ -67,8 +67,8 @@ dual-stack networking are not supported.
 
 ### Tenant Admin Stories
 
-- As a Tenant Admin, I want to inspect and customize my default networking
-  resources (e.g., modify SecurityGroup rules) after they are auto-created
+- As a Tenant Admin, I want to inspect my default networking resources and
+  create replacement networking resources when I need different settings
 
 ### Cloud Infrastructure Admin Stories
 
@@ -106,10 +106,10 @@ dual-stack networking are not supported.
   network level — the unified networking API provides VirtualNetworks
   with any IP subnet, and the system enforces isolation regardless of
   overlapping CIDRs between tenants. [User]
-- **FR-4:** Default resources are labeled as defaults, visible in list
-  and detail views, and editable by the Tenant Admin (e.g., adding
-  SecurityGroup rules). Default resources cannot be deleted while any
-  resource depends on them. [User]
+- **FR-4:** Default resources are labeled as defaults and visible in list
+  and detail views. They follow the unified networking create/read/delete
+  contract; changes require delete and recreate, and deletion is blocked while
+  any resource depends on them. [User]
 - **FR-5:** Creating custom VirtualNetworks does not affect default
   resources — both coexist. [User]
 
@@ -174,8 +174,9 @@ dual-stack networking are not supported.
   exist and are READY before the tenant's first resource creation
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
-- [ ] A Tenant Admin can modify default SecurityGroup rules (e.g., add
-  ingress rules) and the changes take effect
+- [ ] Default networking resources expose only create/read/delete operations;
+  a Tenant Admin can create replacement resources with customized settings once
+  dependencies on the defaults have been removed
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the
   auto-created ExternalIP and ExternalIPAttachment to be cleaned up
   automatically

@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-07-08
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -20,7 +20,7 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-Default networking provides automatic IPv4 resource provisioning at tenant onboarding (including an IPv4 subnet and NATGateway), optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion. IPv6 and dual-stack networking are not supported.
+Default networking provides automatic IPv4 resource provisioning at tenant onboarding (including an IPv4 subnet and NATGateway), optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion. IPv6 and dual-stack networking are not supported. The provisioned networking resources and the workload network attachment fields follow the unified create/read/delete contract; read means List/Get, and changes require delete and recreate.
 
 ## Summary
 
@@ -37,7 +37,8 @@ A reachable resource in OSAC requires networking resources: VirtualNetwork, Subn
 - Optional network_attachments field on all resource types
 - Auto ExternalIP mode for inbound connectivity
 - Auto-cleanup of auto-created resources on deletion
-- Tenant-scoped default resources (visible, editable, lifecycle-managed by tenant)
+- Tenant-scoped default resources (visible and managed through the unified
+  create/read/delete lifecycle)
 
 ### Non-Goals
 
@@ -54,22 +55,27 @@ The design covers three capabilities: default networking (including NATGateway) 
 
 #### Default Networking at Tenant Onboarding
 
-1. **Cloud Infrastructure Admin configures NetworkClass defaults:**
-   ```bash
-   # NetworkClass already exists, update with defaults
-   kubectl patch networkclass moc-region-1 --type merge -p '{
-     "spec": {
-       "defaults": {
-         "virtualNetworkCIDR": "10.0.0.0/16",
-         "ipv4SubnetCIDR": "10.0.1.0/24",
-         "securityGroupRules": [
-           {"direction": "ingress", "protocol": "tcp", "port": 22, "source": "0.0.0.0/0"},
-           {"direction": "ingress", "protocol": "tcp", "port": 443, "source": "0.0.0.0/0"}
-         ]
-       }
-     }
-   }'
-   ```
+1. **Cloud Infrastructure Admin creates the NetworkClass with defaults:**
+   The NetworkClass is created with the deployment-wide IPv4 CIDRs and
+   SecurityGroup rules before tenant onboarding. NetworkClass changes follow
+   the unified create/read/delete contract and require replacement.
+
+   **NetworkClass replacement lifecycle:** `VirtualNetwork.spec.network_class`
+   is required and immutable. The old NetworkClass cannot be deleted while any
+   VirtualNetwork references it; reverse-reference checks must block that
+   delete. To replace the deployment-wide class, create and validate the
+   replacement first, pause default-based creates for every affected existing
+   tenant (not only tenant onboarding), and keep them paused while the old
+   default VirtualNetwork, Subnet, SecurityGroup, and NATGateway are replaced.
+   Recreate tenant VirtualNetworks and their dependent Subnets, SecurityGroups,
+   and NATGateways, and drain/delete resources that still reference the old
+   class. Existing workload attachments are create-time-only and are not
+   rebound; tenants must recreate workloads that need the replacement network,
+   while new workloads use replacement attachments/defaults. Resume
+   default-based creates only after the replacement defaults are READY. Delete
+   the old VirtualNetworks and then the old NetworkClass only after all
+   references are gone. The ExternalIPPool does not reference NetworkClass in
+   this design and is not rebound by this transition.
 
 2. **Cloud Provider Admin creates Tenant:**
    ```bash
@@ -177,7 +183,7 @@ The design covers three capabilities: default networking (including NATGateway) 
     - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
-11. **Tenant Admin inspects and customizes default resources:**
+11. **Tenant Admin inspects default resources:**
     ```bash
     # List default resources
     osac get virtualnetworks --filter 'labels["osac.openshift.io/default"]="true"'
@@ -185,12 +191,33 @@ The design covers three capabilities: default networking (including NATGateway) 
     osac get security-groups --filter 'labels["osac.openshift.io/default"]="true"'
     osac get natgateways --filter 'labels["osac.openshift.io/default"]="true"'
 
-    # Modify default SecurityGroup rules
-    osac update security-group default-sg \
-      --add-ingress "protocol:tcp,port:8080,source:0.0.0.0/0"
+    # Changes require creating replacement networking resources after
+    # dependencies on the defaults have been removed.
     ```
-    - Default resources are editable like any other resource
-    - Default resources cannot be deleted while any resource depends on them (subnet deletion blocked if VMs reference it)
+    - Default resources follow the unified create/read/delete contract; they
+      cannot be edited in place.
+    - Default resources cannot be deleted while any resource depends on them
+      (subnet deletion is blocked if VMs reference it).
+    - Replacing the default resource set (VirtualNetwork, Subnet,
+      SecurityGroup, and NATGateway) is a coordinated transition: pause
+      default-based creates for every affected existing tenant, drain or delete
+      workloads attached to the old defaults, and run reverse-reference checks
+      before deleting any old resource. The old VirtualNetwork must have no
+      Subnet, SecurityGroup, NATGateway, or workload-attachment references.
+      The old NATGateway must have no remaining dependents; deleting it releases
+      its auto-allocated ExternalIP back to the pool through the normal
+      ExternalIP cleanup path. A replacement NATGateway receives a newly
+      allocated ExternalIP; the old address is not rebound. Create each
+      replacement with the same tenant scope and
+      `osac.openshift.io/default: "true"` label. Attachments are immutable, so
+      existing workloads are not rebound and the replacement applies to later
+      creates only.
+    - Defaults cannot be unlabeled in place because networking metadata is
+      immutable. Default selection considers only active, READY resources and
+      must find exactly one matching default; zero or multiple matches is a
+      configuration error. Default-based creates remain paused until the
+      replacement VirtualNetwork, Subnet, SecurityGroup, and NATGateway are
+      READY.
 
 ### API Extensions
 
@@ -355,7 +382,8 @@ type ClusterSpec struct {
 - **Creation:** fulfillment-service creates default VN, IPv4 Subnet, SG, and NATGateway at tenant onboarding (via its own API — resources are persisted in PostgreSQL and reconciled to K8s CRs like any other resource)
 - **Labeling:** All default resources labeled `osac.openshift.io/default: "true"`
 - **Visibility:** Default resources appear in list/detail views like any other resource
-- **Editability:** Tenant Admin can modify default resources (e.g., add SecurityGroup rules)
+- **Mutability:** Default resources are immutable after creation; changes require
+  delete and recreate under the unified networking contract
 - **Deletion protection:** Default resources cannot be deleted while any resource depends on them (e.g., subnet deletion blocked if VMs reference it)
 - **Tenant deletion:** Default resources are deleted when tenant is deleted (owner reference cleanup)
 
@@ -391,7 +419,9 @@ Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPA
 All default and auto-created resources inherit tenant annotation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/SG/NATGateway
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-created ExternalIP/ExternalIPAttachment
-- OPA policies enforce tenant-scoped list/get/update/delete
+- OPA policies enforce tenant-scoped create/list/get/delete; update/patch is
+  not exposed for networking resources, and private controller status
+  transitions remain internal
 
 #### CIDR Overlap Across Tenants
 
@@ -405,10 +435,11 @@ This feature inherits the existing security model:
 - Default resources (VN, Subnet, SG, NATGateway) inherit tenant annotation from Tenant resource
 - No new authentication or authorization changes
 - Default SecurityGroup rules configured by Cloud Infrastructure Admin (applies to all tenants)
-- Tenant Admin can modify default SecurityGroup rules after creation (tenant-configurable)
+- Tenant Admin can create replacement SecurityGroup resources with customized
+  rules after dependencies on the defaults have been removed
 
 **Risk: Default SecurityGroup too permissive**
-- Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenant Admin tightens rules after creation if needed.
+- Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenants that need different rules create replacement SecurityGroup resources and use them for subsequently created workloads.
 
 ### Failure Handling and Recovery
 
@@ -435,8 +466,11 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (default networking, auto-created ExternalIP) inherit tenant isolation:
 - `osac.openshift.io/tenant` annotation propagated from parent to all child resources
-- OPA policies enforce tenant-scoped list/get/update/delete
-- Tenant User can view and manage default and auto-created resources via standard API
+- OPA policies enforce tenant-scoped create/list/get/delete; update/patch is
+  not exposed for networking resources, and private controller status
+  transitions remain internal
+- Tenant User can view default and auto-created resources and use the supported
+  create/list/get/delete operations subject to dependency protection
 - Cloud Infrastructure Admin configures NetworkClass defaults (global, applies to all tenants)
 
 ### Observability and Monitoring
@@ -528,13 +562,13 @@ Resolved: Return error, no resource persisted.
 - fulfillment-service: network_attachments population (populate with defaults when omitted, skip when provided)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
-- fulfillment-service: default resource creation at tenant onboarding (VN, IPv4 Subnet, IPv6 Subnet, SG, NATGateway with default label)
+- fulfillment-service: default resource creation at tenant onboarding (VN, IPv4 Subnet, SG, NATGateway with default label)
 - fulfillment-service: DefaultNetworkingReady condition tracking (true when all defaults including both Subnets and NATGateway READY via feedback, false when any failed)
 - osac-operator resource controllers: auto-created resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
 
 ### Integration Tests
 
-- E2E: create Tenant, verify default VN/IPv4 Subnet/IPv6 Subnet/SG/NATGateway created and labeled `osac.openshift.io/default: "true"`
+- E2E: create Tenant, verify default VN/IPv4 Subnet/SG/NATGateway created and labeled `osac.openshift.io/default: "true"`
 - E2E: create Tenant, default Subnet provisioning fails, verify Tenant remains non-READY with condition
 - E2E: create ComputeInstance without network_attachments, verify defaults populated in spec
 - E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
@@ -542,7 +576,8 @@ Resolved: Return error, no resource persisted.
 - E2E: delete ComputeInstance with auto-created resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance with explicit network_attachments, verify defaults NOT applied
 - E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
-- E2E: Tenant Admin modifies default SecurityGroup rules, verify changes take effect
+- E2E: verify default networking resources expose create/read/delete only and
+  that replacement resources can be created after dependent resources are removed
 
 ### Tricky Test Cases
 
