@@ -13,9 +13,9 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 - Fulfillment-service unit and integration coverage uses Ginkgo/Gomega under `osac/fulfillment-service/internal/servers/`, `internal/controllers/`, `internal/database/migrations/`, and `it/`; use the ExternalIPAttachment server/controller suites and the Volume server/controller suites as patterns.
 - CSI adapter coverage uses standard Go tests in `osac/osac-csi-driver/pkg/driver/controller_test.go`; reuse the existing vendor-controller mocks and tests for `AlreadyExists`, `NotFound`, `Unimplemented`, no-op backends, and retry errors.
-- Operator controller coverage uses Ginkgo/Gomega/envtest under `osac/osac-operator/internal/controller/`; add attachment provider/controller tests beside `volume_controller_test.go` and target deletion tests beside `computeinstance_controller_test.go`.
+- Operator controller coverage uses Ginkgo/Gomega/envtest under `osac/osac-operator/internal/controller/`; add `attachment_controller_test.go` beside `volume_controller_test.go` and target deletion tests beside `computeinstance_controller_test.go`.
 - E2E coverage belongs in `osac/tests/e2e/storage/test_volume_attachment_lifecycle.py`, using `storage/conftest.py`, `tests/e2e/core/grpc_client.py`, `tests/e2e/core/osac_cli.py`, `tests/e2e/core/k8s_client.py`, and `tests/e2e/core/runner.py::poll_until`; follow the lifecycle structure in `test_tenant_storage_lifecycle.py` and `test_caas_cluster_storage.py`.
-- The fake attachment provider must expose deterministic transient, terminal, delayed, no-op, inventory, and call-count controls for unit and integration tests.
+- The fake `AttachmentExecutor` must expose deterministic transient, terminal, delayed, no-op, inventory, stale-generation, and call-count controls for unit and integration tests.
 
 ## Test Cases
 
@@ -213,19 +213,19 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Preconditions
 
-- The fulfillment-service fake `AttachmentProvider` returns a non-retryable error for `vol-123` and later can be switched to success.
+- The operator fake `AttachmentExecutor` returns a non-retryable error for `vol-123` and later can be switched to success.
 
 ##### Steps
 
 1. Create the `vol-123` to `ci-456` attachment.
 2. Read it after reconciliation.
-3. Correct the fake provider and invoke the private `Signal` RPC as an authorized operator identity.
+3. Correct the fake executor and invoke the private `Signal` RPC as an authorized operator identity.
 
 ##### Expected Results
 
 - The attachment reaches `FAILED` with a non-empty reason and message.
-- It never reports `READY` while the provider is failing.
-- Signaling after provider recovery retries the relationship and transitions it to `READY`.
+- It never reports `READY` while the operator executor is failing.
+- Signaling after executor recovery retries the relationship and transitions it to `READY`.
 
 #### TC-FR4-04 [AC-FR4-04] [Story: Cloud Infrastructure Admin]: Transient detach failure retries and terminal detach retains the finalizer
 
@@ -236,7 +236,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 ##### Preconditions
 
 - A `READY` attachment exists in the fulfillment-service integration harness.
-- The fake provider returns a transient detach error, then a terminal detach error.
+- The fake `AttachmentExecutor` returns a transient detach error, then a terminal detach error.
 
 ##### Steps
 
@@ -284,21 +284,21 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Preconditions
 
-- A `READY` attachment exists and the fake provider delays detach.
+- A `READY` attachment exists and the fake `AttachmentExecutor` delays detach.
 
 ##### Steps
 
 1. Delete the attachment.
-2. Restart the fulfillment-service attachment worker before provider completion.
+2. Restart the operator attachment controller before vendor completion.
 3. Allow reconciliation to resume.
 
 ##### Expected Results
 
 - The persisted relationship remains `DELETING` across restart.
-- Reconciliation resumes and the provider receives one effective detach operation.
+- Reconciliation resumes and the vendor receives one effective detach operation.
 - The finalizer is removed only after detached state is confirmed.
 
-#### TC-FR5-03 [AC-FR5-03] [Story: Cloud Infrastructure Admin]: Lost provider response replays the same operation token
+#### TC-FR5-03 [AC-FR5-03] [Story: Cloud Infrastructure Admin]: Lost vendor response replays the same operation token
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -306,20 +306,20 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Preconditions
 
-- The fake provider completes `Attach` for `vol-123`/`ci-456` but drops the response after recording operation token `token-attach-1`.
-- A second provider call can observe an expired `RUNNING` lease and backend state.
+- The fake `AttachmentExecutor` completes vendor attach for `vol-123`/`ci-456` but drops the result after recording operation token `token-attach-1`.
+- A second operator reconcile can observe an expired `RUNNING` claim and vendor state.
 
 ##### Steps
 
-1. Start two provider calls concurrently with operation token `token-attach-1`.
+1. Start two operator reconciles concurrently with operation token `token-attach-1`.
 2. Let the first claim lease expire without a heartbeat.
-3. Allow fulfillment-service to query `GetOperation` and retry the attachment with the same operation token.
-4. Read the provider ledger and attachment status.
+3. Allow the second reconcile to compare-and-swap the claim and retry with the same operation token.
+4. Read the Attachment CR status and vendor call ledger.
 
 ##### Expected Results
 
-- One provider call claims `token-attach-1`; the concurrent call waits for or replays that result, and the expired-lease recovery queries backend state before retrying.
-- The retry returns the recorded result without a second effective backend attachment, and the ledger contains one completed token with no stale owner.
+- One operator reconcile claims `token-attach-1`; the concurrent reconcile waits for or takes over that claim, and stale-owner execution is rejected.
+- Recovery queries vendor state before retrying and produces one effective backend attachment with no stale owner in the Attachment CR status.
 - The attachment reaches `READY` and the persisted operation ledger contains one token/result pair.
 
 ### FR-6: Access mode and backend capability
@@ -374,7 +374,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Preconditions
 
-- The migration test database contains `vol-123` and `ci-456`; the fake provider records calls.
+- The migration test database contains `vol-123` and `ci-456`; the fake operator executor records vendor calls.
 
 ##### Steps
 
@@ -385,7 +385,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 - The database leaves either a persisted active attachment and a blocked Volume deletion, or a rejected attachment with a completed Volume deletion.
 - It never archives/deletes `vol-123` while an active helper row remains.
-- No orphan provider attachment exists after both operations settle.
+- No orphan vendor attachment exists after both operations settle.
 
 ### FR-7: No-op attachment backends
 
@@ -450,7 +450,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 1. Run old CSI against the new service with the feature disabled and publish/unpublish the Volume.
 2. Run the new CSI against the old service.
-3. Run the inventory migration provider and enable the new feature gate.
+3. Run the operator inventory migration and enable the new feature gate.
 4. Publish/unpublish with the new CSI adapter, then roll back the adapter.
 
 ##### Expected Results
@@ -468,7 +468,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Preconditions
 
-- The fake CSI provider reports that the vendor lacks `LIST_VOLUMES_PUBLISHED_NODES` or returns an inventory error.
+- The operator inventory adapter reports that the vendor lacks `LIST_VOLUMES_PUBLISHED_NODES` or returns an inventory error.
 
 ##### Steps
 
@@ -479,10 +479,10 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 ##### Expected Results
 
 - The migration Job records a failure reason and imports no partial relationship set.
-- The feature gate remains disabled and an operator-visible alert identifies the provider.
+- The feature gate remains disabled and an operator-visible alert identifies the backend.
 - CSI readiness remains false and no new-path vendor publish is attempted.
 
-#### TC-FR8-04 [AC-FR8-04] [Story: Cloud Infrastructure Admin]: Provider inventory changes restart the migration epoch
+#### TC-FR8-04 [AC-FR8-04] [Story: Cloud Infrastructure Admin]: Operator inventory changes restart the migration epoch
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -490,12 +490,12 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Preconditions
 
-- The fake provider returns a different inventory checksum on the second page of one migration epoch.
+- The operator inventory adapter returns a different inventory checksum on the second page of one migration epoch.
 
 ##### Steps
 
 1. Run the migration Job through the first inventory page.
-2. Change the fake provider inventory before the next page.
+2. Change the fake operator inventory before the next page.
 3. Allow the Job to finish.
 
 ##### Expected Results
@@ -512,7 +512,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Preconditions
 
-- The fake provider exposes two inventory pages and the migration Job persists its first-page cursor.
+- The operator inventory adapter exposes two inventory pages and the migration Job persists its first-page cursor.
 
 ##### Steps
 
@@ -537,9 +537,9 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Start rollback while the provider operation is in flight.
+1. Start rollback while an operator reconciliation is in flight.
 2. Attempt an old-CSI publish and a new-CSI publish during rollback.
-3. Allow the provider operation and rollback fence to settle.
+3. Allow the operator reconciliation and rollback fence to settle.
 
 ##### Expected Results
 
@@ -613,7 +613,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 - Exactly one ordering wins: either attachment creation returns `FailedPrecondition` because the target deletion guard is held, or the target deletion waits for and detaches the newly created relationship.
 - The target finalizer is removed only after `TargetAttachmentsGone` succeeds.
-- No active helper row or provider attachment remains for `ci-456` after deletion.
+- No active helper row or vendor attachment remains for `ci-456` after deletion.
 
 #### TC-FR9-04 [AC-FR9-04] [Story: Cloud Infrastructure Admin]: Already-deleting target is quarantined during backfill
 
