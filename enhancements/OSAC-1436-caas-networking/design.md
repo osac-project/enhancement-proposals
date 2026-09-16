@@ -19,7 +19,7 @@ superseded-by:
 
 # CaaS Networking — Cluster Networking via OSAC Networking API
 
-CaaS networking provides tenant-controlled cluster node networking via VirtualNetwork + Subnet attachments, BM-based node sets with fabric interface resolution from BareMetalInstanceType, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
+CaaS networking provides tenant-controlled cluster node networking via one `network_attachment` per Cluster, BM-based node sets with fabric interface resolution from BareMetalInstanceType, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
 
 ## Summary
 
@@ -75,7 +75,7 @@ The `BareMetalWorkerReconciler` reads `ClusterOrder.spec.network_attachment` (a 
 - VMaaS or BMaaS networking (this EP covers CaaS only)
 - VM-based cluster node sets (v0.2 supports BM node sets only; VM worker nodes require HyperShift ↔ CUDN integration not in scope)
 - DNS API (DNS record creation stays inline in the template until DNS API is implemented)
-- Multi-NIC cluster nodes (v0.2: one attachment per cluster → one subnet; each node set resolves its own fabric interface from its BareMetalInstanceType)
+- Multi-NIC cluster nodes (not supported; v0.2 has one attachment per cluster → one subnet, while each node set resolves its own fabric interface from its BareMetalInstanceType)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
 
 ## Proposal
@@ -122,7 +122,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
 5. **fulfillment-service:**
     - If `network_attachment` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
-    - Validates network_attachment:
+    - Validates network_attachment (the singular Cluster field):
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
     - For each node_set: resolves `baremetal_instance_type` → BareMetalInstanceType → picks first port with `role=fabric` from `network_ports[]` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec

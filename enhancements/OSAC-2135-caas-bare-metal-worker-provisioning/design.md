@@ -67,7 +67,7 @@ No new CRDs are introduced. The design extends the ClusterOrder CRD status with 
 | MAC address in BareMetalInstance status | [OSAC-2308](https://redhat.atlassian.net/browse/OSAC-2308), [OSAC-3254](https://redhat.atlassian.net/browse/OSAC-3254) | Agent-to-BMI correlation impossible; entire feature blocked |
 | DiskImage resource + BMI DiskImage integration | [OSAC-2540](https://redhat.atlassian.net/browse/OSAC-2540), [OSAC-1270](https://redhat.atlassian.net/browse/OSAC-1270) | Controller cannot resolve RHCOS boot image; BMI creation blocked |
 | Type-safe resource references | [OSAC-1330](https://redhat.atlassian.net/browse/OSAC-1330) | `DiskImageReference` on `ClusterVersionSpec` requires the typed reference pattern; without it, `disk_image` is a plain string with no reference validation or deletion protection |
-| BMaaS networking for subnet attachment | [OSAC-1437](https://redhat.atlassian.net/browse/OSAC-1437) | BMI creation requires `network_attachments`; without BMaaS subnet support, workers cannot be moved to the tenant subnet and will not receive DHCP-assigned IPs on the correct network |
+| BMaaS networking for subnet attachment | [OSAC-1437](https://redhat.atlassian.net/browse/OSAC-1437) | BMI creation requires the plural `network_attachments` compatibility field with exactly one entry; without BMaaS subnet support, workers cannot be moved to the tenant subnet and will not receive DHCP-assigned IPs on the correct network |
 
 The existing BareMetalPool-based static pre-boot pool is removed as part of this work. The `cluster_infra` AAP step that creates BareMetalPool CRs and the scheduled `osac-import-agents` AAP job that discovers and imports hosts are no longer used by CaaS. Any remaining BareMetalPool resources are drained and cleaned up during rollout. The BareMetalPool CRD itself is retained (it serves BMaaS standalone use cases) but CaaS no longer creates or references BareMetalPool resources.
 
@@ -152,7 +152,7 @@ This design replaces `HostType` with `BareMetalInstanceType` and the static agen
 
    This flows through to the proto as `ClusterNodeSet.baremetal_instance_type` (replacing `ClusterNodeSet.host_type`) and to the CRD as `NodeRequest.BareMetalInstanceType` (replacing `NodeRequest.ResourceClass`).
 
-3. Creates the system-owned `BareMetalInstanceCatalogItem` — a pass-through with unlocked parameters so the CaaS controller can set image, user_data, and network_attachments freely (one-time deployment prerequisite):
+3. Creates the system-owned `BareMetalInstanceCatalogItem` — a pass-through with unlocked parameters so the CaaS controller can set image, user_data, and the single `network_attachments` entry (the field remains plural for API compatibility) (one-time deployment prerequisite):
 
    ```bash
    osac-admin create baremetalinstancecatalogitem caas-system-bmi --unlocked
@@ -224,7 +224,7 @@ The diagram shows the end-to-end provisioning flow. The controller waits for eac
    | `catalog_item` | System-owned pass-through | Required by private API; CaaS overrides all parameters |
    | `image` | `ClusterVersion.disk_image` → DiskImage ID | RHCOS boot image for discovery agent |
    | `user_data` | InfraEnv ignition (inline, ~15KB, max 64KB) | Discovery ignition to register with assisted-service |
-   | `network_attachments` | `networkAttachments[0]` + BareMetalInstanceType `network_ports` | Subnet from `ClusterNetworkAttachment`, interface from first `fabric` port, `primary: true` (see Network Attachment Enrichment) |
+   | `network_attachments` | `networkAttachments[0]` + BareMetalInstanceType `network_ports` | The sole attachment from `ClusterNetworkAttachment`, interface from first `fabric` port, `primary: true` (see Network Attachment Enrichment); BMaaS rejects additional entries |
    | `tenant` | Always `"system"` | Hides CaaS BMIs from tenant APIs (see System Tenant Isolation) |
 
    BMaaS handles the physical networking — moving the host to the tenant subnet VLAN and assigning an IP via fabric DHCP — as part of BMI provisioning (dependency: OSAC-1437). If the host fails to join the tenant network, the agent will not register on the expected subnet, and the existing `AgentRegistrationTimeout` handles this failure mode. API and ingress VIPs are provisioned by the existing AAP template (MetalLB LoadBalancer Services) and are not managed by this controller.
@@ -548,7 +548,7 @@ message BareMetalInstanceSpec {
   BareMetalInstanceCatalogItemReference catalog_item = ...; // system-owned catalog item (pass-through)
   optional BareMetalInstanceImage image = ...;              // RHCOS DiskImage reference (see RHCOS DiskImage Resolution)
   optional string user_data = ...;                          // inline discovery ignition content (max 64KB)
-  repeated BareMetalNetworkAttachment network_attachments = ...;
+  repeated BareMetalNetworkAttachment network_attachments = ...; // max 1; plural for API compatibility
   string instance_type = 20;                                // BareMetalInstanceType name from ClusterNodeSet (OSAC-1201)
   // ... other existing fields (ssh_public_key, run_strategy, template_parameters, etc.) omitted
 }
@@ -559,7 +559,7 @@ message BareMetalInstanceImage {
 }
 ```
 
-The system-owned catalog item is created automatically, not by an admin. Because CaaS bare-metal provisioning is only usable once (a) CaaS is deployed, (b) a BMaaS backend is integrated, and (c) at least one `BareMetalInstanceType` is registered, the catalog item is seeded by the same automation that enables the CaaS-on-bare-metal integration — not by the base OSAC install (which may run without BMaaS). Concretely, the osac-installer creates it as a `system`-tenant `BareMetalInstanceCatalogItem` with all provisioning parameters unlocked when the bare-metal integration is enabled; the CaaS controller then reconciles against it (creating it if missing) so a fresh deployment is self-healing rather than dependent on install ordering. The item carries unlocked parameters so the controller can set image, user_data, and network_attachments freely. The `BareMetalInstanceType` referenced in the `ClusterNodeSet` — not this catalog item — determines which host hardware profile BMaaS allocates.
+The system-owned catalog item is created automatically, not by an admin. Because CaaS bare-metal provisioning is only usable once (a) CaaS is deployed, (b) a BMaaS backend is integrated, and (c) at least one `BareMetalInstanceType` is registered, the catalog item is seeded by the same automation that enables the CaaS-on-bare-metal integration — not by the base OSAC install (which may run without BMaaS). Concretely, the osac-installer creates it as a `system`-tenant `BareMetalInstanceCatalogItem` with all provisioning parameters unlocked when the bare-metal integration is enabled; the CaaS controller then reconciles against it (creating it if missing) so a fresh deployment is self-healing rather than dependent on install ordering. The item carries unlocked parameters so the controller can set image, user_data, and the one allowed network attachment. The `BareMetalInstanceType` referenced in the `ClusterNodeSet` — not this catalog item — determines which host hardware profile BMaaS allocates.
 
 Open item: whether the seed lives in the installer chart or is reconciled entirely by the controller is an implementation choice; either way the contract is that no human creates this item, and it does not exist until a `BareMetalInstanceType` is available to reference.
 
@@ -640,7 +640,12 @@ After the first successful MAC match, the controller labels the Agent with `osac
 
 #### Network Attachment Enrichment
 
-The BM controller reads the cluster-level network attachment from `ClusterOrder.spec.networkAttachments[0]` (a `ClusterNetworkAttachment` carrying `subnetRef` + `securityGroupRefs`, defined by OSAC-1436) and enriches it into a per-BMI `BareMetalNetworkAttachment` for the private API call:
+The BM controller reads the cluster-level network attachment from
+`ClusterOrder.spec.networkAttachments[0]` (a `ClusterNetworkAttachment`
+carrying `subnetRef` + `securityGroupRefs`, defined by OSAC-1436) and enriches
+it into a per-BMI `BareMetalNetworkAttachment` for the private API call. The
+array is an internal compatibility shape and contains at most one cluster
+attachment; CaaS does not provide multi-NIC worker networking:
 
 | ClusterNetworkAttachment (input) | BareMetalNetworkAttachment (output) | Source |
 |---|---|---|

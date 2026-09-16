@@ -234,6 +234,19 @@ the cluster's VIPs are discovered (see
 
 ## 2. Goals and Non-Goals
 
+### 2.0 Current workload attachment constraint
+
+VMaaS, BMaaS, and CaaS support at most one tenant network attachment per
+workload. VMaaS and BMaaS retain their repeated `network_attachments` fields
+for wire and API compatibility; the API validates that the list contains zero
+or one entry. CaaS retains its existing singular `network_attachment` field.
+With exactly one attachment, it is the default route/primary attachment. The
+BMaaS attachment retains its existing optional `primary` field; with one
+attachment, omitting it has the same meaning as `primary: true`. VMaaS has no
+primary field, and CaaS has no primary concept.
+Multi-NIC workload networking is future scope and is not enabled by the
+plural field shape.
+
 ### 2.1 Goals
 
 - Provide a unified networking API across VMaaS, CaaS, and BMaaS with a single, consistent resource model
@@ -241,7 +254,7 @@ the cluster's VIPs are discovered (see
 - Support pluggable networking backends that can be added without API changes
 - Enable VMs, clusters, and bare-metal servers to coexist in the same VirtualNetwork
 - Support connected deployments using provider-routable IPs
-- Support per-interface network attachment for bare-metal servers with multiple physical interfaces
+- Support one tenant network attachment per workload, with an optional physical-interface selector for BMaaS
 
 ### Deployment support boundary
 
@@ -310,9 +323,8 @@ explicitly specifies them.
   VirtualNetwork
 - As a tenant, I want to see the available physical interfaces on a bare-metal
   template so I can decide how to attach networks
-- As a tenant, I want to attach different physical interfaces of my
-  BaremetalInstance to different Subnets (e.g., data interface to a data
-  subnet, management interface to a management subnet)
+- As a tenant, I want to select the physical interface used by my
+  BaremetalInstance's single tenant network attachment
 - As a tenant, I want to attach an ExternalIP to my bare-metal server for
   inbound access
 
@@ -366,11 +378,13 @@ Providers configure which networking backends handle network operations.
 Tenants never choose networking backends — the system selects them based
 on the provider's configuration.
 
-#### FR-7: Per-interface network attachment for bare metal (R7)
+#### FR-7: Single network attachment per workload (R7)
 
-Bare-metal servers have multiple physical interfaces. Tenants must be able to
-attach different interfaces to different Subnets based on the interface
-descriptions provided by the template.
+ComputeInstance, BaremetalInstance, and Cluster each support at most one
+tenant network attachment. Bare-metal tenants may select the physical
+interface for that attachment based on the interface descriptions provided by
+the template. The VMaaS and BMaaS repeated fields remain repeated for API
+compatibility, but requests containing more than one entry are rejected.
 
 #### FR-8: Create/read/delete networking contract (R8)
 
@@ -409,7 +423,7 @@ _No non-functional requirements were specified in the original document._
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
 - [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
 - [ ] SecurityGroup enforcement is uniform across all resource types
-- [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., bare-metal servers support per-interface attachment, clusters use a single shared attachment)
+- [ ] Each resource type has its own network attachment configuration appropriate to the resource, and VMaaS, BMaaS, and CaaS each enforce at most one tenant attachment per workload
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
 - [ ] Networking resources support only Create, List/Get, and Delete; changing a networking resource or a workload network attachment requires delete and recreate
@@ -440,9 +454,9 @@ _No non-functional requirements were specified in the original document._
 
 - [ ] Host types describe available interfaces (name, role, description) for bare-metal servers
 - [ ] Bare-metal network attachments include an optional interface reference that identifies a named interface from the host type
-- [ ] Multiple network attachments are supported for bare-metal servers — one per physical interface
-- [ ] The same interface cannot appear in multiple attachments
-- [ ] All referenced subnets must belong to the same VirtualNetwork
+- [ ] A bare-metal network attachment may select one named interface from the host type
+- [ ] Requests containing more than one bare-metal network attachment are rejected
+- [ ] The referenced subnet belongs to the same VirtualNetwork as its security groups
 
 ## 6. Dependencies
 

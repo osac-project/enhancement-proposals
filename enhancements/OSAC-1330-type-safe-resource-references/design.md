@@ -123,6 +123,10 @@ Starting state: A Tenant User has a Subnet named `app-subnet` and a
 SecurityGroup named `app-sg`, both in READY state within their tenant and
 project.
 
+The `network_attachments` examples in this document use the plural VMaaS
+field for API compatibility. The current VMaaS contract accepts zero or one
+entry; the reference-resolution design does not enable multi-NIC workloads.
+
 1. The user submits a CreateComputeInstance request. In the REST/JSON body,
    network attachments use nested reference objects:
    ```json

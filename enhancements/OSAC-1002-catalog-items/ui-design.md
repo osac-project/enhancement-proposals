@@ -72,6 +72,8 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
 6. **Step 3 — Networking** (clusters only): `ClusterNetworkingStep` with `pod_cidr` and `service_cidr` as `StringFieldDefinition` fields. This step is not shown for VM or Bare Metal catalog items.
 7. **Step 4 — Access:** Per-kind access step component with `ssh_public_key`/`ssh_key` and `pull_secret` (clusters) as `StringFieldDefinition` fields. Both default to editable.
    For VM and Bare Metal catalog items, the UI automatically includes the field definition in the API payload without showing it in a wizard step. VM uses `fields.network_attachments` with a typed `ComputeNetworkAttachmentListFieldPolicy`; Bare Metal uses the corresponding `BareMetalNetworkAttachmentListFieldPolicy`. An editable policy may include `default_value: { items: [...] }`, while `default_value` may be omitted. During provisioning, the tenant sends `catalog_item` together with tenant-supplied `network_attachments`; an omitted or explicitly empty tenant list is treated as no input, so fulfillment can apply the editable Catalog default and then default-network injection when the resolved list remains empty. Non-empty tenant values override an editable default. Empty locked or default policy values are rejected when the Catalog Item is created or updated. Fulfillment performs final resource validation; the absence of a JSON `validation_schema` does not disable typed policy checks or resource validation.
+   Both VMaaS and BMaaS enforce the maximum of one resolved attachment; the
+   catalog UI does not add or remove NIC rows.
 8. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
 9. From the detail page or list page, the admin can publish the item by toggling the publish `Switch`.
@@ -351,6 +353,9 @@ Each resource type has its own configuration step component with static, hardcod
 **Step 3: Networking** (clusters only)
 
 `ClusterNetworkingStep` with `pod_cidr` and `service_cidr` as `StringFieldDefinition` fields. This step is not shown for VM or Bare Metal catalog items. VM catalog items emit `fields.network_attachments` as the typed `ComputeNetworkAttachmentListFieldPolicy`; Bare Metal catalog items emit the corresponding `BareMetalNetworkAttachmentListFieldPolicy`. Their `default_value` may be omitted or may contain typed `items`. During provisioning, an omitted or explicitly empty tenant list is treated as no input, allowing the editable Catalog default and subsequent default-network injection; non-empty tenant values override an editable default. Empty locked or default policy values are rejected, and fulfillment performs final resource validation.
+`ComputeNetworkAttachmentListFieldPolicy` and
+`BareMetalNetworkAttachmentListFieldPolicy` both resolve to at most one
+attachment; the service-level cardinality remains authoritative.
 
 **Step 4: Access** (per-kind step component)
 
@@ -492,7 +497,7 @@ Each step component is a static form that explicitly lists its fields using the 
 **VM (ComputeInstance):**
 - `VMConfigurationStep` — `instance_type` (`ResourceSelectorFieldDefinition`, endpoint: `/v1/instance_types`), `cores` (`NumberFieldDefinition`), `memory_gib` (`NumberFieldDefinition`), `image` (`ResourceSelectorFieldDefinition`), `boot_disk.size_gib` (`NumberFieldDefinition`), `additional_disks` (array of `NumberFieldDefinition` for `size_gib`), `run_strategy` (`StringFieldDefinition` with enum: "Always"/"Halted"), `user_data` (`StringFieldDefinition` textarea), `is_windows` (`BooleanFieldDefinition`)
 - `VMAccessStep` — `ssh_key` (`StringFieldDefinition`, default editable)
-- VM has no Networking step. `network_attachments` is auto-included in the API payload (not shown in wizard).
+- VM has no Networking step. `network_attachments` is auto-included in the API payload (not shown in wizard) and accepts at most one entry.
 
 **Bare Metal (BareMetalInstance):**
 - `BMConfigurationStep` — `run_strategy` (`StringFieldDefinition` with enum: "ALWAYS"/"HALTED"), `user_data` (`StringFieldDefinition` textarea)
@@ -511,6 +516,10 @@ const ClusterConfigurationStep = () => (
 ```
 
 **Network attachments handling (VM and Bare Metal):** The `network_attachments` field is not shown in any wizard step. The Catalog Item create payload includes it as `fields.network_attachments`, using `ComputeNetworkAttachmentListFieldPolicy` for VM or `BareMetalNetworkAttachmentListFieldPolicy` for Bare Metal. An editable policy can carry `default_value: { items: [...] }`, but `default_value` can also be omitted. The provisioning request carries `catalog_item` and tenant-supplied `network_attachments`; an omitted or explicitly empty tenant list is treated as no input, while a non-empty list overrides an editable default. Fulfillment resolves the policy, applies default-network injection when the resolved list remains empty, rejects empty locked/default policy values, and performs final resource validation. Omitting a JSON `validation_schema` does not bypass typed policy checks or resource validation; existing workload attachments are not updated in place.
+**Network attachments handling (VM and Bare Metal):** The `network_attachments`
+field is not shown in any wizard step. Typed catalog policies may provide an
+optional default list, but the resolved VMaaS/BMaaS list is still limited to
+zero or one entry and the catalog UI does not add or remove NIC rows.
 
 **NodeSetsFieldEditor (Cluster only) — revised 2026-07-27, template-driven:**
 
@@ -777,6 +786,7 @@ Testing strategy for the catalog management UI:
 - Scope badge: verify badge renders correctly for all three scope levels (General, Organization, Project)
 - Unsupported schema detection: verify schemas with unsupported keywords show read-only "use CLI" message; schemas with only supported keywords show structured controls
 - Network attachments auto-inclusion (VM and Bare Metal): verify both wizards omit the field, VM uses `ComputeNetworkAttachmentListFieldPolicy`, Bare Metal uses `BareMetalNetworkAttachmentListFieldPolicy`, and both Catalog Item payloads support an optional `default_value.items`; verify omitted or explicitly empty tenant lists allow editable defaults and later default-network injection, while empty locked/default policies are rejected; verify omitted JSON `validation_schema` does not bypass typed policy or resource validation; verify Cluster uses pod_cidr/service_cidr in Networking step
+- Network attachments auto-inclusion (VM and Bare Metal): verify both typed policies preserve the zero-or-one service contract; verify omitted or explicitly empty tenant lists allow catalog/default-network resolution; verify Cluster uses pod_cidr/service_cidr in Networking step
 - NodeSetsFieldEditor: verify rows render one-per-template-node-set with host type read-only; verify no template selected shows an info message; verify template with no node sets shows an info message; verify size constraints serialization
 
 **Component-level tests (required):**

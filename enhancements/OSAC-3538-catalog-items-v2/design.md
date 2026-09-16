@@ -260,7 +260,7 @@ flowchart TD
 
 A **Template** defines how a resource is provisioned. It may supply defaults for first-class resource fields and defines its own Template parameters.
 
-A **resource field** is a field in the resource API whose type and valid domain are owned by OSAC, for example `ComputeInstance.spec.instance_type`, `boot_disk.size_gib`, or `network_attachments`. A **governable resource field** is one of the supported resource fields a Catalog Item may govern.
+A **resource field** is a field in the resource API whose type and valid domain are owned by OSAC, for example `ComputeInstance.spec.instance_type`, `boot_disk.size_gib`, or `network_attachments`. A **governable resource field** is one of the supported resource fields a Catalog Item may govern. For current VMaaS and BMaaS resources, `network_attachments` remains plural for API compatibility but the service contract permits at most one entry; catalog policies cannot expand that cardinality.
 
 A **Template parameter** is an input defined by the selected Template, not by the resource API. Its name, type, requiredness, and default come from that Template.
 
@@ -581,7 +581,7 @@ Governable lists keep their ordinary `repeated` shape. A `repeated` field has no
 | `boot_disk.size_gib` | Int32 | Value only |
 | `run_strategy` | Enum | Value only |
 | `user_data` | String | Value only |
-| `network_attachments` | Whole list | Subnet, SecurityGroup |
+| `network_attachments` | Whole list (max one entry) | Subnet, SecurityGroup |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The governable Compute fields collect into one `Fields` message, one policy per field:
@@ -747,7 +747,7 @@ Notes on the fields above:
 | `user_data` | String | Value only |
 | `run_strategy` | Enum | Value only |
 | `image` | Whole structured value | Value only |
-| `network_attachments` | Whole list | Subnet, SecurityGroup |
+| `network_attachments` | Whole list (max one entry) | Subnet, SecurityGroup |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The Bare Metal `Fields` message covers the OS image, run strategy, credentials, network attachments, and automatic ExternalIP attachment:

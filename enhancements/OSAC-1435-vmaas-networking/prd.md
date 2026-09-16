@@ -1,4 +1,4 @@
-# VMaaS Networking — Multi-Interface VMs and Auto External Access
+# VMaaS Networking — Single Attachment VMs and Auto External Access
 
 | Field       | Value   |
 |-------------|---------|
@@ -22,13 +22,13 @@ explicitly specifies them.
 
 ## 1. Problem Statement
 
-Tenants cannot create VMs with multiple network interfaces or designate which interface provides the default gateway. Creating a VM with external access requires manual IP allocation and NAT configuration, forcing tenants to understand inbound and outbound routing before provisioning their first reachable VM. The default networking experience varies across resource types — some resources have simplified creation flows while VMs require explicit networking details on every create.
+Creating a VM with external access requires manual IP allocation and NAT configuration, forcing tenants to understand inbound and outbound routing before provisioning their first reachable VM. The default networking experience varies across resource types — some resources have simplified creation flows while VMs require explicit networking details on every create. VMaaS currently supports at most one network attachment per VM; the plural API field is retained for compatibility.
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
 
-- A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary
+- A tenant can create a VM with zero or one network attachment; the sole attachment is the primary/default route
 - A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically for inbound access
 - A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and security group
 - The platform prevents VM creation in deployments that do not support virtualization
@@ -36,14 +36,14 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 ### 2.2 Non-Goals
 
 - Cluster or bare-metal server networking (this PRD covers VMs only; clusters and bare-metal servers are addressed in separate enhancements)
-- Multiple network interfaces for bare-metal servers (bare-metal multi-interface support is out of scope)
+- Multi-NIC VM networking (future scope; the repeated field does not enable it)
 
 ## 3. User Stories
 
 ### Tenant User Stories
 
-- As a Tenant User, I want to create a VM with multiple network interfaces, so that the VM can communicate on multiple subnets
-- As a Tenant User, I want to designate one network interface as primary, so that it provides the VM's default gateway and DNS configuration
+- As a Tenant User, I want to create a VM with one network attachment, so that it receives connectivity on the selected subnet
+- As a Tenant User, I want the sole network attachment to provide the VM's default gateway and DNS configuration without requiring a second API field
 - As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
 - As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a deployment that only supports bare-metal servers, so that I understand the limitation and can choose a different deployment
@@ -65,10 +65,10 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 ### 4.1 Functional Requirements
 
-#### Multi-Interface VMs
+#### Network Attachment Constraint
 
-- **FR-1:** A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary. The primary interface provides the default gateway, DNS, and is the target for inbound external access and outbound NAT. Non-primary interfaces receive IP addresses but do not provide a default gateway. [User]
-- **FR-2:** When a VM has multiple network interfaces, exactly one must be designated as primary. When a VM has only one network interface, it is implicitly primary. [User]
+- **FR-1:** A tenant can create a VM with zero or one network attachment. The sole attachment provides the default gateway, DNS, inbound external access target, and outbound NAT source. The repeated `network_attachments` field is retained for API compatibility, but a request with more than one entry is rejected. [User]
+- **FR-2:** When one network attachment is present, it is implicitly primary and provides the default route. VMaaS does not expose a `primary` field. [User]
 
 #### Optional Network Configuration with Defaults
 
@@ -80,7 +80,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 #### IP Address Discovery
 
-- **FR-5:** The allocated IP address for each network attachment is visible in the VM status after provisioning completes. When an external IP is attached to a VM, inbound traffic to the external IP is routed to the VM's primary attachment IP. [User]
+- **FR-5:** The allocated IP address for the network attachment is visible in the VM status after provisioning completes. When an external IP is attached to a VM, inbound traffic to the external IP is routed to the VM's sole/primary attachment IP. [User]
 
 #### Deployment Validation
 
@@ -96,11 +96,11 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 ## 5. Acceptance Criteria
 
-- [ ] A Tenant User can create a VM with multiple `--network-attachment` flags and designate one as `--primary`
+- [ ] A Tenant User can create a VM with zero or one `--network-attachment` flag; a second flag is rejected with a clear maximum-one error
 - [ ] A Tenant User can create a VM with `--external-ip-attachment` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
 - [ ] Creating a VM in a bare-metal-only deployment returns an error with a clear message
-- [ ] A multi-interface VM is provisioned with all interfaces operational, with the primary interface providing the default gateway
-- [ ] VM status shows the allocated IP address for each network attachment after provisioning completes
+- [ ] A VM with one attachment is provisioned with that attachment providing the default gateway
+- [ ] VM status shows the allocated IP address for the sole network attachment after provisioning completes
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's primary attachment IP
 - [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically

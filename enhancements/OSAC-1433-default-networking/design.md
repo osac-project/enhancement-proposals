@@ -22,6 +22,14 @@ superseded-by:
 
 Default networking provides automatic IPv4 resource provisioning at tenant onboarding (including an IPv4 subnet and NATGateway), optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion. IPv6 and dual-stack networking are not supported. The provisioned networking resources and the workload network attachment fields follow the unified create/read/delete contract; read means List/Get, and changes require delete and recreate.
 
+The current workload contract is at most one tenant network attachment for
+VMaaS, BMaaS, and CaaS. VMaaS and BMaaS keep their plural
+`network_attachments` fields for API compatibility and reject more than one
+entry; CaaS keeps its singular `network_attachment` field. When one
+attachment is present it is implicitly the primary/default route. The BMaaS
+attachment's existing optional `primary` field may be omitted or set to true;
+VMaaS has no primary field and CaaS has no primary concept.
+
 ## Summary
 
 This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. It inherits the [Unified Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary): default networking supports connected deployments only and does not support air-gapped or disconnected networking. When a tenant is created, the system provisions a default VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration. Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
@@ -43,7 +51,7 @@ A reachable resource in OSAC requires networking resources: VirtualNetwork, Subn
 
 - Single-call resource creation with sensible networking defaults
 - Default networking resources (VN, IPv4 Subnet, SG, NATGateway) provisioned at tenant onboarding
-- Optional network_attachments field on all resource types
+- Optional resource-specific network attachment field on all resource types, with at most one tenant attachment per workload
 - Auto ExternalIP mode for inbound connectivity
 - Auto-cleanup of auto-created resources on deletion
 - Tenant-scoped default resources (visible and managed through the unified
@@ -113,9 +121,9 @@ The design covers three capabilities: default networking (including NATGateway) 
    osac create computeinstance --template ocp_virt_vm --name my-vm
    ```
    - fulfillment-service:
-     - Detects `compute_network_attachments` field is omitted
+     - Detects `network_attachments` field is omitted
      - Queries tenant's default Subnet and default SecurityGroup (labeled `osac.openshift.io/default: "true"`)
-     - Populates `compute_network_attachments` with default Subnet + default SecurityGroup
+     - Populates `network_attachments` with default Subnet + default SecurityGroup
      - Stores resolved attachments in spec
    - Creates ComputeInstance CR with resolved network_attachments
    - osac-operator reconciles normally (VM provisioned on default subnet)
@@ -127,10 +135,9 @@ The design covers three capabilities: default networking (including NATGateway) 
    Output shows:
    ```yaml
    spec:
-     compute_network_attachments:
+     network_attachments:
        - subnet: "default-subnet-id"
          security_groups: ["default-sg-id"]
-         primary: true
    ```
 
 #### Auto ExternalIP for Single-Call Inbound Connectivity

@@ -26,6 +26,12 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 ## 2. Goals and Non-Goals
 
+### 2.0 Current network attachment constraint
+
+CaaS supports one `network_attachment` per Cluster. That attachment supplies
+the subnet for the entire cluster; node sets do not receive separate tenant
+attachments. Multi-NIC cluster-node networking is future scope.
+
 ### 2.1 Goals
 
 - A tenant can create a cluster with explicit network configuration, specifying which subnet and security groups to use for cluster nodes
@@ -42,7 +48,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 - VM-based cluster node sets (deferred — bare-metal only for initial release)
 - DNS API for cluster endpoints (DNS record creation remains template-based until DNS API is implemented)
 - Per-node-set subnet placement (all node sets share the cluster's single network attachment)
-- Multi-NIC cluster nodes (one attachment per cluster; the system automatically determines which physical interface to use for each node set based on its host type)
+- Multi-NIC cluster nodes (the current contract has one attachment per cluster; the system automatically determines which physical interface to use for each node set based on its host type)
 
 ## 3. User Stories
 
