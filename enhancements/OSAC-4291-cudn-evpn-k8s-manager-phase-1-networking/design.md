@@ -9,14 +9,14 @@ tracking-link:
 prd:
   - prd.md
 see-also:
-  - "/enhancements/OSAC-1433-unified-networking-architecture"
+  - "/enhancements/OSAC-1433-unified-networking"
   - "/enhancements/OSAC-1717-ovn-kubernetes-evpn-spike"
   - "/enhancements/OSAC-1435-vmaas-networking"
   - "/enhancements/OSAC-1436-caas-networking"
   - "/enhancements/OSAC-1437-bmaas-networking"
   - "/enhancements/OSAC-1433-default-networking"
-  - "/enhancements/OSAC-2135-caas-bm-worker-provisioning"
-  - "/enhancements/OSAC-1382-multi-fabric-east-west"
+  - "/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning"
+  - "/enhancements/OSAC-1382-multi-fabric-east-west-networking"
 replaces:
   - "N/A"
 superseded-by:

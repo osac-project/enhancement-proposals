@@ -8,7 +8,6 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
 see-also:
-  - Networking API: /enhancements/OSAC-356-networking
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
   - VMaaS Networking: /enhancements/OSAC-1435-vmaas-networking
@@ -16,7 +15,7 @@ see-also:
   - BMaaS Networking: /enhancements/OSAC-1437-bmaas-networking
   - Default Networking: /enhancements/OSAC-1433-default-networking
 replaces:
-  - /enhancements/OSAC-356-networking
+  - OSAC-356 Networking API (legacy)
 superseded-by:
   - N/A
 ---
