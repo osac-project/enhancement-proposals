@@ -128,9 +128,10 @@ metadata:
 spec:
   fabricManager: netris
   k8sManager: cudn_localnet
-status:
-  capabilities:
-    addressFamily: ipv4
+capabilities:
+  supportsIpv4: true
+  supportsIpv6: false
+  supportsDualStack: false
 ```
 
 **Neutron + CUDN (VMs and BM):**
@@ -143,9 +144,10 @@ metadata:
 spec:
   fabricManager: neutron
   k8sManager: cudn_localnet
-status:
-  capabilities:
-    addressFamily: ipv4
+capabilities:
+  supportsIpv4: true
+  supportsIpv6: false
+  supportsDualStack: false
 ```
 
 **BM-only deployment (no VMs):**
@@ -157,26 +159,30 @@ metadata:
   name: gpu-region-1
 spec:
   fabricManager: netris
-status:
-  capabilities:
-    addressFamily: ipv4
+capabilities:
+  supportsIpv4: true
+  supportsIpv6: false
+  supportsDualStack: false
 ```
 
 #### Capabilities
 
 Capabilities are **inferred from the assigned managers** and published in
-the NetworkClass status — the provider does not set them manually. The
-operator computes the intersection of capabilities declared by the fabric
-manager and k8sManager ConfigMaps and populates `status.capabilities`
+the NetworkClass `capabilities` field — the provider does not set them
+manually. The operator computes the intersection of capabilities declared by
+the fabric manager and k8sManager ConfigMaps and populates `capabilities`
 automatically.
 
 The supported deployment boundary is IPv4-only. Managers must advertise the
-same address family, and the operator rejects IPv6 and dual-stack manager
-registrations or NetworkClass status.
+`ipv4` capability. IPv6 and dual-stack manager registrations are rejected,
+and NetworkClass capability output must be `supportsIpv4: true` with
+`supportsIpv6: false` and `supportsDualStack: false`.
 
 | Capability | Type | Meaning |
 |-----------|------|---------|
-| `addressFamily` | enum | `ipv4` only |
+| `supportsIpv4` | bool | IPv4 addressing is available; `true` for OSAC networking |
+| `supportsIpv6` | bool | IPv6 addressing; always `false` |
+| `supportsDualStack` | bool | IPv4 + IPv6 addressing; always `false` |
 | `dpuSupport` | bool | DPU-accelerated networking available |
 
 The set of capabilities is defined by the operator and is fixed — adding a
@@ -202,7 +208,7 @@ metadata:
 data:
   name: netris
   description: "Netris SDN — tenant isolation, ACL, IPAM, DNAT, SNAT"
-  capabilities: "addressFamily:ipv4"
+  capabilities: "ipv4"
 ```
 
 ```yaml
@@ -216,7 +222,7 @@ metadata:
 data:
   name: neutron
   description: "OpenStack Neutron — tenant isolation, IPAM, floating IPs"
-  capabilities: "addressFamily:ipv4"
+  capabilities: "ipv4"
 ```
 
 **K8s managers:**
@@ -232,7 +238,7 @@ metadata:
 data:
   name: cudn_localnet
   description: "CUDN with LocalNet — bridges OVN overlay to physical fabric"
-  capabilities: "addressFamily:ipv4"
+  capabilities: "ipv4"
 ```
 
 The operator discovers managers by listing ConfigMaps with the appropriate

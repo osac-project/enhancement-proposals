@@ -196,7 +196,7 @@ dual-stack networking are not supported.
   [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
 - **OSAC-1712 (automatic pool selection)** — the auto ExternalIP pool
   selection reuses the identical algorithm: pick the READY pool with the
-  most available capacity matching the IP family
+  most available capacity from the IPv4 pool
 - **Tenant onboarding flow** — default resource creation hooks into the
   existing Tenant controller lifecycle
 - **osac-installer** — NetworkClass default configuration must be included

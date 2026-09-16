@@ -20,8 +20,10 @@ BMaaS consumers; service-specific behavior remains in their respective plans.
 
 ### Provider and manager boundaries
 
-- Accept only `addressFamily: ipv4` in manager capabilities and NetworkClass
-  status; reject IPv6, dual-stack, or mismatched manager registrations.
+- Accept only the `ipv4` manager capability and a NetworkClass capability set
+  with `supportsIpv4: true`, `supportsIpv6: false`, and
+  `supportsDualStack: false`; reject IPv6, dual-stack, or mismatched manager
+  registrations.
 - Accept only `IPV4` ExternalIPPools with canonical IPv4 CIDRs; reject
   unspecified families and IPv6/dual-stack pools.
 - Treat invalid manager-reported addresses or status feedback as provisioning
