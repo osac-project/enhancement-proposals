@@ -7,7 +7,7 @@ last-updated: 2026-03-26
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1050
 see-also:
-  - "/enhancements/OSAC-356-networking"
+  - "/enhancements/OSAC-1433-unified-networking"
 replaces:
   - N/A
 superseded-by:

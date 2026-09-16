@@ -56,9 +56,11 @@ This section defines key terms used throughout this document.
   traffic for resources. Rules specify allowed protocols, ports, and
   source/destination addresses.
 
-- **ExternalIPPool**: A provider-defined pool of IP addresses that are
-  routable outside the VirtualNetwork. "External" means external to the VN —
-  not necessarily internet-routable (see gap #8).
+- **ExternalIPPool**: A provider-defined pool containing exactly one canonical
+  IPv4 CIDR for addresses routable outside the VirtualNetwork. "External"
+  means external to the VN — not necessarily internet-routable (see gap #8).
+  The API's repeated `cidrs` field is retained for compatibility, but
+  validation rejects zero or multiple entries.
 
 - **ExternalIP**: An IP address allocated from an ExternalIPPool. Persists
   independently of the resources it's attached to.
@@ -388,6 +390,8 @@ _No non-functional requirements were specified in the original document._
 
 - [ ] ExternalIP semantics do not depend on internet reachability
 - [ ] The supported deployment topology is connected only; air-gapped and disconnected networking deployments are rejected before provisioning
+- [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the
+  repeated `cidrs` field and rejects empty or multiple entries
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
 - [ ] ExternalIPAttachment handles inbound traffic only
 - [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity

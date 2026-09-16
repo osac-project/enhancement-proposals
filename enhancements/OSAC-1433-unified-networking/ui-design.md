@@ -41,18 +41,19 @@ Pure consumer of the existing private `ExternalIPPools` service
 
 - **List page** (`ExternalIpPoolsListPage`, `pages/admin/`) at
   `/admin/infrastructure/external-ip-pools` — alongside Storage and Instance types in the
-  admin "Infrastructure" nav. Columns: **Name**, **IPv4 CIDRs**,
+  admin "Infrastructure" nav. Columns: **Name**, **IPv4 CIDR**,
   **Available / Total** (`status.available`/`status.total`), **State**
   (`ExternalIpPoolStatusLabel`). Row actions: **Edit**, **Delete**. A "Create pool" button
   routes to the create form.
 - **Create/update form** (`ExternalIpPoolFormPage`, one shared component for both
   `/admin/infrastructure/external-ip-pools/create` and
   `/admin/infrastructure/external-ip-pools/:id/edit`, Formik+Yup): **Name** (DNS label),
-  **IPv4 CIDRs** (repeatable, ≥1, `FieldArray`). IPv6 and dual-stack values are
-  rejected by client and server validation. In edit mode, the address family and
-  CIDRs are immutable server-side and render disabled for reference — only
+  **IPv4 CIDR** (exactly one; the form maps it to the API's repeated `cidrs`
+  field). IPv6 and dual-stack values are rejected by client and server
+  validation. In edit mode, the address family and CIDR are immutable
+  server-side and render disabled for reference — only
   **Name** is editable. Create submits
-  `{ metadata: { name }, spec: { ipFamily: "IP_FAMILY_IPV4", cidrs } }` via
+  `{ metadata: { name }, spec: { ipFamily: "IP_FAMILY_IPV4", cidrs: [cidr] } }` via
   `useCreateExternalIPPool()`;
   update submits via `useUpdateExternalIPPool()` with `lock=true`.
 - **Delete:** row action with confirmation, `useDeleteExternalIPPool()`.
@@ -117,7 +118,7 @@ in-place edit.
 | NAT Gateway detach fails | Server error shown in the confirmation modal; row's Detach stays available for retry. |
 | External IP create: pool exhausted | Server's `RESOURCE_EXHAUSTED`/`FAILED_PRECONDITION` shown as a form-level error. |
 | External IP delete fails | Server error shown inline; row's Delete stays available for retry. |
-| Pool create: invalid/overlapping/non-IPv4 CIDR | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
+| Pool create: missing/invalid/overlapping/non-IPv4 or multiple CIDRs | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
 | Pool update: concurrent write | Server's `FAILED_PRECONDITION`/`ABORTED` shown; admin re-fetches and retries. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |

@@ -370,8 +370,9 @@ disconnected networking deployments are not supported.
 
 ExternalIPPools are provider-managed and deployment-scoped. The fabric
 manager handles ExternalIP allocation — one pool serves all resource types.
-Each pool uses canonical IPv4 CIDRs; IPv6 and dual-stack pools are not
-supported.
+Each pool uses exactly one canonical IPv4 CIDR. The API's repeated `cidrs`
+field is retained for compatibility, but validation rejects an empty list or
+more than one entry; IPv6 and dual-stack pools are not supported.
 
 #### Address-Family and CIDR Contract
 
