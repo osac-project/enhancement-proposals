@@ -171,9 +171,11 @@ managed-switch infrastructure, limiting where the platform can run.
   by attaching an ExternalIP; inbound traffic addressed to the external IP reaches
   the machine through the external access path. The provider is responsible for
   default-deny perimeter authorization; tenant ingress policy is deferred. The
-  deployment must advertise and verify a default-deny perimeter capability
-  before an attachment can become Ready; this capability is deployment-scoped,
-  not a per-attachment policy resource.
+  deployment must advertise and verify a default-deny ingress capability covering
+  the external paths used by its ExternalIPAttachments. If that capability is
+  missing or cannot be verified, the ExternalIPAttachment remains non-Ready and
+  reports a diagnostic identifying unsupported ingress authorization. This
+  capability is deployment-scoped, not a per-attachment policy resource.
   [Jira: OSAC-3664; User direction]
 
 #### Outbound External Connectivity
@@ -182,9 +184,12 @@ managed-switch infrastructure, limiting where the platform can run.
   machines through a NATGateway. Outbound traffic is source-address translated
   so it egresses with the NATGateway's external IP as its source address; many
   machines share that one external IP for egress. Provider-managed perimeter
-  controls with default-deny egress authorization are required before the
-  NATGateway is Ready; this capability is deployment-scoped and tenant egress
-  policy is deferred. [Jira: OSAC-3664; Clarify: D14; User direction]
+  controls with default-deny egress authorization covering outbound traffic from
+  subnets using the NATGateway are required before it is Ready. If that capability
+  is missing or cannot be verified, the NATGateway remains non-Ready and reports
+  a diagnostic identifying unsupported egress authorization. This capability is
+  deployment-scoped and tenant egress policy is deferred.
+  [Jira: OSAC-3664; Clarify: D14; User direction]
 
 #### External IP Pools
 
@@ -210,7 +215,10 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - **FR-10:** When a backend networking operation fails (for example, a machine's
   port cannot be placed on the requested subnet's VLAN), the failure is reflected
-  on the affected networking resource's status with a diagnostic message.
+  on the affected networking resource's status with a diagnostic message. If a
+  required provider-managed perimeter capability is missing or cannot be verified,
+  the affected ExternalIPAttachment or NATGateway remains non-Ready and its status
+  identifies the unsupported ingress or egress authorization.
   [Clarify: D9]
 
 #### Lifecycle Cleanup
@@ -248,10 +256,15 @@ managed-switch infrastructure, limiting where the platform can run.
 - [ ] A tenant creates a NATGateway; a subnet machine's permitted outbound traffic
   reaches an external endpoint, which observes the NATGateway's external IP as the
   source address.
-- [ ] A deployment offering external access has its provider-managed perimeter
-  authorization configured; requests that depend on deferred SecurityGroup/ACL
-  policy fail clearly as unsupported before any dataplane state is programmed
-  and do not become Ready.
+- [ ] If provider-managed default-deny ingress authorization is missing or cannot
+  be verified, an ExternalIPAttachment remains non-Ready and its status reports
+  unsupported ingress authorization; after verification succeeds, it can become
+  Ready.
+- [ ] If provider-managed default-deny egress authorization is missing or cannot
+  be verified, a NATGateway remains non-Ready and its status reports unsupported
+  egress authorization; after verification succeeds, it can become Ready.
+- [ ] Requests that depend on deferred SecurityGroup/ACL policy fail clearly as
+  unsupported before any fabric configuration is applied and do not become Ready.
 - [ ] A tenant creates a VirtualNetwork with two subnets: machines in the same
   subnet share a broadcast domain, machines in different subnets of that network
   can reach each other by default through the VirtualNetwork routing path, and machines in a
