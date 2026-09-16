@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-4884 - Volume API Storage Attach and Detach
-- **Total test cases:** 31
+- **Total test cases:** 32
 - **Requirements covered:** 12 of 12
 - **Interface changes covered:** 7 of 7
 
@@ -140,6 +140,31 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 - AAP creates PVCs with `osac.volume.id=vol-123` and `osac.volume.id=vol-456`, and references both PVCs from the KubeVirt VM.
 - CSI creates/binds PVs for the existing OSAC Volumes without calling fulfillment `CreateVolume`.
 - Each relationship reaches `READY` only after PVC/PV binding, VM disk wiring, and CSI publish complete, or exposes a concrete terminal error.
+
+#### TC-FR2-03 [AC-FR2-03] [Story: Cloud Infrastructure Admin]: BMaaS host identity and semi-automatic connection flow
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1, IC-2, IC-7 | critical | automated |
+
+##### Preconditions
+
+- `bmi-123` is an existing BareMetalInstance with no explicit storage initiator.
+- `vol-789` is an available Volume with iSCSI backend metadata and a fake vendor adapter that records host and attach calls.
+
+##### Steps
+
+1. Create a VolumeAttachment from `vol-789` to `bmi-123`.
+2. Reconcile the operator attachment intent.
+3. Inspect the generated host identity, vendor calls, status connection data, and CLI/UI output.
+
+##### Expected Results
+
+- The operator derives a stable IQN from the sanitized BareMetalInstance name and immutable ID and marks the source `Derived`.
+- The vendor adapter creates or reuses a host object for that IQN before attaching `vol-789`.
+- The attachment status includes protocol, initiator, target portal/IQN, and redacted `iscsiadm` commands.
+- Reconciliation reaches `READY` after host creation and attach; repeated reconciliation produces no duplicate effective attach.
+- No command containing credentials is emitted.
 
 ### FR-3: CaaS uses PVC/CSI and the Volume API adapter
 
@@ -748,7 +773,7 @@ The per-test `Story` and `AC` fields are keyed by test-case ID in the `Per-test 
 | Requirement | PRD user story | Acceptance behavior | Test cases |
 |---|---|---|---|
 | FR-1 | Cloud Provider Admin; Tenant Admin/User | gRPC, REST, CLI, and UI expose equivalent lifecycle behavior | TC-FR1-01, TC-FR1-02, TC-FR1-03 |
-| FR-2 | Cloud Infrastructure Admin; Tenant Admin/User | BMaaS and VMaaS targets, including boot/additional disks | TC-FR2-01, TC-FR2-02 |
+| FR-2 | Cloud Infrastructure Admin; Tenant Admin/User | BMaaS and VMaaS targets, including boot/additional disks | TC-FR2-01, TC-FR2-02, TC-FR2-03 |
 | FR-3 | Cloud Infrastructure Admin; Tenant Admin/User | CaaS remains PVC/CSI and uses the Volume API adapter | TC-FR3-01 |
 | FR-4 | Cloud Provider Admin | Pending, retry, deadline, terminal failure, and final outcomes are observable | TC-FR4-01, TC-FR4-02, TC-FR4-03, TC-FR4-04 |
 | FR-5 | Tenant Admin/User | Repeated desired-state requests converge without duplicate effects | TC-FR5-01, TC-FR5-02, TC-FR5-03 |
@@ -769,6 +794,7 @@ The per-test `Story` and `AC` fields are keyed by test-case ID in the `Per-test 
 | TC-FR1-03 | Cloud Infrastructure Admin | AC-FR1-03: Canonical routes, snake_case fields, immutable spec |
 | TC-FR2-01 | Cloud Infrastructure Admin | AC-FR2-01: BMaaS and VMaaS typed targets are accepted; CaaS direct target rejected |
 | TC-FR2-02 | Tenant Admin/User | AC-FR2-02: VM boot and additional disks use attachment lifecycle |
+| TC-FR2-03 | Cloud Infrastructure Admin | AC-FR2-03: BMaaS host identity and semi-automatic connection flow |
 | TC-FR3-01 | Cloud Infrastructure Admin; Tenant Admin/User | AC-FR3-01: CaaS PVC/CSI publish/unpublish uses the private relationship |
 | TC-FR4-01 | Cloud Provider Admin | AC-FR4-01: Deadline leaves observable pending state |
 | TC-FR4-02 | Cloud Provider Admin | AC-FR4-02: Transient backend failure is retried with progress |
@@ -810,12 +836,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 31 |
-| Critical | 14 |
+| Total test cases | 32 |
+| Critical | 15 |
 | High | 16 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 29 |
+| Automated | 30 |
 | Manual | 2 |
 | Requirements with test cases | 12 / 12 |
 | Interface changes with test cases | 7 / 7 |

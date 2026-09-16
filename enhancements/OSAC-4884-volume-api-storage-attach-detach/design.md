@@ -127,12 +127,12 @@ sequenceDiagram
 
 The diagram shows that the API request does not directly attach a vendor volume to a VM. It changes the declarative VM provisioning input; AAP and KubeVirt create the PVC/VM relationship, and the existing CSI data path performs the actual storage binding and publish operation.
 
-The operator boundary is an internal attachment-intent reconciler, not a vendor execution RPC. It receives the VolumeAttachment relationship, validates that the target is an existing VMaaS ComputeInstance, and updates the ComputeInstance provisioning input consumed by the existing AAP workflow. It tracks the requested attachment ID and desired PVC/VM disk state in the operator-side intent status, retries AAP reconciliation through the existing provisioning lifecycle, and reports PVC/VM readiness through feedback. Vendor publish/unpublish remains in the existing CSI driver path; no provider Service, mTLS callback, or fulfillment-to-provider network hop is introduced.
+The operator boundary is an internal attachment-intent reconciler, not a fulfillment provider RPC. For VMaaS it validates an existing ComputeInstance and updates the ComputeInstance provisioning input consumed by AAP. For BMaaS it validates an existing BareMetalInstance, resolves the host initiator, ensures the storage-system host object, and performs the vendor attach operation through a backend adapter. It tracks the requested attachment ID and desired target state in operator status, retries through the existing reconciliation lifecycle, and reports status through feedback. VMaaS vendor publish/unpublish remains in the existing CSI driver path; BMaaS uses the operator's vendor storage adapter because there is no PVC/KubeVirt layer for a bare-metal host.
 
 Responsibilities:
 
 - **Fulfillment-service:** public API, validation, tenant authorization, persistence, deletion guards, and feedback/status synchronization.
-- **OSAC operator:** owns attachment intent, ComputeInstance/AAP input, target cleanup, and feedback status; it does not execute vendor CSI publish calls directly.
+- **OSAC operator:** owns attachment intent, ComputeInstance/AAP input, BareMetalInstance host identity and host-object/attach operations, target cleanup, and feedback status.
 - **OSAC CSI driver:** handles the normal PVC/PV/CSI path. It recognizes `osac.volume.id`, binds an existing OSAC Volume without CreateVolume, and preserves vendor routing for publish/unpublish.
 - **CLI/UI:** create/delete or attach/detach through the public resource API, display status conditions, and do not expose vendor details.
 
@@ -153,6 +153,26 @@ For an existing VMaaS `ComputeInstance`, the user attaches an already-created OS
 The reverse path removes the PVC reference from the VM provisioning input, lets AAP remove the PVC/VM disk relationship, and waits for normal CSI unpublish before the operator reports detach complete. The OSAC Volume itself is not deleted by attachment removal. Boot-disk and additional-disk attachments use the same flow; the only difference is which VM disk list receives the PVC reference.
 
 The PVC annotation is the bridge between the declarative VMaaS workflow and the existing CSI driver. `osac.volume.id` is authoritative for this pre-existing-volume path; a PVC with that annotation must not invoke fulfillment `CreateVolume`. A missing or invalid annotation follows the existing dynamic-provisioning behavior only for ordinary CaaS PVCs, not for an OSAC attachment intent.
+
+### 4.1.2 BMaaS Semi-Automatic Attachment Flow
+
+BMaaS does not receive a PVC or KubeVirt disk. Its attachment request identifies a `BareMetalInstance` target and the operator prepares the storage-system host identity before attaching the existing OSAC Volume:
+
+1. The API request targets `spec.baremetal_instance` and may include an attachment protocol preference when the Volume backend supports both iSCSI and NVMe/TCP.
+2. `osac-operator` reads an explicit initiator from the BareMetalInstance's typed storage-initiator status/metadata when available. The preferred future field is `status.storage_initiators`, with protocol, initiator type, and identifier. A compatibility annotation may supply the same value while older BareMetalInstance versions are present.
+3. If no explicit initiator exists, the operator derives a stable identity from the BareMetalInstance name and immutable ID. The derived value is persisted in the Attachment status so it remains stable if the resource is renamed or its display metadata changes:
+   - iSCSI: `iqn.2026-01.io.osac:bm.<sanitized-name>-<short-id>`
+   - NVMe/TCP: `nqn.2014-08.org.nvmexpress:osac:bm:<sanitized-name>-<short-id>`
+
+   The operator validates IQN/NQN character and length rules, uses the immutable ID to prevent collisions, and records whether the identity was `Explicit` or `Derived`.
+4. The operator's backend adapter ensures the storage-system host object exists for the resolved IQN or NQN. Host creation is idempotent; an existing host with a conflicting initiator is a terminal failure. The adapter uses the concrete vendor storage/CSI-controller integration, not a public backend-specific API.
+5. After the host is ready, the adapter attaches the existing OSAC vendor volume to that host. It uses the Volume's resolved backend, vendor volume ID, protocol, and the requested read-only mode. Repeated attach treats vendor `AlreadyExists` as success.
+6. The operator reports `READY` only after host creation and volume attach succeed. Status includes the resolved protocol, initiator, host identity, target portals/endpoints, target IQN/NQN, LUN or namespace information when supplied by the backend, and a generated connection-command template.
+7. The user performs the final host-side discovery and connection. The UI and CLI expose the generated instructions, and the operator logs the same redacted instructions without credentials:
+   - iSCSI uses `iscsiadm` discovery/login with the target portal and IQN.
+   - NVMe/TCP uses `nvme discover` and `nvme connect` with the portal, port, and NQN.
+
+Detach reverses the flow: the operator unpublishes the volume from the host, retains the host object when other attachments use it, and removes the host object only when no attachment references it and the backend policy permits cleanup. The design does not claim that OSAC can execute `iscsiadm` or `nvme connect` inside the user's bare-metal operating system; those commands are deliberately user/operator actions.
 
 ### 4.2 Data Model / Schema Changes
 
@@ -186,6 +206,7 @@ message VolumeAttachmentStatus {
   string hub = 6 [(cleanapi.field).private = true, (google.api.field_behavior) = OUTPUT_ONLY];
   int32 attempt_count = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
   google.protobuf.Timestamp next_attempt_at = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
+  BareMetalConnection connection = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 ```
 
@@ -216,6 +237,16 @@ message VolumeAttachmentCondition {
   string reason = 3;
   string message = 4;
   google.protobuf.Timestamp last_transition_time = 5;
+}
+message BareMetalConnection {
+  string protocol = 1;
+  string initiator = 2;
+  string initiator_source = 3;
+  string host_name = 4;
+  repeated string portals = 5;
+  string target_name = 6;
+  optional int32 lun = 7;
+  string commands = 8;
 }
 
 message VolumeAttachmentsListRequest { optional int32 offset = 1; optional int32 limit = 2; optional string filter = 3; optional string order = 4; }
