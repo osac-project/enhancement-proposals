@@ -3,7 +3,7 @@ title: ssh-key-registry
 authors:
   - clobrano@redhat.com
 creation-date: 2026-09-08
-last-updated: 2026-09-15
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-51
   - https://redhat.atlassian.net/browse/OSAC-4510
@@ -21,11 +21,11 @@ superseded-by:
 
 ## Summary
 
-Introduce a new `SshKey` resource in the fulfillment-service that lets tenants register named SSH public keys and reference them when creating a ComputeInstance. The `ComputeInstanceSpec` gains an `SshKeyReference ssh_key` field (message with `id` + `name`). `SshKeyReference` is a tenant-scoped exception to the standard `Reference`/`LocalReference` convention (API.md §References) — the registered lookup function ignores the project parameter because SshKeys are tenant-wide. The `ReferenceValidator` gRPC interceptor validates user-provided references at API create time. A PostgreSQL `check_compute_instance_ssh_key_ref` trigger provides defense-in-depth validation with `FOR SHARE` locking. Catalog and template SSH key defaults are out of scope for this milestone. SSH key references are provided exclusively through the ComputeInstance create request. The ComputeInstance controller resolves the key at reconciliation time via `SshKeys.Get` using the canonical `id` and passes the raw public key material to the osac-operator CRD for cloud-init injection on first boot. See [PRD](prd.md) for detailed requirements.
+Introduce a new `SshKey` resource in the fulfillment-service that lets tenants register named SSH public keys and reference them when creating a ComputeInstance or BareMetalInstance. Both `ComputeInstanceSpec` and `BareMetalInstanceSpec` gain an `SshKeyReference ssh_key` field (message with `id` + `name`). `SshKeyReference` is a tenant-scoped exception to the standard `Reference`/`LocalReference` convention (API.md §References) — the registered lookup function ignores the project parameter because SshKeys are tenant-wide. The `ReferenceValidator` gRPC interceptor validates user-provided references at API create time. PostgreSQL triggers (`check_compute_instance_ssh_key_ref` and `check_bare_metal_instance_ssh_key_ref`) provide defense-in-depth validation with `FOR SHARE` locking. Catalog and template SSH key defaults are out of scope for this milestone. SSH key references are provided exclusively through the ComputeInstance or BareMetalInstance create request. Both the ComputeInstance and BareMetalInstance controllers resolve the key at reconciliation time via `SshKeys.Get` using the canonical `id` — the ComputeInstance controller passes the raw public key material to the osac-operator CRD `spec.SSHKey` for cloud-init injection; the BareMetalInstance controller passes it via the `sshPublicKey` template parameter to the bare-metal-fulfillment-operator. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-Today, every ComputeInstance creation requires the user to paste the full SSH public key string into `spec.ssh_public_key`. There is no way to name, store, or reuse a key. This is error-prone (a single mistyped character silently derails VM access) and diverges from the register-once-reference-by-name model used by AWS EC2 key pairs, GCP, and GitHub.
+Today, every ComputeInstance and BareMetalInstance creation requires the user to paste the full SSH public key string into `spec.ssh_public_key`. There is no way to name, store, or reuse a key. This is error-prone (a single mistyped character silently derails VM or bare metal access) and diverges from the register-once-reference-by-name model used by AWS EC2 key pairs, GCP, and GitHub.
 
 The fulfillment-service already stores raw SSH public keys inline on ComputeInstance and BareMetalInstance specs, and already has a `validateOpenSSHPublicKey()` function that parses keys using `golang.org/x/crypto/ssh`. The existing Secret resource is not a fit because SSH public keys are not secret data, and storing them in Vault would add complexity without security benefit.
 
@@ -34,32 +34,34 @@ The fulfillment-service already stores raw SSH public keys inline on ComputeInst
 - Introduce `SshKey` as a first-class, service-agnostic resource following the standard OSAC object shape.
 - Reference SSH keys via a typed, tenant-scoped reference message with id-and-name lookup — a deliberate exception to the project-scoped reference convention because SSH keys are tenant-wide.
 - Enforce referential integrity through dual-layer validation: an API-level interceptor for immediate feedback at create time, and a database trigger for concurrency-safe defense-in-depth.
-- Resolve SSH key references at controller reconciliation time using the canonical ID populated at create time.
+- Resolve SSH key references at controller reconciliation time using the canonical ID populated at create time — for both ComputeInstance and BareMetalInstance.
 - Reuse existing platform patterns for key validation, server scaffolding, and reference resolution.
 - Support the feature via API, CLI, and UI.
-- Remove the legacy inline SSH public key field; SSH key provisioning is exclusively via registered references (pre-GA, no migration needed).
-- Populate the existing osac-operator CRD SSH key field from the resolved reference (no CRD schema change required).
+- Remove the legacy inline SSH public key field from both ComputeInstance and BareMetalInstance; SSH key provisioning is exclusively via registered references (pre-GA, no migration needed).
+- Populate the existing osac-operator CRD SSH key field from the resolved reference for ComputeInstance (no CRD schema change required). For BareMetalInstance, pass the resolved key via the `sshPublicKey` template parameter to the bare-metal-fulfillment-operator (no CRD schema change required).
 
 ### Non-Goals
 
-- Adding an `ssh_key` reference field to `BareMetalInstance` or `Cluster` in this milestone. The registry API is service-agnostic by design (D1), but only ComputeInstance integration is delivered.
+- Adding an `ssh_key` reference field to `Cluster` in this milestone. The registry API is service-agnostic by design (D1), but only ComputeInstance and BareMetalInstance integration is delivered.
 - A functional `Update` RPC for `SshKey`. The private proto defines `Update` and `Signal` as structural requirements of `GenericServer.Build()`, but the server returns `Unimplemented` for `Update`. Neither `Update` nor `Signal` is exposed in the public proto or as a public REST endpoint (D10). To change a key's name, the user deletes and re-registers.
 - Storing SSH public keys in Vault or the existing `Secret` resource. Public keys are not secret data.
 - Quota enforcement on the number of registered SSH keys per tenant (D7).
-- Catalog or template SSH key defaults. SSH keys are tenant/user access identities, not VM profile settings. SSH key references are provided exclusively through the ComputeInstance create request in this milestone.
+- Catalog or template SSH key defaults. SSH keys are tenant/user access identities, not VM profile settings. SSH key references are provided exclusively through the ComputeInstance or BareMetalInstance create request in this milestone.
 - Private key storage, multiple keys per VM, key rotation, or external secret manager integration (see PRD Out of Scope).
 
 ## Proposal
 
-Three components change:
+Four components change:
 
 1. **New `SshKey` resource** (fulfillment-service): A tenant-scoped resource with GenericServer integration. Public API exposes List, Get, Create, and Delete. Update and Signal are private-only (Update returns `Unimplemented`; Signal delegates to `generic.Signal`). Stores the SSH public key material in PostgreSQL. Validated with `ssh.ParseAuthorizedKey` on create. Names are unique per tenant (including during pending deletion, per the standard platform contract). Rejects non-empty `metadata.project` (SshKey is tenant-scoped, not project-scoped).
 
 2. **`ComputeInstance` field change** (fulfillment-service): A new `SshKeyReference ssh_key` field (field 21) on `ComputeInstanceSpec` references a registered key using a tenant-only typed reference (`id` + `name` message). The `ssh_key` reference is immutable after creation. The existing raw `ssh_public_key` field (field 7) is removed — `SshKeyReference` is the only way to provide an SSH key on a ComputeInstance. The `ReferenceValidator` gRPC interceptor validates user-provided references via the registered tenant-only `ReferenceLookupFunc` and auto-populates the `id` from `name` (or vice versa) at create time. The controller always resolves the SSH key reference at reconciliation time via `SshKeys.Get` using `spec.ssh_key.id`.
 
-3. **CLI extension** (fulfillment-service): A new `osac create sshkey` subcommand with `--name` and `--public-key`/`--public-key-file` flags. The existing `osac create computeinstance` command gains an `--ssh-key` flag. Generic `osac get`/`osac delete` commands auto-discover the new type via reflection.
+3. **`BareMetalInstance` field change** (fulfillment-service): A new `SshKeyReference ssh_key` field (field 14) on `BareMetalInstanceSpec` references a registered key using the same tenant-only typed reference. The `ssh_key` reference is immutable after creation. The existing raw `ssh_public_key` field (field 2) is removed — `SshKeyReference` is the only way to provide an SSH key on a BareMetalInstance. The same `ReferenceValidator` interceptor and lookup function validate the reference. The BareMetalInstance controller resolves the SSH key reference at reconciliation time via `SshKeys.Get` using `spec.ssh_key.id` and passes the resolved public key via the `sshPublicKey` template parameter (following the existing BareMetalInstance template-parameter pattern).
 
-The osac-operator receives the raw key in `spec.SSHKey` as before and needs no changes. The osac-ui changes are tracked as a separate deliverable in the same milestone.
+4. **CLI extension** (fulfillment-service): A new `osac create sshkey` subcommand with `--name` and `--public-key`/`--public-key-file` flags. The existing `osac create computeinstance` command gains an `--ssh-key` flag. The existing `osac create baremetalinstance` command gains an `--ssh-key` flag. Generic `osac get`/`osac delete` commands auto-discover the new type via reflection.
+
+The osac-operator receives the raw key in `spec.SSHKey` as before and needs no changes. The bare-metal-fulfillment-operator receives the raw key via the `sshPublicKey` template parameter as before and needs no changes. The osac-ui changes are tracked as a separate deliverable in the same milestone.
 
 ### Workflow Description
 
@@ -90,13 +92,25 @@ The osac-operator receives the raw key in `spec.SSHKey` as before and needs no c
 5. **ComputeInstance controller** resolves `spec.ssh_key` at reconciliation time: calls `SshKeys.Get` (private API) using `spec.ssh_key.id` (the canonical ID auto-populated by the interceptor at create time). Extracts `spec.public_key` and passes it to the osac-operator CRD as `spec.SSHKey`.
 6. **osac-operator** injects the key into the VM via KubeVirt/cloud-init on first boot.
 
+#### Creating a BareMetalInstance with a registered key
+
+**Actor**: Tenant Admin or Tenant User.
+**Starting state**: At least one SshKey is registered in the tenant.
+
+1. **Tenant User** calls `BareMetalInstances.Create` with `spec.ssh_key = {name: "my-laptop"}` (the registered key name). The user may provide `name`, `id`, or both.
+2. **`ReferenceValidator` interceptor** validates the `SshKeyReference` field via the same tenant-only `ReferenceLookupFunc` used for ComputeInstance, auto-populating the missing `id` or `name`. If the SSH key does not exist, the interceptor returns `InvalidArgument`.
+3. **Fulfillment-service** validates: if `ssh_key` is non-nil but both `id` and `name` are empty (i.e., the user sent `ssh_key: {}`), return `InvalidArgument: spec.ssh_key must include at least a name or id; empty SshKeyReference is not valid`.
+4. **Fulfillment-service** persists the BareMetalInstance. The database trigger `check_bare_metal_instance_ssh_key_ref` re-validates the SSH key reference at INSERT time with a `SELECT ... FOR SHARE` lock, preventing a concurrent deletion race (TOCTOU). If the key was deleted between the interceptor check and the INSERT, the trigger raises `Z0002`.
+5. **BareMetalInstance controller** resolves `spec.ssh_key` at reconciliation time: calls `SshKeys.Get` (private API) using `spec.ssh_key.id`. Extracts `spec.public_key` and passes it as the `sshPublicKey` template parameter to the bare-metal-fulfillment-operator CRD (following the existing BareMetalInstance template-parameter pattern in `mutateBMI`).
+6. **bare-metal-fulfillment-operator** injects the key into the bare metal host via the provisioning template at first boot.
+
 #### Deleting an SSH key
 
 **Actor**: Tenant Admin or Tenant User.
 
 1. **Tenant User** calls `SshKeys.Delete`.
-2. **Database trigger** (`check_ssh_key_not_in_use`) checks whether any active ComputeInstance references the key.
-3. If referenced: deletion is rejected with SQLSTATE `Z0003`, surfaced as `FailedPrecondition: cannot delete SshKey 'my-laptop': N ComputeInstance(s) still reference it`.
+2. **Database trigger** (`check_ssh_key_not_in_use`) checks whether any active ComputeInstance or BareMetalInstance references the key.
+3. If referenced: deletion is rejected with SQLSTATE `Z0003`, surfaced as `FailedPrecondition: cannot delete SshKey 'my-laptop': N instance(s) still reference it` (the message includes the combined count from both ComputeInstance and BareMetalInstance tables).
 4. If not referenced: the key is soft-deleted.
 
 ```mermaid
@@ -104,8 +118,10 @@ sequenceDiagram
     participant User
     participant API as Fulfillment API
     participant DB as PostgreSQL
-    participant Ctrl as CI Controller
+    participant CICtrl as CI Controller
+    participant BMICtrl as BMI Controller
     participant Op as osac-operator
+    participant BMOp as bare-metal-operator
 
     Note over User,API: Register SSH Key
     User->>API: SshKeys.Create(name="my-laptop", public_key="ssh-ed25519 ...")
@@ -124,16 +140,30 @@ sequenceDiagram
     API->>DB: INSERT compute_instances (ssh_key={id:"abc-123",name:"my-laptop"})
     Note over DB: Trigger: FOR SHARE lock on ssh_key, verify active
     DB-->>API: OK
-    Note over Ctrl: Controller reconciles
-    Ctrl->>API: SshKeys.Get(id="abc-123")
-    API-->>Ctrl: {spec.public_key: "ssh-ed25519 ..."}
-    Ctrl->>Op: CRD spec.SSHKey = "ssh-ed25519 ..."
+    Note over CICtrl: Controller reconciles
+    CICtrl->>API: SshKeys.Get(id="abc-123")
+    API-->>CICtrl: {spec.public_key: "ssh-ed25519 ..."}
+    CICtrl->>Op: CRD spec.SSHKey = "ssh-ed25519 ..."
     Op->>Op: cloud-init injection on first boot
+
+    Note over User,BMOp: Create BareMetalInstance with registered key
+    User->>API: BareMetalInstances.Create(ssh_key={name:"my-laptop"})
+    Note over API: ReferenceValidator intercepts (same lookup)
+    API->>DB: Lookup SshKey by name in tenant
+    DB-->>API: {id:"abc-123", name:"my-laptop"}
+    API->>DB: INSERT bare_metal_instances (ssh_key={id:"abc-123",name:"my-laptop"})
+    Note over DB: Trigger: FOR SHARE lock on ssh_key, verify active
+    DB-->>API: OK
+    Note over BMICtrl: Controller reconciles
+    BMICtrl->>API: SshKeys.Get(id="abc-123")
+    API-->>BMICtrl: {spec.public_key: "ssh-ed25519 ..."}
+    BMICtrl->>BMOp: template param sshPublicKey = "ssh-ed25519 ..."
+    BMOp->>BMOp: provisioning template injection on first boot
 
     Note over User,DB: Delete SSH Key (blocked)
     User->>API: SshKeys.Delete("my-laptop")
     API->>DB: UPDATE ssh_keys SET deletion_timestamp (trigger: check in-use)
-    DB-->>API: Z0003: 1 ComputeInstance(s) still reference it
+    DB-->>API: Z0003: 2 instance(s) still reference it
     API-->>User: FailedPrecondition
 ```
 
@@ -159,7 +189,11 @@ sequenceDiagram
 
 **Modified gRPC service**: `ComputeInstances` — the `Create` method gains SSH key guest OS and user data type validation. Reference validation is handled by the `ReferenceValidator` interceptor (not custom server logic). The `ssh_public_key` field is removed from the proto (field 7 reserved). No new RPC methods.
 
+**Modified gRPC service**: `BareMetalInstances` — the `Create` method gains SSH key empty-reference rejection. Reference validation is handled by the `ReferenceValidator` interceptor. The `ssh_public_key` field is removed from the proto (field 2 reserved). No new RPC methods.
+
 **Modified proto message**: `ComputeInstanceSpec` gains `SshKeyReference ssh_key = 21` in both public and private APIs. Field 20 is already allocated to `SecretLocalReference user_data_secret = 20`. The `user_data_secret` field provides the precedent for typed reference messages on `ComputeInstanceSpec`. Note: `SshKeyReference` deliberately does not use the `LocalReference` suffix — see the lookup registration section for why. Coordinate the exact field number at implementation time — use the next available number after the highest allocated field in `ComputeInstanceSpec`.
+
+**Modified proto message**: `BareMetalInstanceSpec` gains `SshKeyReference ssh_key = 14` in both public and private APIs. Field 13 is already allocated to `SecretLocalReference user_data_secret = 13`. The `user_data_secret` field provides the precedent for typed reference messages on `BareMetalInstanceSpec`. The same `SshKeyReference` message type is reused — no new reference message needed. Coordinate the exact field number at implementation time — use the next available number after the highest allocated field in `BareMetalInstanceSpec`.
 
 **Server registration**: The following files must be updated to register SshKey:
 
@@ -246,6 +280,27 @@ message ComputeInstanceSpec {
 }
 ```
 
+#### BareMetalInstance Field Addition
+
+```protobuf
+// In baremetal_instance_type.proto (private — source of truth)
+message BareMetalInstanceSpec {
+  // ... existing fields 1-13 ...
+
+  // Typed reference to a registered SSH key within the same tenant.
+  // Same SshKeyReference message and ReferenceValidator interceptor as
+  // ComputeInstance — the lookup function is tenant-only, ignoring project.
+  // Immutable after creation.
+  // The only way to provide an SSH key on a BareMetalInstance — the former
+  // raw ssh_public_key field (field 2) has been removed.
+  SshKeyReference ssh_key = 14 [(google.api.field_behavior) = IMMUTABLE];
+
+  // Field 2 (ssh_public_key) is removed. OSAC is pre-GA; no migration needed.
+  reserved 2;
+  reserved "ssh_public_key";
+}
+```
+
 #### Server Implementation
 
 **`PrivateSshKeysServer`**: Uses `GenericServer[*privatev1.SshKey]` for standard CRUD. Custom logic:
@@ -310,6 +365,26 @@ validator.Register(
 ```
 
 **Why `SshKeyReference` instead of `SshKeyLocalReference`**: The `reference_validator.go` `isLocalReference()` function checks whether a message type name ends with `LocalReference` and, if so, uses the caller's project for scoped lookup. Since `SshKey` is tenant-scoped (not project-scoped), using `SshKeyLocalReference` would trigger incorrect project-scoped behavior. By naming the message `SshKeyReference` (without the `Local` suffix), we avoid the `isLocalReference()` semantic and register a custom lookup function that ignores the project parameter entirely. No changes to `reference_validator.go` are required — the validator passes `callerTenant` and `callerProject` by default, and our lookup function simply doesn't use `project`.
+
+**`PrivateBareMetalInstancesServer.Create` update**: After existing SSH key and authentication validation, add:
+
+1. **Empty reference rejection**: If `ssh_key` is non-nil but both `id` and `name` are empty (i.e., the user sent `ssh_key: {}`), return `InvalidArgument: spec.ssh_key must include at least a name or id; empty SshKeyReference is not valid`. Same pattern as ComputeInstance.
+2. **Authentication method validation update**: The existing requirement `"at least one authentication method must be provided: spec.ssh_public_key, spec.user_data or spec.user_data_secret"` is updated to check `spec.ssh_key` (the new reference) instead of `spec.ssh_public_key` (the removed raw field). At least one of `spec.ssh_key`, `spec.user_data`, or `spec.user_data_secret` must be provided.
+
+Note: BareMetalInstance does not have the Windows guest OS or ignition user data type checks — all bare metal provisioning templates use the provisioning provider's injection mechanism (not cloud-init/ignition).
+
+**`PrivateBareMetalInstancesServer.validateImmutability` update**: Add immutability enforcement for `spec.ssh_key`:
+
+```go
+updatingSshKey := updateIncludesField(mask, "spec.ssh_key")
+// ...
+if updatingSshKey && !proto.Equal(existingSpec.GetSshKey(), newSpec.GetSshKey()) {
+    return grpcstatus.Errorf(grpccodes.InvalidArgument,
+        "cannot change spec.ssh_key: ssh_key is immutable after creation")
+}
+```
+
+This replaces the existing `spec.ssh_public_key` immutability check in the BareMetalInstance server.
 
 **`PrivateComputeInstancesServer.validateImmutability` update**: Add immutability enforcement for `spec.ssh_key`:
 
@@ -447,6 +522,29 @@ Tests must verify: (a) `SshKeyResolutionError` with `Permanent=false` is caught 
 
 This resolution pattern follows the same approach as `InstanceTypes.Get` for resolving cores/memory from `spec.instance_type` — direct ID-based lookup with the ID pre-populated at create time by the `ReferenceValidator` interceptor.
 
+**BareMetalInstance controller update**: The `mutateBMI` function in `baremetalinstance_reconciler_function.go` is extended to resolve the SSH key reference at reconciliation time. The existing code at line 722 (`if t.bareMetalInstance.GetSpec().HasSshPublicKey() { params["sshPublicKey"] = ... }`) is replaced with SSH key reference resolution:
+
+1. If `spec.ssh_key` is set and non-empty (the message is non-nil AND `id` is populated), call `SshKeys.Get` (private API) using `spec.ssh_key.id`. The `id` is always available because the `ReferenceValidator` interceptor auto-populated it at create time.
+2. On success, extract `spec.public_key` from the resolved SshKey and set `params["sshPublicKey"]` (the existing template parameter consumed by the bare-metal-fulfillment-operator's provisioning template).
+3. **gRPC error classification**: The same `SshKeyResolutionError` type and classification table used by the ComputeInstance controller applies to BareMetalInstance. The BareMetalInstance reconciler classifies gRPC errors from `SshKeys.Get` identically — permanent errors (`NotFound`, `InvalidArgument`) set the instance to `BARE_METAL_INSTANCE_STATE_FAILED` with a typed condition reason; transient errors are logged and retried on the next reconciliation event.
+
+The `FunctionBuilder` gains a `SetSshKeysClient` method to inject the `SshKeysClient` dependency (following the same pattern as `secretsClient` and `diskImagesClient` already present in the BareMetalInstance reconciler).
+
+```go
+// In mutateBMI, replacing the existing ssh_public_key handling:
+if t.bareMetalInstance.GetSpec().GetSshKey() != nil &&
+    t.bareMetalInstance.GetSpec().GetSshKey().GetId() != "" {
+    sshKeyResp, err := t.r.sshKeysClient.Get(ctx, privatev1.SshKeysGetRequest_builder{
+        Id: t.bareMetalInstance.GetSpec().GetSshKey().GetId(),
+    }.Build())
+    if err != nil {
+        // Classify and handle using SshKeyResolutionError (same as ComputeInstance)
+        return t.handleSshKeyResolutionError(err)
+    }
+    params["sshPublicKey"] = sshKeyResp.GetObject().GetSpec().GetPublicKey()
+}
+```
+
 #### Database Migration
 
 The `ssh_keys` table requires an explicit migration (GenericDAO does not auto-create tables). Migration `113_create_ssh_keys_tables.up.sql` (coordinate numbering at implementation time; current latest is 112):
@@ -530,24 +628,41 @@ create index compute_instances_by_ssh_key_id on compute_instances
   where deletion_timestamp = 'epoch'
     and data->'spec'->'ssh_key'->>'id' is not null;
 
--- Prevent deleting an SSH key while active ComputeInstances reference it.
--- Looks up by ID (the canonical identifier populated by the ReferenceValidator
--- interceptor), matching the Secret deletion protection pattern in migration 111.
+-- Index for SSH key reference lookups on bare_metal_instances (same pattern):
+create index bare_metal_instances_by_ssh_key_id on bare_metal_instances
+  ((data->'spec'->'ssh_key'->>'id'))
+  where deletion_timestamp = 'epoch'
+    and data->'spec'->'ssh_key'->>'id' is not null;
+
+-- Prevent deleting an SSH key while active ComputeInstances or BareMetalInstances
+-- reference it. Looks up by ID (the canonical identifier populated by the
+-- ReferenceValidator interceptor), matching the Secret deletion protection
+-- pattern in migration 111. Scans both instance tables and reports the combined
+-- count in the error message.
 create function check_ssh_key_not_in_use() returns trigger as $$
 declare
   ci_count bigint;
+  bmi_count bigint;
+  total_count bigint;
 begin
   select count(*) into ci_count
   from compute_instances
   where deletion_timestamp = 'epoch'
     and data->'spec'->'ssh_key'->>'id' = old.id;
 
-  if ci_count > 0 then
+  select count(*) into bmi_count
+  from bare_metal_instances
+  where deletion_timestamp = 'epoch'
+    and data->'spec'->'ssh_key'->>'id' = old.id;
+
+  total_count := ci_count + bmi_count;
+
+  if total_count > 0 then
     raise exception using
       errcode = 'Z0003',
       message = format(
-        'cannot delete SshKey ''%s'': %s ComputeInstance(s) still reference it',
-        old.name, ci_count
+        'cannot delete SshKey ''%s'': %s instance(s) still reference it (%s ComputeInstance(s), %s BareMetalInstance(s))',
+        old.name, total_count, ci_count, bmi_count
       );
   end if;
 
@@ -662,12 +777,94 @@ create trigger check_compute_instance_ssh_key_ref
   for each row
   when (new.deletion_timestamp = 'epoch')
   execute function check_compute_instance_ssh_key_ref();
+
+-- BareMetalInstance SSH key reference trigger — same pattern as
+-- check_compute_instance_ssh_key_ref above, applied to bare_metal_instances.
+-- Validates SSH key references on BareMetalInstance insert and update, taking
+-- a row lock that conflicts with a concurrent SshKey soft-delete.
+create function check_bare_metal_instance_ssh_key_ref() returns trigger as $$
+declare
+  ssh_key_id text;
+  ref_name text;
+  old_ssh_key_id text;
+  found_id text;
+  found_name text;
+begin
+  ssh_key_id := new.data->'spec'->'ssh_key'->>'id';
+  ref_name := new.data->'spec'->'ssh_key'->>'name';
+
+  if tg_op = 'UPDATE' and old.deletion_timestamp = 'epoch' then
+    old_ssh_key_id := old.data->'spec'->'ssh_key'->>'id';
+    if ssh_key_id is not distinct from old_ssh_key_id
+       and ref_name is not distinct from (old.data->'spec'->'ssh_key'->>'name') then
+      return new;
+    end if;
+  end if;
+
+  if coalesce(ssh_key_id, '') = '' and coalesce(ref_name, '') != '' then
+    raise exception using
+      errcode = 'Z0002',
+      message = format(
+        'Incomplete SshKey reference: name ''%s'' is set but id is missing; '
+        'the reference must be normalized to {id, name} before persistence',
+        ref_name
+      );
+  end if;
+
+  if coalesce(ref_name, '') = '' and coalesce(ssh_key_id, '') != '' then
+    raise exception using
+      errcode = 'Z0002',
+      message = format(
+        'Incomplete SshKey reference: id ''%s'' is set but name is missing; '
+        'the reference must include both id and name',
+        ssh_key_id
+      );
+  end if;
+
+  if coalesce(ssh_key_id, '') = '' then
+    return new;
+  end if;
+
+  select id, name into found_id, found_name
+  from ssh_keys
+  where id = ssh_key_id
+    and tenant = new.tenant
+    and deletion_timestamp = 'epoch'
+  for share;
+
+  if found_id is null then
+    raise exception using
+      errcode = 'Z0002',
+      message = format(
+        'SshKey ''%s'' does not exist or has been deleted',
+        ssh_key_id
+      );
+  end if;
+
+  if found_name != ref_name then
+    raise exception using
+      errcode = 'Z0002',
+      message = format(
+        'SshKey reference inconsistent: id ''%s'' resolves to name ''%s'' but reference has name ''%s''',
+        ssh_key_id, found_name, ref_name
+      );
+  end if;
+
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger check_bare_metal_instance_ssh_key_ref
+  before insert or update of data, deletion_timestamp on bare_metal_instances
+  for each row
+  when (new.deletion_timestamp = 'epoch')
+  execute function check_bare_metal_instance_ssh_key_ref();
 ```
 
-**Two-layer validation model**: SSH key references are validated by two complementary mechanisms. This is not redundant — each layer covers a different gap:
-- **Layer 1 — `ReferenceValidator` interceptor**: Provides immediate `InvalidArgument` API feedback for user-provided references, auto-populates `id`/`name`, and enforces tenant scoping. Runs before the server handler. Does **not** hold a row lock.
-- **Layer 2 — `check_compute_instance_ssh_key_ref` DB trigger** (defense in depth): Acquires `FOR SHARE` lock to prevent TOCTOU races with concurrent deletion, rejects incomplete references (missing `id` or `name`), rejects inconsistent `name` (id points to key with different name), and rejects inactive or different-tenant keys. Catches any reference that bypasses the interceptor (e.g., direct DB writes, future write paths).
-- **Z0003 trigger**: Prevents SSH key deletion while active ComputeInstances reference it.
+**Two-layer validation model**: SSH key references on both ComputeInstance and BareMetalInstance are validated by two complementary mechanisms. This is not redundant — each layer covers a different gap:
+- **Layer 1 — `ReferenceValidator` interceptor**: Provides immediate `InvalidArgument` API feedback for user-provided references, auto-populates `id`/`name`, and enforces tenant scoping. Runs before the server handler for both `ComputeInstances.Create` and `BareMetalInstances.Create`. Does **not** hold a row lock.
+- **Layer 2 — DB triggers** (defense in depth): `check_compute_instance_ssh_key_ref` on `compute_instances` and `check_bare_metal_instance_ssh_key_ref` on `bare_metal_instances` each acquire a `FOR SHARE` lock to prevent TOCTOU races with concurrent deletion, reject incomplete references (missing `id` or `name`), reject inconsistent `name` (id points to key with different name), and reject inactive or different-tenant keys. Catches any reference that bypasses the interceptor (e.g., direct DB writes, future write paths).
+- **Z0003 trigger**: Prevents SSH key deletion while active ComputeInstances or BareMetalInstances reference it (scans both tables).
 
 This follows the Secret reference pattern from migration 111 (which uses both the `ReferenceValidator` interceptor and a `check_secret_ref_exists` database trigger).
 
@@ -681,6 +878,7 @@ This follows the Secret reference pattern from migration 111 (which uses both th
   - Registered in `internal/cmd/cli/create/create_cmd.go`.
   - Help text uses Markdown with `{{ bt }}` for inline code per CLI conventions.
 - **`osac create computeinstance`**: The existing `--ssh-public-key` flag is removed. A new `--ssh-key` flag replaces it, accepting a registered key name. Set `spec.ssh_key = {name: "<value>"}` on the request object. The `ReferenceValidator` interceptor auto-populates the `id` field — the CLI does not need to resolve name→id. API responses return `spec.ssh_key = {id: "...", name: "..."}` instead of a bare string.
+- **`osac create baremetalinstance`**: The existing `--ssh-public-key` flag is removed. A new `--ssh-key` flag replaces it, accepting a registered key name. Same behavior as `osac create computeinstance --ssh-key`.
 - **`osac get sshkey`** / **`osac delete sshkey`**: Work automatically via reflection — no code needed.
 
 ### Security Considerations
@@ -700,12 +898,15 @@ SSH public keys are **not sensitive data** — they are designed to be shared pu
 | **Create with invalid key** | `validateOpenSSHPublicKey` rejects; returns `InvalidArgument` | Clear error: "invalid OpenSSH public key: ..." |
 | **Create with duplicate name** | DB unique index rejects; returns `AlreadyExists` | "SshKey with name 'my-laptop' already exists in this tenant" |
 | **Create with non-empty project** | Server rejects; returns `InvalidArgument` | "SshKey does not support projects; metadata.project must be empty" |
-| **Delete while referenced** | Trigger raises `Z0003`; DAO returns `ErrInUse`; server returns `FailedPrecondition` | "cannot delete SshKey 'my-laptop': N ComputeInstance(s) still reference it" |
+| **Delete while referenced** | Trigger raises `Z0003`; DAO returns `ErrInUse`; server returns `FailedPrecondition` | "cannot delete SshKey 'my-laptop': N instance(s) still reference it (X ComputeInstance(s), Y BareMetalInstance(s))" |
 | **Create ComputeInstance with non-existent SSH key** | `ReferenceValidator` interceptor's `ReferenceLookupFunc` returns not-found; interceptor returns `InvalidArgument` before the request reaches the server handler | "SshKey 'my-laptop' not found in this tenant" |
+| **Create BareMetalInstance with non-existent SSH key** | Same `ReferenceValidator` interceptor behavior as ComputeInstance | "SshKey 'my-laptop' not found in this tenant" |
 | **Create ComputeInstance with SSH key on Windows** | Server detects Windows guest OS; returns `InvalidArgument` | "SSH key injection is not supported for Windows instances" |
 | **Create ComputeInstance with SSH key on ignition instance** | Server detects ignition user data type; returns `InvalidArgument` | "SSH key injection requires cloud-init; ignition user data is not compatible" |
 | **Update ComputeInstance attempts to change ssh_key** | Immutability check rejects; returns `InvalidArgument` | "cannot change spec.ssh_key: ssh_key is immutable after creation" |
+| **Update BareMetalInstance attempts to change ssh_key** | Immutability check rejects; returns `InvalidArgument` | "cannot change spec.ssh_key: ssh_key is immutable after creation" |
 | **Concurrent delete + ComputeInstance create** | Two-layer defense: `ReferenceValidator` interceptor provides first check (no lock); `check_compute_instance_ssh_key_ref` trigger acquires `FOR SHARE` lock on SSH key row at INSERT, serializing against concurrent soft-delete | No race: either the ComputeInstance is created with the key (trigger lock blocks delete), or the trigger detects deleted key and raises Z0002 |
+| **Concurrent delete + BareMetalInstance create** | Same two-layer defense: `check_bare_metal_instance_ssh_key_ref` trigger acquires `FOR SHARE` lock on SSH key row | Same behavior as ComputeInstance — no race |
 | **Controller: SshKey not found (`NotFound` — permanent)** | Controller sets `status.state` to failed, adds condition with `reason=SshKeyNotFound`; instance will be re-reconciled on next event or periodic sync but will re-fail if key is still missing | Instance enters Failed state; user must delete and recreate the instance with a valid SSH key reference (see Support Procedures) |
 | **Controller: invalid SSH key reference (`InvalidArgument` — permanent)** | Controller sets `status.state` to failed, adds condition with `reason=SshKeyInvalid`; re-reconciled on next sync | Instance enters Failed state with specific reason |
 | **Controller: fulfillment-service unavailable (`Unavailable`/`DeadlineExceeded` — transient)** | Controller logs warning; does **not** automatically requeue — retries on next event or 1-hour periodic sync | Instance remains in current state; resolves when service recovers and next sync fires |
@@ -714,9 +915,11 @@ SSH public keys are **not sensitive data** — they are designed to be shared pu
 | **Controller: internal server error (`Internal` — transient)** | Controller logs warning; retries on next event or 1-hour periodic sync | Alert if persistent — indicates a server-side bug or infrastructure issue |
 | **Controller: context canceled (`Canceled` — stop)** | Controller does not change instance status; reconciliation resumes on next controller start or next event | No user-visible impact |
 | **Controller: unexpected gRPC code (default — transient)** | Controller logs warning with the unexpected code; does not change status | Treated as transient to avoid prematurely failing instances |
+| **BMI Controller: SshKey not found (`NotFound` — permanent)** | BareMetalInstance controller sets `status.state` to `BARE_METAL_INSTANCE_STATE_FAILED`, adds condition with `reason=SshKeyNotFound` | Instance enters Failed state; same behavior as ComputeInstance controller |
+| **BMI Controller: transient error** | BareMetalInstance controller logs warning, does not change status; retries on next reconciliation event | Same transient handling as ComputeInstance controller |
 | **Database unavailable** | Standard `Internal` error from GenericDAO | "internal error" — no partial state since operations are transactional |
 
-SshKey itself is an API-only resource with no async provisioning. The ComputeInstance controller handles SSH key resolution as part of its existing reconciliation loop. **Note**: the reconciler has no automatic requeue mechanism — all transient errors are retried only via future watch events or the 1-hour periodic sync (see the gRPC Error Classification Table in the controller update section).
+SshKey itself is an API-only resource with no async provisioning. Both the ComputeInstance and BareMetalInstance controllers handle SSH key resolution as part of their existing reconciliation loops. **Note**: the reconcilers have no automatic requeue mechanism — all transient errors are retried only via future watch events or the 1-hour periodic sync (see the gRPC Error Classification Table in the controller update section).
 
 ### RBAC / Tenancy
 
@@ -750,9 +953,9 @@ The `GenericServer` framework emits standard Prometheus metrics for all CRUD ope
 
 | Risk | Mitigation |
 |---|---|
-| **SSH key deletion and re-registration with the same name** — if a user could delete an SSH key and re-register with the same name, the ID-based reference on existing ComputeInstances would become stale (pointing to the old, deleted key's ID). | Deletion is blocked while any ComputeInstance references the key (Z0003 trigger). Names remain reserved during pending deletion (standard platform contract), preventing reuse until archival completes. The `SshKeyReference` stores the canonical `id` (a tenant-scoped reference that ignores project), so even if a new key with the same name were created (after archival), existing ComputeInstances would reference the old ID and the controller would get `NotFound`, correctly entering the failed state. |
+| **SSH key deletion and re-registration with the same name** — if a user could delete an SSH key and re-register with the same name, the ID-based reference on existing ComputeInstances or BareMetalInstances would become stale (pointing to the old, deleted key's ID). | Deletion is blocked while any ComputeInstance or BareMetalInstance references the key (Z0003 trigger scans both tables). Names remain reserved during pending deletion (standard platform contract), preventing reuse until archival completes. The `SshKeyReference` stores the canonical `id` (a tenant-scoped reference that ignores project), so even if a new key with the same name were created (after archival), existing instances would reference the old ID and the controller would get `NotFound`, correctly entering the failed state. |
 | **Migration number collision** — another migration may claim the next available number. | Coordinate migration numbering with the team at implementation time. |
-| **Trigger performance on large tables** — the `check_ssh_key_not_in_use` trigger scans `compute_instances` on every SSH key deletion. | The partial index `compute_instances_by_ssh_key_id` on `(data->'spec'->'ssh_key'->>'id')` (active rows, non-null) ensures index-only lookups. |
+| **Trigger performance on large tables** — the `check_ssh_key_not_in_use` trigger scans both `compute_instances` and `bare_metal_instances` on every SSH key deletion. | The partial indexes `compute_instances_by_ssh_key_id` and `bare_metal_instances_by_ssh_key_id` on `(data->'spec'->'ssh_key'->>'id')` (active rows, non-null) ensure index-only lookups for both tables. |
 
 ### Drawbacks
 
@@ -802,10 +1005,15 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 - `PrivateSshKeysServer.Create` rejects invalid `spec.public_key` (parse failure, trailing content).
 - `PrivateSshKeysServer.Create` rejects duplicate name within the same tenant.
 - `PrivateSshKeysServer.Create` allows the same name in different tenants.
-- `PrivateSshKeysServer.Delete` succeeds when no ComputeInstance references the key.
+- `PrivateSshKeysServer.Delete` succeeds when no ComputeInstance or BareMetalInstance references the key.
 - `PrivateSshKeysServer.Delete` fails with `ErrInUse` when a ComputeInstance references the key.
+- `PrivateSshKeysServer.Delete` fails with `ErrInUse` when a BareMetalInstance references the key.
+- `PrivateSshKeysServer.Delete` fails with `ErrInUse` when both a ComputeInstance and a BareMetalInstance reference the key — error message includes combined count.
 - `PrivateSshKeysServer.Update` returns `Unimplemented`.
 - `PrivateComputeInstancesServer.Create` rejects empty `SshKeyReference` (`ssh_key: {}` with both `id` and `name` empty) with `InvalidArgument`.
+- `PrivateBareMetalInstancesServer.Create` rejects empty `SshKeyReference` (`ssh_key: {}` with both `id` and `name` empty) with `InvalidArgument`.
+- `PrivateBareMetalInstancesServer.Create` validates authentication: at least one of `ssh_key`, `user_data`, or `user_data_secret` must be provided.
+- `PrivateBareMetalInstancesServer.Update` rejects changes to `spec.ssh_key` (immutability, using `proto.Equal` for message comparison).
 - `PrivateComputeInstancesServer.Create` rejects `ssh_key` for Windows instances.
 - `PrivateComputeInstancesServer.Create` rejects `ssh_key` when user data type is ignition (not cloud-init).
 - `PrivateComputeInstancesServer.Update` rejects changes to `spec.ssh_key` (immutability, using `proto.Equal` for message comparison).
@@ -814,6 +1022,14 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 - `ReferenceValidator` interceptor resolves `SshKeyReference` by id → populates `name`.
 - `ReferenceValidator` interceptor does not use project for `SshKeyReference` lookup (tenant-only resolution, regardless of caller's project context).
 - Database trigger `check_ssh_key_not_in_use` blocks deletion when active ComputeInstances reference the key by `id` (Z0003).
+- Database trigger `check_ssh_key_not_in_use` blocks deletion when active BareMetalInstances reference the key by `id` (Z0003).
+- Database trigger `check_ssh_key_not_in_use` blocks deletion when both ComputeInstances and BareMetalInstances reference the key — error message includes combined count (Z0003).
+- Database trigger `check_bare_metal_instance_ssh_key_ref` fires on INSERT with existing key — succeeds and acquires `FOR SHARE` lock (Z0002 path).
+- Database trigger `check_bare_metal_instance_ssh_key_ref` fires on INSERT with missing/deleted key — raises Z0002.
+- Database trigger `check_bare_metal_instance_ssh_key_ref` fires on INSERT with cross-tenant key — raises Z0002 (tenant mismatch).
+- Database trigger `check_bare_metal_instance_ssh_key_ref` rejects incomplete reference: `name` is non-empty but `id` is empty — raises Z0002.
+- Database trigger `check_bare_metal_instance_ssh_key_ref` rejects incomplete reference: `id` is non-empty but `name` is empty — raises Z0002.
+- Database trigger `check_bare_metal_instance_ssh_key_ref` rejects inconsistent name: `id` resolves to a key with a different name — raises Z0002.
 - Database trigger `check_compute_instance_ssh_key_ref` fires on INSERT with existing key — succeeds and acquires `FOR SHARE` lock (Z0002 path).
 - Database trigger `check_compute_instance_ssh_key_ref` fires on INSERT with missing/deleted key — raises Z0002.
 - Database trigger `check_compute_instance_ssh_key_ref` fires on INSERT with cross-tenant key — raises Z0002 (tenant mismatch).
@@ -836,6 +1052,11 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 - ComputeInstance controller treats unknown/unexpected gRPC error codes as transient (logs warning, does not change status).
 - ComputeInstance controller logs warning and does not change status for transient gRPC errors (`Unavailable`, `DeadlineExceeded`, `PermissionDenied`, `Unimplemented`) — recovery via next event or 1-hour periodic sync.
 - ComputeInstance controller does not change status and does not retry on `Canceled` (context cancellation).
+- BareMetalInstance controller resolves `spec.ssh_key` to raw key material via `SshKeys.Get` using `spec.ssh_key.id` and sets `params["sshPublicKey"]` template parameter.
+- BareMetalInstance controller sets `status.state` to `BARE_METAL_INSTANCE_STATE_FAILED` with condition `reason=SshKeyNotFound` when `SshKeys.Get` returns `NotFound`.
+- BareMetalInstance controller sets `status.state` to `BARE_METAL_INSTANCE_STATE_FAILED` with condition `reason=SshKeyInvalid` when `SshKeys.Get` returns `InvalidArgument`.
+- BareMetalInstance controller logs warning and does not change status for transient gRPC errors (`Unavailable`, `DeadlineExceeded`, `PermissionDenied`, `Unimplemented`).
+- BareMetalInstance controller treats unknown/unexpected gRPC error codes as transient.
 - `GenericMapper` correctly maps SshKey and SshKeyReference between public and private types.
 - OPA policy allows SshKey methods for authenticated clients (`grpc_authz_interceptor_test.go`).
 
@@ -843,16 +1064,23 @@ Users continue pasting raw SSH public keys on every ComputeInstance creation.
 
 - Create an SshKey, list it, get it by ID, get it by name (via filtered list), delete it — full CRUD lifecycle in a test database.
 - Create an SshKey, create a ComputeInstance referencing it, attempt to delete the SshKey — verify `ErrInUse` is returned.
+- Create an SshKey, create a BareMetalInstance referencing it, attempt to delete the SshKey — verify `ErrInUse` is returned.
+- Create an SshKey, create both a ComputeInstance and a BareMetalInstance referencing it, attempt to delete the SshKey — verify `ErrInUse` includes combined count from both tables.
 - Delete the ComputeInstance, then delete the SshKey — verify success.
+- Delete the BareMetalInstance, then delete the SshKey — verify success.
 - Create a ComputeInstance with `ssh_key = {name: "my-laptop"}` — verify the `ReferenceValidator` interceptor auto-populates `id`, the controller resolves the key via `SshKeys.Get` using `spec.ssh_key.id`, and the CRD receives the raw key material.
-- **Concurrent deletion race — both orderings**: (a) ComputeInstance INSERT commits first: Z0003 trigger blocks the concurrent SshKey soft-delete. (b) SshKey soft-delete commits first: `check_compute_instance_ssh_key_ref` trigger on the ComputeInstance INSERT detects the deleted key and raises Z0002. Both orderings must be tested to verify no dangling references.
+- Create a BareMetalInstance with `ssh_key = {name: "my-laptop"}` — verify the `ReferenceValidator` interceptor auto-populates `id`, the controller resolves the key via `SshKeys.Get` using `spec.ssh_key.id`, and the CRD receives the raw key as `sshPublicKey` template parameter.
+- **Concurrent deletion race — ComputeInstance — both orderings**: (a) ComputeInstance INSERT commits first: Z0003 trigger blocks the concurrent SshKey soft-delete. (b) SshKey soft-delete commits first: `check_compute_instance_ssh_key_ref` trigger on the ComputeInstance INSERT detects the deleted key and raises Z0002. Both orderings must be tested to verify no dangling references.
+- **Concurrent deletion race — BareMetalInstance — both orderings**: (a) BareMetalInstance INSERT commits first: Z0003 trigger blocks the concurrent SshKey soft-delete. (b) SshKey soft-delete commits first: `check_bare_metal_instance_ssh_key_ref` trigger on the BareMetalInstance INSERT detects the deleted key and raises Z0002. Both orderings must be tested.
 - Concurrent creation of two SshKeys with the same name in the same tenant — verify exactly one succeeds and the other returns `AlreadyExists`.
 - Verify name remains reserved while deletion is pending: create key "my-laptop", delete it, attempt to re-create "my-laptop" before archival completes — verify `AlreadyExists` is returned (matching the platform contract: names remain reserved during pending deletion).
-- **Cross-tenant isolation**: Create SshKeys with identical names (`"shared-name"`) in two different tenants (tenant-A and tenant-B). Create a ComputeInstance in tenant-A referencing `{name: "shared-name"}`. Verify the tenant-only lookup resolves to tenant-A's key (the `ReferenceLookupFunc` ignores project and is scoped to the requesting tenant). Verify the stored `spec.ssh_key.id` is tenant-A's key ID. Verify the CRD receives tenant-A's public key material.
+- **Cross-tenant isolation (ComputeInstance)**: Create SshKeys with identical names (`"shared-name"`) in two different tenants (tenant-A and tenant-B). Create a ComputeInstance in tenant-A referencing `{name: "shared-name"}`. Verify the tenant-only lookup resolves to tenant-A's key (the `ReferenceLookupFunc` ignores project and is scoped to the requesting tenant). Verify the stored `spec.ssh_key.id` is tenant-A's key ID. Verify the CRD receives tenant-A's public key material.
+- **Cross-tenant isolation (BareMetalInstance)**: Same test as above but with a BareMetalInstance in tenant-A. Verify the tenant-only lookup resolves to tenant-A's key and the template parameter receives tenant-A's public key material.
 
 ### E2E Tests
 
 - Tenant User registers an SSH key via API, creates a ComputeInstance selecting that key, and verifies the SSH key is injected into the VM via cloud-init (SSH into the VM using the registered key). This test lives in `tests/e2e/` in the monorepo (not `osac-test-infra`) and spans fulfillment-service, osac-operator, and the provisioned VM. It follows the existing pytest patterns in `tests/e2e/`.
+- Tenant User registers an SSH key via API, creates a BareMetalInstance selecting that key, and verifies the SSH key is injected into the bare metal host via the provisioning template (SSH into the host using the registered key). This test lives in `tests/e2e/` in the monorepo and spans fulfillment-service, bare-metal-fulfillment-operator, and the provisioned host. Note: BareMetalInstance E2E tests require bare metal hardware availability in the test environment; this test may run in a subset of CI environments.
 
 ## Graduation Criteria
 
@@ -862,15 +1090,16 @@ Expected stages: Dev Preview -> Tech Preview -> GA.
 
 | Category | Criterion | Verification |
 |---|---|---|
-| **API lifecycle** | SshKey CRUD (Create, List, Get, Delete) and ComputeInstance Signal complete end-to-end | Integration tests pass: create key, list, get by ID, delete; Signal delegates to `generic.Signal` without error |
-| **Tenant isolation** | Cross-tenant SSH key reference blocked at both API and database layers | Integration test: tenant-A ComputeInstance referencing tenant-B SshKey is rejected by `ReferenceValidator` interceptor (`InvalidArgument`) AND by Z0002 trigger (tenant mismatch) |
-| **First-boot injection** | SSH key is present and usable in the provisioned VM | E2E test: register key, create ComputeInstance, SSH into VM using the registered key — connection succeeds |
+| **API lifecycle** | SshKey CRUD (Create, List, Get, Delete) and ComputeInstance/BareMetalInstance integration complete end-to-end | Integration tests pass: create key, list, get by ID, delete; ComputeInstance and BareMetalInstance creation with SSH key reference succeeds |
+| **Tenant isolation** | Cross-tenant SSH key reference blocked at both API and database layers for both instance types | Integration test: tenant-A ComputeInstance and BareMetalInstance referencing tenant-B SshKey are rejected by `ReferenceValidator` interceptor (`InvalidArgument`) AND by Z0002 trigger (tenant mismatch) |
+| **First-boot injection (VM)** | SSH key is present and usable in the provisioned VM | E2E test: register key, create ComputeInstance, SSH into VM using the registered key — connection succeeds |
+| **First-boot injection (BMI)** | SSH key is present and usable on the provisioned bare metal host | E2E test: register key, create BareMetalInstance, SSH into host using the registered key — connection succeeds (requires bare metal hardware) |
 | **Transient controller errors** | Transient SSH key resolution errors preserve instance status and re-reconcile on next sync | Unit tests: `SshKeyResolutionError{Permanent: false}` → status unchanged, no CRD write; instance re-reconciled on next periodic sync (1-hour) or watch event |
 
 **Tech Preview exit criteria** (additional, in production environment):
 - Deployed in at least one staging/production environment for ≥2 weeks without regression.
 - No persistent `PermissionDenied` or `Unimplemented` errors after deployment (monitored via existing Prometheus metrics).
-- CLI (`osac create sshkey`, `osac create computeinstance --ssh-key`) validated by ≥2 internal users.
+- CLI (`osac create sshkey`, `osac create computeinstance --ssh-key`, `osac create baremetalinstance --ssh-key`) validated by ≥2 internal users.
 - UI SSH key management pages functional and reviewed by UX.
 
 **GA exit criteria**:
@@ -880,13 +1109,13 @@ Expected stages: Dev Preview -> Tech Preview -> GA.
 
 ## Upgrade / Downgrade Strategy
 
-The `spec.ssh_public_key` field is removed. OSAC is pre-GA with no production workloads, so no migration path is needed — the field is simply removed with `reserved 7; reserved "ssh_public_key";` for proto schema hygiene. The `SshKey` resource and `ComputeInstanceSpec.ssh_key` field are the only SSH key mechanism.
+The `spec.ssh_public_key` field is removed from both `ComputeInstanceSpec` and `BareMetalInstanceSpec`. OSAC is pre-GA with no production workloads, so no migration path is needed — the field is simply removed with `reserved 7; reserved "ssh_public_key";` on ComputeInstance and `reserved 2; reserved "ssh_public_key";` on BareMetalInstance for proto schema hygiene. The `SshKey` resource and `SshKeyReference ssh_key` field on both `ComputeInstanceSpec` and `BareMetalInstanceSpec` are the only SSH key mechanism.
 
 **Downgrade**: OSAC is pre-GA with no production workloads, so a formal downgrade procedure is intentionally omitted. If the feature needs to be removed, the standard approach is to delete affected resources through the API and revert the deployment.
 
 ## Version Skew Strategy
 
-The cross-component dependency is the fulfillment-service controller resolving `spec.ssh_key` via `SshKeys.Get` (using `spec.ssh_key.id`) and passing the raw key to the osac-operator CRD as `spec.SSHKey`. The osac-operator itself is unchanged — it receives a raw SSH key string as before.
+The cross-component dependencies are: (1) the ComputeInstance controller resolving `spec.ssh_key` via `SshKeys.Get` (using `spec.ssh_key.id`) and passing the raw key to the osac-operator CRD as `spec.SSHKey` — the osac-operator itself is unchanged; (2) the BareMetalInstance controller resolving `spec.ssh_key` via `SshKeys.Get` and passing the raw key via the `sshPublicKey` template parameter to the bare-metal-fulfillment-operator — the bare-metal-fulfillment-operator itself is unchanged, it receives the raw key in the template parameters as before.
 
 OSAC is pre-GA with no production workloads, so no feature gate is needed. The SshKey resource and the `ComputeInstanceSpec.ssh_key` reference are deployed together as part of a standard Helm release. All three fulfillment-service Deployments (`fulfillment-grpc-server`, `fulfillment-controller`, `fulfillment-rest-gateway`) are updated atomically from the same Helm chart, so mixed-version windows are limited to the rolling-update window of each Deployment.
 
@@ -917,18 +1146,18 @@ Both signals should be checked: rollout status confirms all replicas are updated
 ## Support Procedures
 
 - **Symptom**: User reports "cannot delete SshKey" error.
-  - **Diagnosis**: The SSH key is referenced by an active ComputeInstance. Query: `osac get computeinstances --filter "this.spec.ssh_key.name == '<key-name>'"` or `--filter "this.spec.ssh_key.id == '<key-id>'"`.
-  - **Resolution**: Delete the referencing ComputeInstance(s) first, then retry the SSH key deletion.
+  - **Diagnosis**: The SSH key is referenced by an active ComputeInstance or BareMetalInstance. Query both: `osac get computeinstances --filter "this.spec.ssh_key.name == '<key-name>'"` and `osac get baremetalinstances --filter "this.spec.ssh_key.name == '<key-name>'"` (or use `--filter "this.spec.ssh_key.id == '<key-id>'"` for ID-based lookup).
+  - **Resolution**: Delete the referencing ComputeInstance(s) and/or BareMetalInstance(s) first, then retry the SSH key deletion.
 
 - **Symptom**: ComputeInstance creation fails with "SshKey not found."
   - **Diagnosis**: The referenced SSH key does not exist in the tenant, or was deleted between the user's intent and the API call.
   - **Resolution**: Verify with `osac get sshkey <name>`. Re-register the key if needed.
 
-- **Symptom**: ComputeInstance stuck in `Failed` with reason `SshKeyNotFound`.
+- **Symptom**: ComputeInstance or BareMetalInstance stuck in `Failed` with reason `SshKeyNotFound`.
   - **Diagnosis**: The controller could not resolve `spec.ssh_key.id` via `SshKeys.Get`. The SshKey was deleted outside the trigger protection (e.g., direct DB manipulation) or was never created due to a race. This is an invariant violation — the database triggers should prevent this state under normal operation.
-  - **Resolution**: Delete the affected ComputeInstance and recreate it with a valid SSH key reference. Note: the controller resolves by `id`, not `name`. Re-registering an SSH key with the same name produces a **new ID** — existing ComputeInstances still reference the old ID and will continue to fail with `SshKeyNotFound` (correct behavior, since the old key material is gone). If many ComputeInstances are affected, treat this as an incident requiring controlled repair (identify the root cause of the invariant violation before recreating instances).
+  - **Resolution**: Delete the affected instance (ComputeInstance or BareMetalInstance) and recreate it with a valid SSH key reference. Note: the controller resolves by `id`, not `name`. Re-registering an SSH key with the same name produces a **new ID** — existing instances still reference the old ID and will continue to fail with `SshKeyNotFound` (correct behavior, since the old key material is gone). If many instances are affected, treat this as an incident requiring controlled repair (identify the root cause of the invariant violation before recreating instances).
 
-- **Removing the feature**: OSAC is pre-GA, so removing SSH key support is straightforward: delete any ComputeInstances referencing SSH keys through the API, remove the `SshKeys` gRPC service registration from `register_servers.go`, the OPA allowlist entries from `authz.rego`, and run the database down migrations to drop the `ssh_keys` table and associated triggers.
+- **Removing the feature**: OSAC is pre-GA, so removing SSH key support is straightforward: delete any ComputeInstances and BareMetalInstances referencing SSH keys through the API, remove the `SshKeys` gRPC service registration from `register_servers.go`, the OPA allowlist entries from `authz.rego`, and run the database down migrations to drop the `ssh_keys` table and associated triggers.
 
 ## Infrastructure Needed
 
@@ -952,4 +1181,5 @@ Revision 10: design:revise — final revision incorporating 5 changes from rev9 
 Revision 11: design:revise — per ygalblum review feedback: (1) Removed `ssh_public_key` entirely — `SshKeyReference` is now the only way to provide an SSH key on a ComputeInstance, consistent with AWS/GCP/GitHub register-first model. Removed all mutual exclusivity logic, the "Immutability asymmetry" section, dual-field test cases, and `--ssh-public-key` CLI flag. (2) Added Migration Path section specifying proto field reservation, automated migration job, API client impact, and backward compatibility timeline. (3) Controller always resolves `spec.ssh_key` — no fallback to raw `ssh_public_key`; `HasSshPublicKey()` check replaced by `ssh_key` reference check. (4) Updated test plan with migration and reserved-field tests. (5) Added ComputeInstance CRD support scope to Goals (addresses ygalblum's line 39 comment about missing ComputeInstance scope). (6) Updated upgrade/downgrade strategy to reflect breaking change.
 Revision 12: design:revise — per ygalblum review feedback: OSAC is pre-GA with no production workloads, so removed the entire Migration Path section (automated migration job, backward-compat timeline, old-client cutover). Simplified breaking change description. Removed migration-related test cases. Retained proto field reservation (`reserved 7; reserved "ssh_public_key"`) for schema hygiene. Fixed `// reserved` comments to be executable `reserved` directives in the proto snippet (coderabbitai feedback).
 Revision 13: design:revise — removed the `EnableSshKeyReference` feature gate entirely. OSAC is pre-GA with no production workloads, so the staged rollout mechanism is unnecessary — all fulfillment-service Deployments are updated atomically from the same Helm chart. Removed: Feature Gate Implementation section, Staged Rollout Procedure section, Why a Feature Gate section, gate-disabled code paths in the reconciler, gate-related test cases, gate references in server registration/graduation criteria/upgrade-downgrade/support procedures. Simplified Version Skew Strategy to standard deployment verification. Reclassified `PermissionDenied` and `Unimplemented` gRPC errors from "rollout-transient" to plain "transient". Simplified downgrade procedure from 4 steps to 3 (no gate to disable).
+Revision 14: design:revise — extended design to include BareMetalInstance integration alongside ComputeInstance per adriengentil review feedback: (1) `BareMetalInstanceSpec` gains `SshKeyReference ssh_key = 14` (field 13 is `user_data_secret`; next available is 14); existing `ssh_public_key` (field 2) removed with `reserved 2; reserved "ssh_public_key"`. (2) Added `check_bare_metal_instance_ssh_key_ref` DB trigger on `bare_metal_instances` (same Z0002 pattern as ComputeInstance — `FOR SHARE` lock, incomplete/inconsistent/cross-tenant rejection). (3) Extended `check_ssh_key_not_in_use` Z0003 trigger to scan both `compute_instances` and `bare_metal_instances`; error message includes combined count. (4) BareMetalInstance controller resolves `spec.ssh_key.id` via `SshKeys.Get`, passes resolved key as `sshPublicKey` template parameter (following existing BMI template-parameter pattern at `mutateBMI` line 722); same `SshKeyResolutionError` classification as ComputeInstance. (5) `PrivateBareMetalInstancesServer.Create` adds empty-reference rejection and updated authentication-method validation (`ssh_key` replaces `ssh_public_key`). (6) Immutability enforcement for `spec.ssh_key` on BareMetalInstance (replaces `ssh_public_key` immutability). (7) CLI: `osac create baremetalinstance` gains `--ssh-key` flag. (8) Updated Summary, Goals, Non-Goals, Scope, Proposal, Workflow, Sequence Diagram, API Extensions, Failure Handling, Risks, Graduation Criteria, Upgrade/Downgrade, Version Skew, Support Procedures, and Test Plan to reflect both instance types throughout. (9) OPA: no additional entries needed — SshKey CRUD is service-agnostic (D1), and the `ReferenceValidator` interceptor handles BareMetalInstance references using the same registered lookup function. This avoids the DiskImage duplication trap where separate designs were needed for VMaaS and BMaaS.
 Inputs: [prd.md](prd.md), [clarifications.md](clarifications.md), [design-context.md](design-context.md) (ingest), [research-findings.md](research-findings.md) (research)
