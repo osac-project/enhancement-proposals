@@ -53,9 +53,9 @@ managed-switch infrastructure, limiting where the platform can run.
 - No changes to the OSAC networking API or its resource model — the API is
   inherited from the unified networking work (OSAC-1433) and consumed as-is.
   [Clarify: D3, D5]
-- The backend does not create networking resources (including default networking);
-  it configures the fabric only for resources — machines, clusters, VMs — attached
-  to a network resource. [PR review: CodeRabbit]
+- The backend does not create networking resources (including default networking
+  or a default SecurityGroup); it configures the fabric only for resources —
+  machines, clusters, VMs — attached to a network resource. [User direction]
 - Does not deprecate or remove the existing inline (non-API) CaaS networking path;
   that transition is handled separately by the CaaS agentless-VLAN follow-up.
   [Clarify: D4]
@@ -70,7 +70,7 @@ managed-switch infrastructure, limiting where the platform can run.
   part of this backend. [Clarify: D8]
 - No UI is delivered in this milestone; backend selection and networking
   operations are available through configuration and the CLI. [Clarify: D7]
-- SecurityGroup and ACL policy enforcement is out of scope for this feature and
+- SecurityGroup policy enforcement is out of scope for this feature and
   deferred to a later networking policy design. This feature does not define
   policy resources, policy semantics, or per-resource traffic restrictions.
   Policy-dependent requests are rejected before any VLAN, routing, attachment,
@@ -206,10 +206,16 @@ managed-switch infrastructure, limiting where the platform can run.
   delivered by the follow-up features (see Non-Goals). [Clarify: D1, D8; PR review: CodeRabbit]
 
 - ~~**FR-9:**~~ Removed — default networking is a tenant-onboarding / generic-API
-  concern, not this backend. The backend does not create networking resources; it
-  configures the fabric only for resources attached to a network resource, and
-  realizes any onboarding-created default resources like any other.
-  [PR review: CodeRabbit]
+  concern, not this backend. OSAC-1433 defines the shared networking architecture
+  but does not require this backend to create a default SecurityGroup. The
+  Agentless VLAN deployment does not create one by default; a Cloud Infrastructure
+  Admin may create one only after SecurityGroup support is delivered for this
+  backend. Until then, SecurityGroup-dependent requests are rejected as
+  unsupported. This feature introduces no DefaultNetworkingReady or Tenant READY
+  dependency on a default SecurityGroup; any future default-networking readiness
+  behavior is outside this implementation. The backend configures the fabric only
+  for supported resources attached to a network resource.
+  [User direction; PR review: CodeRabbit]
 
 #### Failure Visibility
 
@@ -263,7 +269,7 @@ managed-switch infrastructure, limiting where the platform can run.
 - [ ] If provider-managed default-deny egress authorization is missing or cannot
   be verified, a NATGateway remains non-Ready and its status reports unsupported
   egress authorization; after verification succeeds, it can become Ready.
-- [ ] Requests that depend on deferred SecurityGroup/ACL policy fail clearly as
+- [ ] Requests that depend on deferred SecurityGroup policy fail clearly as
   unsupported before any fabric configuration is applied and do not become Ready.
 - [ ] A tenant creates a VirtualNetwork with two subnets: machines in the same
   subnet share a broadcast domain, machines in different subnets of that network
