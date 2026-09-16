@@ -75,11 +75,10 @@ managed-switch infrastructure, limiting where the platform can run.
   policy resources, policy semantics, or per-resource traffic restrictions.
   Policy-dependent requests are rejected before any VLAN, routing, attachment,
   DNAT, or SNAT dataplane state is programmed; they are never silently ignored
-  or reported Ready. External ingress/egress authorization is supplied by
-  provider-managed default-deny perimeter controls outside this feature. This
-  is a trusted-fabric deployment profile; mixed-trust workload placement in one
-  VirtualNetwork is rejected, and mutually untrusted workloads require separate
-  VirtualNetworks, not merely separate Subnets.
+  or reported Ready. Until the later policy feature exists, internal traffic is
+  default-permit both within a Subnet and between Subnets in the same
+  VirtualNetwork. External ingress/egress authorization is supplied by
+  provider-managed default-deny perimeter controls outside this feature.
   [User direction]
 - Broad multi-vendor switch support and switch-configuration concurrency beyond the
   initially supported platform(s) are follow-up work; the supported-switch set for
@@ -151,7 +150,8 @@ managed-switch infrastructure, limiting where the platform can run.
 - **FR-3:** A tenant can create a VirtualNetwork containing multiple Subnets.
   Machines attached to the same Subnet share an L2 broadcast domain; machines on
   different Subnets of the same VirtualNetwork can reach each other through the
-  VirtualNetwork routing path without policy-based blocking in this feature;
+  VirtualNetwork routing path by default, without policy-based blocking in this
+  feature;
   machines on different VirtualNetworks have no direct connectivity on the
   internal fabric, even when their address ranges overlap (see NFR-3). Separate
   Subnets provide broadcast segmentation. This follows the unified networking
@@ -254,15 +254,11 @@ managed-switch infrastructure, limiting where the platform can run.
   and do not become Ready.
 - [ ] A tenant creates a VirtualNetwork with two subnets: machines in the same
   subnet share a broadcast domain, machines in different subnets of that network
-  can reach each other through the VirtualNetwork routing path, and machines in a
+  can reach each other by default through the VirtualNetwork routing path, and machines in a
   different VirtualNetwork with the same address range cannot reach those private
   addresses directly on the fabric.
-- [ ] Resources placed in the same Subnet can communicate at L2 even when a
-  future policy would restrict the flow; each Subnet is therefore a trusted L2
-  boundary for this feature, and policy-based separation is deferred to a later
-  ACL design.
-- [ ] A mixed-trust workload attachment to a VirtualNetwork is rejected; users
-  that require private isolation place workloads in separate VirtualNetworks.
+- [ ] Resources placed in the same Subnet can communicate at L2; internal
+  traffic is default-permit until the later policy feature is delivered.
 - [ ] A machine in one VirtualNetwork can reach a machine in another VirtualNetwork
   via the target's ExternalIP over the external path, even though the target's
   private subnet address remains directly unreachable.
