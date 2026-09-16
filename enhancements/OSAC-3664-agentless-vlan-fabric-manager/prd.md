@@ -8,9 +8,11 @@
 
 > This PRD covers the **agentless VLAN fabric manager** — a networking backend for
 > OSAC. It builds on the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md),
-> which defines the shared networking model, resources, and API. This document
-> defines the requirements for delivering that model on environments that use
-> traditional managed switches (without Netris). It adds a backend, not new API.
+> which defines the shared networking model, resources, API, and connected-only
+> deployment support boundary. Air-gapped and disconnected networking
+> deployments are not supported. This document defines the requirements for
+> delivering that model on environments that use traditional managed switches
+> (without Netris). It adds a backend, not new API.
 
 ## 1. Problem Statement
 

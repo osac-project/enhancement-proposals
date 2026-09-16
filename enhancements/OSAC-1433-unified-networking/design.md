@@ -28,6 +28,18 @@ This document describes the technical design for the OSAC unified
 networking architecture. For the problem statement and requirements,
 see the companion [Requirements Document (PRD)](prd.md).
 
+### Deployment Support Boundary
+
+The current OSAC networking contract supports connected deployments only.
+Air-gapped and disconnected networking deployments are outside the supported
+boundary and must not be advertised as supported profiles. A connected
+deployment has reachability among the provider-owned hub, selected network
+managers, provider-controlled networking services, and provider-controlled
+address infrastructure. The provider owns this configuration; connectivity is
+not tenant selectable, and these reachability prerequisites must hold before
+the deployment's NetworkClass is accepted. The boundary applies to
+Fabric-only, K8s-only, and combined manager profiles.
+
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a
 pod. Pod networking is managed by OVN-Kubernetes, meaning VMs live inside an
 OVN overlay that is not directly visible on the physical fabric. The core
@@ -346,10 +358,10 @@ ExternalIPAttachment (tenant-managed)
 ### ExternalIPPool
 
 "External" in ExternalIPPool/ExternalIP means **external to the
-VirtualNetwork** — not necessarily internet-routable. In air-gapped
-environments, the provider creates pools with data-center-routable IPs. In
-internet-connected environments, the pools contain internet-routable IPs.
-The API and flow are identical regardless of the deployment topology.
+VirtualNetwork**. In the supported connected deployment boundary, the
+provider creates pools with addresses routable in the provider's connected
+network. The API does not require Internet reachability, but air-gapped and
+disconnected networking deployments are not supported.
 
 ExternalIPPools are provider-managed and deployment-scoped. The fabric
 manager handles ExternalIP allocation — one pool serves all resource types.
@@ -1290,8 +1302,8 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
    part of the tenant API or NetworkClass spec.
 
 8. **ExternalIP naming.** "External" means external to the VirtualNetwork —
-   not necessarily internet-routable. Applies equally to air-gapped and
-   internet-connected deployments.
+   not necessarily Internet-routable. This applies within the supported
+   connected deployment boundary.
 
 9. **network_attachments immutability.** Network attachments are immutable
    after resource creation. Changing network attachment requires recreating
