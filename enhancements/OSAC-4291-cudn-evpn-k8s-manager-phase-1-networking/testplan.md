@@ -28,12 +28,12 @@
 1. Apply osac-installer Helm chart with cudn_evpn manager enabled
 2. Verify ConfigMap `k8s-manager-cudn-evpn` exists in osac namespace
 3. Verify ConfigMap data.manager = "cudn_evpn"
-4. Verify ConfigMap data.capabilities includes "ipv4"
-5. Verify IPv6 and dual-stack capability values are absent and rejected.
+4. Verify ConfigMap data.capabilities includes "supports_ipv4: true"
+5. Verify ConfigMap data.capabilities includes "supports_ipv6: false"
 
 ##### Expected Results
 
-- ConfigMap created with label `osac.openshift.io/network-k8s-manager: "true"`
+- ConfigMap created with label `osac.openshift.io/k8s-manager: "true"`
 - Capabilities reflect IPv4-only support
 - NetworkClass controller loads cudn_evpn as available k8s manager
 
