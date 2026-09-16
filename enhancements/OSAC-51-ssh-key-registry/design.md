@@ -31,14 +31,14 @@ The fulfillment-service already stores raw SSH public keys inline on ComputeInst
 
 ### Goals
 
-- Introduce `SshKey` as a first-class, service-agnostic resource with its own proto, gRPC service, and database table, following the standard OSAC object shape (`id`, `Metadata`, `Spec`, `Status`).
-- Reuse the existing `validateOpenSSHPublicKey()` function for key validation.
-- Reference SSH keys via a typed `SshKeyReference` message (with `id` + `name` fields). `SshKeyReference` is a tenant-scoped exception to the standard `Reference`/`LocalReference` naming convention (API.md §References) — it deliberately omits the `Local` suffix to avoid the `isLocalReference()` project-scoped lookup in `reference_validator.go`. The registered lookup function ignores the project parameter and resolves by `(tenant, id)` or `(tenant, name)` only. The `ReferenceValidator` gRPC interceptor validates user-provided references and auto-populates `id` from `name` at create time.
-- Resolve SSH key references at reconciliation time in the ComputeInstance controller via `SshKeys.Get` using the canonical `id` (auto-populated by the interceptor at create time).
-- Enforce referential integrity between `SshKey` and `ComputeInstance` using dual-layer defense: the `ReferenceValidator` gRPC interceptor provides immediate API feedback at create time, while a PostgreSQL `check_compute_instance_ssh_key_ref` trigger (SQLSTATE `Z0002`, `SELECT ... FOR SHARE`) provides concurrency-safe defense-in-depth validation. Deletion protection uses the `check_ssh_key_not_in_use` trigger (SQLSTATE `Z0003`).
-- Support the feature via API, CLI (`osac create/get/delete sshkey`), and UI.
-- Remove the existing raw `spec.ssh_public_key` field from `ComputeInstanceSpec`. SSH key provisioning is exclusively via registered `SshKeyReference` — there is no inline raw-key path. OSAC is pre-GA with no production workloads, so no migration is needed; the field is simply removed with proto field reservation for schema hygiene.
-- Extend the osac-operator `ComputeInstance` CRD to accept the resolved SSH key material in `spec.SSHKey` (no CRD schema change required — the field already exists; the change is in how the controller populates it).
+- Introduce `SshKey` as a first-class, service-agnostic resource following the standard OSAC object shape.
+- Reference SSH keys via a typed, tenant-scoped reference message with id-and-name lookup — a deliberate exception to the project-scoped reference convention because SSH keys are tenant-wide.
+- Enforce referential integrity through dual-layer validation: an API-level interceptor for immediate feedback at create time, and a database trigger for concurrency-safe defense-in-depth.
+- Resolve SSH key references at controller reconciliation time using the canonical ID populated at create time.
+- Reuse existing platform patterns for key validation, server scaffolding, and reference resolution.
+- Support the feature via API, CLI, and UI.
+- Remove the legacy inline SSH public key field; SSH key provisioning is exclusively via registered references (pre-GA, no migration needed).
+- Populate the existing osac-operator CRD SSH key field from the resolved reference (no CRD schema change required).
 
 ### Non-Goals
 
