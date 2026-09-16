@@ -158,10 +158,10 @@ The [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types)
 
 - BMaaS tenants discover available interfaces via the BareMetalInstanceType API (with type + speed info)
 - Interface validation uses BareMetalInstanceType's `network_ports` list
-- CaaS resolves the fabric interface from `BareMetalInstanceType.network_ports[].role=fabric`
+- CaaS fulfillment resolves the fabric interface from `BareMetalInstanceType.network_ports[].role=fabric` at cluster creation and stores it on the node set
 - `BareMetalInstanceType.host_label_selector` provides direct inventory matching (OSAC-1201), replacing the former HostType reverse lookup
 
-> **CaaS network attachment source:** For CaaS bare-metal workers, the network attachment originates from the private `ClusterOrder.spec.networkAttachment` (`ClusterNetworkAttachment`) and is enriched per-BMI by the `BareMetalWorkerReconciler`, which resolves the fabric interface from `BareMetalInstanceType.network_ports[]` (first port with `role=fabric`). See [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full enrichment flow.
+> **CaaS network attachment source:** For CaaS bare-metal workers, the network attachment originates from the private `ClusterOrder.spec.networkAttachment` (`ClusterNetworkAttachment`) and is enriched per-BMI by the `BareMetalWorkerReconciler` with the immutable `fabric_interface` already resolved and stored on the node set during cluster creation. See [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full enrichment flow.
 
 #### Interface Role Convention
 
@@ -252,7 +252,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    c. **`reconcileNetworking` (runs after provisioning is complete):**
       - Reads `network_attachments` from the CR spec
-      - **Operator dispatches switch-side config:** For the sole attachment, the operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant network segment name and moves the server's selected fabric port **provisioning network → tenant network** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = fabric server name from ExternalHostID, `logical_interface_name` = interface name from BareMetalInstanceType, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant network segment). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
+      - **Operator dispatches switch-side config:** For the sole attachment, the operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant network segment name and moves the server's selected fabric port **provisioning network → tenant network** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = fabric server name from ExternalHostID, `logical_interface_name` = interface from the resolved attachment, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant network segment). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
       - **Network segment readiness wait:** After each port attach, the move playbook polls the fabric manager until the target network segment reaches active/ready state. This ensures the switch fabric has fully converged before the operator triggers the handoff reboot — without this wait, the host may DHCP on the wrong network.
       - Sets condition: `NetworkAttachmentsReady=True`
 
@@ -561,7 +561,7 @@ the `ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
 
 #### IP Discovery
 
-IP discovery is decoupled from switch port configuration. The `move_network_attachment` role is switch-side only — it moves the server's fabric port onto the tenant subnet's network segment during `reconcileNetworking`, before the host boots. It does not query DHCP leases or return an IP address.
+IP discovery is decoupled from switch port configuration. The `move_network_attachment` role is switch-side only — it moves the server's fabric port onto the tenant subnet's network segment during `reconcileNetworking`, after OS provisioning and before the handoff reboot. It does not query DHCP leases or return an IP address.
 
 After `reconcileProvisioning` completes and the host has received a DHCP lease from the fabric's DHCP server, the operator runs `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing the sole attachment's subnet reference and the server's selected port MAC address. The role queries the fabric manager's DHCP lease API for the subnet, matches the port MAC to find the corresponding DHCP-assigned IP, and returns it. The operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
 
@@ -753,7 +753,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - fulfillment-service: max-one attachment and primary validation (accept single implicit primary, accept explicit primary)
 - fulfillment-service: interface validation (reject an interface not in BareMetalInstanceType)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- bare-metal-fulfillment-operator: reconcileNetworking phase ordering (after inventory, before provisioning)
+- bare-metal-fulfillment-operator: reconcileNetworking phase ordering (after provisioning, before reboot; inventory → provisioning → networking → reboot → IP discovery)
 - bare-metal-fulfillment-operator: dispatcher call for the sole attachment (move_network_attachment with correct from/to network segment params, direction from deletionTimestamp)
 - bare-metal-fulfillment-operator: `buildSubnetMACMap` resolves subnetRef → MAC from the interface-macs annotation (single-NIC fallback when interface unset)
 
@@ -891,12 +891,12 @@ kubectl describe baremetalinstance <name> -n <namespace>
 
 **Detection:** BM cannot reach external networks, `ip route` shows no default route
 
-**Cause:** The sole attachment was not designated or resolved as the implicit primary
+**Cause:** The resolved sole attachment/interface is missing or not Ready. Omission of `primary` is valid and means the sole attachment is implicitly primary.
 
 **Resolution:**
 1. Check BaremetalInstance spec: `kubectl get baremetalinstance <name> -n <namespace> -o yaml`
 2. Verify there is exactly one `networkAttachments[]` entry
-3. If missing or incorrect, delete and re-create the BaremetalInstance with the optional `--primary` flag
+3. Inspect the resolved attachment and interface status, then correct the attachment or underlying network resource and recreate the BaremetalInstance if necessary
 
 ### Symptom: Auto-provisioned ExternalIP not cleaned up after BaremetalInstance deletion
 

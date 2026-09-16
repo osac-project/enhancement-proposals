@@ -245,8 +245,12 @@ BMaaS attachment retains its existing optional `primary` field; with one
 attachment, omitting it has the same meaning as `primary: true`, while
 `primary: false` is rejected. VMaaS has no primary field, and CaaS has no
 primary concept. Omitted or empty attachment lists receive tenant defaults;
-partial supplied attachments receive defaults only for missing fields, and
-the resolved attachment list and fields are immutable after creation.
+partial supplied attachments receive defaults only for missing fields. A
+missing or explicitly empty `security_groups` list is treated as missing; the
+default SecurityGroup applies only when the resolved Subnet belongs to the
+tenant's default VirtualNetwork, otherwise the caller must provide
+SecurityGroups from the resolved Subnet's VirtualNetwork. The resolved
+attachment list and fields are immutable after creation.
 Multi-NIC workload networking is future scope and is not enabled by the
 plural field shape.
 

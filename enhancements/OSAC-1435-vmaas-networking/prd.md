@@ -72,7 +72,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Optional Network Configuration with Defaults
 
-- **FR-3:** Network configuration is optional when creating a VM. When the attachment list is omitted or empty, the system uses the tenant's default subnet and default security group (see Default Networking PRD). When a single attachment is supplied with a missing subnet or security-group list, only the missing field is defaulted; supplied values are preserved. The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
+- **FR-3:** Network configuration is optional when creating a VM. When the attachment list is omitted or empty, the system uses the tenant's default subnet and default security group (see Default Networking PRD). When a single attachment is supplied with a missing subnet, or with a missing or explicitly empty security-group list, only the missing field is defaulted; the default security group is used only when the resolved subnet belongs to the tenant's default VirtualNetwork, otherwise the caller must provide security groups from the resolved subnet's VirtualNetwork. Supplied values are preserved. The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
 
 #### Auto External IP
 

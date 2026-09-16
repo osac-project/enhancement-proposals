@@ -506,8 +506,9 @@ BareMetalInstanceType lists its network ports with name, role, type, speed,
 and description (see
 [HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype)). Given the port identifiers, the tenant specifies which
 interface to attach to the subnet. The current BMaaS contract accepts one
-`network_attachment`, mapping one physical interface to one subnet. If
-`interface` is omitted, the fabric manager picks a default.
+entry in the repeated `network_attachments` field, mapping one physical
+interface to one subnet. If `interface` is omitted, fulfillment defaults to
+the first `fabric` port from `BareMetalInstanceType.network_ports`.
 
 Single interface (simple case):
 
@@ -539,8 +540,9 @@ osac create cluster --template ocp_4_17_small \
 For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
 are architecturally possible but deferred. The fulfillment-service resolves
 the interface from the BareMetalInstanceType (`fabric_interface` — first port
-with role `fabric`). The operator handles agent selection and network attachment
-(switch port configuration) before triggering the provisioning template.
+with role `fabric`) and stores it on the node set. The worker controller passes
+that stored value to BMaaS; BMaaS handles the host's network attachment as part
+of its provisioning lifecycle.
 See [CaaS Networking](/enhancements/OSAC-1436-caas-networking) for the detailed flow.
 
 Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
@@ -726,9 +728,9 @@ move differs per service:
   network → move to tenant network → reboot so the OS re-DHCPs on the tenant
   network). This achieves isolation-until-ready: the tenant cannot reach the
   server during imaging/first-boot.
-- **CaaS:** Move happens **BEFORE provisioning** (agents are pre-booted on the
-  provisioning network, so the port is moved to the tenant network before cluster
-  creation begins; no in-deploy switch needed).
+- **CaaS:** BMaaS moves the port **POST-OS-provisioning** (the host is provisioned
+  on the provisioning network, then the port moves to the tenant network and the
+  host reboots before it joins the cluster installation flow).
 
 Once on the tenant network, the host receives an IP from the fabric's DHCP server
 automatically. A single AAP job template serves both directions, deriving onboard

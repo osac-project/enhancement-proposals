@@ -80,11 +80,11 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Network Configuration
 
-- **FR-1:** Cluster creation supports the singular `network_attachment` field. The attachment may omit its subnet or security-group list; the complete resolved attachment is immutable after creation. The attachment applies to the entire cluster — all node sets share the same subnet. The system determines which physical network interface to use for each node set from its BareMetalInstanceType. [User]
+- **FR-1:** Cluster creation supports the singular `network_attachment` field. The attachment may omit its subnet or omit or explicitly supply an empty security-group list; the complete resolved attachment is immutable after creation. The default SecurityGroup is used only when the resolved Subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork. The attachment applies to the entire cluster — all node sets share the same subnet. The system determines which physical network interface to use for each node set from its BareMetalInstanceType. [User]
 
 #### Optional Network Configuration with Defaults
 
-- **FR-2:** The network configuration on cluster creation is optional. When the attachment is omitted or empty, the system applies the tenant's default subnet and default security group. When a partial attachment is supplied, only missing subnet or security-group fields are defaulted; supplied values are preserved. The default SecurityGroup is used only when the resolved subnet belongs to the tenant's default VirtualNetwork. The resolved configuration is stored so the cluster is self-describing after creation. [User]
+- **FR-2:** The network configuration on cluster creation is optional. When the attachment is omitted or empty, the system applies the tenant's default subnet and default security group. When a partial attachment is supplied, only missing subnet or security-group fields are defaulted; an explicitly empty security-group list is treated as missing; supplied values are preserved. The default SecurityGroup is used only when the resolved subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved subnet's VirtualNetwork. The resolved configuration is stored so the cluster is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -104,7 +104,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Network Connectivity Setup
 
-- **FR-7:** The system configures network connectivity for selected hosts before cluster provisioning begins. For each host, the system configures the appropriate `fabric` port resolved from its BareMetalInstanceType to connect to the specified subnet. Network connectivity must be ready before provisioning proceeds. [User]
+- **FR-7:** BMaaS provisions each selected host on the provisioning network, then moves the host's stored `fabric_interface` to the tenant network, reboots the host, and discovers its tenant-network DHCP address before the host joins the cluster installation flow. The interface is resolved once from the node set's BareMetalInstanceType during cluster creation and stored on the ClusterOrder; CaaS does not re-resolve it at worker creation time. [User]
 
 #### Cluster Provisioning
 

@@ -38,7 +38,7 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
-ComputeInstance currently uses a shared `NetworkAttachment` message. This enhancement keeps the attachment field optional (populating it with tenant defaults when omitted), enforces a maximum of one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. See [PRD](prd.md) for detailed requirements.
+ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhancement keeps the existing repeated attachment field optional (populating it with tenant defaults when omitted), enforces a maximum of one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -46,22 +46,22 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 1. Tenant creates VirtualNetwork, Subnet, SecurityGroup via API
 2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
-3. Tenant creates ComputeInstance with `network_attachments` (shared message, no `primary` field, single-NIC only)
+3. Tenant creates ComputeInstance with `network_attachments` (`ComputeNetworkAttachment`, no `primary` field, single-NIC only)
 4. osac-operator's ComputeInstance controller resolves subnet → namespace, triggers AAP job
 5. AAP template (`osac.templates.ocp_virt_vm`) creates KubeVirt VirtualMachine with one `l2bridge` interface in the subnet's CUDN namespace
 
 ### What Already Works
 
 - `network_attachments` field exists on ComputeInstanceSpec (field 14)
-- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL cardinality and immutability rules; the complete resolved attachment is immutable
+- Operator CRD has `NetworkAttachments []ComputeNetworkAttachment` with CEL cardinality and immutability rules; the complete resolved attachment is immutable
 - Subnet-to-namespace resolution is implemented
 - The template creates VMs in the correct namespace
 - ExternalIPAttachment with `compute_instance` target works end-to-end
 
 ### What's Missing
 
-- Shared `NetworkAttachment` message — no `primary` field; the compatibility field remains single-attachment only
-- No per-resource-type attachment message (`ComputeNetworkAttachment`)
+- Existing `ComputeNetworkAttachment` has no `primary` field; the compatibility field remains single-attachment only
+- Service-level maximum-one validation and field-level defaulting are still required
 - At most one attachment — template creates one `l2bridge` interface
 - No dispatcher — uses `implementation_strategy` annotation
 - BM-only deployment validation (reject VM when no k8sManager)
@@ -127,7 +127,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    ```
    - fulfillment-service:
      - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet and default SecurityGroup (see Default Networking PRD)
-     - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, and a missing or empty SecurityGroup list receives the tenant default SecurityGroup for the resolved Subnet's VirtualNetwork; supplied values are preserved
+     - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, and a missing or empty SecurityGroup list receives the tenant default SecurityGroup only when the resolved Subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork; supplied values are preserved
      - Validates: at most one attachment; the subnet is Ready and the security groups belong to the same VN
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `network_attachments`

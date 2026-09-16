@@ -32,7 +32,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - A tenant can create a bare-metal server with `--external-ip-attachment` and have the system allocate an external IP for inbound access automatically
 - Network attachments are optional — when omitted, the system attaches the server to the tenant's default subnet and security group
 - BareMetalInstanceTypes expose available physical network ports through the API (name, role, type, speed) for bare-metal servers
-- Network connectivity for the attachment is established before bare-metal OS provisioning begins
+- Bare-metal provisioning uses the provisioning network for inventory and OS provisioning, then moves the selected fabric port to the tenant network and reboots the host so it receives its tenant-network IP
 - External IP attachments support bare-metal servers as a target type
 - The system uses a distinct configuration parameter for network automation backend selection, separate from the networking resource hierarchy
 
@@ -95,7 +95,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Optional Network Attachments with Defaults
 
-- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted or empty, the system attaches the server to the tenant's default subnet and default security group, using the first `fabric` port from the BareMetalInstanceType (see Default Networking PRD). When a single attachment is supplied, only missing subnet, security-group, or interface fields are defaulted; supplied values are preserved. A default security group is used only when the resolved subnet belongs to the tenant's default VirtualNetwork. If the BareMetalInstanceType has no valid fabric port, creating a server without an explicit interface fails with a clear error. The resolved attachment is stored with the server so the server is self-describing after creation. [User]
+- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted or empty, the system attaches the server to the tenant's default subnet and default security group, using the first `fabric` port from the BareMetalInstanceType (see Default Networking PRD). When a single attachment is supplied, only missing subnet, security-group, or interface fields are defaulted; a missing or explicitly empty security-group list is treated as missing. A default security group is used only when the resolved subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved subnet's VirtualNetwork. Supplied values are preserved. If the BareMetalInstanceType has no valid fabric port, creating a server without an explicit interface fails with a clear error. The resolved attachment is stored with the server so the server is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -103,7 +103,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Connectivity Configuration
 
-- **FR-7:** Network connectivity for the attachment is established before bare-metal OS provisioning begins. After the server boots, it receives an IP address on the configured subnet. [User]
+- **FR-7:** The host remains on the provisioning network through OS provisioning. After provisioning completes, the system moves the selected fabric port to the tenant network, reboots the host, and allows the host to obtain an IP through tenant-network DHCP. [User]
 
 #### IP Address Visibility
 

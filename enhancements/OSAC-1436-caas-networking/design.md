@@ -122,7 +122,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
 5. **fulfillment-service:**
     - If `network_attachment` is omitted or empty: populates it with the tenant's default Subnet and default SecurityGroup (see Default Networking PRD).
-    - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, and a missing or empty SecurityGroup list receives the tenant default SecurityGroup only when the resolved Subnet belongs to the tenant's default VirtualNetwork; supplied values are preserved. CaaS does not accept a tenant interface field; the worker handoff resolves the first `fabric` port from each node set's BareMetalInstanceType.
+    - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, and a missing or empty SecurityGroup list receives the tenant default SecurityGroup only when the resolved Subnet belongs to the tenant's default VirtualNetwork; supplied values are preserved. CaaS does not accept a tenant interface field; fulfillment resolves the first `fabric` port from each node set's BareMetalInstanceType and stores it as immutable `fabric_interface` on the node set for the worker handoff.
     - Validates network_attachment (the singular Cluster field):
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
@@ -237,9 +237,9 @@ Interfaces are ordered. When multiple interfaces share the same role (e.g., two 
 #### How CaaS Uses BareMetalInstanceType
 
 The tenant provides a single `ClusterNetworkAttachment` with optional `subnet`
-and `security_groups` fields — no node_set or interface field. The
-`BareMetalWorkerReconciler` resolves the interface from the BareMetalInstanceType
-for each node set:
+and `security_groups` fields — no node_set or interface field. Fulfillment
+resolves and stores the interface from the BareMetalInstanceType for each node
+set:
 
 1. For each node set in the cluster spec (e.g., "gpu"), read `ClusterSpec.node_sets["gpu"].baremetal_instance_type` = "bm-standard"
 2. BareMetalInstanceType "bm-standard" has network_ports:
@@ -248,12 +248,12 @@ for each node set:
     {name: "data-1", role: "fabric", type: "Ethernet", speed: "100Gbps"},
     {name: "mgmt-0", role: "management", type: "Ethernet", speed: "1Gbps"}]
    ```
-3. The controller picks the first port with `role=fabric` → `data-0`, uses it as the `interface` field on the per-BMI `BareMetalNetworkAttachment`
-4. BMaaS receives the `BareMetalNetworkAttachment` (subnet + interface + primary) on the BMI Create call and handles the fabric port move as part of provisioning (see [On-Demand BMI Provisioning Model](#on-demand-bmi-provisioning-model-osac-2135))
+3. Fulfillment picks the first port with `role=fabric` → `data-0`, stores it as the immutable `fabric_interface` on the node set in the ClusterOrder
+4. The worker controller copies the stored `fabric_interface` into the per-BMI `BareMetalNetworkAttachment`; BMaaS receives the attachment (subnet + interface + primary) on the BMI Create call and handles the fabric port move as part of provisioning (see [On-Demand BMI Provisioning Model](#on-demand-bmi-provisioning-model-osac-2135))
 
 For v0.2: **CaaS supports BM node sets only.** VM-based cluster node sets are architecturally possible but are deferred — the HyperShift ↔ CUDN integration for VM worker nodes is not in scope.
 
-For v0.2: **one attachment per cluster → one subnet; each node set resolves its own fabric interface from its BareMetalInstanceType.**
+For v0.2: **one attachment per cluster → one subnet; each node set uses its own immutable fabric interface resolved from its BareMetalInstanceType at cluster creation.**
 
 #### Interface Role Convention
 
@@ -547,9 +547,9 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 
 - fulfillment-service: network_attachment validation (subnet exists, Ready, same VN)
 - fulfillment-service: fabric_interface resolution per node set (BareMetalInstanceType must have fabric-role port)
-- fulfillment-service: interface resolution from BareMetalInstanceType (pick first fabric-role port from network_ports[])
+- fulfillment-service: interface resolution from BareMetalInstanceType (pick first fabric-role port from network_ports[] and store it on the node set)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- osac-operator BareMetalWorkerReconciler: BMI creation with enriched network_attachment
+- osac-operator BareMetalWorkerReconciler: BMI creation with enriched network_attachment using the stored node-set interface
 - osac-operator BareMetalWorkerReconciler: Agent-to-BMI MAC correlation
 - osac-operator feedback controller: VIP sync to fulfillment-service
 

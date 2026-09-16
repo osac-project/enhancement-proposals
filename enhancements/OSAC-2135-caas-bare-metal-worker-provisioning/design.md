@@ -224,7 +224,7 @@ The diagram shows the end-to-end provisioning flow. The controller waits for eac
    | `catalog_item` | System-owned pass-through | Required by private API; CaaS overrides all parameters |
    | `image` | `ClusterVersion.disk_image` → DiskImage ID | RHCOS boot image for discovery agent |
    | `user_data` | InfraEnv ignition (inline, ~15KB, max 64KB) | Discovery ignition to register with assisted-service |
-   | `network_attachments` | `networkAttachment` + BareMetalInstanceType `network_ports` | The sole attachment from `ClusterNetworkAttachment`, interface from first `fabric` port, `primary: true` (see Network Attachment Enrichment); BMaaS rejects additional entries |
+   | `network_attachments` | `networkAttachment` + stored node-set `fabric_interface` | The sole attachment from `ClusterNetworkAttachment`; the stored interface was selected from the first `fabric` port during cluster creation, with `primary: true` (see Network Attachment Enrichment); BMaaS rejects additional entries |
    | `tenant` | Always `"system"` | Hides CaaS BMIs from tenant APIs (see System Tenant Isolation) |
 
    BMaaS handles the physical networking — moving the host to the tenant subnet VLAN and assigning an IP via fabric DHCP — as part of BMI provisioning (dependency: OSAC-1437). If the host fails to join the tenant network, the agent will not register on the expected subnet, and the existing `AgentRegistrationTimeout` handles this failure mode. API and ingress VIPs are provisioned by the existing AAP template (MetalLB LoadBalancer Services) and are not managed by this controller.
@@ -654,7 +654,7 @@ networking:
 |---|---|---|
 | `subnetRef` | `subnet` | Pass-through |
 | `securityGroupRefs[]` | `security_groups[]` | Pass-through |
-| — | `interface` | Resolved from `BareMetalInstanceType.network_ports[]` (first port with role `fabric`) |
+| — | `interface` | The node set's stored `fabric_interface`, resolved from `BareMetalInstanceType.network_ports[]` during cluster creation (first port with role `fabric`) |
 | — | `primary: true` | Always set — CaaS BM workers have a single network attachment |
 
 This enrichment is a read-only consumer of the ClusterOrder's singular
@@ -664,7 +664,7 @@ type, not ComputeInstance's `ComputeNetworkAttachment`. This design requires
 the field to be present on the ClusterOrder CRD before the BM controller can
 read it.
 
-The `interface` field is resolved at BMI creation time, not stored on the ClusterOrder. Different node sets in the same cluster can reference different `BareMetalInstanceType`s with different network port configurations — the interface is resolved per node set, not per cluster.
+The `interface` field is resolved once during cluster fulfillment from `BareMetalInstanceType.network_ports[]`, stored as the node set's immutable `fabric_interface` on the ClusterOrder, and consumed by the worker. Different node sets may therefore carry different stored interface values, and later profile changes do not alter an in-flight ClusterOrder.
 
 #### Minimum MCE Version
 
