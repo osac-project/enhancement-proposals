@@ -3,69 +3,96 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-07-08
+last-updated: 2026-09-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
 see-also:
   - "Unified Networking: /enhancements/OSAC-1433-unified-networking"
   - "Default Networking: /enhancements/OSAC-1433-default-networking"
+  - "K8s-only Networking Manager: /enhancements/OSAC-1433-k8s-only-k8s-manager"
 replaces:
   - N/A
 superseded-by:
   - N/A
 ---
 
-# VMaaS Networking — Optional Attachments and Auto External Access
+# VMaaS Networking — Single Interface, Optional Attachments and Auto External Access
 
-This enhancement extends the unified networking API to support VMaaS-specific requirements: multi-NIC ComputeInstance provisioning with a designated primary attachment, optional network attachments with tenant defaults, and auto-provisioned external access (ExternalIP).
+This enhancement extends the unified networking API to support VMaaS-specific requirements: a list-shaped but single-entry ComputeInstance attachment contract, optional network attachments with tenant defaults, and auto-provisioned external access (ExternalIP). Multi-interface VM support is unsupported in the current contract.
 
 ## Summary
 
 This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
 
-ComputeInstance currently uses a shared `NetworkAttachment` message that lacks a `primary` field, preventing multi-NIC VM provisioning with a designated default gateway. This enhancement introduces `ComputeNetworkAttachment` with a `primary` field, makes the attachments field optional (populating with tenant defaults when omitted), and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. See [PRD](prd.md) for detailed requirements.
+Shared field types, formats, presence rules, allowed values, and validation
+are defined by the [Unified Networking field contract](/enhancements/OSAC-1433-unified-networking/design.md#field-types-formats-and-validation).
+
+The shared networking resource model and IPv4-only scope are defined by the
+[Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology).
+The connected-only deployment boundary, including the exclusion of air-gapped
+deployments, is defined by the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary).
+The shared operation contract is defined by [Supported Operations and
+Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
+
+VMaaS also inherits the Unified Networking [strict dependency-ready creation
+contract](/enhancements/OSAC-1433-unified-networking/design.md#strict-dependency-ready-creation): the resolved Subnet, SecurityGroups,
+effective NetworkACL, and VM placement prerequisites must already be Ready
+before a ComputeInstance is persisted. A VM may have Pending OSAC-owned
+automatic ExternalIP children after successful admission, but a tenant or
+Catalog request cannot create a VM or attachment that waits for a Pending
+network dependency.
+
+ComputeInstance exposes the repeated `network_attachments` API field,
+whose values are `ComputeNetworkAttachment` messages. The field remains
+optional and list-shaped while
+accepting at most one entry, and `auto_external_ip_attachment` enables fully
+connected VMs in a single API call. See [PRD](prd.md) for detailed
+requirements.
 
 ## Motivation
 
-ComputeInstance already participates in the networking API. Today's flow:
+ComputeInstance already participates in the networking API. The legacy flow
+being replaced by the shared dispatcher was:
 
-1. Tenant creates VirtualNetwork, Subnet, SecurityGroup via API
-2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
-3. Tenant creates ComputeInstance with `network_attachments` (shared message, no `primary` field, single-NIC only)
+1. Tenant creates VirtualNetwork and Subnet via API; the tenant default
+   SecurityGroup and NetworkACL are created through the complete manager profile
+2. osac-operator's networking controllers resolve the shared per-resource
+   dispatch plan and reconcile each selected target as a standalone AAP job.
+   The current K8s-only manager's concrete entrypoints are defined in the
+   [K8s-only manager design](../OSAC-1433-k8s-only-k8s-manager/design.md).
+3. Tenant creates ComputeInstance with `network_attachments` (resource-specific message, single-interface only)
 4. osac-operator's ComputeInstance controller resolves subnet → namespace, triggers AAP job
 5. AAP template (`osac.templates.ocp_virt_vm`) creates KubeVirt VirtualMachine with one `l2bridge` interface in the subnet's CUDN namespace
 
 ### What Already Works
 
-- `network_attachments` field exists on ComputeInstanceSpec (field 14)
-- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL immutability rules (subnet refs immutable, security group refs mutable)
+- `network_attachments` is the ComputeInstanceSpec attachment field for ComputeInstance
+- Operator CRD has `NetworkAttachments []ComputeNetworkAttachment` with CEL immutability rules (the complete list and every network field are immutable)
 - Subnet-to-namespace resolution is implemented
 - The template creates VMs in the correct namespace
 - ExternalIPAttachment with `compute_instance` target works end-to-end
 
 ### What's Missing
 
-- Shared `NetworkAttachment` message — no `primary` field for multi-NIC
-- No per-resource-type attachment message (`ComputeNetworkAttachment`)
 - Single-NIC only — template creates one `l2bridge` interface
-- No dispatcher — uses `implementation_strategy` annotation
-- BM-only deployment validation (reject VM when no k8sManager)
+- Manager-profile validation before VM dispatch
 - Auto ExternalIP allocation (tenant must manually create ExternalIP + ExternalIPAttachment)
 
 ### Goals
 
-- Multi-NIC support with designated primary attachment for default gateway
-- Resource-specific attachment message (`ComputeNetworkAttachment`) with `primary` field
+- Single-interface support with a list-shaped attachment field
+- Resource-specific attachment message (`ComputeNetworkAttachment`) with a `primary` field
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
-- BM-only deployment validation to reject VM provisioning when no k8s_manager is available
+- Complete manager-profile validation before VM provisioning
 
 ### Non-Goals
 
 - CaaS or BMaaS networking (this EP covers VMaaS only)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
-- Kubernetes manager implementation (CUDN or EVPN fabric integration via k8s_manager roles)
+- Concrete K8s-manager implementations and profiles; see the [K8s-only Networking Manager design](../OSAC-1433-k8s-only-k8s-manager/design.md) and the separate [CUDN EVPN manager design](../OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md)
 
 ## Proposal
 
@@ -75,28 +102,36 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 1. **Tenant creates VirtualNetwork:**
    ```bash
-   osac create virtualnetwork --network-class moc-bm-virt --cidr 10.0.0.0/16 --name my-net
+   osac create virtualnetwork --cidr 10.0.0.0/16 --name my-net
    ```
    - fulfillment-service → creates VirtualNetwork CR
-   - osac-operator VirtualNetwork controller → dispatcher resolves NetworkClass → calls `osac.templates.{{ fabric_manager }}.create_virtual_network`
-   - Fabric manager creates isolated tenant segment on the fabric
+   - osac-operator VirtualNetwork controller → dispatcher resolves the single
+     deployment NetworkClass and the VirtualNetwork target set
+   - Every configured manager creates its implementation of the isolated tenant
+     segment
 
 2. **Tenant creates Subnet:**
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
    ```
-   - osac-operator Subnet controller → dispatcher resolves NetworkClass → triggers TWO AAP jobs (multi-job tracking per OSAC-1459):
-     - `osac.templates.{{ fabric_manager }}.create_subnet` — creates VLAN / fabric segment
-     - `osac.templates.{{ k8s_manager }}.create_subnet` — creates CUDN overlay on each hosting cluster, bridges to the fabric segment
-   - After both complete: subnet is Ready. The CUDN namespace is the deployment target for VMs.
+   - osac-operator Subnet controller → dispatcher resolves NetworkClass and
+     starts one AAP job for each configured manager
+   - A Fabric target creates the fabric segment; a K8s target creates the
+     CUDN/OVN overlay and bridge. After every selected target completes, the
+     subnet is Ready. The CUDN namespace is the deployment target for VMs
+     when a K8s target is selected.
 
-3. **Tenant creates SecurityGroup:**
+3. **Tenant creates policy resources through the complete manager targets:**
    ```bash
-   osac create security-group --virtual-network my-net --name my-sg \
-     --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
+   osac create network-acl --virtual-network my-net --subnet my-subnet --name my-nacl \
+     --rule "action=allow,direction=ingress,protocol=tcp,port=443,source-cidr=0.0.0.0/0"
    ```
-   - Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
-   - Fabric manager creates ACL rules on the fabric
+   - A NetworkACL is associated with the Subnet. It is not attached to an
+     individual VM. A SecurityGroup is selected by the VM attachment and
+     contains stateful allow-only rules.
+   - Dispatcher → every configured manager. If both are configured, both
+     internal targets must reconcile. Native Kubernetes NetworkPolicy alone is
+     not sufficient for either OSAC policy contract.
 
 #### VM Creation
 
@@ -104,7 +139,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    ```bash
    # Explicit networking:
    osac create computeinstance --template ocp_virt_vm \
-     --network-attachment subnet=my-subnet,security-groups=my-sg \
+     --network-attachment subnet=my-subnet \
      --name my-vm
 
    # Or with defaults + auto external access:
@@ -112,15 +147,27 @@ ComputeInstance already participates in the networking API. Today's flow:
      --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
-     - If `compute_network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
-     - Validates: subnets exist, are Ready, same VN, primary rules
+   - If `network_attachments` is omitted or empty: populates the tenant default
+     Subnet and default SecurityGroup, but only when the
+     resolved Subnet belongs to the tenant default VirtualNetwork. For a
+     supplied attachment, defaults only missing subnet or SecurityGroup fields;
+     a non-default-VirtualNetwork Subnet without a compatible explicit group is
+     rejected (see Default Networking PRD)
+     - Validates: at most one attachment, the resolved Subnet exists and is
+       Ready, every explicit/default SecurityGroup is Ready and belongs to the
+       same tenant and VirtualNetwork, the effective NetworkACL is Ready, and
+       the single-entry primary rule is satisfied
+     - If the supplied Subnet is outside the tenant default VirtualNetwork and
+       no compatible SecurityGroup is supplied, reject with `InvalidArgument`;
+       never apply the default-VN SecurityGroup. A Subnet without a Ready
+       effective ACL is rejected for VM placement with `FailedPrecondition`.
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
-   - Creates ComputeInstance CR with `compute_network_attachments`
+   - Creates ComputeInstance CR with `network_attachments`
 
 5. **osac-operator ComputeInstance controller:**
 
    a. `resolveNetworking` (existing logic, extended):
-      - `PrimarySubnetRef()` → returns the primary attachment's subnet (explicit `primary: true`, or implicit if only one attachment)
+      - `PrimarySubnetRef()` → returns the sole attachment's subnet (the entry is implicitly primary when `primary` is omitted)
       - `resolveSubnetTargetNamespace()` → looks up Subnet CR → namespace (same as today)
       - Stamps `osac.openshift.io/subnet-target-namespace` annotation
       - **No dispatcher call for network attachments** — VMs don't need switch port configuration. The k8sManager's work was done at subnet creation (step 2). The overlay already exists.
@@ -129,10 +176,13 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 6. **AAP template (`osac.templates.ocp_virt_vm`):**
    - Reads `subnet-target-namespace` → deployment namespace
-   - Reads `compute_network_attachments`:
-     - Single attachment (today's behavior): creates VM with one `l2bridge` interface in the subnet's CUDN namespace
-     - Multiple attachments (NEW — multi-NIC): creates VM with multiple KubeVirt network/interface definitions, each referencing a different CUDN NAD. The `primary: true` attachment gets the default gateway.
-   - Reads `securityGroupRefs` → adds as pod labels
+   - Reads `network_attachments`:
+     - Empty list: this is resolved to the tenant defaults before the CR is created
+     - Single attachment: creates VM with one `l2bridge` interface in the subnet's CUDN namespace
+     - Multiple entries are rejected by fulfillment-service and never reach the template
+   - Reads the effective NetworkACL from the selected Subnet and the effective
+     SecurityGroup list from the VM attachment; no ACL reference is copied into
+     the VM attachment or pod labels
    - Creates DataVolume + KubeVirt VirtualMachine
    - VM gets IP from each CUDN (via DHCP)
    - VM is on the fabric (overlay bridged at subnet creation)
@@ -142,31 +192,39 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 7. **osac-operator ComputeInstance feedback controller** discovers VM IPs:
    - Watches KubeVirt VMI (VirtualMachineInstance) network status
-   - For each interface, reads the assigned IP from `vmi.status.interfaces[].ipAddress`
-   - Maps each interface to the corresponding `compute_network_attachment` by CUDN NAD reference
+   - Reads the assigned IP from the sole `vmi.status.interfaces[].ipAddress`
+   - Maps the interface to the sole `ComputeNetworkAttachment` value from
+     `network_attachments` by CUDN NAD reference
    - Fires Signal RPC to fulfillment-service with per-attachment IP data
-   - fulfillment-service writes `compute_network_attachment_statuses` on ComputeInstanceStatus (each entry: `subnet_ref`, `ip_address`, `primary`)
-   - Tenant can inspect: `osac get computeinstance my-vm -o yaml` shows assigned IPs per attachment
+   - fulfillment-service writes at most one `compute_network_attachment_statuses` entry on ComputeInstanceStatus (`subnet` typed reference, `ip_address`, `primary`)
+   - Tenant can inspect: `osac get computeinstance my-vm -o yaml` shows the assigned IP for the attachment
 
 #### External Access (optional, auto-provisioned when `auto_external_ip_attachment=true`)
 
 8. **fulfillment-service creates ExternalIP and ExternalIPAttachment:**
-   - Auto-selects ExternalIPPool (READY, most available capacity, matching IP family)
-   - Creates ExternalIP from pool, labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <compute-instance-id>`
-   - Creates ExternalIPAttachment binding ExternalIP to VM's primary subnet IP, labeled `osac.openshift.io/auto-provisioned: "true"`
+   - Auto-selects an IPv4 ExternalIPPool (READY, most available capacity)
+   - Creates ExternalIP and ExternalIPAttachment with the canonical
+     `osac.openshift.io/auto-created: "true"` marker and an exact immutable
+     ComputeInstance owner relationship. The ExternalIP may also expose
+     `osac.openshift.io/auto-created-for: <compute-instance-id>` for indexed
+     discovery, but that label is not ownership proof.
+   - The ExternalIPAttachment binds the ExternalIP to VM's primary subnet IP.
    - Both start in **Pending** state. The ExternalIPAttachment controller checks two preconditions before dispatching (requeues if either is not met):
-     1. ExternalIP must be Allocated (have an allocated address from the fabric manager)
+     1. ExternalIP must be Allocated by every selected manager for that
+        ExternalIP
      2. ComputeInstance must have `compute_network_attachment_statuses` populated with the primary attachment's `ip_address` (VM IP discovered from KubeVirt VMI)
-   - Once both are met: dispatcher → `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
-   - Fabric manager creates DNAT rule: external IP → VM's primary subnet IP (from `compute_network_attachment_statuses`)
+   - Once both are met: dispatcher invokes the external-IP attachment
+     operation on every selected manager for that resource
+   - The selected manager implementation(s) create DNAT: external IP → VM's
+     primary subnet IP (from `compute_network_attachment_statuses`)
    - ExternalIPAttachment transitions from Pending to Ready
 
 #### Deletion (reverse order)
 
 9. **Delete ComputeInstance:**
-   - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
-   - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
-   - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
+   - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by OSAC, the parent cleanup finalizer deletes only resources with the canonical auto-created marker and an exact immutable ComputeInstance owner: ExternalIPAttachment first, waits for full removal, then ExternalIP. A target reference or label alone is not sufficient ownership proof.
+   - **Manually created resources are NOT cleaned up** — if the tenant created an ExternalIP explicitly, it persists until the tenant deletes it. A manually created ExternalIPAttachment that targets the ComputeInstance is a reverse reference and blocks ComputeInstance deletion until the tenant deletes the attachment; it is not detached or changed to Pending implicitly.
+   - **Default networking resources (VN, Subnet, SecurityGroup, NetworkACL, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources. Subnet deletion reports ComputeInstance and NetworkACL blockers; VirtualNetwork deletion reports Subnet, SecurityGroup, NetworkACL, and NATGateway blockers.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
    - Template deletes KubeVirt VM + DataVolume
    - No `move_network_attachment` call — the VM lives on the CUDN overlay, not a fabric switch port, so it is never parked or port-moved (the port-move primitive and parking apply only to fabric-attached BM servers and CaaS agents)
@@ -174,6 +232,37 @@ ComputeInstance already participates in the networking API. Today's flow:
 10. **Delete networking resources:**
     - Each networking resource controller triggers its delete AAP job
     - Dispatcher calls the appropriate manager role for each
+
+### CLI networking contract
+
+VMaaS inherits the shared [Unified Networking CLI contract](../OSAC-1433-unified-networking/design.md#normative-cli-contract).
+The VM-specific mapping is:
+
+| API field | CLI form | Allowed values |
+|---|---|---|
+| `spec.network_attachments` | One optional `--network-attachment` | Zero or one attachment; repeating the option is rejected |
+| `ComputeNetworkAttachment.subnet` | `subnet=<name>` inside the attachment value | Optional; omission receives only the tenant default Subnet |
+| `ComputeNetworkAttachment.security_groups` | `security-groups=<name>[,...]` inside the attachment value | Optional; omission receives the tenant default SecurityGroup only when the resolved Subnet is in the tenant default VirtualNetwork; explicit list is typed, unique, same-tenant, same-VN, and Ready |
+| `ComputeNetworkAttachment.primary` | Not emitted by the CLI | Omission is implicitly primary; `true` is accepted only through a structured client; `false` is rejected |
+| `auto_external_ip_attachment` | `--external-ip-attachment` | Presence means `true`; omission means `false`; create-time only |
+
+The canonical explicit command is:
+
+```bash
+osac create computeinstance --template ocp_virt_vm \
+  --network-attachment subnet=my-subnet \
+  --name my-vm
+```
+
+The CLI must not expose `--network-attachments`, `interface=...`, or a
+multi-NIC mode for VMaaS. Omitting `--network-attachment` invokes the tenant
+default Subnet and the default SecurityGroup only when that Subnet is in the
+tenant default VirtualNetwork and the group is available. The CLI constructs
+typed local Subnet and SecurityGroup references and sends the resource-specific
+`ComputeNetworkAttachment` message. NetworkACL association is managed through
+the NetworkACL resource. VM network fields and
+`auto_external_ip_attachment` cannot be changed through update or patch
+commands; delete and recreate is required.
 
 ### API Extensions
 
@@ -183,41 +272,50 @@ Replace the shared `NetworkAttachment` with `ComputeNetworkAttachment`:
 
 ```protobuf
 message ComputeNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
-  bool primary = 3;                     // immutable, designates default gateway
+  SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
+  optional bool primary = 2;            // one attachment is implicitly primary
+  repeated SecurityGroupLocalReference security_groups = 3; // omitted -> tenant default SecurityGroup only for the tenant default VirtualNetwork
 }
 
 message ComputeInstanceSpec {
   // ... existing fields ...
-  // DEPRECATED: field 14 (old shared NetworkAttachment)
-  repeated ComputeNetworkAttachment compute_network_attachments = 18; // optional
-  bool auto_external_ip_attachment = 19;  // NEW, auto-provision ExternalIP + ExternalIPAttachment
+  repeated ComputeNetworkAttachment network_attachments = 18; // optional; zero or one supported
+  optional bool auto_external_ip_attachment = 19; // NEW, create-time only; omitted/false disables auto-provisioning; true creates ExternalIP + ExternalIPAttachment
 }
 
 message ComputeNetworkAttachmentStatus {
-  string subnet_ref = 1;               // Subnet ID (echoed from spec)
+  SubnetLocalReference subnet = 1;     // Controller-owned resolved reference
   string ip_address = 2;               // Discovered from KubeVirt VMI network status after DHCP/overlay assignment
   bool primary = 3;                     // Echoed from spec
 }
 
 message ComputeInstanceStatus {
   // ... existing fields ...
-  repeated ComputeNetworkAttachmentStatus compute_network_attachment_statuses = N; // NEW
+  repeated ComputeNetworkAttachmentStatus compute_network_attachment_statuses = N; // NEW; at most one entry
 }
 ```
 
 #### Operator CRD (osac-operator)
 
-Update `ComputeInstanceSpec.NetworkAttachments` struct:
-- Add `Primary bool` field with CEL immutability validation
-- Add validation: if >1 attachment, exactly one must be `primary: true`
-- `PrimarySubnetRef()` returns the attachment with `primary: true` (falls back to first attachment for backward compat)
+The public fulfillment API field `spec.network_attachments` maps to the
+operator CRD field `spec.networkAttachments` (Go field
+`ComputeInstanceSpec.NetworkAttachments`). Fulfillment-service performs this
+API-to-CRD conversion when it creates the private CR; the operator does not
+accept the public snake_case field directly. The CRD field is the same
+resource-specific `ComputeNetworkAttachment` message, not the replaced shared
+`NetworkAttachment` message. There is no legacy conversion path because the
+shared field has no users or persisted resources.
+
+Define/extend `ComputeInstanceSpec.NetworkAttachments` with:
+- `Primary bool` field with CEL immutability validation
+- CEL immutability validation for the complete attachment list and every entry field
+- Add validation: the list contains at most one attachment; if present, `primary` must be omitted or `true`
+- `PrimarySubnetRef()` returns the sole attachment (or no attachment before default resolution)
 
 CEL validation rule:
 ```yaml
-- rule: "self.networkAttachments.size() > 1 ? self.networkAttachments.filter(x, x.primary == true).size() == 1 : true"
-  message: "When multiple network attachments exist, exactly one must have primary: true"
+- rule: "self.networkAttachments.size() <= 1 && (self.networkAttachments.size() == 0 || !has(self.networkAttachments[0].primary) || self.networkAttachments[0].primary == true)"
+  message: "ComputeInstance supports at most one network attachment and it cannot set primary: false"
 ```
 
 Add `ComputeNetworkAttachmentStatus` to `ComputeInstanceStatus`:
@@ -229,26 +327,163 @@ type ComputeInstanceStatus struct {
 }
 
 type ComputeNetworkAttachmentStatus struct {
-    SubnetRef string `json:"subnetRef"`
+    Subnet *SubnetLocalReference `json:"subnet,omitempty"`
     IPAddress string `json:"ipAddress,omitempty"` // Discovered from KubeVirt VMI after DHCP/overlay assignment
     Primary   bool   `json:"primary,omitempty"`
 }
 ```
 
-The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching the KubeVirt VMI `status.interfaces` and mapping each interface IP to the corresponding attachment by CUDN NAD reference.
+The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching the sole KubeVirt VMI interface in `status.interfaces` and mapping its IP to the single attachment by CUDN NAD reference.
 
 #### Server Validation (fulfillment-service)
 
-- During migration: accept both old field (14) and new field (18). If both set, reject. If old set, convert internally.
-- Primary validation: if multiple attachments, exactly one primary
-- BM-only deployment check: if the NetworkClass has no k8sManager, reject ComputeInstance creation
+VMaaS performs validation in the shared order defined by the [Unified
+Networking validation pipeline](/enhancements/OSAC-1433-unified-networking/design.md#validation-and-enforcement-pipeline).
+The following checks are VMaaS-specific and are required on every direct,
+Template-based, and Catalog-based ComputeInstance create path.
+
+**Request shape validation:**
+
+- `network_attachments` must contain zero or one entry. A second entry is
+  rejected before reference lookup, defaulting, capacity reservation, or CR
+  creation with a single-interface cardinality error.
+- The optional `primary` presence bit is significant. Omitted and `true` are
+  accepted for the sole entry; explicit `false` is rejected. A defaulted entry
+  is persisted with the canonical primary meaning, but an explicit `false`
+  must never be rewritten to `true`.
+- Unknown attachment fields, a malformed subnet reference, or a malformed
+  Boolean presence encoding is
+  rejected by the API shape layer.
+
+**Attachment resolution and references:**
+
+- Missing or empty attachment input resolves to exactly one attachment
+  containing the tenant's default Subnet and default SecurityGroup when one
+  exists. If the default Subnet is absent or not Ready, return the shared
+  no-default or readiness error; do not create a VM with an unresolved
+  attachment. The effective ACL is inherited from that Subnet; an unfinished
+  provider adapter may complete its normal operation as a successful no-op.
+- A supplied single attachment defaults only missing subnet or SecurityGroup
+  fields. After resolution, the Subnet must exist, be `Ready`, be IPv4, and
+  belong to the effective tenant/project. Every referenced SecurityGroup must
+  be Ready, belong to the same tenant and VirtualNetwork, and be unique. The
+  Subnet's effective NetworkACL must also be Ready.
+- The resolved attachment references one VirtualNetwork. A Catalog or
+  Template value that resolves to an invalid Subnet is rejected; defaulting
+  must not silently replace an explicitly supplied Subnet.
+- The resolved Subnet must have the hosting namespace/CUDN placement required
+  by the selected K8s manager. Missing placement status or a failed CUDN is a
+  provisioning precondition failure, not a reason to create a second attachment
+  or fall back to another Subnet. An unfinished manager operation uses the
+  normal successful no-op AAP path.
+
+**Deployment and complete-manager validation:**
+
+- ComputeInstance creation requires a Ready NetworkClass with a complete
+  manager profile. The profile includes VMaaS regardless of whether the
+  deployment is K8s-only, Fabric-only, or combined.
+- The selected manager(s) receive VM placement, attachment, and IPv4 discovery
+  operations. No workload subset declaration or per-manager scope selection is
+  used. The requested Subnet and IPv4 address-family prerequisites must pass.
+- Every selected manager is a target for SecurityGroup and NetworkACL. Native
+  Kubernetes NetworkPolicy alone is not sufficient for either OSAC policy
+  contract. An unfinished operation may use the approved successful no-op AAP
+  role.
+
+**CRD and controller validation:**
+
+- The ComputeInstance CRD repeats the maximum-cardinality and optional
+  `primary` checks with CEL. It also makes the entire resolved attachment
+  list, every Subnet and SecurityGroup reference, and `primary` immutable
+  after creation.
+- `PrimarySubnetRef()` returns the sole resolved attachment's Subnet and
+  returns no value only before default resolution has populated the CR. It
+  must never select an arbitrary first entry from an invalid multi-entry list.
+- The AAP template receives one resolved attachment and creates exactly one
+  KubeVirt network interface. It must fail closed if the CR contains more
+  than one entry rather than provisioning only the first entry.
+- The feedback controller accepts zero or one VMI network status entry, maps
+  the sole interface by the CUDN NAD reference, and writes only a canonical
+  IPv4 address that belongs to the resolved Subnet. Duplicate, mismatched,
+  non-IPv4, or more-than-one status entries are not published as Ready.
+
+**Automatic ExternalIP validation:**
+
+- When `auto_external_ip_attachment` is true, the same request first passes
+  normal VM attachment validation. Automatic external access cannot bypass
+  the required default Subnet, resolved SecurityGroups, or its effective
+  NetworkACL.
+- The selected pool must be Ready, IPv4, and have capacity. Pool selection is
+  deterministic among equal-capacity pools. Capacity reservation, the parent
+  ComputeInstance, ExternalIP, and Pending ExternalIPAttachment are persisted
+  atomically; any validation or capacity failure rolls back all of them.
+- The auto-created ExternalIPAttachment target is the ComputeInstance and its
+  endpoint is `UNSPECIFIED`. The service never accepts a tenant-supplied
+  target endpoint IP for this path.
+- The ExternalIPAttachment controller dispatches only after the ExternalIP
+  is `Allocated` and the VM status contains the sole attachment's canonical
+  IPv4 address. Until then it requeues and leaves the attachment Pending.
+- The auto-created ExternalIPAttachment DNAT target is the sole attachment's
+  IP. A VM with no discovered attachment IP cannot transition the attachment
+  to Ready.
+
+**Update, delete, and status validation:**
+
+- Update, patch, replace, and field-mask requests that change either
+  attachment field, any nested Subnet/primary value, or
+  `auto_external_ip_attachment` are rejected. The supported change is delete
+  and recreate.
+- A delete is blocked by the shared dependency guards while the VM has a
+  manually created ExternalIPAttachment reference. Valid OSAC-owned auto
+  children are the only exception and are deleted in
+  ExternalIPAttachment-then-ExternalIP order before parent finalizer removal.
+  The ExternalIPPool is never part of the cascade. A child that is deleting but
+  not yet archived remains a blocker for its parent.
+- Status writes may update only controller-owned conditions, provisioning
+  state, discovered IP, and finalizers. A status callback cannot mutate the
+  resolved network spec or make an unready Subnet or its effective NetworkACL
+  usable.
+
+Any validation failure above is surfaced with a field path where possible,
+for example `spec.network_attachments[1]`,
+`spec.network_attachments[0].subnet`, or
+`spec.network_attachments[0].primary`. The request is not persisted
+when the failure is found during create.
+
+#### Catalog Item interaction
+
+Catalog Item v2 governs the canonical `network_attachments` field as
+one complete list. It may lock the list or make it editable with an optional
+default. The field is the only supported ComputeInstance networking input.
+
+Catalog resolution happens before tenant default networking. A locked list
+rejects conflicting tenant input. An editable list accepts tenant input,
+otherwise uses its Catalog default, then the Template default, and finally
+defaults only missing Subnet and SecurityGroup fields from the tenant's
+defaults when those resources exist. Explicitly supplied fields are never
+replaced; NetworkACL association is not a Catalog or workload field.
+
+The editable policy applies only while creating the ComputeInstance. After
+creation, the complete resolved attachment list and every network field are
+read-only; changing them requires deleting and recreating the VM. Catalog Item
+definitions and metadata remain governed by Catalog Items v2 and are not
+changed here. A missing `security_groups` value receives the tenant default
+SecurityGroup when that resource exists; an explicit list is preserved and
+validated by the shared contract.
+
+The Catalog list must obey the same Compute rules as direct creation: it may
+contain zero or one attachment, and a supplied attachment is implicit primary
+when `primary` is omitted. Catalog policy can govern the Subnet,
+SecurityGroup list, and compatible `primary` value; NetworkACL association,
+CUDN/NAD placement, and hosting-cluster selection remain system concerns. A
+shared Catalog Item cannot lock or default tenant-local Subnet or SecurityGroup
+references.
 
 #### Template Changes (osac-aap)
 
-- `osac.templates.ocp_virt_vm/tasks/create_build_spec.yaml`: support multiple KubeVirt network/interface definitions from `compute_network_attachments`
-- Each attachment maps to a KubeVirt interface with `l2bridge` binding referencing the attachment's subnet's CUDN NAD
-- Primary attachment: IP + default gateway + DNS (via DHCP)
-- Non-primary: IP + connected route only (via DHCP)
+- `osac.templates.ocp_virt_vm/tasks/create_build_spec.yaml`: consume the single resolved entry from `network_attachments`
+- The entry maps to one KubeVirt interface with `l2bridge` binding referencing the attachment's subnet's CUDN NAD
+- The sole attachment supplies the IP, default gateway, and DNS via DHCP
 
 ### Implementation Details/Notes/Constraints
 
@@ -256,33 +491,38 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate network_attachments, create CR, auto-provision ExternalIP, write `compute_network_attachment_statuses` from feedback |
+| fulfillment-service | Validate `network_attachments`, create CR, auto-provision ExternalIP, write `compute_network_attachment_statuses` from feedback |
 | osac-operator ComputeInstance controller | Resolve subnet → namespace, trigger AAP, clean up auto-provisioned resources |
-| osac-operator ComputeInstance feedback controller | Watch KubeVirt VMI network status, discover per-attachment IPs, Signal fulfillment-service |
-| osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SG, ExternalIP) |
-| AAP template (ocp_virt_vm) | Create multi-NIC KubeVirt VM in correct namespace |
-| fabric_manager (Ansible role) | VN/Subnet/SG/ExternalIP provisioning; no per-VM call |
-| k8s_manager (Ansible role) | Create CUDN overlay at subnet creation; no per-VM call |
+| osac-operator ComputeInstance feedback controller | Watch the sole KubeVirt VMI interface status, discover the attachment IP, Signal fulfillment-service |
+| osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SecurityGroup, NetworkACL, ExternalIP) |
+| AAP template (ocp_virt_vm) | Create single-interface KubeVirt VM in the correct namespace |
+| selected manager(s) | VN/Subnet/SecurityGroup/NetworkACL/ExternalIP provisioning; no per-VM call after subnet setup |
+| k8s_manager (Ansible role, when configured) | Reconcile the selected manager's subnet implementation at subnet creation; no per-VM call. Concrete profiles own the implementation mapping. |
 
-#### Primary Attachment Resolution
+#### Single Attachment Resolution
 
-- Explicit: first attachment with `primary: true`
-- Implicit: if only one attachment, treat as primary (no explicit flag required)
-- Error: if >1 attachment and no `primary: true`, or >1 `primary: true`
+- The list may contain zero or one entry at API input time; more than one is rejected.
+- After default resolution, the sole entry is primary when `primary` is omitted or `true`.
+- Explicit `primary: false` is rejected.
 
 #### Auto-Provisioned Resource Lifecycle
 
-- Labeled `osac.openshift.io/auto-provisioned: "true"`
-- Parent resource finalizer deletes in order: ExternalIPAttachment → ExternalIP
-- On permanent cleanup failure: finalizer removed, parent deleted, orphaned resources left for manual cleanup
+- Resources carry the canonical `osac.openshift.io/auto-created: "true"`
+  marker and an exact immutable ComputeInstance owner relationship.
+- The parent resource finalizer deletes in order: ExternalIPAttachment →
+  ExternalIP, waiting for each resource to disappear before proceeding.
+- The ExternalIPPool and tenant-created resources are never cascaded.
+- On cleanup failure, the finalizer remains and the parent stays `Deleting`; it
+  is not removed to create an orphan.
 
-#### Backward Compatibility Strategy
+#### API Change
 
-Dual-field support during migration:
-- Server accepts old `network_attachments` (field 14) or new `compute_network_attachments` (field 18)
-- Reject if both set
-- Internal conversion: old → new format (no `primary` on single attachment, implicit primary)
-- Deprecation timeline: TBD (OSAC-1471)
+The ComputeInstance networking API changes from the shared
+`NetworkAttachment` shape to the resource-specific
+`ComputeNetworkAttachment` shape before release. Only
+`network_attachments` is accepted. The previous shared field and
+message are not exposed as a compatibility path because no users or persisted
+resources depend on them yet.
 
 ### Security Considerations
 
@@ -290,14 +530,23 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control VM inbound traffic (tenant-configurable via explicit SG or default SG)
-- Multi-NIC VMs on different subnets share the same SecurityGroup enforcement (pod labels apply to all interfaces)
+- SecurityGroup enforcement follows the [Unified Networking SecurityGroup
+  semantics](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-rule-semantics)
+  for explicit and default groups. NetworkACL enforcement follows the shared
+  stateless semantics for the effective Subnet ACL. The hard-coded deployment
+  `permit` baseline is separate from the tenant default ACL.
 
 ### Failure Handling and Recovery
 
 #### ComputeInstance Controller Reconciliation Failures
 
-- Subnet resolution failure (subnet not found, not Ready): ComputeInstance enters Failed state with condition, retries on Subnet status change
+- A create request with a missing Subnet uses the normal visibility-safe
+  `NotFound`/`InvalidArgument` response; a request that references an existing
+  Subnet that is not Ready is rejected before ComputeInstance persistence with
+  `FailedPrecondition`. No ComputeInstance is left in Failed or Pending to
+  wait for that Subnet. After a valid admission, failures in the VM's own
+  manager provisioning may put the ComputeInstance in Failed and be retried
+  according to the manager reconciliation contract.
 - Namespace resolution failure (subnet has no target namespace): ComputeInstance enters Failed state, retries after manual correction
 - AAP job failure (template execution error): ComputeInstance enters Failed state with AAP job ID in status, manual investigation required
 
@@ -310,24 +559,26 @@ This feature inherits the existing security model:
 #### Cleanup Failures
 
 - Auto-provisioned resource cleanup transient failure: finalizer retries
-- Auto-provisioned resource cleanup permanent failure: after N retries, finalizer is removed, parent resource deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required)
+- Auto-provisioned resource cleanup permanent failure: the parent remains in
+  `Deleting`, the finalizer is retained, and retry/status reporting continues;
+  no orphan is intentionally created by removing the finalizer.
 
 ### RBAC / Tenancy
 
 No RBAC or tenancy changes. All new resources (ComputeInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
-- OPA policies enforce tenant-scoped list/get/update/delete
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
+- OPA policies enforce tenant-scoped list/get/create/delete; update and patch of network-owned fields are rejected
+- Tenant User can view auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via the standard API; their network-owned fields are not editable.
 
 ### Observability and Monitoring
 
 New structured log events:
-- ComputeInstance controller: `ResolvedPrimarySubnet` (info), `SubnetResolutionFailed` (error), `MultiNICProvisioning` (info)
+- ComputeInstance controller: `ResolvedPrimarySubnet` (info), `SubnetResolutionFailed` (error), `NetworkAttachmentCardinalityRejected` (error)
 - fulfillment-service: `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error)
 
 New Kubernetes events on ComputeInstance:
 - `NetworkingResolved`: subnet → namespace resolution succeeded
-- `NetworkingResolutionFailed`: subnet resolution failed (not found, not Ready, BM-only deployment)
+- `NetworkingResolutionFailed`: subnet resolution failed (not found or not Ready)
 - `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
 
 No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
@@ -338,15 +589,22 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Impact:** OSAC-1511 (CUDN) and OSAC-1717 (EVPN) are both in spike/blocked state. Without a k8s_manager, the Subnet controller cannot provision overlay networks, and VMaaS networking does not function.
 
-**Mitigation:** Prioritize unblocking one of these dependencies. Accept that VMaaS remains unavailable until a k8s_manager exists. Document as a hard dependency.
+**Mitigation:** Provide and validate a complete manager profile. VMaaS uses
+the normal manager target and operation-specific AAP jobs; an unfinished
+operation may use the approved successful no-op.
 
 **Reviewed by:** Engineering / Product
 
-#### Risk: Multi-job tracking not implemented
+#### Risk: Multi-target tracking not implemented
 
-**Impact:** OSAC-1459 is a prerequisite for Subnet controller to call both fabric_manager and k8s_manager. Without it, Subnet controller can only call one manager.
+**Impact:** OSAC-1459 is a prerequisite for Subnet controller to track both
+fabric_manager and k8s_manager targets. Without it, the controller cannot
+reliably reconcile a combined deployment.
 
-**Mitigation:** Defer multi-manager support or accept single-manager-only subnet provisioning. Document limitation.
+**Mitigation:** Treat OSAC-1459 as a provider deployment prerequisite. Do not
+admit a combined NetworkClass until multi-target tracking is available. During
+development, unfinished manager operations may use the approved successful
+no-op AAP path, but dispatch must never be reduced to one manager target.
 
 **Reviewed by:** osac-operator team
 
@@ -360,11 +618,11 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 ### Drawbacks
 
-#### Dual-field migration complexity
+#### API shape change
 
-Supporting both old `network_attachments` (field 14) and new `compute_network_attachments` (field 18) adds server validation complexity and migration burden. Tenants using the old field must eventually migrate.
-
-**Trade-off:** Backward compatibility vs. clean API surface. Chosen approach: temporary dual-field support with documented migration timeline (OSAC-1471).
+The resource-specific attachment message adds a small pre-release API change,
+but removes dual-field validation and avoids a compatibility and migration
+period before the API has users.
 
 ## Alternatives (Not Implemented)
 
@@ -372,7 +630,7 @@ Supporting both old `network_attachments` (field 14) and new `compute_network_at
 
 Instead of creating `ComputeNetworkAttachment`, extend the shared `NetworkAttachment` message with an optional `primary` field usable by all resource types.
 
-**Rejected because:** Other resource types (Cluster, BaremetalInstance) have different attachment semantics (CaaS needs separate API/ingress attachments, BMaaS has no multi-NIC concept). Resource-specific attachment messages provide cleaner API surface and type-specific validation.
+**Rejected because:** Other resource types (Cluster, BaremetalInstance) have different attachment semantics (CaaS needs separate API/ingress attachments, while BMaaS supports exactly one tenant network attachment on one physical NIC). Resource-specific attachment messages provide cleaner API surface and type-specific validation.
 
 ### Alternative 2: Capacity exhaustion creates Failed resource instead of returning error
 
@@ -388,28 +646,12 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 ## Test Plan
 
-### Unit Tests
-
-- fulfillment-service: primary validation (reject >1 primary, accept single implicit primary, accept explicit primary)
-- fulfillment-service: dual-field validation (reject both old and new, convert old → new)
-- fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
-- fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (explicit primary, implicit single-attachment)
-
-### Integration Tests
-
-- E2E: create ComputeInstance with multiple attachments, verify multi-NIC KubeVirt VM provisioned
-- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
-- E2E: create ComputeInstance in BM-only deployment, verify error returned
-- E2E: create ComputeInstance with old `network_attachments` field, verify backward compat (internal conversion)
-
-### Tricky Test Cases
-
-- Multi-NIC VM with primary on second attachment (verify default gateway on correct interface)
-- ExternalIPPool exhaustion (verify error returned, no resource created)
-- Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
-
+The executable, reviewable plan for VMaaS Networking is maintained in
+[testplan.md](testplan.md). It covers the one-or-less interface contract,
+attachment defaulting, provisioning and status, automatic ExternalIP behavior,
+immutability, cleanup, Catalog parity, and unsupported behavior. Shared
+networking contracts are covered by the [Unified Networking test
+plan](../OSAC-1433-unified-networking/testplan.md).
 ## Graduation Criteria
 
 **Note:** This section will be updated when the enhancement is targeted at a release.
@@ -417,17 +659,16 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 Proposed maturity level: **Tech Preview** → **GA**
 
 Tech Preview criteria:
-- [ ] API fields (`compute_network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
+- [ ] API fields (`network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
 - [ ] Operator CRD updated with `Primary` field and CEL validation
-- [ ] Multi-NIC template support (`osac.templates.ocp_virt_vm`) implemented
+- [ ] Single-interface template support (`osac.templates.ocp_virt_vm`) implemented
 - [ ] Auto ExternalIP attachment provisioning functional
-- [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP)
+- [ ] Integration tests pass (E2E coverage for single-interface cardinality, auto ExternalIP)
 - [ ] Documentation: API reference, user guide for simplified VM creation
 
 GA criteria:
 - [ ] k8s_manager implementation (OSAC-1511 or OSAC-1717) delivered and production-tested
 - [ ] Multi-job tracking (OSAC-1459) implemented and stable
-- [ ] Dual-field migration (OSAC-1471) completed, old `network_attachments` deprecated and removed
 - [ ] Production deployment verified (MOC or other OSAC deployment)
 - [ ] User feedback incorporated (usability, error messages, edge cases)
 
@@ -435,28 +676,16 @@ GA criteria:
 
 ### Upgrade
 
-Micro version upgrades (`x.y.N → x.y.N+2`):
-- New fields (`compute_network_attachments`, `auto_external_ip_attachment`) are additive — existing ComputeInstance resources continue to work with old `network_attachments` field (field 14)
-- Server supports both old and new fields during migration (dual-field support)
-- No user action required
-
-Minor version upgrades (`x.N → x.N+1`):
-- Deprecation warning added for old `network_attachments` field (field 14) in fulfillment-service API responses
-- Tenant User encouraged to migrate to new field via CLI update (`osac-cli` supports new `--network-attachment` flag with `--primary`)
-- No breaking changes — old field remains functional
+The resource-specific attachment schema and its server and operator consumers
+are deployed atomically. Because the API change occurs before users or
+persisted resources exist, no dual-field compatibility period or client
+migration is required.
 
 ### Downgrade
 
-If `N+1` upgrade fails or cluster is misbehaving:
-- Manual rollback: update fulfillment-service and osac-operator images to `N`
-- Existing ComputeInstance resources with new `compute_network_attachments` field (field 18) will be unrecognized by `N` server
-- Manual cleanup required: delete ComputeInstance resources created with new field, re-create with old field
-- Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
-
-Acceptable downgrade steps:
-- Delete CRs using new field (field 18)
-- Re-create using old field (field 14)
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-provisioned: "true"`)
+If `N+1` upgrade fails, downgrade across the attachment schema change is not
+supported. The fulfillment-service and operator versions must be rolled back
+as one unit before any ComputeInstance resources are created.
 
 ## Version Skew Strategy
 
@@ -466,54 +695,53 @@ fulfillment-service and osac-operator are deployed together in the same namespac
 
 ### Client Skew
 
-osac-cli (n-1) with fulfillment-service (n):
-- Old CLI uses old `--network-attachments` flag → server accepts via dual-field support, converts internally
-- New CLI uses new `--network-attachment` + `--primary` flags → server accepts new field
-
-osac-cli (n) with fulfillment-service (n-1):
-- New CLI uses new `--network-attachment` flag → old server rejects unknown field
-- Workaround: use old `--network-attachments` flag until server is upgraded
-
-Recommendation: keep osac-cli and fulfillment-service within one minor version.
+The CLI and fulfillment-service must be upgraded together with the
+resource-specific attachment schema. Mixed client/server versions across this
+pre-release API change are unsupported.
 
 ## Support Procedures
 
-### Symptom: ComputeInstance stuck in Pending, condition "NetworkingResolutionFailed"
+### Symptom: ComputeInstance creation is rejected for networking readiness
 
 **Detection:**
 ```bash
-kubectl describe computeinstance <name> -n <namespace>
-# Check status.conditions for NetworkingResolutionFailed
+# Inspect the create response for FailedPrecondition and its dependency details
 ```
 
-**Cause:** Subnet not found, not Ready, or BM-only deployment (no k8s_manager)
+**Cause:** The requested Subnet is missing/not visible, is not Ready, or the
+deployment's selected VM placement prerequisites are not Ready.
 
 **Resolution:**
 1. Check Subnet status: `kubectl get subnet <subnet-name> -n <namespace>`
-2. If Subnet is not Ready, investigate Subnet provisioning failure (check AAP job logs)
-3. If BM-only deployment, tenant must create VM in a deployment with k8s_manager configured
+2. If Subnet is not Ready, investigate Subnet provisioning failure (check AAP job logs), wait for `Ready`, and retry the create request
+3. If the manager profile is not Ready, resolve the provider configuration
+   error before retrying
 
-### Symptom: Multi-NIC VM has no default gateway
+### Symptom: ComputeInstance has an invalid attachment cardinality
 
-**Detection:** VM cannot reach external networks, `ip route` shows no default route
+**Detection:** Create request is rejected with a single-interface validation error
 
-**Cause:** Primary attachment not designated or incorrectly resolved
+**Cause:** The request supplied more than one entry, or set `primary: false` on the sole entry
 
 **Resolution:**
-1. Check ComputeInstance spec: `kubectl get computeinstance <name> -n <namespace> -o yaml`
-2. Verify exactly one `networkAttachments[].primary: true`
-3. If missing or incorrect, delete and re-create ComputeInstance with correct `--primary` flag
+1. Submit zero or one entry in `network_attachments`
+2. Omit `primary` or set it to `true`; multi-interface placement is not supported yet
 
-### Symptom: Auto-provisioned ExternalIP not cleaned up after ComputeInstance deletion
+### Symptom: ComputeInstance remains Deleting during auto-provisioned ExternalIP cleanup
 
-**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-provisioned: "true"` with no parent
+**Detection:** `kubectl get computeinstance` shows the parent in `Deleting`,
+and controller logs show a retry for its owned `ExternalIPAttachment` or
+`ExternalIP`.
 
-**Cause:** Finalizer cleanup failed permanently
+**Cause:** Cleanup is waiting for a transient backend/API dependency or failed
+after deletion was admitted.
 
 **Resolution:**
 1. Check ComputeInstance deletion logs (controller logs) for cleanup errors
-2. Manually delete orphaned ExternalIPAttachment: `kubectl delete externalipattachment <name> -n <namespace>`
-3. Manually delete orphaned ExternalIP: `kubectl delete externalip <name> -n <namespace>`
+2. Verify the canonical auto-created marker and exact immutable
+   ComputeInstance owner relationship
+3. Resolve the backend/API failure and allow reconciliation to delete the
+   attachment first and the ExternalIP second; do not remove the finalizer
 
 ### Disabling the feature
 
@@ -528,6 +756,6 @@ Consequences:
 
 ## Infrastructure Needed
 
-- AAP execution environment with `osac.templates.ocp_virt_vm` role updated for multi-NIC support
-- k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
+- AAP execution environment with `osac.templates.ocp_virt_vm` role updated for the single resolved network attachment
+- A selected K8s manager Ansible role and its profile-specific implementation, such as the [K8s-only manager](../OSAC-1433-k8s-only-k8s-manager/design.md) or [CUDN EVPN manager](../OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md)
 - Integration test environment with CUDN or EVPN fabric

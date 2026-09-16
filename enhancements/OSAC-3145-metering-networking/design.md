@@ -23,6 +23,14 @@ superseded-by:
 ## Summary
 Meter ExternalIP and NATGateway allocation time through the existing pipeline. The current code has no networking mapper, no initial quantity/correction consumer, no resource-level gate, and no M360 networking contract; those are required changes, not delivered behavior. See [PRD](prd.md) for detailed requirements.
 
+This design meters IPv4-only networking resources. IPv6 and dual-stack
+networking are not supported.
+
+The metered resources follow the [Unified Networking deployment support
+boundary](../OSAC-1433-unified-networking/design.md#deployment-support-boundary):
+they are defined for connected deployments only, and this design does not add
+air-gapped or disconnected networking support.
+
 ## Motivation
 The event proto carries ExternalIP, ExternalIPAttachment, and NATGateway, but `BuildFilter` and `MapperForEvent` do not consume them. Fulfillment and the operator both currently write `ExternalIP.status.attached` (`fulfillment-service/internal/servers/private_external_ip_attachments_server.go:225-287`, `osac-operator/internal/controller/externalipattachment_controller.go:675-718`), so attribution can precede READY and race.
 
@@ -32,7 +40,7 @@ The event proto carries ExternalIP, ExternalIPAttachment, and NATGateway, but `B
 - Define exact usage, correction, pagination, feature-gate, tenancy, failure, and adapter contracts.
 
 ### Non-Goals
-VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and UI. NATGateway is not an ExternalIPAttachment target. Its meter uses its own NATGateway ID, ExternalIP reference, VirtualNetwork reference, tenant, project, and deployment identity. CAP-6 remains a Part 1 dependency.
+VirtualNetwork/Subnet/SecurityGroup/NetworkACL, bandwidth, pricing, quota, inventory, and UI. NATGateway is not an ExternalIPAttachment target. Its meter uses its own NATGateway ID, ExternalIP reference, VirtualNetwork reference, tenant, project, and deployment identity. CAP-6 remains a Part 1 dependency.
 
 ## Prerequisites and Gates
 | Gate | Owner | Required artifact | Test evidence | Graduation gate |
@@ -135,7 +143,7 @@ The helper covers every direct auto path, not only defaults: `private_compute_in
 
 The existing attachment spec is the authoritative input oneof: `external_ip`, exactly one of `compute_instance|cluster|baremetal_instance`, and `target_endpoint` only for cluster (`fulfillment-service/proto/private/osac/private/v1/external_ip_attachment_type.proto:63-103`). It is immutable. State updates use the private update mask; parent output fields are never accepted in that mask. The mapper reads settled ExternalIP output, never joins attachment streams.
 
-IP family comes from an ExternalIPPool lookup by immutable pool ID; a cache miss is an error. ExternalIP dimensions are resource ID, tenant, project, deployment, IP family, pool, `attached`, and settled attribution. Empty project means tenant default. NATGateway dimensions are resource ID, virtual-network reference, external-IP reference, tenant, project, and deployment. No VirtualNetwork join is needed for metering.
+The ExternalIPPool comes from an immutable pool-ID lookup; a cache miss is an error. ExternalIP pools and addresses are IPv4-only. ExternalIP dimensions are resource ID, tenant, project, deployment, pool, `attached`, and settled attribution. Empty project means tenant default. NATGateway dimensions are resource ID, virtual-network reference, external-IP reference, tenant, project, and deployment. No VirtualNetwork join is needed for metering.
 
 ### Usage and Correction Contract
 Current `schema.LifecycleData` has only `duration_seconds`, current `correction.go` emits v1 corrections with a nil affected interval, and `m360-adapter/translate.go` has no correction or networking route. Current code is insufficient.
@@ -192,13 +200,10 @@ This changes fulfillment transaction boundaries and removes convenient operator 
 - Add a new service/configurable registry here: Part 1 owns CAP-6 and shared infrastructure.
 
 ## Test Plan
-Tests use Ginkgo v2 in `osac-metering/metering-service/internal/{events,watch,reconciliation,projection}`, `osac-metering/adapters/cmd/m360-adapter`, `fulfillment-service/internal/servers`, and `osac-operator/internal/controller`; E2E uses pytest under `tests/e2e/`. Documentation covers the event contract, routes, support, and retention.
-### Unit Tests
-Assert API oneof rejects NATGateway, common proto imports pass `buf lint`, update masks reject parent output fields, exact predicates/transitions, target endpoint rules, fixed-point quantity, correction sign/unit validation, gate union/reload routing, and total/progress pagination.
-### Integration Tests
-Assert attachment READY and Delete transitions update both rows atomically; force each DAO failure and assert rollback; exercise VMaaS `auto_external_ip_attachment` create/rollback/pre-READY/cleanup plus cluster, bare-metal, default, attachment, and NAT auto paths; attach and detach an ExternalIP while it remains ALLOCATED and assert old/new dimension slices close and open at `attachment_transition_time`, heartbeat replacement stays within the active slice, delayed/replayed transitions do not double-count, and allocation seconds equal the disjoint slice total; replay normal lifecycle and heartbeat events through two fresh adapter instances and assert one provider record per stable `event_id`; call ExternalIP/NAT Delete successfully, delay feedback, and assert usage closes at `metadata.deletion_timestamp` rather than feedback time; assert no operator parent writes, non-empty event IDs, correction topic/chart/adapter routing, one provider submission per adjustment, shared correction/group IDs, unique adjustment/provider keys, per-adjustment durable replay no-ops, offset commit only after all adjustments, retry after partial failure without double application, NAT dimensions, cache failures, correction apply/reverse, concurrent-delete/shift Get confirmation, and M360 flat payload routing.
-### E2E Tests
-Exercise unattached ExternalIP, ComputeInstance/Cluster API/Ingress/BareMetal attachments, detach, NATGateway with VirtualNetwork dimensions, excluded VirtualNetwork/Subnet/SecurityGroup negative cases, failures/retries, duplicate replay, Kafka/DLQ, gate reload/disable/re-enable, and resource-seconds totals.
+
+The executable plan is maintained in [testplan.md](testplan.md), with unit,
+integration, and E2E coverage for the event contract, networking lifecycle,
+deletion timing, attribution, replay, corrections, and M360 delivery.
 
 ## Graduation Criteria
 Target release 0.3. Graduation requires Part 1, OSAC-983, the initial correction/read-model/M360 consumers, deployment identity, CAP-6, and heartbeat sizing gates close. Then require exact allocation totals, transactionally consistent attribution, no NAT attachment target, all event IDs, pagination confirmation, correction replay, ExternalIP FAILED-age alerting, the negative test for excluded network objects, retention/dedup parity, and no existing meter regression.

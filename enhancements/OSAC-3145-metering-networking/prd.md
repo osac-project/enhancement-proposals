@@ -8,7 +8,7 @@
 
 ## Glossary
 
-Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.md) apply here. Additional terms:
+Terms defined in the [Part 1 PRD](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) apply here. Additional terms:
 
 | Term | Definition |
 |------|-----------|
@@ -19,11 +19,20 @@ Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.
 
 OSAC provisions ExternalIPs and NAT Gateways that consume scarce provider infrastructure from allocation until deletion, but has no mechanism to report that consumption to billing. An ExternalIP consumes finite address pool space whether it is attached to a resource or not — the provider's pool is finite and each allocation reduces availability. A NAT Gateway consumes dedicated gateway capacity for as long as it exists. Metering exists to supply billing with usage data for resources that can incur cost — not to enforce quota, and not to inventory every networking object a tenant holds.
 
-VirtualNetworks, Subnets, and SecurityGroups are configuration metadata that will not incur cost — they are free across all surveyed hyperscalers and GPU/AI clouds, none of which meter them on an allocation basis — so metering does not report them.
+VirtualNetworks, Subnets, SecurityGroups, and NetworkACLs are configuration metadata that will not incur cost — they are free across all surveyed hyperscalers and GPU/AI clouds, none of which meter them on an allocation basis — so metering does not report them.
 
 Without metering for the billable networking resources, Cloud Provider Admins have no usage data to account for the scarce network infrastructure tenants hold, and Tenant Admins have no visibility into their billable networking footprint across projects.
 
 ## 2. In Scope
+
+The networking resources covered by this PRD use IPv4 addresses only. IPv6 and
+dual-stack networking are not supported.
+
+This metering proposal observes the shared [Unified Networking deployment
+support boundary](../OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
+networking-enabled deployments are connected only, and air-gapped or
+disconnected networking deployments are not supported. This does not change
+the metering pipeline's independent deployment or retention requirements.
 
 ### 2.1 Services
 
@@ -36,18 +45,18 @@ Metered networking resources are service-agnostic — an ExternalIP or NATGatewa
 
 ExternalIP resources support all three services and can be attached to ComputeInstances, Clusters, and BareMetalInstances. Attachment status is tracked as a queryable dimension on the ExternalIP meter, not as a separately metered resource.
 
-VirtualNetwork, Subnet, and SecurityGroup are available on all three services but are not metered — they are configuration metadata that will not incur cost, so metering does not report them.
+VirtualNetwork, Subnet, SecurityGroup, and NetworkACL are available on all three services but are not metered — they are configuration metadata that will not incur cost, so metering does not report them.
 
 ### 2.2 Capabilities
 
 - Billing-bound reporting — metering reports only networking resources that can incur cost; it is not a quota feed and not a complete inventory of the networking objects a tenant or user holds
 - Networking resource allocation metering — metering for ExternalIPs and NATGateways from READY/ALLOCATED state to deletion
 - Unattached IP metering — ExternalIPs generate usage data regardless of attachment status, with attachment status as a queryable dimension
-- Parent-child attribution — extending [Part 1](/enhancements/metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that ExternalIPs attached to a parent resource can be attributed to it in a unified usage view: ExternalIPs to ComputeInstances, Clusters, and BareMetalInstances
+- Parent-child attribution — extending [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that ExternalIPs attached to a parent resource can be attributed to it in a unified usage view: ExternalIPs to ComputeInstances, Clusters, and BareMetalInstances
 
 ## 3. Out of Scope
 
-- Metering of VirtualNetwork, Subnet, and SecurityGroup — these are configuration metadata that will not incur cost (free across all surveyed hyperscalers and GPU/AI clouds); metering does not report them (per PR #159 review, [comment 5204380439](https://github.com/osac-project/enhancement-proposals/pull/159#issuecomment-5204380439))
+- Metering of VirtualNetwork, Subnet, SecurityGroup, and NetworkACL — these are configuration metadata that will not incur cost (free across all surveyed hyperscalers and GPU/AI clouds); metering does not report them (per PR #159 review, [comment 5204380439](https://github.com/osac-project/enhancement-proposals/pull/159#issuecomment-5204380439))
 - Quota enforcement and a complete inventory of the networking resources a tenant or user holds — these are not purposes of metering
 - BMaaS compute metering — tracked separately ([OSAC-2506](https://redhat.atlassian.net/browse/OSAC-2506)); ExternalIPs and NATGateways consumed by BMaaS are in scope here
 - Storage metering — tracked separately ([OSAC-3141](https://redhat.atlassian.net/browse/OSAC-3141))
@@ -79,7 +88,8 @@ VirtualNetwork, Subnet, and SecurityGroup are available on all three services bu
 ### 5.1 Networking Resource Allocation Metering
 
 - **CAP-1:** Billable networking resources (ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion.
-- **CAP-2:** Networking usage is queryable by resource type, IP family (IPv4/IPv6 for ExternalIP), deployment, tenant, and project.
+- **CAP-2:** Networking usage is queryable by resource type, deployment, tenant,
+  and project. ExternalIP usage is IPv4-only.
 
 ### 5.2 Unattached IP Metering
 
@@ -91,9 +101,9 @@ VirtualNetwork, Subnet, and SecurityGroup are available on all three services bu
 
 ## 6. Usage Measurement Model
 
-This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
+This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
 
-Each metered networking resource type has a flat allocation meter. Usage is queryable by resource type, deployment, tenant, and project; ExternalIPs additionally use IP family and attachment status (see CAP-2 and CAP-3).
+Each metered networking resource type has a flat allocation meter. Usage is queryable by resource type, deployment, tenant, and project; ExternalIPs additionally use attachment status (see CAP-2 and CAP-3).
 
 | Resource | Meter | Unit | Example (30 days) |
 |----------|-------|------|-------------------|
@@ -104,8 +114,8 @@ Each metered networking resource type has a flat allocation meter. Usage is quer
 
 - [ ] Each billable networking resource (ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
 - [ ] An allocated-but-unattached ExternalIP generates usage data
-- [ ] VirtualNetwork, Subnet, and SecurityGroup generate no metering usage data
-- [ ] Networking usage can be broken down by resource type, deployment, tenant, and project; ExternalIPs additionally expose IP family and attachment status
+- [ ] VirtualNetwork, Subnet, SecurityGroup, and NetworkACL generate no metering usage data
+- [ ] Networking usage can be broken down by resource type, deployment, tenant, and project; ExternalIPs additionally expose attachment status and are IPv4-only
 - [ ] ExternalIPs attached to a parent resource (ComputeInstances/Clusters/BareMetalInstances) can be attributed to the parent in a unified usage view
 - [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
 - [ ] Networking usage data maintains per-second granularity, deduplication, and retention consistent with Part 1 metering
@@ -117,7 +127,7 @@ Each metered networking resource type has a flat allocation meter. Usage is quer
 
 ## 9. Dependencies
 
-- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/metering-and-usage-tracking/prd.md) is a prerequisite. Part 2c extends but does not replace it.
+- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Part 2c extends but does not replace it.
 
 ## 10. Risks
 

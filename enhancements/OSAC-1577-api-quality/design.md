@@ -42,7 +42,7 @@ The DAO layer itself is fully generic (`GenericDAO[O Object]`), but the server l
 - New resource types or domain-specific API changes.
 - UI changes beyond what API changes would break. [Locked: D4]
 - Upgrade/downgrade support — OSAC does not currently support upgrades.
-- Multi-region or quota enforcement.
+- Quota enforcement.
 
 ## Proposal
 
@@ -158,9 +158,7 @@ import "buf/validate/validate.proto";
 option (cleanapi.file).package = "osac.public.v1";
 
 message VirtualNetworkSpec {
-  string network_class = 1 [(buf.validate.field).string.min_len = 1];
   string ipv4_cidr = 2;
-  string region = 3 [(cleanapi.field).private = true];
   string implementation_strategy = 4 [(cleanapi.field).private = true];
 }
 
@@ -170,7 +168,11 @@ message VirtualNetworkStatus {
 }
 ```
 
-The generated public proto for this file would contain `VirtualNetworkSpec` with only `network_class` and `ipv4_cidr`, `VirtualNetworkStatus` with only `conditions`, the `Get` RPC without HTTP annotations, and no `Signal` RPC.
+The generated public proto for this file would contain `VirtualNetworkSpec`
+with only `ipv4_cidr`; `implementation_strategy` is provider-resolved and
+private, and there is no tenant-selectable `network_class` field in the
+single-NetworkClass model. `VirtualNetworkStatus` contains only `conditions`,
+the `Get` RPC has no HTTP annotations, and there is no `Signal` RPC.
 
 Entirely private files (hub, storage_backend, storage_tier types and services) use file-level exclusion:
 
@@ -188,7 +190,8 @@ protoc-gen-cleanapi can remove `google.api.http` annotations but cannot rewrite 
 
 `buf.validate` annotations currently exist only in public protos. Since the private protos become the single source of truth, validation annotations move to the private protos. protoc-gen-cleanapi operates at the text level and preserves all non-private annotations, so `buf.validate` annotations on public-facing fields pass through to the generated public protos unchanged.
 
-Validation annotations on private-only fields (e.g., `region` format validation) remain in the private protos and are excluded along with the field.
+Validation annotations on private-only fields remain in the private protos and
+are excluded along with the field.
 
 ##### Public-Only Proto Files
 
@@ -254,7 +257,7 @@ Tables requiring `active_` companions (based on existing Pattern A triggers):
 | Table | Reason |
 |-------|--------|
 | `active_subnets` | Referenced by compute_instances |
-| `active_virtual_networks` | Referenced by subnets, security_groups, nat_gateways |
+| `active_virtual_networks` | Referenced by subnets, network_acls, nat_gateways |
 | `active_instance_types` | Referenced by compute_instances |
 | `active_cluster_catalog_items` | Referenced by clusters |
 | `active_compute_instance_catalog_items` | Referenced by compute_instances |
@@ -412,7 +415,11 @@ No authentication or authorization changes. The public API surface, RBAC rules, 
 
 The active-object tables and ref tables contain only resource IDs — no sensitive data is exposed. The materialized ref tables are internal to the database and not accessible via any API.
 
-protoc-gen-cleanapi's `private = true` annotations ensure private fields (region, hub, finalizers, implementation_strategy) are excluded from the generated public protos. This is verified by `buf lint` on the generated output and by the existing integration test suite that exercises the public API.
+protoc-gen-cleanapi's `private = true` annotations ensure private fields
+(hub, finalizers, and implementation_strategy) are excluded from the
+generated public protos. This is verified by `buf lint` on the generated
+output and by the existing integration test suite that exercises the public
+API.
 
 Tenant isolation metadata (`osac.openshift.io/tenant`, `osac.openshift.io/owner-reference`) is unaffected — these annotations exist in the data model, not in proto field definitions.
 
@@ -534,7 +541,7 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 
 **OSAC-1274:**
 - Full round-trip test: create a resource via public API, read via private API, verify field mapping
-- Verify that private-only fields (region, hub, finalizers) are absent from public API responses
+- Verify that private-only fields (hub, finalizers) are absent from public API responses
 - Verify that private-only RPCs (Signal) are not exposed on the public gRPC service
 
 **OSAC-1331:**

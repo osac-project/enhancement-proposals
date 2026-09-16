@@ -10,9 +10,9 @@
 
 ### R1.Q1: Personas — Who configures EVPN?
 
-The feature describes k8s manager registration, CUDN creation, and BGP peering setup. Which OSAC persona(s) are responsible for enabling EVPN for a deployment/region? Is this:
+The feature describes k8s manager registration, CUDN creation, and BGP peering setup. Which OSAC persona(s) are responsible for enabling EVPN for a deployment? Is this:
 - Cloud Infrastructure Admin work during initial OSAC installation?
-- Cloud Provider Admin work when onboarding a new region?
+- Cloud Provider Admin work when onboarding a new deployment?
 - Automatically enabled based on infrastructure detection?
 
 #### Answer
@@ -25,7 +25,7 @@ PRD user stories will target Cloud Infrastructure Admin for EVPN setup/configura
 
 #### Decision (D1)
 
-EVPN configuration is Cloud Infrastructure Admin responsibility during installation - not tenant-facing, not automatic, not per-region onboarding.
+EVPN configuration is Cloud Infrastructure Admin responsibility during installation - not tenant-facing, not automatic, not per-deployment tenant onboarding.
 
 ---
 
@@ -84,15 +84,29 @@ This is stricter than the Jira description's "one VM-subnet per VirtualNetwork" 
 
 #### Answer
 
-The limit is one subnet per VirtualNetwork. The validation happens when creating the subnet - a second subnet under the same VirtualNetwork won't be allowed.
+The VM-capable topology is limited to one Subnet per VirtualNetwork. The first
+Subnet receives the CUDN. Additional Subnets may be created while no VMs exist,
+but they are fabric-only; once VMs exist, the Subnet API rejects additional
+Subnets. VMaaS rejects VM creation whenever the VirtualNetwork has multiple
+Subnets.
 
 #### Impact
 
-PRD validation requirements: fulfillment-service Subnet creation API must reject a second subnet when the parent VirtualNetwork uses a NetworkClass whose k8s manager has this limitation. Error message should reference OVN Connectors limitation. No operator-side validation needed (API rejection prevents the CR from ever being created).
+PRD validation requirements: fulfillment-service Subnet creation API must reject
+an additional Subnet when the parent VirtualNetwork uses a NetworkClass whose
+k8s manager has this limitation and VMs already exist. Additional Subnets are
+fabric-only while no VMs exist. VMaaS must reject VM creation whenever multiple
+Subnets exist. No operator-side validation is needed for the rejected request
+because API validation prevents that Subnet from being created.
 
 #### Decision (D4)
 
-Validation enforced at Subnet API creation time in fulfillment-service, conditional on the NetworkClass's k8s manager. Constraint is one subnet per VirtualNetwork when the k8s manager is `cudn_evpn` (not a universal constraint; other NetworkClasses support multiple subnets). Second subnet creation attempt returns validation error.
+Validation is enforced at Subnet API creation time in fulfillment-service,
+conditional on the NetworkClass's k8s manager. For `cudn_evpn`, one Subnet is
+VM-capable per VirtualNetwork: a second Subnet is allowed as fabric-only while
+no VMs exist, but creation is rejected once VMs are present. VMaaS blocks VM
+creation for any VirtualNetwork with multiple Subnets. Other NetworkClasses are
+not affected.
 
 ---
 
@@ -195,17 +209,22 @@ Underlay configuration (physical link, Netris port setup, BGP session) is a docu
 
 ### R2.Q4: NetworkClass ConfigMap Schema
 
-The Jira mentions "k8s manager registration via ConfigMap with declared capabilities."
+The Jira mentions k8s-manager registration via ConfigMap.
 
 What exact fields are in the ConfigMap?
 
 #### Answer
 
-NetworkClass ConfigMap should contain: `name: cudn_evpn` with capabilities `ipv4` or `dualstack` (same structure as other k8s managers, no additional EVPN-specific fields).
+NetworkClass ConfigMap should contain: `name: cudn_evpn` with the deployment-wide
+`addressFamily: ipv4` setting (same structure as other k8s managers, with no
+additional EVPN-specific fields). IPv6 and dual-stack networking are not
+supported.
 
 #### Impact
 
-PRD documents NetworkClass ConfigMap schema matching existing pattern from OSAC-1433 unified networking. No EVPN-specific ConfigMap fields beyond standard name and capabilities.
+PRD documents the NetworkClass ConfigMap schema matching the existing pattern
+from OSAC-1433 unified networking. No EVPN-specific ConfigMap fields beyond the
+standard name and deployment-wide address-family setting.
 
 ---
 
@@ -292,15 +311,24 @@ Is this in scope for Phase 1?
 
 #### Answer
 
-MetalLB IPAddressPool is out of scope for Phase 1.
+The earlier Phase 1 boundary treated MetalLB IPAddressPool creation as a
+separate CaaS concern. The current design makes the selected K8s manager's
+IPAddressPool creation and readiness part of the shared Subnet lifecycle when
+the CaaS/VIP path is enabled.
 
 #### Impact
 
-PRD Out of Scope section explicitly lists MetalLB IPAddressPool creation. This is handled separately in OSAC-1436 (CaaS Networking).
+The current PRD and design no longer assign competing pool creation to CaaS.
+The selected K8s manager owns the manager-side IPAddressPool creation; CaaS
+consumes the resulting pool and VIPs.
 
 #### Decision (D9)
 
-MetalLB IPAddressPool creation is out of scope for Phase 1 (deferred to OSAC-1436 CaaS Networking).
+MetalLB IPAddressPool creation is in scope for the selected K8s manager's
+Subnet readiness path for the CaaS/VIP flow. This does not add a second
+CaaS-owned pool or change the shared resource API. If the provider operation is
+unfinished during development, the normal AAP job may complete as a successful
+no-op.
 
 ---
 
@@ -360,5 +388,7 @@ When tenant creates VirtualNetwork/Subnet:
 - **D6:** Underlay configuration is documented prerequisite, not automated
 - **D7:** Route targets come from Netris (no client-side calculation)
 - **D8:** Integration test is automated in CI with real Netris fabric
-- **D9:** MetalLB IPAddressPool creation is out of scope
+- **D9:** The selected K8s manager owns MetalLB IPAddressPool creation when the
+  CaaS/VIP path is enabled; CaaS consumes the pool and does not create a
+  competing pool.
 - **D10:** Design extends OSAC-1433, not a new document

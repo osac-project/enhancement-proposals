@@ -3,7 +3,7 @@ title: catalog-items-v2-field-governance
 authors:
   - Ilya Skornyakov
 creation-date: 2026-08-20
-last-updated: 2026-08-25
+last-updated: 2026-09-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3538
 prd:
@@ -21,6 +21,12 @@ superseded-by:
 ## Summary
 
 This design replaces `FieldDefinition` with typed policies for selected resource fields and Template parameters. Each policy has one of three states: ungoverned, locked, or editable with an optional Catalog default.
+
+Catalog Item human-readable fields use the shared Metadata contract: the
+technical `metadata.name` is immutable, while optional mutable
+`metadata.display_name` and `metadata.description` hold the friendly label and
+description. The legacy top-level Catalog Item `title` and `description`
+fields are removed and reserved according to OSAC-2921.
 
 Provisioning continues through the standard `Create` RPC for ComputeInstance, Cluster, and BareMetalInstance. Each request selects exactly one source: a Catalog Item or a Template. Catalog-based creation applies policy, materializes `spec.template`, resolves all defaults, validates the final spec, and persists the resource.
 
@@ -88,9 +94,6 @@ See the [PRD](prd.md) for product requirements.
 - [Risks and alternatives](#risks-and-alternatives)
   - [Alternatives considered](#alternatives-considered)
 - [Test plan](#test-plan)
-  - [Unit tests](#unit-tests)
-  - [Integration tests](#integration-tests)
-  - [E2E tests](#e2e-tests)
 - [Graduation criteria](#graduation-criteria)
 
 ## End-to-end example
@@ -236,7 +239,7 @@ Catalog governs supported resource fields according to their existing API semant
 
 ### Dependencies
 
-The DiskImage resource (OSAC-2540) required for `disk_image` governance is already available on main. All in-scope fields can be represented and resolved by Catalog today. Two are not yet realized end-to-end by their resource implementations: Cluster `pull_secret_secret` (OSAC-1567) and Bare Metal automatic ExternalIP attachment (osac#355, OSAC-1441). Catalog stores and resolves these fields independently of that work. Field-level deferrals are listed in the Deferred table above.
+The DiskImage resource (OSAC-2540) required for `disk_image` governance is already available on main. All in-scope fields can be represented and resolved by Catalog today. Cluster `pull_secret_secret` (OSAC-1567) remains an implementation dependency for the resource path, while Bare Metal automatic ExternalIP attachment follows the current BMaaS contract. Catalog stores and resolves both fields through their typed policies. Field-level deferrals are listed in the Deferred table above.
 
 ## Architecture
 
@@ -268,6 +271,19 @@ A **Catalog Item** builds a curated offering on top of one Template. For a suppo
 
 At Create, fulfillment combines the policies, tenant input, Template defaults, and normal resource and system defaults into an ordinary resource spec. Afterward the Catalog Item leaves the resource lifecycle.
 
+For networking, Catalog policy uses the same public field names and
+resource-specific message types as direct resource creation:
+
+| Resource | Catalog field | Value type | Supported shape |
+|---|---|---|---|
+| `ComputeInstance` | `network_attachments` | repeated `ComputeNetworkAttachment` | zero or one item |
+| `Cluster` | `network_attachment` | `ClusterNetworkAttachment` | one structured value, or unset |
+| `BareMetalInstance` | `network_attachments` | repeated `BareMetalNetworkAttachment` | zero or one item |
+
+Catalog Items do not rename these API fields to include the message type. They
+govern the field value and then hand the materialized resource to the owning
+service, whose normal networking validation remains authoritative.
+
 ```text
 Template
   ├── resource-field defaults
@@ -291,7 +307,7 @@ The design distinguishes resource fields from Template parameters:
 | Concept | Resource API | Catalog Item |
 |---|---|---|
 | Governable resource field | `instance_type` | `fields.instance_type` (field policy) |
-| Template parameter | not a resource field | `template_parameters["region"]` (parameter policy) |
+| Template parameter | not a resource field | `template_parameters[<template-defined-name>]` (parameter policy) |
 
 ### Resolution precedence
 
@@ -386,7 +402,7 @@ Protobuf requires a message wrapper when a list appears inside a policy `oneof`.
 
 ```protobuf
 message ComputeNetworkAttachmentList {
-  repeated ComputeNetworkAttachment items = 1;
+  repeated ComputeNetworkAttachment items = 1; // zero or one item for now
 }
 
 message ComputeNetworkAttachmentListFieldPolicy {
@@ -420,7 +436,11 @@ Compute and Bare Metal treat an empty attachment list as unset. Catalog Item Cre
 
 ### Template parameter policy
 
-OSAC owns the type and valid domain of first-class resource fields, so those fields use typed policies. The selected Template owns the names and types of Template parameters. For example, `ComputeInstance.spec.instance_type` is a resource field even when the Template provides its default, and `region` is a Template parameter only if the selected Template defines a parameter named `region`. A Template default for a resource field does not make that field a Template parameter.
+OSAC owns the type and valid domain of first-class resource fields, so those
+fields use typed policies. The selected Template owns the names and types of
+Template parameters. A resource field remains a resource field even when the
+Template provides its default; a Template default for a resource field does
+not make that field a Template parameter.
 
 Parameter policies therefore use `google.protobuf.Any`:
 
@@ -477,7 +497,10 @@ The object schema changes as follows:
 
 - Field 8 (`field_definitions`) is reserved. Field 10 adds the resource-specific `fields` message.
 - Field 9 adds `template_parameters`.
-- Existing `id`, `metadata`, `title`, `description`, `template`, and `published` fields keep their numbers and types.
+- Existing `id`, `metadata`, `template`, and `published` fields keep their
+  numbers and types. The legacy top-level `title` and `description` fields are
+  removed and reserved; their values belong in `metadata.display_name` and
+  `metadata.description`.
 - `template` keeps its type but becomes required and immutable.
 - The legacy top-level `tenant` field (7) is removed and reserved.
 
@@ -489,9 +512,6 @@ Using Cluster as the example (the same shape applies to all three types):
 message ClusterCatalogItem {
   string id = 1;
   Metadata metadata = 2;
-  string title = 3;
-  string description = 4;
-
   ClusterTemplateReference template = 5 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.field_behavior) = IMMUTABLE,
@@ -500,8 +520,8 @@ message ClusterCatalogItem {
 
   bool published = 6;
 
-  reserved 7, 8;
-  reserved "tenant", "field_definitions";
+  reserved 3, 4, 7, 8;
+  reserved "title", "description", "tenant", "field_definitions";
 
   map<string, TemplateParameterPolicy> template_parameters = 9;
   ClusterCatalogItemFields fields = 10;
@@ -577,7 +597,7 @@ Governable lists keep their ordinary `repeated` shape. A `repeated` field has no
 | `boot_disk.size_gib` | Int32 | Value only |
 | `run_strategy` | Enum | Value only |
 | `user_data` | String | Value only |
-| `network_attachments` | Whole list | Subnet, SecurityGroup |
+| `network_attachments` | Whole list | Subnet and SecurityGroup membership; NetworkACL is inherited from the Subnet and must be Ready |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The governable Compute fields collect into one `Fields` message, one policy per field:
@@ -603,9 +623,11 @@ A tenant-owned item that exercises every Compute policy shape, from a locked ima
 
 ```json
 {
-  "metadata": { "name": "linux-workstation" },
-  "title": "Linux Workstation",
-  "description": "General-purpose Linux VM with a fixed image and a resizable boot disk.",
+  "metadata": {
+    "name": "linux-workstation",
+    "display_name": "Linux Workstation",
+    "description": "General-purpose Linux VM with a fixed image and a resizable boot disk."
+  },
   "template": { "name": "ocp_virt_vm", "shared": true },
   "published": true,
   "fields": {
@@ -622,7 +644,7 @@ A tenant-owned item that exercises every Compute policy shape, from a locked ima
             {
               // Local references are valid because this Catalog Item is tenant-owned.
               "subnet": { "name": "tenant-subnet-a" },
-              "security_groups": [{ "name": "default" }, { "name": "web" }]
+              "primary": true
             }
           ]
         }
@@ -663,7 +685,9 @@ Notes on the fields above:
 
   `ComputeInstanceSpec.run_strategy` and `ComputeInstanceTemplateSpecDefaults.run_strategy` remain optional, and a supplied value must be defined and non-zero. The config-as-code client maps the friendly value in `meta/osac.yaml` to the enum, and the Ansible metadata stays unchanged.
 - `storage_tier` and `additional_disks` stay ordinary resource fields until `storage_tier` becomes a typed reference.
-- Network attachment policy references use the Catalog Item's scope, so a tenant-owned item may reference its own Subnets and SecurityGroups.
+- `network_attachments` is the only supported Compute networking field. Catalog policy governs this complete list of `ComputeNetworkAttachment` values.
+- Compute attachment policy governs the complete list. The field remains list-shaped but accepts zero or one attachment only. A single attachment is implicitly primary when `primary` is omitted; explicit `primary: false` and more than one attachment are rejected. Catalog validation applies the same rule as direct Compute creation.
+- Network attachment policy references use the Catalog Item's scope, so a tenant-owned item may reference its own Subnets and SecurityGroups. NetworkACL association is managed by the NetworkACL resource and is not carried in the attachment policy; the effective ACL is inherited from the selected Subnet and must be Ready.
 
 ### Cluster
 
@@ -674,6 +698,7 @@ Notes on the fields above:
 | `pull_secret_secret` | Whole reference | Secret |
 | `network.pod_cidr` | CIDR string | Value only |
 | `network.service_cidr` | CIDR string | Value only |
+| `network_attachment` | Whole `ClusterNetworkAttachment` value | Subnet and SecurityGroup membership; NetworkACL is inherited from the Subnet and must be Ready |
 | `node_sets[name].size` | Int32 | Value only |
 | `auto_external_ip_attachment` | Bool | Value only |
 
@@ -686,7 +711,8 @@ message ClusterCatalogItemFields {
   SecretReferenceFieldPolicy pull_secret_secret = 3;
   ClusterNetworkFieldPolicies network = 4;
   map<string, Int32FieldPolicy> node_sets = 5;
-  BoolFieldPolicy auto_external_ip_attachment = 6;
+  ClusterNetworkAttachmentFieldPolicy network_attachment = 6;
+  BoolFieldPolicy auto_external_ip_attachment = 7;
 }
 
 message ClusterNetworkFieldPolicies {
@@ -699,9 +725,11 @@ A shared, provider-curated item that pins the version, mixes locked and editable
 
 ```json
 {
-  "metadata": { "name": "managed-openshift-small" },
-  "title": "Managed OpenShift (Small)",
-  "description": "Provider-curated OpenShift cluster with a fixed version.",
+  "metadata": {
+    "name": "managed-openshift-small",
+    "display_name": "Managed OpenShift (Small)",
+    "description": "Provider-curated OpenShift cluster with a fixed version."
+  },
   "template": { "name": "ocp_4_17_small", "shared": true },
   "published": true,
   "fields": {
@@ -712,27 +740,27 @@ A shared, provider-curated item that pins the version, mixes locked and editable
       "pod_cidr": { "editable": { "default_value": "10.128.0.0/14" } },
       "service_cidr": { "locked": "172.30.0.0/16" }
     },
+    "network_attachment": { "editable": {} },
     "node_sets": {
       // Keys are Template node-set names. Only size is governable.
       "workers": { "editable": { "default_value": 3 } },
       "infra": { "locked": 2 }
     },
     "auto_external_ip_attachment": { "editable": { "default_value": false } }
-  },
-  "template_parameters": {
-    "region": {
-      "locked": {
-        "@type": "type.googleapis.com/google.protobuf.StringValue",
-        "value": "us-east"
-      }
-    }
   }
 }
 ```
 
 Notes on the fields above:
 
-- The `node_sets` map key is the real Template node-set name, and only its size is governable. The Template remains authoritative for `host_type`.
+- The `node_sets` map key is the real Template node-set name, and only its
+  size is governable by the Catalog Item. The effective
+  `baremetal_instance_type` comes from the resolved Cluster template and is the
+  sole hardware and interface source; Catalog Items do not introduce a second
+  hardware or interface catalog. A provisioning wizard must load these node
+  sets from the resolved ClusterTemplate; it must not offer a separate
+  BareMetalInstanceType picker or tenant-composed node-set rows.
+- `network_attachment` governs the single tenant-facing `ClusterNetworkAttachment`, including its SecurityGroup list. `fabric_interface` is resolved from each node set's BareMetalInstanceType and is not a Catalog field. A shared item leaves tenant-local Subnet and SecurityGroup selection editable; an item with a Catalog default may use only references visible in the item's scope. NetworkACL association is inherited from the selected Subnet and is not a Catalog field; the ACL must be Ready.
 - Raw `pull_secret` stays ungovernable, because storing it would expose secret material through Catalog Item Get and List. The typed `pull_secret_secret` field is governable: it stores a `SecretLocalReference` that names a Secret in the tenant, so the Catalog Item holds a reference and keeps secret material out. A shared item accepts `editable {}` for it, so each tenant supplies its own Secret at provisioning.
 
 ### BareMetalInstance
@@ -743,7 +771,7 @@ Notes on the fields above:
 | `user_data` | String | Value only |
 | `run_strategy` | Enum | Value only |
 | `image` | Whole structured value | Value only |
-| `network_attachments` | Whole list | Subnet, SecurityGroup |
+| `network_attachments` | Whole list of `BareMetalNetworkAttachment` values | Subnet and SecurityGroup membership; NetworkACL is inherited from the Subnet and must be Ready |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The Bare Metal `Fields` message covers the OS image, run strategy, credentials, network attachments, and automatic ExternalIP attachment:
@@ -763,9 +791,11 @@ A tenant-owned item with a locked OS image and a single locked network attachmen
 
 ```json
 {
-  "metadata": { "name": "gpu-baremetal-node" },
-  "title": "GPU Bare Metal Node",
-  "description": "Single-tenant GPU host with a fixed OS image.",
+  "metadata": {
+    "name": "gpu-baremetal-node",
+    "display_name": "GPU Bare Metal Node",
+    "description": "Single-tenant GPU host with a fixed OS image."
+  },
   "template": { "name": "baremetal_gpu_large", "shared": true },
   "published": true,
   "fields": {
@@ -781,7 +811,6 @@ A tenant-owned item with a locked OS image and a single locked network attachmen
           {
             // Local references are valid because this Catalog Item is tenant-owned.
             "subnet": { "name": "tenant-fabric" },
-            "security_groups": [{ "name": "baremetal-default" }],
             "interface": "eno1",
             "primary": true
           }
@@ -805,6 +834,7 @@ Notes on the fields above:
 
 - `image` is a `BareMetalInstanceImage`, a structured value, not a DiskImage reference, so it carries no reference delete protection.
 - The Bare Metal run-strategy enum moves to a common proto imported by the resource and Catalog Item types. A supplied value must be defined and non-zero.
+- Bare Metal accepts at most one attachment, so `primary` does not select among entries. The single materialized attachment is implicitly primary; if the field is represented in a policy value, it must be `true` and is canonicalized with the normal Bare Metal validation.
 
 ## Processing flows
 
@@ -858,7 +888,30 @@ authenticate and resolve visibility
 
 Catalog resolution requires the effective tenant and project, so Create attribution happens before Catalog or Template resolution. The resulting object then follows the normal persistence path.
 
-Compute default-network injection moves after Catalog and Template resolution [Codebase: internal/servers/private_compute_instances_server.go]. It runs only when the resolved attachment list remains empty, preserving the resource's existing empty-list behavior.
+Resource-specific default-network resolution runs after Catalog and Template precedence has been resolved and applies the shared field-level defaulting matrix to the resulting tenant-facing attachment:
+
+- For ComputeInstance and BaremetalInstance, an omitted or empty
+  `network_attachments` list receives the tenant default Subnet and default
+  SecurityGroup when those resources exist. The default SecurityGroup may be
+  selected only when the resolved Subnet belongs to the tenant default
+  VirtualNetwork; otherwise a missing SecurityGroup is rejected unless a
+  compatible explicit group is supplied. Baremetal additionally receives its
+  default valid fabric interface. For Cluster, an empty
+  `network_attachment` message receives the tenant default Subnet and default
+  SecurityGroup, subject to the same default-VirtualNetwork
+  condition; each node set's physical interface is resolved from its
+  BareMetalInstanceType.
+- A supplied attachment entry or non-empty `network_attachment` message
+  receives a default only for each missing Subnet or SecurityGroup field (and
+  the applicable Bare Metal interface field). Supplied non-empty fields are
+  preserved. A tenant default SecurityGroup fills a missing or empty field
+  only when the resolved Subnet belongs to the tenant default
+  VirtualNetwork; a non-default-VirtualNetwork Subnet without a compatible
+  explicit SecurityGroup is rejected. NetworkACL association is resolved from
+  the effective Subnet and must be Ready.
+- An empty repeated network policy is therefore treated as unset. An empty structured Cluster policy is also treated as unset; a partial structured policy remains partial and is completed field-by-field rather than being replaced wholesale.
+
+The resulting value is then validated using the same Subnet, NetworkACL-inheritance, VirtualNetwork, primary, interface, readiness, and cardinality rules as direct resource creation.
 
 Resource Create validates dependencies and Template parameters again. A later Template or lifecycle change may make a Catalog Item temporarily unprovisionable even though the item remains structurally valid. Reference-valued policies are materialized like other field values; reference lifecycle semantics are defined in [Reference semantics](#reference-semantics).
 
@@ -882,7 +935,81 @@ Catalog resolution runs in each resource-specific private Create handler, alongs
 
 Policy resolution treats scalars, structured values, lists, and typed references uniformly: it selects the winning value and copies it into the materialized resource. Normal resource validation remains authoritative for field validity, cross-field invariants, and resource-specific rules.
 
-Resource Update performs no Catalog resolution. `spec.catalog_item` and `spec.template` are immutable, and normal Update behavior applies to the remaining fields.
+#### Network policy validation delegation
+
+Catalog Items can supply network-owned values, but they do not create a second
+network contract. The [Unified Networking validation
+pipeline](/enhancements/OSAC-1433-unified-networking/design.md#validation-and-enforcement-pipeline)
+and the applicable VMaaS, CaaS, or BMaaS design remain authoritative. The
+Catalog Item authoring and materialization paths must
+apply the following rules:
+
+Catalog-based networking also inherits the [Unified Networking deployment
+support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
+catalog authoring and materialization support connected deployments only and
+must not advertise or create air-gapped or disconnected networking.
+
+- A Catalog Item policy value must be structurally valid for the governed
+  resource field. A malformed wrapper, missing required policy `oneof`, wrong
+  typed reference, malformed IPv4/CIDR, unknown enum, or unsupported list
+  element is rejected at Catalog Item Create/Update.
+- A Compute `network_attachments` policy remains list-shaped; its
+  `items` field contains `ComputeNetworkAttachment` values and accepts zero or
+  one entry only. More than one item and an item
+  with explicit `primary: false` are rejected. Omitted `primary` and
+  `primary: true` are the only accepted single-entry forms. Each
+  `security_groups` entry is a typed local SecurityGroup reference; entries
+  must be unique, and final materialization requires each group to be Ready
+  and in the same tenant and VirtualNetwork as the resolved Subnet.
+- A Bare Metal `network_attachments` policy accepts zero or one
+  `BareMetalNetworkAttachment` entry and
+  applies the same implicit-primary rule, while its interface reference must
+  be validated against the effective BareMetalInstanceType when the resource
+  is materialized. Catalog authoring must not invent a physical interface
+  catalog separate from BareMetalInstanceType.
+- A Cluster `network_attachment` policy is one `ClusterNetworkAttachment`
+  structured attachment and may govern its tenant-facing Subnet and
+  `security_groups` fields. The effective ACL is inherited from that Subnet
+  and must be Ready, while node-set fabric-interface derivation and
+  VIP endpoint values remain system-owned.
+- Empty repeated network policy values and empty structured Cluster attachment
+  policies have the existing Catalog semantics of “unset” and fall through to
+  the next defaulting source. A partial structured policy is not empty and is
+  completed field-by-field by the shared defaulting matrix. An empty locked or
+  editable default is rejected where the target resource treats empty as unset.
+  This does not make an explicitly invalid non-empty value acceptable.
+- Locked and editable policy values are checked for reference scope. A shared
+  Catalog Item cannot lock or default tenant-local Subnet or SecurityGroup
+  references. A tenant-owned item may reference resources in its own scope,
+  but those references must exist and be Ready before the resulting workload
+  is accepted.
+- After Catalog and Template precedence is resolved, the final materialized
+  resource must pass the complete Unified Networking contract and the
+  corresponding VMaaS, CaaS, or BMaaS validation. Catalog resolution must not
+  bypass readiness, cardinality, same-VN, interface, complete-manager, or
+  ExternalIP prerequisite checks.
+- If final validation fails, the Catalog-based resource create is atomic: no
+  parent resource or auto-created networking child is persisted. Updating the
+  Catalog Item itself also remains atomic and must not leave a partially
+  updated policy.
+- Catalog metadata, descriptions, publication state, and non-network resource
+  fields remain governed by Catalog Items v2 and are not changed by these
+  network validations.
+
+The Catalog test contract must include direct policy-authoring failures for
+multi-entry Compute/Bare Metal lists, explicit false primary, malformed and
+wrong-scope references, empty locked values, and invalid CIDRs. Resource-create
+tests must then prove that the same policy succeeds or fails identically to an
+equivalent direct resource request, including Pending/Failed references,
+cross-VirtualNetwork attachments, CaaS endpoint rules, and auto ExternalIP
+capacity failures.
+
+Resource Update performs no Catalog resolution. `spec.catalog_item` and
+`spec.template` are immutable. Normal Update behavior applies only to
+non-network-owned fields; all network-owned fields and workload network
+attachment fields remain immutable under Unified Networking and require
+delete/recreate to change. Catalog Item metadata and other non-network-owned
+fields retain their normal update behavior.
 
 ## RBAC and UX
 
@@ -1004,7 +1131,7 @@ Old clients must not edit v2 Catalog Items, because full-object updates could dr
 - Replace `applyFieldDefinitions` on Catalog creation paths.
 - Update Template-default helpers to use presence instead of zero-value checks for the newly optional scalars, so an explicit `0` reaches normal validation, which already rejects a non-positive `size_gib`.
 - Update the Compute boot-disk and Cluster node-set defaulting paths accordingly. Because `size_gib` belongs to the shared `ComputeInstanceDisk`, audit its Template-default usage in `ComputeInstanceTemplateSpecDefaults.boot_disk` as well [Codebase: internal/utils/spec_defaults.go, internal/servers/private_clusters_server.go].
-- Reorder Compute default-network injection.
+- Apply each resource type's default-network resolution after Catalog and Template resolution.
 - Fix scoped reference lookup so Catalog Item authoring and source resolution honor the resolved tenant, project, and shared-reference scope [Codebase: internal/references/lookups.go, internal/references/reference_validator.go].
 - Resolve and materialize in each resource-specific private handler: attribute the effective tenant and project up front, because Catalog resolution needs the scope, resolve the source Catalog Item and Template, apply policies and defaults, materialize `spec.template`, run normal final resource validation, then delegate persistence to `GenericServer.Create`. This extends the existing `validateAndTransformCatalogItem` path [Codebase: internal/servers/private_compute_instances_server.go].
 - Treat reference-valued policy results like other values during materialization. References stored by Catalog Items are validated and canonicalized on Catalog Item Create and Update, and their referents are locked in the same transaction before persistence.
@@ -1021,7 +1148,7 @@ Bare Metal Create is currently Catalog-only. It adopts the common exactly-one pr
 
 - Require exactly one of `catalog_item` or `template`, rejecting both or neither with `InvalidArgument`. The Catalog Item path materializes its Template into `spec.template`, and the direct path uses the supplied `template`.
 - Resolve Template parameters and defaults from `spec.template` for both paths.
-- Resolve the default network interface through `spec.template -> host_type`, not through the Catalog Item.
+- Resolve the default network interface through `spec.template -> baremetal_instance_type`, not through the Catalog Item.
 - The reconciler consumes only `spec.template`, so its Catalog Item client is removed.
 - Remove Bare Metal Catalog Item deletion checks against existing resources. `spec.catalog_item` is weak provenance only.
 
@@ -1032,7 +1159,9 @@ Delete protection for strong references uses existing `Z0003` reverse-reference 
 1. Add Template protection for Catalog Items and materialized resources.
 2. Extend InstanceType protection to Catalog Items.
 3. Update DiskImage and ClusterVersion paths for the new policy structure.
-4. Extend Subnet and SecurityGroup protection for stored network-attachment policies.
+4. Extend Subnet protection for stored network-attachment policies; NetworkACL
+   associations remain owned by the NetworkACL resource and are not stored in
+   workload attachment policies.
 5. Add Secret reverse-reference protection for governed `pull_secret_secret` values.
 6. Remove resource-to-Catalog-Item protection.
 
@@ -1083,103 +1212,12 @@ Future constraints belong inside editable policy messages, for example integer r
 
 ## Test plan
 
-### Unit tests
-
-Infrastructure: fulfillment-service Ginkgo suite (`ginkgo run -r internal`), which runs against a real ephemeral PostgreSQL container, the embedded OPA/Rego policy, and protovalidate, with a fake Kubernetes client for controllers. No kind cluster, Keycloak, or Envoy. Database delete-protection triggers are covered here as migration tests (`*_test.go` beside each `.up.sql`, via the `DescribeMigration` harness against the same real Postgres).
-
-**Policy semantics.**
-
-- Absent, locked, editable, and editable-with-default states.
-- Missing `oneof` arm rejection.
-- Explicit `0` and `false` presence on the optional scalars, distinct from omission, and preserved through Template defaulting into final validation.
-- Explicit empty string on a presence-bearing string is a tenant value, distinct from omission, and an omitted string falls through to the Catalog default.
-- Empty repeated list is treated as omission and falls through to the Catalog default.
-- Locked tenant-input rejection.
-
-**Resolution.**
-
-- Tenant value over Catalog default.
-- Catalog default over Template and system defaults.
-- Normal fallthrough for editable-without-default and ungoverned fields.
-- Requiredness after complete resolution.
-- Compute default-network injection after Catalog resolution.
-
-**Lists.**
-
-- Omitted tenant list applies the editable Catalog default.
-- Explicitly empty tenant list is treated the same as omitted and applies the default.
-- Non-empty tenant list overrides an editable default.
-- Locked policy with an omitted tenant list applies the locked value.
-- Locked policy with an explicitly empty tenant list applies the locked value.
-- Locked policy with a non-empty tenant list returns `InvalidArgument`.
-- Empty `locked` value or empty editable default is rejected at Catalog Item Create and Update for `network_attachments`, whose resource semantics treat empty as unset.
-- Default network injection runs after Catalog resolution and triggers whenever the resolved list is still empty after tenant input, Catalog policy, and Template defaults, including an editable policy with no Catalog default that the tenant did not supply.
-
-**Authoring validation and references.**
-
-- Scalar and CIDR validation at Catalog Item authoring.
-- Catalog Item Create without a Template rejected with `InvalidArgument`.
-- Every governable Template parameter type succeeds with a matching, unpackable policy `Any` on Catalog Item Create, Update, and Catalog-based resource Create.
-- Unknown parameter names, `google.protobuf.Value` policies, mismatched type URLs, and malformed payloads return `InvalidArgument`; an ungoverned `Value` parameter retains normal Template provisioning behavior.
-- A reference selected by Catalog policy is copied into the materialized resource.
-- Shared and tenant-local reference scope.
-- Shared `editable {}` accepted for local references.
-- Shared locked and default local references rejected.
-- Catalog Item provenance resolves on Create but not Update.
-
-**Referential integrity (database migration triggers).**
-
-- Referent deletion blocked for both locked and editable-default values.
-- Deleting a governed referent succeeds after its Catalog Item reference is removed.
-- Template deletion blocked by every Catalog Item type, including unpublished items.
-- Template deletion blocked by a materialized resource, then allowed after the resource is gone.
-- Catalog Item deletion succeeds after resource creation.
-- Secret deletion blocked while a Catalog Item references a governed `pull_secret_secret`.
-
-**Visibility filtering.**
-
-- Tenant Admin sees own unpublished items.
-- Tenant User does not see unpublished items.
-
-**Lifecycle and immutability.**
-
-- Catalog Item updates affect only later resources.
-- Catalog Item Template change rejected on Update for all three types, over both public and private APIs, while other mutable fields still update.
-- `BareMetalInstance.spec.template` change rejected on Update.
-
-**Provisioning source and reconcile.**
-
-- Bare Metal reconciler uses materialized `spec.template` only (fulfillment-service reconciler in `internal/controllers/baremetalinstance/`, fake Kubernetes client).
-- Provisioning source for each resource type, at the server-logic level:
-  - `catalog_item` only: succeeds and materializes `spec.template`.
-  - `template` only: succeeds.
-  - Both: `InvalidArgument`.
-  - Neither: `InvalidArgument`.
-
-### Integration tests
-
-Infrastructure: fulfillment-service `it/` suite against a real kind cluster (created via osac-installer) with Envoy Gateway (TLS and SNI routing), Keycloak (real JWT and organization-to-tenant mapping), and real Postgres. Exercises the full request path over the wire with real authentication; the operator is not reconciling to real infrastructure.
-
-- End-to-end Create over the real gRPC and REST wire materializes `spec.template` and persists, for each resource type.
-- Provisioning source matrix (`catalog_item` only, `template` only, both, neither) exercised through the real interceptor chain.
-- All three resource types accept direct Template-only Create.
-- Tenant Admin sees own unpublished items and Tenant User does not, using real Keycloak identities and organization-to-tenant mapping.
-- Tenant-supplied resource references behave the same under Catalog-based and direct Template-based Create (generic reference-validation interceptor plus private handler).
-- REST gateway and the `osac` CLI handle the new shapes (list wrapping, scalar presence, `run_strategy`).
-- Existing resource update, reconcile, upgrade, and scale work after Catalog Item deletion.
-
-### E2E tests
-
-Infrastructure: osac-test-infra pytest against the full stack, fulfillment service through the operator and AAP to real infrastructure. Uses the existing `catalog`, `vmaas`, `caas`, and `bmaas` suites.
-
-- Catalog-based provisioning succeeds end-to-end and materializes `spec.template`:
-  - ComputeInstance (vmaas) resolves a Catalog list policy into the ordinary resource list.
-  - Cluster (caas) provisions with version and node-set policies.
-  - BareMetalInstance (bmaas) provisions through both direct Template and Catalog Item creation.
-- Cluster provisioning resolves a governed `pull_secret_secret` reference end-to-end.
-- Bare Metal `auto_external_ip_attachment` policy resolves through Catalog into the provisioned resource spec.
-- Regenerated UI, CLI, operator, AAP, and test-infra clients handle the new shapes. This is a cross-component compatibility concern spanning repos, not a single enforcement point.
-
+The executable, reviewable Catalog Items v2 networking-governance plan is
+maintained in [testplan.md](testplan.md). It covers typed policy authoring,
+presence and precedence, direct-versus-Catalog parity, reference scope and
+readiness, metadata and unrelated fields, and unsupported governance.
+Resource-specific networking validation remains owned by the Unified
+Networking, VMaaS, CaaS, and BMaaS test plans linked there.
 ## Graduation criteria
 
 Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview -> Tech Preview -> GA based on production deployment feedback.

@@ -3,7 +3,7 @@ title: multi-fabric-east-west-networking
 authors:
   - vromanso@redhat.com
 creation-date: 2026-07-14
-last-updated: 2026-08-11
+last-updated: 2026-09-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1382
 prd:
@@ -39,6 +39,19 @@ introduced.
 The AAP path for Server Cluster create/delete is already implemented
 (osac-aap PR #447). VPC → Server Cluster in existing VPC → OSAC Subnet
 coexistence and tenant isolation were validated on zeus12.
+
+## Deployment Topology
+
+This design supports exactly one hub cluster per OSAC deployment. Multi-hub
+deployments are not supported. FabricDomain, VirtualNetwork, and Subnet
+resources are reconciled through that hub; the fabric and workload servers
+remain data-plane infrastructure rather than additional hubs.
+
+> **Current implementation boundary:** OSAC supports connected deployments only.
+> Air-gapped deployments are not supported. This proposal inherits the
+> [Unified Networking deployment support boundary](../OSAC-1433-unified-networking/design.md#deployment-support-boundary);
+> it does not change the FabricDomain workload-participation or resize
+> behavior defined by this EP.
 
 ## Motivation
 
@@ -186,7 +199,7 @@ service FabricDomains {
 
 // NetworkClass extensions (existing resource, new fields)
 message NetworkClassCapabilities {
-  // existing: supports_ipv4, supports_ipv6, …
+  // Existing networking capability: IPv4 only.
   bool supports_east_west_ethernet = 5;
   bool supports_east_west_infiniband = 6;
   bool supports_nvlink = 7;
@@ -225,7 +238,7 @@ Changing them requires delete + re-create. `servers` is mutable (resize).
 | FD-VAL-03 | `virtual_networks` length == 1 | `INVALID_ARGUMENT`: "exactly one VirtualNetwork required in Phase 1" |
 | FD-VAL-04 | Referenced VN must exist and be same-tenant | `NOT_FOUND` / `PERMISSION_DENIED` |
 | FD-VAL-05 | VN's NetworkClass must have `east_west_config.ethernet_ew.template_id` for `ETHERNET_EW` | `FAILED_PRECONDITION`: "NetworkClass missing template_id for ethernet_ew" |
-| FD-VAL-06 | Type `INFINIBAND_EW` / `NVLINK` rejected until Phase 2/3 | `UNIMPLEMENTED`: "type not yet supported" |
+| FD-VAL-06 | Type `INFINIBAND_EW` / `NVLINK` is not supported in the current design | `UNIMPLEMENTED`: "type not supported" |
 
 ### Why Phase 1 requires VirtualNetwork (1:1)
 
@@ -379,10 +392,23 @@ via the same Server Cluster's EW V-Net. FabricDomain does not remove N-S.
 
 ### Multiple FabricDomains, few NetworkClasses
 
-NetworkClass is a catalog entry ("how we implement EW on this backend").
-FabricDomain is an instance ("these servers, this fabric type"). Many domains
-may reference one NetworkClass. Multiple NetworkClasses only when backends or
-templates differ (e.g. GPU vs storage template, Netris vs NICo).
+NetworkClass is a provider configuration profile ("how we implement EW on
+this backend"). FabricDomain is an instance ("these servers, this fabric
+type"). Many domains may reference one NetworkClass. Multiple NetworkClasses
+only when backends or templates differ (e.g. GPU vs storage template, Netris
+vs NICo). NetworkClass is not an OSAC Catalog Item and is not a customer
+offering.
+
+### Catalog Item boundary
+
+Catalog Item v2 governs create-time choices on a ComputeInstance, Cluster, or
+BaremetalInstance, including the resource's north-south network attachment.
+It does not create, select, or compose a `FabricDomain`, and it does not
+govern the NetworkClass, east-west template, server membership, NIC mapping,
+or provisioning networks. A resource offering that needs both a tenant
+Subnet and an east-west FabricDomain therefore requires the FabricDomain to be
+managed as a separate resource; multi-resource Catalog offerings are outside
+the current Catalog Item scope.
 
 ### Who manages InfiniBand / NVLink?
 
@@ -442,6 +468,11 @@ Server Cluster Template example (Netris, infra-owned):
 
 FabricDomain does not repeat this. Changing NIC layout = change template on
 NetworkClass, not the domain object.
+
+These template-level NIC mappings are infrastructure-side fabric plumbing and
+do not change the BMaaS resource contract. A `BaremetalInstance` uses one
+tenant network attachment on one physical NIC; this design does not support
+multi-NIC or multi-homed BMaaS attachments.
 
 ---
 
@@ -554,6 +585,12 @@ FabricDomain inherits the existing OSAC multi-tenant security model:
 - **No new authentication/authorization surface:** FabricDomain uses the same
   gRPC interceptor chain and OPA policy engine as existing networking resources.
 
+SecurityGroup behavior on the associated VirtualNetwork follows the [Unified
+Networking field contract](/enhancements/OSAC-1433-unified-networking/design.md#securitygrouprule-fields)
+and its deployment-baseline and tenant-default rules. This East-West design
+does not redefine SecurityGroup evaluation or add a separate ACL translation
+contract.
+
 ### Failure Handling and Recovery
 
 | Failure mode | What happens | Recovery | User observes |
@@ -633,6 +670,9 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
 
 ## Phase 1 limitations
 
+All IP addressing in this design is IPv4-only. IPv6 and dual-stack networking
+are not supported.
+
 - VirtualNetwork association required (exactly one); zero or many deferred.
 - **Membership is static.** Admin provides explicit hostnames at create time.
   Phase 2 should support inventory-driven membership (label selectors on
@@ -640,6 +680,8 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
   hosts are assigned.
 - No server eligibility validation (admin trusted on hostnames).
 - NIC mapping only via Netris template.
+- BMaaS tenant attachments remain single-NIC; multiple NICs in a server
+  template are provider-side fabric plumbing, not multiple tenant attachments.
 - `template_id` is Netris-specific (scoped to NetworkClass).
 - Templates pre-created by infra; OSAC does not manage template lifecycle.
 - **Bare-metal only; no SR-IOV/VM EW.** FabricDomain membership is

@@ -18,6 +18,11 @@ superseded-by:
 
 > **Status:** This proposal is superseded by [Catalog Items v2](../OSAC-3538-catalog-items-v2/design.md). It remains useful as historical background, but its `FieldDefinition`, dot-notation path, and JSON Schema API model are legacy and should not be treated as current behavior.
 
+> Historical networking examples in this document are also superseded. Use the
+> [Unified Networking attachment contract](../OSAC-1433-unified-networking/design.md#attachment-field-names-and-message-types)
+> and [Catalog Items v2](../OSAC-3538-catalog-items-v2/design.md) for the
+> current field/type pairs.
+
 ## Summary
 
 Today there is a 1:1 mapping between templates and ansible roles. A user sees a
@@ -72,8 +77,11 @@ don't have the ability to add or modify ansible roles.
 
   **List and map constraints:**
   - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
-    Example: `network_attachments` with `{"minItems": 1, "maxItems": 1}` locks a VM to exactly one network attachment — the user can choose which subnet and security groups but cannot add a second NIC.
-    Example: `network_attachments` with `{"minItems": 1, "maxItems": 4}` allows 1–4 network attachments.
+    Example: `network_attachments` with `{"minItems": 1, "maxItems": 1}` locks a VM to exactly one network attachment — the user can choose which subnet and optional SecurityGroups, while its effective NetworkACL is inherited from that subnet. The user cannot add a second NIC.
+    The historical API model allowed `network_attachments` with
+    `{"minItems": 1, "maxItems": 4}`. That legacy behavior is not supported
+    by the current Catalog Items v2 or Unified Networking contracts, which
+    allow zero or one attachment for VM and bare-metal workloads.
     Example: `additional_disks` with `{"maxItems": 0}` prevents users from adding any additional disks beyond the boot disk.
   - **Map entry count** (`minProperties`, `maxProperties`): same pattern for map fields.
     Example: `node_sets` with `{"minProperties": 2, "maxProperties": 2}` locks a cluster to exactly two node sets (e.g., control-plane + workers) — the user can edit each node set's `size` but cannot add or remove node sets.

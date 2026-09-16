@@ -3,13 +3,13 @@ title: type-safe-resource-references
 authors:
   - Haim Tayrie
 creation-date: 2026-07-15
-last-updated: 2026-07-15
+last-updated: 2026-09-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1330
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/OSAC-356-networking"
+  - "/enhancements/OSAC-1433-unified-networking"
   - "/enhancements/bare-metal-fulfillment"
 replaces:
   - N/A
@@ -28,6 +28,13 @@ for centralized reference validation, and updates the CLI, UI, database
 triggers, and CEL filter paths accordingly. See [PRD](prd.md) for detailed
 requirements.
 
+The networking schemas covered by this design use IPv4 CIDRs only; IPv6 and
+dual-stack networking are not supported. Every configured Fabric or K8s manager
+is a complete target for the SecurityGroup and NetworkACL contracts. The
+effective ACL is inherited from the selected Subnet. Kubernetes NetworkPolicy
+alone does not satisfy the stateless NetworkACL contract; an unfinished
+provider adapter may use a successful no-op AAP operation during development.
+
 ## Motivation
 
 Every OSAC resource that points to another resource does so through a bare
@@ -36,12 +43,12 @@ schema level from `SubnetSpec.ipv4_cidr` -- both are strings. This creates
 three classes of problems:
 
 1. **No compile-time safety.** Nothing prevents a developer from passing a
-   SecurityGroup ID where a VirtualNetwork ID is expected. The proto compiler,
+   Subnet ID where a VirtualNetwork ID is expected. The proto compiler,
    Go type system, and REST/JSON schema all treat these identically.
 
 2. **No cross-tenant addressability.** References carry only an identifier (or
    name) with no tenant or project context. Referencing a shared resource in a
-   different tenant (a global ClusterTemplate, a platform-scoped NetworkClass)
+   different tenant (a global ClusterTemplate, a deployment-scoped NetworkClass)
    requires out-of-band knowledge of the target's identifier.
 
 3. **Scattered, inconsistent validation.** Each server validates references
@@ -66,7 +73,7 @@ and standardizes error reporting across all services. [Locked: D2]
 ### Goals
 
 - Provide compile-time type safety for all inter-resource references through
-  per-type protobuf messages, making it impossible to assign a SecurityGroup
+  per-type protobuf messages, making it impossible to assign a Subnet
   reference to a VirtualNetwork field.
 - Centralize reference existence validation in a single gRPC interceptor so
   that new resources automatically inherit validation without per-server code.
@@ -119,9 +126,10 @@ The design introduces three coordinated changes:
 
 #### Creating a compute instance with network attachments (Tenant User)
 
-Starting state: A Tenant User has a Subnet named `app-subnet` and a
-SecurityGroup named `app-sg`, both in READY state within their tenant and
-project.
+Starting state: A Tenant User has a Subnet named `app-subnet` in READY state
+within the tenant and project. The Subnet has its effective NetworkACL ready;
+the ACL is associated with the Subnet and is not referenced by the workload
+attachment.
 
 1. The user submits a CreateComputeInstance request. In the REST/JSON body,
    network attachments use nested reference objects:
@@ -132,8 +140,7 @@ project.
        "catalog_item": { "name": "standard-vm" },
        "network_attachments": [
          {
-           "subnet": { "name": "app-subnet" },
-           "security_groups": [{ "name": "app-sg" }]
+           "subnet": { "name": "app-subnet" }
          }
        ]
      }
@@ -144,7 +151,9 @@ project.
    `catalog_item` field is a `ComputeInstanceCatalogItemReference` (full
    reference, since catalog items may be cross-tenant). The `subnet` field is
    a `SubnetLocalReference` (local, since subnets are always same-tenant). The
-   `security_groups` field is a `repeated SecurityGroupLocalReference`.
+   attachment contains a `SubnetLocalReference` and optional typed
+   `SecurityGroupLocalReference` values; its effective NetworkACL is resolved
+   from the referenced Subnet and is not embedded in the attachment.
 
 3. The reference validation interceptor fires before the server handler. It
    walks the `CreateComputeInstanceRequest` message using protoreflect,
@@ -164,34 +173,33 @@ project.
 
 5. If all references are valid, the request proceeds to the
    ComputeInstancesServer handler, which performs business logic validation
-   (e.g., the security groups must belong to the same VirtualNetwork as the
-   subnet).
+   (e.g., the Subnet and its effective NetworkACL must be Ready and belong to
+   the same tenant and VirtualNetwork).
 
-6. On success, the created ComputeInstance is returned with the reference
-   fields populated exactly as submitted.
+6. On success, the created ComputeInstance is returned with the submitted
+   names preserved and the resolved identifier/scope fields populated according
+   to the reference contract.
 
-#### Creating a virtual network with a cross-tenant network class (Tenant Admin)
+#### Creating a virtual network in the single deployment NetworkClass (Tenant Admin)
 
-Starting state: A Cloud Infrastructure Admin has created a NetworkClass named
-`high-perf` in the platform scope.
+Starting state: The provider has configured the single deployment NetworkClass.
+Tenants do not select a NetworkClass for individual VirtualNetworks.
 
 1. The Tenant Admin submits a CreateVirtualNetwork request:
    ```json
    {
      "metadata": { "name": "prod-net" },
      "spec": {
-       "network_class": { "name": "high-perf" },
        "ipv4_cidr": "10.0.0.0/16"
      }
    }
    ```
 
-2. The `network_class` field is a `NetworkClassReference` (full reference).
-   Since NetworkClass is a platform-scoped resource, the interceptor looks it
-   up without tenant filtering.
+2. The server resolves the single deployment NetworkClass and derives the
+   provider/private `implementation_strategy`.
 
-3. The interceptor validates that `high-perf` exists. The server handler
-   validates CIDR format and NetworkClass capabilities (IPv4 support).
+3. The server validates the CIDR format and the complete resolved manager
+   contract.
 
 #### Creating a catalog item referencing a template in another tenant (Cloud Provider Admin)
 
@@ -290,17 +298,17 @@ add new gRPC services, CRDs, webhooks, or finalizers.
 
 | File | Change |
 |------|--------|
-| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, `SubnetLocalReference`, `SecurityGroupLocalReference`. Replace string fields in `ComputeInstanceSpec` and `NetworkAttachment`. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
+| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, and `SubnetLocalReference`. Replace string fields in `ComputeInstanceSpec` and `ComputeNetworkAttachment`. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
 | `subnet_type.proto` | Add `VirtualNetworkLocalReference`. Replace `SubnetSpec.virtual_network`. |
-| `virtual_network_type.proto` | Add `NetworkClassReference`. Replace `VirtualNetworkSpec.network_class`. |
-| `security_group_type.proto` | Add `VirtualNetworkLocalReference` (reuse from subnet). Replace `SecurityGroupSpec.virtual_network`. |
+| `virtual_network_type.proto` | Remove the tenant-settable `NetworkClassReference`; retain provider/private `implementation_strategy` and validate `VirtualNetworkSpec.ipv4_cidr`. |
+| `network_acl_type.proto` | Reuse `VirtualNetworkLocalReference` and add repeated `SubnetLocalReference` fields for `NetworkACLSpec.virtual_network` and `NetworkACLSpec.subnets`. NetworkACL rules contain no workload attachment references. |
 | `external_ip_attachment_type.proto` | Add `ExternalIPLocalReference`, `ComputeInstanceLocalReference`, `ClusterLocalReference`, `BareMetalInstanceLocalReference`. Replace string fields in `ExternalIPAttachmentSpec` oneof. |
 | `external_ip_type.proto` | Add `ExternalIPPoolReference`. Replace `ExternalIPSpec.pool`. |
 | `public_ip_attachment_type.proto` | Add `PublicIPLocalReference`, `ComputeInstanceLocalReference` (reuse). Replace string fields. |
 | `public_ip_type.proto` | Add `PublicIPPoolReference`. Replace `PublicIPSpec.pool`. |
 | `nat_gateway_type.proto` | Add references for VirtualNetwork and ExternalIP. Replace string fields. |
-| `cluster_type.proto` | Add `ClusterTemplateReference`, `ClusterCatalogItemReference`, `HostTypeReference`. Replace string fields. |
-| `baremetal_instance_type.proto` | Add `BareMetalInstanceCatalogItemReference`. Replace string field. |
+| `cluster_type.proto` | Add `ClusterTemplateReference`, `ClusterCatalogItemReference`, `BareMetalInstanceTypeReference`, and `SubnetLocalReference` usage in the canonical `ClusterNetworkAttachment`. Replace string fields in `ClusterSpec`, `ClusterNodeSet`, and the cluster attachment. The effective NetworkACL is resolved from the attachment's Subnet. |
+| `baremetal_instance_type.proto` | Add `BareMetalInstanceCatalogItemReference` and `BareMetalInstanceTypeReference` to `BareMetalInstanceSpec`, plus `SubnetLocalReference` usage in the canonical `BareMetalNetworkAttachment`. Replace the corresponding string fields. The effective NetworkACL is resolved from the attachment's Subnet. |
 | `role_binding_type.proto` | Add `RoleReference`, `UserReference`. Replace string fields. |
 | `project_membership_type.proto` | Add `ProjectReference`, `UserReference` (reuse). Replace string fields. |
 | `catalog_item_type.proto` (cluster, compute, baremetal) | Add template references. Replace string fields. |
@@ -313,10 +321,32 @@ plus an additional `string tenant` field. Private-only status-level references
 (hub, pool mirrors) are addressed in the Implementation Details section.
 
 **Shared reference messages:** When multiple resources reference the same
-target type (e.g., both `NetworkAttachment` and `PublicIPAttachmentSpec`
-reference `ComputeInstance`), the reference message is defined once in the
-target type's `_type.proto` file and imported where needed. This prevents
-duplicate message definitions.
+target type (e.g., both `ComputeNetworkAttachment` and
+`PublicIPAttachmentSpec` reference `ComputeInstance`), the reference message
+is defined once in the target type's `_type.proto` file and imported where
+needed. This prevents duplicate message definitions.
+
+**Canonical networking attachment messages:** The shared `NetworkAttachment`
+message is not a supported public or private resource-spec field. Networking
+attachments use the resource-specific messages defined by Unified Networking:
+
+| Resource | Canonical field | Canonical message | Typed reference fields |
+|---|---|---|---|
+| ComputeInstance | `spec.network_attachments` | repeated `ComputeNetworkAttachment` (zero or one supported) | `subnet: SubnetLocalReference`; `security_groups: repeated SecurityGroupLocalReference`; effective NetworkACL is inherited from the Subnet |
+| Cluster | `spec.network_attachment` | `ClusterNetworkAttachment` (singular) | `subnet: SubnetLocalReference`; `security_groups: repeated SecurityGroupLocalReference`; effective NetworkACL is inherited from the Subnet |
+| BaremetalInstance | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` (zero or one supported) | `BareMetalInstanceSpec.catalog_item: BareMetalInstanceCatalogItemReference`; `BareMetalInstanceSpec.instance_type: BareMetalInstanceTypeReference`; attachment `subnet: SubnetLocalReference`; `security_groups: repeated SecurityGroupLocalReference`; effective NetworkACL is inherited from the Subnet |
+
+The resource-specific messages retain the API shapes required by the service
+contracts, but all reference-bearing fields use the typed messages above. The
+service designs define the additional `primary` and physical-interface rules;
+they do not reintroduce the shared attachment type.
+
+The names in the `Canonical field` column are API field names, not message
+type names. In particular, `spec.network_attachment` carries a
+`ClusterNetworkAttachment`, while `spec.network_attachments` carries repeated
+`ComputeNetworkAttachment` values for ComputeInstance and repeated
+`BareMetalNetworkAttachment` values for BaremetalInstance. The API does not define
+`cluster_network_attachment` or `bare_metal_network_attachments` fields.
 
 **Operational impact:** None. This is a schema change with no new controllers,
 webhooks, or runtime components beyond the interceptor (which replaces existing
@@ -331,16 +361,16 @@ structure.
 
 | UI code location | Current wire format | New wire format | Notes |
 |---|---|---|---|
-| `networking.ts` `CreateVirtualNetworkInput.networkClass` | `spec: { network_class: networkClass }` (string) | `spec: { network_class: { name: networkClass } }` | Local var already holds the name |
+| `networking.ts` `CreateVirtualNetworkInput` | `spec: { network_class: networkClass, ipv4_cidr: cidr }` | `spec: { ipv4_cidr: cidr }` | NetworkClass is deployment-resolved; the tenant supplies only the CIDR |
 | `networking.ts` `CreateSubnetInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName } }` | Rename variable from `Id` to name-based |
-| `networking.ts` `CreateSecurityGroupInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName } }` | Same pattern as Subnet |
+| `networking.ts` `CreateNetworkACLInput.virtualNetworkName` | `spec: { virtual_network: virtualNetworkName }` (string) | `spec: { virtual_network: { name: vnetName }, subnets: [{ name: subnetName }] }` | NetworkACL associations use typed local Subnet references; workload attachments do not reference NetworkACLs |
 | `networking.ts` `virtualNetworkFilterForSubnetList` | `this.spec.virtual_network == "${id}"` | `this.spec.virtual_network.name == "${name}"` | CEL filter path change |
 | `ip-management.ts` `useCreatePublicIP` body | `spec: { pool: string }` | `spec: { pool: { name: poolName } }` | |
 | `ip-management.ts` `useCreateExternalIP` body | `spec: { pool: string }` | `spec: { pool: { name: poolName } }` | |
 | `ip-management.ts` `useCreatePublicIPAttachment` body | `spec: { publicIp: string, target: { case, value } }` | `spec: { public_ip: { name: ipName }, compute_instance: { name: vmName } }` | Oneof becomes separate fields with reference messages |
 | `ip-management.ts` `useCreateExternalIPAttachment` body | `spec: { externalIp: string, target: { case, value } }` | `spec: { external_ip: { name: ipName }, compute_instance: { name: vmName } }` | Same oneof pattern |
 | `cluster.ts` `CreateClusterInput.spec.catalogItem` | `spec: { catalogItem: string }` | `spec: { catalog_item: { name: catalogName } }` | |
-| `compute-instance-wire.ts` `buildComputeInstanceCreateBody` | `spec: { template: "id", catalog_item: "id", subnet: "id", security_groups: ["id"] }` | `spec: { template: { name: "tpl" }, catalog_item: { name: "ci" }, network_attachments: [{ subnet: { name: "s" }, security_groups: [{ name: "sg" }] }] }` | Most complex change; wire builder must wrap strings |
+| `compute-instance-wire.ts` `buildComputeInstanceCreateBody` | `spec: { template: "id", catalog_item: "id", subnet: "id" }` | `spec: { template: { name: "tpl" }, catalog_item: { name: "ci" }, network_attachments: [{ subnet: { name: "s" } }] }` | Most complex change; wire builder must wrap strings; the effective NetworkACL is inherited from the Subnet |
 
 **Known deviation:** The `@temp-api` attachment types
 (`useCreatePublicIPAttachment`, `useCreateExternalIPAttachment`) use a
@@ -367,9 +397,9 @@ and private APIs use different full reference shapes:
 // public _type.proto file.
 message ClusterTemplateReference {
   option (buf.validate.message).cel = {
-    id: "id_or_name_required",
-    message: "at least one of id or name must be provided",
-    expression: "this.id != '' || this.name != ''"
+    id: "name_required",
+    message: "name must be provided",
+    expression: "this.name != ''"
   };
 
   string id = 1;
@@ -383,9 +413,9 @@ message ClusterTemplateReference {
 // _type.proto file.
 message ClusterTemplateReference {
   option (buf.validate.message).cel = {
-    id: "id_or_name_required",
-    message: "at least one of id or name must be provided",
-    expression: "this.id != '' || this.name != ''"
+    id: "name_required",
+    message: "name must be provided",
+    expression: "this.name != ''"
   };
 
   string id = 1;
@@ -399,9 +429,9 @@ message ClusterTemplateReference {
 // Shared between public and private APIs.
 message SubnetLocalReference {
   option (buf.validate.message).cel = {
-    id: "id_or_name_required",
-    message: "at least one of id or name must be provided",
-    expression: "this.id != '' || this.name != ''"
+    id: "name_required",
+    message: "name must be provided",
+    expression: "this.name != ''"
   };
 
   string id = 1;
@@ -422,29 +452,30 @@ it includes all public fields (`id`, `name`, `project`, `shared`) plus an
 additional `tenant` field for Cloud Provider Admins who manage cross-tenant
 resources.
 
-All reference types (full and local) support three resolution modes:
+All reference types (full and local) require `name` in a request. The optional
+`id` is a resolved/output field; when a caller supplies it together with
+`name`, the interceptor verifies that both identify the same resource. An
+identifier cannot replace the name.
 
-1. **Name only** (most common): The interceptor resolves the resource by name
+1. **Name only** (the normal form): The interceptor resolves the resource by name
    within the caller's tenant (or the `shared` tenant if `shared = true` in
    public API, or the explicit `tenant` in private API). The `id` field in the
    stored reference is auto-populated with the resolved resource's identifier.
-2. **ID only**: The interceptor resolves the resource by identifier. The `name`
-   field is auto-populated from the resolved resource. This preserves backward
-   compatibility for clients that already use identifiers.
-3. **Both provided**: The interceptor resolves both and validates they refer to
-   the same resource. If they disagree, it returns `InvalidArgument`.
+2. **Both provided**: The interceptor resolves by `name` and verifies that an
+   optional supplied `id` identifies the same resource. If they disagree, it
+   returns `InvalidArgument`.
 
-In all modes, the interceptor mutates the request via protoreflect to fill in
-missing fields before the handler runs. The stored JSON always contains the
-fully-qualified reference. This ensures consistent downstream behavior
-regardless of how the caller specified the reference.
+The interceptor rejects a request that supplies only `id`, rather than
+silently preserving the old identifier-only request format. After name
+resolution it mutates the request via protoreflect to fill in the resolved
+`id` and any scope fields before the handler runs. The stored JSON therefore
+contains a fully-qualified reference.
 
 Local references omit `tenant` and `project` because the target is always in
 the same scope as the referencing resource. The interceptor derives tenant and
 project from the owning resource's metadata, not from the caller's auth
-context. The `id` field is included for backward compatibility — clients that
-currently use resource identifiers can continue to do so during the transition
-to name-based references.
+context. The `id` field may be populated after the named resource is resolved,
+but it is not a standalone input form.
 
 #### Which fields use local vs. full references
 
@@ -454,9 +485,9 @@ resource can be in a different tenant or project from the referencing resource:
 | Field | Reference Type | Rationale |
 |-------|---------------|-----------|
 | `SubnetSpec.virtual_network` | `VirtualNetworkLocalReference` | Subnet is always in the same tenant/project as its parent VirtualNetwork |
-| `SecurityGroupSpec.virtual_network` | `VirtualNetworkLocalReference` | Same reasoning as Subnet |
-| `NetworkAttachment.subnet` | `SubnetLocalReference` | ComputeInstance and Subnet are in the same tenant/project |
-| `NetworkAttachment.security_groups` | `repeated SecurityGroupLocalReference` | Same tenant/project |
+| `NetworkACLSpec.virtual_network` | `VirtualNetworkLocalReference` | The NetworkACL belongs to the same VirtualNetwork as its associated Subnets |
+| `ComputeNetworkAttachment.subnet` | `SubnetLocalReference` | ComputeInstance and Subnet are in the same tenant/project |
+| `NetworkACLSpec.subnets` | `repeated SubnetLocalReference` | NetworkACL associations are explicit, same-scope Subnet references |
 | `NATGatewaySpec.virtual_network` | `VirtualNetworkLocalReference` | Same tenant/project |
 | `NATGatewaySpec.external_ip` | `ExternalIPLocalReference` | Same tenant/project |
 | `ExternalIPAttachmentSpec.external_ip` | `ExternalIPLocalReference` | Same tenant/project |
@@ -466,20 +497,20 @@ resource can be in a different tenant or project from the referencing resource:
 | `PublicIPAttachmentSpec.public_ip` | `PublicIPLocalReference` | Same tenant/project |
 | `PublicIPAttachmentSpec.compute_instance` | `ComputeInstanceLocalReference` | Same tenant/project |
 | `InstanceTypeDeprecation.replacement` | `InstanceTypeLocalReference` | Same scope |
-| `VirtualNetworkSpec.network_class` | `NetworkClassReference` | NetworkClass is platform-scoped (cross-tenant) |
 | `ClusterSpec.template` | `ClusterTemplateReference` | Templates may be shared across tenants |
 | `ClusterSpec.catalog_item` | `ClusterCatalogItemReference` | Catalog items may be shared across tenants |
-| `ClusterNodeSet.host_type` | `HostTypeReference` | HostTypes are platform-scoped |
+| `ClusterNodeSet.baremetal_instance_type` | `BareMetalInstanceTypeReference` | BareMetalInstanceTypes are platform-scoped |
 | `ComputeInstanceSpec.template` | `ComputeInstanceTemplateReference` | Templates may be shared |
 | `ComputeInstanceSpec.catalog_item` | `ComputeInstanceCatalogItemReference` | Catalog items may be shared |
 | `ComputeInstanceSpec.instance_type` | `InstanceTypeReference` | InstanceTypes may be shared |
-| `ExternalIPSpec.pool` | `ExternalIPPoolReference` | Pools are platform-scoped |
+| `ExternalIPSpec.pool` | `ExternalIPPoolReference` | Pools are provider/deployment-scoped, not tenant-local |
 | `PublicIPSpec.pool` | `PublicIPPoolReference` | Pools are platform-scoped |
 | `BareMetalInstanceSpec.catalog_item` | `BareMetalInstanceCatalogItemReference` | Catalog items may be shared |
+| `BareMetalInstanceSpec.instance_type` | `BareMetalInstanceTypeReference` | BareMetalInstanceTypes are platform-scoped |
 | `ClusterCatalogItem.template` | `ClusterTemplateReference` | Cross-tenant template reference |
 | `ComputeInstanceCatalogItem.template` | `ComputeInstanceTemplateReference` | Cross-tenant template reference |
 | `BareMetalInstanceCatalogItem.template` | `BareMetalInstanceTemplateReference` | Cross-tenant template reference |
-| `ClusterTemplateNodeSet.host_type` | `HostTypeReference` | Platform-scoped |
+| `ClusterTemplateNodeSet.baremetal_instance_type` | `BareMetalInstanceTypeReference` | Platform-scoped |
 | `ComputeInstanceTemplateSpecDefaults.instance_type` | `InstanceTypeReference` | May be shared |
 | `RoleBindingSpec.role` | `RoleReference` | Roles may be platform-scoped |
 | `RoleBindingSpec.users` | `repeated UserReference` | Users may be cross-project |
@@ -497,8 +528,10 @@ message SubnetSpec {
     (google.api.field_behavior) = REQUIRED,
     (google.api.field_behavior) = IMMUTABLE
   ];
-  optional string ipv4_cidr = 2 [(google.api.field_behavior) = IMMUTABLE];
-  optional string ipv6_cidr = 3 [(google.api.field_behavior) = IMMUTABLE];
+  string ipv4_cidr = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.field_behavior) = IMMUTABLE
+  ];
 }
 ```
 
@@ -518,8 +551,10 @@ message SubnetSpec {
     (google.api.field_behavior) = REQUIRED,
     (google.api.field_behavior) = IMMUTABLE
   ];
-  optional string ipv4_cidr = 2 [(google.api.field_behavior) = IMMUTABLE];
-  optional string ipv6_cidr = 3 [(google.api.field_behavior) = IMMUTABLE];
+  string ipv4_cidr = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.field_behavior) = IMMUTABLE
+  ];
 }
 ```
 
@@ -582,7 +617,7 @@ tenant context and a database transaction are available).
 ```go
 // ReferenceValidator validates and resolves resource references in incoming
 // gRPC requests. It validates that referenced resources exist and
-// auto-populates missing fields (id, name, tenant, project) via protoreflect
+// auto-populates missing fields (id, tenant, project) via protoreflect
 // mutation before the handler runs.
 type ReferenceValidator struct {
     registry map[protoreflect.FullName]ReferenceLookupFunc
@@ -596,9 +631,9 @@ type ResolvedRef struct {
     Name    string
 }
 
-// ReferenceLookupFunc resolves a resource by id, name, or both within a
-// tenant/project scope. At least one of id or name is non-empty (enforced by
-// buf.validate CEL). Returns the fully-resolved reference or dao.ErrNotFound.
+// ReferenceLookupFunc resolves a resource by the required name and optionally
+// verifies an id within a tenant/project scope. Returns the fully-resolved
+// reference or dao.ErrNotFound.
 type ReferenceLookupFunc func(
     ctx context.Context,
     tenant, project, id, name string,
@@ -624,31 +659,40 @@ tenant when empty. If `shared = true` is set in the private API, it takes
 precedence over the `tenant` field (maps to `tenant = "shared"`). The lookup
 function always receives a resolved `tenant` and `project` string.
 
-**Resolution modes.** The interceptor supports three resolution modes for full
+**Resolution modes.** The interceptor supports two resolution modes for full
 references, determined by which fields the caller provides:
 
 | Mode | Input | Behavior |
 |------|-------|----------|
-| Name only | `name` set, `id` empty | Look up by name within tenant scope. Auto-populate `id` in the request. |
-| ID only | `id` set, `name` empty | Look up by id. Auto-populate `name` in the request. |
-| Both | `id` and `name` both set | Look up, verify both resolve to the same resource. Return `InvalidArgument` if they disagree. |
+| Name only | `name` set, `id` empty | Look up by name within tenant scope and auto-populate `id` in the request. |
+| Both | `name` and `id` both set | Look up by name and verify the supplied `id` identifies the same resource. Return `InvalidArgument` if they disagree. |
 
-For local references (`LocalReference` messages), the same three resolution
-modes apply. The tenant is always the caller's tenant.
+For local references (`LocalReference` messages), the same two resolution
+modes apply. The tenant is normally the owning resource's effective tenant.
+There is one trusted private exception for the current CaaS worker flow:
+CaaS creates the destination BareMetalInstance in the builtin `system`
+tenant, while its Subnet and effective NetworkACL belong to the tenant that
+owns the Cluster. The authenticated CaaS controller passes that source
+tenant/project as reference-resolution context, and BMaaS must resolve the
+Subnet there and inherit its effective NetworkACL rather than reject the
+request because the destination BMI has different metadata. This exception
+is limited to the private CaaS worker create path; it does not change
+tenant-facing local-reference semantics.
 
 The lookup function uses the existing `List` + CEL filter pattern already
-established in the codebase (e.g., `lookupCatalogItem`, `lookupTemplate`):
-`"this.id == X || this.metadata.name == X"`. This avoids adding a new DAO
-method.
+established in the codebase (e.g., `lookupCatalogItem`, `lookupTemplate`) to
+resolve the required name within scope. When an input `id` is also present,
+the resolved object's identifier is compared with it. This avoids adding a new
+DAO method.
 
 **Request mutation.** After resolution, the interceptor writes the resolved
 values back into the request message via `protoreflect.Message.Set()`. This
 ensures the handler and stored JSON always contain fully-qualified references
 regardless of how the caller specified them. For example, a public API client
-that sends `{ "id": "abc-123", "shared": true }` gets the stored reference
+that sends `{ "name": "my-template", "shared": true }` gets the stored reference
 expanded to
 `{ "id": "abc-123", "name": "my-template", "project": "", "shared": true }`.
-A private API client that sends `{ "id": "abc-123" }` gets
+A private API client that sends `{ "name": "my-template" }` gets
 `{ "id": "abc-123", "name": "my-template", "project": "", "shared": false, "tenant": "infra-templates" }`.
 
 **Reference detection.** The interceptor identifies reference fields by
@@ -665,7 +709,8 @@ registered lookups, preventing deployment of misconfigured servers.
 iterate over set fields. For message-typed fields, it checks whether the
 message type matches a registered reference type. For repeated fields, it
 iterates each element. For oneof fields, it inspects the populated variant.
-For nested messages (like `NetworkAttachment` inside `ComputeInstanceSpec`),
+For nested messages (like `ComputeNetworkAttachment` inside
+`ComputeInstanceSpec`),
 it recurses.
 
 **Tenant and project context.** For `LocalReference` messages, the interceptor
@@ -691,8 +736,10 @@ per invalid reference, where the `field` is the proto field path (e.g.,
 `spec.network_attachments[0].subnet.name`) and the `description` is a
 human-readable message.
 
-**Platform-scoped resources.** Resources like NetworkClass, ExternalIPPool,
-PublicIPPool, and HostType are platform-scoped and not filtered by tenant. The
+**Provider/deployment-scoped resources.** Resources like NetworkClass,
+ExternalIPPool, and PublicIPPool are provider/deployment-scoped and not
+filtered by tenant. BareMetalInstanceType is platform-scoped and likewise is
+not filtered by tenant. The
 lookup function registered for these types omits tenant filtering.
 
 **Interceptor registration in the chain:**
@@ -732,7 +779,7 @@ introduced by this EP.
 IDs), trigger queries must add tenant predicates when switching from ID-based
 to name-based matching. The scoping rule depends on the reference type:
 
-- **Same-tenant local references** (Subnet→VN, CI→Subnet, SG→VN,
+- **Same-tenant local references** (Subnet→VN, CI→Subnet, NetworkACL→VN,
   CI→InstanceType): Currently match on `id` with no tenant filter. After
   migration, add `tenant = new.tenant` (forward triggers) or
   `tenant = old.tenant` (reverse triggers) to scope lookups within the
@@ -784,36 +831,35 @@ their filter expressions as part of the same delivery chunk.
 
 The CLI currently accepts reference values as string flags (e.g.,
 `--template my-template`, `--subnet my-subnet`). After the change, the CLI
-constructs reference messages from flag values:
+constructs typed reference messages from flag values. Networking workload
+commands use the canonical compound `--network-attachment` option defined by
+Unified Networking; the option remains singular at the CLI even when the VM
+or BM API field is a repeated `network_attachments` field.
 
-**For local references (by name or id):**
+**For local references (by name):**
 
 ```bash
 # By name (common case):
-osac compute-instance create --name my-vm --catalog-item standard-vm \
-  --subnet app-subnet --security-group app-sg
-
-# By id (backward compatibility):
-osac compute-instance create --name my-vm --catalog-item standard-vm \
-  --subnet-id abc-123 --security-group-id def-456
+osac create computeinstance --name my-vm --template ocp_virt_vm \
+  --network-attachment subnet=app-subnet
 
 # The CLI internally constructs:
-# network_attachments[0].subnet: { name: "app-subnet" }  or  { id: "abc-123" }
-# network_attachments[0].security_groups[0]: { name: "app-sg" }  or  { id: "def-456" }
+# network_attachments[0].subnet: { name: "app-subnet" }
+# the effective NetworkACL is inherited from "app-subnet"
 ```
 
 **For full references with project or shared scope:**
 
 ```bash
 # Reference in a specific project:
-osac cluster create --name my-cluster \
+osac create cluster --name my-cluster \
   --template team-template --template-project team-a.staging
 
 # The CLI internally constructs:
 # template: { name: "team-template", project: "team-a.staging" }
 
 # Reference in the shared tenant:
-osac cluster create --name my-cluster \
+osac create cluster --name my-cluster \
   --template shared-template --template-shared
 
 # The CLI internally constructs:
@@ -821,8 +867,12 @@ osac cluster create --name my-cluster \
 ```
 
 For each reference field, the CLI accepts `--<field>` (name) and
-`--<field>-id` (identifier). For full reference fields, `--<field>-project`
-scopes within a project and `--<field>-shared` targets the shared tenant.
+`--<field>-id` (identifier) as a consistency check alongside the name. The
+`--<field>-id` form is not a standalone reference; ID-only input is rejected
+because every reference requires `name`. For full reference fields,
+`--<field>-project` scopes within a project and `--<field>-shared` targets the
+shared tenant; both may be supplied together to scope a lookup to a project
+within the shared tenant.
 
 The CLI's `describe` output displays references with their resolved names:
 
@@ -831,6 +881,12 @@ Spec:
   Virtual Network: prod-net
   IPv4 CIDR:       10.0.1.0/24
 ```
+
+For full references, `describe` also displays the resolved tenant, project, or
+shared scope when that scope is meaningful. A shared reference with an
+explicit project is shown as a project within the shared tenant. Local
+references show their resolved resource name and do not expose tenant/project
+selectors.
 
 #### Private API and Status-Level References
 
@@ -860,10 +916,10 @@ database triggers, CLI, UI), and leaves the system fully functional.
 
 | Chunk | Resources | Reference Fields | Rationale |
 |-------|-----------|-----------------|-----------|
-| 1 - Interceptor + Networking | VirtualNetwork, Subnet, SecurityGroup, NetworkClass | `network_class`, `virtual_network` (x3) | Foundation: build interceptor with the simplest reference graph. Networking resources have clear local-reference semantics. |
-| 2 - Compute | ComputeInstance, ComputeInstanceTemplate, ComputeInstanceCatalogItem, InstanceType | `template`, `catalog_item`, `instance_type`, `subnet`, `security_groups`, `replacement` | Highest user-facing impact. Depends on networking references from Chunk 1. |
+| 1 - Interceptor + Networking | VirtualNetwork, Subnet, NetworkACL, NetworkClass | `virtual_network`, `subnets` | Foundation: build interceptor with the local networking reference graph. NetworkClass is deployment-resolved and has no tenant reference field. |
+| 2 - Compute | ComputeInstance, ComputeInstanceTemplate, ComputeInstanceCatalogItem, InstanceType | `template`, `catalog_item`, `instance_type`, `subnet`, `replacement` | Highest user-facing impact. Depends on networking references from Chunk 1; the effective NetworkACL is resolved from the Subnet. |
 | 3 - IP Management | ExternalIP, ExternalIPPool, ExternalIPAttachment, PublicIP, PublicIPPool, PublicIPAttachment, NATGateway | `pool` (x2), `external_ip` (x2), `public_ip`, `virtual_network`, `compute_instance`, `cluster`, `baremetal_instance` | IP resources have complex oneof targets. |
-| 4 - Clusters + Bare Metal | Cluster, ClusterTemplate, ClusterCatalogItem, BareMetalInstance, BareMetalInstanceCatalogItem, BareMetalInstanceTemplate, HostType | `template` (x2), `catalog_item` (x2), `host_type` (x2) | CaaS and BMaaS services. |
+| 4 - Clusters + Bare Metal | Cluster, ClusterTemplate, ClusterCatalogItem, BareMetalInstance, BareMetalInstanceCatalogItem, BareMetalInstanceTemplate, BareMetalInstanceType | `template` (x2), `catalog_item` (x2), `baremetal_instance_type` (x2) | CaaS and BMaaS services. |
 | 5 - IAM | RoleBinding, ProjectMembership, Role, User, Project | `role`, `users`, `project`, `user` | IAM references are self-contained. |
 
 Within each chunk, the implementation order is:
@@ -1037,15 +1093,15 @@ details on the URI/ARN trade-off.
   serializes/deserializes in both proto binary and JSON formats.
 - Interceptor reference detection: verify that the interceptor discovers all
   reference-typed fields in each request message, including nested messages
-  (`NetworkAttachment` inside `ComputeInstanceSpec`), repeated fields
-  (`security_groups`), and oneof fields (`ExternalIPAttachmentSpec.target`).
+  (`ComputeNetworkAttachment` inside `ComputeInstanceSpec`), repeated fields
+  (`NetworkACLSpec.subnets`), and oneof fields (`ExternalIPAttachmentSpec.target`).
 - Interceptor validation logic: verify that the interceptor returns
   `InvalidArgument` with correct field paths for missing references, returns
   success for valid references, and aggregates multiple errors.
 - Interceptor resolution modes (full and local references): verify name-only
-  resolution (id auto-populated), id-only resolution (name auto-populated),
-  both-match (succeeds, no mutation needed), and both-mismatch (returns
-  `InvalidArgument` explaining the inconsistency).
+  resolution (id auto-populated), missing-name/id-only rejection, both-match
+  resolution, and both-mismatch rejection with `InvalidArgument` explaining
+  the inconsistency.
 - Request mutation: verify that after interceptor runs, the request message
   contains fully-qualified references (all fields populated) regardless
   of which fields the caller originally provided.
@@ -1058,9 +1114,9 @@ details on the URI/ARN trade-off.
 - End-to-end Create with valid local reference by name: Create a
   VirtualNetwork, then a Subnet referencing it by name. Verify the Subnet
   is created and the stored reference contains both `id` and `name`.
-- End-to-end Create with valid local reference by id: Create a
-  VirtualNetwork, then a Subnet referencing it by `id` only. Verify the
-  stored reference contains both `id` and `name` (auto-populated).
+- End-to-end Create with a local reference missing `name`: Create a
+  VirtualNetwork, then attempt to create a Subnet referencing it by `id` only.
+  Verify `InvalidArgument` reports that `name` is required.
 - End-to-end Create with invalid reference: Attempt to create a Subnet
   referencing a nonexistent VirtualNetwork. Verify `InvalidArgument` with
   the correct field path.
@@ -1081,10 +1137,6 @@ details on the URI/ARN trade-off.
 - Cross-tenant catalog item (Chunk 2): Create a ComputeInstance referencing
   a CatalogItem in the shared tenant. Verify the full reference resolves
   across tenants.
-- ID-only resolution in caller's tenant (Chunk 2): Create a CatalogItem in
-  the caller's tenant, then create a ComputeInstance referencing it by `id`
-  only (no `name`, `shared = false`). Verify the stored reference contains
-  both `id` and `name`, and the resolved tenant matches the caller's tenant.
 - Both-match resolution in shared scope (Chunk 2): Create a CatalogItem in
   the `shared` tenant, then create a ComputeInstance providing both `id` and
   `name` with `shared = true`. Verify success and the resolved tenant is
@@ -1107,10 +1159,46 @@ details on the URI/ARN trade-off.
 **E2E tests (osac-test-infra, pytest):**
 
 - Full provisioning workflow: Create NetworkClass, VirtualNetwork, Subnet,
-  SecurityGroup, and ComputeInstance with all references by name. Verify the
-  ComputeInstance reaches RUNNING state.
+  NetworkACL associated with the Subnet, and ComputeInstance with all
+  references by name. Verify the ComputeInstance reaches RUNNING state and
+  inherits the Subnet's effective NetworkACL.
 - Error scenario: Attempt to create a ComputeInstance with a nonexistent
   Subnet name. Verify the API returns a clear error message.
+
+**CLI tests (osac-cli):**
+
+**CLI unit tests:**
+
+- Parse a local name-only reference such as `--subnet app-subnet` and verify
+  the CLI emits the corresponding typed `{name: "app-subnet"}` message.
+- Parse an ID-only reference such as `--subnet-id <id>` and verify the CLI
+  rejects it because all references require the name. For a full reference,
+  verify name-only and both-name-and-ID forms are accepted when valid, while
+  ID-only is rejected before persistence.
+
+**CLI integration tests:**
+
+- Supply matching name and ID and verify the request is accepted and resolved;
+  supply a conflicting name and ID and verify `InvalidArgument` identifies the
+  reference field and no create occurs.
+- Supply `--<field>-project` and verify project-scoped resolution; supply
+  `--<field>-shared` and verify shared-tenant resolution. Verify local
+  networking references reject project/shared selectors. When both full
+  reference selectors are supplied, verify `shared=true` selects the shared
+  tenant and `project` scopes the lookup within that tenant.
+- Run the same cases for typed references nested in VM/BM attachments and the
+  singular Cluster attachment, plus repeated typed Subnet references in a
+  NetworkACL.
+
+**CLI E2E tests:**
+
+- Run `describe` on resources containing resolved references and verify it
+  renders the resolved resource names and applicable tenant/project/shared
+  scope rather than raw IDs only.
+- Pass an unknown reference, malformed ID, empty name, unsupported flag, or
+  malformed compound attachment key and verify a field-specific CLI error,
+  no API call for parser errors, and no persisted resource for server-side
+  reference errors.
 
 Test plan details will be developed during implementation for each delivery
 chunk. Each chunk's tests cover the specific resources migrated in that chunk.

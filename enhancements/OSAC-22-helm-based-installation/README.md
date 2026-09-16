@@ -52,7 +52,11 @@ Helm provides:
 - **Separate OSAC installation from prerequisite deployment:** Helm chart installs OSAC components, with optional bundled PostgreSQL/Keycloak (non-HA) for simplified deployments, while prerequisite operators (AAP, cert-manager) must be installed separately
 - **Make installation available via OpenShift Software Catalog:** Provide form-based installation UI in the OpenShift console for ease of use
 - **Idempotent installation and upgrades:** Support `helm upgrade --install` and idempotent hooks (pre-install validation, db migration, AAP bootstrap) to enable safe re-runs on failure
-- **Support disconnected deployments:** Document mirroring of OCI charts and container images to internal registries for air-gapped environments
+- **Document artifact mirroring for constrained installations:** Describe how
+  OCI charts and container images can be mirrored to internal registries. This
+  packaging procedure does not override the [Unified Networking deployment
+  support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary),
+  which supports connected deployments only.
 - Provide Helm charts for all OSAC components (fulfillment-service, osac-operator, osac-aap)
 - Create an umbrella chart that composes component charts with proper dependency ordering
 - Support both development workflows (git submodules with `file://` chart references) and production workflows (OCI registry with versioned charts)
@@ -449,7 +453,13 @@ helm install fulfillment oci://ghcr.io/osac-project/charts/service \
 ```
 
 **Disconnected/Air-gapped deployments:**
-For environments without internet access (e.g., Enclave):
+The following artifact-mirroring procedure is retained for packaging and
+installation experiments in environments without internet access (e.g., an
+enclave). It must not be interpreted as support for an air-gapped OSAC
+networking deployment: the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary)
+requires connected deployments.
+
 1. Mirror OCI charts to internal registry:
    ```bash
    helm pull oci://ghcr.io/osac-project/charts/osac --version 1.0.0

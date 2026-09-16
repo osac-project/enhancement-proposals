@@ -36,7 +36,11 @@ The design unifies two event sources — the fulfillment-service Watch stream (V
 4. **Metering decoupled from provisioning** — the Metering Service is a read-only consumer of fulfillment-service state; no metering code path is on the critical path of resource lifecycle operations [PRD: D-2]
 5. **Reconciliation as first-class correctness** — the hourly reconciliation loop is not a fallback for failures; it is expected to detect and correct gaps continuously, even in a healthy system
 6. **Explicit over implicit** — every state transition is enriched with `previous_state`, `current_state`, `transition_time`, and `duration_seconds`; receiving adapters never need to infer state from sequences of events
-7. **Cloud-native and air-gap compatible** — all components run as containerized workloads on OpenShift with no external SaaS dependencies [PRD: CAP-14]
+7. **Cloud-native and metering air-gap compatible** — all metering components run
+   as containerized workloads on OpenShift with no external SaaS dependencies
+   [PRD: CAP-14]. This packaging property does not override the [Unified
+   Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary),
+   which requires connected deployments for OSAC networking.
 
 ### Non-Goals
 
@@ -710,7 +714,13 @@ This satisfies the high-availability goal [PRD: D-2] because the Metering Servic
 
 **Provider Adapter Tenant Safety:** Adapters receive all tenants' events on shared Kafka topics (partitioned by resource_id, not tenant_id). Adapter implementations must not expose one tenant's data to another during translation.
 
-**Air-Gap Compatibility:** All components run on-premise within the OSAC installation. No outbound calls to external CDNs, license servers, or SaaS telemetry endpoints. The billing provider endpoint may be on-premise or an on-premise proxy.
+**Metering Air-Gap Compatibility:** All metering components run on-premise
+within the OSAC installation. No metering path requires outbound calls to
+external CDNs, license servers, or SaaS telemetry endpoints. The billing
+provider endpoint may be on-premise or an on-premise proxy. This does not make
+an OSAC networking deployment air-gap compatible; networking remains governed
+by the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary).
 
 **Project-Scoped Visibility [PRD: D-1]:** Tenant Users see usage for projects they have access to, scoped via RBAC at the Usage API layer. This is out of scope for the metering pipeline — the Metering Service carries `project_id` as a passthrough dimension for downstream filtering.
 
@@ -797,7 +807,7 @@ Fulfillment-service directly pushes billing events to the billing provider on st
 | Replay for migration | No | No | No | No | Yes |
 | Heartbeat for long-running resources | No | Partial | No | No | Yes |
 | Metering decoupled from provisioning | N/A | Yes | Yes | No | Yes |
-| Air-gap compatible | N/A | Yes | Yes | Yes | Yes |
+| Metering air-gap compatible | N/A | Yes | Yes | Yes | Yes |
 | Historical reconstruction | No | No | No | No | Yes |
 
 ## Open Questions
