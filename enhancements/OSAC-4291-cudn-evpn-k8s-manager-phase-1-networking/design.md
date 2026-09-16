@@ -1092,7 +1092,7 @@ metadata:
   name: k8s-manager-cudn-evpn
   namespace: osac
   labels:
-    osac.openshift.io/network/k8s-manager: "true"  # Matches OSAC-1433 label path
+    osac.openshift.io/network-k8s-manager: "true"  # Matches OSAC-1433 label path
 data:
   name: cudn_evpn  # Field name 'name' per OSAC-1433 schema (not 'manager')
   description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)"

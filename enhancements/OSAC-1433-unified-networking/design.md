@@ -69,6 +69,10 @@ which provides a per-server resource aligned with ComputeInstance.
 All networking resources and manager integrations in this design use IPv4.
 IPv6 and dual-stack networking are not supported.
 
+> **Implementation status:** This is the normative target contract. Current
+> proto/CRD schemas and allocation paths still contain legacy IPv6/dual-stack
+> support; implementation work must enforce this contract before rollout.
+
 For user stories, goals, and non-goals, see the
 [Requirements Document (PRD)](prd.md).
 
@@ -204,7 +208,7 @@ metadata:
   name: fabric-manager-netris
   namespace: osac
   labels:
-    osac.openshift.io/network/fabric-manager: "true"
+    osac.openshift.io/network-fabric-manager: "true"
 data:
   name: netris
   description: "Netris SDN — tenant isolation, ACL, IPAM, DNAT, SNAT"
@@ -218,7 +222,7 @@ metadata:
   name: fabric-manager-neutron
   namespace: osac
   labels:
-    osac.openshift.io/network/fabric-manager: "true"
+    osac.openshift.io/network-fabric-manager: "true"
 data:
   name: neutron
   description: "OpenStack Neutron — tenant isolation, IPAM, floating IPs"
@@ -234,7 +238,7 @@ metadata:
   name: k8s-manager-cudn-localnet
   namespace: osac
   labels:
-    osac.openshift.io/network/k8s-manager: "true"
+    osac.openshift.io/network-k8s-manager: "true"
 data:
   name: cudn_localnet
   description: "CUDN with LocalNet — bridges OVN overlay to physical fabric"
@@ -377,6 +381,9 @@ parent VirtualNetwork and sibling Subnet CIDRs must not overlap. Provider and
 controller-produced addresses are canonical IPv4 addresses without a CIDR
 suffix. Any IPv6, dual-stack, malformed, or non-canonical value is rejected
 before persistence or backend dispatch.
+All explicit and automatic ExternalIP allocation paths, including per-service
+auto-provisioning, must request `IP_FAMILY_IPV4`; `IP_FAMILY_UNSPECIFIED` is
+not a valid default for this contract.
 
 ### End-to-End Flows
 

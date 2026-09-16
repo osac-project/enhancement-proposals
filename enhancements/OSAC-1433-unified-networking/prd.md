@@ -127,6 +127,13 @@ CIDRs and IPv4 addresses. IPv6 and dual-stack networking are not supported;
 requests that contain them are rejected before persistence or backend
 dispatch.
 
+> **Implementation status:** This is the normative target contract for the
+> unified networking architecture. The current implementation still exposes
+> legacy IPv6/dual-stack schema fields and accepts family-agnostic manager
+> registrations and allocation defaults. Fulfillment-service and operator
+> enforcement—including IPv4-only validation and `IP_FAMILY_IPV4` selection—
+> must land before this contract is considered implemented.
+
 ### Gaps in the Current Design
 
 #### Gap #1: CaaS and BMaaS have no networking API

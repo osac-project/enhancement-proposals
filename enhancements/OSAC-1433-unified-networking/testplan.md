@@ -24,7 +24,7 @@ BMaaS consumers; service-specific behavior remains in their respective plans.
   with `supportsIpv4: true`, `supportsIpv6: false`, and
   `supportsDualStack: false`; reject IPv6, dual-stack, or mismatched manager
   registrations.
-- Accept only `IPV4` ExternalIPPools with canonical IPv4 CIDRs; reject
+- Accept only `IP_FAMILY_IPV4` ExternalIPPools with canonical IPv4 CIDRs; reject
   unspecified families and IPv6/dual-stack pools.
 - Treat invalid manager-reported addresses or status feedback as provisioning
   failures and never mark the resource Ready.

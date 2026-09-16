@@ -33,7 +33,7 @@
 
 ##### Expected Results
 
-- ConfigMap created with label `osac.openshift.io/k8s-manager: "true"`
+- ConfigMap created with label `osac.openshift.io/network-k8s-manager: "true"`
 - Capabilities reflect IPv4-only support
 - NetworkClass controller loads cudn_evpn as available k8s manager
 

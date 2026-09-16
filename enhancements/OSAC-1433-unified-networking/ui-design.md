@@ -52,7 +52,8 @@ Pure consumer of the existing private `ExternalIPPools` service
   rejected by client and server validation. In edit mode, the address family and
   CIDRs are immutable server-side and render disabled for reference — only
   **Name** is editable. Create submits
-  `{ metadata: { name }, spec: { ipFamily: "IPv4", cidrs } }` via `useCreateExternalIPPool()`;
+  `{ metadata: { name }, spec: { ipFamily: "IP_FAMILY_IPV4", cidrs } }` via
+  `useCreateExternalIPPool()`;
   update submits via `useUpdateExternalIPPool()` with `lock=true`.
 - **Delete:** row action with confirmation, `useDeleteExternalIPPool()`.
 
