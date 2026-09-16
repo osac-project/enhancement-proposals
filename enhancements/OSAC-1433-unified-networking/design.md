@@ -936,6 +936,29 @@ The `fabric_interface` is resolved by the fulfillment-service at creation time f
 node set from its BareMetalInstanceType (first port with role `fabric`)
 and stored on the node set definition. The tenant does not set this field.
 
+#### Attachment Presence and Defaulting
+
+The API distinguishes an omitted attachment from a supplied attachment, but
+both an omitted attachment and an empty attachment list/message mean that the
+caller requested the normal tenant defaults. Defaulting is field-level for a
+single supplied attachment:
+
+| Input | Resolution |
+|---|---|
+| VMaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup. |
+| BMaaS attachment list omitted or empty | Add the tenant's default Subnet, default SecurityGroup, and the first `fabric` port from `BareMetalInstanceType.network_ports`. |
+| CaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup; resolve the first `fabric` port from each node set's `BareMetalInstanceType` for the BM worker handoff. |
+| One attachment with no Subnet | Default only the Subnet; preserve supplied SecurityGroups and, for BMaaS, the supplied interface. |
+| One attachment with no SecurityGroups | Default only the SecurityGroup list, but only when the resolved Subnet belongs to the tenant's default VirtualNetwork. Otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork. |
+| One BMaaS attachment with no interface | Default only the interface to the first `fabric` port from `BareMetalInstanceType.network_ports`. |
+| One complete attachment | Preserve all supplied values and validate readiness, tenant scope, and VirtualNetwork relationships. |
+
+An explicitly empty `security_groups` list is treated as a missing
+SecurityGroup value for this defaulting rule. If a required default is absent
+or not Ready, creation fails with a validation or precondition error. The
+fully resolved attachment is stored with the workload and is immutable after
+creation.
+
 #### Resource Specs
 
 **ComputeInstance**:
@@ -1191,8 +1214,9 @@ default and determines:
 - If one BMaaS attachment exists, its existing `primary` field may be omitted
   or set to `true`; both mean the same default-route behavior. `primary: false`
   is rejected. VMaaS has no primary field, and CaaS has no primary concept.
-- Omitted or empty attachment lists receive defaults; a supplied attachment
-  receives defaults only for missing fields.
+- Omitted or empty attachment lists receive the resource-specific defaults
+  described in [Attachment Presence and Defaulting](#attachment-presence-and-defaulting);
+  a supplied attachment receives defaults only for missing fields.
 - The complete resolved attachment list and every network-owned field are
   immutable after creation; changing them requires deleting and recreating the
   workload.

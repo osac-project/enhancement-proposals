@@ -226,7 +226,8 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```
 
 5. **fulfillment-service:**
-   - If `network_attachments` is omitted or empty: populates with the tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)). For a supplied single attachment, only missing subnet, security-group, or interface fields are defaulted; supplied values are preserved. The system selects the first port with role `fabric` from the BareMetalInstanceType as the default interface for the single attachment (matching PRD FR-5).
+   - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet, default SecurityGroup, and the first port with role `fabric` from `BareMetalInstanceType.network_ports` (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)).
+   - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, a missing or empty SecurityGroup list receives the tenant default SecurityGroup only when the resolved Subnet belongs to the tenant's default VirtualNetwork, and a missing interface receives the first `fabric` port from `BareMetalInstanceType.network_ports`; supplied values are preserved.
    - Validates:
      - At most one network attachment is specified
      - Each subnet exists, is Ready
@@ -421,8 +422,6 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 - The `interface` must reference a valid port name from the BareMetalInstanceType (its network ports list defines available ports)
 - Interfaces with role `lifecycle` are rejected in `network_attachments` — lifecycle interfaces (PXE boot, BMC) are reserved for the provisioning system and are not tenant-attachable
 - If `interface` is omitted: defaults to the first port with `role=fabric` from the BareMetalInstanceType (consistent with the omitted-list default)
-- If single attachment: `primary` is implicit; omitted or `true` is accepted and `false` is rejected
-- network_attachments are immutable after creation
 - If a single attachment is present: `primary` is implicit; omitted or `true` is accepted and `false` is rejected
 - The complete resolved `network_attachments` list is immutable after creation; changing it requires deleting and recreating the BaremetalInstance
 

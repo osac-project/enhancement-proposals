@@ -114,6 +114,26 @@ The design covers three capabilities: default networking (including NATGateway) 
    - Tenant status condition shows: `DefaultNetworkingReady: false, reason: SubnetProvisioningFailed, message: "Subnet 'default' failed to provision"`
    - Cloud Provider Admin inspects failure, fixes root cause, and retries by deleting and re-creating the tenant
 
+#### Shared Attachment Resolution
+
+Default Networking uses the same presence and field-level defaulting rules as
+the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-networking/design.md#attachment-presence-and-defaulting):
+
+- An omitted attachment, an empty attachment list, or an empty CaaS attachment
+  message requests the tenant defaults.
+- For VMaaS and CaaS, those defaults are the tenant's default Subnet and
+  default SecurityGroup. For BMaaS, the first `fabric` port from
+  `BareMetalInstanceType.network_ports` is defaulted as well.
+- A single supplied attachment is completed field-by-field. A missing Subnet,
+  or a missing/empty SecurityGroup list, receives only its corresponding
+  default; BMaaS also defaults a missing interface to the first `fabric` port.
+  Supplied values are never replaced.
+- The default SecurityGroup is selected only when the resolved Subnet belongs
+  to the tenant's default VirtualNetwork. Otherwise the caller must supply
+  SecurityGroups from the resolved Subnet's VirtualNetwork.
+- The fully resolved attachment is stored with the workload and is immutable
+  after creation. Missing or non-Ready defaults cause creation to fail.
+
 #### Simplified Resource Creation with Defaults
 
 4. **Tenant User creates VM without networking parameters:**

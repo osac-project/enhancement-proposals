@@ -642,10 +642,13 @@ After the first successful MAC match, the controller labels the Agent with `osac
 
 The BM controller reads the singular cluster-level network attachment from
 `ClusterOrder.spec.networkAttachment` (a `ClusterNetworkAttachment` carrying
-typed subnet and security-group references, defined by OSAC-1436) and enriches
-it into a one-entry per-BMI `network_attachments` list for the private API
-call. The per-BMI list is an internal compatibility shape; CaaS does not
-provide multi-NIC worker networking:
+typed subnet and security-group references, defined by OSAC-1436). CaaS
+fulfillment resolves omitted, empty, and partial attachment input before the
+ClusterOrder is created; the worker controller does not apply a second set of
+defaults. It enriches the resolved attachment into a one-entry per-BMI
+`network_attachments` list for the private API call. The per-BMI list is an
+internal compatibility shape; CaaS does not provide multi-NIC worker
+networking:
 
 | ClusterNetworkAttachment (input) | BareMetalNetworkAttachment (output) | Source |
 |---|---|---|

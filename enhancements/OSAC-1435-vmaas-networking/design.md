@@ -126,7 +126,8 @@ ComputeInstance already participates in the networking API. Today's flow:
      --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
-     - If `network_attachments` is omitted or empty: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD); a supplied single attachment receives defaults only for missing fields
+     - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet and default SecurityGroup (see Default Networking PRD)
+     - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, and a missing or empty SecurityGroup list receives the tenant default SecurityGroup for the resolved Subnet's VirtualNetwork; supplied values are preserved
      - Validates: at most one attachment; the subnet is Ready and the security groups belong to the same VN
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `network_attachments`
