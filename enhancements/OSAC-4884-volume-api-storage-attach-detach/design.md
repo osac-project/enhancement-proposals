@@ -70,11 +70,11 @@ The OSAC CSI driver adapts `ControllerPublishVolume` and `ControllerUnpublishVol
 
 ### Goals
 
-- Reuse the existing OSAC resource shape, generic CRUD services, tenant authorization, finalizers, and provisioning lifecycle.
-- Persist attachment intent and observed state so requests remain recoverable after deadlines, process restarts, and client loss.
-- Use explicit typed references for BMaaS and VMaaS targets instead of accepting arbitrary backend node identifiers.
-- Preserve CSI compatibility by converging CSI publish/unpublish calls onto the same attachment operation and retaining legacy volume routing during migration.
-- Make attachment relationships enforceable for volume deletion and target lifecycle cleanup.
+- Let callers inspect and retry attachment progress after deadlines, process restarts, and client loss.
+- Let authorized callers target BMaaS and VMaaS resources through typed references rather than arbitrary backend node identifiers.
+- Preserve existing CSI-managed workloads while the new attachment lifecycle is enabled in a controlled migration.
+- Prevent volume and compute-target deletion from leaving active storage relationships.
+- Keep the public contract backend-neutral across direct compute, CSI, CLI, and UI workflows.
 
 ### Non-Goals
 
@@ -121,7 +121,9 @@ sequenceDiagram
 
 The diagram shows that the client request records intent before backend completion, while the worker owns eventual progress. CSI uses the same state machine rather than bypassing the control plane. Status reads remain available after the original request deadline.
 
-The provider boundary is an internal gRPC contract owned by fulfillment-service. The BMaaS/VMaaS adapter is hosted with the operator integration and the CaaS adapter is hosted by the CSI driver. Both adapters accept a volume ID, typed target, read-only flag, and operation deadline, and return a backend-neutral result classification. They do not write attachment status directly; fulfillment-service applies every transition.
+The provider boundary is an authenticated internal gRPC contract owned by fulfillment-service. Its private proto defines `AttachmentProvider.Attach`, `Detach`, `ListAttachments`, `GetOperation`, `TakeoverOperation`, `BeginInventory`, and `EndInventory`; requests contain `attachment_id`, `operation_token`, `volume_id`, a typed target, `readonly`, `migration_epoch`, `claim_generation`, and `deadline`; responses contain `SUCCEEDED`, `ALREADY_SATISFIED`, `RETRYABLE`, or `TERMINAL` plus a backend-neutral message and observed vendor identity. `spec_version` is the immutable metadata version captured when the desired relationship is created. The `operation_token` is `sha256(attachment_id + desired_state + spec_version)` and is the provider deduplication key. Providers atomically claim an unseen token as `RUNNING` with a five-minute lease and monotonically increasing `claim_generation`; concurrent calls for the same token wait for or replay the same ledger result and cannot both invoke the backend. Every provider call compares its claim generation and migration epoch before and after backend execution; a stale owner is rejected and cannot commit a result. A worker that finds an expired lease calls `TakeoverOperation` with an expected generation; exactly one compare-and-swap succeeds. The winner queries backend state using the same token, records the observed result, and only then retries; it never blindly starts a second operation. Providers persist completed tokens until the attachment is deleted and return the original result for a repeated token.
+
+The BMaaS/VMaaS provider server runs in the operator manager Deployment and invokes the existing backend/provisioning boundary. The CaaS provider server runs in the CSI controller Deployment alongside its existing CSI server and invokes the vendor CSI controller. Fulfillment-service calls these services through Kubernetes Services using mTLS service-account identities; Helm creates the Services, NetworkPolicies, TLS Secrets, RBAC, endpoint configuration, and readiness probes. Provider readiness is required before the attachment feature gate can be enabled. Providers do not write attachment status directly; fulfillment-service applies every transition and owns retry scheduling.
 
 Responsibilities:
 
@@ -130,45 +132,51 @@ Responsibilities:
 - **OSAC CSI driver:** implements the CaaS provider adapter, maps CSI publish/unpublish requests to private `csi_node` relationships, and preserves legacy routing during migration.
 - **CLI/UI:** create/delete or attach/detach through the public resource API, display status conditions, and do not expose vendor details.
 
-Lifecycle sequence: create assigns the tenant annotation and Volume owner-reference, adds the attachment finalizer, persists `PENDING`, and creates the operator CR for direct targets. Reconciliation updates status and conditions after each provider result. Delete records the deletion timestamp, changes state to `DELETING`, requests detach, and removes the finalizer only after detach is confirmed or the backend reports the relationship absent. A terminal detach failure retains the finalizer and `DELETING` state for operator recovery.
+Lifecycle sequence: create assigns the tenant annotation and Volume owner-reference, adds the attachment finalizer, and persists `PENDING`. The worker calls the selected provider endpoint and updates status after each result. Delete records the deletion timestamp, changes state to `DELETING`, requests detach, and removes the finalizer only after detach is confirmed or the provider reports the relationship absent. Target controllers register their target finalizer at target creation, before any deletion request can occur. The rollout migration backfills that finalizer on every existing ComputeInstance and BareMetalInstance before enabling the attachment feature gate; targets already marked for deletion are held by the migration guard until cleanup completes. During deletion reconciliation, the target controller calls `BeginTargetDeletion`, waits for `TargetAttachmentsGone`, then removes the already-present target finalizer. A terminal detach failure retains both finalizers and `DELETING` state for operator recovery. The operator attachment controller owns only provider execution for BMaaS/VMaaS; the CSI driver owns only provider execution for CaaS.
 
 ### 4.2 Data Model / Schema Changes
 
-Add a public `VolumeAttachment` resource following `ExternalIPAttachment`:
+Add a public `VolumeAttachment` resource following `ExternalIPAttachment`. The private source file imports `cleanapi/cleanapi.proto`, `google/api/annotations.proto`, `google/api/field_behavior.proto`, `google/protobuf/field_mask.proto`, `google/protobuf/timestamp.proto`, `buf/validate/validate.proto`, and the existing metadata, condition, Volume, ComputeInstance, and BareMetalInstance reference types. It declares `option (cleanapi.file).package = "osac.public.v1"` and `option (cleanapi.file).http_route_prefix_map = "private:fulfillment"`.
 
-```text
-VolumeAttachment {
+```protobuf
+message VolumeAttachment {
   string id = 1;
   Metadata metadata = 2;
   VolumeAttachmentSpec spec = 3;
   VolumeAttachmentStatus status = 4;
 }
 
-VolumeAttachmentSpec {
-  VolumeLocalReference volume = 1;          // required, immutable
+message VolumeAttachmentSpec {
+  option (buf.validate.message).cel = { expression: "has(this.compute_instance) || has(this.baremetal_instance) || has(this.csi_node)" };
+  VolumeLocalReference volume = 1 [(google.api.field_behavior) = REQUIRED, (google.api.field_behavior) = IMMUTABLE];
   oneof target {
-    ComputeInstanceLocalReference compute_instance = 2;
-    BareMetalInstanceLocalReference baremetal_instance = 3;
-    CsiNodeReference csi_node = 4;            // private field; excluded from public API
+    ComputeInstanceLocalReference compute_instance = 2 [(google.api.field_behavior) = IMMUTABLE];
+    BareMetalInstanceLocalReference baremetal_instance = 3 [(google.api.field_behavior) = IMMUTABLE];
+    CsiNodeReference csi_node = 5 [(cleanapi.field).private = true];
   }                                           // exactly one, immutable
-  bool readonly = 5;                          // immutable; defaults false
+  bool readonly = 4 [(google.api.field_behavior) = IMMUTABLE];
 }
 
-VolumeAttachmentStatus {
-  VolumeAttachmentState state = 1;             // output only
-  optional string message = 2;                 // output only
-  string volume_id = 3;                        // output only convenience field
-  string target_id = 4;                        // output only convenience field
-  repeated VolumeAttachmentCondition conditions = 5; // output only
-  string hub = 6;                              // private, output only
+message VolumeAttachmentStatus {
+  VolumeAttachmentState state = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
+  optional string message = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string volume_id = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string target_id = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
+  repeated VolumeAttachmentCondition conditions = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
+  string hub = 6 [(cleanapi.field).private = true, (google.api.field_behavior) = OUTPUT_ONLY];
+  int32 attempt_count = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp next_attempt_at = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
 }
 ```
 
-Add the following messages to the private source proto; field numbers are reserved for this resource and are not reused. `volume` and the target oneof carry `google.api.field_behavior` annotations for `REQUIRED` and `IMMUTABLE`; `status` fields carry `OUTPUT_ONLY`; IDs use `buf.validate` non-empty constraints; a message-level CEL rule requires exactly one target; and `csi_node` plus `hub` use CleanAPI private annotations.
+Add the following messages and service methods to the private source protos; field numbers are reserved and are not reused. Public fields occupy numbers 1-4 and the private `csi_node` member is last at field 5, preserving CleanAPI field-number compatibility. `volume`, each public target, and `readonly` carry `google.api.field_behavior` annotations for `REQUIRED`/`IMMUTABLE`; `status` fields carry `OUTPUT_ONLY`; IDs use `buf.validate` non-empty constraints; a message-level CEL rule requires exactly one target; and `csi_node` plus `hub` use CleanAPI private annotations. `VolumeAttachmentCondition` imports the shared `condition_status_type.proto` and `google/protobuf/timestamp.proto`.
 
-```text
-VolumeLocalReference { string id = 1; string name = 2; }
-CsiNodeReference { string cluster_id = 1; string node_id = 2; }
+```protobuf
+message VolumeLocalReference { string id = 1 [(buf.validate.field).string.min_len = 1]; }
+message CsiNodeReference {
+  string cluster_id = 1 [(buf.validate.field).string.min_len = 1];
+  string node_id = 2 [(buf.validate.field).string.min_len = 1];
+}
 enum VolumeAttachmentState {
   VOLUME_ATTACHMENT_STATE_UNSPECIFIED = 0;
   VOLUME_ATTACHMENT_STATE_PENDING = 1;
@@ -182,18 +190,130 @@ enum VolumeAttachmentConditionType {
   VOLUME_ATTACHMENT_CONDITION_TYPE_DETACHED = 2;
   VOLUME_ATTACHMENT_CONDITION_TYPE_RECONCILING = 3;
 }
-VolumeAttachmentCondition {
+message VolumeAttachmentCondition {
   VolumeAttachmentConditionType type = 1;
   ConditionStatus status = 2;
   string reason = 3;
   string message = 4;
-  Timestamp last_transition_time = 5;
+  google.protobuf.Timestamp last_transition_time = 5;
+}
+
+service AttachmentProvider {
+  rpc Attach(AttachmentProviderRequest) returns (AttachmentProviderResponse) { option (cleanapi.method).private = true; }
+  rpc Detach(AttachmentProviderRequest) returns (AttachmentProviderResponse) { option (cleanapi.method).private = true; }
+  rpc ListAttachments(ListProviderAttachmentsRequest) returns (ListProviderAttachmentsResponse) { option (cleanapi.method).private = true; }
+  rpc GetOperation(AttachmentOperationRequest) returns (AttachmentOperationResponse) { option (cleanapi.method).private = true; }
+  rpc TakeoverOperation(AttachmentTakeoverRequest) returns (AttachmentOperationResponse) { option (cleanapi.method).private = true; }
+  rpc BeginInventory(BeginInventoryRequest) returns (BeginInventoryResponse) { option (cleanapi.method).private = true; }
+  rpc EndInventory(EndInventoryRequest) returns (EndInventoryResponse) { option (cleanapi.method).private = true; }
+}
+
+message AttachmentProviderRequest {
+  option (cleanapi.message).private = true;
+  string attachment_id = 1;
+  string operation_token = 2;
+  string volume_id = 3;
+  oneof target { ComputeInstanceLocalReference compute_instance = 4; BareMetalInstanceLocalReference baremetal_instance = 5; CsiNodeReference csi_node = 6; }
+  bool readonly = 7;
+  google.protobuf.Timestamp deadline = 8;
+  string migration_epoch = 9;
+  int64 claim_generation = 10;
+  int64 spec_version = 11;
+}
+
+message AttachmentOperationRequest {
+  option (cleanapi.message).private = true;
+  string attachment_id = 1;
+  string operation_token = 2;
+  int64 claim_generation = 3;
+}
+message AttachmentOperationResponse {
+  option (cleanapi.message).private = true;
+  string claim_state = 1;
+  google.protobuf.Timestamp lease_until = 2;
+  string claim_owner = 3;
+  AttachmentProviderResponse result = 4;
+  int64 claim_generation = 5;
+}
+
+message AttachmentTakeoverRequest {
+  option (cleanapi.message).private = true;
+  string attachment_id = 1;
+  string operation_token = 2;
+  int64 expected_generation = 3;
+  string new_claim_owner = 4;
+}
+
+message AttachmentProviderResponse {
+  option (cleanapi.message).private = true;
+  AttachmentProviderResult result = 1;
+  string message = 2;
+  string observed_vendor_id = 3;
+}
+
+enum AttachmentProviderResult {
+  ATTACHMENT_PROVIDER_RESULT_UNSPECIFIED = 0;
+  ATTACHMENT_PROVIDER_RESULT_SUCCEEDED = 1;
+  ATTACHMENT_PROVIDER_RESULT_ALREADY_SATISFIED = 2;
+  ATTACHMENT_PROVIDER_RESULT_RETRYABLE = 3;
+  ATTACHMENT_PROVIDER_RESULT_TERMINAL = 4;
+}
+
+message ListProviderAttachmentsRequest {
+  option (cleanapi.message).private = true;
+  string volume_id = 1;
+  string inventory_epoch = 2;
+  string snapshot_token = 3;
+  string cursor = 4;
+}
+message ListProviderAttachmentsResponse {
+  option (cleanapi.message).private = true;
+  repeated ProviderAttachment items = 1;
+  string inventory_epoch = 2;
+  string snapshot_token = 3;
+  string next_cursor = 4;
+  string page_checksum = 5;
+  bool complete = 6;
+}
+message ProviderAttachment { option (cleanapi.message).private = true; string volume_id = 1; string target_id = 2; string target_kind = 3; string vendor_id = 4; }
+
+message BeginInventoryRequest { option (cleanapi.message).private = true; string provider_id = 1; }
+message BeginInventoryResponse { option (cleanapi.message).private = true; string inventory_epoch = 1; string snapshot_token = 2; }
+message EndInventoryRequest { option (cleanapi.message).private = true; string provider_id = 1; string inventory_epoch = 2; string snapshot_token = 3; }
+message EndInventoryResponse { option (cleanapi.message).private = true; bool stable = 1; }
+
+message VolumeAttachmentsListRequest { optional int32 offset = 1; optional int32 limit = 2; optional string filter = 3; optional string order = 4; }
+message VolumeAttachmentsListResponse { int32 size = 1; int32 total = 2; repeated VolumeAttachment items = 3; }
+message VolumeAttachmentsGetRequest { string id = 1; }
+message VolumeAttachmentsGetResponse { VolumeAttachment object = 1; }
+message VolumeAttachmentsCreateRequest { VolumeAttachment object = 1; }
+message VolumeAttachmentsCreateResponse { VolumeAttachment object = 1; }
+message VolumeAttachmentsUpdateRequest { VolumeAttachment object = 1; google.protobuf.FieldMask update_mask = 2; bool lock = 3; }
+message VolumeAttachmentsUpdateResponse { VolumeAttachment object = 1; }
+message VolumeAttachmentsDeleteRequest { string id = 1; }
+message VolumeAttachmentsDeleteResponse {}
+message VolumeAttachmentsSignalRequest { option (cleanapi.message).private = true; string id = 1; }
+message VolumeAttachmentsSignalResponse { option (cleanapi.message).private = true; }
+
+service VolumeAttachments {
+  rpc List(VolumeAttachmentsListRequest) returns (VolumeAttachmentsListResponse) { option (google.api.http) = { get: "/api/fulfillment/v1/volume_attachments" }; }
+  rpc Get(VolumeAttachmentsGetRequest) returns (VolumeAttachmentsGetResponse) { option (google.api.http) = { get: "/api/fulfillment/v1/volume_attachments/{id}" response_body: "object" }; }
+  rpc Create(VolumeAttachmentsCreateRequest) returns (VolumeAttachmentsCreateResponse) { option (google.api.http) = { post: "/api/fulfillment/v1/volume_attachments" body: "object" response_body: "object" }; }
+  rpc Update(VolumeAttachmentsUpdateRequest) returns (VolumeAttachmentsUpdateResponse) { option (google.api.http) = { patch: "/api/fulfillment/v1/volume_attachments/{object.id}" body: "object" response_body: "object" }; }
+  rpc Delete(VolumeAttachmentsDeleteRequest) returns (VolumeAttachmentsDeleteResponse) { option (google.api.http) = { delete: "/api/fulfillment/v1/volume_attachments/{id}" }; }
+  rpc Signal(VolumeAttachmentsSignalRequest) returns (VolumeAttachmentsSignalResponse) { option (cleanapi.method).private = true; }
 }
 ```
 
-`VolumeLocalReference`, `ComputeInstanceLocalReference`, and `BareMetalInstanceLocalReference` resolve by ID when set; name is accepted only for create and is resolved to an immutable ID before persistence. `CsiNodeReference` requires both an authorized CaaS cluster ID and non-empty node ID and is marked private with CleanAPI. The resource is immutable after creation; changing a target requires deleting the attachment and creating another one. `readonly` must be compatible with the CSI capability and volume access mode. Conditions use the shared `ConditionStatus` enum (`UNSPECIFIED`, `TRUE`, `FALSE`); top-level state remains the compatibility summary used by existing clients.
+The generated public schema contains `VolumeAttachment`, `VolumeAttachmentSpec` with `compute_instance`, `baremetal_instance`, and `readonly`, and all output fields. The private source marks `csi_node` and `hub` with `[(cleanapi.field).private = true]`; every `AttachmentProvider` and `VolumeAttachmentController` RPC carries `[(cleanapi.method).private = true]`; and every provider, inventory, operation, and controller message carries `[(cleanapi.message).private = true]`. `UpdateRequest.lock` remains public because it is the standard optimistic-lock field used by public OSAC resources. Every status field carries `(google.api.field_behavior) = OUTPUT_ONLY`. CI runs `uv run dev.py lint proto` and `uv run dev.py build protos` to verify public generation, field numbering, HTTP annotations, and generated Go clients.
 
-Add an attachment persistence table using the existing migration convention. It stores the resource JSON, standard metadata/tenant columns, and unique active relationship keys for `(volume_id, target_kind, target_id)`. A database-level reference or service transaction prevents deletion of a Volume while attachments in `PENDING`, `READY`, `FAILED`, or `DELETING` exist. The migration is additive and requires no backfill for existing volumes; existing CSI relationships are adopted by the CSI driver on the first publish/unpublish call after upgrade.
+`VolumeLocalReference` requires a stable Volume ID. `ComputeInstanceLocalReference` and `BareMetalInstanceLocalReference` resolve by ID; CLI name flags are resolved client-side to IDs before the API request, so the server never rewrites immutable `spec`. `CsiNodeReference` requires both an authorized CaaS cluster ID and non-empty node ID and is marked private with CleanAPI. The resource is immutable after creation; changing a target requires deleting an attachment and creating another one. `readonly` must be compatible with the CSI capability and volume access mode. Conditions use the shared `ConditionStatus` enum (`UNSPECIFIED`, `TRUE`, `FALSE`); top-level state remains the compatibility summary used by existing clients.
+
+Add an attachment persistence table, active-relationship helper table, and operation-token ledger using the existing numbered migration convention. The helper stores `(attachment_id, tenant, volume_id, target_kind, target_id, state)` and has a partial unique index for non-deleted relationships on `(volume_id, target_kind, target_id)`. The ledger stores `(attachment_id, desired_state, spec_version, migration_epoch, operation_token, result, observed_vendor_id, claim_state, claim_generation, lease_until, claim_owner)` and prevents a provider retry from producing a second effective operation. All database transactions use the same lock order: Volume row, then target mirror row, then helper rows. Create attachment and delete Volume transactions reject objects with a deletion timestamp, then insert/check the helper row or return custom `volume_in_use` SQLSTATE mapped to `FailedPrecondition`.
+
+Target deletion uses an explicit two-phase handshake because fulfillment PostgreSQL and Kubernetes cannot share a transaction. The target controller registers its finalizer when the target is created, and the rollout migration backfills it for existing targets. During deletion reconciliation it calls private `BeginTargetDeletion(target_kind, target_id)`, which briefly locks the target mirror row, marks it deleting, and commits a deletion guard before releasing the row lock. Attachment creation always locks the Volume first, then the target mirror row, and observes the committed guard; worker reconciliation uses the same Volume-then-target order. `BeginTargetDeletion` never holds a target lock while waiting on a Volume or helper row, so no reverse lock order exists. The target controller then calls `ListByTarget`; each relationship is moved to `DELETING` and detached. It removes the already-present target finalizer only after fulfillment-service returns `TargetAttachmentsGone`. A target delete request that cannot acquire the guard remains pending; attachment creation cannot race past it.
+
+The target finalizer key is `osac.openshift.io/volume-attachment`. The rollout backfill Job upserts a target-mirror row and patches this finalizer only for existing ComputeInstance and BareMetalInstance objects without a deletion timestamp, recording a migration epoch and per-target result. It is idempotent and retries conflicts. A target already marked for deletion is quarantined in the mirror table instead of being patched: new attachment creation is rejected for that target, existing relationships are moved to `DELETING` and drained immediately, and the mirror retains the target ID until `TargetAttachmentsGone`. The feature gate remains disabled until every non-deleting target has the finalizer and every quarantined target has no active relationship. This avoids adding a finalizer after Kubernetes deletion has started.
 
 Volume status gains an output-only attachment summary only if list/get performance requires it; the attachment resource remains authoritative. No vendor volume ID, backend credential, or raw CSI secret is exposed through the public attachment resource.
 
@@ -211,6 +331,25 @@ Add `VolumeAttachments` using the standard OSAC resource service pattern. The pr
 
 The public Volume API prerequisite `osac#743` must be available first. The private service also includes `Signal` for controller feedback, following existing attachment resources.
 
+The private service adds these concrete controller messages and RPCs:
+
+```protobuf
+message TargetReference { string kind = 1; string id = 2; }
+message BeginTargetDeletionRequest { TargetReference target = 1; }
+message BeginTargetDeletionResponse { bool guard_acquired = 1; }
+message ListByTargetRequest { TargetReference target = 1; }
+message ListByTargetResponse { repeated string attachment_ids = 1; }
+message TargetAttachmentsGoneRequest { TargetReference target = 1; }
+message TargetAttachmentsGoneResponse { bool gone = 1; }
+service VolumeAttachmentController {
+  rpc BeginTargetDeletion(BeginTargetDeletionRequest) returns (BeginTargetDeletionResponse) { option (cleanapi.method).private = true; }
+  rpc ListByTarget(ListByTargetRequest) returns (ListByTargetResponse) { option (cleanapi.method).private = true; }
+  rpc TargetAttachmentsGone(TargetAttachmentsGoneRequest) returns (TargetAttachmentsGoneResponse) { option (cleanapi.method).private = true; }
+}
+```
+
+They are private and are called by ComputeInstance and BareMetalInstance controllers during their finalizer workflow. `BeginTargetDeletion` acquires the target deletion guard; `ListByTarget` returns active relationship IDs; `TargetAttachmentsGone` succeeds only when the helper table has no relationship for the target.
+
 Validation rules:
 
 - `volume` is required and must resolve to an existing, non-deleted Volume in a usable state.
@@ -218,6 +357,7 @@ Validation rules:
 - The referenced target must be an OSAC-managed BMaaS or VMaaS resource visible to the caller.
 - The attachment is rejected if the volume access mode and backend capability do not permit the requested concurrent relationship.
 - An existing active relationship for the same volume and target converges to idempotent success.
+- Concurrent creates for the same `(volume, target, readonly)` lock the Volume row, retry a unique-index conflict by reading the winner, and return that existing object. A concurrent request with a different `readonly` value returns `AlreadyExists` with the existing attachment ID and does not change the desired state.
 - A duplicate relationship to a different target is accepted only for supported multi-attachment modes/backend capabilities.
 - Delete is idempotent when the relationship is already absent or fully detached.
 - Client deadlines apply to the request; a deadline does not cancel durable reconciliation. The response or subsequent Get reports `PENDING`, `READY`, or `FAILED`.
@@ -231,7 +371,7 @@ POST /api/fulfillment/v1/volume_attachments
     "metadata": {"name": "database-disk-vm1"},
     "spec": {
       "volume": {"id": "vol-123"},
-      "target": {"compute_instance": {"id": "ci-456"}},
+      "compute_instance": {"id": "ci-456"},
       "readonly": false
     }
   }
@@ -250,7 +390,7 @@ The worker uses bounded concurrency and exponential backoff. It must not create 
 
 ### 4.5 Security Considerations
 
-Authentication remains in the existing gRPC interceptor chain. OPA rules authorize VolumeAttachment operations using the attachment tenant and referenced Volume/target tenants. Tenant users and tenant administrators may access only relationships within their tenant. Provider administrators may operate across tenants only when their existing provider-level policy grants access.
+Authentication remains in the existing gRPC interceptor chain. OPA rules authorize VolumeAttachment operations using the attachment tenant and referenced Volume/target tenants. Tenant users and tenant administrators may access only relationships within their tenant. Provider administrators may operate on resources in multiple tenants only through separately authorized same-tenant requests; no role can create a cross-tenant Volume-to-target relationship.
 
 The server resolves references under authorization before creating the relationship, preventing an unauthorized caller from using an attachment as an existence oracle. Target IDs are validated against OSAC resource types, and vendor IDs, CSI secrets, backend endpoints, and raw node credentials remain private. CSI service identities receive only the internal permissions required to converge relationships for authorized tenant-scoped Volume resources.
 
@@ -261,14 +401,14 @@ The server resolves references under authorization before creating the relations
 | Invalid volume or target | Reject before persistence with `InvalidArgument` or `NotFound`. | Request fails with named validation error. |
 | Cross-tenant reference | OPA/interceptor rejects access. | `PermissionDenied`; no relationship is created. |
 | Unsupported access/backend combination | Validate before dispatch. | `FailedPrecondition`; no backend call. |
-| Backend transient failure | Keep relationship `PENDING`, record message, retry with exponential backoff. | `PENDING` status and progress message. |
-| Backend terminal attach failure | Set `FAILED`, retain diagnostic message, allow explicit retry through the standard signal/reconcile path. | `FAILED`; no false `READY` state. |
-| Request deadline exceeded | Leave durable relationship pending; caller may Get or repeat the same request. | Deadline error for the request; state remains observable and retry-safe. |
+| Backend transient failure | Keep relationship `PENDING`, record message, and retry at 1s, 2s, 4s, then exponential backoff capped at 5m for eight attempts. Persist `next_attempt_at` and attempt count. | `PENDING` status and progress message. |
+| Backend terminal attach failure or exhausted retry budget | Set `FAILED`, retain diagnostic message, and stop automatic retries. An authorized provider/operator identity may call the private `Signal` RPC, which resets the retry schedule without changing `spec`. | `FAILED`; no false `READY` state. |
+| Request deadline or lost provider response | Leave durable relationship pending; retry the same `operation_token`. Provider ledger replay or backend `AlreadyExists`/`NotFound` converts the ambiguous result to one effective state. | Deadline error for the request; state remains observable and retry-safe. |
 | Backend reports already attached | Treat as successful if it matches the requested volume/target relationship. | `READY`, no duplicate effect. |
 | Backend reports already detached/not found | Treat as successful during detach. | Attachment deletion completes. |
 | Node-local/no-attach backend | Mark operation successful without vendor controller call. | `READY` or completed delete. |
-| Target deletion | Target controller requests deletion of all relationships referencing the target and waits for detach. | Attachments enter `DELETING`; target cleanup does not leave stale active relationships. |
-| Volume deletion while attached | Volume delete returns `FailedPrecondition` or remains blocked by in-use protection until relationships are gone. | Volume remains present until all attachments detach. |
+| Target deletion | The target delete transaction locks the target row, marks it deleting, and blocks new attachment inserts. Its finalizer requests detach for every helper row and is removed only after all relationships are gone. | Attachments enter `DELETING`; target cleanup does not leave stale active relationships. |
+| Volume deletion while attached | The Volume delete transaction locks the Volume row and returns `FailedPrecondition` with SQLSTATE `volume_in_use` when any helper row exists. | Volume remains present until all attachments detach. |
 | Controller restart | Reconcile persisted `PENDING`, `FAILED`, and `DELETING` relationships. | Progress resumes without client recreation. |
 
 No force-detach path is provided. Terminal detach failure remains visible for operator recovery and the attachment finalizer prevents the relationship from disappearing while backend state is uncertain.
@@ -279,7 +419,7 @@ No force-detach path is provided. Terminal detach failure remains visible for op
 
 The API adds create/get/list/update/delete permissions for tenant roles and corresponding provider-admin permissions. CSI identities use a dedicated internal policy path and cannot use public provider-admin authority. Attachment deletion and volume deletion checks execute inside the same authorization and persistence boundary to avoid a time-of-check/time-of-use gap.
 
-The fulfillment-service attachment worker requests an operator-side attachment CR for BMaaS and VMaaS, carrying only the attachment ID, volume ID, target reference, and desired read-only flag. The operator attachment controller implements the internal `AttachmentProvider` contract and returns results to fulfillment-service; it does not report public state directly. For private `csi_node` relationships, the CSI driver implements the provider contract and returns vendor results to fulfillment-service; it uses the same persisted relationship and finalizer rules.
+The fulfillment-service attachment worker calls the operator-side `AttachmentProvider` endpoint for BMaaS and VMaaS, carrying only the attachment ID, volume ID, target reference, and desired read-only flag. The operator provider invokes the existing backend/provisioning boundary and returns results; it does not report public state directly. For private `csi_node` relationships, the worker calls the CSI provider endpoint, which invokes the vendor CSI controller and returns results; the same persisted relationship and finalizer rules apply.
 
 ### 4.8 Extensibility / Future-Proofing
 
@@ -315,7 +455,7 @@ Add authorized Volume and ComputeInstance attach/detach actions and status rende
 
 **Requirements:** FR-3, FR-5, FR-7, FR-8, FR-10
 
-Change the OSAC CSI driver controller publish/unpublish path to converge the VolumeAttachment lifecycle while preserving legacy volume-context/vendor-ID fallback and no-op backends; see sections 4.1 and 4.6.
+Change the OSAC CSI driver controller publish/unpublish path to converge the VolumeAttachment lifecycle while preserving legacy volume-context/vendor-ID routing only while the feature gate is disabled, plus no-op backend behavior; see sections 4.1 and 4.6.
 
 ### IC-6: Lifecycle deletion protection
 
@@ -379,9 +519,19 @@ Security review is owned by fulfillment-service authorization maintainers and OS
 
 The public API addition is backward-compatible for existing clients. The database migration is additive. Existing Volumes require no recreation and gain attachment protection once the new service is deployed.
 
-CSI migration must be staged: deploy the attachment API and controller, update CSI to support the new adapter while retaining legacy context/status fallback, then switch new CaaS publish/unpublish calls to the attachment path. Old CSI callers continue sending standard CSI operations. During version skew, the new CSI driver must operate against a service that understands the attachment API before enabling the new path; otherwise it must retain the legacy proxy behavior and expose the deployment mismatch through readiness/metrics.
+CSI migration uses an explicit feature-negotiation matrix and never silently falls back after a durable relationship has been recorded:
 
-Existing in-flight CSI attachments must not be detached solely because no `VolumeAttachment` record exists after upgrade. Adoption must be lazy or inventory-backed, and the migration must preserve the current vendor volume ID/backend mapping until the relationship is represented by the new control plane.
+| Fulfillment service | CSI driver | Behavior |
+|---|---|---|
+| Old | Old | Legacy direct vendor publish/unpublish remains active. |
+| New, attachment feature disabled | Old | Legacy direct vendor publish/unpublish remains active. |
+| New, attachment feature enabled | Old | Legacy path remains active until the migration gate verifies provider inventory; the service does not create new-path records from old CSI calls. |
+| New, attachment feature enabled | New | New CSI calls use the private `csi_node` relationship and provider endpoint. Legacy calls are rejected with `FailedPrecondition` if the relationship API is unavailable rather than being silently routed outside durable state. |
+| Old | New | New CSI readiness fails because the required private API capability is absent; no publish/unpublish operation is accepted. |
+
+Before enabling the new path, a migration Job authenticated as the provider identity calls `BeginInventory`, then `ListAttachments` with the returned `inventory_epoch`, `snapshot_token`, and cursor, and writes results to a provider-scoped staging table with page checksums. `EndInventory` returns `stable=true` only if the provider snapshot did not change; otherwise the epoch is discarded and restarted. The CaaS provider implements inventory by requiring the vendor CSI `LIST_VOLUMES_PUBLISHED_NODES` capability; a vendor that lacks that capability is not eligible for the new feature gate. The job promotes all staged rows to private `csi_node` attachment records and active-relationship helper rows in one database transaction only after every provider inventory succeeds and every provider reports a stable snapshot. A restarted Job resumes the same epoch and cursor while the snapshot token remains valid; if the provider rejects the token or the checksum changes, it marks the epoch `ABORTED`, deletes staged rows, and starts a new epoch. No partial relationship set is visible. Volumes with a relationship that cannot be inventoried block the gate and produce an operator-visible alert. Rollback disables the new feature gate, leaves imported records intact, and permits old CSI to use the legacy path only after the service confirms no new-path operation is pending for that target. The rollback command checks the helper table, migration epoch, and provider operation leases before enabling legacy mode.
+
+The staging table is `(migration_epoch, provider_id, snapshot_token, cursor, page_checksum, rows_json, state)` with a unique `(migration_epoch, provider_id, cursor)` key. Epoch states are `RUNNING`, `STABLE`, `PROMOTED`, and `ABORTED`; promotion changes all providers from `STABLE` to `PROMOTED` in one transaction, while any checksum or provider failure changes the epoch to `ABORTED` and deletes its staged rows. The feature gate stores the promoted epoch and rejects new-path operations whose epoch does not match. Rollback first changes the gate to `DRAINING`, waits for operation ledgers with that epoch to reach a terminal result, then changes to `LEGACY`; it cannot enable legacy mode while a provider lease or pending helper relationship remains.
 
 Downgrade must leave existing attachment records intact and retain the legacy CSI proxy fallback. Operators must not delete attachment rows as part of rollback; unresolved relationships remain visible for the next upgraded controller.
 
@@ -401,7 +551,7 @@ The `osac-ui` and `osac-ux` checkouts are not present in this workspace, so no m
 
 ## Test Plan
 
-Detailed behavioral coverage is in [04-testplan.md](04-testplan.md). It covers every normalized PRD requirement and every interface change.
+Detailed behavioral coverage is in [testplan.md](testplan.md). It covers every normalized PRD requirement and every interface change.
 
 ### Unit Tests
 
@@ -426,6 +576,8 @@ Detailed behavioral coverage is in [04-testplan.md](04-testplan.md). It covers e
 - BMaaS and VMaaS direct attachment and CaaS CSI adapter flows pass required automated coverage.
 - Existing CSI volumes continue operating through upgrade and the attachment lifecycle survives service/driver restarts.
 - No-force-detach recovery is documented and observable through status, events, metrics, and logs.
+- Helm values, provider services, RBAC, migrations, metrics, and installer sequencing are validated in the supported installation path.
+- `osac-ui` and `osac-ux` are available and the generated UI field mapping is reviewed before UI acceptance.
 - The OSAC 0.3 release acceptance suite passes, including the representative E2E and all specified negative scenarios.
 
 ## Upgrade / Downgrade Strategy
@@ -436,7 +588,7 @@ Rollback keeps the additive schema and attachment records. The CSI driver falls 
 
 ## Version Skew Strategy
 
-The service must support old CSI clients sending standard publish/unpublish calls during a rolling update. The new CSI driver must detect attachment API incompatibility and retain legacy routing rather than silently dropping attachment requests. The new API is not considered enabled for user-facing direct operations until `osac#743` and generated public clients are deployed.
+The service supports old CSI clients sending standard publish/unpublish calls during a rolling update. The new CSI driver requires the private attachment capability during readiness and does not invoke vendor publish/unpublish when the capability is unavailable. The new API is not enabled for user-facing direct operations until `osac#743`, generated public clients, provider endpoints, and the inventory migration gate are deployed.
 
 ## Support Procedures
 
@@ -448,4 +600,4 @@ The service must support old CSI clients sending standard publish/unpublish call
 
 ## Infrastructure Needed
 
-No new repository is required. Implementation uses the existing fulfillment-service, osac-operator, osac-csi-driver, and workspace E2E test infrastructure. The `osac-ui` and `osac-ux` checkouts must be available for UI implementation and UX type alignment.
+Implementation uses the existing fulfillment-service, osac-operator, osac-csi-driver, osac-installer, and workspace E2E infrastructure. It adds a fulfillment-service attachment migration, an operator provider Service and RBAC, CSI provider endpoint configuration and RBAC, mTLS/service-account credentials, attachment metrics, and Helm values for provider endpoints and the feature gate. `osac-installer` must deploy these in dependency order: database migration, fulfillment API, provider endpoints, operator/CSI rollout, inventory migration, then feature enablement. The `osac-ui` and `osac-ux` checkouts must be available for UI implementation and UX type alignment.
