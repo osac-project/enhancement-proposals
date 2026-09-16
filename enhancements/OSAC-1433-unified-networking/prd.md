@@ -390,6 +390,7 @@ _No non-functional requirements were specified in the original document._
 
 - [ ] ExternalIP semantics do not depend on internet reachability
 - [ ] The supported deployment topology is connected only; air-gapped and disconnected networking deployments are rejected before provisioning
+- [ ] ExternalIPPool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4` and rejects `IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values before persistence
 - [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the
   repeated `cidrs` field and rejects empty or multiple entries
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress

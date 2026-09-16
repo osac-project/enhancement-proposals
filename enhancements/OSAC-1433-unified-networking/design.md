@@ -375,6 +375,9 @@ manager handles ExternalIP allocation — one pool serves all resource types.
 Each pool uses exactly one canonical IPv4 CIDR. The API's repeated `cidrs`
 field is retained for compatibility, but validation rejects an empty list or
 more than one entry; IPv6 and dual-stack pools are not supported.
+Pool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4`;
+`IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values are rejected before
+persistence.
 
 #### Address-Family and CIDR Contract
 

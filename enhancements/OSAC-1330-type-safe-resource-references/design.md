@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/OSAC-356-networking"
+  - "/enhancements/OSAC-1433-unified-networking"
   - "/enhancements/bare-metal-fulfillment"
 replaces:
   - N/A
@@ -497,10 +497,8 @@ message SubnetSpec {
     (google.api.field_behavior) = REQUIRED,
     (google.api.field_behavior) = IMMUTABLE
   ];
-  string ipv4_cidr = 2 [
-    (google.api.field_behavior) = REQUIRED,
-    (google.api.field_behavior) = IMMUTABLE
-  ];
+  optional string ipv4_cidr = 2 [(google.api.field_behavior) = IMMUTABLE];
+  optional string ipv6_cidr = 3 [(google.api.field_behavior) = IMMUTABLE];
 }
 ```
 
