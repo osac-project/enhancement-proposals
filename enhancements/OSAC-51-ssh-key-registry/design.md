@@ -261,7 +261,7 @@ message ComputeInstanceSpec {
 
 **`PrivateComputeInstancesServer.Create` update**: After existing catalog-item and template validation, add (in order):
 
-1. **Empty reference rejection**: If `ssh_key` is non-nil but both `id` and `name` are empty (i.e., the user sent `ssh_key: {}`), return `InvalidArgument: spec.ssh_key must include at least a name or id; empty SshKeyReference is not valid`. This runs before the `ReferenceValidator` interceptor, which would otherwise pass through an empty reference without performing a lookup.
+1. **Empty reference rejection**: If `ssh_key` is non-nil but both `id` and `name` are empty (i.e., the user sent `ssh_key: {}`), return `InvalidArgument: spec.ssh_key must include at least a name or id; empty SshKeyReference is not valid`. The `ReferenceValidator` interceptor runs before this handler but passes empty references through without performing a lookup (there is nothing to resolve). This server-side check catches the empty reference that the interceptor does not reject.
 2. **Guest OS validation**: If `ssh_key` is set and the catalog item resolves to a Windows guest OS (`GuestOSFamily == "windows"`), return `InvalidArgument: SSH key injection is not supported for Windows instances`.
 3. **User data type validation**: If `ssh_key` is set and the instance's user data type is ignition (not cloud-init), return `InvalidArgument: SSH key injection requires cloud-init; ignition user data is not compatible`. Note: all currently supported Linux catalog items use cloud-init; this is a forward-compatibility guard for potential future ignition-based images.
 
