@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-07-08
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -20,7 +20,7 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-Default networking provides automatic IPv4 resource provisioning at tenant onboarding (including an IPv4 subnet and NATGateway), optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion. IPv6 and dual-stack networking are not supported.
+Default networking provides automatic IPv4 resource provisioning at tenant onboarding (including an IPv4 subnet and NATGateway), optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion. IPv6 and dual-stack networking are not supported. The provisioned networking resources and the workload network attachment fields follow the unified create/read/delete contract; read means List/Get, and changes require delete and recreate.
 
 ## Summary
 
@@ -37,7 +37,7 @@ A reachable resource in OSAC requires networking resources: VirtualNetwork, Subn
 - Optional network_attachments field on all resource types
 - Auto ExternalIP mode for inbound connectivity
 - Auto-cleanup of auto-created resources on deletion
-- Tenant-scoped default resources (visible, editable, lifecycle-managed by tenant)
+- Tenant-scoped default resources (visible, read-only after creation, and lifecycle-managed by tenant)
 
 ### Non-Goals
 
@@ -55,21 +55,10 @@ The design covers three capabilities: default networking (including NATGateway) 
 #### Default Networking at Tenant Onboarding
 
 1. **Cloud Infrastructure Admin configures NetworkClass defaults:**
-   ```bash
-   # NetworkClass already exists, update with defaults
-   kubectl patch networkclass moc-region-1 --type merge -p '{
-     "spec": {
-       "defaults": {
-         "virtualNetworkCIDR": "10.0.0.0/16",
-         "ipv4SubnetCIDR": "10.0.1.0/24",
-         "securityGroupRules": [
-           {"direction": "ingress", "protocol": "tcp", "port": 22, "source": "0.0.0.0/0"},
-           {"direction": "ingress", "protocol": "tcp", "port": 443, "source": "0.0.0.0/0"}
-         ]
-       }
-     }
-   }'
-   ```
+   The provider creates the deployment's `NetworkClass` with its default
+   networking values. `NetworkClass` is not patched after creation; changing
+   provider defaults requires deleting and creating a replacement according to
+   the unified networking contract.
 
 2. **Cloud Provider Admin creates Tenant:**
    ```bash
@@ -177,7 +166,7 @@ The design covers three capabilities: default networking (including NATGateway) 
     - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
-11. **Tenant Admin inspects and customizes default resources:**
+11. **Tenant Admin inspects default resources:**
     ```bash
     # List default resources
     osac get virtualnetworks --filter 'labels["osac.openshift.io/default"]="true"'
@@ -185,11 +174,11 @@ The design covers three capabilities: default networking (including NATGateway) 
     osac get security-groups --filter 'labels["osac.openshift.io/default"]="true"'
     osac get natgateways --filter 'labels["osac.openshift.io/default"]="true"'
 
-    # Modify default SecurityGroup rules
-    osac update security-group default-sg \
-      --add-ingress "protocol:tcp,port:8080,source:0.0.0.0/0"
+    # Inspect default SecurityGroup rules
+    osac get security-group default-sg
     ```
-    - Default resources are editable like any other resource
+    - Default resources are readable like any other resource and immutable after creation
+    - A different rule set requires a replacement/custom SecurityGroup
     - Default resources cannot be deleted while any resource depends on them (subnet deletion blocked if VMs reference it)
 
 ### API Extensions
@@ -355,7 +344,7 @@ type ClusterSpec struct {
 - **Creation:** fulfillment-service creates default VN, IPv4 Subnet, SG, and NATGateway at tenant onboarding (via its own API — resources are persisted in PostgreSQL and reconciled to K8s CRs like any other resource)
 - **Labeling:** All default resources labeled `osac.openshift.io/default: "true"`
 - **Visibility:** Default resources appear in list/detail views like any other resource
-- **Editability:** Tenant Admin can modify default resources (e.g., add SecurityGroup rules)
+- **Immutability:** Default resources cannot be updated after creation; a changed configuration requires delete and recreate, subject to dependency guards
 - **Deletion protection:** Default resources cannot be deleted while any resource depends on them (e.g., subnet deletion blocked if VMs reference it)
 - **Tenant deletion:** Default resources are deleted when tenant is deleted (owner reference cleanup)
 
@@ -391,7 +380,7 @@ Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPA
 All default and auto-created resources inherit tenant annotation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/SG/NATGateway
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-created ExternalIP/ExternalIPAttachment
-- OPA policies enforce tenant-scoped list/get/update/delete
+- OPA policies enforce tenant-scoped list/get/delete for networking resources; workload resources retain their own lifecycle authorization
 
 #### CIDR Overlap Across Tenants
 
@@ -405,10 +394,10 @@ This feature inherits the existing security model:
 - Default resources (VN, Subnet, SG, NATGateway) inherit tenant annotation from Tenant resource
 - No new authentication or authorization changes
 - Default SecurityGroup rules configured by Cloud Infrastructure Admin (applies to all tenants)
-- Tenant Admin can modify default SecurityGroup rules after creation (tenant-configurable)
+- Tenant Admin can inspect default SecurityGroup rules; a different policy requires a replacement/custom SecurityGroup
 
 **Risk: Default SecurityGroup too permissive**
-- Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenant Admin tightens rules after creation if needed.
+- Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenant Admin creates a replacement or custom SecurityGroup when different rules are needed.
 
 ### Failure Handling and Recovery
 
@@ -435,8 +424,8 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (default networking, auto-created ExternalIP) inherit tenant isolation:
 - `osac.openshift.io/tenant` annotation propagated from parent to all child resources
-- OPA policies enforce tenant-scoped list/get/update/delete
-- Tenant User can view and manage default and auto-created resources via standard API
+- OPA policies enforce tenant-scoped list/get/delete for networking resources; workload resources retain their own lifecycle authorization
+- Tenant User can view and delete default and auto-created resources according to the create/read/delete contract; controller-owned cleanup remains automatic for auto-created resources
 - Cloud Infrastructure Admin configures NetworkClass defaults (global, applies to all tenants)
 
 ### Observability and Monitoring
