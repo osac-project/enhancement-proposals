@@ -8,7 +8,6 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking
-  - Original Networking API: /enhancements/OSAC-356-networking
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
 replaces:
@@ -99,8 +98,8 @@ resource model. The technical design that fulfills these requirements is
 described in a companion enhancement:
 [Unified Networking Design](/enhancements/OSAC-1433-unified-networking).
 
-The original [Networking API enhancement](/enhancements/OSAC-356-networking) was designed
-with VMaaS (ComputeInstance) as the only consumer, explicitly listing CaaS and
+An earlier Networking API proposal was designed with VMaaS (ComputeInstance) as
+the only consumer, explicitly listing CaaS and
 BMaaS as non-goals. As OSAC grows and new teams onboard, this limitation forces
 each service type to implement networking independently:
 
@@ -388,6 +387,5 @@ _No non-functional requirements were specified in the original document._
 
 - **Unified Networking Design**: [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) — Technical design document fulfilling these requirements
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
-- **Original Networking API**: [/enhancements/OSAC-356-networking](/enhancements/OSAC-356-networking) — VMaaS-only networking API (superseded for multi-service scenarios)
 - **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference
