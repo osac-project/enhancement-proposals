@@ -79,32 +79,527 @@ All networking resources and manager integrations in this design use IPv4.
 IPv6 and dual-stack networking are not supported.
 
 > **Implementation status:** This is the normative target contract. Current
-> proto/CRD schemas and allocation paths still contain legacy IPv6/dual-stack
+> schemas and allocation paths still contain legacy IPv6/dual-stack
 > support; implementation work must enforce this contract before rollout.
 
 For user stories, goals, and non-goals, see the
 [Requirements Document (PRD)](prd.md).
 
-### API operation constraint
+## API Contract
 
-The unified networking API supports only create, read, and delete operations
-for networking resources. Read means `List` and `Get`; there is no tenant or
-provider `Update`/`Patch` operation for a networking resource's specification
-or metadata. The affected resources are `NetworkClass`, `VirtualNetwork`,
-`Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
-`ExternalIPAttachment`, and `NATGateway`.
+This section is the canonical API reference for unified networking. It covers
+the networking fields on the resource itself and on the workload resources
+that consume networking. Non-network workload fields remain governed by their
+service-specific designs.
 
-All networking resource specification and metadata fields are immutable after
-creation. A change requires deleting the resource and creating a replacement,
-subject to the normal
-dependency guards. The network attachment fields on `ComputeInstance`,
-`Cluster`, and `BaremetalInstance` are create-time-only as well; changing a
-network attachment requires replacing the parent workload. Controllers may
-update status, conditions, readiness, and IP-discovery fields during
-reconciliation, but those internal writes are not additional API operations.
-This is the normative contract for the VMaaS, CaaS, and BMaaS designs that
-reference this document; those designs inherit it and do not redefine
-networking operations.
+### Shared API conventions
+
+#### API resource and persistence representations
+
+The resource described in this section is the logical API resource, not a
+database row. The `Field` column uses a logical field path such as
+`spec.ipv4_cidr`; it describes the public API contract independently of the
+transport used to carry it.
+
+A logical `Create` operation accepts only fields marked request-writable. A
+logical `Get` or `List` operation returns the complete resource representation,
+including server-assigned identity, resolved defaults, output-only status, and
+provider/controller fields where the caller is authorized to see them. The
+request and response envelopes may differ by API transport, but they carry
+this same logical resource contract.
+
+The database or CRD representation is implementation-specific. It may split
+metadata into columns, store spec/status as structured data, add version and
+lifecycle data, or use a different schema entirely. Those storage details must
+not be used as the API field contract.
+
+#### Methods
+
+| Method | Availability | Contract |
+|---|---|---|
+| `List` | User, provider, or private controller according to resource scope | Returns only resources visible in the caller's tenant/project or provider scope. Filters and ordering use the platform resource API. |
+| `Get` | User, provider, or private controller according to resource scope | Resolves one resource by its stable `id` or supported metadata name and applies the same visibility rules as `List`. |
+| `Create` | Resource owner or provider, depending on the resource | Validates the complete request before persistence, resolves documented defaults, and stores an immutable effective network configuration. |
+| `Delete` | Resource owner or provider, depending on the resource | Enforces reverse-reference and dependency guards. Auto-created ExternalIP children are deleted by the documented parent finalizer flow. |
+| `Update` | Not supported for networking configuration | The operation is not part of the networking contract. Metadata and network-owned fields are immutable; a replacement requires delete and create. An implementation that exposes a generic update operation must reject networking updates. |
+| Private `Signal` / reconciliation writes | Controller only | Internal signals may trigger reconciliation. Controllers may update status, conditions, readiness, IP discovery, timestamps, and finalizers; these are not user API updates. |
+
+Every networking resource has the common envelope `id`, `metadata`, `spec`,
+and `status`.
+
+#### Common resource envelope fields
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `id` | Stable resource identity | String | Present in responses; immutable | Unique within the resource type and deployment scope. |
+| `metadata` | Resource name, ownership, labels, annotations, and lifecycle metadata | Metadata | Present where defined; immutable after creation for every caller | No metadata update operation is supported. Server-managed deletion/finalizer bookkeeping is lifecycle control, not a metadata update. |
+| `spec` | Desired networking configuration | Resource-specific message | Required or optional as stated by the resource; immutable after creation | Input is validated before persistence and defaults are resolved into the effective configuration. |
+| `status` | Controller-reported lifecycle and discovery results | Resource-specific message | Output-only | A resource starts in its resource-specific `UNSPECIFIED` or `PENDING` state, becomes `READY` only after required backend work succeeds, and reports terminal failures through `FAILED` and `status.message`. |
+
+#### Shared formats, types, and presence
+
+| Value | Type and format | Presence/default/validation |
+|---|---|---|
+| IPv4 CIDR | String `a.b.c.d/prefix`, prefix `0..32`, host bits zero | Required where the resource table says required. IPv6, dual-stack, malformed, non-canonical, and host-bit-set values are rejected. A Subnet must be contained by its parent VirtualNetwork and sibling Subnets must not overlap. |
+| IPv4 address | String `a.b.c.d` without a CIDR suffix | Output-only for allocated/discovered addresses. Empty means not discovered; it is not a sentinel address. |
+| Resource reference | Typed local or full reference message with the documented `id`/`name` fields | The referenced object must exist, be visible in the permitted scope, have the required type, and be `READY`/`ALLOCATED` when the field's table requires it. Arbitrary identifier strings are not valid typed references. |
+| Enum | Named value from a resource-defined enumeration | User-set enum fields reject `UNSPECIFIED`, unknown, and future values unless the resource table explicitly allows `UNSPECIFIED`. |
+| List | Ordered or unordered list of values or typed references | Cardinality, duplicate handling, and ordering are part of the field contract. Duplicate references are rejected; ordering is preserved where primary attachment order is meaningful. |
+| Field path | Dot-separated logical path such as `spec.ipv4_cidr` | Field names are stable API concepts; a transport may apply its own naming or envelope rules. |
+| Timestamp | Point in time | Controller/system timestamps use RFC 3339/UTC semantics when exposed by the API. |
+| Integer counter | Whole-number count | Counters are non-negative unless a resource table explicitly states otherwise. |
+
+### NetworkClass API
+
+NetworkClass is provider-owned and deployment-scoped. Tenants may list or get
+the effective class but cannot create, update, or delete it.
+
+#### Methods
+
+| Method | Caller | Contract |
+|---|---|---|
+| `List` | Provider or authorized tenant reader | Lists the deployment's visible NetworkClass objects; tenant callers receive the effective classes only. |
+| `Get` | Provider or authorized tenant reader | Returns one visible NetworkClass and its resolved manager, capability, and default fields. |
+| `Create` | Provider control plane | Creates a provider-owned class after connected reachability and manager-registration validation. |
+| `Delete` | Provider control plane | Deletes a class only when no deployment default or tenant resource references it. |
+| `Update` | Not supported | NetworkClass metadata, manager selection, capabilities, and defaults are immutable; replacement requires delete and create. |
+| Private reconciliation | Networking controller | Updates only status, readiness, diagnostics, and hub placement. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `title` | Short provider-authored display name | String | Optional, provider-set, immutable | Presentation only; it does not select a backend. |
+| `description` | Provider-authored long description and limitations | Markdown string | Optional, provider-set, immutable | Must follow platform Markdown rules. |
+| `constraints` | Provider implementation constraints | `NetworkClassConstraints` | Optional provider output, immutable | No tenant-defined constraint fields are currently supported. |
+| `capabilities` | Provider-computed supported address and feature capabilities | `NetworkClassCapabilities` | Output-only | `supports_ipv4` is true for a usable class; IPv6 and dual-stack are false in this contract. The manager combination must not advertise unsupported resources. |
+| `capabilities.supports_ipv4` / `spec.disable_capabilities.supports_ipv4` | Whether IPv4 is supported or disabled by policy | Boolean | Capability is output-only; disable flag is provider-only; default `false` | Effective `capabilities.supports_ipv4` must be true for an accepted class. |
+| `capabilities.supports_ipv6` / `spec.disable_capabilities.supports_ipv6` | Whether IPv6 is supported or disabled by policy | Boolean | Capability is output-only; disable flag is provider-only; default `false` | Must be false in this IPv4-only contract. |
+| `capabilities.supports_dual_stack` / `spec.disable_capabilities.supports_dual_stack` | Whether dual-stack is supported or disabled by policy | Boolean | Capability is output-only; disable flag is provider-only; default `false` | Must be false in this IPv4-only contract. |
+| `capabilities.dpu_support` / `spec.disable_capabilities.dpu_support` | Whether DPU offload is supported or disabled by policy | Boolean | Capability is output-only; disable flag is provider-only; default `false` | May be true only when the selected managers advertise DPU support. |
+| `is_default` | Marks the provider-selected default class | Boolean | Provider-only; default `false`; immutable to tenants | At most one active default class exists per deployment. |
+| `fabric_manager` | Selects the registered physical/fabric manager | String | Provider-only, immutable | If set, it must name an enabled provider registration. It handles physical segments, ACLs, IP allocation, DNAT, and SNAT. |
+| `k8s_manager` | Selects the registered Kubernetes networking manager | String | Provider-only, immutable | If set, it must name an enabled provider registration. At least one of `fabric_manager` and `k8s_manager` is required. |
+| `spec.defaults` | Default tenant onboarding network configuration | `NetworkDefaults` | Required by this contract; provider-only and immutable | Both IPv4 default CIDRs are required and must satisfy the nested field rules below. |
+| `spec.disable_capabilities` | Provider policy for disabling supported capabilities | `NetworkClassCapabilities` | Optional provider-only, immutable | Not tenant input. Disabled values cannot appear in the effective capabilities. |
+| `spec.vip_prefix_length` | Reserves the subnet suffix for CaaS API/ingress VIPs | Integer | Conditionally required, immutable | Required when CaaS/MetalLB VIP allocation is offered. It must be a valid IPv4 prefix more specific than the participating Subnet prefix and contained within that Subnet. |
+| `spec.defaults.virtual_network_ipv4_cidr` | CIDR for the automatically created tenant VirtualNetwork | String | Required within `defaults`; immutable | Canonical IPv4 CIDR with host bits zero. There is no fallback if omitted. |
+| `spec.defaults.subnet_ipv4_cidr` | CIDR for the automatically created tenant Subnet | String | Required within `defaults`; immutable | Canonical IPv4 CIDR, contained by the default VirtualNetwork CIDR, and non-overlapping with sibling Subnets. |
+| `spec.defaults.virtual_network_ipv6_cidr` | Legacy IPv6 default field | String | Legacy optional field; rejected in new requests | Retained for compatibility only; it must not be supplied or silently dual-stacked. |
+| `spec.defaults.subnet_ipv6_cidr` | Legacy IPv6 default field | String | Legacy optional field; rejected in new requests | Retained for compatibility only; it must not be supplied or silently dual-stacked. |
+| `spec.defaults.ingress_rules` / `egress_rules` | Legacy default SecurityRule lists | List of `SecurityRule` | Legacy compatibility fields | New canonical requests use the SecurityGroup rule model. Legacy values are accepted only when they can be represented as supported IPv4 rules. |
+| `spec.defaults.enable_nat_gateway` | Requests automatic default NATGateway onboarding | Boolean | Optional; default `false`; immutable | `true` is valid only when the selected manager combination supports NATGateway. |
+| `status.state` | Current NetworkClass lifecycle state | `NetworkClassState` | Output-only; default `UNSPECIFIED` | Allowed values are `UNSPECIFIED`, `PENDING`, `READY`, and `FAILED`. |
+| `status.message` | Human-readable lifecycle diagnostic | String | Output-only; empty when no diagnostic exists | Not a stable machine-readable error code. |
+| `status.hub` | Hub placement for reconciliation | String | Private output-only; sticky for the resource lifetime | Must identify the deployment's single configured networking hub. |
+
+NetworkClass is accepted only after the provider-owned connected
+reachability prerequisites are satisfied.
+
+### VirtualNetwork API
+
+VirtualNetwork is tenant-owned and provides an infrastructure-agnostic IP
+domain. It can be used by VMaaS, CaaS, and BMaaS when the selected manager
+combination supports the workload.
+
+#### Methods
+
+| Method | Caller | Contract |
+|---|---|---|
+| `List` | Tenant or provider | Lists VirtualNetworks visible in the caller's tenant/project or provider scope. |
+| `Get` | Tenant or provider | Returns one VirtualNetwork and its resolved NetworkClass, CIDR, state, and hub. |
+| `Create` | Tenant or provider | Validates the resolved class and IPv4 CIDR, then creates the resource in `PENDING` state. |
+| `Delete` | Tenant or provider | Deletes the VirtualNetwork only after Subnet, SecurityGroup, NATGateway, and workload references are removed. |
+| `Update` | Not supported | The class, CIDR, implementation strategy, metadata, and effective configuration are immutable. |
+| Private reconciliation | Networking controller | Updates only state, diagnostics, hub placement, and finalizers. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `spec.network_class` | Provider-resolved class implementing the network | `NetworkClassReference` | Provider/private; omitted input resolves the single deployment default; immutable | Tenants cannot select a different class. The resolved class must be `READY`. |
+| `spec.ipv4_cidr` | Tenant VirtualNetwork address space | String | Required by this IPv4 contract; immutable | Canonical IPv4 CIDR with host bits zero. Cross-tenant overlap is allowed only because backend isolation is guaranteed. |
+| `spec.implementation_strategy` | Provider-resolved backend strategy | String | Output-only/private; immutable | Derived from the deployment NetworkClass. It is never tenant input. Deployment placement is provider-owned and is not a tenant API field. |
+| `status.state` | Lifecycle readiness | `VirtualNetworkState` | Output-only | `UNSPECIFIED`, `PENDING`, `READY`, `FAILED`, `DELETING`, or `DELETE_FAILED` as defined by the resource lifecycle. |
+| `status.message` | Human-readable lifecycle diagnostic | String | Output-only; absent/empty when no diagnostic exists | Not a stable machine-readable error code. |
+| `status.hub` | Hub placement for reconciliation | String | Output-only; sticky for the resource lifetime | The single configured networking hub owns the CR placement. |
+
+Create rejects an absent or non-ready NetworkClass and persists the network in
+`PENDING` until the selected manager reports the segment ready. Delete is
+blocked while Subnets, SecurityGroups, NATGateways, or workload references
+remain.
+
+### Subnet API
+
+Subnet is tenant-owned and is always a child of one VirtualNetwork.
+
+#### Methods
+
+| Method | Caller | Contract |
+|---|---|---|
+| `List` | Tenant or provider | Lists Subnets visible in the caller's tenant/project or provider scope. |
+| `Get` | Tenant or provider | Returns one Subnet with its parent reference, CIDR, state, and hub. |
+| `Create` | Tenant or provider | Validates parent readiness, containment, and sibling non-overlap before persisting the Subnet. |
+| `Delete` | Tenant or provider | Deletes the Subnet only when no attachment, workload, or other child reference remains. |
+| `Update` | Not supported | Parent, CIDR, metadata, and effective networking configuration are immutable. |
+| Private reconciliation | Networking controller | Updates only state, diagnostics, hub placement, and finalizers. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `spec.virtual_network` | Parent VirtualNetwork | `VirtualNetworkLocalReference` | Required; immutable | Parent must exist, be `READY`, and be in the same tenant/project scope. |
+| `spec.ipv4_cidr` | Subnet address range | String | Required by this IPv4 contract; immutable | Canonical IPv4 CIDR, contained entirely by the parent VN, and non-overlapping with every sibling Subnet. |
+| `spec.ipv6_cidr` | Legacy IPv6 address range | String | Legacy compatibility field; rejected in new requests | IPv6 and dual-stack are outside this contract. |
+| `status.state` | Lifecycle readiness | `SubnetState` | Output-only | `UNSPECIFIED`, `PENDING`, `READY`, `FAILED`, `DELETING`, or `DELETE_FAILED`. |
+| `status.message` | Human-readable lifecycle diagnostic | String | Output-only | Explains failed validation or backend provisioning. |
+| `status.hub` | Hub placement for reconciliation | String | Output-only; sticky | Uses the deployment's single networking hub. |
+
+### SecurityGroup API
+
+SecurityGroup is tenant-owned and scoped to one VirtualNetwork. Legacy
+direction-specific fields remain readable for compatibility; the unified
+canonical rule representation is described below.
+
+#### Methods
+
+| Method | Caller | Contract |
+|---|---|---|
+| `List` | Tenant or provider | Lists SecurityGroups visible in the caller's tenant/project or provider scope. |
+| `Get` | Tenant or provider | Returns one SecurityGroup, including its immutable effective rule representation. |
+| `Create` | Tenant or provider | Validates the parent VirtualNetwork and canonical or legacy rules before persistence. |
+| `Delete` | Tenant or provider | Deletes the group only when no workload attachment references it; the system fallback group is provider-managed. |
+| `Update` | Not supported | Parent, rules, metadata, and effective policy are immutable; replacement requires delete and create. |
+| Private reconciliation | Networking controller | Updates only state, diagnostics, hub placement, and finalizers. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `spec.virtual_network` | VirtualNetwork whose workloads may use the group | `VirtualNetworkLocalReference` | Required; immutable | Parent must be `READY` and in the same scope. |
+| `spec.ingress` | Legacy inbound rule list | List of `SecurityRule` | Legacy input/read compatibility; immutable after create | Cannot be combined with canonical `rules`; only representable IPv4 rules are accepted. |
+| `spec.egress` | Legacy outbound rule list | List of `SecurityRule` | Legacy input/read compatibility; immutable after create | Same compatibility rules as `ingress`. |
+| `spec.rules` | Canonical tenant firewall rules | List of `SecurityGroupRule` | Required for tenant-created groups; immutable | A tenant-created group has at least one rule. The system-created fallback group may be empty. Duplicates and conflicting equal-specificity rules are rejected. |
+| `status.state` | Lifecycle readiness | `SecurityGroupState` | Output-only | `UNSPECIFIED`, `PENDING`, `READY`, `FAILED`, `DELETING`, or `DELETE_FAILED`. |
+| `status.message` | Human-readable lifecycle diagnostic | String | Output-only | Reports invalid rule or parent readiness failures. |
+
+#### SecurityGroupRule fields
+
+| Field | Meaning | Type | Presence and validation |
+|---|---|---|---|
+| `action` | Allow or deny matching traffic | Enum | Required; `ALLOW` or `DENY`; unspecified/unknown rejected. |
+| `direction` | Inbound or outbound direction | Enum | Required; `INGRESS` or `EGRESS`. |
+| `protocol` | Protocol match | Enum | Required; `TCP`, `UDP`, `ICMP`, or `ANY`. |
+| `port` | Single protocol port | Integer | Required for TCP/UDP, omitted for ICMP/ANY, range `1..65535`; port ranges are unsupported. |
+| `source_cidr` / `destination_cidr` | Remote address match | Exactly one string | Exactly one canonical IPv4 CIDR. Ingress uses `source_cidr`; egress uses `destination_cidr`. |
+| Rule evaluation | Effective behavior of multiple rules | Policy, not a field | Provider baseline is always present and is not exposed in the tenant group. Most-specific matching tenant rule wins; equal-specificity conflicts are rejected. |
+
+### ExternalIPPool API
+
+ExternalIPPool is provider-managed and deployment-scoped. One pool may serve
+all workload resource types.
+
+#### Methods
+
+| Method | Caller | Contract |
+|---|---|---|
+| `List` | Provider or authorized tenant reader | Lists pools visible in the provider scope; tenants do not select arbitrary pool ranges. |
+| `Get` | Provider or authorized tenant reader | Returns one pool and its immutable ranges, family, strategy, and allocation counters. |
+| `Create` | Provider control plane | Creates a pool only from provider-authorized IPv4 ranges and a supported implementation strategy. |
+| `Delete` | Provider control plane | Deletes a pool only after all ExternalIP allocations are released. |
+| `Update` | Not supported | Ranges, family, strategy, metadata, and allocation policy are immutable. |
+| Private reconciliation | Networking controller | Updates only lifecycle state, diagnostics, hub placement, counters, and finalizers. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `spec.cidrs` | Address ranges available for allocation | List of strings | Required; immutable | Current contract supports exactly one canonical IPv4 CIDR. The range must be provider-authorized and must not overlap another allocation pool. |
+| `spec.ip_family` | Address family of all pool ranges | `IPFamily` | Required; immutable | Must be `IPV4`; unspecified, IPv6, and mixed-family requests are rejected. |
+| `spec.implementation_strategy` | Provider-selected address advertisement strategy | String | Output-only; immutable | Derived by the provider; current supported strategy is the configured manager's supported implementation. |
+| `status.state` | Pool lifecycle | `ExternalIPPoolState` | Output-only | `UNSPECIFIED`, `PENDING`, `READY`, `FAILED`, `DELETING`, or `DELETE_FAILED`. |
+| `status.message` | Pool lifecycle diagnostic | String | Output-only | Explains allocation backend readiness or failure. |
+| `status.hub` | Hub placement | String | Output-only; sticky | Uses the deployment's single networking hub. |
+| `status.total` | Total usable addresses | Integer | Output-only | Computed from the supported CIDR, excluding unusable addresses. |
+| `status.allocated` | Addresses allocated to ExternalIP resources | Integer | Output-only | Never exceeds `total`. |
+| `status.available` | Addresses available for allocation | Integer | Output-only | `total - allocated`; zero means new ExternalIP creates fail for capacity. |
+
+### ExternalIP API
+
+ExternalIP is tenant-owned when explicitly created and is also created by the
+provider transaction for automatic external access.
+
+#### Methods
+
+| Method | Caller | Contract |
+|---|---|---|
+| `List` | Tenant or provider | Lists ExternalIPs visible in the caller's tenant/project or provider scope. |
+| `Get` | Tenant or provider | Returns one ExternalIP with allocation state, address, pool, attachment, and attribution status. |
+| `Create` | Tenant or provider, or parent controller | Allocates from the selected provider pool; automatic parent creation may create it atomically in `PENDING` state. |
+| `Delete` | Tenant or provider, subject to ownership | Deletes only an unattached ExternalIP; an attached address must be detached first, including during parent finalization. |
+| `Update` | Not supported | Pool, metadata, address ownership, and allocation identity are immutable. |
+| Private reconciliation | Networking controller | Updates only allocation state, address, attachment attribution, timestamps, diagnostics, and finalizers. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `spec.pool` | Pool from which the address is allocated | `ExternalIPPoolReference` | Required; immutable | Pool must be `READY`, visible in the permitted scope, IPv4, and have capacity. Tenants cannot provide an arbitrary address. |
+| `status.state` | Allocation lifecycle | `ExternalIPState` | Output-only | `UNSPECIFIED`, `PENDING`, `ALLOCATED`, `FAILED`, or `DELETING`. |
+| `status.message` | Allocation diagnostic | String | Output-only | Explains allocation failure or pending state. |
+| `status.address` | Allocated IPv4 address | String | Output-only; empty until `ALLOCATED`, stable thereafter | Must be canonical IPv4 and belong to the pool CIDR. |
+| `status.pool` | Resolved pool identifier | String | Output-only | Mirrors `spec.pool`; cannot change. |
+| `status.attached` | Whether a ready attachment consumes the address | Boolean | Output-only; default `false` | An attached ExternalIP cannot be deleted. |
+| `status.hub` | Hub placement | String | Output-only; sticky | Uses the deployment's single networking hub. |
+| `status.attribution` | Settled target attribution | ExternalIPAttribution | Output-only | Controller-populated only. |
+| `status.attachment_transition_time` | Time attachment attribution changed | Timestamp | Output-only | RFC 3339/UTC timestamp. |
+| `status.state_transition_time` | Time allocation state changed | Timestamp | Output-only | RFC 3339/UTC timestamp. |
+
+### ExternalIPAttachment API
+
+ExternalIPAttachment binds one allocated ExternalIP to one target. A Cluster
+attachment may be created before the Cluster is ready; it remains `PENDING`
+until the target VIP is available. Automatic parent-resource provisioning may
+also create the ExternalIP and attachment atomically in `PENDING` state.
+
+#### Methods
+
+| Method | Caller | Contract |
+|---|---|---|
+| `List` | Tenant or provider | Lists attachments visible in the caller's tenant/project or provider scope. |
+| `Get` | Tenant or provider | Returns one immutable target binding and its resolved address and lifecycle state. |
+| `Create` | Tenant or provider, or parent controller | Validates exactly one target and creates a binding; a Cluster target may remain pending until its VIP exists. |
+| `Delete` | Tenant or provider, or parent controller | Removes DNAT attribution before releasing the ExternalIP; parent finalizers use this ordering automatically. |
+| `Update` | Not supported | ExternalIP, target, endpoint, metadata, and effective DNAT configuration are immutable. |
+| Private reconciliation | Networking controller | Updates only binding state, resolved address, diagnostics, timestamps, and finalizers. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `spec.external_ip` | Address being attached | `ExternalIPLocalReference` | Required; immutable | Must reference an `ALLOCATED`, unconsumed ExternalIP, except the documented internal auto-provisioning transaction. |
+| `spec.compute_instance` | ComputeInstance DNAT target | Typed reference | Exactly one target arm; immutable | Target must exist in scope and expose its resolved attachment address before DNAT. |
+| `spec.cluster` | Cluster DNAT target | Typed reference | Exactly one target arm; immutable | Target may be pending; controller waits for the selected VIP. |
+| `spec.baremetal_instance` | BaremetalInstance DNAT target | Typed reference | Exactly one target arm; immutable | Target must exist in scope and expose its discovered IPv4 address before DNAT. |
+| `spec.target_endpoint` | Cluster endpoint receiving DNAT | `ExternalIPAttachmentEndpoint` | Immutable; required for Cluster, `UNSPECIFIED` otherwise | Only `API` or `INGRESS` is valid for Cluster. |
+| `status.state` | Binding lifecycle | `ExternalIPAttachmentState` | Output-only | `UNSPECIFIED`, `PENDING`, `READY`, `FAILED`, or `DELETING`. |
+| `status.external_ip_address` | Address mirrored from ExternalIP | IPv4 address | Output-only; empty until ready | Must match the referenced ExternalIP status. |
+| `status.message` | Binding diagnostic | String | Output-only | Explains pending target discovery or failure. |
+| `status.hub` | Hub placement | String | Output-only; sticky | Uses the deployment's single networking hub. |
+| `status.state_transition_time` | Time binding state changed | Timestamp | Output-only | RFC 3339/UTC timestamp. |
+
+### NATGateway API
+
+NATGateway provides outbound SNAT for every Subnet in one VirtualNetwork. Only
+one gateway is allowed per VN, and an ExternalIP cannot be shared with an
+ExternalIPAttachment.
+
+#### Methods
+
+| Method | Caller | Contract |
+|---|---|---|
+| `List` | Tenant or provider | Lists NATGateways visible in the caller's tenant/project or provider scope. |
+| `Get` | Tenant or provider | Returns one gateway with its immutable VirtualNetwork and ExternalIP references and lifecycle state. |
+| `Create` | Tenant or provider | Validates one-ready-gateway-per-VN, ExternalIP exclusivity, and manager capability before persistence. |
+| `Delete` | Tenant or provider | Removes SNAT only after dependent egress operations have drained and the gateway reference is released. |
+| `Update` | Not supported | VirtualNetwork, ExternalIP, metadata, and effective SNAT configuration are immutable. |
+| Private reconciliation | Networking controller | Updates only lifecycle state, diagnostics, hub placement, timestamps, and finalizers. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `spec.virtual_network` | VirtualNetwork whose egress is translated | `VirtualNetworkLocalReference` | Required; immutable | Parent must be `READY`; one NATGateway per VN. |
+| `spec.external_ip` | SNAT source address | `ExternalIPLocalReference` | Required; immutable | ExternalIP must be `ALLOCATED`, same scope, and unconsumed. K8s-only deployments reject NATGateway creation when unsupported. |
+| `status.state` | SNAT lifecycle | `NATGatewayState` | Output-only | `UNSPECIFIED`, `PENDING`, `READY`, `FAILED`, or `DELETING`. |
+| `status.message` | SNAT diagnostic | String | Output-only | Explains dependency or backend failure. |
+| `status.hub` | Hub placement | String | Output-only; sticky | Uses the deployment's single networking hub. |
+| `status.state_transition_time` | Time gateway state changed | Timestamp | Output-only | RFC 3339/UTC timestamp. |
+
+### ComputeInstance networking API
+
+This subsection covers only the networking fields on ComputeInstance. The
+current unified field is the list-shaped `network_attachments` field; the
+field remains repeated for compatibility but accepts at most one virtual NIC
+attachment.
+
+#### Methods
+
+ComputeInstance itself follows its service-specific create/read/update/delete
+contract for non-network fields. The networking fields below are
+create-time-only under this design: a network change requires replacing the
+ComputeInstance. Automatic ExternalIP children are cleaned up in attachment-
+then-IP order when the parent finalizer performs that documented cleanup.
+
+| Method | Caller | Networking contract |
+|---|---|---|
+| `List` | Tenant or provider | Returns the visible ComputeInstance resources with their resolved networking fields and discovered addresses. |
+| `Get` | Tenant or provider | Returns one ComputeInstance with its resolved attachment, status, and any auto-created ExternalIP children visible to the caller. |
+| `Create` | Tenant or provider | Resolves the documented default attachment, validates the single-NIC constraint, and creates any requested ExternalIP children in the parent transaction. |
+| `Delete` | Tenant or provider | Removes auto-created ExternalIPAttachment and ExternalIP children in dependency order before completing parent deletion. |
+| `Update` | Not supported for networking fields | A network change requires replacing the ComputeInstance; non-network fields remain governed by the service-specific API. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence/default/mutability | Validation |
+|---|---|---|---|---|
+| `spec.network_attachments` | VM virtual NIC attachment | List of `ComputeNetworkAttachment` | Optional; omitted/empty resolves tenant defaults; immutable after create | Zero or one entry is accepted. The entry must reference a `READY` Subnet; its resolved attachment belongs to one VN. More than one entry is rejected. |
+| `ComputeNetworkAttachment.subnet` | Subnet for one virtual NIC | `SubnetLocalReference` | Required after resolution; immutable | Must be visible, `READY`, and in the effective tenant scope. |
+| `ComputeNetworkAttachment.security_groups` | Groups applied to one virtual NIC | List of `SecurityGroupLocalReference` | Optional; empty resolves the tenant default group; immutable | Every group must be `READY`, same-VN, and unique. |
+| `spec.auto_external_ip_attachment` | Requests automatic ExternalIP and attachment creation | Boolean | Default `false`; immutable | When true, the parent transaction creates the Pending children atomically and the controller waits for allocation and discovered VM IP. |
+| `status.compute_network_attachment_statuses` | Runtime IP for the resolved VM attachment | List of `ComputeNetworkAttachmentStatus` | Output-only; empty until discovery; cardinality matches the resolved attachment | The status entry maps to the sole attachment and reports canonical IPv4. |
+| `ComputeNetworkAttachmentStatus.subnet_ref` | Resolved Subnet identifier | String | Output-only | Must match the resolved attachment. |
+| `ComputeNetworkAttachmentStatus.ip_address` | DHCP/overlay-discovered VM address | IPv4 address | Output-only; empty until discovery | Must be canonical IPv4. |
+
+### Cluster networking API
+
+Cluster networking has two separate concepts: `spec.network` configures the
+cluster-internal pod/service ranges, while `spec.network_attachment` connects
+all node sets to one tenant Subnet.
+
+#### Methods
+
+Cluster create resolves omitted networking defaults. The networking fields are
+immutable after creation; changing them requires replacing the Cluster. Read
+and list expose the resolved attachment and output-only endpoint status.
+
+| Method | Caller | Networking contract |
+|---|---|---|
+| `List` | Tenant or provider | Returns visible Clusters with their resolved networking fields and endpoint status. |
+| `Get` | Tenant or provider | Returns one Cluster with its resolved attachment and discovered API/ingress endpoints. |
+| `Create` | Tenant or provider | Resolves cluster-network defaults, validates the single attachment, and creates any requested ExternalIP children in the parent transaction. |
+| `Delete` | Tenant or provider | Removes auto-created ExternalIPAttachment and ExternalIP children in dependency order before completing parent deletion. |
+| `Update` | Not supported for networking fields | A network change requires replacing the Cluster; non-network fields remain governed by the CaaS API. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence/default/mutability | Validation |
+|---|---|---|---|---|
+| `spec.network` | Cluster-internal CNI ranges | `ClusterNetwork` | Optional; immutable; omitted child fields use platform defaults | Pod/service CIDRs are canonical IPv4 and are not tenant fabric Subnets. |
+| `ClusterNetwork.pod_cidr` | Pod network range | IPv4 CIDR | Default `10.128.0.0/14`; immutable after resolution | Must be valid and non-overlapping with the service range and provider-reserved ranges. |
+| `ClusterNetwork.service_cidr` | Service network range | IPv4 CIDR | Default `172.30.0.0/16`; immutable after resolution | Must be valid and non-overlapping with the pod range and provider-reserved ranges. |
+| `spec.network_attachment` | Single tenant attachment shared by all node sets | `ClusterNetworkAttachment` | Optional parent; omitted resolves tenant defaults; immutable | A present message must contain `subnet`; only an empty `security_groups` list may default inside it. |
+| `ClusterNetworkAttachment.subnet` | Shared tenant Subnet | `SubnetLocalReference` | Required when message is present; immutable | Must reference a `READY` Subnet in the effective tenant scope. |
+| `ClusterNetworkAttachment.security_groups` | Groups applied to all node-set fabric interfaces | List of `SecurityGroupLocalReference` | Optional; empty selects tenant default; immutable in networking contract | Groups must be `READY`, same-VN, and unique. |
+| `spec.auto_external_ip_attachment` | Requests API and ingress ExternalIP children | Boolean | Default `false`; immutable | When true, creates two Pending ExternalIPs and attachments atomically. |
+| `status.api_endpoint` | Internal API VIP used as DNAT target | IPv4 address | Empty until MetalLB/CaaS discovery | Not the external `api_url`; controller-populated only. |
+| `status.ingress_endpoint` | Internal ingress VIP used as DNAT target | IPv4 address | Empty until MetalLB/CaaS discovery | Not the external console URL; controller-populated only. |
+
+### BaremetalInstance networking API
+
+BaremetalInstance networking uses one physical interface attachment. The
+repeated field is retained for compatibility, but the current BMaaS contract
+accepts at most one attachment and treats it as the primary attachment.
+
+#### Methods
+
+BaremetalInstance create resolves omitted networking defaults. Network
+attachment fields and `auto_external_ip_attachment` are immutable after
+creation; a change requires replacing the BaremetalInstance. Non-network
+provisioning fields remain governed by the BMaaS design.
+
+| Method | Caller | Networking contract |
+|---|---|---|
+| `List` | Tenant or provider | Returns visible BaremetalInstances with their resolved attachment and discovered address status. |
+| `Get` | Tenant or provider | Returns one BaremetalInstance with its resolved attachment, interface, and address status. |
+| `Create` | Tenant or provider | Resolves the default fabric port, validates the single-NIC constraint, and creates any requested ExternalIP children in the parent transaction. |
+| `Delete` | Tenant or provider | Removes auto-created ExternalIPAttachment and ExternalIP children in dependency order before completing parent deletion. |
+| `Update` | Not supported for networking fields | A network change requires replacing the BaremetalInstance; non-network fields remain governed by the BMaaS API. |
+
+#### Fields
+
+| Field | Meaning | Type | Presence/default/mutability | Validation |
+|---|---|---|---|---|
+| `spec.network_attachments` | Physical NIC-to-Subnet attachment | List of `BareMetalNetworkAttachment` | Optional; omitted/empty resolves tenant defaults; immutable in this contract | Zero or one entry is accepted. The entry uses one VN and is the primary attachment. More than one entry is rejected. |
+| `BareMetalNetworkAttachment.subnet` | Subnet connected to one physical NIC | `SubnetLocalReference` | Required after resolution; immutable | Must be `READY` and in the effective tenant scope. |
+| `BareMetalNetworkAttachment.security_groups` | Groups applied to one physical NIC | List of `SecurityGroupLocalReference` | Optional; empty resolves tenant default; immutable in this contract | Groups must be `READY`, same-VN, and unique. |
+| `BareMetalNetworkAttachment.interface` | Physical port selected for the attachment | String | Omitted selects the first valid fabric-role port; immutable | Must identify a valid non-lifecycle port from the effective hardware profile. |
+| `BareMetalNetworkAttachment.primary` | Compatibility marker for the default-route and external-access attachment | Boolean | Optional; omitted or `true` means primary; immutable | `false` is rejected because only one attachment is supported. |
+| `spec.auto_external_ip_attachment` | Requests automatic ExternalIP and attachment creation | Boolean | Default `false`; immutable | Parent transaction creates Pending children; controller waits for allocation and DHCP discovery. |
+| `status.network_attachment_statuses` | Runtime state per physical attachment | List of `BareMetalNetworkAttachmentStatus` | Output-only; empty until DHCP lease discovery; cardinality matches resolved attachments | Entries must correspond to resolved interfaces and report canonical IPv4. |
+| `BareMetalNetworkAttachmentStatus.interface` | Resolved physical interface | String | Output-only | Must match the selected hardware port. |
+| `BareMetalNetworkAttachmentStatus.subnet_ref` | Resolved Subnet identifier | String | Output-only | Legacy status representation; must match the resolved attachment. |
+| `BareMetalNetworkAttachmentStatus.ip_address` | DHCP-discovered tenant address | IPv4 address | Output-only; empty until lease discovery | Canonical IPv4 only. |
+| `BareMetalNetworkAttachmentStatus.primary` | Resolved primary designation | Boolean | Output-only | Mirrors the resolved attachment. |
+
+The `interface` selector is resolved against the effective
+`BareMetalInstanceType` port catalog. `fabric` ports are tenant-network
+eligible; `lifecycle` ports are reserved for provisioning and are rejected.
+When the selector is omitted, BMaaS chooses the first valid fabric port. CaaS
+resolves its worker fabric interface from each node set's
+`BareMetalInstanceType` rather than exposing that selector to the tenant.
+
+### HostType API
+
+HostType is a provider/system hardware catalog retained for inventory and
+legacy consumers. Current BMaaS and CaaS attachment resolution uses the
+tenant-facing `BareMetalInstanceType` and its `network_ports`; HostType is not
+a second source of truth for workload networking. This subsection defines
+only the fields that remain relevant to provider-side networking. Virtual-
+machine HostTypes have no physical interfaces. Bare-metal HostTypes have an
+ordered interface list.
+
+#### Methods
+
+| Method | Caller | Networking contract |
+|---|---|---|
+| `List` | Provider or private controller | Lists HostTypes available for provider-side inventory and legacy consumers. |
+| `Get` | Provider or private controller | Returns the immutable interface catalog for provider-side inventory; it does not override `BareMetalInstanceType.network_ports`. |
+| `Create` / `Delete` | Provider control plane | Catalog lifecycle is owned by the HostType API; deletion is blocked while a provider workflow requires the profile. |
+| `Update` | Not a networking operation | Catalog mutation cannot mutate existing Cluster or BaremetalInstance attachments; this design exposes no networking update path. |
+
+#### Fields used by networking
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `id` | Stable HostType identifier | String | Server-assigned, immutable | Must be unique. |
+| `metadata` | Resource metadata | `Metadata` | Established by the owning catalog API; not a networking input | Networking controllers treat it as opaque. |
+| `title` | Short hardware-profile name | String | Provider-set | Human-readable single-line text. |
+| `description` | Long hardware-profile description | Markdown string | Provider-set | Must follow platform Markdown rules. |
+| `interfaces` | Physical ports available on the profile | List of `NetworkInterface` | Provider-set; ordered | Empty for VM profiles; non-empty for BM profiles. The first interface for a role is the legacy provider-side default. |
+| `NetworkInterface.name` | Stable interface identifier | String | Required; unique within the HostType; immutable for provider-side resolution | Names such as `data-0` and `mgmt-0` are opaque identifiers. |
+| `NetworkInterface.role` | Intended traffic role | String | Required; provider-set | `fabric`, `management`, `storage`, and `lifecycle` are conventions, not an enforced enum. `lifecycle` is not tenant-attachable. |
+| `NetworkInterface.description` | Human-readable interface description | String | Optional provider-set | Informational only. |
+
+### BareMetalInstanceType API
+
+BareMetalInstanceType is the tenant-visible catalog of bare-metal hardware.
+Networking consumes its ordered `network_ports` list; CPU, memory, disk, and
+accelerator fields remain defined by the BareMetalInstanceType API.
+
+#### Methods
+
+| Method | Caller | Networking contract |
+|---|---|---|
+| `List` | Tenant or provider | Lists hardware profiles and their discoverable network ports. |
+| `Get` | Tenant or provider | Returns the profile and the network-port catalog used to validate `BareMetalNetworkAttachment.interface`. |
+| `Create` / `Delete` | Provider control plane | Catalog lifecycle is owned by the BareMetalInstanceType API; deletion is blocked while a provisioning workflow requires the profile. |
+| `Update` | Not a networking operation | Catalog mutation cannot mutate existing BaremetalInstance attachments; this design exposes no networking update path. |
+
+#### Fields used by networking
+
+| Field | Meaning | Type | Presence and mutability | Validation |
+|---|---|---|---|---|
+| `id` | Stable hardware-profile identifier | String | Server-assigned, immutable | Must be unique. |
+| `metadata` | Resource metadata | `Metadata` | Established by the owning catalog API; not a networking input | Networking controllers treat it as opaque. |
+| `spec.hardware.network_ports` | Physical network ports available on the hardware profile | List of `BareMetalNetworkPortSpec` | Optional at the generic catalog layer; immutable for a resolved BaremetalInstance | Port names must be unique. A usable networking profile must expose at least one `fabric` port. |
+| `BareMetalNetworkPortSpec.name` | Port identifier selected by an attachment | String | Required; unique within the profile | Must be non-empty and stable across inventory, fabric-manager, and DHCP-lease lookup. |
+| `BareMetalNetworkPortSpec.role` | Port traffic role | String | Required; provider-set | `fabric`, `management`, `storage`, and `lifecycle` are conventions. `lifecycle` is not tenant-attachable. |
+| `BareMetalNetworkPortSpec.type` | Physical link type | String | Required; provider-set | Examples include `Ethernet` and `InfiniBand`; non-empty. |
+| `BareMetalNetworkPortSpec.speed` | Link speed | String | Required; provider-set | Examples include `1Gbps`, `10Gbps`, and `100Gbps`; non-empty. |
+
+#### Reference and lifecycle rules
+
+For every resource above, validation proceeds before backend dispatch: resolve
+typed references, apply only the documented defaults, validate scope and
+readiness, validate IPv4 and cardinality, then persist the complete effective
+spec. A rejected create persists nothing. Controllers requeue while an
+allowed dependency is `PENDING`; they never mark a resource `READY` before
+all required backend operations and discovered addresses are valid.
+
+The provider-owned baseline connectivity, single-hub placement, IPv4-only
+boundary, and create/read/delete immutability rules in the surrounding design
+are normative parts of every subsection above.
 
 ## Proposal
 
@@ -158,7 +653,7 @@ ExternalIP, DNAT, or SNAT.
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: moc-region-1
+  name: moc-site-1
 spec:
   fabricManager: netris
   k8sManager: cudn_localnet
@@ -174,7 +669,7 @@ capabilities:
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: bos-region-1
+  name: bos-site-1
 spec:
   fabricManager: neutron
   k8sManager: cudn_localnet
@@ -190,7 +685,7 @@ capabilities:
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: gpu-region-1
+  name: gpu-site-1
 spec:
   fabricManager: netris
 capabilities:
@@ -436,7 +931,7 @@ K8s manager the provider has deployed.
 
 ```bash
 osac admin create externalippool \
-  --network-class moc-region-1 \
+  --network-class moc-site-1 \
   --cidrs 203.0.113.0/24 \
   --ip-family ipv4 \
   --name external-pool-1
@@ -453,7 +948,7 @@ servers.
 **Create VirtualNetwork:**
 
 ```bash
-osac create virtualnetwork --network-class moc-region-1 --cidr 10.0.0.0/16 \
+osac create virtualnetwork --network-class moc-site-1 --cidr 10.0.0.0/16 \
   --name my-net
 ```
 
@@ -504,11 +999,13 @@ Bare-metal servers have multiple physical interfaces. The tenant discovers
 available network ports via the BareMetalInstanceType API — each
 BareMetalInstanceType lists its network ports with name, role, type, speed,
 and description (see
-[HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype)). Given the port identifiers, the tenant specifies which
-interface to attach to the subnet. The current BMaaS contract accepts one
-entry in the repeated `network_attachments` field, mapping one physical
-interface to one subnet. If `interface` is omitted, fulfillment defaults to
-the first `fabric` port from `BareMetalInstanceType.network_ports`.
+[HostType API](#hosttype-api) and
+[BareMetalInstanceType API](#baremetalinstancetype-api)). Given the port
+identifiers, the tenant specifies which interface to attach to the subnet.
+The current BMaaS contract accepts one entry in the repeated
+`network_attachments` field, mapping one physical interface to one subnet. If
+`interface` is omitted, fulfillment defaults to the first `fabric` port from
+`BareMetalInstanceType.network_ports`.
 
 Single interface (simple case):
 
@@ -790,7 +1287,7 @@ ensure correct ordering:
 5. Once all ExternalIPs are gone: proceed with parent resource
    deletion.
 
-If cleanup fails permanently (after N retries): finalizer is removed,
+If cleanup fails permanently after a configured retry limit: finalizer is removed,
 parent resource deleted, orphaned resources left in cluster. Orphaned
 resources are identifiable by the `auto-created-for` label.
 
@@ -805,334 +1302,6 @@ osac create natgateway --virtual-network my-net --externalip nat-ip \
 The fabric manager creates a SNAT rule for the VN: all egress traffic from
 the VN's CIDR is source-NATted to the ExternalIP. Applies to all resources
 in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
-
-### API Extensions
-
-#### VirtualNetwork
-
-```protobuf
-message VirtualNetworkSpec {
-  string network_class = 1; // required, immutable
-  string ipv4_cidr = 2;     // required canonical IPv4 CIDR, immutable
-}
-```
-
-No scope or service field — subnets are infrastructure-agnostic.
-
-#### HostType and BareMetalInstanceType
-
-**HostType** is a legacy system-level inventory resource. New BMaaS and CaaS
-network attachment resolution uses the tenant-facing `BareMetalInstanceType`
-and its `network_ports`; the workload networking contract does not use
-`HostType` as a second source of truth.
-
-```protobuf
-message NetworkInterface {
-  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0" — unique within the type
-  string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
-  string description = 3; // e.g., "100GbE fabric interface"
-}
-```
-
-Existing HostType records may still expose `interfaces` for inventory and
-legacy consumers, but that list does not expand the tenant attachment
-cardinality or override `BareMetalInstanceType.network_ports`.
-
-Interfaces are ordered. When multiple interfaces share the same role
-(e.g., two `fabric` interfaces), the first one in the list is the default
-for that role — used by CaaS for automatic interface resolution.
-
-**BareMetalInstanceType** is a tenant-facing catalog resource defined in
-the [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types).
-It provides a richer hardware discovery catalog for BMaaS, including
-structured network ports with additional type and speed information:
-
-```protobuf
-message BareMetalNetworkPortSpec {
-  string name = 1;        // e.g., "data-0", "data-1", "mgmt-0" — unique within the type
-  string role = 2;        // e.g., "fabric", "management", "storage", "lifecycle"
-  string type = 3;        // e.g., Ethernet, InfiniBand
-  string speed = 4;       // e.g., 1Gbps, 100Gbps
-  string description = 5; // e.g., "100GbE fabric interface"
-}
-```
-
-`BareMetalInstanceType` is the authoritative tenant-facing hardware and
-network-port catalog. Its `BareMetalNetworkPortSpec` entries provide the
-names, roles, types, and speeds used for BMaaS validation and CaaS interface
-resolution; no HostType reverse lookup is required for the workload contract.
-
-| Role | Meaning |
-|------|---------|
-| `fabric` | Primary fabric traffic (east-west, tenant workloads) |
-| `management` | In-band management/control plane traffic |
-| `storage` | Storage fabric traffic |
-| `lifecycle` | Out-of-band lifecycle management (PXE boot, Redfish/BMC) — not tenant-attachable |
-
-Roles are conventions, not enforced enums. Ports/interfaces with role
-`lifecycle` are used by the provisioning system (Ironic, Metal3) and
-should not appear in `network_attachments`.
-
-**CaaS** uses BareMetalInstanceType: the fulfillment-service resolves the
-interface automatically (first `fabric`-role port → stored as immutable
-`fabric_interface` on the node set definition).
-
-**BMaaS** uses BareMetalInstanceType: the tenant discovers interfaces
-from BareMetalInstanceType and specifies port names directly on
-`BareMetalNetworkAttachment.interface`, validated against the
-`BareMetalInstanceType.network_ports` list. The `interface` field references
-a port name from that list.
-
-#### Network Attachment Types
-
-Each resource type has its own network attachment message. The core fields
-(`subnet`, `security_groups`) are shared, but each type adds
-resource-specific fields. `network_attachments` are immutable after
-resource creation — changing network attachment requires recreating the
-resource. VMaaS and BMaaS keep repeated fields for wire/API compatibility but
-enforce a maximum of one entry. CaaS uses its existing singular field.
-
-**ComputeNetworkAttachment** (for ComputeInstance):
-
-```protobuf
-message ComputeNetworkAttachment {
-  SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
-  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
-}
-```
-
-The repeated field is retained for compatibility, but at most one entry is
-accepted. The sole entry is the VM's default route/primary attachment; the
-VMaaS attachment message has no primary field.
-
-**BareMetalNetworkAttachment** (for BaremetalInstance):
-
-```protobuf
-message BareMetalNetworkAttachment {
-  SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
-  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
-  string interface = 3;                 // optional, immutable: physical port name from BareMetalInstanceType
-  optional bool primary = 4;            // omitted or true: implicit primary; false is rejected
-}
-```
-
-The repeated field is retained for compatibility, but at most one entry is
-accepted. The `interface` field, when supplied, references a port name from
-the BareMetalInstanceType's network ports list; if omitted, the system picks
-the default fabric interface. Omitted or empty attachment lists receive
-defaults, and a supplied entry receives defaults only for missing fields. The
-sole entry is the default route/primary attachment. A `primary: true` value is
-accepted for compatibility and is redundant; `primary: false` is rejected.
-
-**ClusterNetworkAttachment** (for Cluster):
-
-```protobuf
-message ClusterNetworkAttachment {
-  SubnetLocalReference subnet = 1;                         // Required after resolution; immutable after creation
-  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
-}
-```
-
-A single attachment applies to the whole cluster — all node sets share the same subnet.
-The `fabric_interface` is resolved by the fulfillment-service at creation time for each
-node set from its BareMetalInstanceType (first port with role `fabric`)
-and stored on the node set definition. The tenant does not set this field.
-
-#### Attachment Presence and Defaulting
-
-The API distinguishes an omitted attachment from a supplied attachment, but
-both an omitted attachment and an empty attachment list/message mean that the
-caller requested the normal tenant defaults. Defaulting is field-level for a
-single supplied attachment:
-
-| Input | Resolution |
-|---|---|
-| VMaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup. |
-| BMaaS attachment list omitted or empty | Add the tenant's default Subnet, default SecurityGroup, and the first `fabric` port from `BareMetalInstanceType.network_ports`. |
-| CaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup; resolve the first `fabric` port from each node set's `BareMetalInstanceType` for the BM worker handoff. |
-| One attachment with no Subnet | Default only the Subnet; preserve supplied SecurityGroups and, for BMaaS, the supplied interface. |
-| One attachment with no SecurityGroups | Default only the SecurityGroup list, but only when the resolved Subnet belongs to the tenant's default VirtualNetwork. Otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork. |
-| One BMaaS attachment with no interface | Default only the interface to the first `fabric` port from `BareMetalInstanceType.network_ports`. |
-| One complete attachment | Preserve all supplied values and validate readiness, tenant scope, and VirtualNetwork relationships. |
-
-An explicitly empty `security_groups` list is treated as a missing
-SecurityGroup value for this defaulting rule. If a required default is absent
-or not Ready, creation fails with a validation or precondition error. The
-fully resolved attachment is stored with the workload and is immutable after
-creation.
-
-#### Resource Specs
-
-**ComputeInstance**:
-
-```protobuf
-message ComputeInstanceSpec {
-  // ... existing fields ...
-  repeated ComputeNetworkAttachment network_attachments = 14; // max 1 for compatibility
-  optional bool auto_external_ip_attachment = 18;
-}
-```
-
-The repeated `network_attachments` field is retained for API compatibility, but the
-fulfillment-service and operator accept at most one entry. VMaaS has no separate
-primary field; the sole entry is implicitly the default route.
-
-**BaremetalInstance** (new — defined in the
-[BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api)):
-
-```protobuf
-message BareMetalInstanceSpec {
-  string catalog_item = 1;
-  optional string ssh_public_key = 2;
-  optional string user_data = 3;
-  optional BareMetalInstanceRunStrategy run_strategy = 4;
-  int64 restart_trigger = 5;
-  map<string, google.protobuf.Any> template_parameters = 6;
-  optional BareMetalInstanceImage image = 7;
-
-  // NEW: OSAC networking; repeated for compatibility, max 1
-  repeated BareMetalNetworkAttachment network_attachments = 8;
-}
-```
-
-**Cluster** (new):
-
-```protobuf
-message ClusterSpec {
-  string template = 1;
-  map<string, google.protobuf.Any> template_parameters = 2;
-  map<string, ClusterNodeSet> node_sets = 3;
-
-  // NEW: networking
-  ClusterNetworkAttachment network_attachment = 9;  // singular, one per cluster
-}
-```
-
-- Cluster-internal CNI (pod/service CIDRs) uses platform defaults.
-- The cluster's template determines whether nodes are VMs or BM. Both
-  types are placed on the same subnet — VMs via the K8s overlay (already
-  bridged to the fabric), BM nodes directly on the fabric.
-
-The Cluster resource also gains two fields populated by the system
-during provisioning:
-
-```protobuf
-message ClusterStatus {
-  string api_endpoint = X;      // set by CaaS template, internal API server VIP
-  string ingress_endpoint = Y;  // set by CaaS template, internal ingress VIP
-}
-```
-
-These are used by the ExternalIPAttachment controller as the DNAT backend
-IP when the target is a cluster (see
-[Cluster ExternalIPAttachment flow](#cluster-externalipattachment-flow)).
-
-#### Resource Status — Discovered IPs
-
-After provisioning, resources receive IPs via DHCP. Feedback controllers
-discover these IPs and write them to status for two purposes: tenant
-visibility and ExternalIPAttachment DNAT target resolution.
-
-**ComputeInstanceStatus:**
-
-```protobuf
-message ComputeNetworkAttachmentStatus {
-  string subnet_ref = 1;               // Subnet ID (echoed from spec)
-  string ip_address = 2;               // Discovered from KubeVirt VMI network status
-}
-
-message ComputeInstanceStatus {
-  // ... existing fields ...
-  repeated ComputeNetworkAttachmentStatus compute_network_attachment_statuses = N;
-}
-```
-
-Feedback controller watches KubeVirt VMI `status.interfaces[].ipAddress`,
-maps each interface to the corresponding attachment by CUDN NAD reference,
-and fires Signal RPC to fulfillment-service.
-
-**BaremetalInstanceStatus:**
-
-```protobuf
-message BareMetalNetworkAttachmentStatus {
-  string interface = 1;                 // Physical interface name (echoed from spec)
-  string subnet_ref = 2;               // Subnet ID (echoed from spec)
-  string ip_address = 3;               // Discovered via query_dhcp_lease role after provisioning (matches port MAC to DHCP lease)
-  bool primary = 4;                     // true for the sole resolved attachment; normalized from spec
-}
-
-message BareMetalInstanceStatus {
-  // ... existing fields ...
-  repeated BareMetalNetworkAttachmentStatus network_attachment_statuses = N;
-}
-```
-
-IP discovered after DHCP assignment on the tenant network. After
-`reconcileProvisioning` completes, the operator dispatches
-`query_dhcp_lease` to the fabric manager's DHCP lease API, matching
-the server's port MAC address to find the assigned IP (see
-[BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)).
-The operator writes the discovered IP to CR status, and the feedback
-controller syncs to fulfillment-service.
-
-**ClusterStatus** does not have per-attachment IP status — CaaS uses
-service-level VIPs (`api_endpoint`, `ingress_endpoint`) rather than
-per-node IPs. Per-agent IPs are tracked on the ClusterOrder CR's
-`NodeSetStatus.AgentStatus.IPAddress` (operator-internal, not surfaced
-to tenant).
-
-#### ExternalIPAttachment — Inbound Traffic (DNAT)
-
-Handles **inbound traffic only**. Does not affect egress (that is
-NATGateway's job).
-
-```protobuf
-enum ExternalIPAttachmentEndpoint {
-  EXTERNAL_IP_ATTACHMENT_ENDPOINT_UNSPECIFIED = 0;
-  EXTERNAL_IP_ATTACHMENT_ENDPOINT_API         = 1;  // Cluster API server
-  EXTERNAL_IP_ATTACHMENT_ENDPOINT_INGRESS     = 2;  // Cluster ingress wildcard
-}
-
-message ExternalIPAttachmentSpec {
-  string external_ip = 1;          // required, immutable
-
-  oneof target {
-    string compute_instance = 2;
-    string cluster = 3;
-    string baremetal_instance = 4;
-  }
-  ExternalIPAttachmentEndpoint target_endpoint = 5;
-  // Required when target=cluster; must be UNSPECIFIED otherwise.
-}
-```
-
-All fields are immutable after creation.
-
-#### NATGateway — Outbound Traffic (SNAT)
-
-Handles **outbound traffic only**.
-
-```protobuf
-message NATGatewaySpec {
-  string virtual_network = 1;  // parent VN ID, required, immutable
-  string external_ip = 2;      // required, immutable
-}
-```
-
-An ExternalIP can only be used by one consumer (either an
-ExternalIPAttachment or a NATGateway, not both). One NATGateway per
-VirtualNetwork. NATGateway is optional — it provides a dedicated egress
-identity. Without it, resources may still have default egress but without a
-controlled source IP.
-
-All fields are immutable after creation.
-
-**Direction summary:**
-
-| Resource | Direction | Mechanism |
-|----------|-----------|-----------|
-| ExternalIPAttachment | Inbound (DNAT) | External IP → resource |
-| NATGateway | Outbound (SNAT) | Resource → external IP |
 
 ### Implementation Details
 
@@ -1199,7 +1368,7 @@ Per-subnet NAT association is a future enhancement.
 
 VMaaS, BMaaS, and CaaS currently support at most one tenant network
 attachment per workload. VMaaS and BMaaS retain repeated attachment fields
-for wire/API compatibility, while CaaS retains its singular field. Requests
+for API compatibility, while CaaS retains its singular field. Requests
 with more than one VM or BM attachment are rejected by API validation and by
 the corresponding operator CRD. Multi-NIC workload networking is future
 scope.
