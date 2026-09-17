@@ -73,7 +73,10 @@ don't have the ability to add or modify ansible roles.
   **List and map constraints:**
   - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
     Example: `network_attachments` with `{"minItems": 1, "maxItems": 1}` locks a VM to exactly one network attachment — the user can choose which subnet and security groups but cannot add a second NIC.
-    Example: `network_attachments` with `{"minItems": 1, "maxItems": 4}` allows 1–4 network attachments.
+    `network_attachments` uses `maxItems: 1` for current VMaaS and BMaaS
+    resources. A catalog schema must not advertise more than one attachment;
+    the backend rejects additional entries even when a catalog item omits a
+    field-level schema.
     Example: `additional_disks` with `{"maxItems": 0}` prevents users from adding any additional disks beyond the boot disk.
   - **Map entry count** (`minProperties`, `maxProperties`): same pattern for map fields.
     Example: `node_sets` with `{"minProperties": 2, "maxProperties": 2}` locks a cluster to exactly two node sets (e.g., control-plane + workers) — the user can edit each node set's `size` but cannot add or remove node sets.
@@ -320,6 +323,8 @@ input, allowing the editable Catalog default and subsequent default-network
 injection; non-empty tenant values override an editable default. Empty locked
 or default policy values are rejected, and normal resource validation remains
 authoritative.
+Both VMaaS and BMaaS still validate that the resolved list contains at most
+one entry; omitting a catalog schema does not enable additional NICs.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:

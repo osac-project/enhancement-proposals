@@ -125,12 +125,19 @@ dual-stack networking are not supported.
 #### Optional Network Attachments
 
 - **FR-6:** The network attachment configuration on ComputeInstance,
-  Cluster, and BaremetalInstance is optional. When omitted, the system
-  populates it with the tenant's default Subnet and default SecurityGroup.
-  The resolved attachments are stored with the resource so the resource is
-  self-describing after creation. [User]
-- **FR-7:** When a resource is created with explicit network attachments,
-  no defaults are applied. [User]
+  Cluster, and BaremetalInstance is optional and supports at most one tenant
+  attachment. When omitted or empty, the system populates it with the tenant's
+  default Subnet and default SecurityGroup. When a partial attachment is
+  supplied, only missing fields are defaulted and supplied values are
+  preserved. A missing or explicitly empty `security_groups` list is treated
+  as missing; the default SecurityGroup applies only when the resolved Subnet
+  belongs to the tenant's default VirtualNetwork, otherwise the caller must
+  provide SecurityGroups from the resolved Subnet's VirtualNetwork. The resolved attachment is stored with the resource so the
+  resource is self-describing after creation. VMaaS and BMaaS retain plural
+  field names for API compatibility; CaaS retains its singular field. [User]
+- **FR-7:** When a resource is created with an explicit complete attachment,
+  no values are replaced by defaults. Missing fields in a single explicit
+  attachment receive only their corresponding defaults. [User]
 
 #### Auto ExternalIP
 
