@@ -42,9 +42,9 @@ managed-switch infrastructure, limiting where the platform can run.
 - A Cloud Infrastructure Admin can deploy OSAC with API-driven tenant networking
   in an environment that uses traditional managed switches (no Netris), by
   selecting the agentless VLAN backend. [Clarify: D6]
-- Tenants get the same networking API and observable behavior — virtual networks,
-  subnets, security groups, inbound external access, and outbound NAT — regardless
-  of whether the deployment's backend is Netris or agentless VLAN. [Clarify: D6, D8]
+- Tenants get the same networking API and supported virtual-network, subnet,
+  inbound external access, and outbound NAT behavior regardless of whether the
+  deployment's backend is Netris or agentless VLAN. [Clarify: D6, D8]
 - Bare-metal servers, clusters, and compute instances all use the agentless VLAN
   backend for their fabric networking through the existing networking API, with no
   changes to the service provisioning flows (VM IP addressing and VM-to-fabric
@@ -52,8 +52,8 @@ managed-switch infrastructure, limiting where the platform can run.
   [Clarify: D1, D5, D8; PR review: CodeRabbit]
 - A tenant can create a virtual network with multiple subnets: machines in the
   same subnet share a broadcast domain, machines in different subnets of the same
-  network can reach each other when permitted by SecurityGroup rules, and machines
-  in different networks stay isolated. [Clarify: D12]
+  network can reach each other through the VirtualNetwork routing path, and
+  machines in different networks stay isolated. [Clarify: D12; User direction]
 - Backend networking failures are visible to operators on the affected networking
   resource's status. [Clarify: D9]
 
@@ -62,9 +62,9 @@ managed-switch infrastructure, limiting where the platform can run.
 - No changes to the OSAC networking API or its resource model — the API is
   inherited from the unified networking work (OSAC-1433) and consumed as-is.
   [Clarify: D3, D5]
-- The backend does not create networking resources (including default networking);
-  it configures the fabric only for resources — machines, clusters, VMs — attached
-  to a network resource. [PR review: CodeRabbit]
+- The backend does not create networking resources (including default networking
+  or a default SecurityGroup); it configures the fabric only for resources —
+  machines, clusters, VMs — attached to a network resource. [User direction]
 - Does not deprecate or remove the existing inline (non-API) CaaS networking path;
   that transition is handled separately by the CaaS agentless-VLAN follow-up.
   [Clarify: D4]
@@ -79,6 +79,16 @@ managed-switch infrastructure, limiting where the platform can run.
   part of this backend. [Clarify: D8]
 - No UI is delivered in this milestone; backend selection and networking
   operations are available through configuration and the CLI. [Clarify: D7]
+- SecurityGroup policy enforcement is out of scope for this feature and
+  deferred to a later networking policy design. This feature does not define
+  policy resources, policy semantics, or per-resource traffic restrictions.
+  Policy-dependent requests are rejected before any VLAN, routing, attachment,
+  DNAT, or SNAT dataplane state is programmed; they are never silently ignored
+  or reported Ready. Until the later policy feature exists, internal traffic is
+  default-permit both within a Subnet and between Subnets in the same
+  VirtualNetwork. External ingress/egress authorization is supplied by
+  provider-managed default-deny perimeter controls outside this feature.
+  [User direction]
 - Broad multi-vendor switch support and switch-configuration concurrency beyond the
   initially supported platform(s) are follow-up work; the supported-switch set for
   this milestone is specified in the design EP. [PR review: CodeRabbit]
@@ -108,7 +118,7 @@ managed-switch infrastructure, limiting where the platform can run.
 ### Tenant Admin / Tenant User
 
 - As a Tenant Admin, I want to create and manage networking resources — virtual
-  networks, subnets, security groups, external IPs, and NAT gateways — through the
+  networks, subnets, external IPs, and NAT gateways — through the
   same API regardless of whether the deployment uses Netris or agentless VLAN, so
   that my experience is identical across environments. [Clarify: D6, D8]
 - As a Tenant Admin, I want to create a virtual network with multiple subnets
@@ -138,20 +148,23 @@ managed-switch infrastructure, limiting where the platform can run.
 #### Fabric-Manager-Agnostic Networking
 
 - **FR-2:** With the agentless VLAN backend configured, tenants can create and
-  manage the full networking resource set — VirtualNetwork, Subnet, SecurityGroup,
-  ExternalIP, ExternalIPAttachment, NATGateway — through the existing networking
-  API, with behavior equivalent to the Netris backend. [Clarify: D1, D5, D8]
+  manage the VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and
+  NATGateway resources through the existing networking
+  API, with behavior equivalent to the Netris backend. Requests that rely on
+  deferred policy resources or policy fields fail clearly as unsupported rather
+  than being ignored. [Clarify: D1, D5, D8; User direction]
 
 #### Multiple Subnets per Virtual Network
 
 - **FR-3:** A tenant can create a VirtualNetwork containing multiple Subnets.
   Machines attached to the same Subnet share an L2 broadcast domain; machines on
-  different Subnets of the same VirtualNetwork can reach each other **when
-  permitted by the applicable SecurityGroup rules** (the VirtualNetwork provides
-  the routing path; SecurityGroups govern which traffic is allowed); machines on
-  different VirtualNetworks have no direct connectivity on the internal fabric,
-  even when their address ranges overlap (see NFR-3). This follows the unified
-  networking model (OSAC-1433). [Clarify: D12; PR review: CodeRabbit]
+  different Subnets of the same VirtualNetwork can reach each other through the
+  VirtualNetwork routing path by default, without policy-based blocking in this
+  feature;
+  machines on different VirtualNetworks have no direct connectivity on the
+  internal fabric, even when their address ranges overlap (see NFR-3). Separate
+  Subnets provide broadcast segmentation. This follows the unified networking
+  model (OSAC-1433). [Clarify: D12; User direction]
 
 #### Automatic IP Assignment
 
@@ -165,16 +178,27 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - **FR-5:** A tenant can make a machine reachable from outside its VirtualNetwork
   by attaching an ExternalIP; inbound traffic addressed to the external IP reaches
-  the machine when permitted by the applicable SecurityGroup rules.
-  [Jira: OSAC-3664; PR review: CodeRabbit]
+  the machine through the external access path. The provider is responsible for
+  default-deny perimeter authorization; tenant ingress policy is deferred. The
+  deployment must advertise and verify a default-deny ingress capability covering
+  the external paths used by its ExternalIPAttachments. If that capability is
+  missing or cannot be verified, the ExternalIPAttachment remains non-Ready and
+  reports a diagnostic identifying unsupported ingress authorization. This
+  capability is deployment-scoped, not a per-attachment policy resource.
+  [Jira: OSAC-3664; User direction]
 
 #### Outbound External Connectivity
 
 - **FR-6:** A tenant can provide outbound external connectivity for a subnet's
-  machines through a NATGateway. Outbound traffic permitted by the applicable
-  SecurityGroup rules is source-address translated so it egresses with the
-  NATGateway's external IP as its source address; many machines share that one
-  external IP for egress. [Jira: OSAC-3664; Clarify: D14; PR review: CodeRabbit]
+  machines through a NATGateway. Outbound traffic is source-address translated
+  so it egresses with the NATGateway's external IP as its source address; many
+  machines share that one external IP for egress. Provider-managed perimeter
+  controls with default-deny egress authorization covering outbound traffic from
+  subnets using the NATGateway are required before it is Ready. If that capability
+  is missing or cannot be verified, the NATGateway remains non-Ready and reports
+  a diagnostic identifying unsupported egress authorization. This capability is
+  deployment-scoped and tenant egress policy is deferred.
+  [Jira: OSAC-3664; Clarify: D14; User direction]
 
 #### External IP Pools
 
@@ -191,16 +215,25 @@ managed-switch infrastructure, limiting where the platform can run.
   delivered by the follow-up features (see Non-Goals). [Clarify: D1, D8; PR review: CodeRabbit]
 
 - ~~**FR-9:**~~ Removed — default networking is a tenant-onboarding / generic-API
-  concern, not this backend. The backend does not create networking resources; it
-  configures the fabric only for resources attached to a network resource, and
-  realizes any onboarding-created default resources like any other.
-  [PR review: CodeRabbit]
+  concern, not this backend. OSAC-1433 defines the shared networking architecture
+  but does not require this backend to create a default SecurityGroup. The
+  Agentless VLAN deployment does not create one by default; a Cloud Infrastructure
+  Admin may create one only after SecurityGroup support is delivered for this
+  backend. Until then, SecurityGroup-dependent requests are rejected as
+  unsupported. This feature introduces no DefaultNetworkingReady or Tenant READY
+  dependency on a default SecurityGroup; any future default-networking readiness
+  behavior is outside this implementation. The backend configures the fabric only
+  for supported resources attached to a network resource.
+  [User direction; PR review: CodeRabbit]
 
 #### Failure Visibility
 
 - **FR-10:** When a backend networking operation fails (for example, a machine's
   port cannot be placed on the requested subnet's VLAN), the failure is reflected
-  on the affected networking resource's status with a diagnostic message.
+  on the affected networking resource's status with a diagnostic message. If a
+  required provider-managed perimeter capability is missing or cannot be verified,
+  the affected ExternalIPAttachment or NATGateway remains non-Ready and its status
+  identifies the unsupported ingress or egress authorization.
   [Clarify: D9]
 
 #### Lifecycle Cleanup
@@ -230,31 +263,33 @@ managed-switch infrastructure, limiting where the platform can run.
 ## 5. Acceptance Criteria
 
 - [ ] With the agentless VLAN backend configured, a tenant creates a
-  VirtualNetwork, Subnet, and SecurityGroup through the API and they reach a ready
-  state.
+  VirtualNetwork and Subnet through the API and they reach a ready state.
 - [ ] A bare-metal server or cluster node attached to an agentless-VLAN subnet
   automatically receives an IP on that subnet, visible in its status.
-- [ ] A tenant attaches an ExternalIP to a machine; inbound traffic permitted by
-  the machine's SecurityGroup rules reaches the machine.
-- [ ] Inbound traffic to a machine's ExternalIP that is not permitted by any
-  SecurityGroup rule is blocked.
+- [ ] A tenant attaches an ExternalIP to a machine and inbound traffic reaches
+  the machine through the external access path.
 - [ ] A tenant creates a NATGateway; a subnet machine's permitted outbound traffic
   reaches an external endpoint, which observes the NATGateway's external IP as the
   source address.
-- [ ] Outbound traffic not permitted by any SecurityGroup rule cannot leave through
-  the NATGateway.
+- [ ] If provider-managed default-deny ingress authorization is missing or cannot
+  be verified, an ExternalIPAttachment remains non-Ready and its status reports
+  unsupported ingress authorization; after verification succeeds, it can become
+  Ready.
+- [ ] If provider-managed default-deny egress authorization is missing or cannot
+  be verified, a NATGateway remains non-Ready and its status reports unsupported
+  egress authorization; after verification succeeds, it can become Ready.
+- [ ] Requests that depend on deferred SecurityGroup policy fail clearly as
+  unsupported before any fabric configuration is applied and do not become Ready.
 - [ ] A tenant creates a VirtualNetwork with two subnets: machines in the same
   subnet share a broadcast domain, machines in different subnets of that network
-  can reach each other when permitted by SecurityGroup rules, and machines in a
+  can reach each other by default through the VirtualNetwork routing path, and machines in a
   different VirtualNetwork with the same address range cannot reach those private
   addresses directly on the fabric.
+- [ ] Resources placed in the same Subnet can communicate at L2; internal
+  traffic is default-permit until the later policy feature is delivered.
 - [ ] A machine in one VirtualNetwork can reach a machine in another VirtualNetwork
   via the target's ExternalIP over the external path, even though the target's
   private subnet address remains directly unreachable.
-- [ ] Cross-subnet traffic within a VirtualNetwork that is **permitted** by a
-  SecurityGroup rule succeeds.
-- [ ] Cross-subnet traffic within a VirtualNetwork that is **not permitted** by
-  any SecurityGroup rule is blocked.
 - [ ] A bare-metal server provisions networking end-to-end through the agentless
   VLAN backend using the same networking API as with Netris (the reference
   validation path this milestone).
@@ -265,7 +300,9 @@ managed-switch infrastructure, limiting where the platform can run.
 - [ ] A switch-port/VLAN configuration failure is reflected on the affected
   networking resource's status with a diagnostic message.
 - [ ] The same networking API requests produce equivalent tenant-observable
-  results on an agentless-VLAN deployment as on a Netris deployment.
+  virtual-network, subnet, inbound external-access, and outbound-NAT results on
+  an agentless-VLAN deployment as on a Netris deployment; policy enforcement is
+  explicitly deferred.
 - [ ] Selecting between the Netris and agentless VLAN backends is a provider
   configuration — not visible to tenants and requiring no API change.
 - [ ] Deleting an ExternalIPAttachment removes the inbound DNAT; deleting its
