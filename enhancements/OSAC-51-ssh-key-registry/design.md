@@ -38,7 +38,7 @@ The fulfillment-service already stores raw SSH public keys inline on ComputeInst
 - Reuse existing platform patterns for key validation, server scaffolding, and reference resolution.
 - Support the feature via API, CLI, and UI.
 - Remove the legacy inline SSH public key field from both ComputeInstance and BareMetalInstance; SSH key provisioning is exclusively via registered references (pre-GA, no migration needed).
-- Populate the existing osac-operator CRD SSH key field from the resolved reference for ComputeInstance (no CRD schema change required). For BareMetalInstance, pass the resolved key via the `sshPublicKey` template parameter to the bare-metal-fulfillment-operator (no CRD schema change required).
+- Inject resolved SSH key material into both ComputeInstance and BareMetalInstance using existing downstream operator interfaces — no operator schema changes required.
 
 ### Non-Goals
 
