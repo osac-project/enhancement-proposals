@@ -3,12 +3,11 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-06-10
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking
-  - Original Networking API: /enhancements/OSAC-356-networking
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
 replaces:
@@ -57,9 +56,11 @@ This section defines key terms used throughout this document.
   traffic for resources. Rules specify allowed protocols, ports, and
   source/destination addresses.
 
-- **ExternalIPPool**: A provider-defined pool of IP addresses that are
-  routable outside the VirtualNetwork. "External" means external to the VN —
-  not necessarily internet-routable (see gap #8).
+- **ExternalIPPool**: A provider-defined pool containing exactly one canonical
+  IPv4 CIDR for addresses routable outside the VirtualNetwork. "External"
+  means external to the VN — not necessarily internet-routable (see gap #8).
+  The API's repeated `cidrs` field is retained for compatibility, but
+  validation rejects zero or multiple entries.
 
 - **ExternalIP**: An IP address allocated from an ExternalIPPool. Persists
   independently of the resources it's attached to.
@@ -99,8 +100,8 @@ resource model. The technical design that fulfills these requirements is
 described in a companion enhancement:
 [Unified Networking Design](/enhancements/OSAC-1433-unified-networking).
 
-The original [Networking API enhancement](/enhancements/OSAC-356-networking) was designed
-with VMaaS (ComputeInstance) as the only consumer, explicitly listing CaaS and
+An earlier Networking API proposal was designed with VMaaS (ComputeInstance) as
+the only consumer, explicitly listing CaaS and
 BMaaS as non-goals. As OSAC grows and new teams onboard, this limitation forces
 each service type to implement networking independently:
 
@@ -120,6 +121,20 @@ each service type to implement networking independently:
 
 The result is fragmented networking with no consistency, no reuse, and no
 tenant-facing abstraction.
+
+### Supported Address-Family Boundary
+
+All networking resources and traffic described by this PRD use canonical IPv4
+CIDRs and IPv4 addresses. IPv6 and dual-stack networking are not supported;
+requests that contain them are rejected before persistence or backend
+dispatch.
+
+> **Implementation status:** This is the normative target contract for the
+> unified networking architecture. The current implementation still exposes
+> legacy IPv6/dual-stack schema fields and accepts family-agnostic manager
+> registrations and allocation defaults. Fulfillment-service and operator
+> enforcement—including IPv4-only validation and `IP_FAMILY_IPV4` selection—
+> must land before this contract is considered implemented.
 
 ### Gaps in the Current Design
 
@@ -195,13 +210,15 @@ participants alongside BM servers. The current design does not address how
 VMs and bare-metal servers coexist in the same deployment, whether they can share
 a VirtualNetwork, or how traffic flows between them.
 
-#### Gap #8: Air-gapped environments not considered
+#### Gap #8: Deployment connectivity boundary
 
-ExternalIPPool and ExternalIP must work in air-gapped deployments where there
-are no internet-routable IPs. Tenants still need the same API primitives (IP
-allocation, inbound DNAT, outbound SNAT) for data-center-internal external
-access. "External" means external to the VirtualNetwork, not
-internet-routable.
+The current OSAC networking contract supports connected deployments only.
+Air-gapped and disconnected networking deployments are outside the supported
+boundary. In a supported deployment, the provider-owned hub, selected network
+managers, and OSAC networking services must be able to reach one another and
+the provider-controlled address infrastructure. "External" still means
+external to the VirtualNetwork; it does not by itself imply Internet
+reachability.
 
 #### Gap #9: CaaS has unique prerequisite ordering
 
@@ -217,14 +234,54 @@ the cluster's VIPs are discovered (see
 
 ## 2. Goals and Non-Goals
 
+### 2.0 Current workload attachment constraint
+
+VMaaS, BMaaS, and CaaS support at most one tenant network attachment per
+workload. VMaaS and BMaaS retain their repeated `network_attachments` fields
+for wire and API compatibility; the API validates that the list contains zero
+or one entry. CaaS retains its existing singular `network_attachment` field.
+With exactly one attachment, it is the default route/primary attachment. The
+BMaaS attachment retains its existing optional `primary` field; with one
+attachment, omitting it has the same meaning as `primary: true`, while
+`primary: false` is rejected. VMaaS has no primary field, and CaaS has no
+primary concept. Omitted or empty attachment lists receive tenant defaults;
+partial supplied attachments receive defaults only for missing fields. A
+missing or explicitly empty `security_groups` list is treated as missing; the
+default SecurityGroup applies only when the resolved Subnet belongs to the
+tenant's default VirtualNetwork, otherwise the caller must provide
+SecurityGroups from the resolved Subnet's VirtualNetwork. The resolved
+attachment list and fields are immutable after creation.
+Multi-NIC workload networking is future scope and is not enabled by the
+plural field shape.
+
 ### 2.1 Goals
 
 - Provide a unified networking API across VMaaS, CaaS, and BMaaS with a single, consistent resource model
 - Enable tenants to manage networking resources (VirtualNetworks, Subnets, SecurityGroups, ExternalIPs) without choosing implementation backends
 - Support pluggable networking backends that can be added without API changes
 - Enable VMs, clusters, and bare-metal servers to coexist in the same VirtualNetwork
-- Work in air-gapped environments using data-center-routable IPs
-- Support per-interface network attachment for bare-metal servers with multiple physical interfaces
+- Support connected deployments using provider-routable IPs
+- Support one tenant network attachment per workload, with an optional physical-interface selector for BMaaS
+
+### Deployment support boundary
+
+The current OSAC networking contract supports connected deployments only.
+Air-gapped and disconnected networking deployments are not supported and must
+not be advertised as supported deployment profiles. The provider owns the
+connectivity configuration: the hub, selected network managers,
+provider-controlled networking services, and provider-controlled address
+infrastructure must have connected reachability before the deployment's
+NetworkClass is accepted. Connectivity is not tenant selectable, and this
+boundary applies to Fabric-only, K8s-only, and combined manager profiles.
+
+### Networking hub support boundary
+
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
 
 ### 2.2 Success Metrics
 
@@ -240,7 +297,8 @@ the cluster's VIPs are discovered (see
 - DNS API for tenant-managed DNS zones (separate enhancement)
 - Advanced per-physical-interface configuration for BaremetalInstance (NIC
   bonding, VLAN trunking, etc. — basic per-interface subnet attachment is
-  supported via the `interface` field on NetworkAttachment)
+  supported for the sole attachment via the `interface` field on
+  BareMetalNetworkAttachment)
 - Load Balancer API
 - Internet Gateway API
 - Quota enforcement for networking resources
@@ -264,8 +322,8 @@ the cluster's VIPs are discovered (see
   VirtualNetwork
 - As a tenant, I want to attach ExternalIPs to my cluster's API server and
   ingress endpoints before provisioning
-- As a tenant, I want my cluster to work in air-gapped environments using
-  data-center-routable IPs
+- As a tenant, I want my cluster to work in the provider's connected network
+  using provider-routable IPs
 
 ### BMaaS-Specific Stories
 
@@ -273,9 +331,8 @@ the cluster's VIPs are discovered (see
   VirtualNetwork
 - As a tenant, I want to see the available physical interfaces on a bare-metal
   template so I can decide how to attach networks
-- As a tenant, I want to attach different physical interfaces of my
-  BaremetalInstance to different Subnets (e.g., data interface to a data
-  subnet, management interface to a management subnet)
+- As a tenant, I want to select the physical interface used by my
+  BaremetalInstance's single tenant network attachment
 - As a tenant, I want to attach an ExternalIP to my bare-metal server for
   inbound access
 
@@ -329,11 +386,31 @@ Providers configure which networking backends handle network operations.
 Tenants never choose networking backends — the system selects them based
 on the provider's configuration.
 
-#### FR-7: Per-interface network attachment for bare metal (R7)
+#### FR-7: Single network attachment per workload (R7)
 
-Bare-metal servers have multiple physical interfaces. Tenants must be able to
-attach different interfaces to different Subnets based on the interface
-descriptions provided by the template.
+ComputeInstance, BaremetalInstance, and Cluster each support at most one
+tenant network attachment. Bare-metal tenants may select the physical
+interface for that attachment based on the interface descriptions provided by
+the template. The VMaaS and BMaaS repeated fields remain repeated for API
+compatibility, but requests containing more than one entry are rejected.
+
+#### FR-8: Create/read/delete networking contract (R8)
+
+The networking resources defined by this PRD — `NetworkClass`,
+`VirtualNetwork`, `Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
+`ExternalIPAttachment`, and `NATGateway` — support only create, read, and
+delete operations. Read includes `List` and `Get`. Their specification and
+metadata are fixed after creation; changing a networking resource requires
+deleting it and creating a replacement. The network attachment fields on
+`ComputeInstance`, `Cluster`, and `BaremetalInstance` are also set at parent
+creation time and cannot be changed in place; changing them requires replacing
+the parent workload.
+
+Controller-owned status, condition, readiness, and IP-discovery updates are
+internal reconciliation and do not add a tenant/provider update operation.
+This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
+reference this PRD; those proposals inherit it and do not redefine networking
+operations.
 
 ### 4.2 Non-Functional Requirements
 
@@ -354,14 +431,19 @@ _No non-functional requirements were specified in the original document._
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
 - [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
 - [ ] SecurityGroup enforcement is uniform across all resource types
-- [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., bare-metal servers support per-interface attachment, clusters use a single shared attachment)
+- [ ] Each resource type has its own network attachment configuration appropriate to the resource, and VMaaS, BMaaS, and CaaS each enforce at most one tenant attachment per workload
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
+- [ ] Networking resources support only Create, List/Get, and Delete; changing a networking resource or a workload network attachment requires delete and recreate
 
 ### External Access
 
 - [ ] ExternalIP semantics do not depend on internet reachability
-- [ ] The API and workflow are identical for all deployment topologies (air-gapped, internet-connected, intranet-only)
+- [ ] The supported deployment topology is connected only; air-gapped and disconnected networking deployments are rejected before provisioning
+- [ ] ExternalIPPool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4` and rejects `IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values before persistence
+- [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the
+  repeated `cidrs` field and rejects empty or multiple entries
+- [ ] Supported networking deployments use exactly one provider-owned hub; multi-hub networking placement, cross-hub resource coordination, and cross-hub network connectivity are unsupported
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
 - [ ] ExternalIPAttachment handles inbound traffic only
 - [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity
@@ -378,16 +460,15 @@ _No non-functional requirements were specified in the original document._
 
 ### Resource-Specific (Bare Metal)
 
-- [ ] Host types describe available interfaces (name, role, description) for bare-metal servers
-- [ ] Bare-metal network attachments include an optional interface reference that identifies a named interface from the host type
-- [ ] Multiple network attachments are supported for bare-metal servers — one per physical interface
-- [ ] The same interface cannot appear in multiple attachments
-- [ ] All referenced subnets must belong to the same VirtualNetwork
+- [ ] BareMetalInstanceTypes describe available network ports (name, role, type, speed) for bare-metal servers
+- [ ] Bare-metal network attachments include an optional interface reference that identifies a named port from the BareMetalInstanceType
+- [ ] A bare-metal network attachment may select one named port from the BareMetalInstanceType
+- [ ] Requests containing more than one bare-metal network attachment are rejected
+- [ ] The referenced subnet belongs to the same VirtualNetwork as its security groups
 
 ## 6. Dependencies
 
 - **Unified Networking Design**: [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) — Technical design document fulfilling these requirements
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
-- **Original Networking API**: [/enhancements/OSAC-356-networking](/enhancements/OSAC-356-networking) — VMaaS-only networking API (superseded for multi-service scenarios)
 - **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference

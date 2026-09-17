@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/OSAC-356-networking"
+  - "/enhancements/OSAC-1433-unified-networking"
   - "/enhancements/bare-metal-fulfillment"
 replaces:
   - N/A
@@ -122,6 +122,10 @@ The design introduces three coordinated changes:
 Starting state: A Tenant User has a Subnet named `app-subnet` and a
 SecurityGroup named `app-sg`, both in READY state within their tenant and
 project.
+
+The `network_attachments` examples in this document use the plural VMaaS
+field for API compatibility. The current VMaaS contract accepts zero or one
+entry; the reference-resolution design does not enable multi-NIC workloads.
 
 1. The user submits a CreateComputeInstance request. In the REST/JSON body,
    network attachments use nested reference objects:
@@ -290,7 +294,9 @@ add new gRPC services, CRDs, webhooks, or finalizers.
 
 | File | Change |
 |------|--------|
-| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, `SubnetLocalReference`, `SecurityGroupLocalReference`. Replace string fields in `ComputeInstanceSpec` and `NetworkAttachment`. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
+| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, `SubnetLocalReference`, `SecurityGroupLocalReference`. Replace string fields in `ComputeInstanceSpec` and `ComputeNetworkAttachment`. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
+| `baremetal_instance_common_type.proto` | Reuse `SubnetLocalReference` and `SecurityGroupLocalReference` in `BareMetalNetworkAttachment`. |
+| `cluster_common_type.proto` | Reuse `SubnetLocalReference` and `SecurityGroupLocalReference` in `ClusterNetworkAttachment`. |
 | `subnet_type.proto` | Add `VirtualNetworkLocalReference`. Replace `SubnetSpec.virtual_network`. |
 | `virtual_network_type.proto` | Add `NetworkClassReference`. Replace `VirtualNetworkSpec.network_class`. |
 | `security_group_type.proto` | Add `VirtualNetworkLocalReference` (reuse from subnet). Replace `SecurityGroupSpec.virtual_network`. |
@@ -313,7 +319,7 @@ plus an additional `string tenant` field. Private-only status-level references
 (hub, pool mirrors) are addressed in the Implementation Details section.
 
 **Shared reference messages:** When multiple resources reference the same
-target type (e.g., both `NetworkAttachment` and `PublicIPAttachmentSpec`
+target type (e.g., both `ComputeNetworkAttachment` and `PublicIPAttachmentSpec`
 reference `ComputeInstance`), the reference message is defined once in the
 target type's `_type.proto` file and imported where needed. This prevents
 duplicate message definitions.
@@ -455,8 +461,12 @@ resource can be in a different tenant or project from the referencing resource:
 |-------|---------------|-----------|
 | `SubnetSpec.virtual_network` | `VirtualNetworkLocalReference` | Subnet is always in the same tenant/project as its parent VirtualNetwork |
 | `SecurityGroupSpec.virtual_network` | `VirtualNetworkLocalReference` | Same reasoning as Subnet |
-| `NetworkAttachment.subnet` | `SubnetLocalReference` | ComputeInstance and Subnet are in the same tenant/project |
-| `NetworkAttachment.security_groups` | `repeated SecurityGroupLocalReference` | Same tenant/project |
+| `ComputeNetworkAttachment.subnet` | `SubnetLocalReference` | ComputeInstance and Subnet are in the same tenant/project |
+| `ComputeNetworkAttachment.security_groups` | `repeated SecurityGroupLocalReference` | Same tenant/project |
+| `BareMetalNetworkAttachment.subnet` | `SubnetLocalReference` | BareMetalInstance and Subnet are in the same tenant/project |
+| `BareMetalNetworkAttachment.security_groups` | `repeated SecurityGroupLocalReference` | Same tenant/project |
+| `ClusterNetworkAttachment.subnet` | `SubnetLocalReference` | Cluster and Subnet are in the same tenant/project |
+| `ClusterNetworkAttachment.security_groups` | `repeated SecurityGroupLocalReference` | Same tenant/project |
 | `NATGatewaySpec.virtual_network` | `VirtualNetworkLocalReference` | Same tenant/project |
 | `NATGatewaySpec.external_ip` | `ExternalIPLocalReference` | Same tenant/project |
 | `ExternalIPAttachmentSpec.external_ip` | `ExternalIPLocalReference` | Same tenant/project |
@@ -518,8 +528,10 @@ message SubnetSpec {
     (google.api.field_behavior) = REQUIRED,
     (google.api.field_behavior) = IMMUTABLE
   ];
-  optional string ipv4_cidr = 2 [(google.api.field_behavior) = IMMUTABLE];
-  optional string ipv6_cidr = 3 [(google.api.field_behavior) = IMMUTABLE];
+  string ipv4_cidr = 2 [
+    (google.api.field_behavior) = REQUIRED,
+    (google.api.field_behavior) = IMMUTABLE
+  ];
 }
 ```
 
@@ -665,7 +677,7 @@ registered lookups, preventing deployment of misconfigured servers.
 iterate over set fields. For message-typed fields, it checks whether the
 message type matches a registered reference type. For repeated fields, it
 iterates each element. For oneof fields, it inspects the populated variant.
-For nested messages (like `NetworkAttachment` inside `ComputeInstanceSpec`),
+For nested messages (like `ComputeNetworkAttachment` inside `ComputeInstanceSpec`),
 it recurses.
 
 **Tenant and project context.** For `LocalReference` messages, the interceptor
@@ -1037,7 +1049,8 @@ details on the URI/ARN trade-off.
   serializes/deserializes in both proto binary and JSON formats.
 - Interceptor reference detection: verify that the interceptor discovers all
   reference-typed fields in each request message, including nested messages
-  (`NetworkAttachment` inside `ComputeInstanceSpec`), repeated fields
+  (`ComputeNetworkAttachment`, `BareMetalNetworkAttachment`, and
+  `ClusterNetworkAttachment`), repeated fields
   (`security_groups`), and oneof fields (`ExternalIPAttachmentSpec.target`).
 - Interceptor validation logic: verify that the interceptor returns
   `InvalidArgument` with correct field paths for missing references, returns

@@ -9,14 +9,14 @@ tracking-link:
 prd:
   - prd.md
 see-also:
-  - "/enhancements/OSAC-1433-unified-networking-architecture"
+  - "/enhancements/OSAC-1433-unified-networking"
   - "/enhancements/OSAC-1717-ovn-kubernetes-evpn-spike"
   - "/enhancements/OSAC-1435-vmaas-networking"
   - "/enhancements/OSAC-1436-caas-networking"
   - "/enhancements/OSAC-1437-bmaas-networking"
   - "/enhancements/OSAC-1433-default-networking"
-  - "/enhancements/OSAC-2135-caas-bm-worker-provisioning"
-  - "/enhancements/OSAC-1382-multi-fabric-east-west"
+  - "/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning"
+  - "/enhancements/OSAC-1382-multi-fabric-east-west-networking"
 replaces:
   - "N/A"
 superseded-by:
@@ -28,6 +28,19 @@ superseded-by:
 ## Summary
 
 This design extends OSAC-1433's NetworkClass two-manager architecture with a new k8s manager (`cudn_evpn`) that provisions OVN-Kubernetes ClusterUserDefinedNetwork (CUDN) with EVPN transport, enabling KubeVirt VMs to join the physical fabric via BGP EVPN route advertisement. The design covers sequential provisioning (fabric → k8s manager data flow), CUDN lifecycle, single-subnet validation, and integration test patterns. FRRConfiguration for BGP underlay peering is an installation prerequisite (not created by k8s manager); OVN-Kubernetes auto-updates it when CUDN appears. See [PRD](prd.md) for detailed requirements.
+
+This manager inherits the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
+Phase 1 supports connected deployments only and does not add air-gapped or
+disconnected networking support.
+This manager also inherits the [Unified Networking hub support
+boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
 
 ## Related Designs
 
@@ -1087,21 +1100,18 @@ metadata:
   name: k8s-manager-cudn-evpn
   namespace: osac
   labels:
-    osac.openshift.io/network/k8s-manager: "true"  # Matches OSAC-1433 label path
+    osac.openshift.io/network-k8s-manager: "true"  # Matches OSAC-1433 label path
 data:
   name: cudn_evpn  # Field name 'name' per OSAC-1433 schema (not 'manager')
   description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)"
-  capabilities: "supports_ipv4:true,supports_ipv6:false,single_subnet_per_vn:true"  # Comma-separated string per OSAC-1433
+  capabilities: "ipv4"  # Standard manager capability token per OSAC-1433
   # template_role field removed - not in OSAC-1433 spec, dispatcher resolves role name from k8s_manager field
 ```
 
 **Capability Fields:**
-- `supports_ipv4:true` — IPv4 address family supported
-- `supports_ipv6:false` — IPv6 not supported in Phase 1
-- `single_subnet_per_vn:true` — NEW capability: enforces single-subnet-per-VirtualNetwork constraint (checked by fulfillment-service validation)
-
-The `single_subnet_per_vn` capability is checked by fulfillment-service Subnet validation (see Subnet Validation section above) to make the constraint pluggable for future k8s managers.
-```
+- `ipv4` — IPv4 address family supported; IPv6 and dual-stack are not supported
+- The single-subnet-per-VirtualNetwork constraint is enforced by
+  fulfillment-service validation; it is not a custom manager capability token.
 
 **RBAC:**
 
@@ -1487,7 +1497,7 @@ Graduation criteria will be defined when targeting a release. Expected stages:
 
 - **Dev Preview (0.3):** Single-cluster EVPN bridging with manual prerequisites, documented installation guide, E2E test in CI
 - **Tech Preview (0.4):** Multi-cluster support (OSAC-3667 Phase 2), gateway MAC auto-coordination, VTEP automation
-- **GA (0.5+):** IPv6/dual-stack support, OVN Connectors (inter-subnet routing), OVN-K secondary CUDN support (multi-NIC VMs), production SLA
+- **GA (0.5+):** OVN Connectors (inter-subnet routing), OVN-K secondary CUDN support (multi-NIC VMs), production SLA
 
 Success signals for GA:
 - 3+ customer deployments in production

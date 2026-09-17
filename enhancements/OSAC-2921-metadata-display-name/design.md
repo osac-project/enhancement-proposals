@@ -40,9 +40,13 @@ Two complementary naming features apply:
 
 - **OSAC-1061** makes `metadata.name` mandatory, unique, and immutable (DNS
   identity).
-- **This enhancement** adds mutable, non-unique `metadata.display_name` and
+- **This enhancement** adds non-unique `metadata.display_name` and
   `metadata.description` for natural-language labeling, and consolidates the
-  existing per-type fields onto Metadata. [Locked: D1, D2, D4]
+  existing per-type fields onto Metadata. They are mutable for resource APIs
+  that support metadata updates. Networking resources and workload
+  network-attachment fields governed by OSAC-1433 are excluded from this
+  metadata-update path and accept these values only at creation. [Locked: D1,
+  D2, D4]
 
 `metadata` fields are stored in dedicated SQL columns, not in the `data`
 JSONB document [Codebase: fulfillment-service/internal/database/dao/generic_dao.go].
@@ -54,7 +58,10 @@ changes, not proto-only edits.
 - Extend shared public and private `Metadata` with optional `display_name`
   (max 63) and `description` (max 256), validated via buf.validate. [Locked: D5, D7, D8]
 - Persist both fields as columns on all object and archive tables and wire
-  them through GenericDAO create/update/list/makeMetadata and FilterTranslator.
+  them through GenericDAO create/update/list/makeMetadata and FilterTranslator
+  for APIs and fields that support metadata updates. Networking resources and
+  workload network-attachment fields governed by OSAC-1433 are excluded from
+  this Update path and retain their create-time-only contract.
 - Implement List `order` plumbing end-to-end so clients can sort by
   `metadata.display_name` (and `metadata.name`, `id`). [Locked: D6]
 - Remove resource-level `title`/`description` from all twelve affected types
@@ -112,14 +119,14 @@ JSON paths.
 |-------|------|
 | `id` | System-assigned unique identifier |
 | `metadata.name` | DNS-label name (OSAC-1061: mandatory, unique, immutable) |
-| `metadata.display_name` | Optional mutable non-unique friendly label (max 63) |
-| `metadata.description` | Optional mutable opaque string (max 256) |
+| `metadata.display_name` | Optional non-unique friendly label (max 63); mutable only for APIs supporting metadata updates |
+| `metadata.description` | Optional opaque string (max 256); mutable only for APIs supporting metadata updates |
 
 ### Workflow Description
 
 **Actors:** Tenant User, Tenant Admin, Cloud Provider Admin, Cloud
-Infrastructure Admin — any persona that creates or updates objects via
-gRPC, REST, or CLI (`osac`).
+Infrastructure Admin — any persona that creates or updates supported objects
+via gRPC, REST, or CLI (`osac`).
 
 #### Create with display_name
 
@@ -133,7 +140,11 @@ Starting state: authenticated caller with create permission on a type
 3. GenericDAO writes `display_name` and `description` columns (empty
    string when omitted) and returns the created object.
 
-#### Update and clear
+For networking resources governed by OSAC-1433, these fields are create-time
+inputs only. Changing them requires deleting and recreating the networking
+resource.
+
+#### Update and clear for resources that support metadata updates
 
 1. Caller submits Update with `update_mask` including
    `metadata.display_name` and/or `metadata.description`.
@@ -225,14 +236,16 @@ Public and private Metadata gain identical fields and docs
 [Codebase: fulfillment-service/docs/API.md]:
 
 ```protobuf
-// Human-friendly display name. Optional, not unique, mutable.
+// Human-friendly display name. Optional, not unique; mutable only for resource
+// APIs that support metadata updates.
 // Not constrained to DNS-label format.
 string display_name = 11 [(buf.validate.field).string = {
   max_len: 63
 }];
 
 // Optional human-friendly description. Opaque string; clients may
-// treat content as Markdown. Not unique, mutable.
+// treat content as Markdown. Not unique; mutable only for resource APIs that
+// support metadata updates.
 string description = 12 [(buf.validate.field).string = {
   max_len: 256
 }];
@@ -395,8 +408,13 @@ policy is tracked as a follow-up outside the server cutover.
 | Filter on `metadata.display_name` before FilterTranslator update | Translation error | Deploy DAO change with proto |
 | Old client sends removed `title` | Field ignored or rejected by new stubs | Client upgrade |
 
-Create/Update/List remain idempotent under retry for the same payload.
-No controller reconciliation is involved.
+For non-networking resources and fields that support them, Create/Update/List
+remain idempotent under retry for the same payload. Networking resources and
+workload network-attachment fields are excluded from this generic metadata
+behavior and use the OSAC-1433 create/read/delete contract. This enhancement
+adds no new controller reconciliation for metadata fields; existing networking
+controllers continue to reconcile networking resources, including the
+established SecurityGroup flow.
 
 ### RBAC / Tenancy
 
@@ -408,8 +426,10 @@ templates) remain visible under current platform rules.
 ### Observability and Monitoring
 
 No new Prometheus metrics or Kubernetes events. Existing gRPC and DAO
-operation duration metrics cover Create/Update/List. Migration progress is
-observed via normal migration runner logs.
+operation duration metrics cover supported Create/Update/List operations for
+non-networking resources and fields. Networking resources and workload
+network-attachment fields use their OSAC-1433 Create/List/Get/Delete APIs.
+Migration progress is observed via normal migration runner logs.
 
 ### Risks and Mitigations
 
@@ -481,14 +501,15 @@ notes and emit migration-time warnings with per-type truncated counts.
 
 - Protovalidate accepts display_name length 0–63 and description 0–256;
   rejects longer values.
-- GenericDAO Create/Update/Get round-trips display_name and description,
-  including clear-to-empty via update_mask.
+- GenericDAO Create/Update/Get round-trips display_name and description for
+  resource APIs that support Update, including clear-to-empty via update_mask.
 - FilterTranslator translates `this.metadata.display_name == 'x'`.
 - List order parses `metadata.display_name desc` and rejects unknown fields.
 - List order with `metadata.display_name` appends secondary `id asc` when
   `id` is not already present.
 - Server tests for the twelve types create/update without title fields and
-  assert Metadata values.
+  assert Metadata values, with Update coverage limited to resource APIs that
+  support it.
 - Migration unit/integration test: seed rows with flat and spec title/
   description (including >256 description), run migration, assert column
   values and **only** the migrated JSON paths removed.
@@ -496,13 +517,15 @@ notes and emit migration-time warnings with per-type truncated counts.
   `FieldDefinition.display_name`, HostType interface `description`).
 - Migration emits a warning with resource type and truncated-row count when
   descriptions exceed 256 (no description contents in logs).
-- Create/Update retry with the same payload remains idempotent.
+- Create/Update retry with the same payload remains idempotent for resource
+  APIs that support Update.
 
 ### Integration (`ginkgo run it`)
 
-- Create Project / NetworkClass / ComputeInstanceCatalogItem with
-  display_name; List with filter and order; Update clear; Get confirms
-  empty string.
+- Create Project / ComputeInstanceCatalogItem with display_name; List with
+  filter and order; Update clear; Get confirms empty string.
+- Create NetworkClass with display_name; List with filter and order; Get
+  confirms the value. Changing it requires delete and recreate.
 - List with duplicate `display_name` values and `order=metadata.display_name`
   returns stable pages across offset/limit (no duplicates/skips).
 

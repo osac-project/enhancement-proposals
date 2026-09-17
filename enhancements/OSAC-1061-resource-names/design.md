@@ -22,6 +22,8 @@ superseded-by:
 
 This design enforces naming discipline across all OSAC resources through three layers: proto validation (mandatory names, RFC 1123 format), PostgreSQL unique indexes (uniqueness within scope boundaries), and PostgreSQL immutability triggers (name cannot change after creation). The changes are concentrated in the proto `Metadata` message and a single database migration — no server or DAO code changes are required for core enforcement. See [PRD](prd.md) for detailed requirements.
 
+Networking resources governed by [OSAC-1433](/enhancements/OSAC-1433-unified-networking/design.md) are an operation exception: they support Create, List/Get, and Delete only. Their name, specification, and metadata changes use delete and recreate; the Update examples below apply only to resource APIs that support Update.
+
 ## Motivation
 
 The fulfillment-service stores all resources through a generic DAO layer backed by PostgreSQL. Each resource table includes a `name` column, but the column allows empty strings (default `''`), the proto `Metadata.name` field permits empty strings via an optional regex pattern, and most tables lack uniqueness constraints on the name column. Of 35 resource tables, only 9 enforce any form of name uniqueness, and only 8 include `name` in their immutability triggers.
@@ -53,7 +55,7 @@ Three enforcement layers implement the naming requirements:
 
 All resource tables are in scope — tenant-scoped, platform-scoped, and dual-scope. [Locked: D1]
 
-1. **Proto validation** makes names mandatory and format-compliant. The `Metadata.name` field regex is updated to disallow empty strings, and `min_len: 1` is added. The existing protovalidate interceptor enforces this on Create; the server validates the merged object on Update. [Locked: D3, D8]
+1. **Proto validation** makes names mandatory and format-compliant. The `Metadata.name` field regex is updated to disallow empty strings, and `min_len: 1` is added. The existing protovalidate interceptor enforces this on Create; for resource APIs that support Update, the server validates the merged object there as well. [Locked: D3, D8]
 
 2. **Database uniqueness indexes** prevent duplicate names within scope boundaries. Each resource table receives a uniqueness index matching its scope: `UNIQUE(name)` for globally unique resources (`roles`, `role_bindings`), `UNIQUE(tenant, name)` for tenant-scoped resources without project scoping (`users`, `identity_providers`), and `UNIQUE(tenant, project, name)` for all other resource tables. Platform-scoped resources (`tenant = "shared"`, `project = ""`) achieve effective global uniqueness through the project-scoped index. Indexes cover all rows including soft-deleted, blocking name reuse during pending deletion. [Locked: D2, D7]
 
@@ -99,7 +101,8 @@ The Create flow is identical for all resource types. Platform-scoped resources f
 
 #### Updating a Resource (Name Change Rejected)
 
-When an update request includes a name different from the stored value:
+For a resource API that supports Update, when an update request includes a name
+different from the stored value:
 
 1. Server fetches current object, merges the field mask, validates the merged result (format validation passes).
 2. DAO executes `UPDATE ... SET name = 'new-name' ...`.
@@ -132,7 +135,7 @@ This feature modifies the shared `Metadata` protobuf message. No new services, C
 
 **Behavioral changes to existing resources:**
 - All `Create*` RPCs reject requests with missing or invalid names (previously accepted empty)
-- All `Update*` RPCs reject name changes via database trigger (some tables already enforced this; now all do)
+- All `Update*` RPCs for resource APIs that support Update reject name changes via database trigger (some tables already enforced this; now all do); networking resources do not expose Update
 - All `Create*` RPCs reject duplicate names within scope boundaries (most resources previously accepted duplicates)
 
 ## UX Alignment
@@ -300,7 +303,7 @@ Input validation is strengthened: the proto `min_len: 1` constraint and updated 
 
 **Uniqueness constraint violation (duplicate name):** The DAO translates the PostgreSQL `UniqueViolation` to `ErrAlreadyExists`. The server returns `AlreadyExists`. No partial state is created. The user chooses a different name and retries.
 
-**Immutability trigger violation (name change on update):** The trigger raises SQLSTATE `Z0001`. The DAO translates to `ErrImmutable`. The server returns `InvalidArgument`. The update is rolled back entirely — the resource retains its original state.
+**Immutability trigger violation (name change on a supported update):** The trigger raises SQLSTATE `Z0001`. The DAO translates to `ErrImmutable`. The server returns `InvalidArgument`. The update is rolled back entirely — the resource retains its original state. Networking resources governed by OSAC-1433 have no Update operation; changing their name requires delete and recreate.
 
 **Migration failure (existing data violations):** The data cleanup migration runs first in the upgrade sequence, backfilling empty names and deduplicating collisions. If the cleanup migration itself fails (e.g., unexpected data patterns), the entire upgrade is rolled back. No partial enforcement is applied.
 
@@ -428,10 +431,11 @@ Integration tests run against a real PostgreSQL instance via the DAO test infras
 - Create two users with the same name in the same tenant → second returns `ErrAlreadyExists`
 - Create two users with the same name in different tenants → both succeed
 
-**Immutability enforcement:**
+**Immutability enforcement for resource APIs that support Update:**
 - Update a resource's name → returns `ErrImmutable` with `fields: ["metadata.name"]`
 - Update a resource without changing the name → succeeds
 - Update a resource's other fields (labels, annotations, spec) → succeeds (name not affected)
+- Networking resource changes use delete and recreate because those resources do not expose Update
 
 **Concurrent creation:**
 - Launch N goroutines that each attempt to create a resource with the same name, tenant, and project → exactly one succeeds, all others return `ErrAlreadyExists`
@@ -444,7 +448,7 @@ E2E tests via `osac-test-infra` pytest framework against the fulfillment-service
 - Create a VirtualNetwork with an invalid name → `InvalidArgument`
 - Create two VirtualNetworks with the same name in the same tenant/project → second returns `AlreadyExists` with resource type in message
 - Create a VirtualNetwork, delete it, create another with the same name before archival → `AlreadyExists`
-- Update a VirtualNetwork's name → `InvalidArgument: field 'metadata.name' is immutable`
+- Networking resources do not expose Update; changing a VirtualNetwork name requires delete and recreate
 - Create a platform-scoped NetworkClass with a duplicate name → `AlreadyExists`
 
 ## Graduation Criteria
