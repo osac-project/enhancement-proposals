@@ -117,7 +117,7 @@ The boot disk and additional disks follow different defaulting rules:
 
 - **Boot disk** supports per-field defaults through CatalogItem FieldDefinitions (`boot_disk.storage_tier` path) and Template SpecDefaults (`boot_disk` field). This works because the boot disk is a known, single, always-present disk -- an admin can meaningfully pre-select a tier for it.
 
-- **Additional disks** can be defaulted as a whole array through a CatalogItem FieldDefinition with `path: "additional_disks"`. This follows the same semantics as `network_attachments`: the FieldDefinition path resolver does not support per-element field addressing (e.g., `additional_disks[0].storage_tier`), so the default covers the entire array -- size and tier for each element. If the user wants to change anything -- just the size, just the tier, or the number of disks -- they must provide the entire `additional_disks` array, since there is no per-element merging.
+- **Additional disks** can be defaulted as a whole array through a CatalogItem FieldDefinition with `path: "additional_disks"`. This follows the same whole-array field-definition mechanism as `network_attachments`: the path resolver does not support per-element field addressing (e.g., `additional_disks[0].storage_tier`), so the default covers the entire array -- size and tier for each element. Its presence semantics are specific to `additional_disks`: an explicit empty array opts out. If the user wants to change anything -- just the size, just the tier, or the number of disks -- they must provide the entire `additional_disks` array, since there is no per-element merging.
 
 When the CatalogItem defines an `additional_disks` default, the distinction between an omitted field and an empty array is significant:
 - **Field omitted** (`!HasAdditionalDisks()`): the CatalogItem default applies. The user accepts whatever additional disks the admin pre-configured.
@@ -258,7 +258,7 @@ Example FieldDefinition for a CatalogItem that pre-selects a boot disk tier:
 }
 ```
 
-Additional disks can be defaulted as a whole array through a FieldDefinition with `path: "additional_disks"`. This follows the same semantics as `network_attachments`: the path resolver treats array fields as opaque values, so the default covers the entire array. If the user provides their own `additional_disks`, the user-provided value replaces the entire default -- no per-element merging occurs.
+Additional disks can be defaulted as a whole array through a FieldDefinition with `path: "additional_disks"`. This follows the same whole-array mechanism as `network_attachments`: the path resolver treats array fields as opaque values, so the default covers the entire array. Unlike workload `network_attachments`, an explicitly empty `additional_disks` array is an opt-out. If the user provides their own non-empty `additional_disks`, the user-provided value replaces the entire default -- no per-element merging occurs.
 
 Example FieldDefinition for a CatalogItem that pre-configures a data disk:
 

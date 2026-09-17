@@ -260,7 +260,7 @@ flowchart TD
 
 A **Template** defines how a resource is provisioned. It may supply defaults for first-class resource fields and defines its own Template parameters.
 
-A **resource field** is a field in the resource API whose type and valid domain are owned by OSAC, for example `ComputeInstance.spec.instance_type`, `boot_disk.size_gib`, or `network_attachments`. A **governable resource field** is one of the supported resource fields a Catalog Item may govern.
+A **resource field** is a field in the resource API whose type and valid domain are owned by OSAC, for example `ComputeInstance.spec.instance_type`, `boot_disk.size_gib`, or `network_attachments`. A **governable resource field** is one of the supported resource fields a Catalog Item may govern. For current VMaaS and BMaaS resources, `network_attachments` remains plural for API compatibility but the service contract permits at most one entry; catalog policies cannot expand that cardinality. CaaS uses the singular `Cluster.network_attachment` policy, which also represents exactly one cluster-wide attachment and cannot express per-node-set or multi-NIC placement.
 
 A **Template parameter** is an input defined by the selected Template, not by the resource API. Its name, type, requiredness, and default come from that Template.
 
@@ -581,7 +581,7 @@ Governable lists keep their ordinary `repeated` shape. A `repeated` field has no
 | `boot_disk.size_gib` | Int32 | Value only |
 | `run_strategy` | Enum | Value only |
 | `user_data` | String | Value only |
-| `network_attachments` | Whole list | Subnet, SecurityGroup |
+| `network_attachments` | Whole list (max one entry) | Subnet, SecurityGroup |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The governable Compute fields collect into one `Fields` message, one policy per field:
@@ -678,6 +678,7 @@ Notes on the fields above:
 | `pull_secret_secret` | Whole reference | Secret |
 | `network.pod_cidr` | CIDR string | Value only |
 | `network.service_cidr` | CIDR string | Value only |
+| `network_attachment` | One structured attachment | Subnet, SecurityGroup |
 | `node_sets[name].size` | Int32 | Value only |
 | `auto_external_ip_attachment` | Bool | Value only |
 
@@ -691,6 +692,7 @@ message ClusterCatalogItemFields {
   ClusterNetworkFieldPolicies network = 4;
   map<string, Int32FieldPolicy> node_sets = 5;
   BoolFieldPolicy auto_external_ip_attachment = 6;
+  ClusterNetworkAttachmentFieldPolicy network_attachment = 7;
 }
 
 message ClusterNetworkFieldPolicies {
@@ -747,7 +749,7 @@ Notes on the fields above:
 | `user_data` | String | Value only |
 | `run_strategy` | Enum | Value only |
 | `image` | Whole structured value | Value only |
-| `network_attachments` | Whole list | Subnet, SecurityGroup |
+| `network_attachments` | Whole list (max one entry) | Subnet, SecurityGroup |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The Bare Metal `Fields` message covers the OS image, run strategy, credentials, network attachments, and automatic ExternalIP attachment:
@@ -862,7 +864,7 @@ authenticate and resolve visibility
 
 Catalog resolution requires the effective tenant and project, so Create attribution happens before Catalog or Template resolution. The resulting object then follows the normal persistence path.
 
-Compute default-network injection moves after Catalog and Template resolution [Codebase: internal/servers/private_compute_instances_server.go]. It runs only when the resolved attachment list remains empty, preserving the resource's existing empty-list behavior.
+Compute default-network injection moves after Catalog and Template resolution [Codebase: internal/servers/private_compute_instances_server.go]. It runs only when the resolved attachment list remains empty, preserving the resource's existing empty-list behavior. The same final resource validation applies to BMaaS's zero-or-one repeated list and CaaS's singular `network_attachment`; a Catalog policy cannot add a second attachment or override service-level field defaulting and VirtualNetwork membership rules.
 
 Resource Create validates dependencies and Template parameters again. A later Template or lifecycle change may make a Catalog Item temporarily unprovisionable even though the item remains structurally valid. Reference-valued policies are materialized like other field values; reference lifecycle semantics are defined in [Reference semantics](#reference-semantics).
 
@@ -1117,6 +1119,8 @@ Infrastructure: fulfillment-service Ginkgo suite (`ginkgo run -r internal`), whi
 - Locked policy with an explicitly empty tenant list applies the locked value.
 - Locked policy with a non-empty tenant list returns `InvalidArgument`.
 - Empty `locked` value or empty editable default is rejected at Catalog Item Create and Update operations for `network_attachments`, whose resource semantics treat empty as unset.
+- Catalog Item Create and Update accept one-entry locked and editable-default lists, reject two-entry lists with `InvalidArgument`, and preserve the service-level maximum-one rule even when a field-level schema is absent.
+- Cluster `network_attachment` policy tests cover an omitted/empty policy falling through to CaaS defaulting, a single typed attachment preserving supplied values, and final validation of subnet/security-group references; the singular field cannot express a second attachment or per-node-set placement.
 - Default network injection runs after Catalog resolution and triggers whenever the resolved list is still empty after tenant input, Catalog policy, and Template defaults, including an editable policy with no Catalog default that the tenant did not supply.
 
 **Authoring validation and references.**
