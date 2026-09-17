@@ -4,7 +4,7 @@
 
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
 - **Design task:** OSAC-4307
-- **Total test cases:** 31
+- **Total test cases:** 29
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 6 of 6
 
@@ -49,8 +49,8 @@
 ##### Steps
 
 1. Select agentless_net through the provider configuration.
-2. Submit the same VirtualNetwork, Subnet, and SecurityGroup requests used with
-   the Netris profile.
+2. Submit the same VirtualNetwork and Subnet requests used with the Netris
+   profile.
 
 ##### Expected Results
 
@@ -73,7 +73,7 @@
 
 ##### Steps
 
-1. Create a VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP,
+1. Create a VirtualNetwork, Subnet, ExternalIPPool, ExternalIP,
    ExternalIPAttachment, and NATGateway through the existing API.
 2. Poll the corresponding CRs and fulfillment-service resources.
 
@@ -131,7 +131,7 @@
 - ARP resolves without a routed hop.
 - IPv4 traffic reaches the peer while the Subnet remains a single L2 domain.
 
-#### TC-FR3-02: Route cross-Subnet traffic by default and enforce SecurityGroup restrictions
+#### TC-FR3-02: Route cross-Subnet traffic by default
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -140,24 +140,18 @@
 ##### Preconditions
 
 - One Ready VirtualNetwork contains two Ready Subnets.
-- Test interfaces are bound to different Subnets and have no applicable
-  SecurityGroup initially.
+- Test interfaces are bound to different Subnets.
 
 ##### Steps
 
-1. Send traffic between the Subnets with no applicable SecurityGroup.
-2. Attach or reconcile a SecurityGroup whose rules exclude the test flow.
-3. Repeat the traffic attempt.
-4. Add a matching SecurityGroup rule and repeat the traffic attempt.
+1. Send traffic between the Subnets.
+2. Repeat the traffic attempt after reconciliation and a controller restart.
 
 ##### Expected Results
 
-- With no applicable SecurityGroup, the permit-all baseline routes the flow
-  between Subnets.
-- While the restrictive SecurityGroup is applicable, the excluded flow is
-  dropped by its policy.
-- After a matching rule is added, the VN namespace routes the flow again.
-- SecurityGroup rule changes update only the owned iptables/netfilter rules.
+- The permit-all baseline routes the flow between Subnets.
+- Reconciliation and restart do not introduce a policy-dependent readiness gate
+  or change the routed result.
 
 #### TC-FR3-03: Isolate overlapping VirtualNetworks on the internal fabric
 
@@ -306,8 +300,8 @@
 
 - An ExternalIP is Allocated with status.address populated.
 - The target has no primary private address at first, then receives one.
-- No applicable SecurityGroup is attached to the target, so the baseline permits
-  the inbound test flow.
+- The supported external path is available, so the default forwarding baseline
+  permits the inbound test flow.
 
 ##### Steps
 
@@ -328,31 +322,6 @@
   attachment becomes Ready only after DNAT success and status feedback
   confirmation.
 
-#### TC-FR5-02: Enforce SecurityGroup restriction and remove DNAT on deletion
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated |
-
-##### Preconditions
-
-- An ExternalIPAttachment is Ready and its target has a primary IP.
-- An applicable SecurityGroup is attached to the target and has no matching
-  ingress rule for the test flow.
-
-##### Steps
-
-1. Send traffic to the ExternalIP.
-2. Delete the ExternalIPAttachment.
-3. Inspect the owned DNAT rule and parent ExternalIP status.
-
-##### Expected Results
-
-- The packet is dropped by the applicable SecurityGroup restriction rather than
-  by the permit-all baseline.
-- The DNAT rule is removed before the attachment finalizer is cleared.
-- ExternalIP status.attached becomes false after feedback.
-
 ### FR-6: Outbound external connectivity
 
 #### TC-FR6-01: SNAT permitted egress through the NATGateway ExternalIP
@@ -365,7 +334,7 @@
 
 - An ExternalIP is Allocated with status.address populated.
 - A NATGateway references that ExternalIP and a Ready VirtualNetwork.
-- No applicable SecurityGroup is attached, so the permit-all baseline permits
+- The supported external path is available, so the permit-all baseline permits
   the test egress flow.
 
 ##### Steps
@@ -378,31 +347,6 @@
 - The endpoint observes the NATGateway ExternalIP as the source address.
 - The SNAT rule is present in the owned state mapping.
 - NATGateway status.phase is Ready.
-
-#### TC-FR6-02: Apply SecurityGroup restriction before SNAT
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | high | automated |
-
-##### Preconditions
-
-- A NATGateway has an owned SNAT rule.
-- An applicable SecurityGroup is attached and has no matching egress rule for
-  the test flow.
-
-##### Steps
-
-1. Send the test flow from a Subnet interface.
-2. Add the matching SecurityGroup egress rule and repeat the flow.
-
-##### Expected Results
-
-- The first flow is dropped by the applicable SecurityGroup restriction and
-  does not reach SNAT.
-- The second flow reaches POSTROUTING and the external endpoint observes the
-  NATGateway ExternalIP.
-- The NATGateway role does not add or modify SecurityGroup rules.
 
 ### FR-7: External IP pools
 
@@ -520,8 +464,8 @@
 ##### Preconditions
 
 - Fixtures represent a CaaS cluster node and a VMaaS ComputeInstance whose
-  attachment omits the Subnet and SecurityGroup fields so tenant defaults must
-  be resolved.
+  attachment omits the Subnet field so the existing tenant default must be
+  resolved.
 - A fake AAP provider captures the selected role arguments.
 
 ##### Steps
@@ -532,8 +476,7 @@
 
 ##### Expected Results
 
-- Both fixtures expand omitted Subnet and SecurityGroup fields to the tenant's
-  defaults.
+- Both fixtures expand the omitted Subnet field to the tenant's default.
 - The single CaaS `BareMetalNetworkAttachment` has `primary: true`.
 - The single VMaaS attachment is implicitly primary; generic
   `query_dhcp_lease` arguments do not require a `primary` field.
@@ -541,9 +484,9 @@
   change.
 - Full service provisioning remains assigned to OSAC-1611 and OSAC-3665.
 
-### FR-10: Failure visibility
+### FR-9: Failure visibility
 
-#### TC-FR10-01: Surface a switch-port or VLAN failure
+#### TC-FR9-01: Surface a switch-port or VLAN failure
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -565,7 +508,7 @@
 - Status.conditions contains a failure reason identifying the fabric operation.
 - The job history contains the failed target and provider error.
 
-#### TC-FR10-02: Surface missing or stale DHCP feedback
+#### TC-FR9-02: Surface missing or stale DHCP feedback
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -588,9 +531,9 @@
 - Status identifies DHCPLeaseUnavailable or the equivalent diagnostic reason.
 - No ExternalIPAttachment DNAT job is dispatched without a current target IP.
 
-### FR-11: Lifecycle cleanup
+### FR-10: Lifecycle cleanup
 
-#### TC-FR11-01: Remove DNAT before releasing an ExternalIP
+#### TC-FR10-01: Remove DNAT before releasing an ExternalIP
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -613,7 +556,7 @@
 - The attachment finalizer is removed only after DNAT cleanup feedback.
 - Pool capacity increases only after ExternalIP deletion.
 
-#### TC-FR11-02: Clean one Subnet/VirtualNetwork without affecting peers
+#### TC-FR10-02: Clean one Subnet/VirtualNetwork without affecting peers
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -622,7 +565,7 @@
 ##### Preconditions
 
 - The first VirtualNetwork has two Ready Subnets, each with VLAN and namespace
-  state, and a SecurityGroup policy that applies to both Subnets.
+  state.
 - The second VirtualNetwork has an independent Subnet, VLAN, namespace, and
   test attachment.
 
@@ -631,7 +574,7 @@
 1. Delete one Subnet from the first VirtualNetwork and wait for its finalizer
    cleanup to complete.
 2. Inspect state-file entries, DHCP state, switch VLANs, namespace interfaces,
-   gateway state, and the SecurityGroup policy for the remaining Subnet.
+   gateway state, and the forwarding baseline for the remaining Subnet.
 3. Verify permitted traffic for the remaining Subnet, then delete the first
    VirtualNetwork and inspect the second VirtualNetwork.
 
@@ -640,16 +583,14 @@
 - The deleted Subnet's DHCP state, VLAN, interfaces, gateway, and
   Subnet-owned state are removed in dependency order, and its VLAN is not
   released before cleanup is confirmed.
-- The SecurityGroup-owned chain remains after Subnet deletion; its rules for
-  the remaining Subnet continue to permit the configured traffic, while
-  SecurityGroup reconciliation removes only obsolete rules for the deleted
-  Subnet.
+- The forwarding baseline for the remaining Subnet continues to permit
+  supported traffic after the sibling Subnet is deleted.
 - After the first VirtualNetwork is deleted, its remaining child state and
-  SecurityGroup rules are removed in dependency order.
+  forwarding state are removed in dependency order.
 - The second VirtualNetwork's namespace, VLAN, and connectivity remain present.
 - The deleted resources' finalizers are removed only after cleanup feedback.
 
-#### TC-FR11-03: Delay parent-first ExternalIP release until attachment cleanup
+#### TC-FR10-03: Delay parent-first ExternalIP release until attachment cleanup
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -732,7 +673,7 @@
 - The `/30` request is accepted with `10.20.2.5` as the gateway and the
   remaining usable address available to DHCP.
 
-### NFR-2: Netris-equivalent tenant behavior
+### NFR-2: Netris parity for in-scope tenant behavior
 
 #### TC-NFR2-01: Compare core API behavior with the Netris backend
 
@@ -747,16 +688,19 @@
 
 ##### Steps
 
-1. Create the same VirtualNetwork, multiple Subnets, SecurityGroup, and
-   attachment scenario against each backend.
-2. Compare API responses, phases, conditions, and allowed/denied traffic.
+1. Create the same VirtualNetwork, multiple Subnets, and attachment scenario
+   against each backend.
+2. Compare API responses, phases, conditions, and in-scope attachment results.
 
 ##### Expected Results
 
 - Resource shapes and tenant-visible status fields match the existing API
   contract.
-- Same-Subnet, permitted cross-Subnet, and denied traffic outcomes match.
+- Same-Subnet, permitted cross-Subnet, and topology-isolation outcomes match
+  for the in-scope backend behavior.
 - Backend selection does not add tenant-visible API fields.
+- SecurityGroup provisioning and policy enforcement are excluded from this
+  parity comparison.
 
 #### TC-NFR2-02: Compare external access behavior with the Netris backend
 
@@ -771,17 +715,20 @@
 
 ##### Steps
 
-1. Exercise permitted and denied inbound traffic through ExternalIPAttachment.
-2. Exercise permitted and denied outbound traffic through NATGateway.
-3. Compare status and cleanup results.
+1. Exercise inbound traffic through ExternalIPAttachment after DNAT succeeds.
+2. Exercise outbound traffic through NATGateway and observe the translated
+   source address.
+3. Compare readiness, status, address translation, and cleanup results.
 
 ##### Expected Results
 
-- Both backends expose the same allowed/denied traffic outcomes.
-- Inbound traffic reaches the target only through its ExternalIP and permitted
-  policy.
+- Both backends expose the same in-scope resource and status behavior.
+- Inbound traffic reaches the target only through its ExternalIP after the
+  attachment is Ready.
 - Outbound traffic observes the configured NATGateway ExternalIP.
 - Deletion removes only the resources' owned mappings.
+- SecurityGroup provisioning and policy enforcement are excluded from this
+  comparison because they remain outside the agentless milestone.
 
 ### NFR-3: Internal VirtualNetwork isolation
 
@@ -818,7 +765,6 @@
 - Two overlapping VirtualNetworks have an ExternalIPAttachment and a
   NATGateway configured through allocated ExternalIPs with populated status
   addresses.
-- SecurityGroup rules permit the intended external flow.
 
 ##### Steps
 
@@ -845,12 +791,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 31 |
+| Total test cases | 29 |
 | Critical | 11 |
-| High | 19 |
+| High | 17 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 30 |
+| Automated | 28 |
 | Manual | 1 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 6 / 6 |
