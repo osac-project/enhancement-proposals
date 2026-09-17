@@ -71,9 +71,9 @@ The implementation extends three areas of the osac-ui codebase:
    public Volume proto definitions (`Volume`, `VolumeSpec`, `VolumeStatus`,
    `VolumeAccessMode`, `VolumeState`, and the `Volumes` service descriptor with
    `List`/`Get`).
-2. **`libs/ui-components`** — new API hooks (`useVolumes`, `useVolume`), a
-   `VolumeStatusLabel` component, a `VolumeTable` component, and list/detail
-   page components.
+2. **`libs/ui-components`** — a `VolumeStatusLabel` component, a `VolumeTable`
+   component, and list/detail page components (using the existing generic
+   `useApiFetch`/`useApiQuery` hooks — no new per-resource hooks needed).
 3. **`apps/app-frontend`** — nav entry, routing, and page wiring for the new
    Storage > Volumes section.
 
@@ -90,10 +90,12 @@ and at least one volume has been provisioned via the storage control plane
 
 1. Tenant User navigates to **Storage > Volumes** in the sidebar.
 2. The `VolumesListPage` renders a table with columns: **Name** (link to
-   detail), **Storage Tier**, **Size (GiB)**, **Access Mode**, **State**
-   (status badge), **Age**.
-3. A filter toolbar allows filtering by state (CEL filter on
-   `this.status.state`) and free-text search on name.
+   detail), **State** (status badge), **Project**, **Storage Tier**,
+   **Size (GiB)**, **Access Mode**, **Created**.
+3. A filter toolbar allows filtering by state (CEL filter using the shared
+   CEL builder with typed `VolumeState` enum values), name (CEL server-side
+   filter on `metadata.name`), and project (CEL filter on
+   `metadata.project`).
 4. Pagination uses the standard OSAC `offset`/`limit` contract.
 5. TanStack Query refetch interval handles live updates.
 
@@ -101,10 +103,9 @@ and at least one volume has been provisioned via the storage control plane
 
 1. Tenant User clicks a volume name in the list.
 2. The `VolumeDetailsPage` renders at `/storage/volumes/:id`.
-3. A `ResourceDetailHeader` shows the volume name, display name (if set), and
-   state badge.
-4. A detail overview card displays: id, name, display name, storage tier, size,
-   access mode, state, and status message (if present).
+3. A `ResourceDetailHeader` shows the volume name and state badge.
+4. A detail overview card displays: id, name, storage tier, size, access mode,
+   state, and status message (if present).
 5. Metadata section shows tenant, project, created/updated timestamps.
 
 ```mermaid
@@ -133,12 +134,14 @@ No new API extensions. This UI change consumes the existing public Volume
 `List` and `Get` endpoints from the fulfillment-service. No CRDs, webhooks, or
 finalizers are introduced.
 
-New API query hooks added to `libs/ui-components/src/api/v1/volume.ts`:
+No new custom hooks are needed. The existing generic `useApiFetch` and
+`useApiQuery` hooks are used to construct volume queries inline, following the
+established pattern:
 
-| Hook | RPC | Endpoint |
-|------|-----|----------|
-| `useVolumes` | `List` | `GET /api/fulfillment/v1/volumes` |
-| `useVolume` | `Get` | `GET /api/fulfillment/v1/volumes/{id}` |
+| Operation | RPC | Endpoint |
+|-----------|-----|----------|
+| List volumes | `List` | `GET /api/fulfillment/v1/volumes` |
+| Get volume | `Get` | `GET /api/fulfillment/v1/volumes/{id}` |
 
 No mutation hooks are needed — this release is read-only.
 
@@ -160,7 +163,6 @@ directly.
 |---|---|---|
 | `id` | `id` | Immutable system-generated identifier; used as route param |
 | `metadata.name` | `metadata.name` | Immutable RFC 1123 label; primary display name |
-| `metadata.displayName` | `metadata.display_name` | Optional human-friendly label |
 | `spec.storageTier` | `spec.storage_tier` | Storage tier name |
 | `spec.sizeGib` | `spec.size_gib` | Capacity in GiB |
 | `spec.accessMode` | `spec.access_mode` | `VolumeAccessMode` enum |
@@ -177,11 +179,10 @@ standard protobuf-to-TypeScript camelCase conversion.
 New files in `libs/ui-components/src/`:
 
 ```
-api/v1/volume.ts                            API hooks (useVolumes, useVolume)
 components/Volume/
   VolumeStatusLabel.tsx                      state badge (Creating/Available/Failed/Deleting)
   VolumeAccessModeLabel.tsx                  access mode display (ReadWriteOnce, etc.)
-  VolumeTable.tsx                            table with columns, sorting, filtering
+  VolumeTable.tsx                            table with columns and filtering
   VolumeDetailsCard.tsx                      spec/status summary card for detail page
 pages/tenant/
   VolumesListPage.tsx                        list page
@@ -189,28 +190,30 @@ pages/tenant/
   VolumeRoutes.tsx                           nested /storage/volumes/* router
 ```
 
-#### API hooks (`api/v1/volume.ts`)
+#### API usage (generic hooks)
 
-Follows the established pattern from `disk-image.ts` and
-`baremetal-instance.ts`:
+Volume pages use the existing generic `useApiFetch` and `useApiQuery` hooks
+— no custom per-resource hook file is needed. Usage follows the established
+pattern:
 
 ```ts
 import { VolumesService } from '@osac/types/public';
 
-export function useVolumes(options?: { filter?: string; offset?: number; limit?: number }) {
-  return useApiQuery(VolumesService, 'list', {
-    filter: options?.filter,
-    offset: options?.offset,
-    limit: options?.limit,
-  });
-}
+// Construct the API client with useApiFetch
+const volumeApi = useApiFetch(VolumesService);
 
-export function useVolume(id: string) {
-  return useApiQuery(VolumesService, 'get', { id }, { enabled: !!id });
-}
+// List volumes
+const volumes = useApiQuery(volumeApi, 'list', {
+  filter: celFilter,
+  offset,
+  limit,
+});
+
+// Get a single volume
+const volume = useApiQuery(volumeApi, 'get', { id }, { enabled: !!id });
 ```
 
-No mutation hooks, no `invalidateVolumesQueries` — read-only release.
+No mutation hooks — read-only release.
 
 #### Nav and routing changes (`apps/app-frontend`)
 
@@ -253,26 +256,31 @@ needed.
 | READ_ONLY_MANY | ReadOnlyMany |
 | READ_WRITE_MANY | ReadWriteMany |
 | READ_WRITE_ONCE_POD | ReadWriteOncePod |
-| UNSPECIFIED | Unknown |
+| UNSPECIFIED | Unspecified |
 
 Labels follow the Kubernetes PersistentVolume access mode naming convention
 that storage users are familiar with.
 
 #### Volume table columns (`VolumeTable`)
 
-| Column | Source field | Sortable | Notes |
-|--------|-------------|----------|-------|
-| Name | `metadata.name` | Yes | Link to `/storage/volumes/{id}`; shows `display_name` as subtitle if set |
-| Storage Tier | `spec.storage_tier` | Yes | Plain text |
-| Size | `spec.size_gib` | Yes | Formatted as `{n} GiB` |
-| Access Mode | `spec.access_mode` | No | `VolumeAccessModeLabel` |
-| State | `status.state` | No | `VolumeStatusLabel` badge |
-| Age | `metadata.created_at` | Yes | Relative time (e.g., "2h ago") |
+| Column | Source field | Notes |
+|--------|-------------|-------|
+| Name | `metadata.name` | Link to `/storage/volumes/{id}` |
+| State | `status.state` | `VolumeStatusLabel` badge |
+| Project | `metadata.project` | Project name |
+| Storage Tier | `spec.storageTier` | Plain text |
+| Size | `spec.sizeGib` | Formatted as `{n} GiB` |
+| Access Mode | `spec.accessMode` | `VolumeAccessModeLabel` |
+| Created | `metadata.createdAt` | Relative time (e.g., "2h ago") |
+
+Sortable columns are not supported by the OSAC UI table framework at this time
+and are deferred to future work.
 
 Filter toolbar:
-- State dropdown filter (maps to CEL: `this.status.state == {value}`)
-- Free-text name search (client-side filter on `metadata.name` and
-  `metadata.display_name`)
+- State dropdown filter (uses the shared CEL builder with typed `VolumeState`
+  enum values)
+- Name filter (CEL server-side filter on `metadata.name`)
+- Project filter (CEL server-side filter on `metadata.project`)
 
 #### Volume detail page (`VolumeDetailsPage`)
 
@@ -287,7 +295,6 @@ Detail overview card sections:
 **Identification:**
 - ID (copyable)
 - Name
-- Display Name (if set)
 
 **Configuration:**
 - Storage Tier
@@ -338,6 +345,11 @@ as other resources). The API enforces tenant isolation server-side:
 
 The UI does not implement any client-side visibility filtering — row scoping is
 handled entirely by the fulfillment service.
+
+**Future consideration:** Shared volumes (volumes visible to multiple tenants
+via explicit sharing policies) are not modeled in this release. If the Volume
+API introduces sharing semantics in a later phase, the list page may need an
+additional filter or visual indicator for shared vs. owned volumes.
 
 ### Observability and Monitoring
 
@@ -398,11 +410,9 @@ Unit tests (Vitest + React Testing Library):
   links volume name to `/storage/volumes/{id}`.
 - `VolumeTable` state filter dropdown generates the correct CEL filter string.
 - `VolumeDetailsCard` renders all sections (identification, configuration,
-  status, metadata) and handles missing optional fields (display_name absent,
-  message absent).
-- `useVolumes` hook calls `VolumesService.list` with correct parameters.
-- `useVolume` hook calls `VolumesService.get` with the volume id and is
-  disabled when id is empty.
+  status, metadata) and handles missing optional fields (message absent).
+- Volume list query via `useApiFetch(VolumesService)` + `useApiQuery` returns
+  correct data for list and get operations.
 
 ### Integration Tests
 
