@@ -82,12 +82,13 @@ managed-switch infrastructure, limiting where the platform can run.
 - SecurityGroup policy enforcement is out of scope for this feature and
   deferred to a later networking policy design. This feature does not define
   policy resources, policy semantics, or per-resource traffic restrictions.
-  Policy-dependent requests are rejected before any VLAN, routing, attachment,
-  DNAT, or SNAT dataplane state is programmed; they are never silently ignored
-  or reported Ready. Until the later policy feature exists, internal traffic is
-  default-permit both within a Subnet and between Subnets in the same
-  VirtualNetwork. External ingress/egress authorization is supplied by
-  provider-managed default-deny perimeter controls outside this feature.
+  Until the later policy feature exists, all routed traffic is permitted,
+  including internal traffic within a Subnet, traffic between Subnets in the
+  same VirtualNetwork, and external ingress and egress through the supported
+  external access paths. Same-subnet L2 traffic is also permitted. This
+  default-permit behavior does not create routes between otherwise isolated
+  VirtualNetworks; where the networking topology provides a supported route,
+  the traffic is permitted without provider-managed default-deny controls.
   [User direction]
 - Broad multi-vendor switch support and switch-configuration concurrency beyond the
   initially supported platform(s) are follow-up work; the supported-switch set for
@@ -149,10 +150,10 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - **FR-2:** With the agentless VLAN backend configured, tenants can create and
   manage the VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and
-  NATGateway resources through the existing networking
-  API, with behavior equivalent to the Netris backend. Requests that rely on
-  deferred policy resources or policy fields fail clearly as unsupported rather
-  than being ignored. [Clarify: D1, D5, D8; User direction]
+  NATGateway resources through the existing networking API, with behavior
+  equivalent to the Netris backend. SecurityGroup resources and policy
+  enforcement are not delivered by this feature. [Clarify: D1, D5, D8;
+  User direction]
 
 #### Multiple Subnets per Virtual Network
 
@@ -178,13 +179,10 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - **FR-5:** A tenant can make a machine reachable from outside its VirtualNetwork
   by attaching an ExternalIP; inbound traffic addressed to the external IP reaches
-  the machine through the external access path. The provider is responsible for
-  default-deny perimeter authorization; tenant ingress policy is deferred. The
-  deployment must advertise and verify a default-deny ingress capability covering
-  the external paths used by its ExternalIPAttachments. If that capability is
-  missing or cannot be verified, the ExternalIPAttachment remains non-Ready and
-  reports a diagnostic identifying unsupported ingress authorization. This
-  capability is deployment-scoped, not a per-attachment policy resource.
+  the machine through the external access path. Routed inbound traffic through
+  that path is permitted by default until a future SecurityGroup-like policy
+  mechanism is delivered; no provider-managed default-deny authorization
+  capability is required for the ExternalIPAttachment to become Ready.
   [Jira: OSAC-3664; User direction]
 
 #### Outbound External Connectivity
@@ -192,12 +190,10 @@ managed-switch infrastructure, limiting where the platform can run.
 - **FR-6:** A tenant can provide outbound external connectivity for a subnet's
   machines through a NATGateway. Outbound traffic is source-address translated
   so it egresses with the NATGateway's external IP as its source address; many
-  machines share that one external IP for egress. Provider-managed perimeter
-  controls with default-deny egress authorization covering outbound traffic from
-  subnets using the NATGateway are required before it is Ready. If that capability
-  is missing or cannot be verified, the NATGateway remains non-Ready and reports
-  a diagnostic identifying unsupported egress authorization. This capability is
-  deployment-scoped and tenant egress policy is deferred.
+  machines share that one external IP for egress. Routed outbound traffic through
+  that path is permitted by default until a future SecurityGroup-like policy
+  mechanism is delivered; no provider-managed default-deny authorization
+  capability is required for the NATGateway to become Ready.
   [Jira: OSAC-3664; Clarify: D14; User direction]
 
 #### External IP Pools
@@ -214,31 +210,16 @@ managed-switch infrastructure, limiting where the platform can run.
   network-attachment API. End-to-end per-service provisioning and validation are
   delivered by the follow-up features (see Non-Goals). [Clarify: D1, D8; PR review: CodeRabbit]
 
-- ~~**FR-9:**~~ Removed — default networking is a tenant-onboarding / generic-API
-  concern, not this backend. OSAC-1433 defines the shared networking architecture
-  but does not require this backend to create a default SecurityGroup. The
-  Agentless VLAN deployment does not create one by default; a Cloud Infrastructure
-  Admin may create one only after SecurityGroup support is delivered for this
-  backend. Until then, SecurityGroup-dependent requests are rejected as
-  unsupported. This feature introduces no DefaultNetworkingReady or Tenant READY
-  dependency on a default SecurityGroup; any future default-networking readiness
-  behavior is outside this implementation. The backend configures the fabric only
-  for supported resources attached to a network resource.
-  [User direction; PR review: CodeRabbit]
-
 #### Failure Visibility
 
-- **FR-10:** When a backend networking operation fails (for example, a machine's
+- **FR-9:** When a backend networking operation fails (for example, a machine's
   port cannot be placed on the requested subnet's VLAN), the failure is reflected
-  on the affected networking resource's status with a diagnostic message. If a
-  required provider-managed perimeter capability is missing or cannot be verified,
-  the affected ExternalIPAttachment or NATGateway remains non-Ready and its status
-  identifies the unsupported ingress or egress authorization.
+  on the affected networking resource's status with a diagnostic message.
   [Clarify: D9]
 
 #### Lifecycle Cleanup
 
-- **FR-11:** When a networking resource is deleted, the backend removes that
+- **FR-10:** When a networking resource is deleted, the backend removes that
   resource's fabric configuration and releases any addresses it allocated, without
   affecting other resources. Teardown respects dependency order — an
   ExternalIPAttachment's inbound DNAT is removed before its ExternalIP is released
@@ -268,25 +249,20 @@ managed-switch infrastructure, limiting where the platform can run.
   automatically receives an IP on that subnet, visible in its status.
 - [ ] A tenant attaches an ExternalIP to a machine and inbound traffic reaches
   the machine through the external access path.
-- [ ] A tenant creates a NATGateway; a subnet machine's permitted outbound traffic
-  reaches an external endpoint, which observes the NATGateway's external IP as the
-  source address.
-- [ ] If provider-managed default-deny ingress authorization is missing or cannot
-  be verified, an ExternalIPAttachment remains non-Ready and its status reports
-  unsupported ingress authorization; after verification succeeds, it can become
-  Ready.
-- [ ] If provider-managed default-deny egress authorization is missing or cannot
-  be verified, a NATGateway remains non-Ready and its status reports unsupported
-  egress authorization; after verification succeeds, it can become Ready.
-- [ ] Requests that depend on deferred SecurityGroup policy fail clearly as
-  unsupported before any fabric configuration is applied and do not become Ready.
+- [ ] A tenant creates a NATGateway; a subnet machine's outbound traffic reaches
+  an external endpoint, which observes the NATGateway's external IP as the source
+  address.
+- [ ] An ExternalIPAttachment and NATGateway become Ready without
+  provider-managed default-deny authorization verification, and routed traffic
+  through their supported external paths is permitted by default until a future
+  SecurityGroup-like policy mechanism is delivered.
 - [ ] A tenant creates a VirtualNetwork with two subnets: machines in the same
   subnet share a broadcast domain, machines in different subnets of that network
   can reach each other by default through the VirtualNetwork routing path, and machines in a
   different VirtualNetwork with the same address range cannot reach those private
   addresses directly on the fabric.
 - [ ] Resources placed in the same Subnet can communicate at L2; internal
-  traffic is default-permit until the later policy feature is delivered.
+  traffic is permitted by default until the later policy feature is delivered.
 - [ ] A machine in one VirtualNetwork can reach a machine in another VirtualNetwork
   via the target's ExternalIP over the external path, even though the target's
   private subnet address remains directly unreachable.
@@ -301,8 +277,8 @@ managed-switch infrastructure, limiting where the platform can run.
   networking resource's status with a diagnostic message.
 - [ ] The same networking API requests produce equivalent tenant-observable
   virtual-network, subnet, inbound external-access, and outbound-NAT results on
-  an agentless-VLAN deployment as on a Netris deployment; policy enforcement is
-  explicitly deferred.
+  an agentless-VLAN deployment as on a Netris deployment; all supported routed
+  traffic is permitted by default until the future policy feature is delivered.
 - [ ] Selecting between the Netris and agentless VLAN backends is a provider
   configuration — not visible to tenants and requiring no API change.
 - [ ] Deleting an ExternalIPAttachment removes the inbound DNAT; deleting its
