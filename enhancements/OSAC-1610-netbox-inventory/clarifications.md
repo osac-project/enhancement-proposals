@@ -1,4 +1,4 @@
-# Clarification Log — OSAC-4346
+# Clarification Log — OSAC-1610
 
 ## Status
 
