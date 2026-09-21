@@ -4,19 +4,27 @@ on:
   pull_request:
     paths:
       - '.github/scripts/ep_*.py'
+      - '.github/scripts/tp_*.py'
+      - '.github/scripts/comment_upsert.py'
       - '.github/scripts/check_ep_naming.py'
       - '.github/scripts/test_*ep*.py'
+      - '.github/scripts/test_tp*.py'
       - '.github/scripts/testdata/**'
       - '.github/scripts/requirements.txt'
       - '.github/workflows/test-ep-review.yml'
+
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
         with:
           python-version: "3.13"
 
@@ -25,7 +33,7 @@ jobs:
           cd .github/scripts
           pip install -r requirements.txt
 
-      - name: Run EP review tests
+      - name: Run review tests
         run: |
           cd .github/scripts
-          python3 -m unittest discover -s . -p "test_*ep*.py" -v
+          python3 -m unittest discover -s . -p "test_*.py" -v

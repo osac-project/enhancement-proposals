@@ -29,7 +29,7 @@ superseded-by:
 
 - **BareMetalInstance** provisioning (separate PRD)
 - **Template parameters**
-- **Multi-NIC** — wizard submits one `network_attachments` entry (one VN, one subnet, security groups); no add/remove NIC rows
+- **Multi-NIC** — out of scope; the wizard submits at most one `network_attachments` entry (one VN, one subnet, security groups), with no add/remove NIC rows. The plural field is retained for API compatibility.
 - **Cluster template `node_sets` defaults** — the wizard does **not** load, display, or apply `ClusterTemplate.spec.node_sets` (`host_type` or `size` defaults)
 - **`spec.additional_disks`** — wizard scope undecided ([§5](#5-open-decisions)); default: boot disk only
 
@@ -64,7 +64,8 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 - **`spec.instance_type`**: Configuration-step **instance type** picker — tenant selects a named compute bundle (cores + memory) from [§2.1.5](#215-vm-instance-type-picker-api). Payload sends **`spec.instance_type` only** (instance type name); the wizard does **not** collect or send `spec.cores` or `spec.memory_gib` ([VM Instance Types EP](/enhancements/OSAC-46-vm-instance-types), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735) / OSAC-1217). The API validates the name and state; the reconciler resolves cores/memory on the CR. Catalog `field_definitions` for this path are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)).
 - **Disks**: wizard collects `spec.boot_disk.size_gib` only unless [§5](#5-open-decisions) chooses `spec.additional_disks`.
 - **`spec.ssh_key`**: optional on the General step — prefill from catalog `default` when defined ([§2.1.2](#212-catalog-overlay-and-defaults)); tenant may edit when `editable: true` or clear the field. Omit from the client create payload only when the field is blank after catalog selection or user edits. Include the parsed plain string in the payload when the wizard holds a value (prefilled default or user entry).
-- **Networking**: pickers assemble a single `spec.network_attachments` entry; raw JSON not shown. Catalog `field_definitions` for this path (including nested paths) are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
+- **Networking**: pickers assemble a single `spec.network_attachments` entry; raw JSON not shown. The API rejects a second entry. Catalog `field_definitions` for this path (including nested paths) are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
+- The direct VM API also permits an omitted or empty attachment list and applies normal tenant-default resolution. The v1 wizard intentionally requires one picker-selected entry and always emits one; this UI requirement does not change the API's zero-or-one contract.
 
 **Cluster**
 
@@ -131,27 +132,27 @@ The wizard loads picker options from the **public** fulfillment APIs (`osac.publ
 **Subnet and security group filters** (after virtual network selection):
 
 ```text
-this.spec.virtual_network == "<vn-id>"
+this.spec.virtual_network.name == "<vn-name>"
 ```
 
 **Picker display and values:**
 
 | Picker | Option label | Selected value |
 | ------ | ------------ | -------------- |
-| Virtual network | `metadata.name` (fallback `id`) | VirtualNetwork `id` — drives subnet/SG list filters only |
-| Subnet | `metadata.name` (fallback `id`) | Subnet `id` |
-| Security group | `metadata.name` (fallback `id`) | SecurityGroup `id` (multi-select) |
+| Virtual network | `metadata.name` | VirtualNetwork `metadata.name` — drives subnet/SG list filters only |
+| Subnet | `metadata.name` | Subnet `metadata.name` |
+| Security group | `metadata.name` | SecurityGroup `metadata.name` (multi-select) |
 
 **Create payload assembly** — one `spec.network_attachments` element:
 
 ```json
 {
-  "subnet": "<subnet-id>",
-  "security_groups": ["<security-group-id>"]
+  "subnet": { "name": "<subnet-name>" },
+  "security_groups": [{ "name": "<security-group-name>" }]
 }
 ```
 
-Per `NetworkAttachment` in `compute_instance_type.proto`. The wizard does not send virtual network ID in `network_attachments`; placement is implied by the subnet (security groups must belong to the same virtual network).
+Per `ComputeNetworkAttachment` in `compute_instance_type.proto`. The wizard does not send virtual network ID in `network_attachments`; placement is implied by the subnet (security groups must belong to the same virtual network).
 
 **Load order:** virtual network list → on selection, load filtered subnet and security group lists → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
 

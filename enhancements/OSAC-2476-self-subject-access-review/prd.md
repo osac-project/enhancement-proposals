@@ -15,7 +15,7 @@ Authenticated users (tenant admins and tenant users) currently have no way to ch
 - **Permission check API** that allows authenticated users to check their own permissions on OSAC resources without performing the actual operation
 - **Request specification** describing the hypothetical operation to check:
   - Resource type (e.g., Cluster, ComputeInstance, VirtualNetwork, Subnet, SecurityGroup, User, Tenant)
-  - Verb (create, get, update, delete, list)
+  - Verb supported by the resource (create, get, delete, list; update only where the resource API exposes it)
   - Optional tenant name and resource name to scope the hypothetical operation (the authenticated user's identity is always determined from the request's authentication context, never from request fields)
 - **Response** indicating whether the authenticated user would be authorized:
   - `allowed` boolean field showing whether the permission check passed
@@ -23,7 +23,7 @@ Authenticated users (tenant admins and tenant users) currently have no way to ch
 - **Advisory results** — permission check results reflect authorization state at check time; the actual operation must independently re-evaluate authorization since permissions and resource state may change between the check and the operation
 - **Authorization consistency** — permission check results must match the authorization decision that would be made for the same user attempting the same operation (same resource type, verb, tenant, and resource name) at the time of the check
 - **User identity determination** — the API determines the authenticated user's identity, tenants, and roles automatically from authentication context (no separate identity parameters)
-- **Comprehensive resource coverage** — support permission checks for all OSAC resource types and standard verbs (note: user management and quota scenarios referenced in user stories translate to permission checks on underlying resource operations like creating/updating User or Tenant resources)
+- **Comprehensive resource coverage** — support permission checks for all OSAC resource types and the verbs each resource supports (networking resources governed by OSAC-1433 omit Update; user management and quota scenarios referenced in user stories translate to permission checks on underlying resource operations like creating/updating User or Tenant resources)
 - **Access control** — any authenticated user can call the endpoint to check their own permissions
 - **Validation** — tests must demonstrate that permission check results match actual authorization outcomes for allowed and denied scenarios across different roles (Admin, Tenant Admin, Client) and resource types
 - **API documentation** describing the endpoint, request/response schemas, usage examples, and the advisory nature of results
@@ -43,8 +43,8 @@ Authenticated users (tenant admins and tenant users) currently have no way to ch
 
 ### Tenant User
 
-- As a tenant user, I want to check whether I have permission to create, update, or delete infrastructure resources (ComputeInstance, Subnet, SecurityGroup) in a specific tenant before starting the workflow, so that the UI and CLI can validate permissions upfront and warn me before I invest effort in changes I cannot save
-- As a tenant user, I want to check resource-scoped permissions (update or delete operations on a specific resource by name) before enabling edit or delete actions, so that I know whether I can modify a particular resource before attempting the operation
+- As a tenant user, I want to check whether I have permission to create, read, or delete infrastructure resources (ComputeInstance, Subnet, SecurityGroup) in a specific tenant before starting the workflow, while checking workload Update permissions separately where supported, so that the UI and CLI can validate permissions upfront and warn me before I invest effort in changes I cannot save
+- As a tenant user, I want to check resource-scoped delete permissions on a specific networking resource by name, and Update permissions only where the resource API supports Update, before enabling edit or delete actions, so that I know which operations are available before attempting them
 
 ## Assumptions
 

@@ -62,7 +62,7 @@ CaaS requires bare-metal compute to back OpenShift cluster worker nodes. Today, 
 - **BareMetalInstanceType definitions `[Jira: OSAC-2675]`:** Resource class specifications must be finalized so that ClusterOrder can reference them.
 - **BMaaS host lifecycle API:** BMaaS must support requesting, observing readiness of, and releasing bare-metal hosts so that CaaS can manage the full provisioning lifecycle.
 - **Cluster-specific host preparation:** BMaaS must support provisioning hosts preconfigured for a specific cluster, so that CaaS can request worker nodes without separate configuration steps.
-- **BMaaS networking for subnet attachment `[Jira: OSAC-1437]`:** BMaaS must support network attachments on BareMetalInstances so that CaaS-managed worker hosts are moved to the cluster's tenant subnet as part of the BMI lifecycle.
+- **BMaaS networking for subnet attachment `[Jira: OSAC-1437]`:** BMaaS must support the plural `network_attachments` compatibility field on BareMetalInstances while accepting at most one entry, so that each CaaS-managed worker is moved to the cluster's tenant subnet as part of the BMI lifecycle. CaaS does not provide multi-NIC worker networking.
 
 ---
 

@@ -3,7 +3,7 @@ title: api-quality
 authors:
   - htayrie@redhat.com
 creation-date: 2026-07-26
-last-updated: 2026-07-26
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1577
 prd:
@@ -253,7 +253,7 @@ Tables requiring `active_` companions (based on existing Pattern A triggers):
 
 | Table | Reason |
 |-------|--------|
-| `active_subnets` | Referenced by compute_instances |
+| `active_subnets` | Referenced by each ComputeInstance network attachment |
 | `active_virtual_networks` | Referenced by subnets, security_groups, nat_gateways |
 | `active_instance_types` | Referenced by compute_instances |
 | `active_cluster_catalog_items` | Referenced by clusters |
@@ -315,18 +315,34 @@ Since OSAC stores references in the JSONB `data` column (not in dedicated SQL co
 ```sql
 CREATE TABLE compute_instance_subnet_refs (
   compute_instance_id TEXT NOT NULL REFERENCES compute_instances(id) ON DELETE CASCADE,
+  attachment_index INTEGER NOT NULL CHECK (attachment_index >= 0),
   subnet_id TEXT NOT NULL REFERENCES active_subnets(id),
-  PRIMARY KEY (compute_instance_id)
+  PRIMARY KEY (compute_instance_id, attachment_index)
 );
 ```
 
-A trigger on `compute_instances` materializes the `subnet_id` from the JSONB `data` column into this ref table:
+A trigger on `compute_instances` materializes one row for every entry in the
+ComputeInstance network-attachment array from the JSONB `data` column. The
+`attachment_index` is the zero-based position in that immutable array and is
+the attachment-level identity for this dependency table; it allows multiple
+attachments to reference the same subnet. For ComputeInstance network
+attachments governed by [OSAC-1433](../OSAC-1433-unified-networking/design.md),
+the attachment list and its fields are create-time inputs and cannot be
+updated in place:
 
-- **INSERT** (active instance): extract `subnet_id` from JSONB `data`, insert into ref table
-- **UPDATE** (reference change): update ref table row with new `subnet_id`
-- **Soft-delete** (instance `deletion_timestamp` set): remove row from ref table — the instance is no longer an active child
-- **Undelete** (instance `deletion_timestamp` reset to epoch): re-insert ref row from JSONB `data`
-- **Hard-delete** (row deleted): `ON DELETE CASCADE` on `compute_instance_id` removes the ref row
+- **INSERT** (active instance): iterate every network attachment, extract its
+  `subnet_id`, and insert `(compute_instance_id, attachment_index, subnet_id)`.
+- **UPDATE**: do not mutate attachment reference rows. A change to the
+  network-attachment array is rejected by the resource immutability rule; an
+  update to unrelated ComputeInstance fields leaves all attachment rows
+  unchanged. Soft-delete and undelete are the only update transitions handled
+  by this trigger.
+- **Soft-delete** (instance `deletion_timestamp` set): remove all rows for the
+  instance — it is no longer an active child.
+- **Undelete** (instance `deletion_timestamp` reset to epoch): re-insert one
+  row per network attachment from JSONB `data`.
+- **Hard-delete** (row deleted): `ON DELETE CASCADE` on `compute_instance_id`
+  removes every attachment row.
 
 The FK from `subnet_id` to `active_subnets(id)` enforces that the referenced subnet is active. Migration backfill inserts refs only for currently active compute instances (`deletion_timestamp = 'epoch'`).
 
@@ -339,8 +355,12 @@ A single migration (next available number after 79), executed in one transaction
 3. Lock all affected source tables (`LOCK TABLE <table> IN SHARE ROW EXCLUSIVE MODE`) to prevent concurrent writes during backfill
 4. Backfill `active_<table>` tables from existing data (`INSERT INTO active_<table> SELECT id FROM <table> WHERE deletion_timestamp = 'epoch'`)
 5. Attach `maintain_active_objects` triggers to parent tables
-6. Create materialized ref tables for each parent-child relationship
-7. Backfill ref tables from existing JSONB data (active instances only: `WHERE deletion_timestamp = 'epoch'`)
+6. Create or migrate materialized ref tables for each parent-child relationship;
+   `compute_instance_subnet_refs` uses the composite primary key
+   `(compute_instance_id, attachment_index)` rather than one row per instance
+7. Backfill ref tables from existing JSONB data (active instances only:
+   `WHERE deletion_timestamp = 'epoch'`), inserting one row per network
+   attachment with its stable array index
 8. Attach ref materialization triggers to child tables
 9. Drop the old per-resource Pattern A triggers (e.g., `DROP TRIGGER check_subnets_not_in_use ON subnets`)
 10. Drop the old per-resource Pattern A trigger functions (e.g., `DROP FUNCTION check_subnets_not_in_use()`) from migrations 52, 55, 56, 59, 73, 76
