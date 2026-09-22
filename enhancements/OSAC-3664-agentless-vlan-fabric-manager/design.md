@@ -1463,6 +1463,8 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | VLAN state sidecar lock unavailable | Retry with backoff; preserve existing allocation and do not use the data-file inode as a lock | Provisioning remains pending with lock diagnostic |
 | State JSON is malformed, truncated, or an unknown schema version | Fail closed; do not allocate, release, or mutate provider state. Validate the `.bak` generation and require the explicit recovery action | Resource condition identifies `StateCorrupt`; existing state remains untouched |
 | Crash leaves a stale state temporary file or backup | Ignore temporary files; validate current state and `.bak` under the sidecar lock, then resume only after one complete generation is selected | Recovery event identifies the selected last-known-good generation |
+| Net node is unreachable or its BGP/dnsmasq preflight fails | Block all fabric mutations, provider commits, cleanup releases, and finalizer removal; requeue after health recovers | `NetNodeUnavailable` condition is visible; existing resources remain degraded |
+| Net-node restore cannot rehydrate namespaces, DHCP, routes, or translations | Keep mutations and releases blocked; restore from the validated backup or surface the exact failed phase | `NetNodeRestoreFailed` condition identifies the phase; no new `/32` is advertised |
 | VLAN allocation exhausted or already owned | Do not reuse an allocated ID; fail the requested generation | Failed condition identifies VLAN allocation exhaustion/conflict |
 | ExternalIP state sidecar lock unavailable or pool has no free address | Retry without changing an existing `HELD` reservation; do not publish an address or bypass the shared lock | ExternalIP remains non-ready with an allocation diagnostic and capacity remains held once |
 | ExternalIP provider-result annotation is missing, stale, malformed, or out of pool | Reject the result before `ALLOCATED`; retain the same reservation and retry the current generation; do not record a successful config version | ExternalIP remains Pending/Progressing with a provider-result condition |
@@ -1491,6 +1493,35 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 All create/delete/attach/detach operations are keyed by stable resource or
 binding UID and desired generation. AAP retries must be safe after a controller
 restart or lost job response. [Codebase: osac-operator/pkg/provisioning/provision_lifecycle.go]
+
+#### Net-node availability and restore contract
+
+This milestone has one authoritative net node and no automatic standby. A
+net-node preflight checks reachability, state-file validation, namespace
+inventory, dnsmasq services, and the provider BGP session before a fabric
+mutation is accepted. When the node is unavailable, the operator reports
+`NetNodeUnavailable`, blocks new or modifying VirtualNetwork/Subnet,
+attachment, NAT, and ExternalIP provider operations, and retains all relevant
+finalizers and capacity reservations. It does not mark an unobserved provider
+operation committed or release an address during the outage.
+
+If the node process and kernel state remain alive, existing L2/routed flows may
+continue while new control-plane changes are blocked. A node reboot or network
+namespace loss breaks active connections and may withdraw upstream `/32`
+routes; the design does not promise connection or conntrack continuity across
+that failure. Existing resources remain represented but degraded until the
+restore sequence completes.
+
+Recovery acquires the sidecar state lock, validates the current generation or
+explicitly restores the last-known-good backup, then recreates namespaces,
+veths, VLAN interfaces, gateways, forwarding, dnsmasq from preserved lease
+files, and owned DNAT/SNAT rules. It restores BGP `/32` routes only after the
+corresponding namespace path and translations are verified. Conntrack state is
+not persisted; old connections must reconnect, while new connections are
+allowed only after the restored rules and routes pass health checks. A malformed
+state or failed restore keeps mutations blocked and surfaces `StateCorrupt` or
+`NetNodeRestoreFailed` rather than guessing or releasing resources.
+
 ### RBAC / Tenancy
 
 No new RBAC or authentication policy is required. Existing OPA and attribution
@@ -1532,6 +1563,8 @@ existing controller/AAP boundaries:
 |---|---|---|
 | NetworkManagerUnavailable | Warning | Manager registration or capability lookup fails |
 | FabricOperationFailed | Warning | AAP create/update/delete job fails |
+| NetNodeUnavailable | Warning | Net-node reachability, state, dnsmasq, or BGP preflight fails |
+| NetNodeRestoreFailed | Warning | Namespace, DHCP, route, or translation rehydration fails |
 | VLANAllocationFailed | Warning | VLAN allocation cannot complete |
 | TransitLinkFailed | Warning | A per-VirtualNetwork transit `/30`, veth, or namespace route cannot be created or repaired |
 | ExternalIPReservationBlocked | Warning | A durable allocation or consumer reservation cannot advance |
@@ -1755,6 +1788,9 @@ not a substitute for that testplan.
 - Exercise state writes interrupted before, during, and after rename; verify
   sidecar-lock serialization, parent-directory durability, old-or-new complete
   JSON, `.bak` recovery, and fail-closed malformed-state handling.
+- Verify net-node preflight blocks mutations and capacity release while the
+  node is unavailable, then rehydrates namespaces, dnsmasq, routes, and NAT
+  from the validated state; confirm old conntrack flows are not promised.
 - Allocate one transit `/30` per VirtualNetwork and preserve its namespace/host
   addresses, next hop, and route identity across retries.
 - Map resource UID, tenant, VirtualNetwork, Subnet, and attachment identity to
@@ -1810,6 +1846,9 @@ not a substitute for that testplan.
   controller/AAP restart recovery from `port_bindings`. Verify the BMF power
   and reboot gates before DHCP discovery and before tenant-to-provisioning
   restoration.
+- Stop and restart the net node during Ready traffic and cleanup; verify
+  existing resources become degraded, new operations are blocked, BGP routes
+  are restored after the data path, and capacity is not released early.
 - Exercise AAP role argument validation and idempotent create/delete for the
   Cumulus support contract.
 - Verify all VLAN/IPAM writers use the shared sidecar-lock transaction and that
@@ -1933,10 +1972,12 @@ Support personnel diagnose failures in this order:
 1. Inspect the resource's status conditions and provisioning job history.
 2. Confirm the NetworkClass points to a discovered IPv4-capable
    'agentless_net' ConfigMap.
-3. Inspect AAP job status, 'leases' artifacts, provider-result annotations,
+3. Check net-node reachability, state validation, namespace inventory, dnsmasq
+   services, and BGP session health before inspecting AAP jobs.
+4. Inspect AAP job status, 'leases' artifacts, provider-result annotations,
    reservation events, dnsmasq unit/configuration and lease paths, and the
    agentless role logs.
-4. Check the lock-protected state file for the resource UID, VLAN,
+5. Check the lock-protected state file for the resource UID, VLAN,
    gateway/DHCP, namespace, transit `/30`, veth peer addresses, provider-side
    ExternalIP allocation, saved BGP `/32` prefix/next hop, and owned NAT/DNAT
    rule mapping. Compare any ExternalIP address with
@@ -1945,7 +1986,7 @@ Support personnel diagnose failures in this order:
    state and pool counters before diagnosing capacity. Also inspect the stable
    sidecar lock, schema validation result, last-known-good `.bak`, and any
    `StateCorrupt` or recovery event before attempting a repair.
-5. Verify Cumulus VLAN/trunk/access-port state and the net-node namespace,
+6. Verify Cumulus VLAN/trunk/access-port state and the net-node namespace,
    interfaces, route/BGP installation or withdrawal, exact whole-address DNAT,
    explicit `SNAT --to-source` rules, and conntrack state. Confirm that no
    host-side MASQUERADE rule can overwrite the NATGateway source address. For
