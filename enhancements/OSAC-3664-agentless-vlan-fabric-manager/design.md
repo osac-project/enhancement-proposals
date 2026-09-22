@@ -433,7 +433,7 @@ failure message in the existing provisioning history and status condition.
 
 - If the manager ConfigMap is absent, dispatch stops before an external side
   effect and the resource reports a configuration failure.
-- If VLAN allocation or the state-file lock fails, the operation is retried
+- If VLAN allocation or the state sidecar lock fails, the operation is retried
   without changing existing allocations.
 - If switch configuration succeeds but net-node configuration fails, the
   controller retries the missing desired state and cleanup logic removes the
@@ -1081,7 +1081,38 @@ serialized names may follow the current collection conventions, but the state
 must be keyed by stable OSAC resource identifiers rather than arbitrary
 cluster-purpose strings. State writes are atomic, locked, and idempotent. A
 state schema version permits an additive migration if the backend state format
-changes. [Codebase: osac-aap/collections/ansible_collections/agentless_net/ipam]
+changes. The write protocol is:
+
+1. Derive a stable sidecar lock path, for example
+   `<state-path>.lock`, and open it with `O_CREAT` before every read or write.
+   Acquire an exclusive `flock` on this sidecar; never lock the data-file inode,
+   because atomic rename replaces that inode and would allow concurrent writers.
+2. Under the sidecar lock, read and strictly validate the current JSON schema,
+   including duplicate UID/VLAN/address checks and all cross-references. A
+   missing file is initialized only during first installation when no backup
+   exists; a missing file after a generation was committed is corruption. A
+   malformed or unknown-version state fails closed: no allocation, release,
+   route change, or successful AAP result is allowed.
+3. Serialize the complete next state to a uniquely named temporary file in the
+   same directory and filesystem, set its restrictive mode, flush it, and call
+   `fsync` on the temporary file.
+4. Before replacing the current state, write the validated current bytes to a
+   same-filesystem `<state-path>.bak` temporary file, `fsync` it, atomically
+   rename it to the backup path, and `fsync` the parent directory.
+5. Atomically rename the new temporary state over the data path and `fsync` the
+   parent directory before releasing the sidecar lock. Stale temporary files
+   are never treated as state.
+
+This ordering guarantees that a crash at any byte of a write leaves either the
+previous complete state or the next complete state; it cannot expose partial
+JSON. The backup is the last-known-good generation. If the current file is
+malformed or missing, the role reports `StateCorrupt` and stops. An operator
+recovery action validates the backup and restores it through the same locked
+temporary-file/rename protocol; recovery never silently overwrites malformed
+state. The existing low-level IPAM allocation tasks that use `r+`, `seek`,
+`write`, `truncate`, and `fsync` on the data file are not reusable unchanged;
+they must be converted to this shared transaction helper before participating
+in the unified state file. [Codebase: osac-aap/collections/ansible_collections/agentless_net/ipam]
 
 ##### API action state transitions
 
@@ -1248,7 +1279,9 @@ The agentless implementation must provide:
 - Shared step roles for VLAN/IPAM, router namespace, DHCP, forwarding baseline,
   BGP `/32` announce/withdraw, whole-address DNAT, explicit-source SNAT, and
   Cumulus port configuration. The BGP action receives the saved `route_prefix`
-  and `route_next_hop`; it must verify withdrawal before cleanup proceeds.
+  and `route_next_hop`; it must verify withdrawal before cleanup proceeds. All
+  state-changing roles use the shared sidecar-lock/temp-file/rename transaction
+  and do not call the old in-place IPAM writer.
 - Role argument validation and idempotent create/delete behavior.
 
 The generic attachment playbook must not derive a detach target from the
@@ -1358,9 +1391,11 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | Manager ConfigMap missing or capability mismatch | Stop before AAP side effects; requeue after manager discovery changes | Resource condition identifies missing manager/capability |
 | Networking CR lookup uses a tenant namespace, name-only selector, or mismatched tenant/owner attribution | Stop before mutation; reselect `$OSAC_NETWORKING_NAMESPACE` and retry by stable UUID with server-set attribution | Resource condition identifies namespace/attribution mismatch |
 | Invalid NetworkClass, unsupported IPv6 request, or Subnet prefix `/31`/`/32` | API/controller validation rejects before provisioning | Invalid argument or failed condition names the unsupported address family or prefix; no AAP job or fabric state is created |
-| VLAN state lock unavailable | Retry with backoff; preserve existing allocation | Provisioning remains pending with lock diagnostic |
+| VLAN state sidecar lock unavailable | Retry with backoff; preserve existing allocation and do not use the data-file inode as a lock | Provisioning remains pending with lock diagnostic |
+| State JSON is malformed, truncated, or an unknown schema version | Fail closed; do not allocate, release, or mutate provider state. Validate the `.bak` generation and require the explicit recovery action | Resource condition identifies `StateCorrupt`; existing state remains untouched |
+| Crash leaves a stale state temporary file or backup | Ignore temporary files; validate current state and `.bak` under the sidecar lock, then resume only after one complete generation is selected | Recovery event identifies the selected last-known-good generation |
 | VLAN allocation exhausted or already owned | Do not reuse an allocated ID; fail the requested generation | Failed condition identifies VLAN allocation exhaustion/conflict |
-| ExternalIP state lock unavailable or pool has no free address | Retry without changing an existing `HELD` reservation; do not publish an address | ExternalIP remains non-ready with an allocation diagnostic and capacity remains held once |
+| ExternalIP state sidecar lock unavailable or pool has no free address | Retry without changing an existing `HELD` reservation; do not publish an address or bypass the shared lock | ExternalIP remains non-ready with an allocation diagnostic and capacity remains held once |
 | ExternalIP provider-result annotation is missing, stale, malformed, or out of pool | Reject the result before `ALLOCATED`; retain the same reservation and retry the current generation; do not record a successful config version | ExternalIP remains Pending/Progressing with a provider-result condition |
 | ExternalIP allocation fails before atomic provider-state commit | Require a provider `NOT_COMMITTED` result or an inspect job before compensation; retain capacity while retryable and release it exactly once only after terminal failure/deletion | ExternalIP remains non-ready during retry; capacity is restored only after authoritative compensation |
 | ExternalIP deletion races allocation or provider cleanup | Serialize by ExternalIP UUID; keep `release_requested` and the finalizer until `NOT_COMMITTED` or `CLEANUP_COMPLETE` is acknowledged by fulfillment-service | No address becomes reusable until provider state, consumer state, and API reservation agree |
@@ -1479,11 +1514,14 @@ status.
 #### Stateful net-node failure
 
 A restart or failover can lose namespace, DHCP, conntrack, NAT, veth, or BGP
-route state. The state file is versioned and locked; rehydration reconciles the
-saved transit link, `/32` route ownership, and translation rules before
-reporting a consumer Ready. This milestone supports one authoritative net node
-and does not claim multi-node state replication or automatic failover. Recovery
-requires the state-file backup, network inventory, and BGP peer configuration.
+route state. Rehydration first acquires the stable sidecar lock and validates
+the current state or last-known-good `.bak`; malformed state blocks every
+mutation and release. It then reconciles the saved transit link, `/32` route
+ownership, and translation rules before reporting a consumer Ready. This
+milestone supports one authoritative net node and does not claim multi-node
+state replication or automatic failover. Recovery requires the state backup,
+network inventory, BGP peer configuration, and an explicit restore action when
+the current generation is corrupt.
 
 #### External route and source-address correctness
 
@@ -1641,6 +1679,9 @@ not a substitute for that testplan.
 - Parse and validate agentless manager ConfigMap capabilities.
 - Allocate and release VLAN IDs with idempotence, collision rejection, pool
   exhaustion, lock contention, and state-file recovery cases.
+- Exercise state writes interrupted before, during, and after rename; verify
+  sidecar-lock serialization, parent-directory durability, old-or-new complete
+  JSON, `.bak` recovery, and fail-closed malformed-state handling.
 - Allocate one transit `/30` per VirtualNetwork and preserve its namespace/host
   addresses, next hop, and route identity across retries.
 - Map resource UID, tenant, VirtualNetwork, Subnet, and attachment identity to
@@ -1685,6 +1726,8 @@ not a substitute for that testplan.
   controller/AAP restart recovery from `port_bindings`.
 - Exercise AAP role argument validation and idempotent create/delete for the
   Cumulus support contract.
+- Verify all VLAN/IPAM writers use the shared sidecar-lock transaction and that
+  the legacy in-place IPAM writer cannot mutate the unified state file.
 - Verify controller restart/requeue behavior and ordered finalizer cleanup.
 
 ### E2E Tests
@@ -1770,6 +1813,8 @@ The operator, fulfillment-service, installer, and AAP collections must agree on:
 - generic job names and input shapes;
 - status/lease artifact schema;
 - state-file schema version;
+- state transaction protocol: stable sidecar lock, same-filesystem temporary
+  file, file and parent-directory `fsync`, atomic rename, and `.bak` recovery;
 - per-VirtualNetwork transit-link fields and the BGP `/32` route prefix/next-hop
   contract;
 - network-attachment binding fields, `attach`/`detach` direction semantics,
@@ -1806,7 +1851,9 @@ Support personnel diagnose failures in this order:
    rule mapping. Compare any ExternalIP address with
    `ExternalIP.status.address`, the allocated-address annotation, provider
    operation ID, and state digest. Confirm the fulfillment-service reservation
-   state and pool counters before diagnosing capacity.
+   state and pool counters before diagnosing capacity. Also inspect the stable
+   sidecar lock, schema validation result, last-known-good `.bak`, and any
+   `StateCorrupt` or recovery event before attempting a repair.
 5. Verify Cumulus VLAN/trunk/access-port state and the net-node namespace,
    interfaces, route/BGP installation or withdrawal, exact whole-address DNAT,
    explicit `SNAT --to-source` rules, and conntrack state. Confirm that no
