@@ -241,7 +241,8 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    provisioning-network ID. The logical interface remains the status identity;
    the MAC is the DHCP lease identity. Agentless ignores security-group policy
    references in this default-permit milestone but carries them without
-   changing the generic handoff shape. [User]
+   changing the generic handoff shape. [User] [Codebase:
+   bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_types.go]
    The BMaaS attachment contract permits each `subnetRef` at most once within
    one BareMetalInstance; a Subnet may still be used by many BareMetalInstances.
    Multi-NIC BareMetalInstances therefore use distinct Subnets, and duplicate
@@ -260,17 +261,24 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    switch. It verifies the host port identity, then performs reset-plus-set as
    one switch transaction or locked idempotent convergence: reset the access
    configuration and set the port to the resolved tenant VLAN. It reports
-   success only after the switch port and `port_bindings` state agree. A retry
-   with the same binding UID and operation ID is a no-op after verification.
-4. For `detach`, the same contract restores the exact provider provisioning
-   network recorded in `port_bindings`, not the deleted Subnet's display name.
-   Agentless resets the tenant access configuration and sets the port to the
-   saved provisioning VLAN, verifies the port, then marks the binding
-   `restored` and removes it. If state is missing, the role may use only the
-   stable provider provisioning-network ID; it must fail closed when that ID or
-   its VLAN mapping is unavailable. The BMF deprovisioning finalizer waits for
-   this restore acknowledgement before the host can leave the provisioning
-   workflow.
+   success only after the switch port and `port_bindings` state agree. The BMF
+   operator then reboots the host (or renews the link when the service supports
+   it) and waits for the host's reboot/power condition and post-move DHCP lease.
+   `NetworkHandoffComplete` is set only after port move, reboot completion, and
+   OS DHCP on the tenant network; IP discovery and Ready are gated on it. A
+   retry with the same binding UID and operation ID is a no-op after each phase
+   is verified.
+4. For `detach`, the BMF operator first powers the host off while it is still
+   on the tenant network. Only after `PowerOff` is observed does the same
+   contract restore the exact provider provisioning network recorded in
+   `port_bindings`, not the deleted Subnet's display name. Agentless resets the
+   tenant access configuration and sets the port to the saved provisioning VLAN,
+   verifies the port, then marks the binding `restored` and removes it.
+   `NetworkOffboardComplete` is set only after power-off and provisioning-VLAN
+   restoration. If state is missing, the role may use only the stable provider
+   provisioning-network ID; it must fail closed when that ID or its VLAN mapping
+   is unavailable. The BMF deprovisioning finalizer waits for this
+   acknowledgement before the host can leave the provisioning workflow.
 5. The target obtains an IPv4 address through DHCP in the VN namespace. One
    DHCP service is bound to every Subnet VLAN interface in that namespace, so
    each Subnet's broadcast domain has a local DHCP presence. Central DHCP with
@@ -362,7 +370,7 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    ExternalIPAttachment remains non-ready; `status.attached` remains true
    because the consumer reservation still prevents a second user. The address
    remains reserved for retry or ordered cleanup. For a Cluster target,
-   For a Cluster target, `targetEndpoint` selects the current API-server or
+   `targetEndpoint` selects the current API-server or
    ingress VIP, and the same all-protocol address translation is used rather
    than a port-specific rule. Once the supported external path exists, routed
    inbound traffic is permitted by the default forwarding baseline; no
@@ -1034,6 +1042,7 @@ port_bindings:
     security_group_refs: []
     direction: attach | detach
     state: desired | attached | restoring | restored
+    handoff_phase: port_moved | rebooting | dhcp_pending | attached | poweroff_pending | restoring | restored
     operation_id: <idempotency-key>
 ~~~
 
@@ -1400,6 +1409,7 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | ExternalIP allocation fails before atomic provider-state commit | Require a provider `NOT_COMMITTED` result or an inspect job before compensation; retain capacity while retryable and release it exactly once only after terminal failure/deletion | ExternalIP remains non-ready during retry; capacity is restored only after authoritative compensation |
 | ExternalIP deletion races allocation or provider cleanup | Serialize by ExternalIP UUID; keep `release_requested` and the finalizer until `NOT_COMMITTED` or `CLEANUP_COMPLETE` is acknowledged by fulfillment-service | No address becomes reusable until provider state, consumer state, and API reservation agree |
 | Switch VLAN or access-port operation fails | Retry the same binding UID with the saved host/MAC, switch port, tenant VLAN, and provisioning VLAN; do not release or forget the binding on partial failure | AAP failure and resource status contain switch error; the port remains in the last verified state |
+| BMaaS reboot, power-off, or post-move DHCP gate fails | Keep the binding phase and BMF finalizer, retry the host lifecycle operation, and do not start or complete IP discovery until the matching handoff condition is true | `NetworkHandoffComplete` or `NetworkOffboardComplete` remains false with a diagnostic condition |
 | BMaaS detach cannot resolve the provisioning network | Fail closed and retain the binding/finalizer; do not leave the host on a tenant VLAN or guess from a display name | Resource remains terminating with provisioning-network diagnostic |
 | Transit-pool allocation or veth/router setup partially fails | Reuse the UID-keyed transit `/30` and saved interface/IP values on retry; do not announce any ExternalIP route until the namespace and default route are verified | VirtualNetwork or dependent consumer remains non-ready with a transit-link diagnostic |
 | Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
@@ -1700,7 +1710,8 @@ not a substitute for that testplan.
   status updates, and exactly-once `RELEASED` capacity accounting.
 - Validate attachment binding keys, host/MAC identity, direction transitions,
   provisioning-network resolution, security-group reference pass-through, and
-  idempotent attach/detach state changes.
+  idempotent attach/detach state changes, including reboot, power-off, and
+  DHCP-gated handoff phases.
 - Verify status condition reason/message mapping for AAP and controller-owned
   allocation errors.
 
@@ -1723,7 +1734,9 @@ not a substitute for that testplan.
   distinct Subnets, and reject duplicate SubnetRefs before lease discovery.
 - Exercise Cumulus attach and detach with a fake switch: verify tenant VLAN
   placement, provisioning-VLAN restoration, partial-failure retry, and
-  controller/AAP restart recovery from `port_bindings`.
+  controller/AAP restart recovery from `port_bindings`. Verify the BMF power
+  and reboot gates before DHCP discovery and before tenant-to-provisioning
+  restoration.
 - Exercise AAP role argument validation and idempotent create/delete for the
   Cumulus support contract.
 - Verify all VLAN/IPAM writers use the shared sidecar-lock transaction and that
@@ -1739,7 +1752,8 @@ not a substitute for that testplan.
 - Provision a BMaaS reference attachment, obtain a DHCP address, and observe it in
   status.
 - Verify the BMaaS lifecycle moves a host from provisioning to its tenant VLAN
-  and back to the exact provisioning VLAN on offboarding, without relying on a
+  then reboots and observes tenant DHCP before Ready, and powers it off before
+  returning to the exact provisioning VLAN on offboarding, without relying on a
   Netris variable or display name.
 - Verify inbound ExternalIP traffic follows the BGP `/32` to the VN namespace,
   reaches the target through whole-address DNAT, and returns through conntrack.
