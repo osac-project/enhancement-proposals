@@ -395,14 +395,24 @@ not alter the NATGateway configuration. [Locked: D14]
    ExternalIP is allocated, belongs to the expected tenant scope, and is not
    already consumed by another NATGateway or ExternalIPAttachment.
 3. The agentless role resolves every current Subnet CIDR in the VirtualNetwork
-   and its persisted transit link. It installs namespace-side `POSTROUTING`
-   rules with explicit `SNAT --to-source <ExternalIP.status.address>` for
-   those source CIDRs when traffic exits through the transit veth. It must not
-   use `MASQUERADE` in the namespace or on the host for this path, because that
-   would expose a node/interface address instead of the allocated ExternalIP.
-   The role then announces the exact ExternalIP `/32` through BGP using the
-   saved namespace-side transit address as next hop.
-4. The independently reconciled `filter/FORWARD` permit-all baseline allows
+   and its persisted transit link. It persists that exact list as
+   `nat_gateways.source_cidrs` and installs one namespace-side `POSTROUTING`
+   rule with explicit `SNAT --to-source <ExternalIP.status.address>` per CIDR
+   when traffic exits through the transit veth. It must not use `MASQUERADE`
+   in the namespace or on the host for this path, because that would expose a
+   node/interface address instead of the allocated ExternalIP. The role then
+   announces the exact ExternalIP `/32` through BGP using the saved namespace-
+   side transit address as next hop.
+4. A Subnet add/update enqueues every NATGateway for its VirtualNetwork. The
+   NATGateway reconciler adds the new source CIDR and verifies the new SNAT rule
+   before the Subnet is reported `NetworkReady` when a NATGateway already
+   exists. A Subnet delete first marks the Subnet pending deletion and enqueues
+   NATGateway reconciliation; the NATGateway removes and verifies that CIDR's
+   SNAT rule, persists the reduced `source_cidrs` set, and only then allows the
+   Subnet controller to delete its VLAN, gateway, and DHCP state. If the
+   VirtualNetwork has no Subnets, the NATGateway keeps its consumer reservation
+   and route but has an empty source rule set and reports no egress sources.
+5. The independently reconciled `filter/FORWARD` permit-all baseline allows
    supported routed packets to reach the SNAT path. The NATGateway role does
    not evaluate or modify policy resources. The external endpoint observes the
    allocated ExternalIP as the source address, and established return traffic
@@ -1018,6 +1028,7 @@ nat_gateways:
     virtual_network_uid: <virtual-network-uid>
     external_ip_address: <ipv4>
     source_cidrs: [<subnet-cidr>]
+    source_cidrs_revision: <subnet-state-generation>
     route_prefix: <external-ip>/32
     route_next_hop: <namespace-transit-ip>
     route_protocol: bgp
@@ -1071,7 +1082,8 @@ backend. Their saved route prefix, next hop, protocol, and address are the
 inputs for idempotent repair and deletion; cleanup must not derive them from a
 current name or a newly allocated transit link. `target_endpoint` records the
 cluster API-versus-ingress choice, while `source_cidrs` is reconciled whenever
-the VirtualNetwork's Subnet set changes. `port_bindings` records both sides of
+the VirtualNetwork's Subnet set changes. `source_cidrs_revision` records the
+Subnet snapshot that the SNAT rule set covers. `port_bindings` records both sides of
 the access-port transition: the resolved tenant VLAN and the stable provider
 provisioning-network/VLAN used for detach. Its `binding_uid`, host UID, MAC,
 interface, switch port, direction, and operation ID are the idempotency and
@@ -1413,6 +1425,7 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | BMaaS detach cannot resolve the provisioning network | Fail closed and retain the binding/finalizer; do not leave the host on a tenant VLAN or guess from a display name | Resource remains terminating with provisioning-network diagnostic |
 | Transit-pool allocation or veth/router setup partially fails | Reuse the UID-keyed transit `/30` and saved interface/IP values on retry; do not announce any ExternalIP route until the namespace and default route are verified | VirtualNetwork or dependent consumer remains non-ready with a transit-link diagnostic |
 | Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
+| NATGateway source CIDR set is stale during Subnet add/delete | Requeue NATGateway from the Subnet event; add/remove the individual SNAT rule, persist the new `source_cidrs_revision`, and block Subnet deletion until removal is verified | NATGateway condition identifies stale source rules; Subnet remains pending deletion or readiness |
 | DHCP lease absent or ambiguous | Requery; do not update status or create DNAT until identity/freshness checks pass | Condition identifies lease-unavailable/ambiguous |
 | AAP lease artifact is stale or job failed | Ignore artifact, retain current status, retry current generation | Job failure and resource condition remain visible |
 | Forwarding baseline or owned NAT rule application fails | Retry the desired generation without reporting Ready; preserve the saved route/NAT inputs | The affected resource condition and job history identify the forwarding or NAT operation failure |
@@ -1702,6 +1715,8 @@ not a substitute for that testplan.
   desired-generation freshness.
 - Verify whole-address/all-protocol DNAT, explicit `SNAT --to-source`, BGP
   announce-after-rule ordering, and route-withdraw-before-release cleanup.
+- Verify NATGateway source-CIDR reconciliation when a Subnet is added, updated,
+  or deleted, including rule-set revision and ordering before VLAN release.
 - Inject an ExternalIP state-file write failure and verify that no partial
   `external_ips` entry is visible, retries reuse the same UUID reservation, and
   terminal failure compensates capacity only after `NOT_COMMITTED`.
@@ -1726,6 +1741,9 @@ not a substitute for that testplan.
 - Exercise BGP `/32` announce/withdraw with a saved namespace-side next hop,
   whole-address DNAT for API/ingress cluster endpoints, and explicit-source
   SNAT without host-side MASQUERADE.
+- Exercise Subnet churn while NATGateway is Ready: verify a new SNAT rule is
+  installed before Subnet readiness and an old rule is removed before Subnet
+  VLAN/DHCP cleanup.
 - Exercise ExternalIP deletion during allocation and verify UUID serialization,
   Pending/Failed compensation, provider cleanup, consumer cleanup, and delayed
   exactly-once API capacity release.
