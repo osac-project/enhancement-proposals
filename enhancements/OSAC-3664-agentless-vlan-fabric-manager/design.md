@@ -162,7 +162,9 @@ state.
 3. The installer creates a ConfigMap labeled
    'osac.openshift.io/network-fabric-manager' with 'data.name=agentless_net'.
    The operator discovers it and includes the manager in NetworkClass
-   capability reconciliation. [Codebase: osac-operator/charts/operator/templates/network-managers.yaml]
+   capability reconciliation. All networking CR projections use the configured
+   `OSAC_NETWORKING_NAMESPACE` hub namespace; tenant IDs remain annotations,
+   not namespaces. [Codebase: osac-operator/charts/operator/templates/network-managers.yaml]
 4. The post-install NetworkClass hook selects 'fabric_manager=agentless_net'.
    The Cloud Infrastructure Admin chooses the physical backend through
    deployment configuration, not through a new UI selector. Existing UI/API
@@ -583,9 +585,12 @@ does not mark the provisioning version successful.
 The following examples show the Kubernetes CR representation of each existing
 Networking API resource handled by the agentless fabric manager. `status` is
 controller-owned and is shown only to explain the important observed fields;
-users submit the `spec` and do not write `status`. The tenant-scoped examples
-include the required tenant and owner-reference annotations. `NetworkClass` is
-a fulfillment-service API object rather than an operator CR, so its
+users submit the `spec` and do not write `status`. All networking CRs are
+materialized in the single configured hub/networking namespace,
+`$OSAC_NETWORKING_NAMESPACE`; the tenant annotations identify the logical
+owner because Kubernetes namespace boundaries do not separate tenants here.
+The examples use `tenant-a` only as an annotation value. `NetworkClass` is a
+fulfillment-service API object rather than an operator CR, so its
 `fabric_manager: agentless_net` selection is represented by the
 `VirtualNetwork.spec.networkClass` field and the manager-registration section
 above.
@@ -597,7 +602,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: VirtualNetwork
 metadata:
   name: vnet-a
-  namespace: tenant-a
+  namespace: $OSAC_NETWORKING_NAMESPACE
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -636,7 +641,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: Subnet
 metadata:
   name: subnet-a
-  namespace: tenant-a
+  namespace: $OSAC_NETWORKING_NAMESPACE
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -684,7 +689,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: ExternalIPPool
 metadata:
   name: public-ipv4
-  namespace: osac-networking
+  namespace: $OSAC_NETWORKING_NAMESPACE
 spec:
   cidrs:
   - 198.51.100.0/29
@@ -732,7 +737,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: ExternalIP
 metadata:
   name: public-ip-1
-  namespace: tenant-a
+  namespace: $OSAC_NETWORKING_NAMESPACE
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -781,7 +786,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: ExternalIPAttachment
 metadata:
   name: public-ip-1-to-bm-1
-  namespace: tenant-a
+  namespace: $OSAC_NETWORKING_NAMESPACE
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -820,7 +825,7 @@ apiVersion: osac.openshift.io/v1alpha1
 kind: NATGateway
 metadata:
   name: vnet-a-egress
-  namespace: tenant-a
+  namespace: $OSAC_NETWORKING_NAMESPACE
   annotations:
     osac.openshift.io/tenant: tenant-a
     osac.openshift.io/owner-reference: <tenant-owner-reference>
@@ -1149,8 +1154,8 @@ Traffic between hosts in the same Subnet is switched at Layer 2 on the access
 VLAN and does not traverse the namespace's `filter/FORWARD` chain. That traffic
 is intentionally permitted by FR-3; the chain cannot be described as an
 attachment-scoped enforcement point for same-Subnet packets. The baseline
-therefore governs routed packets only, while VLAN uniqueness and separate
-VirtualNetwork namespaces provide the internal isolation boundary.
+therefore governs routed packets only, while VLAN uniqueness and separate Linux
+VirtualNetwork routing namespaces provide the internal isolation boundary.
 
 SecurityGroup resources, policy rules, and default-deny authorization are not
 implemented by this milestone. There is no attachment-to-SecurityGroup state,
@@ -1314,8 +1319,10 @@ wizard workflow is not part of this design. [Codebase: osac-installer/charts/osa
 
 No new authentication mechanism or tenant authorization policy is introduced.
 The existing fulfillment-service OPA/authentication path remains the authority for
-API access, and the operator continues to process tenant-scoped CRs in their
-existing namespace/annotation boundaries. [Codebase: fulfillment-service/internal/auth]
+API access. The operator processes all networking CRs in the configured hub
+namespace and relies on the server-set tenant/owner annotations plus stable
+UUIDs for attribution; co-location is not treated as tenant isolation.
+[Codebase: fulfillment-service/internal/auth]
 
 The implementation must preserve 'osac.openshift.io/tenant' and
 'osac.openshift.io/owner-reference' on tenant-scoped resources. Provider-scoped
@@ -1349,6 +1356,7 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | Failure | Recovery | Observable result |
 |---|---|---|
 | Manager ConfigMap missing or capability mismatch | Stop before AAP side effects; requeue after manager discovery changes | Resource condition identifies missing manager/capability |
+| Networking CR lookup uses a tenant namespace, name-only selector, or mismatched tenant/owner attribution | Stop before mutation; reselect `$OSAC_NETWORKING_NAMESPACE` and retry by stable UUID with server-set attribution | Resource condition identifies namespace/attribution mismatch |
 | Invalid NetworkClass, unsupported IPv6 request, or Subnet prefix `/31`/`/32` | API/controller validation rejects before provisioning | Invalid argument or failed condition names the unsupported address family or prefix; no AAP job or fabric state is created |
 | VLAN state lock unavailable | Retry with backoff; preserve existing allocation | Provisioning remains pending with lock diagnostic |
 | VLAN allocation exhausted or already owned | Do not reuse an allocated ID; fail the requested generation | Failed condition identifies VLAN allocation exhaustion/conflict |
@@ -1387,6 +1395,15 @@ Tenant-scoped Kubernetes resources retain both
 owner-reference points to the parent resource where the existing service path
 sets it. The operator and service use these annotations for filtering and
 feedback attribution. [Codebase: fulfillment-service/internal/servers/private_subnets_server.go]
+
+VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and NATGateway CRs
+are co-located in the configured `$OSAC_NETWORKING_NAMESPACE`/hub namespace.
+That namespace is an operator placement boundary, not a tenant-isolation
+boundary. Fulfillment-service OPA and attribution checks remain the user-access
+boundary. Every AAP lookup or mutation must select the configured namespace,
+stable resource UUID, and server-set tenant/owner attribution together; a
+resource name alone is never an isolation key. Names may be used only for
+diagnostic labels after the UUID and attribution checks pass.
 
 The agentless role receives validated private resource data through AAP. It
 must not use a tenant-provided name as an isolation key; the resource UID and
@@ -1747,6 +1764,7 @@ state version; otherwise manual state export/restore is required.
 The operator, fulfillment-service, installer, and AAP collections must agree on:
 
 - manager name 'agentless_net';
+- configured `OSAC_NETWORKING_NAMESPACE` hub namespace for every networking CR;
 - capability string 'ipv4';
 - implementation-strategy value;
 - generic job names and input shapes;
