@@ -4,7 +4,10 @@
 
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
 - **Design task:** OSAC-4307
-- **Total test cases:** 29
+- **Design:** [design.md](design.md)
+- **Authority:** This requirement-anchored test plan is part of the design PR;
+  the design document's Test Plan section is only a short strategy summary.
+- **Total test cases:** 34
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 6 of 6
 
@@ -70,16 +73,21 @@
 
 - agentless_net is Ready in NetworkClass.
 - The test tenant has the required authorization and tenant metadata.
+- A Cloud Infrastructure Admin fixture can create the provider-scoped
+  ExternalIPPool; the tenant fixture cannot create or update that pool.
 
 ##### Steps
 
-1. Create a VirtualNetwork, Subnet, ExternalIPPool, ExternalIP,
-   ExternalIPAttachment, and NATGateway through the existing API.
-2. Poll the corresponding CRs and fulfillment-service resources.
+1. Create an ExternalIPPool with the provider-admin fixture.
+2. Create a VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and
+   NATGateway with the tenant fixture through the existing API.
+3. Attempt to create or update the ExternalIPPool with the tenant fixture.
+4. Poll the corresponding CRs and fulfillment-service resources.
 
 ##### Expected Results
 
 - Each request is accepted without an agentless-specific API field.
+- The tenant cannot create or modify the provider-scoped ExternalIPPool.
 - Each corresponding resource reaches its expected Ready or Allocated state.
 - Each tenant-scoped CR retains both required tenant-isolation annotations.
 
@@ -185,7 +193,8 @@
 
 ##### Preconditions
 
-- A Ready Subnet has a per-VN DHCP service bound to its VLAN interface.
+- A Ready Subnet has the per-VN dnsmasq service bound to its VLAN interface,
+  with a rendered range that excludes the gateway address.
 - A BareMetalInstance has a network attachment referencing that Subnet.
 
 ##### Steps
@@ -194,6 +203,7 @@
 2. Run the generic network-attachment job and hand the port to the Subnet VLAN.
 3. Reboot or renew DHCP on the host.
 4. Run the generic DHCP lease query job.
+5. Restart the per-VN dnsmasq service and query the same lease again.
 
 ##### Expected Results
 
@@ -203,6 +213,8 @@
   the MAC matches the attachment's annotation mapping.
 - BareMetalInstance status contains the same IP in its network attachment status.
 - NetworkHandoffComplete and IPDiscoveryComplete become True.
+- The lease survives the dnsmasq restart and the daemon reuses the configured
+  lease file rather than assigning a second address.
 
 #### TC-FR4-02: Map multiple DHCP leases to the correct attachments
 
@@ -288,6 +300,32 @@
 - A valid multi-NIC BareMetalInstance uses a distinct SubnetRef for each
   attachment, and a Subnet remains usable by other BareMetalInstances.
 
+#### TC-FR4-05: Recover the per-VN DHCP service and lease store
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-3 | high | automated |
+
+##### Preconditions
+
+- A VirtualNetwork has two Ready Subnets with dnsmasq ranges, gateway
+  exclusions, and a valid per-VN lease file.
+- A bare-metal interface has a current lease on one Subnet.
+
+##### Steps
+
+1. Stop or corrupt the per-VN dnsmasq configuration or lease file.
+2. Reconcile the VirtualNetwork and Subnets and observe the DHCP condition.
+3. Restore the valid lease file and restart the supervised dnsmasq service.
+4. Run `query_dhcp_lease` for the existing MAC and SubnetRef.
+
+##### Expected Results
+
+- IP discovery remains pending while the daemon or lease file is invalid.
+- The role renders the configured ranges and reserved gateway addresses again.
+- The daemon restarts with the preserved lease and the same MAC/Subnet receives
+  the same valid address without a duplicate lease.
+
 ### FR-5: Inbound external access
 
 #### TC-FR5-01: Create DNAT after the target address is ready
@@ -302,6 +340,8 @@
 - The target has no primary private address at first, then receives one.
 - The supported external path is available, so the default forwarding baseline
   permits the inbound test flow.
+- The provider-owned BGP peer is established and can report learned `/32`
+  routes.
 
 ##### Steps
 
@@ -316,6 +356,8 @@
   absent.
 - The attachment remains Pending or Progressing with no unknown DNAT target.
 - After the address appears, the controller dispatches the DNAT operation.
+- The whole-address DNAT rule and consumer-owned ExternalIP `/32` are present;
+  the upstream BGP peer learns the route.
 - The attachment remains non-ready if ExternalIP allocation succeeds but the
   DNAT operation fails.
 - Inbound traffic reaches the target under the permit-all baseline, and the
@@ -334,6 +376,8 @@
 
 - An ExternalIP is Allocated with status.address populated.
 - A NATGateway references that ExternalIP and a Ready VirtualNetwork.
+- The VirtualNetwork has two Ready Subnets, and the NATGateway state contains
+  both source CIDRs.
 - The supported external path is available, so the permit-all baseline permits
   the test egress flow.
 
@@ -345,8 +389,36 @@
 ##### Expected Results
 
 - The endpoint observes the NATGateway ExternalIP as the source address.
-- The SNAT rule is present in the owned state mapping.
+- One explicit `SNAT --to-source` rule exists for each source CIDR; no
+  host-side MASQUERADE changes the observed source.
+- The consumer-owned `/32` route is learned by the provider BGP peer.
 - NATGateway status.phase is Ready.
+
+#### TC-FR6-02: Reconcile NAT rules after Subnet churn
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5 | high | automated |
+
+##### Preconditions
+
+- A Ready VirtualNetwork has a Ready NATGateway and one Subnet in
+  `nat_gateways.source_cidrs`.
+- A fake AAP provider can observe SNAT rule changes and Subnet finalizers.
+
+##### Steps
+
+1. Add a second Subnet to the VirtualNetwork and wait for its VLAN/DHCP state.
+2. Inspect NATGateway reconciliation and the source-CIDR revision.
+3. Delete the second Subnet and observe NATGateway and Subnet cleanup ordering.
+
+##### Expected Results
+
+- The second CIDR is added to the desired SNAT set before the Subnet is
+  reported Ready.
+- Deleting the Subnet removes its SNAT rule and updates the revision before
+  the Subnet VLAN, gateway, or DHCP state is released.
+- The NATGateway remains usable for the first Subnet throughout the churn.
 
 ### FR-7: External IP pools
 
@@ -365,17 +437,20 @@
 
 1. Wait for the pool to reach Ready.
 2. Create an ExternalIP through the existing API.
-3. Wait for the ExternalIP AAP job to succeed and inspect its
-   `external_ip_address` artifact.
-4. Read pool and ExternalIP status and inspect the agentless state file.
+3. Wait for the ExternalIP AAP job to commit provider state and inspect the
+   allocated-address and provider-result annotations.
+4. Read pool and ExternalIP status, reservation state, and agentless state file.
 
 ##### Expected Results
 
 - Pool status.total and status.available reflect the configured CIDR capacity.
 - ExternalIP status.state is Allocated and status.address contains an address
   from the pool.
-- The AAP artifact, `ExternalIP.status.address`, and the state-file
-  `external_ips` entry contain the same address keyed by the ExternalIP UID.
+- The committed provider-result annotation, `ExternalIP.status.address`, and
+  the state-file `external_ips` entry contain the same address keyed by the
+  ExternalIP UUID and state digest.
+- The fulfillment-service reservation is `COMMITTED` and pool capacity is held
+  exactly once.
 - The state-file `external_ip_pools` entry records the provider-side pool CIDR.
 
 #### TC-FR7-02: Reject exhausted capacity and restore it on release
@@ -391,16 +466,16 @@
 ##### Steps
 
 1. Attempt to create another ExternalIP from the exhausted pool.
-2. Delete an existing ExternalIP.
-3. Wait for the state-file allocation to be removed and create another
-   ExternalIP from the pool.
+2. Delete an existing ExternalIP and wait for provider `CLEANUP_COMPLETE` or
+   `NOT_COMMITTED` to be acknowledged by fulfillment-service.
+3. Create another ExternalIP from the pool.
 
 ##### Expected Results
 
 - The first create request fails with a capacity/precondition error.
-- Pool status.available increases after the deletion is persisted.
+- Pool status.available increases only after the reservation reaches `RELEASED`.
 - The subsequent create request receives a newly allocated address, and the
-  state file contains exactly one allocation for the new ExternalIP UID.
+  state file contains exactly one allocation for the new ExternalIP UUID.
 
 #### TC-FR7-03: Preserve pool status during concurrent allocation and reconciliation
 
@@ -419,16 +494,43 @@
 
 1. Start an ExternalIP creation and an ExternalIPPool reconciliation that
    updates the phase/conditions at the same time.
-2. Wait for both operations to complete, then read the pool status and the
-   ExternalIP AAP allocation artifact.
+2. Wait for both operations to complete, then read the pool status, provider
+   annotations, reservation row, and ExternalIP state.
 
 ##### Expected Results
 
 - The pool retains `allocated=1` and `available=1` from the capacity update.
 - The reconciler's phase and conditions are also present; neither writer
   overwrites fields owned by the other.
-- The ExternalIP address in status matches the AAP artifact and its state-file
-  allocation, with no duplicate allocation after conflict retries.
+- The ExternalIP address in status matches the provider annotation and its
+  state-file allocation, with no duplicate allocation after conflict retries.
+- The reservation row and pool capacity update are idempotent.
+
+#### TC-FR7-04: Recover an interrupted provider state-file write
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | high | automated |
+
+##### Preconditions
+
+- The AgentlessNet state file has a valid committed generation and `.bak`.
+- The test can interrupt a write before, during, and after atomic rename.
+
+##### Steps
+
+1. Inject a process or host failure at each write phase.
+2. Restart the provider role and inspect the state file, sidecar lock, and
+   backup.
+3. Retry allocation and cleanup after selecting the validated generation.
+
+##### Expected Results
+
+- The reader sees either the previous complete JSON or the next complete JSON,
+  never truncated content.
+- A malformed current file blocks mutation and requires explicit `.bak` restore.
+- Concurrent writers serialize on the stable sidecar lock and do not duplicate
+  an ExternalIP or release capacity twice.
 
 ### FR-8: Networking across all services
 
@@ -441,19 +543,27 @@
 ##### Preconditions
 
 - A Ready Subnet has a recorded VLAN.
-- A BareMetalInstance exposes an interface and subnetRef attachment.
+- A BareMetalInstance exposes an interface, authoritative MAC, host UID, and
+  SubnetRef attachment; the provider provisioning-network ID is configured.
 
 ##### Steps
 
-1. Run playbook_osac_move_network_attachment for the bind operation.
-2. Inspect the Cumulus port, VLAN, and port_bindings state.
-3. Run the deprovisioning operation.
+1. Run `playbook_osac_move_network_attachment` with `attach` and the stable
+   binding/host/MAC/Subnet/provisioning-network inputs.
+2. Verify the port is on the tenant VLAN, reboot the host, and wait for
+   `NetworkHandoffComplete` and DHCP discovery.
+3. Power off the host and run the same playbook with `detach`.
+4. Inspect the Cumulus port, VLAN, and `port_bindings` state.
 
 ##### Expected Results
 
-- The AgentlessNet attachment role receives host, interface, and Subnet inputs.
-- The switch port is assigned to the Subnet VLAN and the binding is recorded.
-- Unbind removes the port binding without changing another Subnet's VLAN.
+- The AgentlessNet attachment role receives stable host, interface, MAC, Subnet,
+  direction, and provisioning-network inputs.
+- The switch port is assigned to the Subnet VLAN and the binding is recorded;
+  DHCP and handoff readiness follow reboot.
+- Detach restores the exact provisioning VLAN, reports
+  `NetworkOffboardComplete`, and removes the binding without changing another
+  Subnet's VLAN.
 
 #### TC-FR8-02: Accept downstream CaaS and VMaaS attachment inputs
 
@@ -531,6 +641,36 @@
 - Status identifies DHCPLeaseUnavailable or the equivalent diagnostic reason.
 - No ExternalIPAttachment DNAT job is dispatched without a current target IP.
 
+#### TC-FR9-03: Block operations during a net-node outage and restore safely
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-6 | high | automated |
+
+##### Preconditions
+
+- A VirtualNetwork, Subnet, NATGateway, and ExternalIPAttachment are Ready.
+- The net node has a valid state generation, `.bak`, dnsmasq lease files, and
+  provider BGP session.
+
+##### Steps
+
+1. Stop or isolate the net node and attempt a new Subnet, attachment, delete,
+   and ExternalIP capacity-release operation.
+2. Observe existing resource conditions, finalizers, reservations, and traffic.
+3. Restore the net node and allow state, namespaces, dnsmasq, NAT, and BGP to
+   rehydrate.
+
+##### Expected Results
+
+- New mutations, cleanup releases, and finalizer removal are blocked with
+  `NetNodeUnavailable`; no capacity is released early.
+- Existing resources become degraded; active flows may continue only while the
+  kernel state remains alive, and conntrack continuity is not promised after
+  restart.
+- New routes are advertised only after the restored data path is verified, and
+  resources return to Ready after reconciliation.
+
 ### FR-10: Lifecycle cleanup
 
 #### TC-FR10-01: Remove DNAT before releasing an ExternalIP
@@ -552,9 +692,12 @@
 
 ##### Expected Results
 
-- DNAT is absent before the ExternalIP is released.
+- The ExternalIP `/32` is withdrawn before DNAT and conntrack cleanup.
+- DNAT and owner-specific conntrack state are absent before the ExternalIP is
+  released.
 - The attachment finalizer is removed only after DNAT cleanup feedback.
-- Pool capacity increases only after ExternalIP deletion.
+- `status.attached` remains true until consumer cleanup is acknowledged.
+- Pool capacity increases only after the reservation reaches `RELEASED`.
 
 #### TC-FR10-02: Clean one Subnet/VirtualNetwork without affecting peers
 
@@ -621,6 +764,34 @@
   attachment cleanup is incomplete.
 - After confirmed DNAT cleanup and finalizer removal, ExternalIP deletion
   releases the address and only then increases pool capacity.
+
+#### TC-FR10-04: Remove NAT before releasing an ExternalIP
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5 | high | automated |
+
+##### Preconditions
+
+- A Ready NATGateway owns explicit SNAT rules and an advertised ExternalIP
+  `/32`.
+- The parent ExternalIP is Allocated and has no competing consumer.
+
+##### Steps
+
+1. Request NATGateway deletion and ExternalIP deletion concurrently.
+2. Observe the BGP route, SNAT rules, conntrack state, NATGateway finalizer,
+   reservation state, and pool capacity.
+3. Allow route withdrawal and SNAT/conntrack cleanup to complete, then retry
+   ExternalIP deletion.
+
+##### Expected Results
+
+- ExternalIP capacity remains held while the NATGateway route or SNAT state
+  exists.
+- The route is withdrawn before SNAT and conntrack cleanup, and the NATGateway
+  consumer reservation remains held until the service acknowledges cleanup.
+- Pool capacity increases only after the reservation reaches `RELEASED`.
 
 ### NFR-1: IPv4-only capability
 
@@ -791,12 +962,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 29 |
+| Total test cases | 34 |
 | Critical | 11 |
-| High | 17 |
+| High | 22 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 28 |
+| Automated | 33 |
 | Manual | 1 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 6 / 6 |
