@@ -1010,12 +1010,22 @@ virtual_networks:
     external_reachability:
       mode: bgp
       route_prefix_length: 32
+    dhcp:
+      daemon: dnsmasq
+      service_unit: agentless-dhcp@<virtual-network-uid>.service
+      config_path: /etc/agentless-net/dhcp/<virtual-network-uid>/dnsmasq.conf
+      lease_path: /var/lib/agentless-net/dhcp/<virtual-network-uid>/dnsmasq.leases
+      lease_duration_seconds: <integer>
     default_forward_policy: permit_all
 subnets:
   - uid: <subnet-uid>
     virtual_network_uid: <uid>
     vlan_id: <integer>
+    vlan_interface: <namespace-vlan-interface>
     gateway_ipv4: <address>
+    dhcp_range_start: <address>
+    dhcp_range_end: <address>
+    dhcp_reserved_addresses: [<address>]
 external_ip_pools:
   - uid: <external-ip-pool-uid>
     cidrs: [<ipv4-cidr>]
@@ -1155,7 +1165,7 @@ in the unified state file. [Codebase: osac-aap/collections/ansible_collections/a
 | API action | State transition | AgentlessNet data-plane operation |
 |---|---|---|
 | VirtualNetwork create/update/delete | Add or reconcile one `virtual_networks` entry, including its transit `/30`, veth identities, and external-reachability mode; remove it only when the VirtualNetwork object is deleted and its child entries are gone | Allocate or reuse the transit link; create or repair the namespace, uplink, default route, and permit-all baseline; remove the link during ordered cleanup |
-| Subnet create/update/delete | Add or reuse one `subnets` entry; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, and DHCP scope; reconcile any active NATGateway `source_cidrs`; no host access-port binding during Subnet provisioning |
+| Subnet create/update/delete | Add or reuse one `subnets` entry with VLAN interface, gateway, DHCP range, exclusions, and state generation; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, dnsmasq range, and lease mapping; reload the per-VN daemon; reconcile any active NATGateway `source_cidrs`; no host access-port binding during Subnet provisioning |
 | ExternalIPPool create/delete | Add or reconcile one `external_ip_pools` entry; remove it only when the ExternalIPPool object is deleted | Register or remove provider-side pool CIDRs under the state-file lock; fulfillment-service remains authoritative for capacity counters |
 | ExternalIP create/delete | Create or reuse one fulfillment-service reservation keyed by ExternalIP UUID; add or reuse one complete `external_ips` provider entry keyed by the same UUID; accept provider and consumer cleanup events; release capacity only in the service's idempotent `RELEASED` transaction | Select and persist a complete IPv4 allocation atomically under the state-file lock, patch the provider-result annotations, and remove provider state before the service acknowledges capacity release |
 | ExternalIPAttachment create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add, replace, or remove one `attachments` entry containing the target, whole-address DNAT, `/32` route, saved next hop, and route-announced state; retain the reservation through cleanup | Read the address from `ExternalIP.status.address` and target status, create the all-protocol DNAT rule, announce or withdraw the owned BGP `/32`, then report consumer cleanup to the service |
@@ -1185,11 +1195,34 @@ consumer reservation and `status.attached`; only after that and the provider
 
 #### DHCP and lease feedback
 
-The implementation runs one DHCP service in each VN namespace and binds it to
-every Subnet VLAN interface. This gives DHCPDISCOVER broadcasts a local
-interface in each L2 domain and allows one lease store to serve all Subnets in
-the VN. Central DHCP with relay is not a supported deployment option for this
-milestone. [Locked: D13] [User] [Research: Local DHCP presence per broadcast domain]
+The implementation uses `dnsmasq` as one supervised DHCP daemon per
+VirtualNetwork Linux namespace. The AgentlessNet role renders
+`/etc/agentless-net/dhcp/<virtual-network-uid>/dnsmasq.conf`, stores leases in
+`/var/lib/agentless-net/dhcp/<virtual-network-uid>/dnsmasq.leases`, and runs the
+daemon through `agentless-dhcp@<virtual-network-uid>.service` with automatic
+restart. The service starts only after the namespace and all declared VLAN
+interfaces exist; Subnet changes render a complete configuration and reload or
+restart the same daemon while preserving the lease file. Central DHCP with
+relay is not a supported deployment option for this milestone. [Locked: D13]
+[User] [Research: Local DHCP presence per broadcast domain]
+
+Each Subnet entry supplies one DHCP range bound to its VLAN interface. The
+range excludes the network and broadcast addresses, the first usable gateway
+address stored as `gateway_ipv4`, and any provider-reserved addresses. The
+daemon advertises that gateway as DHCP option 3 and uses the configured lease
+duration. A `/30` therefore leaves only its non-gateway usable address for
+DHCP; `/31` and `/32` remain rejected because this gateway/DHCP model cannot
+provide the required separate host address.
+
+The lease database is the dnsmasq lease-file format at the path above. The
+`query_dhcp_lease` role reads it after validating the current state generation,
+filters for an unexpired authoritative MAC, and confirms that the leased IP is
+inside the requested Subnet CIDR and not reserved. It rejects zero, duplicate,
+expired, MAC-mismatched, or cross-Subnet matches. A daemon restart reloads the
+same lease file; a missing or malformed lease file causes a diagnostic and
+requeue rather than assigning a replacement address. The operator publishes a
+lease artifact containing the attachment identity, MAC, SubnetRef, IP, and
+state generation. [Codebase: osac-aap/playbook_osac_query_dhcp_lease.yml]
 
 The agentless 'query_dhcp_lease' role accepts the generic attachment inputs:
 
@@ -1311,7 +1344,8 @@ The agentless implementation must provide:
   for the BMF attachment flow. The role returns the resolved tenant and
   provisioning VLANs, switch port, operation ID, and observed binding state.
 - 'query_dhcp_lease' compatible with the generic query playbook.
-- Shared step roles for VLAN/IPAM, router namespace, DHCP, forwarding baseline,
+- Shared step roles for VLAN/IPAM, router namespace, dnsmasq DHCP service and
+  lease-store management, forwarding baseline,
   BGP `/32` announce/withdraw, whole-address DNAT, explicit-source SNAT, and
   Cumulus port configuration. The BGP action receives the saved `route_prefix`
   and `route_next_hop`; it must verify withdrawal before cleanup proceeds. All
@@ -1440,6 +1474,7 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | Transit-pool allocation or veth/router setup partially fails | Reuse the UID-keyed transit `/30` and saved interface/IP values on retry; do not announce any ExternalIP route until the namespace and default route are verified | VirtualNetwork or dependent consumer remains non-ready with a transit-link diagnostic |
 | Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
 | NATGateway source CIDR set is stale during Subnet add/delete | Requeue NATGateway from the Subnet event; add/remove the individual SNAT rule, persist the new `source_cidrs_revision`, and block Subnet deletion until removal is verified | NATGateway condition identifies stale source rules; Subnet remains pending deletion or readiness |
+| dnsmasq configuration, service, or lease file is missing/malformed | Re-render the complete per-VN configuration, preserve a valid lease file, restart the supervised daemon, and requeue; never invent a lease | DHCP condition identifies daemon/config/lease failure and IP discovery remains pending |
 | DHCP lease absent or ambiguous | Requery; do not update status or create DNAT until identity/freshness checks pass | Condition identifies lease-unavailable/ambiguous |
 | AAP lease artifact is stale or job failed | Ignore artifact, retain current status, retry current generation | Job failure and resource condition remain visible |
 | Forwarding baseline or owned NAT rule application fails | Retry the desired generation without reporting Ready; preserve the saved route/NAT inputs | The affected resource condition and job history identify the forwarding or NAT operation failure |
@@ -1543,10 +1578,11 @@ restoration before deleting state.
 
 #### DHCP and lease-store dependency
 
-A missing per-namespace DHCP service prevents IP status and therefore prevents
-reliable inbound DNAT. The role validates the namespace DHCP configuration
-before attachment, retries lease queries, and records the missing lease in
-status.
+A missing or unhealthy per-VN dnsmasq service prevents IP status and therefore
+prevents reliable inbound DNAT. The role validates the namespace interfaces,
+dnsmasq unit/configuration, lease-file format, gateway exclusions, and lease
+freshness before attachment; it restarts the daemon from the preserved lease
+file and records the failure in status instead of assigning a replacement IP.
 
 #### Stateful net-node failure
 
@@ -1727,6 +1763,8 @@ not a substitute for that testplan.
   policy-resource inputs or default-deny gates.
 - Validate DHCP lease artifact identity, address family, Subnet reference, and
   desired-generation freshness.
+- Validate dnsmasq range generation, gateway/reserved-address exclusions,
+  lease-file parsing, daemon restart, and lease preservation across reload.
 - Verify whole-address/all-protocol DNAT, explicit `SNAT --to-source`, BGP
   announce-after-rule ordering, and route-withdraw-before-release cleanup.
 - Verify NATGateway source-CIDR reconciliation when a Subnet is added, updated,
@@ -1763,6 +1801,8 @@ not a substitute for that testplan.
   Pending/Failed compensation, provider cleanup, consumer cleanup, and delayed
   exactly-once API capacity release.
 - Verify tenant and owner annotations survive the service-to-CR path.
+- Verify per-VN dnsmasq configuration and service lifecycle for multiple VLAN
+  interfaces, including malformed configuration and lease-file recovery.
 - Exercise generic DHCP job artifact consumption for multi-NIC instances using
   distinct Subnets, and reject duplicate SubnetRefs before lease discovery.
 - Exercise Cumulus attach and detach with a fake switch: verify tenant VLAN
@@ -1867,6 +1907,8 @@ The operator, fulfillment-service, installer, and AAP collections must agree on:
   contract;
 - network-attachment binding fields, `attach`/`detach` direction semantics,
   stable provisioning-network identity, and the `port_bindings` state shape;
+- DHCP daemon (`dnsmasq`) lifecycle, per-VN config/lease paths, range and
+  exclusion rules, and lease-artifact identity validation;
 - whole-address DNAT inputs and explicit-source SNAT inputs. A component that
   still sends the old single-port DNAT or MASQUERADE-only SNAT arguments must
   not report the consumer Ready.
@@ -1892,7 +1934,8 @@ Support personnel diagnose failures in this order:
 2. Confirm the NetworkClass points to a discovered IPv4-capable
    'agentless_net' ConfigMap.
 3. Inspect AAP job status, 'leases' artifacts, provider-result annotations,
-   reservation events, and the agentless role logs.
+   reservation events, dnsmasq unit/configuration and lease paths, and the
+   agentless role logs.
 4. Check the lock-protected state file for the resource UID, VLAN,
    gateway/DHCP, namespace, transit `/30`, veth peer addresses, provider-side
    ExternalIP allocation, saved BGP `/32` prefix/next hop, and owned NAT/DNAT
@@ -1925,7 +1968,8 @@ A repeatable validation environment needs:
 - a provider transit-CIDR pool, a configured BGP peer, and a way to verify
   `/32` route installation and withdrawal;
 - AAP inventory and job templates for the generic networking playbooks;
-- IPv4 DHCP lease storage accessible to the agentless role;
+- dnsmasq and a service supervisor on the net node, with per-VN configuration
+  and IPv4 lease storage accessible to the agentless role;
 - an ExternalIPPool and an external traffic endpoint for DNAT/SNAT assertions;
 - existing OSAC kind/integration fixtures for service and controller tests.
 
