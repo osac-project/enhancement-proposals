@@ -19,7 +19,7 @@ superseded-by:
 
 ## Summary
 
-This enhancement introduces `BareMetalInstance` and `BareMetalInstanceCatalogItem` resources to the OSAC fulfillment-service public API, enabling tenants to provision and manage physical bare metal servers through a self-service interface. Catalog items are provider-managed entries that expose available hardware profiles, OS base images, and network configurations to tenants; each is backed by a `BareMetalInstanceTemplate`. The design adopts a pluggable provider architecture — implemented in a dedicated baremetal fulfillment component — so that future bare metal backends can be integrated without breaking the API. This EP is scoped to the fulfillment-service API layer; operator, provisioning, UX, and E2E concerns are tracked as companion work items under OSAC-1118.
+This enhancement introduces `BareMetalInstance` and `BareMetalInstanceCatalogItem` resources to the OSAC fulfillment-service public API, enabling tenants to provision and manage physical bare metal servers through a self-service interface. Catalog items are provider-managed entries that expose available hardware profiles and OS base images to tenants; each is backed by a `BareMetalInstanceTemplate`. Bare Metal networking is outside this EP and is deferred to a future enhancement. The design adopts a pluggable provider architecture — implemented in a dedicated baremetal fulfillment component — so that future bare metal backends can be integrated without breaking the API. This EP is scoped to the fulfillment-service API layer; operator, provisioning, UX, and E2E concerns are tracked as companion work items under OSAC-1118.
 
 ## Motivation
 
@@ -47,7 +47,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 ### Non-Goals
 
-* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement; in this initial phase, network configuration is fixed by the Cloud Provider Admin as part of the `BareMetalInstanceCatalogItem` and tenants have no mechanism to configure networking at provision time. A dedicated networking enhancement will enable tenants to create their own `Subnet` and attach it to a `BareMetalInstance`.
+* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement. This EP does not add networking fields to `BareMetalInstanceCatalogItem`; BareMetalInstance users cannot configure networking until a dedicated networking API exists. A dedicated networking enhancement will define how tenants create their own `Subnet` and attach it to a `BareMetalInstance`.
 * Custom hardware profile selection by tenants at provision time — fixed by the catalog item. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new catalog item.
 * AAP playbook, baremetal fulfillment component, UI/UX, and E2E test implementation — covered in companion work.
 * Support for multiple bare metal backends in this initial release — the architecture is designed for future extensibility.
@@ -57,7 +57,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 The proposal introduces three new resource types to the fulfillment-service public API:
 
-**`BareMetalInstanceTemplate`** defines a bare metal hardware profile (host type, OS image, network configuration). Cloud Provider Admins create and manage templates via the private API; tenants can discover available templates via the public API (List/Get only). osac-aap is used for the actual host-level provisioning at runtime, not for template management.
+**`BareMetalInstanceTemplate`** defines a bare metal hardware profile and OS image. Cloud Provider Admins create and manage templates via the private API; tenants can discover available templates via the public API (List/Get only). Resource networking is not defined by this EP and is deferred to a future enhancement. osac-aap is used for the actual host-level provisioning at runtime, not for template management.
 
 **`BareMetalInstanceCatalogItem`** is a catalog entry that presents an available bare metal configuration to tenants. Cloud Provider Admins publish global catalog items; Tenant Admins can additionally create tenant-scoped catalog items through the public API, referencing available templates. The `published` flag controls visibility and an optional `tenant` field enables scoping to a specific tenant; unpublished or out-of-scope catalog items are invisible to tenant List/Get calls. `FieldDefinition` entries on the catalog item govern which spec fields tenants may override and apply defaults for the rest.
 
