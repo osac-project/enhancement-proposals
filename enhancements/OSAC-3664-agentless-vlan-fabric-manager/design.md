@@ -443,6 +443,23 @@ The ExternalIP is not assigned as a floating address to an arbitrary host
 interface. The BGP `/32`, the persisted transit next hop, and the namespace NAT
 state together provide reachability and make repair/deletion deterministic.
 
+The provider underlay contract is explicit. The provider inventory must have a
+working FRR/BGP session and upstream route policy before `agentless_net` is
+Ready; those peer/session settings are provider configuration, not tenant
+inputs. The existing `agentless_net.l3.bgp` primitive does not establish the
+upstream BGP session. It adds or removes the consumer-owned local FRR static
+route `<external-ip>/32 via <namespace-transit-next-hop>`, which FRR then
+advertises over the provider-owned session. Agentless owns that local route and
+the consumer UID; the provider owns the BGP peer and upstream policy.
+
+An attachment or NATGateway is Ready only after the local FRR route is present,
+the provider route check confirms the `/32` is advertised/reachable upstream,
+and the namespace translation is installed. Cleanup withdraws the exact local
+route, verifies that upstream reachability is gone, and only then removes the
+translation and permits ExternalIP cleanup. A failed or unavailable upstream
+check leaves the consumer non-ready and retains its finalizer and reservation.
+[Codebase: osac-aap/collections/ansible_collections/agentless_net/l3/roles/bgp]
+
 #### Failure and recovery workflow
 
 For every operation, the controller records the AAP job target, attempt, and
@@ -1736,8 +1753,9 @@ not a substitute for that testplan.
   consumers persist the transit/route state, and DNAT/SNAT actions use that
   address.
 - Exercise BGP `/32` announce/withdraw with a saved namespace-side next hop,
-  whole-address DNAT for API/ingress cluster endpoints, and explicit-source
-  SNAT without host-side MASQUERADE.
+  verify the provider-owned FRR/BGP peer sees the route, exercise whole-address
+  DNAT for API/ingress cluster endpoints, and verify explicit-source SNAT
+  without host-side MASQUERADE.
 - Exercise Subnet churn while NATGateway is Ready: verify a new SNAT rule is
   installed before Subnet readiness and an old rule is removed before Subnet
   VLAN/DHCP cleanup.
@@ -1770,8 +1788,9 @@ not a substitute for that testplan.
   then reboots and observes tenant DHCP before Ready, and powers it off before
   returning to the exact provisioning VLAN on offboarding, without relying on a
   Netris variable or display name.
-- Verify inbound ExternalIP traffic follows the BGP `/32` to the VN namespace,
-  reaches the target through whole-address DNAT, and returns through conntrack.
+- Verify the upstream BGP peer learns the ExternalIP `/32`, inbound traffic
+  follows it to the VN namespace, reaches the target through whole-address
+  DNAT, and returns through conntrack.
 - Verify outbound traffic is explicitly SNATed and the external endpoint
   observes the NATGateway ExternalIP as the source address.
 - Verify ExternalIPAttachment and Subnet/VirtualNetwork deletion order and
