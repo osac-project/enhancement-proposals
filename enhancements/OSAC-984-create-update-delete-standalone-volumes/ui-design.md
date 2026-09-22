@@ -85,7 +85,7 @@ osac-ui/
 │   ├── components/Volume/
 │   │   ├── VolumeWizardPage.tsx         # Create wizard page (breadcrumb + title)
 │   │   ├── VolumeWizard.tsx             # Multi-step wizard (Formik + PF Wizard)
-│   │   ├── GeneralStep.tsx              # Step 1: Tenant, Project, Name, Description
+│   │   ├── GeneralStep.tsx              # Step 1: Project, Name, Description
 │   │   ├── ConfigurationStep.tsx        # Step 2: Storage tier, Size, Access mode
 │   │   ├── ReviewStep.tsx               # Step 3: Read-only summary before submission
 │   │   ├── VolumeDeleteConfirmModal.tsx
@@ -207,18 +207,6 @@ When no volumes exist, display a centered empty state:
   compute resources."
 - **Action:** Primary "Create volume" button
 
-#### Polling for State Transitions
-
-Volumes in `CREATING` or `DELETING` state are transient. The list page uses
-TanStack Query's `refetchInterval` to poll for updates:
-
-- **When any visible volume is in CREATING or DELETING:** Poll every 5
-  seconds.
-- **When all visible volumes are in terminal states (AVAILABLE, FAILED,
-  DELETED):** Stop polling (default `staleTime`).
-
-This matches the existing compute instance list polling pattern.
-
 ### 4.4 Create Volume Wizard
 
 A multi-step wizard following the agreed-upon resource creation pattern
@@ -240,7 +228,6 @@ Identity and ownership fields common to all resource types.
 
 | Field | Component | Required | Notes |
 |---|---|---|---|
-| Tenant | `TenantSelectField` | Yes (Cloud Provider Admin only) | For cloud provider admin resources. Includes an option to make the resource global. Hidden for tenant-scoped users (auto-set from context). |
 | Project | `ProjectSelectField` | Yes | Selects the tenant project scope for the resource. |
 | Name | `NameField` | Yes | DNS label: `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`. Cannot be changed after creation. |
 | Description | `InputField` (textarea) | No | Free-text description. |
@@ -262,7 +249,7 @@ Read-only summary of all selections before submission.
 
 | Section | Displayed Fields |
 |---|---|
-| General | Tenant (if applicable), Project, Name, Description |
+| General | Project, Name, Description |
 | Configuration | Storage tier, Size, Access mode |
 
 The Review step presents all entered values in a read-only summary so
@@ -283,12 +270,6 @@ to previous steps to make corrections.
 │                                                          │
 │ Step 1 — General:                                        │
 │ ┌──────────────────────────────────────────────────────┐ │
-│ │ Tenant * (Cloud Provider Admin only)                 │ │
-│ │ ┌──────────────────────────────────────────────────┐ │ │
-│ │ │ Select tenant                                ▼   │ │ │
-│ │ └──────────────────────────────────────────────────┘ │ │
-│ │ ☐ Make resource global                               │ │
-│ │                                                      │ │
 │ │ Project *                                            │ │
 │ │ ┌──────────────────────────────────────────────────┐ │ │
 │ │ │ Select project                               ▼   │ │ │
@@ -329,7 +310,6 @@ to previous steps to make corrections.
 │ Step 3 — Review:                                         │
 │ ┌──────────────────────────────────────────────────────┐ │
 │ │ General                                              │ │
-│ │   Tenant:       My Tenant                            │ │
 │ │   Project:      analytics-prod                       │ │
 │ │   Name:         my-volume-name                       │ │
 │ │   Description:  Primary data store                   │ │
@@ -352,7 +332,6 @@ to previous steps to make corrections.
 
 | Field | Component | Yup Schema | Required | Notes |
 |---|---|---|---|---|
-| Tenant | `TenantSelectField` | `Yup.string().required()` | Yes (admin) | Cloud Provider Admin only; includes global option. Hidden for tenant users. |
 | Project | `ProjectSelectField` | `Yup.string().required()` | Yes | Tenant project scope for the resource. |
 | Name | `NameField` | `resourceNameSchema(t)` | Yes | DNS label: `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`. Cannot be changed after creation. |
 | Description | `InputField` (textarea) | `Yup.string()` | No | Free-text description. |
@@ -468,9 +447,10 @@ matching the ExternalIPPools details page. Each column contains a
 │                                                          │
 │  Overview              Configuration          Status     │
 │  ─────────             ─────────────          ──────     │
-│  Status   Available    Storage Tier  std-blk  State  OK  │
-│  Created  3 hours ago  Size          100 GiB  Message —  │
-│  ID       abc-123...   Access Mode   RWO                 │
+│  Project  analytics..  Storage Tier  std-blk  State  OK  │
+│  Status   Available    Size          100 GiB  Message —  │
+│  Created  3 hours ago  Access Mode   RWO                 │
+│  ID       abc-123...                                     │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -520,26 +500,20 @@ during creation).
 
 | Column | Section Title | Fields |
 |---|---|---|
-| Left (`GridItem md={4}`) | Overview | Status (`VolumeStatusLabel`), Created (`Timestamp`), ID |
+| Left (`GridItem md={4}`) | Overview | Project, Status (`VolumeStatusLabel`), Created (`Timestamp`), ID |
 | Center (`GridItem md={4}`) | Configuration | Storage Tier, Size (formatted as "{n} GiB"), Access Mode |
 | Right (`GridItem md={4}`) | Status | State, Message (shown only when set) |
-
-#### Polling on Details Page
-
-When the volume is in `CREATING` or `DELETING` state, the details page
-polls for updates every 5 seconds. The `VolumeStatusLabel` updates
-automatically when the volume transitions to its next state.
 
 ### 4.6 Volume Status Label
 
 A new `VolumeStatusLabel` component maps `VolumeState` enum values to the
 existing `ResourceStatusLabel`. The lookup normalizes `undefined` to
 `VOLUME_STATE_UNSPECIFIED` so that volumes with an absent `state` field
-safely render the "Unknown" label instead of crashing:
+safely render the "Unspecified" label instead of crashing:
 
 ```typescript
 const VOLUME_STATUS_MAP: Record<VolumeState, { status: StatusKind; text: string }> = {
-  [VolumeState.VOLUME_STATE_UNSPECIFIED]: { status: 'unspecified',  text: 'Unknown'  },
+  [VolumeState.VOLUME_STATE_UNSPECIFIED]: { status: 'unspecified',  text: 'Unspecified'  },
   [VolumeState.VOLUME_STATE_CREATING]:    { status: 'progressing',  text: 'Creating' },
   [VolumeState.VOLUME_STATE_AVAILABLE]:   { status: 'ready',        text: 'Available'},
   [VolumeState.VOLUME_STATE_FAILED]:      { status: 'failed',       text: 'Failed'   },
@@ -561,7 +535,7 @@ const VolumeStatusLabel = ({ state }: { state?: VolumeState }) => {
 | Failed | Red | ExclamationCircleIcon |
 | Deleting | Blue | InProgressIcon |
 | Deleted | Grey | QuestionCircleIcon |
-| Unknown | Grey | QuestionCircleIcon |
+| Unspecified | Grey | QuestionCircleIcon |
 
 ### 4.7 Delete Confirmation
 
@@ -644,32 +618,6 @@ service's `typeName` are invalidated. The `useUpdateResource` hook
 automatically computes `update_mask` paths from the request object
 via `buildUpdateMaskPaths`.
 
-#### State-Aware Polling
-
-Volumes in transient states (`CREATING`, `DELETING`) require polling.
-This is implemented via TanStack Query's `refetchInterval` option,
-passed through the generic hook's options parameter:
-
-```typescript
-// List page: poll while any volume is in a transient state
-useListResource(Volumes, params, {
-  refetchInterval: (query) => {
-    const items = query.state.data?.items ?? [];
-    return items.some((v) => isTransientState(v.status?.state))
-      ? 5_000
-      : false;
-  },
-});
-
-// Details page: poll while the current volume is in a transient state
-useGetResource(Volumes, { id }, {
-  refetchInterval: (query) =>
-    isTransientState(query.state.data?.object?.status?.state)
-      ? 5_000
-      : false,
-});
-```
-
 #### DELETED-Volume Exclusion
 
 The `Volumes.list` API is expected to omit volumes in `DELETED` state.
@@ -734,7 +682,7 @@ The "Refresh and retry" action:
 | **Create fails (duplicate name)** | Inline danger alert: "volume with name 'x' already exists...". User chooses a different name. |
 | **Create fails (NFS tier selected)** | Inline danger alert with protocol-specific message from backend. User selects a block-protocol tier. |
 | **Create fails (network/server error)** | Inline danger alert: "An unexpected error occurred". User retries. |
-| **Create succeeds, volume stays CREATING** | Details page polls every 5s. Status label shows blue "Creating". |
+| **Create succeeds, volume stays CREATING** | Status label shows blue "Creating". UI refreshes state on default intervals. |
 | **Create succeeds, volume moves to FAILED** | Details page shows red "Failed" status with `status.message` in danger alert. Delete remains available. |
 | **Inline description update fails (version conflict)** | Warning alert: "This volume was modified". User clicks "Refresh and retry". |
 | **Delete fails (not found)** | Modal shows inline danger alert: "Volume not found". User closes modal; list refreshes. |
@@ -815,8 +763,8 @@ responses by displaying an appropriate error message.
 
 **VolumeStatusLabel:**
 - TC-UI-S1: Each VolumeState renders correct color and text.
-- TC-UI-S2: `VOLUME_STATE_UNSPECIFIED` renders grey "Unknown".
-- TC-UI-S3: When `state` prop is `undefined` (absent from API response), the component renders grey "Unknown" (normalizes to `VOLUME_STATE_UNSPECIFIED`).
+- TC-UI-S2: `VOLUME_STATE_UNSPECIFIED` renders grey "Unspecified".
+- TC-UI-S3: When `state` prop is `undefined` (absent from API response), the component renders grey "Unspecified" (normalizes to `VOLUME_STATE_UNSPECIFIED`).
 
 **Error display:**
 - TC-UI-E1: InvalidArgument shows "Failed to create volume".
