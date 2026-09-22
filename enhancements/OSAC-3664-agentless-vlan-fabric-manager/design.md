@@ -237,11 +237,10 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    contains the BareMetalInstance UID, BareMetalHost UID, logical interface,
    authoritative MAC from the `osac.openshift.io/interface-macs` annotation,
    Subnet UID, parent VirtualNetwork UID, server-side tenant attribution,
-   optional opaque `security_group_refs`, operation direction, and the provider
-   provisioning-network ID. The logical interface remains the status identity;
-   the MAC is the DHCP lease identity. Agentless ignores security-group policy
-   references in this default-permit milestone but carries them without
-   changing the generic handoff shape. [User] [Codebase:
+   operation direction, and the provider provisioning-network ID. The logical
+   interface remains the status identity; the MAC is the DHCP lease identity.
+   This default-permit milestone carries no policy-resource or
+   SecurityGroup-association input. [User] [Codebase:
    bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_types.go]
    The BMaaS attachment contract permits each `subnetRef` at most once within
    one BareMetalInstance; a Subnet may still be used by many BareMetalInstances.
@@ -250,8 +249,8 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
 2. After host provisioning, the BMF flow starts the generic
    `playbook_osac_move_network_attachment.yml` AAP job with this contract:
    `operation` (`attach` or `detach`), `binding_uid`, host/interface/MAC
-   identity, `subnet_uid`, `virtual_network_uid`, tenant attribution,
-   `security_group_refs`, and `provisioning_network_id`. The playbook must not
+   identity, `subnet_uid`, `virtual_network_uid`, tenant attribution, and
+   `provisioning_network_id`. The playbook must not
    look up `netris_bm_provisioning_vnet` or reduce the binding to a V-Net name.
    Agentless resolves `subnet_uid` to the persisted tenant VLAN and resolves
    `provisioning_network_id` from provider configuration to its exact access
@@ -1050,7 +1049,6 @@ port_bindings:
     tenant_vlan_id: <integer>
     provisioning_network_id: <provider-stable-id>
     provisioning_vlan_id: <integer>
-    security_group_refs: []
     direction: attach | detach
     state: desired | attached | restoring | restored
     handoff_phase: port_moved | rebooting | dhcp_pending | attached | poweroff_pending | restoring | restored
@@ -1291,8 +1289,7 @@ The agentless implementation must provide:
 - Generic network attachment entrypoints for create/delete or equivalent
   attach/detach operations. The generic playbook passes a stable binding UID,
   host UID, interface, authoritative MAC, Subnet/VN UID, tenant attribution,
-  opaque security-group references, direction, and provider provisioning-
-  network ID. The AgentlessNet implementation must add
+  direction, and provider provisioning-network ID. The AgentlessNet implementation must add
   `osac-aap/collections/ansible_collections/osac/templates/roles/agentless_net/tasks/move_network_attachment.yaml`
   for the BMF attachment flow. The role returns the resolved tenant and
   provisioning VLANs, switch port, operation ID, and observed binding state.
@@ -1571,9 +1568,9 @@ Unknown provider outcomes fail closed and require an inspect/cleanup retry.
 Differences from Netris can change tenant-observable behavior even when API
 responses match. A capability-by-capability parity matrix and BMaaS reference
 validation compare the in-scope L2, routing, DHCP, DNAT, SNAT, status, and
-cleanup behavior. SecurityGroup provisioning and policy enforcement are excluded
-from this parity claim because they remain a Netris requirement but are deferred
-for agentless VLAN. [Locked: C2] [PRD: FR-2, NFR-2]
+cleanup behavior. SecurityGroup provisioning and policy enforcement are outside
+this milestone and are excluded from the parity claim for both backend paths.
+[Locked: C2] [PRD: FR-2, NFR-2]
 
 #### Privileged integration surface
 
@@ -1724,8 +1721,8 @@ not a substitute for that testplan.
   events, consumer exclusivity for Attachment versus NATGateway, field-scoped
   status updates, and exactly-once `RELEASED` capacity accounting.
 - Validate attachment binding keys, host/MAC identity, direction transitions,
-  provisioning-network resolution, security-group reference pass-through, and
-  idempotent attach/detach state changes, including reboot, power-off, and
+  provisioning-network resolution, and idempotent attach/detach state changes,
+  including reboot, power-off, and
   DHCP-gated handoff phases.
 - Verify status condition reason/message mapping for AAP and controller-owned
   allocation errors.
