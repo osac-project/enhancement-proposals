@@ -96,12 +96,12 @@ osac-ui/
 
 ```
 Browser
-  → Connect JSON (POST/PATCH/DELETE /api/fulfillment/v1/volumes)
+  → Connect JSON via generated `Volumes` client (POST per RPC to generated service/method paths)
   → Go proxy (Connect JSON → native gRPC bridge)
   → fulfillment-service gRPC server
   → public VolumesServer (inMapper, validation, delegation)
   → private VolumesServer → GenericDAO → PostgreSQL
-  → Response: public Volume (status fields stripped by outMapper)
+  → Response: public Volume (outMapper preserves lifecycle status fields — state, message — while stripping internal-only fields: vendor_volume_id, backend, protocol, hub, vendor_context)
   → TanStack Query cache update → React re-render
 ```
 
@@ -176,10 +176,10 @@ capabilities.
 
 | Enum Value | Display Label |
 |---|---|
-| `VOLUME_ACCESS_MODE_READ_WRITE_ONCE` | ReadWriteOnce |
-| `VOLUME_ACCESS_MODE_READ_ONLY_MANY` | ReadOnlyMany |
-| `VOLUME_ACCESS_MODE_READ_WRITE_MANY` | ReadWriteMany |
-| `VOLUME_ACCESS_MODE_READ_WRITE_ONCE_POD` | ReadWriteOncePod |
+| `VolumeAccessMode.VOLUME_ACCESS_MODE_READ_WRITE_ONCE` | ReadWriteOnce |
+| `VolumeAccessMode.VOLUME_ACCESS_MODE_READ_ONLY_MANY` | ReadOnlyMany |
+| `VolumeAccessMode.VOLUME_ACCESS_MODE_READ_WRITE_MANY` | ReadWriteMany |
+| `VolumeAccessMode.VOLUME_ACCESS_MODE_READ_WRITE_ONCE_POD` | ReadWriteOncePod |
 
 These labels match the Kubernetes PersistentVolume access mode names that
 cloud-native users expect.
@@ -277,7 +277,7 @@ A full-page form following the `StorageTierCreatePage` pattern.
 | Field | Component | Yup Schema | Required | Notes |
 |---|---|---|---|---|
 | Name | `NameField` | `resourceNameSchema(t)` | Yes | DNS label: `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`. Disabled in edit mode. |
-| Storage tier | `StorageTierSelectField` | `Yup.string().required()` | Yes | Fetches active tiers via public API. Disabled in edit mode. |
+| Storage tier | `StorageTierSelectField` | `Yup.string().required()` | Yes | Fetches active tiers via public API, filtered to `STORAGE_PROTOCOL_BLOCK` tiers only (NFS creation is a non-goal). Disabled in edit mode. |
 | Size (GiB) | `InputField` (type="number") | `positiveIntegerSchema(t)` | Yes | Must be > 0. Disabled in edit mode. |
 | Access mode | `RadioButtonField` | `Yup.string().oneOf([...]).required()` | Yes | 4 options. Disabled in edit mode. |
 | Display name | `InputField` | `Yup.string().max(63)` | No | Optional human-readable label. Max 63 chars. |
@@ -323,11 +323,48 @@ const getVolumeSchema = (t: TFunction) =>
     sizeGib: positiveIntegerSchema(t).required(t('Size is required')),
     accessMode: Yup.string()
       .oneOf(
-        ['READ_WRITE_ONCE', 'READ_ONLY_MANY', 'READ_WRITE_MANY', 'READ_WRITE_ONCE_POD'],
+        [
+          VolumeAccessMode.VOLUME_ACCESS_MODE_READ_WRITE_ONCE,
+          VolumeAccessMode.VOLUME_ACCESS_MODE_READ_ONLY_MANY,
+          VolumeAccessMode.VOLUME_ACCESS_MODE_READ_WRITE_MANY,
+          VolumeAccessMode.VOLUME_ACCESS_MODE_READ_WRITE_ONCE_POD,
+        ],
         t('Access mode is required'),
       )
       .required(t('Access mode is required')),
   });
+```
+
+#### Form-to-Resource Mapping
+
+On submit, a `toVolumeResource` mapper converts Formik values to a
+`PartialMessage<Volume>` for the API call:
+
+```typescript
+const toVolumeResource = (values: VolumeFormValues): PartialMessage<Volume> => ({
+  metadata: {
+    name: values.metadata.name,
+    displayName: values.displayName || undefined,
+    description: values.description || undefined,
+  },
+  spec: {
+    storageTier: values.storageTier,
+    sizeGib: values.sizeGib,
+    accessMode: values.accessMode as VolumeAccessMode,
+  },
+});
+```
+
+In edit mode, only mutable fields are sent (with an `update_mask`):
+
+```typescript
+const toVolumeUpdate = (values: VolumeFormValues): PartialMessage<Volume> => ({
+  id: values.id,
+  metadata: {
+    displayName: values.displayName || undefined,
+    description: values.description || undefined,
+  },
+});
 ```
 
 Server-side errors (API responses) are caught and displayed as an inline
@@ -423,7 +460,8 @@ The details page supports inline editing for `display_name` and
 - Clicking the icon switches that field to edit mode (text input appears).
 - Check icon saves; close icon cancels.
 - The save action calls the Update API with `update_mask` targeting only
-  the changed field and `lock=true` for optimistic locking.
+  the changed field path (`metadata.display_name` or
+  `metadata.description`) and `lock=true` for optimistic locking.
 - On success, TanStack Query cache is invalidated to refresh the display.
 
 Labels and annotations are edited via a separate modal (matching the
@@ -453,12 +491,12 @@ existing `ResourceStatusLabel`:
 
 ```typescript
 const VOLUME_STATUS_MAP: Record<VolumeState, { status: StatusKind; text: string }> = {
-  [VolumeState.UNSPECIFIED]:  { status: 'unspecified',  text: 'Unknown'  },
-  [VolumeState.CREATING]:     { status: 'progressing',  text: 'Creating' },
-  [VolumeState.AVAILABLE]:    { status: 'ready',        text: 'Available'},
-  [VolumeState.FAILED]:       { status: 'failed',       text: 'Failed'   },
-  [VolumeState.DELETING]:     { status: 'progressing',  text: 'Deleting' },
-  [VolumeState.DELETED]:      { status: 'unspecified',  text: 'Deleted'  },
+  [VolumeState.VOLUME_STATE_UNSPECIFIED]: { status: 'unspecified',  text: 'Unknown'  },
+  [VolumeState.VOLUME_STATE_CREATING]:    { status: 'progressing',  text: 'Creating' },
+  [VolumeState.VOLUME_STATE_AVAILABLE]:   { status: 'ready',        text: 'Available'},
+  [VolumeState.VOLUME_STATE_FAILED]:      { status: 'failed',       text: 'Failed'   },
+  [VolumeState.VOLUME_STATE_DELETING]:    { status: 'progressing',  text: 'Deleting' },
+  [VolumeState.VOLUME_STATE_DELETED]:     { status: 'unspecified',  text: 'Deleted'  },
 };
 ```
 
@@ -520,13 +558,26 @@ that is already in DELETING state (race condition), the API returns success
 New hooks in `libs/ui-components/src/api/v1/volumes.ts`:
 
 ```typescript
+// State-aware polling: poll every 5s while any volume is in a transient
+// state (CREATING or DELETING); disable polling at terminal states.
+const isTransientState = (state?: VolumeState) =>
+  state === VolumeState.VOLUME_STATE_CREATING ||
+  state === VolumeState.VOLUME_STATE_DELETING;
+
 // Read hooks
 export const useVolumes = (params: ListParams = {}) => {
   const client = useApiFetch(Volumes);
   return useApiQuery({
     queryKey: apiQueryKey('v1/volumes', undefined, params),
     queryFn: () => client.list(params),
-    select: (data) => data.items,
+    // Preserve pagination metadata (size, total) alongside items
+    select: (data) => ({ items: data.items, size: data.size, total: data.total }),
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      return items.some((v) => isTransientState(v.status?.state))
+        ? 5_000
+        : false;
+    },
   });
 };
 
@@ -537,6 +588,10 @@ export const useVolume = (id: string) => {
     queryFn: () => client.get({ id }),
     select: (data) => data.object,
     enabled: Boolean(id),
+    refetchInterval: (query) =>
+      isTransientState(query.state.data?.object?.status?.state)
+        ? 5_000
+        : false,
   });
 };
 
@@ -581,6 +636,13 @@ export const useDeleteVolume = () => {
     mutationFn: (id: string) => client.delete({ id }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: apiQueryKey('v1/volumes') });
+    },
+    onError: (error: ConnectError) => {
+      // When the volume was already deleted (NotFound), invalidate the
+      // list so the stale entry disappears when the modal closes.
+      if (error.code === Code.NotFound) {
+        queryClient.invalidateQueries({ queryKey: apiQueryKey('v1/volumes') });
+      }
     },
   });
 };
@@ -788,7 +850,7 @@ Using `apps/playwright/scratch/` against a live cluster:
 | 3 | Volume Details & Metadata Editing | M | 3 | Epics 1, 2 |
 | 4 | Volume Deletion | S | 2 | Epics 1, 3 |
 
-**Total: 4 epics, 11 stories (8 [DEV], 1 [QE], 1 [DOCS])**
+**Total: 4 epics, 11 stories (9 [DEV], 1 [QE], 1 [DOCS])**
 
 ### Epic 1: Volume API Layer & Shared Components (M)
 
