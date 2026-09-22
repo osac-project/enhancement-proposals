@@ -22,11 +22,13 @@ design covers the tenant-facing UI that consumes the public Volume CUD API
 (OSAC-2685) at `/api/fulfillment/v1/volumes`. The backend API and its
 implementation are complete; this document specifies the console experience.
 
-The UI delivers four views: a volume list page (extending OSAC-4542's
-read-only list), a create volume form, a volume details page with metadata
-editing, and a delete confirmation modal. All views follow existing OSAC UI
-patterns (PatternFly 6, Formik + Yup, TanStack Query, Connect/gRPC-Web)
-and reuse shared components from `libs/ui-components`.
+The UI delivers three views: a volume list page (extending OSAC-4542's
+read-only list), a create volume wizard (3-step: General → Configuration →
+Review), and a volume details page with inline description editing and
+a delete confirmation modal. All views follow existing OSAC UI patterns
+(PatternFly 6, Formik + Yup, TanStack Query, Connect/gRPC-Web) and reuse
+shared components from `libs/ui-components`, including the generic resource
+hooks from `use-resource.ts`.
 
 ## 2. Goals and Non-Goals
 
@@ -77,19 +79,22 @@ targets tenant users at a different navigation path.
 ```text
 osac-ui/
 ├── apps/app-frontend/src/shell/
-│   └── VolumeRoutes.tsx              # Route definitions
+│   └── VolumeRoutes.tsx                 # Route definitions
 ├── libs/ui-components/src/
-│   ├── api/v1/
-│   │   └── volumes.ts                # API hooks (useVolumes, useVolume, useCreateVolume, etc.)
+│   ├── api/use-resource.ts              # Generic resource hooks (existing, shared)
 │   ├── components/Volume/
-│   │   ├── VolumeCreatePage.tsx       # Create + Edit form (shared component)
+│   │   ├── VolumeWizardPage.tsx         # Create wizard page (breadcrumb + title)
+│   │   ├── VolumeWizard.tsx             # Multi-step wizard (Formik + PF Wizard)
+│   │   ├── GeneralStep.tsx              # Step 1: Tenant, Project, Name, Description
+│   │   ├── ConfigurationStep.tsx        # Step 2: Storage tier, Size, Access mode
+│   │   ├── ReviewStep.tsx               # Step 3: Read-only summary before submission
 │   │   ├── VolumeDeleteConfirmModal.tsx
-│   │   ├── VolumeStatusLabel.tsx      # State → ResourceStatusLabel mapping
-│   │   ├── VolumeActionsMenu.tsx      # Kebab menu (Edit, Delete)
-│   │   └── VolumeDetailsActionButtons.tsx
+│   │   ├── VolumeStatusLabel.tsx        # State → ResourceStatusLabel mapping
+│   │   ├── VolumeActionsMenu.tsx        # Kebab menu (Delete)
+│   │   ├── VolumeDetailsPage.tsx        # Details page shell (header + delete action)
+│   │   └── VolumeDetailsPageContent.tsx # Column-layout details content
 │   └── pages/tenant/
-│       ├── VolumesListPage.tsx        # List view with toolbar + table
-│       └── VolumeDetailsPage.tsx      # Details view with metadata sections
+│       └── VolumesListPage.tsx          # List view with toolbar + table
 ```
 
 #### Data Flow
@@ -127,9 +132,8 @@ New routes under the tenant navigation:
 | Path | Component | Purpose |
 |---|---|---|
 | `/storage/volumes` | `VolumesListPage` | Volume list with table, toolbar, pagination |
-| `/storage/volumes/create` | `VolumeCreatePage` | Create volume form |
-| `/storage/volumes/:id` | `VolumeDetailsPage` | Volume details with metadata sections |
-| `/storage/volumes/:id/edit` | `VolumeCreatePage` | Edit mutable metadata (same component as create) |
+| `/storage/volumes/create` | `VolumeWizardPage` | Create volume wizard |
+| `/storage/volumes/:id` | `VolumeDetailsPage` | Volume details with column-layout sections |
 
 Route file (`VolumeRoutes.tsx`):
 
@@ -137,9 +141,8 @@ Route file (`VolumeRoutes.tsx`):
 export const VolumeRoutes = () => (
   <Routes>
     <Route index element={<VolumesListPage />} />
-    <Route path="create" element={<VolumeCreatePage />} />
+    <Route path="create" element={<VolumeWizardPage />} />
     <Route path=":id" element={<VolumeDetailsPage />} />
-    <Route path=":id/edit" element={<VolumeCreatePage />} />
   </Routes>
 );
 ```
@@ -188,7 +191,6 @@ cloud-native users expect.
 
 | Action | Available States | Disabled States | Behavior |
 |---|---|---|---|
-| **Edit** | CREATING, AVAILABLE, FAILED | DELETING, DELETED | Navigate to `/storage/volumes/:id/edit` |
 | **Delete** | AVAILABLE, FAILED | CREATING, DELETING, DELETED | Open `VolumeDeleteConfirmModal` |
 
 Actions in disabled states are hidden from the kebab menu, not shown as
@@ -219,9 +221,16 @@ This matches the existing compute instance list polling pattern.
 
 ### 4.4 Create Volume Wizard
 
-A multi-step wizard following the agreed-upon resource creation pattern.
-All new resources should adopt this 3-step wizard structure:
-**General → Configuration → Review**.
+A multi-step wizard following the agreed-upon resource creation pattern
+used by `ExternalIpPoolWizard` in osac-ui. All new resources should adopt
+this 3-step wizard structure: **General → Configuration → Review**.
+
+The wizard uses PatternFly's `Wizard` and `WizardStep` components, wrapped
+in a `Formik` provider with `FieldValidationProvider`. Navigation is
+handled by `OSACWizardFooter` (shared component from
+`libs/ui-components/src/components/Wizard/`). Each step is a separate
+component file (`GeneralStep`, `ConfigurationStep`, `ReviewStep`) for
+maintainability.
 
 #### Wizard Steps
 
@@ -356,41 +365,17 @@ to previous steps to make corrections.
 | Size (GiB) | `InputField` (type="number") | `positiveIntegerSchema(t)` | Yes | Must be > 0. Cannot be changed after creation. |
 | Access mode | `RadioButtonField` | `Yup.string().oneOf([...]).required()` | Yes | 4 options. Cannot be changed after creation. |
 
-#### Create vs. Edit Mode
+#### Submission
 
-A single `VolumeCreatePage` component handles both modes, toggled by the
-presence of the `:id` route parameter (matching the `StorageTierCreatePage`
-pattern):
+The wizard is create-only — there is no standalone edit page. After
+creation, the only mutable field (`description`) is edited inline on
+the details page (section 4.5) using the generic `useUpdateResource`
+hook. This avoids a separate edit form where most fields would be
+disabled.
 
-**Create mode** (`/storage/volumes/create`):
-- All wizard steps are shown
 - Title: "Create volume"
-- Submit button: "Create" (on the Review step)
+- Submit button: "Create" (on the Review step, via `OSACWizardFooter`)
 - On success: navigate to `/storage/volumes/:id` (details page)
-
-**Edit mode** (`/storage/volumes/:id/edit`):
-- Immutable fields (name, storage_tier, size_gib, access_mode) rendered as
-  disabled inputs with helper text: "Cannot be changed after creation"
-- Disabled fields use `aria-describedby` pointing to the helper text for
-  screen reader accessibility
-- Mutable fields (description) remain editable
-- Title: "Edit volume"
-- Submit button: "Save"
-- On success: navigate back to `/storage/volumes/:id`
-
-> **Design note — conditional removal of edit flow:** After removing
-> `display_name`, the only mutable field remaining in the edit flow is
-> `description` (a metadata field, not a configuration field). If the
-> backend confirms that no configuration fields are mutable
-> post-creation, the standalone edit page (`/storage/volumes/:id/edit`)
-> should be removed entirely. Description editing would then be handled
-> exclusively through the inline edit pattern on the details page
-> (section 4.5). This section is retained pending backend confirmation
-> of mutable field support.
-
-Labels and annotations are managed separately (see section 4.5 Details
-Page) because they use a key-value editor pattern that does not fit a
-simple form field.
 
 #### Validation
 
@@ -419,94 +404,74 @@ const getVolumeSchema = (t: TFunction) =>
 
 #### Form-to-Resource Mapping
 
-On submit, a `toVolumeResource` mapper converts Formik values to a
-`PartialMessage<Volume>` for the API call:
+On submit, a `toCreateRequest` mapper converts Formik values to the
+create request shape, following the pattern used by
+`ExternalIpPoolWizard`:
 
 ```typescript
-const toVolumeResource = (values: VolumeFormValues): PartialMessage<Volume> => ({
-  metadata: {
-    name: values.metadata.name,
-    description: values.description || undefined,
-  },
-  spec: {
-    storageTier: values.storageTier,
-    sizeGib: values.sizeGib,
-    accessMode: values.accessMode as VolumeAccessMode,
+const toCreateRequest = (values: VolumeFormValues) => ({
+  object: {
+    metadata: {
+      name: values.metadata.name,
+      description: values.description || undefined,
+    },
+    spec: {
+      storageTier: values.storageTier,
+      sizeGib: values.sizeGib,
+      accessMode: values.accessMode as VolumeAccessMode,
+    },
   },
 });
 ```
 
-In edit mode, only mutable fields are sent (with an `update_mask`).
-The volume ID comes from the `:id` route parameter — not from form
-values — because `id` is not a form field and is not part of the Yup
-schema:
-
-```typescript
-const toVolumeUpdate = (values: VolumeFormValues, routeId: string): PartialMessage<Volume> => ({
-  id: routeId,
-  metadata: {
-    description: values.description || undefined,
-  },
-});
-```
-
-The edit-mode submit handler calls `toVolumeUpdate(values, id)` where
-`id` is the route parameter extracted via `useParams<{ id: string }>()`.
-
-Server-side errors (API responses) are caught and displayed as an inline
-danger alert below the form, using `getErrorMessage(error)` to extract
-human-readable text from the gRPC error.
+Server-side errors (API responses) are caught and displayed via the
+`OSACWizardFooter`'s error prop (matching the ExternalIPPools pattern),
+using `getErrorMessage(error)` to extract human-readable text from the
+gRPC error.
 
 #### Form Behavior
 
 - **`LeaveFormConfirmation`** — included to prompt the user when navigating
-  away with unsaved changes.
-- **Submit loading state** — the Create/Save button shows a spinner
-  (`isLoading={isSubmitting}`) and is disabled during submission.
-- **Cancel** — link-styled button, navigates back to the list or details
-  page.
+  away with unsaved changes (same as ExternalIPPools wizard).
+- **Submit loading state** — the `OSACWizardFooter` manages loading and
+  disabled states during submission.
+- **Cancel** — handled by the `OSACWizardFooter`, navigates back to the
+  volume list.
 
 ### 4.5 Volume Details Page
 
-Displays a single volume's full information with action buttons and
-editable metadata sections.
+Displays a single volume's full information using a column layout
+**without cards**, following the `ExternalIpPoolDetailsPage` pattern
+from osac-ui. The page is split into two components:
+
+- **`VolumeDetailsPage`** — shell component that uses `ResourceDetailsPage`
+  and `ResourceDetailHeader` (shared components), handles loading/error
+  states, and renders the Delete button.
+- **`VolumeDetailsPageContent`** — renders the column-based detail
+  sections using PatternFly `Grid`/`GridItem` with `DescriptionList`.
 
 #### Page Layout
+
+The details content uses a 3-column `Grid` layout (`GridItem md={4}`),
+matching the ExternalIPPools details page. Each column contains a
+`Title headingLevel="h2"` section header followed by a compact
+`DescriptionList`. No `Card` wrappers are used.
 
 ```text
 ┌──────────────────────────────────────────────────────────┐
 │ Breadcrumb: Storage > Volumes > {name}                   │
 │                                                          │
-│ ┌──────────────────────────────────────────────────────┐ │
-│ │ ResourceDetailHeader                                 │ │
-│ │ Title: {metadata.name}          [Edit] [Delete]      │ │
-│ │ Status: VolumeStatusLabel                            │ │
-│ └──────────────────────────────────────────────────────┘ │
+│ ResourceDetailHeader                                     │
+│ Name: {metadata.name}                        [Delete]    │
+│ Description: {metadata.description} [pencil]             │
+│ ─────────────────────────────────────────────────────────│
 │                                                          │
-│ ┌─ Spec ─────────────────────────────────────────────┐   │
-│ │ Storage Tier    standard-block                      │   │
-│ │ Size            100 GiB                             │   │
-│ │ Access Mode     ReadWriteOnce                       │   │
-│ └─────────────────────────────────────────────────────┘   │
+│  Overview              Configuration          Status     │
+│  ─────────             ─────────────          ──────     │
+│  Status   Available    Storage Tier  std-blk  State  OK  │
+│  Created  3 hours ago  Size          100 GiB  Message —  │
+│  ID       abc-123...   Access Mode   RWO                 │
 │                                                          │
-│ ┌─ Status ───────────────────────────────────────────┐   │
-│ │ State           Available  (VolumeStatusLabel)      │   │
-│ │ Message         (shown only when set, e.g. errors)  │   │
-│ └─────────────────────────────────────────────────────┘   │
-│                                                          │
-│ ┌─ Metadata ─────────────────────────────────────────┐   │
-│ │ Description     Primary data store     [pencil]     │   │
-│ │ Created         2026-09-15 14:32:10 UTC             │   │
-│ │ ID              abc-123-def-456                      │   │
-│ └─────────────────────────────────────────────────────┘   │
-│                                                          │
-│ ┌─ Labels ───────────────────────────────────────────┐   │
-│ │ env=production  team=analytics         [Edit]       │   │
-│ └─────────────────────────────────────────────────────┘   │
-│                                                          │
-│ ┌─ Annotations ──────────────────────────────────────┐   │
-│ │ cost-center=CC-4421                    [Edit]       │   │
-│ └─────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -514,12 +479,10 @@ editable metadata sections.
 
 | Button | Variant | Visible When | Behavior |
 |---|---|---|---|
-| **Edit** | Secondary | CREATING, AVAILABLE, FAILED | Navigate to `/storage/volumes/:id/edit` |
-| **Delete** | Secondary (not danger) | AVAILABLE, FAILED | Open `VolumeDeleteConfirmModal` |
+| **Delete** | Danger | AVAILABLE, FAILED | Open `VolumeDeleteConfirmModal` |
 
-Buttons are hidden (not disabled) in states where the action is invalid,
-following PatternFly's convention that delete triggers should not use danger
-styling.
+The Delete button is hidden (not disabled) in states where the action is
+invalid (`CREATING`, `DELETING`, `DELETED`).
 
 #### Failed State Message
 
@@ -532,35 +495,34 @@ Warning: Volume provisioning failed
   Backend reported: <status.message content>
 ```
 
-This gives the user an actionable error message. The volume can still have
-its metadata updated or be deleted from this state.
+This gives the user an actionable error message. The volume can still be
+deleted from this state.
 
-#### Inline Metadata Editing
+#### Inline Description Editing
 
 The details page supports inline editing for `description` using
 PatternFly's field-specific inline edit pattern:
 
-- A pencil icon appears beside the editable field.
+- A pencil icon appears beside the description in the header area.
 - Clicking the icon switches that field to edit mode (text input appears).
 - Check icon saves; close icon cancels.
-- The save action calls the Update API with `update_mask` targeting only
-  the changed field path (`metadata.description`) and `lock=true` for
-  optimistic locking.
+- The save action calls the Update API via `useUpdateResource(Volumes)`
+  (the generic hook automatically computes `update_mask` paths from the
+  request object).
 - On success, TanStack Query cache is invalidated to refresh the display.
 
-Labels and annotations are edited via a separate modal (matching the
-existing OSAC pattern for key-value pairs). The "Edit" link on each section
-opens a modal with a key-value editor allowing add, modify, and remove
-operations.
+The pencil icon is **hidden** when the volume is in `DELETING` or
+`DELETED` state. When the volume is in `CREATING` state, description
+editing remains available (the PRD explicitly allows metadata updates
+during creation).
 
-#### State-Dependent Edit Availability
+#### Detail Columns
 
-Inline edit icons and the Edit button are **hidden** when the volume is in
-`DELETING` or `DELETED` state. The details page still displays the volume
-information in read-only mode during these states.
-
-When the volume is in `CREATING` state, metadata editing remains available
-(the PRD explicitly allows metadata updates during creation).
+| Column | Section Title | Fields |
+|---|---|---|
+| Left (`GridItem md={4}`) | Overview | Status (`VolumeStatusLabel`), Created (`Timestamp`), ID |
+| Center (`GridItem md={4}`) | Configuration | Storage Tier, Size (formatted as "{n} GiB"), Access Mode |
+| Right (`GridItem md={4}`) | Status | State, Message (shown only when set) |
 
 #### Polling on Details Page
 
@@ -606,9 +568,12 @@ const VolumeStatusLabel = ({ state }: { state?: VolumeState }) => {
 Uses the existing `DeleteResourceModal`:
 
 ```tsx
+import { Volumes } from '@osac/types/public';
+import { useDeleteResource } from '../../api/use-resource';
+
 const VolumeDeleteConfirmModal = ({ volume, onClose, onSuccess }) => {
   const { t } = useTranslation();
-  const deleteVolume = useDeleteVolume();
+  const deleteVolume = useDeleteResource(Volumes);
   const volumeName = volume.metadata?.name ?? volume.id;
 
   return (
@@ -621,7 +586,7 @@ const VolumeDeleteConfirmModal = ({ volume, onClose, onSuccess }) => {
       onClose={onClose}
       onSuccess={onSuccess}
       mutation={deleteVolume}
-      variables={volume.id}
+      variables={{ id: volume.id }}
     />
   );
 };
@@ -647,120 +612,74 @@ that is already in DELETING state (race condition), the API returns success
 
 ### 4.8 API Hooks
 
-New hooks in `libs/ui-components/src/api/v1/volumes.ts`:
+The volume UI uses the **generic resource hooks** from
+`libs/ui-components/src/api/use-resource.ts` rather than defining
+custom per-resource hooks. This follows the pattern established by
+ExternalIPPools and other resources in osac-ui.
 
 ```typescript
-// State-aware polling: poll every 5s while any volume is in a transient
-// state (CREATING or DELETING); disable polling at terminal states.
-const isTransientState = (state?: VolumeState) =>
-  state === VolumeState.VOLUME_STATE_CREATING ||
-  state === VolumeState.VOLUME_STATE_DELETING;
-
-// Read hooks
-//
-// DELETED-volume exclusion: The Volumes.list API is expected to omit
-// volumes in DELETED state from its response (the backend archives
-// them). As a defensive measure the client also filters out any
-// DELETED volumes that may appear during the brief window between
-// a successful delete RPC and the next list refresh. Pagination
-// metadata (size, total) is preserved from the server response so
-// the toolbar pager stays accurate.
-export const useVolumes = (params: ListParams = {}) => {
-  const client = useApiFetch(Volumes);
-  return useApiQuery({
-    queryKey: apiQueryKey('v1/volumes', undefined, params),
-    queryFn: () => client.list(params),
-    // Preserve pagination metadata (size, total) alongside items;
-    // filter out DELETED volumes defensively (the API should already
-    // exclude them, but a race between delete and list can surface one).
-    select: (data) => ({
-      items: data.items.filter(
-        (v) => v.status?.state !== VolumeState.VOLUME_STATE_DELETED,
-      ),
-      size: data.size,
-      total: data.total,
-    }),
-    refetchInterval: (query) => {
-      const items = query.state.data?.items ?? [];
-      return items.some((v) => isTransientState(v.status?.state))
-        ? 5_000
-        : false;
-    },
-  });
-};
-
-export const useVolume = (id: string) => {
-  const client = useApiFetch(Volumes);
-  return useApiQuery({
-    queryKey: apiQueryKey('v1/volumes', [id]),
-    queryFn: () => client.get({ id }),
-    select: (data) => data.object,
-    enabled: Boolean(id),
-    refetchInterval: (query) =>
-      isTransientState(query.state.data?.object?.status?.state)
-        ? 5_000
-        : false,
-  });
-};
-
-// Mutation hooks
-export const useCreateVolume = () => {
-  const client = useApiFetch(Volumes);
-  const queryClient = useApiQueryClient();
-  return useMutation({
-    mutationFn: (volume: PartialMessage<Volume>) =>
-      client.create({ object: volume }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: apiQueryKey('v1/volumes') });
-    },
-  });
-};
-
-export const useUpdateVolume = () => {
-  const client = useApiFetch(Volumes);
-  const queryClient = useApiQueryClient();
-  return useMutation({
-    mutationFn: ({
-      volume,
-      updateMask,
-    }: {
-      volume: PartialMessage<Volume>;
-      updateMask?: string[];
-    }) =>
-      client.update({ object: volume, updateMask, lock: true }),
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: apiQueryKey('v1/volumes', [variables.volume.id!]),
-      });
-      queryClient.invalidateQueries({ queryKey: apiQueryKey('v1/volumes') });
-    },
-  });
-};
-
-export const useDeleteVolume = () => {
-  const client = useApiFetch(Volumes);
-  const queryClient = useApiQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => client.delete({ id }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: apiQueryKey('v1/volumes') });
-    },
-    onError: (error: ConnectError) => {
-      // When the volume was already deleted (NotFound), invalidate the
-      // list so the stale entry disappears when the modal closes.
-      if (error.code === Code.NotFound) {
-        queryClient.invalidateQueries({ queryKey: apiQueryKey('v1/volumes') });
-      }
-    },
-  });
-};
+import { Volumes } from '@osac/types/public';
+import {
+  useListResource,
+  useGetResource,
+  useCreateResource,
+  useUpdateResource,
+  useDeleteResource,
+} from '../../api/use-resource';
 ```
+
+#### Hook Usage by Component
+
+| Component | Hook | Purpose |
+|---|---|---|
+| `VolumesListPage` | `useListResource(Volumes, params)` | List volumes with pagination |
+| `VolumeDetailsPage` | `useGetResource(Volumes, { id })` | Fetch single volume |
+| `VolumeWizard` | `useCreateResource(Volumes)` | Create volume on wizard submit |
+| `VolumeDetailsPage` (inline edit) | `useUpdateResource(Volumes)` | Update description |
+| `VolumeDeleteConfirmModal` | `useDeleteResource(Volumes)` | Delete volume |
+
+The generic hooks handle cache invalidation automatically — on
+successful create, update, or delete, all queries keyed by the
+service's `typeName` are invalidated. The `useUpdateResource` hook
+automatically computes `update_mask` paths from the request object
+via `buildUpdateMaskPaths`.
+
+#### State-Aware Polling
+
+Volumes in transient states (`CREATING`, `DELETING`) require polling.
+This is implemented via TanStack Query's `refetchInterval` option,
+passed through the generic hook's options parameter:
+
+```typescript
+// List page: poll while any volume is in a transient state
+useListResource(Volumes, params, {
+  refetchInterval: (query) => {
+    const items = query.state.data?.items ?? [];
+    return items.some((v) => isTransientState(v.status?.state))
+      ? 5_000
+      : false;
+  },
+});
+
+// Details page: poll while the current volume is in a transient state
+useGetResource(Volumes, { id }, {
+  refetchInterval: (query) =>
+    isTransientState(query.state.data?.object?.status?.state)
+      ? 5_000
+      : false,
+});
+```
+
+#### DELETED-Volume Exclusion
+
+The `Volumes.list` API is expected to omit volumes in `DELETED` state.
+As a defensive measure, the list page component filters out any
+`DELETED` volumes that may appear during the brief window between a
+successful delete RPC and the next list refresh.
 
 **Prerequisites:** The `Volumes` service descriptor must be exported from
 `@osac/types`. This requires running `pnpm gen-types` after the public
-volume proto files are included in the UI's protobuf source. Additionally,
-`'v1/volumes'` must be registered as an `ApiRoute` in
-`libs/ui-components/src/api/types.ts`.
+volume proto files are included in the UI's protobuf source.
 
 ### 4.9 Error Handling
 
@@ -768,10 +687,10 @@ volume proto files are included in the UI's protobuf source. Additionally,
 
 | gRPC Code | Backend Message (example) | Alert Title | Alert Variant |
 |---|---|---|---|
-| `InvalidArgument` | "field 'metadata.name' is required" | "Failed to create volume" / "Failed to update volume" | danger |
+| `InvalidArgument` | "field 'metadata.name' is required" | "Failed to create volume" | danger |
 | `AlreadyExists` | "volume with name 'x' already exists in tenant 'y'" | "Failed to create volume" | danger |
 | `NotFound` | standard not-found | "Volume not found" | danger |
-| `FailedPrecondition` | "volume in state 'DELETING' cannot be updated" | "Failed to update volume" | danger |
+| `FailedPrecondition` | "volume in state 'DELETING' cannot be updated" | "Failed to update description" | danger |
 | `Aborted` | "optimistic lock failure: version mismatch" | "This volume was modified" (see below) | warning |
 | `Unauthenticated` | — | Redirects to login (handled by `connectErrorInterceptor`) | — |
 | `PermissionDenied` | — | "You do not have permission to perform this action" | danger |
@@ -791,8 +710,8 @@ Warning: This volume was modified
 The "Refresh and retry" action:
 1. Invalidates the TanStack Query cache for the volume.
 2. Re-fetches the volume from the API.
-3. Resets the form with the fresh values.
-4. The user can then re-apply their changes and submit again.
+3. Resets the inline edit field with the fresh value.
+4. The user can then re-apply their change and save again.
 
 ### 4.10 Security Considerations
 
@@ -816,10 +735,8 @@ The "Refresh and retry" action:
 | **Create fails (NFS tier selected)** | Inline danger alert with protocol-specific message from backend. User selects a block-protocol tier. |
 | **Create fails (network/server error)** | Inline danger alert: "An unexpected error occurred". User retries. |
 | **Create succeeds, volume stays CREATING** | Details page polls every 5s. Status label shows blue "Creating". |
-| **Create succeeds, volume moves to FAILED** | Details page shows red "Failed" status with `status.message` in danger alert. Edit and Delete remain available. |
-| **Update fails (version conflict)** | Warning alert: "This volume was modified". User clicks "Refresh and retry". |
-| **Update fails (immutable field)** | Should not occur (fields are disabled in UI). If it does, inline danger alert shows server message. |
-| **Update fails (volume is DELETING)** | Should not occur (edit is hidden in DELETING state). If it does, inline danger alert. |
+| **Create succeeds, volume moves to FAILED** | Details page shows red "Failed" status with `status.message` in danger alert. Delete remains available. |
+| **Inline description update fails (version conflict)** | Warning alert: "This volume was modified". User clicks "Refresh and retry". |
 | **Delete fails (not found)** | Modal shows inline danger alert: "Volume not found". User closes modal; list refreshes. |
 | **Delete fails (server error)** | Modal shows inline danger alert: "Failed to delete volume" with error detail. User can retry or close. |
 | **API unreachable** | TanStack Query shows loading state, then error after timeout. `QueryErrorState` component renders. |
@@ -827,8 +744,8 @@ The "Refresh and retry" action:
 ### 4.12 RBAC / Tenancy
 
 The UI does not implement authorization checks. All authorization is
-enforced by the API's OPA layer. The UI renders actions (Create, Edit,
-Delete) for all authenticated users and handles `PermissionDenied`
+enforced by the API's OPA layer. The UI renders actions (Create, Delete)
+for all authenticated users and handles `PermissionDenied`
 responses by displaying an appropriate error message.
 
 ## 5. Accessibility
@@ -842,7 +759,6 @@ responses by displaying an appropriate error message.
 | **Error suggestion (SC 3.3.3)** | Yup messages are actionable: "Name must only contain lowercase letters, digits, and hyphens" not "Invalid name" |
 | **Status messages (SC 4.1.3)** | Volume state transitions announced via `role="status"` live region. API errors use PatternFly `Alert` (implicit `role="alert"`). |
 | **Focus management (SC 2.4.3)** | After form submission with errors, focus moves to first error field. After modal close, focus returns to trigger element. |
-| **Disabled field explanation (SC 4.1.2)** | Immutable fields in edit mode use `aria-describedby` pointing to helper text: "Cannot be changed after creation" |
 | **Delete confirmation (SC 3.2.2)** | PatternFly `Modal` provides `role="dialog"`, `aria-modal="true"`, focus trapping, and Escape key dismissal. |
 | **Keyboard navigation** | All actions reachable via keyboard. Tab order follows visual order. Kebab menu opens with Enter/Space. |
 
@@ -857,7 +773,6 @@ responses by displaying an appropriate error message.
 ### New Dependencies
 
 - **`@osac/types` update:** Public volume types must be generated (`pnpm gen-types`).
-- **`ApiRoute` registration:** `'v1/volumes'` must be added to the API route type union.
 
 ### No Breaking Changes
 
@@ -875,7 +790,7 @@ responses by displaying an appropriate error message.
 | PRD Requirement | Test Cases | Type |
 |---|---|---|
 | Create volume through console | TC-UI-C1, TC-UI-C2, TC-UI-C3 | Unit, Playwright |
-| Update volume metadata through console | TC-UI-U1, TC-UI-U2, TC-UI-U3 | Unit |
+| Update volume description (inline edit) | TC-UI-U1, TC-UI-U2 | Unit |
 | Delete volume through console | TC-UI-D1, TC-UI-D2 | Unit |
 | Show lifecycle status | TC-UI-S1, TC-UI-S2, TC-UI-S3 | Unit |
 | Actionable error display | TC-UI-E1, TC-UI-E2, TC-UI-E3, TC-UI-E4 | Unit |
@@ -885,15 +800,14 @@ responses by displaying an appropriate error message.
 
 ### Unit Tests (Vitest + React Testing Library)
 
-**VolumeCreatePage:**
-- TC-UI-C1: Renders all required fields; submitting empty shows validation errors.
-- TC-UI-C2: Successful creation calls the API with correct payload and navigates to details.
-- TC-UI-C3: API error displays inline danger alert with server message.
+**VolumeWizard (create):**
+- TC-UI-C1: Renders all wizard steps; submitting with empty fields shows validation errors per step.
+- TC-UI-C2: Successful creation calls `useCreateResource(Volumes)` with correct payload and navigates to details.
+- TC-UI-C3: API error displays in wizard footer.
 
-**VolumeCreatePage (edit mode):**
-- TC-UI-U1: Immutable fields are disabled.
-- TC-UI-U2: Metadata update calls API with `lock=true`, correct `update_mask`, and the route-parameter `id` (not a form field value). Verifies that `toVolumeUpdate(values, routeId)` produces a payload whose `id` matches the `:id` URL parameter.
-- TC-UI-U3: Version conflict shows warning alert with "Refresh and retry".
+**VolumeDetailsPage (inline description edit):**
+- TC-UI-U1: Inline description edit calls `useUpdateResource(Volumes)` with correct payload; cache refreshes on success.
+- TC-UI-U2: Version conflict shows warning alert with "Refresh and retry".
 
 **VolumeDeleteConfirmModal:**
 - TC-UI-D1: Renders modal; Delete calls API and closes on success.
@@ -910,8 +824,8 @@ responses by displaying an appropriate error message.
 - TC-UI-E3: FailedPrecondition shows state-specific message.
 - TC-UI-E4: Aborted shows warning variant with refresh action.
 
-**useVolumes (list hook):**
-- TC-UI-L1: When the API response includes a volume with `VOLUME_STATE_DELETED`, the `select` transform filters it out of `items` while preserving `size` and `total` pagination metadata from the original response.
+**VolumesListPage (list filtering):**
+- TC-UI-L1: When the API response includes a volume with `VOLUME_STATE_DELETED`, the component filters it out of the displayed list.
 
 **VolumeActionsMenu:**
 - TC-UI-A1: Actions hidden based on volume state.
@@ -919,10 +833,10 @@ responses by displaying an appropriate error message.
 ### Manual Verification (Playwright)
 
 Using `apps/playwright/scratch/` against a live cluster:
-- Create volume; verify "Creating" transitions to "Available".
-- Edit description; verify change persists.
+- Create volume via wizard; verify "Creating" transitions to "Available".
+- Edit description inline on details page; verify change persists.
 - Delete volume; verify it disappears from list.
-- Duplicate name; verify error message.
+- Duplicate name; verify error message in wizard.
 
 ## 8. Task Decomposition
 
@@ -931,11 +845,11 @@ Using `apps/playwright/scratch/` against a live cluster:
 | # | Epic | Size | Stories | Depends On |
 |---|---|---|---|---|
 | 1 | Volume API Layer & Shared Components | M | 3 | — |
-| 2 | Create Volume | M | 3 | Epic 1 |
-| 3 | Volume Details & Metadata Editing | M | 3 | Epics 1, 2 |
+| 2 | Create Volume Wizard | M | 3 | Epic 1 |
+| 3 | Volume Details Page | S | 2 | Epics 1, 2 |
 | 4 | Volume Deletion | S | 2 | Epics 1, 3 |
 
-**Total: 4 epics, 11 stories (9 [DEV], 1 [QE], 1 [DOCS])**
+**Total: 4 epics, 10 stories (8 [DEV], 1 [QE], 1 [DOCS])**
 
 ### Epic 1: Volume API Layer & Shared Components (M)
 
@@ -948,26 +862,26 @@ page, routing, and navigation.
 | 2 | Add VolumeStatusLabel, VolumeActionsMenu, and list page | [DEV] | L |
 | 3 | Add volume routing and sidebar navigation | [DEV] | S |
 
-### Epic 2: Create Volume (M)
+### Epic 2: Create Volume Wizard (M)
 
-Full-page form with Formik + Yup, error handling, and e2e test coverage.
+Multi-step wizard (General → Configuration → Review) with Formik + Yup,
+error handling, and e2e test coverage.
 
 | # | Title | Prefix | Size |
 |---|---|---|---|
-| 1 | Implement VolumeCreatePage with Formik + Yup validation | [DEV] | L |
+| 1 | Implement VolumeWizard with 3-step wizard and Formik + Yup validation | [DEV] | L |
 | 2 | Add create volume error handling and edge cases | [DEV] | M |
-| 3 | Volume create, edit, and delete e2e scenarios | [QE] | M |
+| 3 | Volume create and delete e2e scenarios | [QE] | M |
 
-### Epic 3: Volume Details & Metadata Editing (M)
+### Epic 3: Volume Details Page (S)
 
-Details page, edit mode with optimistic locking, inline editing, and
-labels/annotations modal.
+Details page with column layout (no cards), inline description editing,
+and optimistic locking.
 
 | # | Title | Prefix | Size |
 |---|---|---|---|
-| 1 | Implement VolumeDetailsPage with spec, status, and metadata | [DEV] | L |
-| 2 | Add edit mode and optimistic locking conflict handling | [DEV] | M |
-| 3 | Add inline metadata editing and labels/annotations modal | [DEV] | M |
+| 1 | Implement VolumeDetailsPage with column layout and inline description edit | [DEV] | L |
+| 2 | Add optimistic locking conflict handling for inline edits | [DEV] | S |
 
 ### Epic 4: Volume Deletion (S)
 
@@ -980,6 +894,6 @@ Delete confirmation modal and user documentation.
 
 ### PRD Requirement Coverage
 
-All 20 PRD requirements are covered by at least one implementing story and
-one validating test case. No gaps identified. See the full coverage matrix
-in the design artifacts for detailed requirement-to-story-to-test mapping.
+All PRD requirements are covered by at least one implementing story and
+one validating test case. See the full coverage matrix in the design
+artifacts for detailed requirement-to-story-to-test mapping.
