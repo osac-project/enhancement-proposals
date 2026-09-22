@@ -164,7 +164,7 @@ capabilities.
 
 | Column | Source Field | Sortable | Notes |
 |---|---|---|---|
-| Name | `metadata.name` | Yes | Link to details page. Shows `metadata.display_name` as subtitle when set. |
+| Name | `metadata.name` | Yes | Link to details page |
 | Status | `status.state` | Yes | `VolumeStatusLabel` component |
 | Storage Tier | `spec.storage_tier` | Yes | Tier name as text |
 | Size | `spec.size_gib` | Yes | Formatted as "{n} GiB" |
@@ -217,9 +217,48 @@ TanStack Query's `refetchInterval` to poll for updates:
 
 This matches the existing compute instance list polling pattern.
 
-### 4.4 Create Volume Page
+### 4.4 Create Volume Wizard
 
-A full-page form following the `StorageTierCreatePage` pattern.
+A multi-step wizard following the agreed-upon resource creation pattern.
+All new resources should adopt this 3-step wizard structure:
+**General → Configuration → Review**.
+
+#### Wizard Steps
+
+**Step 1 — General**
+
+Identity and ownership fields common to all resource types.
+
+| Field | Component | Required | Notes |
+|---|---|---|---|
+| Tenant | `TenantSelectField` | Yes (Cloud Provider Admin only) | For cloud provider admin resources. Includes an option to make the resource global. Hidden for tenant-scoped users (auto-set from context). |
+| Project | `ProjectSelectField` | Yes | Selects the tenant project scope for the resource. |
+| Name | `NameField` | Yes | DNS label: `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`. Cannot be changed after creation. |
+| Description | `InputField` (textarea) | No | Free-text description. |
+| Labels | _(future)_ | No | Key-value labels. Placeholder for future implementation. |
+
+**Step 2 — Configuration**
+
+Volume-specific specification fields.
+
+| Field | Component | Required | Notes |
+|---|---|---|---|
+| Storage tier | `StorageTierSelectField` | Yes | Fetches active tiers via public API, filtered to `STORAGE_PROTOCOL_BLOCK` tiers only (NFS creation is a non-goal). |
+| Size (GiB) | `InputField` (type="number") | Yes | Must be > 0. Cannot be changed after creation. |
+| Access mode | `RadioButtonField` | Yes | 4 options (see Access Mode Display Labels in section 4.3). |
+
+**Step 3 — Review**
+
+Read-only summary of all selections before submission.
+
+| Section | Displayed Fields |
+|---|---|
+| General | Tenant (if applicable), Project, Name, Description |
+| Configuration | Storage tier, Size, Access mode |
+
+The Review step presents all entered values in a read-only summary so
+the user can verify before submitting. A "Back" button allows returning
+to previous steps to make corrections.
 
 #### Page Layout
 
@@ -229,8 +268,22 @@ A full-page form following the `StorageTierCreatePage` pattern.
 │                                                          │
 │ Title: Create volume                                     │
 │                                                          │
+│ ┌─────────────────────────────────────────────────────┐  │
+│ │  (1) General    (2) Configuration    (3) Review     │  │
+│ └─────────────────────────────────────────────────────┘  │
+│                                                          │
+│ Step 1 — General:                                        │
 │ ┌──────────────────────────────────────────────────────┐ │
-│ │ OsacForm                                             │ │
+│ │ Tenant * (Cloud Provider Admin only)                 │ │
+│ │ ┌──────────────────────────────────────────────────┐ │ │
+│ │ │ Select tenant                                ▼   │ │ │
+│ │ └──────────────────────────────────────────────────┘ │ │
+│ │ ☐ Make resource global                               │ │
+│ │                                                      │ │
+│ │ Project *                                            │ │
+│ │ ┌──────────────────────────────────────────────────┐ │ │
+│ │ │ Select project                               ▼   │ │ │
+│ │ └──────────────────────────────────────────────────┘ │ │
 │ │                                                      │ │
 │ │ Name *                                               │ │
 │ │ ┌──────────────────────────────────────────────────┐ │ │
@@ -239,6 +292,14 @@ A full-page form following the `StorageTierCreatePage` pattern.
 │ │ Helper: Lowercase letters, digits, and hyphens.      │ │
 │ │         Max 63 characters. Cannot be changed later.  │ │
 │ │                                                      │ │
+│ │ Description                                          │ │
+│ │ ┌──────────────────────────────────────────────────┐ │ │
+│ │ │                                                  │ │ │
+│ │ └──────────────────────────────────────────────────┘ │ │
+│ └──────────────────────────────────────────────────────┘ │
+│                                                          │
+│ Step 2 — Configuration:                                  │
+│ ┌──────────────────────────────────────────────────────┐ │
 │ │ Storage tier *                                       │ │
 │ │ ┌──────────────────────────────────────────────────┐ │ │
 │ │ │ Select a storage tier                        ▼   │ │ │
@@ -254,34 +315,46 @@ A full-page form following the `StorageTierCreatePage` pattern.
 │ │ Access mode *                                        │ │
 │ │ ○ ReadWriteOnce     ○ ReadOnlyMany                   │ │
 │ │ ○ ReadWriteMany     ○ ReadWriteOncePod               │ │
+│ └──────────────────────────────────────────────────────┘ │
+│                                                          │
+│ Step 3 — Review:                                         │
+│ ┌──────────────────────────────────────────────────────┐ │
+│ │ General                                              │ │
+│ │   Tenant:       My Tenant                            │ │
+│ │   Project:      analytics-prod                       │ │
+│ │   Name:         my-volume-name                       │ │
+│ │   Description:  Primary data store                   │ │
 │ │                                                      │ │
-│ │ Display name                                         │ │
-│ │ ┌──────────────────────────────────────────────────┐ │ │
-│ │ │                                                  │ │ │
-│ │ └──────────────────────────────────────────────────┘ │ │
-│ │                                                      │ │
-│ │ Description                                          │ │
-│ │ ┌──────────────────────────────────────────────────┐ │ │
-│ │ │                                                  │ │ │
-│ │ └──────────────────────────────────────────────────┘ │ │
+│ │ Configuration                                        │ │
+│ │   Storage tier: standard-block                       │ │
+│ │   Size:         100 GiB                              │ │
+│ │   Access mode:  ReadWriteOnce                        │ │
 │ └──────────────────────────────────────────────────────┘ │
 │                                                          │
 │ [!] Inline danger alert (shown on API error)             │
 │                                                          │
-│ [ Create ]  Cancel                                       │
+│ [ Back ]  [ Create ]  Cancel                             │
 └──────────────────────────────────────────────────────────┘
 ```
 
-#### Form Fields
+#### Form Fields (All Steps)
+
+**Step 1 — General:**
 
 | Field | Component | Yup Schema | Required | Notes |
 |---|---|---|---|---|
-| Name | `NameField` | `resourceNameSchema(t)` | Yes | DNS label: `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`. Disabled in edit mode. |
-| Storage tier | `StorageTierSelectField` | `Yup.string().required()` | Yes | Fetches active tiers via public API, filtered to `STORAGE_PROTOCOL_BLOCK` tiers only (NFS creation is a non-goal). Disabled in edit mode. |
-| Size (GiB) | `InputField` (type="number") | `positiveIntegerSchema(t)` | Yes | Must be > 0. Disabled in edit mode. |
-| Access mode | `RadioButtonField` | `Yup.string().oneOf([...]).required()` | Yes | 4 options. Disabled in edit mode. |
-| Display name | `InputField` | `Yup.string().max(63)` | No | Optional human-readable label. Max 63 chars. |
+| Tenant | `TenantSelectField` | `Yup.string().required()` | Yes (admin) | Cloud Provider Admin only; includes global option. Hidden for tenant users. |
+| Project | `ProjectSelectField` | `Yup.string().required()` | Yes | Tenant project scope for the resource. |
+| Name | `NameField` | `resourceNameSchema(t)` | Yes | DNS label: `^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`. Cannot be changed after creation. |
 | Description | `InputField` (textarea) | `Yup.string()` | No | Free-text description. |
+
+**Step 2 — Configuration:**
+
+| Field | Component | Yup Schema | Required | Notes |
+|---|---|---|---|---|
+| Storage tier | `StorageTierSelectField` | `Yup.string().required()` | Yes | Fetches active tiers via public API, filtered to `STORAGE_PROTOCOL_BLOCK` tiers only (NFS creation is a non-goal). |
+| Size (GiB) | `InputField` (type="number") | `positiveIntegerSchema(t)` | Yes | Must be > 0. Cannot be changed after creation. |
+| Access mode | `RadioButtonField` | `Yup.string().oneOf([...]).required()` | Yes | 4 options. Cannot be changed after creation. |
 
 #### Create vs. Edit Mode
 
@@ -290,9 +363,9 @@ presence of the `:id` route parameter (matching the `StorageTierCreatePage`
 pattern):
 
 **Create mode** (`/storage/volumes/create`):
-- All fields editable
+- All wizard steps are shown
 - Title: "Create volume"
-- Submit button: "Create"
+- Submit button: "Create" (on the Review step)
 - On success: navigate to `/storage/volumes/:id` (details page)
 
 **Edit mode** (`/storage/volumes/:id/edit`):
@@ -300,10 +373,20 @@ pattern):
   disabled inputs with helper text: "Cannot be changed after creation"
 - Disabled fields use `aria-describedby` pointing to the helper text for
   screen reader accessibility
-- Mutable fields (display_name, description) remain editable
+- Mutable fields (description) remain editable
 - Title: "Edit volume"
 - Submit button: "Save"
 - On success: navigate back to `/storage/volumes/:id`
+
+> **Design note — conditional removal of edit flow:** After removing
+> `display_name`, the only mutable field remaining in the edit flow is
+> `description` (a metadata field, not a configuration field). If the
+> backend confirms that no configuration fields are mutable
+> post-creation, the standalone edit page (`/storage/volumes/:id/edit`)
+> should be removed entirely. Description editing would then be handled
+> exclusively through the inline edit pattern on the details page
+> (section 4.5). This section is retained pending backend confirmation
+> of mutable field support.
 
 Labels and annotations are managed separately (see section 4.5 Details
 Page) because they use a key-value editor pattern that does not fit a
@@ -317,7 +400,6 @@ Client-side validation (Formik + Yup) fires on blur and on submit:
 const getVolumeSchema = (t: TFunction) =>
   Yup.object({
     metadata: Yup.object({ name: resourceNameSchema(t) }),
-    displayName: Yup.string().max(63, t('Display name must be at most 63 characters')),
     description: Yup.string(),
     storageTier: Yup.string().required(t('Storage tier is required')),
     sizeGib: positiveIntegerSchema(t).required(t('Size is required')),
@@ -344,7 +426,6 @@ On submit, a `toVolumeResource` mapper converts Formik values to a
 const toVolumeResource = (values: VolumeFormValues): PartialMessage<Volume> => ({
   metadata: {
     name: values.metadata.name,
-    displayName: values.displayName || undefined,
     description: values.description || undefined,
   },
   spec: {
@@ -364,7 +445,6 @@ schema:
 const toVolumeUpdate = (values: VolumeFormValues, routeId: string): PartialMessage<Volume> => ({
   id: routeId,
   metadata: {
-    displayName: values.displayName || undefined,
     description: values.description || undefined,
   },
 });
@@ -401,7 +481,6 @@ editable metadata sections.
 │ │ ResourceDetailHeader                                 │ │
 │ │ Title: {metadata.name}          [Edit] [Delete]      │ │
 │ │ Status: VolumeStatusLabel                            │ │
-│ │ Subtitle: {metadata.display_name} (if set)           │ │
 │ └──────────────────────────────────────────────────────┘ │
 │                                                          │
 │ ┌─ Spec ─────────────────────────────────────────────┐   │
@@ -416,7 +495,6 @@ editable metadata sections.
 │ └─────────────────────────────────────────────────────┘   │
 │                                                          │
 │ ┌─ Metadata ─────────────────────────────────────────┐   │
-│ │ Display Name    My analytics volume    [pencil]     │   │
 │ │ Description     Primary data store     [pencil]     │   │
 │ │ Created         2026-09-15 14:32:10 UTC             │   │
 │ │ ID              abc-123-def-456                      │   │
@@ -459,15 +537,15 @@ its metadata updated or be deleted from this state.
 
 #### Inline Metadata Editing
 
-The details page supports inline editing for `display_name` and
-`description` using PatternFly's field-specific inline edit pattern:
+The details page supports inline editing for `description` using
+PatternFly's field-specific inline edit pattern:
 
-- A pencil icon appears beside each editable field.
+- A pencil icon appears beside the editable field.
 - Clicking the icon switches that field to edit mode (text input appears).
 - Check icon saves; close icon cancels.
 - The save action calls the Update API with `update_mask` targeting only
-  the changed field path (`metadata.display_name` or
-  `metadata.description`) and `lock=true` for optimistic locking.
+  the changed field path (`metadata.description`) and `lock=true` for
+  optimistic locking.
 - On success, TanStack Query cache is invalidated to refresh the display.
 
 Labels and annotations are edited via a separate modal (matching the
@@ -789,7 +867,7 @@ responses by displaying an appropriate error message.
 
 | Alternative | Why Rejected |
 |---|---|
-| **Modal-based create form** | Create form has 6+ fields including a remote-data dropdown. PatternFly recommends modals only for simple confirmations. Full-page form is the OSAC convention. |
+| **Modal-based create form** | Create wizard has multiple fields across steps including a remote-data dropdown. PatternFly recommends modals only for simple confirmations. Full-page wizard is the OSAC convention. |
 | **Inline table editing for metadata** | Cumbersome for multi-field metadata. Details page inline edit provides a better experience. |
 | **Separate edit page for labels/annotations** | Key-value pairs are better served by a modal editor. Avoids unnecessary page navigation. |
 | **Type-to-confirm on delete** | Existing `DeleteResourceModal` does not include it. Adding for volumes only would be inconsistent. |
@@ -870,7 +948,7 @@ responses by displaying an appropriate error message.
 
 Using `apps/playwright/scratch/` against a live cluster:
 - Create volume; verify "Creating" transitions to "Available".
-- Edit display name; verify change persists.
+- Edit description; verify change persists.
 - Delete volume; verify it disappears from list.
 - Duplicate name; verify error message.
 
