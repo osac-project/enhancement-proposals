@@ -831,17 +831,6 @@ enforced by the API's OPA layer. The UI renders actions (Create, Edit,
 Delete) for all authenticated users and handles `PermissionDenied`
 responses by displaying an appropriate error message.
 
-### 4.13 Extensibility / Future-Proofing
-
-| Future Capability | UI Impact |
-|---|---|
-| **NFS/file-storage support (OSAC-4515)** | No UI change needed — the `StorageTierSelectField` already shows all active tiers. |
-| **Attach/detach (OSAC-4884)** | Details page adds an "Attachments" section. Delete button may show a warning when attachments exist. |
-| **Volume expansion** | Details page adds a "Resize" action. Size field becomes editable in a resize-specific flow. |
-| **Snapshots/clones** | Details page adds a "Snapshots" tab. |
-| **Labels/annotations editor** | The key-value editor modal is designed as a reusable component. |
-| **Bulk delete** | The list page's checkbox selection pattern supports future bulk actions. |
-
 ## 5. Accessibility
 
 ### WCAG 2.1 AA Compliance
@@ -863,16 +852,7 @@ responses by displaying an appropriate error message.
 - **Volume deleted:** Inline success alert announced via `role="alert"`.
 - **State transition:** Status label update announced via `role="status"` live region.
 
-## 6. Alternatives Considered
-
-| Alternative | Why Rejected |
-|---|---|
-| **Modal-based create form** | Create wizard has multiple fields across steps including a remote-data dropdown. PatternFly recommends modals only for simple confirmations. Full-page wizard is the OSAC convention. |
-| **Inline table editing for metadata** | Cumbersome for multi-field metadata. Details page inline edit provides a better experience. |
-| **Separate edit page for labels/annotations** | Key-value pairs are better served by a modal editor. Avoids unnecessary page navigation. |
-| **Type-to-confirm on delete** | Existing `DeleteResourceModal` does not include it. Adding for volumes only would be inconsistent. |
-
-## 7. Impact and Compatibility
+## 6. Impact and Compatibility
 
 ### New Dependencies
 
@@ -888,15 +868,7 @@ responses by displaying an appropriate error message.
 
 - "Volumes" link added to tenant sidebar under a "Storage" section.
 
-## 8. Open Questions
-
-| # | Question | Owner | Impact |
-|---|---|---|---|
-| 1 | Should the volume list page live under `/storage/volumes` (new Storage nav section) or extend the existing admin storage routes? | UX/Product | Determines navigation structure. Recommendation: new tenant-facing routes. |
-| 2 | Should labels and annotations be editable from the create form, or only from the details page after creation? | UX | Recommendation: details page only, matching the simpler create form pattern. |
-| 3 | Should the UI show CSI-provisioned volumes differently from user-created volumes? | Product | CSI volumes have auto-generated names (`pvc-{UID}`). Recommendation: defer to OSAC-4542 list design. |
-
-## 9. Test Plan
+## 7. Test Plan
 
 ### Requirement Traceability
 
@@ -952,7 +924,7 @@ Using `apps/playwright/scratch/` against a live cluster:
 - Delete volume; verify it disappears from list.
 - Duplicate name; verify error message.
 
-## 10. Task Decomposition
+## 8. Task Decomposition
 
 ### Epic Summary
 
