@@ -74,7 +74,7 @@ targets tenant users at a different navigation path.
 
 #### Component Hierarchy
 
-```
+```text
 osac-ui/
 ├── apps/app-frontend/src/shell/
 │   └── VolumeRoutes.tsx              # Route definitions
@@ -94,7 +94,7 @@ osac-ui/
 
 #### Data Flow
 
-```
+```text
 Browser
   → Connect JSON via generated `Volumes` client (POST per RPC to generated service/method paths)
   → Go proxy (Connect JSON → native gRPC bridge)
@@ -223,7 +223,7 @@ A full-page form following the `StorageTierCreatePage` pattern.
 
 #### Page Layout
 
-```
+```text
 ┌──────────────────────────────────────────────────────────┐
 │ Breadcrumb: Storage > Volumes > Create                   │
 │                                                          │
@@ -355,17 +355,23 @@ const toVolumeResource = (values: VolumeFormValues): PartialMessage<Volume> => (
 });
 ```
 
-In edit mode, only mutable fields are sent (with an `update_mask`):
+In edit mode, only mutable fields are sent (with an `update_mask`).
+The volume ID comes from the `:id` route parameter — not from form
+values — because `id` is not a form field and is not part of the Yup
+schema:
 
 ```typescript
-const toVolumeUpdate = (values: VolumeFormValues): PartialMessage<Volume> => ({
-  id: values.id,
+const toVolumeUpdate = (values: VolumeFormValues, routeId: string): PartialMessage<Volume> => ({
+  id: routeId,
   metadata: {
     displayName: values.displayName || undefined,
     description: values.description || undefined,
   },
 });
 ```
+
+The edit-mode submit handler calls `toVolumeUpdate(values, id)` where
+`id` is the route parameter extracted via `useParams<{ id: string }>()`.
 
 Server-side errors (API responses) are caught and displayed as an inline
 danger alert below the form, using `getErrorMessage(error)` to extract
@@ -387,7 +393,7 @@ editable metadata sections.
 
 #### Page Layout
 
-```
+```text
 ┌──────────────────────────────────────────────────────────┐
 │ Breadcrumb: Storage > Volumes > {name}                   │
 │                                                          │
@@ -443,7 +449,7 @@ When a volume is in FAILED state, the `status.message` field (set by the
 backend reconciler) is displayed in an inline danger alert at the top of
 the details page, below the header:
 
-```
+```text
 Warning: Volume provisioning failed
   Backend reported: <status.message content>
 ```
@@ -487,7 +493,9 @@ automatically when the volume transitions to its next state.
 ### 4.6 Volume Status Label
 
 A new `VolumeStatusLabel` component maps `VolumeState` enum values to the
-existing `ResourceStatusLabel`:
+existing `ResourceStatusLabel`. The lookup normalizes `undefined` to
+`VOLUME_STATE_UNSPECIFIED` so that volumes with an absent `state` field
+safely render the "Unknown" label instead of crashing:
 
 ```typescript
 const VOLUME_STATUS_MAP: Record<VolumeState, { status: StatusKind; text: string }> = {
@@ -497,6 +505,12 @@ const VOLUME_STATUS_MAP: Record<VolumeState, { status: StatusKind; text: string 
   [VolumeState.VOLUME_STATE_FAILED]:      { status: 'failed',       text: 'Failed'   },
   [VolumeState.VOLUME_STATE_DELETING]:    { status: 'progressing',  text: 'Deleting' },
   [VolumeState.VOLUME_STATE_DELETED]:     { status: 'unspecified',  text: 'Deleted'  },
+};
+
+const VolumeStatusLabel = ({ state }: { state?: VolumeState }) => {
+  const resolved = state ?? VolumeState.VOLUME_STATE_UNSPECIFIED;
+  const { status, text } = VOLUME_STATUS_MAP[resolved];
+  return <ResourceStatusLabel status={status} text={text} />;
 };
 ```
 
@@ -565,13 +579,29 @@ const isTransientState = (state?: VolumeState) =>
   state === VolumeState.VOLUME_STATE_DELETING;
 
 // Read hooks
+//
+// DELETED-volume exclusion: The Volumes.list API is expected to omit
+// volumes in DELETED state from its response (the backend archives
+// them). As a defensive measure the client also filters out any
+// DELETED volumes that may appear during the brief window between
+// a successful delete RPC and the next list refresh. Pagination
+// metadata (size, total) is preserved from the server response so
+// the toolbar pager stays accurate.
 export const useVolumes = (params: ListParams = {}) => {
   const client = useApiFetch(Volumes);
   return useApiQuery({
     queryKey: apiQueryKey('v1/volumes', undefined, params),
     queryFn: () => client.list(params),
-    // Preserve pagination metadata (size, total) alongside items
-    select: (data) => ({ items: data.items, size: data.size, total: data.total }),
+    // Preserve pagination metadata (size, total) alongside items;
+    // filter out DELETED volumes defensively (the API should already
+    // exclude them, but a race between delete and list can surface one).
+    select: (data) => ({
+      items: data.items.filter(
+        (v) => v.status?.state !== VolumeState.VOLUME_STATE_DELETED,
+      ),
+      size: data.size,
+      total: data.total,
+    }),
     refetchInterval: (query) => {
       const items = query.state.data?.items ?? [];
       return items.some((v) => isTransientState(v.status?.state))
@@ -674,7 +704,7 @@ volume proto files are included in the UI's protobuf source. Additionally,
 When the update API returns `Aborted` (version mismatch), the UI shows a
 distinct warning alert (not danger) with a refresh action:
 
-```
+```text
 Warning: This volume was modified
   Another user or process updated this volume while you were editing.
   [ Refresh and retry ]
@@ -797,10 +827,11 @@ responses by displaying an appropriate error message.
 | Create volume through console | TC-UI-C1, TC-UI-C2, TC-UI-C3 | Unit, Playwright |
 | Update volume metadata through console | TC-UI-U1, TC-UI-U2, TC-UI-U3 | Unit |
 | Delete volume through console | TC-UI-D1, TC-UI-D2 | Unit |
-| Show lifecycle status | TC-UI-S1, TC-UI-S2 | Unit |
+| Show lifecycle status | TC-UI-S1, TC-UI-S2, TC-UI-S3 | Unit |
 | Actionable error display | TC-UI-E1, TC-UI-E2, TC-UI-E3, TC-UI-E4 | Unit |
 | Same states/behavior as API and CLI | TC-UI-S1, TC-UI-S2, TC-UI-E1-E4 | Unit |
 | Tenant-scoped permissions | TC-UI-A1 | Unit |
+| DELETED volumes excluded from list | TC-UI-L1 | Unit |
 
 ### Unit Tests (Vitest + React Testing Library)
 
@@ -811,7 +842,7 @@ responses by displaying an appropriate error message.
 
 **VolumeCreatePage (edit mode):**
 - TC-UI-U1: Immutable fields are disabled.
-- TC-UI-U2: Metadata update calls API with `lock=true` and correct `update_mask`.
+- TC-UI-U2: Metadata update calls API with `lock=true`, correct `update_mask`, and the route-parameter `id` (not a form field value). Verifies that `toVolumeUpdate(values, routeId)` produces a payload whose `id` matches the `:id` URL parameter.
 - TC-UI-U3: Version conflict shows warning alert with "Refresh and retry".
 
 **VolumeDeleteConfirmModal:**
@@ -820,13 +851,17 @@ responses by displaying an appropriate error message.
 
 **VolumeStatusLabel:**
 - TC-UI-S1: Each VolumeState renders correct color and text.
-- TC-UI-S2: Unknown/undefined state renders grey "Unknown".
+- TC-UI-S2: `VOLUME_STATE_UNSPECIFIED` renders grey "Unknown".
+- TC-UI-S3: When `state` prop is `undefined` (absent from API response), the component renders grey "Unknown" (normalizes to `VOLUME_STATE_UNSPECIFIED`).
 
 **Error display:**
 - TC-UI-E1: InvalidArgument shows "Failed to create volume".
 - TC-UI-E2: AlreadyExists shows duplicate name message.
 - TC-UI-E3: FailedPrecondition shows state-specific message.
 - TC-UI-E4: Aborted shows warning variant with refresh action.
+
+**useVolumes (list hook):**
+- TC-UI-L1: When the API response includes a volume with `VOLUME_STATE_DELETED`, the `select` transform filters it out of `items` while preserving `size` and `total` pagination metadata from the original response.
 
 **VolumeActionsMenu:**
 - TC-UI-A1: Actions hidden based on volume state.
