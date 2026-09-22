@@ -229,29 +229,52 @@ This design specifies the BMaaS reference path. CaaS and VMaaS service-specific
 attachment workflows follow in OSAC-1611 and OSAC-3665; their workflows and
 service-specific input contracts are not expanded here. [Locked: D1, D2]
 
-1. The bare-metal-fulfillment-operator resolves the BareMetalInstance network
-   attachments, host interface names, and Subnet references. For BMaaS, it
-   resolves the authoritative NIC MAC for each selected interface from the
-   BareMetalHost `osac.openshift.io/interface-macs` annotation. The logical
-   interface name selects the annotation entry and remains the port-move/status
-   identity; the MAC is the DHCP lease identity. [User]
+1. The bare-metal-fulfillment-operator resolves each attachment into a stable
+   backend-neutral binding contract. The binding key is
+   `<baremetal-instance-uid>/<interface>/<subnet-uid>`, not a display name. It
+   contains the BareMetalInstance UID, BareMetalHost UID, logical interface,
+   authoritative MAC from the `osac.openshift.io/interface-macs` annotation,
+   Subnet UID, parent VirtualNetwork UID, server-side tenant attribution,
+   optional opaque `security_group_refs`, operation direction, and the provider
+   provisioning-network ID. The logical interface remains the status identity;
+   the MAC is the DHCP lease identity. Agentless ignores security-group policy
+   references in this default-permit milestone but carries them without
+   changing the generic handoff shape. [User]
    The BMaaS attachment contract permits each `subnetRef` at most once within
    one BareMetalInstance; a Subnet may still be used by many BareMetalInstances.
    Multi-NIC BareMetalInstances therefore use distinct Subnets, and duplicate
    `subnetRef` values are rejected before network handoff or DHCP discovery.
 2. After host provisioning, the BMF flow starts the generic
-   `playbook_osac_move_network_attachment.yml` AAP job. The playbook resolves
-   each `subnetRef` and dispatches the backend-specific
-   `move_network_attachment` entrypoint. For this design, a new
-   `osac.templates.agentless_net` role must provide
-   `tasks/move_network_attachment.yaml` to resolve the host interface and bind
-   the corresponding switch port to the Subnet VLAN.
-3. The target obtains an IPv4 address through DHCP in the VN namespace. One
+   `playbook_osac_move_network_attachment.yml` AAP job with this contract:
+   `operation` (`attach` or `detach`), `binding_uid`, host/interface/MAC
+   identity, `subnet_uid`, `virtual_network_uid`, tenant attribution,
+   `security_group_refs`, and `provisioning_network_id`. The playbook must not
+   look up `netris_bm_provisioning_vnet` or reduce the binding to a V-Net name.
+   Agentless resolves `subnet_uid` to the persisted tenant VLAN and resolves
+   `provisioning_network_id` from provider configuration to its exact access
+   VLAN. The role returns `binding_uid`, operation ID, resolved switch/port,
+   tenant VLAN, provisioning VLAN, direction, and observed state.
+3. For `attach`, Agentless records the desired binding before changing the
+   switch. It verifies the host port identity, then performs reset-plus-set as
+   one switch transaction or locked idempotent convergence: reset the access
+   configuration and set the port to the resolved tenant VLAN. It reports
+   success only after the switch port and `port_bindings` state agree. A retry
+   with the same binding UID and operation ID is a no-op after verification.
+4. For `detach`, the same contract restores the exact provider provisioning
+   network recorded in `port_bindings`, not the deleted Subnet's display name.
+   Agentless resets the tenant access configuration and sets the port to the
+   saved provisioning VLAN, verifies the port, then marks the binding
+   `restored` and removes it. If state is missing, the role may use only the
+   stable provider provisioning-network ID; it must fail closed when that ID or
+   its VLAN mapping is unavailable. The BMF deprovisioning finalizer waits for
+   this restore acknowledgement before the host can leave the provisioning
+   workflow.
+5. The target obtains an IPv4 address through DHCP in the VN namespace. One
    DHCP service is bound to every Subnet VLAN interface in that namespace, so
    each Subnet's broadcast domain has a local DHCP presence. Central DHCP with
    relay is not supported in this milestone. [PRD: FR-4] [Locked: D13] [User]
    [Research: Local DHCP presence per broadcast domain]
-4. The generic 'playbook_osac_query_dhcp_lease.yml' invokes the selected
+6. The generic 'playbook_osac_query_dhcp_lease.yml' invokes the selected
    template's 'query_dhcp_lease' task for each network attachment. Because each
    `subnetRef` is unique within the BareMetalInstance, the agentless task uses
    the authoritative BMaaS port MAC resolved from the
@@ -259,24 +282,27 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    match the lease store and publishes one lease entry per requested Subnet
    through 'set_stats'. Named fabric-server workflows may use their host
    identity, but BMaaS does not use an interface name as the lease key.
-5. The operator validates the artifact's job status, attachment identity,
+7. The operator validates the artifact's job status, attachment identity,
    authoritative MAC, Subnet reference, address family, and freshness before
    writing the observed address to the resource status. For BMaaS, each entry
    must contain a `mac_address` matching the interface-macs annotation, the
    expected `subnet_ref`, and the assigned IP. The artifact must contain exactly
    one entry for each requested SubnetRef; duplicate, unexpected, missing, or
    MAC-mismatched entries fail IP discovery.
-6. The bare-metal operator retrieves the completed AAP job, parses
+8. The bare-metal operator retrieves the completed AAP job, parses
    DHCPLeaseResult.Leases, maps each lease by authoritative MAC plus the unique
    SubnetRef, validates the IP address, and writes
    Status.NetworkAttachmentStatuses. If a lease is missing, duplicated,
    unexpected, MAC-mismatched, or invalid, IP discovery remains failed and
    reconciliation retries.
-7. The osac-operator BareMetalInstance feedback controller watches the CR status
+9. The osac-operator BareMetalInstance feedback controller watches the CR status
    change and calls the fulfillment-service BareMetalInstances.Signal RPC.
    fulfillment-service persists the status, after which ExternalIPAttachment
    reconciliation can read the target's primary IP and create DNAT.
-8. CaaS and VMaaS attachment and IP-address workflows remain follow-up work.
+10. CaaS and VMaaS attachment and IP-address workflows can reuse the same
+   direction, stable-subnet, host/interface, and provisioning-network contract;
+   their service-specific identity resolution and IP-address workflows remain
+   follow-up work.
    VM IP assignment and OVN bridging are not performed by this backend. [Locked: D8]
 
 #### ExternalIP and inbound access
@@ -488,7 +514,7 @@ The implementation changes the following existing surfaces:
 |---|---|---|---|
 | IC-1 | Installer values, manager ConfigMap, NetworkClass selection | Register and select 'agentless_net' as a fabric manager with IPv4 capability | FR-1, NFR-1 |
 | IC-2 | VirtualNetwork and Subnet API/CR lifecycle | Route existing fabric resources through the agentless dispatcher and realize VLAN, namespace, forwarding baseline, and cleanup state | FR-2, FR-3, FR-10, NFR-2, NFR-3 |
-| IC-3 | Fabric network-attachment and DHCP feedback path | Attach BM/CaaS/VM targets through the existing generic contract and surface fabric-assigned IPs for BM/CaaS | FR-4, FR-8 |
+| IC-3 | Fabric network-attachment and DHCP feedback path | Attach and detach BM/CaaS/VM targets through a backend-neutral stable binding contract, restore the provider provisioning network on offboarding, and surface fabric-assigned IPs for BM/CaaS | FR-4, FR-8 |
 | IC-4 | ExternalIPPool, ExternalIP, and ExternalIPAttachment lifecycle | Persist an ExternalIP-UID reservation in fulfillment-service, allocate provider-side addresses through the locked AAP state file, transport and validate the provider result, install whole-address DNAT, and announce/withdraw the consumer-owned ExternalIP `/32` route | FR-5, FR-7, FR-10, NFR-2, NFR-3 |
 | IC-5 | NATGateway lifecycle | Apply explicit outbound SNAT using the address in `ExternalIP.status.address`, announce/withdraw its `/32` route, and never replace it with host/interface MASQUERADE | FR-6, FR-10, NFR-2, NFR-3 |
 | IC-6 | Resource status, conditions, events, and job history | Surface manager registration, provisioning, DHCP, switch, forwarding, BGP route, NAT, provider-result handshake, reservation, and cleanup failures with diagnostic reasons | FR-9, NFR-2 |
@@ -987,11 +1013,23 @@ nat_gateways:
       mode: explicit
       to_source: <external-ip>
 port_bindings:
-  - key: <baremetal-instance-uid>/<interface>/<subnet-uid>
+  - binding_uid: <baremetal-instance-uid>/<interface>/<subnet-uid>
+    baremetal_instance_uid: <baremetal-instance-uid>
+    host_uid: <baremetal-host-uid>
     subnet_uid: <subnet-uid>
-    vlan_id: <integer>
-    host_name: <host-name>
+    virtual_network_uid: <virtual-network-uid>
+    tenant: <server-attributed-tenant>
     interface: <logical-interface>
+    mac_address: <authoritative-mac>
+    switch: <switch-identity>
+    switch_port: <switch-port-identity>
+    tenant_vlan_id: <integer>
+    provisioning_network_id: <provider-stable-id>
+    provisioning_vlan_id: <integer>
+    security_group_refs: []
+    direction: attach | detach
+    state: desired | attached | restoring | restored
+    operation_id: <idempotency-key>
 ~~~
 
 The `virtual_networks.transit` entry is allocated from the provider-configured
@@ -1019,16 +1057,20 @@ backend. Their saved route prefix, next hop, protocol, and address are the
 inputs for idempotent repair and deletion; cleanup must not derive them from a
 current name or a newly allocated transit link. `target_endpoint` records the
 cluster API-versus-ingress choice, while `source_cidrs` is reconciled whenever
-the VirtualNetwork's Subnet set changes.
+the VirtualNetwork's Subnet set changes. `port_bindings` records both sides of
+the access-port transition: the resolved tenant VLAN and the stable provider
+provisioning-network/VLAN used for detach. Its `binding_uid`, host UID, MAC,
+interface, switch port, direction, and operation ID are the idempotency and
+cleanup inputs; a host display name or Netris V-Net name is not sufficient.
 
 The current `agentless_net.l3.dnat` role is single-port and TCP/UDP-specific,
 and the current `agentless_net.l3.snat` role uses `MASQUERADE`; neither role is
 reused unchanged for these entries. The generic AgentlessNet implementation
 must extend or wrap them with an all-protocol, whole-address DNAT action and an
-explicit-source SNAT action. `port_bindings` tracks the
-temporary BMF-to-Subnet attachment operation because the current milestone
-invokes the generic attachment playbook directly; a future SubnetAttachment
-CRD could replace this integration boundary. The existing low-level IPAM
+explicit-source SNAT action. `port_bindings` tracks the BMF-to-Subnet binding
+through both attach and detach because the current milestone invokes the
+generic attachment playbook directly; a future SubnetAttachment CRD could
+replace this integration boundary. The existing low-level IPAM
 `public_ips` map is not retained in the unified backend state. The exact
 serialized names may follow the current collection conventions, but the state
 must be keyed by stable OSAC resource identifiers rather than arbitrary
@@ -1046,7 +1088,7 @@ changes. [Codebase: osac-aap/collections/ansible_collections/agentless_net/ipam]
 | ExternalIP create/delete | Create or reuse one fulfillment-service reservation keyed by ExternalIP UUID; add or reuse one complete `external_ips` provider entry keyed by the same UUID; accept provider and consumer cleanup events; release capacity only in the service's idempotent `RELEASED` transaction | Select and persist a complete IPv4 allocation atomically under the state-file lock, patch the provider-result annotations, and remove provider state before the service acknowledges capacity release |
 | ExternalIPAttachment create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add, replace, or remove one `attachments` entry containing the target, whole-address DNAT, `/32` route, saved next hop, and route-announced state; retain the reservation through cleanup | Read the address from `ExternalIP.status.address` and target status, create the all-protocol DNAT rule, announce or withdraw the owned BGP `/32`, then report consumer cleanup to the service |
 | NATGateway create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add or remove one `nat_gateways` entry containing all current source CIDRs, explicit SNAT address, `/32` route, saved next hop, and route-announced state; retain the reservation through cleanup | Read the address from `ExternalIP.status.address`, create explicit `SNAT --to-source` rules, announce or withdraw the owned BGP `/32`, then report consumer cleanup to the service |
-| BMF attachment bind/unbind | Add or remove one `port_bindings` entry keyed by machine, interface, and Subnet | Move the Cumulus access port to or from the Subnet VLAN through the generic attachment playbook |
+| BMF attachment bind/unbind | Add or reconcile one `port_bindings` entry keyed by binding UID, host/interface/MAC, Subnet, tenant VLAN, and provisioning-network identity | For attach, reset-plus-set the access port to the resolved Subnet VLAN; for detach, reset-plus-set it back to the saved provisioning VLAN and remove state only after verification |
 
 Every provider transition is applied under the state-file lock and is persisted
 before the corresponding operation is reported successful. The
@@ -1190,15 +1232,24 @@ The agentless implementation must provide:
   whole-address DNAT or explicit-source SNAT. The VirtualNetwork entrypoint
   allocates and repairs the per-VirtualNetwork transit `/30` and veth pair.
 - Generic network attachment entrypoints for create/delete or equivalent
-  attach/detach operations. The AgentlessNet implementation must add
+  attach/detach operations. The generic playbook passes a stable binding UID,
+  host UID, interface, authoritative MAC, Subnet/VN UID, tenant attribution,
+  opaque security-group references, direction, and provider provisioning-
+  network ID. The AgentlessNet implementation must add
   `osac-aap/collections/ansible_collections/osac/templates/roles/agentless_net/tasks/move_network_attachment.yaml`
-  for the BMF attachment flow.
+  for the BMF attachment flow. The role returns the resolved tenant and
+  provisioning VLANs, switch port, operation ID, and observed binding state.
 - 'query_dhcp_lease' compatible with the generic query playbook.
 - Shared step roles for VLAN/IPAM, router namespace, DHCP, forwarding baseline,
   BGP `/32` announce/withdraw, whole-address DNAT, explicit-source SNAT, and
   Cumulus port configuration. The BGP action receives the saved `route_prefix`
   and `route_next_hop`; it must verify withdrawal before cleanup proceeds.
 - Role argument validation and idempotent create/delete behavior.
+
+The generic attachment playbook must not derive a detach target from the
+current Subnet name or a Netris variable. It passes the stable provisioning
+network ID on both directions, and AgentlessNet resolves that ID to a VLAN from
+provider configuration before performing reset-plus-set and verification.
 
 The ExternalIP operator must validate provider-result annotations before treating
 an AAP success as a successful reconciliation. The shared provisioning
@@ -1305,7 +1356,8 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | ExternalIP provider-result annotation is missing, stale, malformed, or out of pool | Reject the result before `ALLOCATED`; retain the same reservation and retry the current generation; do not record a successful config version | ExternalIP remains Pending/Progressing with a provider-result condition |
 | ExternalIP allocation fails before atomic provider-state commit | Require a provider `NOT_COMMITTED` result or an inspect job before compensation; retain capacity while retryable and release it exactly once only after terminal failure/deletion | ExternalIP remains non-ready during retry; capacity is restored only after authoritative compensation |
 | ExternalIP deletion races allocation or provider cleanup | Serialize by ExternalIP UUID; keep `release_requested` and the finalizer until `NOT_COMMITTED` or `CLEANUP_COMPLETE` is acknowledged by fulfillment-service | No address becomes reusable until provider state, consumer state, and API reservation agree |
-| Switch VLAN or access-port operation fails | Retry idempotently; leave existing applied state untouched when possible | AAP failure and resource status contain switch error |
+| Switch VLAN or access-port operation fails | Retry the same binding UID with the saved host/MAC, switch port, tenant VLAN, and provisioning VLAN; do not release or forget the binding on partial failure | AAP failure and resource status contain switch error; the port remains in the last verified state |
+| BMaaS detach cannot resolve the provisioning network | Fail closed and retain the binding/finalizer; do not leave the host on a tenant VLAN or guess from a display name | Resource remains terminating with provisioning-network diagnostic |
 | Transit-pool allocation or veth/router setup partially fails | Reuse the UID-keyed transit `/30` and saved interface/IP values on retry; do not announce any ExternalIP route until the namespace and default route are verified | VirtualNetwork or dependent consumer remains non-ready with a transit-link diagnostic |
 | Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
 | DHCP lease absent or ambiguous | Requery; do not update status or create DNAT until identity/freshness checks pass | Condition identifies lease-unavailable/ambiguous |
@@ -1321,9 +1373,9 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | Delete is interrupted | Finalizer re-enters the ordered cleanup phases after restart | Resource remains terminating with cleanup reason |
 | Net node restarts | Rehydrate transit links, `/32` route ownership, DNAT/SNAT rules, and conntrack prerequisites from the versioned state file; reconcile actual interfaces/rules before reporting Ready | Existing resource statuses remain non-ready until observed state converges |
 
-All create/delete operations are keyed by stable resource UID and desired
-generation. AAP retries must be safe after a controller restart or lost job
-response. [Codebase: osac-operator/pkg/provisioning/provision_lifecycle.go]
+All create/delete/attach/detach operations are keyed by stable resource or
+binding UID and desired generation. AAP retries must be safe after a controller
+restart or lost job response. [Codebase: osac-operator/pkg/provisioning/provision_lifecycle.go]
 ### RBAC / Tenancy
 
 No new RBAC or authentication policy is required. Existing OPA and attribution
@@ -1338,7 +1390,10 @@ feedback attribution. [Codebase: fulfillment-service/internal/servers/private_su
 
 The agentless role receives validated private resource data through AAP. It
 must not use a tenant-provided name as an isolation key; the resource UID and
-server-side tenant attribution are the isolation inputs.
+server-side tenant attribution are the isolation inputs. For port moves, the
+host UID, authoritative MAC, binding UID, Subnet UID, and provider provisioning
+network ID are mandatory; a display host name or V-Net name cannot select a
+switch port or detach target.
 
 ### Observability and Monitoring
 
@@ -1387,6 +1442,15 @@ Cumulus is the only validated switch platform. Other NetworkRunner providers may
 have different command, commit, locking, or rollback semantics. The design
 documents the Cumulus support boundary and fails configuration validation for
 unvalidated provider profiles. [User] [Research: NetworkRunner and Cumulus]
+
+#### BMaaS port restoration
+
+An interrupted handoff can leave a host on a tenant VLAN and prevent the next
+PXE/provisioning attempt from reaching the provisioning network. The binding
+state persists host/MAC, switch port, tenant VLAN, provisioning-network ID/VLAN,
+and direction; attach and detach use the same idempotent reset-plus-set
+operation, retain the finalizer on uncertainty, and verify provisioning VLAN
+restoration before deleting state.
 
 #### DHCP and lease-store dependency
 
@@ -1525,12 +1589,14 @@ artifact handling, and the service-specific FR-4/FR-9 tests.
 
 **Owner:** Connectivity & Fabric team
 
-**Question:** Which exact inputs and lock scope comprise the supported Cumulus
-create/delete task contract for VLANs and access ports?
+**Question:** Which exact switch transaction and lock scope implement the
+supported Cumulus reset-plus-set operation for attach and detach, including
+access-port rollback after a partial failure?
 
-The milestone does not claim move, update, rollback, or broader
-NetworkRunner-provider behavior. Create/delete tasks must be idempotent and
-must leave the switch in a known state after a failed retry.
+This milestone claims BMaaS attach and detach through the stable binding
+contract defined above, but does not claim broader NetworkRunner-provider
+behavior. Each operation must be idempotent, preserve the saved provisioning
+VLAN, and leave the switch in a known state after a failed retry.
 
 **Impact:** Limits the role argument schema, concurrency tests, support procedures,
 and documented switch compatibility.
@@ -1543,9 +1609,9 @@ and documented switch compatibility.
 does each BMaaS, CaaS, and VMaaS integration provide to the generic attachment
 and DHCP roles?
 
-**Impact:** The BMaaS role input and MAC-to-lease mapping are defined here;
-future service integrations may extend the generic contract without changing
-the BMaaS identity rule.
+**Impact:** The BMaaS binding, provisioning-network identity, and MAC-to-lease
+mapping are defined here; CaaS and VMaaS may extend the generic contract with
+their own stable host identity without changing the BMaaS identity rule.
 
 ## Test Plan
 
@@ -1574,6 +1640,9 @@ not a substitute for that testplan.
 - Verify provider-result annotation validation, idempotent private provider
   events, consumer exclusivity for Attachment versus NATGateway, field-scoped
   status updates, and exactly-once `RELEASED` capacity accounting.
+- Validate attachment binding keys, host/MAC identity, direction transitions,
+  provisioning-network resolution, security-group reference pass-through, and
+  idempotent attach/detach state changes.
 - Verify status condition reason/message mapping for AAP and controller-owned
   allocation errors.
 
@@ -1594,6 +1663,9 @@ not a substitute for that testplan.
 - Verify tenant and owner annotations survive the service-to-CR path.
 - Exercise generic DHCP job artifact consumption for multi-NIC instances using
   distinct Subnets, and reject duplicate SubnetRefs before lease discovery.
+- Exercise Cumulus attach and detach with a fake switch: verify tenant VLAN
+  placement, provisioning-VLAN restoration, partial-failure retry, and
+  controller/AAP restart recovery from `port_bindings`.
 - Exercise AAP role argument validation and idempotent create/delete for the
   Cumulus support contract.
 - Verify controller restart/requeue behavior and ordered finalizer cleanup.
@@ -1606,6 +1678,9 @@ not a substitute for that testplan.
   private-address isolation between overlapping VirtualNetworks.
 - Provision a BMaaS reference attachment, obtain a DHCP address, and observe it in
   status.
+- Verify the BMaaS lifecycle moves a host from provisioning to its tenant VLAN
+  and back to the exact provisioning VLAN on offboarding, without relying on a
+  Netris variable or display name.
 - Verify inbound ExternalIP traffic follows the BGP `/32` to the VN namespace,
   reaches the target through whole-address DNAT, and returns through conntrack.
 - Verify outbound traffic is explicitly SNATed and the external endpoint
@@ -1679,6 +1754,8 @@ The operator, fulfillment-service, installer, and AAP collections must agree on:
 - state-file schema version;
 - per-VirtualNetwork transit-link fields and the BGP `/32` route prefix/next-hop
   contract;
+- network-attachment binding fields, `attach`/`detach` direction semantics,
+  stable provisioning-network identity, and the `port_bindings` state shape;
 - whole-address DNAT inputs and explicit-source SNAT inputs. A component that
   still sends the old single-port DNAT or MASQUERADE-only SNAT arguments must
   not report the consumer Ready.
@@ -1715,7 +1792,10 @@ Support personnel diagnose failures in this order:
 5. Verify Cumulus VLAN/trunk/access-port state and the net-node namespace,
    interfaces, route/BGP installation or withdrawal, exact whole-address DNAT,
    explicit `SNAT --to-source` rules, and conntrack state. Confirm that no
-   host-side MASQUERADE rule can overwrite the NATGateway source address.
+   host-side MASQUERADE rule can overwrite the NATGateway source address. For
+   BMaaS, compare the binding UID, host/MAC, switch port, tenant VLAN,
+   provisioning-network ID/VLAN, direction, and observed state with
+   `port_bindings`; never infer detach behavior from a display name.
 
 To disable new use, remove or change the NetworkClass selection after draining
 resources; do not delete the manager ConfigMap while resources still need
