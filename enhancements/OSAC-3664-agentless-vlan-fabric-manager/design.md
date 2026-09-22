@@ -102,14 +102,16 @@ creating DNAT. [PRD: FR-4] [Codebase: osac-aap/playbook_osac_query_dhcp_lease.ym
 The design adds the missing agentless implementation behind the existing
 NetworkClass and dispatcher contracts. A provider registers an
 'agentless_net' fabric-manager ConfigMap through Helm values and selects it in
-the existing deployment configuration. The fulfillment-service and operator
-own API validation, tenancy, CRDs, status, finalizers, dependency checks, and
-ExternalIPPool capacity accounting. AgentlessNet owns provider-side pool and
+the existing deployment configuration. The fulfillment-service owns API
+validation, tenancy, durable ExternalIP allocation/consumer reservations, and
+pool capacity accounting; the operator owns CRDs, finalizers, dependency
+checks, and observed status. AgentlessNet owns provider-side pool and
 ExternalIP address allocation in its locked state file, as well as
 VirtualNetwork/Subnet realization, per-VirtualNetwork transit links, BGP `/32`
 reachability, the permit-all forwarding baseline, BMF port binding, DNAT, and
-SNAT. It publishes the allocated address through the AAP job result and the
-operator exposes it as `ExternalIP.status.address`. [PRD: FR-1, FR-2]
+SNAT. It writes provider-result annotations after state-file commits; the
+operator exposes a validated address as `ExternalIP.status.address`. [PRD:
+FR-1, FR-2]
 
 The flow below shows the ownership boundary. The operator selects the
 implementation strategy and starts generic AAP jobs; the agentless template
@@ -285,24 +287,32 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    job registers the pool CIDRs in the locked AgentlessNet state file.
 2. Creating the ExternalIPPool defines capacity; it does not allocate an
    address or create a traffic rule. When an ExternalIP is created, the
-   fulfillment-service validates that the referenced pool is Ready and has
-   capacity, then reserves one capacity slot in its API state. The agentless
-   `create_external_ip` AAP job reads the pool entry from the locked state
-   file, reuses an existing allocation for the ExternalIP UID when retrying,
-   or selects and persists the first available IPv4 address. It publishes the
-   selected address as an `external_ip_address` AAP job artifact through
-   `ansible.builtin.set_stats`; the operator validates that artifact and writes
-   the address to `ExternalIP.status.address`. The ExternalIP becomes ALLOCATED
-   only after the AAP job succeeds and still has no data-plane route or NAT
-   rule. External reachability is owned by the later ExternalIPAttachment or
-   NATGateway consumer, not by the allocation alone.
+   fulfillment-service transaction locks the pool and creates the durable
+   `external_ip_reservations` row keyed by the ExternalIP UUID. The row holds
+   capacity in `HELD` state; it is not released merely because the provider job
+   fails. The agentless `create_external_ip` AAP job reads the pool entry from
+   the locked state file, reuses an existing allocation for the ExternalIP UID
+   when retrying, or selects and persists the first available IPv4 address.
+   After the provider entry commits, the role patches the allocated-address and
+   provider-result annotations together on the ExternalIP CR and fails the AAP
+   job if that patch is rejected. The operator validates those annotations,
+   records the `COMMITTED` provider event in fulfillment-service, and only then
+   writes the address to `ExternalIP.status.address` and marks the ExternalIP
+   ALLOCATED. Allocation alone still has no data-plane route or NAT rule.
    `ExternalIP` readiness means that a concrete address is allocated; it does
    not mean that inbound traffic is usable. Inbound readiness is represented by
    the separate ExternalIPAttachment resource.
 3. The Tenant Admin creates an ExternalIPAttachment that references the
-   allocated ExternalIP and targets a supported resource. A Tenant User may
-   request this through an authorized workload workflow, but the Networking
-   API resource lifecycle remains Tenant Admin-owned.
+   allocated ExternalIP and targets a supported resource. In the same
+   fulfillment-service transaction that creates the child record, the service
+   locks the ExternalIP reservation, verifies that no consumer is present, and
+   records an Attachment consumer reservation. This sets
+   `ExternalIP.status.attached=true` as an exclusivity reservation, not as a
+   readiness signal. A Tenant User may request this through an authorized
+   workload workflow, but the Networking API resource lifecycle remains Tenant
+   Admin-owned. NATGateway creation uses the same transaction and consumer
+   reservation, so an Attachment and NATGateway cannot acquire one ExternalIP
+   concurrently.
 4. The controller waits until the target's primary private address is present
    and current in status. Until then, the attachment remains pending and the
    controller does not dispatch an AAP attachment job.
@@ -321,8 +331,9 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    DNAT rule is present, and the BGP `/32` is observed as installed. It reaches
    Ready only after those checks and status feedback confirm the operation. If
    allocation succeeds but DNAT or route advertisement fails, the
-   ExternalIPAttachment remains non-ready and the parent ExternalIP is not
-   marked attached; the address remains reserved for retry or ordered cleanup.
+   ExternalIPAttachment remains non-ready; `status.attached` remains true
+   because the consumer reservation still prevents a second user. The address
+   remains reserved for retry or ordered cleanup. For a Cluster target,
    For a Cluster target, `targetEndpoint` selects the current API-server or
    ingress VIP, and the same all-protocol address translation is used rather
    than a port-specific rule. Once the supported external path exists, routed
@@ -341,7 +352,9 @@ not alter the NATGateway configuration. [Locked: D14]
 #### NATGateway and outbound access
 
 1. A Tenant Admin creates a NATGateway for a VirtualNetwork and supplies an
-   explicit reference to an already allocated ExternalIP.
+   explicit reference to an already allocated ExternalIP. The service transaction
+   records the NATGateway consumer reservation under the same ExternalIP UUID
+   lock used by Attachment creation.
 2. The controller resolves that ExternalIP reference and verifies that the
    ExternalIP is allocated, belongs to the expected tenant scope, and is not
    already consumed by another NATGateway or ExternalIPAttachment.
@@ -423,14 +436,19 @@ failure message in the existing provisioning history and status condition.
    ExternalIP and verify the route, rule, and conntrack state are absent. The
    referenced ExternalIP remains a separate resource and is not released
    implicitly.
-4. For an ExternalIP, retain the fulfillment-service capacity reservation and
-   deletion finalizer while an attachment or NATGateway owns a route, DNAT/SNAT
-   rule, conntrack entry, provider allocation task, or UID-keyed `external_ips`
-   entry. If an atomic provider-state commit never occurred, release the API
-   reservation after the allocation reaches terminal failure. If a provider
-   entry exists, remove it under the state-file lock and confirm that both
-   external consumers and the `/32` route are absent before releasing the API
-   reservation. [User]
+4. For an ExternalIP, the fulfillment-service records `release_requested` but
+   does not decrement pool capacity. The ExternalIP controller retains its
+   finalizer while an Attachment/NATGateway consumer reservation, provider
+   allocation task, or UID-keyed `external_ips` entry exists. If no provider
+   job was ever started, the operator still records a verified `NOT_COMMITTED`
+   event for the UUID reservation before removing its finalizer. If the
+   provider reports `NOT_COMMITTED`, the service can release a terminal failed
+   or deleted allocation without an address. If the provider reports
+   `CLEANUP_COMPLETE`, it must include the committed address/digest and prove
+   that both external consumers, the `/32` route, DNAT/SNAT, and conntrack state
+   are absent. The service then performs the single `RELEASED` capacity
+   transaction; only its acknowledgement allows the operator to remove the
+   finalizer. [User]
 5. For a Subnet, remove only DHCP, its VLAN subinterface, gateway IP, and
    Subnet-owned switch/VLAN state, then release the VLAN ID after confirmed
    cleanup.
@@ -446,17 +464,23 @@ ExternalIPPool resources. The Tenant Admin owns creation and deletion of the
 tenant's VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and
 NATGateway resources. Agentless_net never creates or deletes those API objects;
 it applies and removes the fabric state during their existing reconciliation
-lifecycles. This feature creates no default networking or policy resources.
+lifecycles. The fulfillment-service owns allocation/consumer reservation
+state and pool counters; the operator owns CR finalizers and observed status;
+AgentlessNet owns provider state and cleanup evidence. This feature creates no
+default networking or policy resources.
 
 ### API Extensions
 
 No new public gRPC service, REST resource, protobuf field, CRD kind, or webhook
-is introduced. Existing fabric-facing resources receive the agentless backend;
-fulfillment-service retains ExternalIPPool validation and capacity accounting,
-the agentless AAP roles allocate provider-side pool addresses, and
-ExternalIPAttachment and NATGateway use the resulting `ExternalIP.status.address`
-for DNAT/SNAT. Existing status and condition fields carry observed readiness
-and diagnostic failures. [Locked: D3, D5, D9]
+is introduced. Existing fabric-facing resources receive the agentless backend.
+The fulfillment-service adds an internal, non-tenant reservation record and a
+private provider-result operation; neither is exposed through the public API or
+REST surface. Agentless AAP roles allocate provider-side pool addresses and
+write the established `osac.openshift.io/allocated-address` annotation plus a
+validated provider-result annotation. ExternalIPAttachment and NATGateway use
+the resulting `ExternalIP.status.address` for DNAT/SNAT. Existing status and
+condition fields carry observed readiness and diagnostic failures. [Locked: D3,
+D5, D9]
 
 The implementation changes the following existing surfaces:
 
@@ -465,9 +489,9 @@ The implementation changes the following existing surfaces:
 | IC-1 | Installer values, manager ConfigMap, NetworkClass selection | Register and select 'agentless_net' as a fabric manager with IPv4 capability | FR-1, NFR-1 |
 | IC-2 | VirtualNetwork and Subnet API/CR lifecycle | Route existing fabric resources through the agentless dispatcher and realize VLAN, namespace, forwarding baseline, and cleanup state | FR-2, FR-3, FR-10, NFR-2, NFR-3 |
 | IC-3 | Fabric network-attachment and DHCP feedback path | Attach BM/CaaS/VM targets through the existing generic contract and surface fabric-assigned IPs for BM/CaaS | FR-4, FR-8 |
-| IC-4 | ExternalIPPool, ExternalIP, and ExternalIPAttachment lifecycle | Preserve service-owned pool capacity, allocate provider-side addresses through the locked AAP state file, install whole-address DNAT, and announce/withdraw the consumer-owned ExternalIP `/32` route | FR-5, FR-7, FR-10, NFR-2, NFR-3 |
+| IC-4 | ExternalIPPool, ExternalIP, and ExternalIPAttachment lifecycle | Persist an ExternalIP-UID reservation in fulfillment-service, allocate provider-side addresses through the locked AAP state file, transport and validate the provider result, install whole-address DNAT, and announce/withdraw the consumer-owned ExternalIP `/32` route | FR-5, FR-7, FR-10, NFR-2, NFR-3 |
 | IC-5 | NATGateway lifecycle | Apply explicit outbound SNAT using the address in `ExternalIP.status.address`, announce/withdraw its `/32` route, and never replace it with host/interface MASQUERADE | FR-6, FR-10, NFR-2, NFR-3 |
-| IC-6 | Resource status, conditions, events, and job history | Surface manager registration, provisioning, DHCP, switch, forwarding, BGP route, NAT, and cleanup failures with diagnostic reasons | FR-9, NFR-2 |
+| IC-6 | Resource status, conditions, events, and job history | Surface manager registration, provisioning, DHCP, switch, forwarding, BGP route, NAT, provider-result handshake, reservation, and cleanup failures with diagnostic reasons | FR-9, NFR-2 |
 
 #### Existing resource and metadata constraints
 
@@ -479,6 +503,54 @@ The implementation changes the following existing surfaces:
 - No API-level field is added for VLAN ID, Linux namespace, DHCP server, switch
   platform, or AAP job ID. Those are implementation state and status metadata,
   not tenant API inputs.
+
+#### ExternalIP reservation and provider-result contract
+
+The fulfillment-service stores one durable `external_ip_reservations` record
+per ExternalIP UUID. The record is not a Kubernetes object and is not returned
+by the tenant API. Its key fields are:
+
+| Field | Meaning |
+|---|---|
+| `external_ip_id`, `pool_id` | Stable allocation identity and parent pool |
+| `allocation_state` | `HELD`, `COMMITTED`, `RELEASE_REQUESTED`, or `RELEASED` |
+| `provider_state` | `UNKNOWN`, `NOT_COMMITTED`, `COMMITTED`, or `CLEANUP_COMPLETE` |
+| `address`, `provider_operation_id`, `provider_state_digest` | Provider evidence; address is required only for `COMMITTED` and cleanup evidence |
+| `consumer_kind`, `consumer_id`, `consumer_state` | Exclusive Attachment/NATGateway reservation and `RESERVED` or `CLEANUP_PENDING` state |
+| `release_requested_at`, `released_at`, `version` | Crash recovery, audit, and optimistic-locking fields |
+
+Create locks the pool row and reservation key in one database transaction. A
+new row increments `pool.status.allocated` and decrements
+`pool.status.available`; a retry for the same ExternalIP UUID reuses the row
+and never increments capacity twice. A release transaction locks the
+reservation and pool, checks the provider and consumer gates, and changes the
+row to `RELEASED` while decrementing `allocated` and incrementing `available`
+exactly once. The row remains as an idempotency tombstone after release.
+
+The private `RecordExternalIPProviderEvent` operation accepts
+`external_ip_id`, `provider_operation_id`, `event`, `address`,
+`provider_state_digest`, `consumer_kind`, `consumer_id`, and
+`route_and_translation_absent`. Event values are `COMMITTED`,
+`NOT_COMMITTED`, `CONSUMER_CLEANUP_COMPLETE`, and `CLEANUP_COMPLETE`.
+`COMMITTED` is accepted only for a valid pool address and a provider entry
+known to exist; `NOT_COMMITTED` is accepted only when the provider has verified
+that no entry exists; `CONSUMER_CLEANUP_COMPLETE` is accepted only for the
+currently reserved child; and `CLEANUP_COMPLETE` is accepted only when the
+provider entry, ExternalIP route, DNAT, SNAT, and conntrack state are absent.
+Replaying the same operation and digest is a no-op; a conflicting event or
+digest is an aborted conflict. Only the operator calls this private operation
+after validating the AAP result. [Codebase:
+fulfillment-service/proto/private/osac/private/v1/external_ips_service.proto]
+
+The provider-result annotations are part of the internal controller contract:
+`osac.openshift.io/allocated-address` carries the committed address,
+`osac.openshift.io/external-ip-provider-event` carries the event,
+`osac.openshift.io/external-ip-provider-operation` carries the AAP operation
+identity, and `osac.openshift.io/external-ip-provider-digest` carries the
+state-file evidence. The ExternalIP reconciler accepts a successful AAP job
+only after these values match the current UUID and desired generation. A
+missing, malformed, stale, or pool-out-of-range result remains retryable and
+does not mark the provisioning version successful.
 
 #### NetworkAPI resource CRs and implementation points
 
@@ -653,21 +725,28 @@ status:
 `spec.pool` requests an address from the named provider pool. The
 Tenant Admin creates this resource; it is not implicitly created by a tenant
 or by AgentlessNet. `status.address` is the allocated IPv4 address,
-`status.state` reports allocation, and `status.attached` reports whether an
-ExternalIPAttachment is currently using it.
+`status.state` reports allocation, and `status.attached` reports whether either
+an ExternalIPAttachment or a NATGateway holds the exclusive consumer
+reservation. It does not mean that the child data-plane operation is Ready.
+The fulfillment-service owns `status.attached`; the operator owns
+`status.address`, `status.state`, `status.phase`, `status.conditions`, and
+provisioning fields. Each writer uses a field-scoped merge or read-modify-write
+with conflict retries and never replaces a stale full status.
 
-The fulfillment-service validates the pool and reserves capacity, but the
-agentless AAP job selects the concrete address from the provider state file.
-The job publishes the address as an `external_ip_address` artifact; the
-operator validates the job result and publishes it in `status.address`.
-Allocation alone creates no traffic rule; the address is consumed later by an
-ExternalIPAttachment or a NATGateway, subject to the existing dependency and
-exclusivity checks.
+The fulfillment-service validates the pool and owns the durable capacity
+reservation, but the agentless AAP job selects the concrete address from the
+provider state file. The role writes the established allocated-address
+annotation and a provider-result annotation. The operator validates the result,
+records the private provider event, and publishes the address in
+`status.address` only after the service acknowledges `COMMITTED`. Allocation
+alone creates no traffic rule; the address is consumed later by an
+ExternalIPAttachment or a NATGateway, subject to the durable consumer
+reservation.
 
-The preferred future architecture is for fulfillment-service/controller to
-select the concrete address and pass it as an input to the backend, making the
-backend a pure realization layer. That change is intentionally deferred; this
-milestone follows the existing Netris provider-side allocation pattern.
+Provider-side address selection remains in AgentlessNet for this milestone.
+The fulfillment-service does not advertise capacity as available until its
+reservation reaches `RELEASED`, regardless of whether the provider selected the
+address or only reported `NOT_COMMITTED`.
 
 ##### ExternalIPAttachment
 
@@ -695,7 +774,9 @@ selects the ComputeInstance, Cluster, or BareMetalInstance. `targetEndpoint`
 is additionally required for a cluster target. `status.phase` and
 `status.conditions` report whether the attachment is active; the target's
 private address remains in the existing attachment/network status path rather
-than becoming a new ExternalIPAttachment API field.
+than becoming a new ExternalIPAttachment API field. The parent ExternalIP
+consumer reservation remains held through `DELETING` until the attachment
+controller reports route, DNAT, and conntrack cleanup to fulfillment-service.
 
 The ExternalIPAttachment controller waits for the target's primary IPv4 address
 from the existing DHCP lease/status feedback path. If the address is missing
@@ -738,8 +819,9 @@ AgentlessNet consumes the address in `ExternalIP.status.address` and installs
 owned explicit-source SNAT rules and announces the consumer-owned ExternalIP
 `/32`; it does not repeat those validation checks or evaluate a policy resource.
 Deleting the NATGateway withdraws that route and removes its SNAT rules but
-does not release the ExternalIP; ExternalIP deletion remains a separate Tenant
-Admin operation.
+does not release the ExternalIP or clear its consumer reservation until cleanup
+evidence is acknowledged by fulfillment-service; ExternalIP deletion remains a
+separate Tenant Admin operation.
 
 The CR examples show the API boundary. VLAN IDs, namespace names, DHCP lease
 records, iptables chains, conntrack/NAT state, and AAP job identifiers remain
@@ -921,6 +1003,13 @@ provider-facing net-node interface used for egress. The
 ExternalIP consumer owns one `<address>/32` announcement, and no L2/ARP
 reachability alternative is claimed.
 
+The fulfillment-service `external_ip_reservations` record is separate from
+this provider state file. The service row owns API capacity, allocation and
+consumer reservation state; the `external_ips` provider entry owns only the
+concrete provider allocation. The two records are correlated by ExternalIP
+UUID, address, provider operation ID, and state digest. A provider event is not
+treated as capacity release until the service transaction accepts it.
+
 The `external_ip_pools` entries register provider-side pool CIDRs and the
 `external_ips` entries record concrete addresses allocated from those pools.
 The AAP roles allocate under the state-file lock and reuse an existing
@@ -954,19 +1043,20 @@ changes. [Codebase: osac-aap/collections/ansible_collections/agentless_net/ipam]
 | VirtualNetwork create/update/delete | Add or reconcile one `virtual_networks` entry, including its transit `/30`, veth identities, and external-reachability mode; remove it only when the VirtualNetwork object is deleted and its child entries are gone | Allocate or reuse the transit link; create or repair the namespace, uplink, default route, and permit-all baseline; remove the link during ordered cleanup |
 | Subnet create/update/delete | Add or reuse one `subnets` entry; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, and DHCP scope; reconcile any active NATGateway `source_cidrs`; no host access-port binding during Subnet provisioning |
 | ExternalIPPool create/delete | Add or reconcile one `external_ip_pools` entry; remove it only when the ExternalIPPool object is deleted | Register or remove provider-side pool CIDRs under the state-file lock; fulfillment-service remains authoritative for capacity counters |
-| ExternalIP create/delete | Create one idempotent fulfillment-service capacity reservation keyed by ExternalIP UID; add or reuse one complete `external_ips` entry keyed by the same UID; remove the provider entry before releasing the API reservation | Select and persist a complete IPv4 allocation atomically under the state-file lock, publish it as the AAP result, and release provider state before API capacity during ordered cleanup |
-| ExternalIPAttachment create/delete | Add, replace, or remove one `attachments` entry containing the target, whole-address DNAT, `/32` route, saved next hop, and route-announced state | Read the address from `ExternalIP.status.address` and target status, create the all-protocol DNAT rule, announce or withdraw the owned BGP `/32`, then remove the rule during ordered cleanup |
-| NATGateway create/delete | Add or remove one `nat_gateways` entry containing all current source CIDRs, explicit SNAT address, `/32` route, saved next hop, and route-announced state | Read the address from `ExternalIP.status.address`, create explicit `SNAT --to-source` rules, announce or withdraw the owned BGP `/32`, then remove the rules during ordered cleanup |
+| ExternalIP create/delete | Create or reuse one fulfillment-service reservation keyed by ExternalIP UUID; add or reuse one complete `external_ips` provider entry keyed by the same UUID; accept provider and consumer cleanup events; release capacity only in the service's idempotent `RELEASED` transaction | Select and persist a complete IPv4 allocation atomically under the state-file lock, patch the provider-result annotations, and remove provider state before the service acknowledges capacity release |
+| ExternalIPAttachment create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add, replace, or remove one `attachments` entry containing the target, whole-address DNAT, `/32` route, saved next hop, and route-announced state; retain the reservation through cleanup | Read the address from `ExternalIP.status.address` and target status, create the all-protocol DNAT rule, announce or withdraw the owned BGP `/32`, then report consumer cleanup to the service |
+| NATGateway create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add or remove one `nat_gateways` entry containing all current source CIDRs, explicit SNAT address, `/32` route, saved next hop, and route-announced state; retain the reservation through cleanup | Read the address from `ExternalIP.status.address`, create explicit `SNAT --to-source` rules, announce or withdraw the owned BGP `/32`, then report consumer cleanup to the service |
 | BMF attachment bind/unbind | Add or remove one `port_bindings` entry keyed by machine, interface, and Subnet | Move the Cumulus access port to or from the Subnet VLAN through the generic attachment playbook |
 
-Every transition is applied under the state-file lock and is persisted before
-the corresponding operation is reported successful. The fulfillment-service
-capacity reservation and provider `external_ips` entry use the ExternalIP UID
-as their idempotency key. The provider writes the complete entry atomically—an
-allocation either commits the full entry or commits nothing. A retry reuses a
-committed entry by UID instead of allocating a second address. A failed
-allocation with no committed entry keeps the same API reservation while it is
-retryable and releases it exactly once on terminal failure or deletion. [User]
+Every provider transition is applied under the state-file lock and is persisted
+before the corresponding operation is reported successful. The
+fulfillment-service reservation and provider `external_ips` entry use the
+ExternalIP UUID as their idempotency key. The provider writes the complete
+entry atomically—an allocation either commits the full entry or commits
+nothing. A retry reuses a committed entry by UID instead of allocating a second
+address. A failed allocation with no committed entry keeps the same service
+reservation while retryable; terminal failure or deletion requires a validated
+`NOT_COMMITTED` event before the service can release it. [User]
 
 For an ExternalIP consumer, the desired route and translation state is recorded
 with the consumer UID before the AAP action starts. The role applies the
@@ -974,7 +1064,10 @@ namespace translation first, announces the saved `/32` with the saved next hop,
 and sets `route_announced: true` only after both the data-plane rule and route
 are observed. A retry uses those same values. Cleanup reverses that order from
 the outside in: withdraw and verify the route, remove and verify the owned NAT
-rule, clear the consumer state, and only then permit ExternalIP release.
+rule, delete and verify owner-specific conntrack state, and report
+`CONSUMER_CLEANUP_COMPLETE` to fulfillment-service. The service then clears the
+consumer reservation and `status.attached`; only after that and the provider
+`CLEANUP_COMPLETE` event can the allocation reservation be released.
 
 #### DHCP and lease feedback
 
@@ -1031,21 +1124,33 @@ model and AAP action contract. [PRD: FR-3, FR-5, FR-6] [User]
 
 #### ExternalIP, DNAT, and SNAT
 
-ExternalIPPool API objects, aggregate capacity counters, and UID-keyed capacity
-reservations remain fulfillment-service state. AgentlessNet maintains
-provider-side pool and concrete ExternalIP allocation entries in its locked
-state file. The AAP allocation job publishes the selected address only after
-the complete `external_ips` entry is atomically committed, and the operator
-copies it to `ExternalIP.status.address`. ExternalIP release remains blocked
-while an ExternalIPAttachment or NATGateway still owns a route or NAT mapping,
-while allocation is in progress, or while the provider entry has not been
-confirmed removed. The route owner retains the exact `/32` and next hop needed
-for withdrawal; it is not reconstructed from the current VirtualNetwork
-object.
-If provider allocation fails before the atomic commit, no provider address
-exists and the retry uses the existing UID reservation; terminal failure or
-deletion compensates that reservation. If the provider entry is committed,
-cleanup removes it before the API reservation and pool capacity are released.
+ExternalIPPool API objects, aggregate capacity counters, and the durable
+ExternalIP-UID reservation remain fulfillment-service state. AgentlessNet
+maintains provider-side pool and concrete ExternalIP allocation entries in its
+locked state file. The AAP allocation role first commits the complete
+`external_ips` entry, then patches the provider-result annotations. The
+operator validates the current UUID, generation, pool membership, address, and
+state digest before recording `COMMITTED` in fulfillment-service and copying
+the address to `ExternalIP.status.address`.
+
+The reservation state machine is:
+
+| State | Entry condition | Capacity rule |
+|---|---|---|
+| `HELD` | API create transaction reserved one pool slot | Counted as allocated; retryable provider work may reuse it |
+| `COMMITTED` | Provider entry and address were acknowledged by the service | Remains allocated; consumer may be reserved separately |
+| `RELEASE_REQUESTED` | Delete or terminal failure requested release | Remains allocated until provider and consumer gates pass |
+| `RELEASED` | Service transaction accepted `NOT_COMMITTED` or `CLEANUP_COMPLETE` | Capacity returned exactly once; later duplicate events are no-ops |
+
+`NOT_COMMITTED` is authoritative only when the provider inspected its UID-keyed
+state and found no entry. A failed AAP job without that result cannot release
+capacity; the operator retries an inspect/compensation action. For a committed
+entry, ExternalIPAttachment and NATGateway must first report consumer cleanup,
+then the provider delete action must withdraw the route, remove DNAT/SNAT and
+conntrack state, remove the `external_ips` entry, and report
+`CLEANUP_COMPLETE`. The fulfillment-service then locks the reservation and pool
+and performs the one-time capacity release. No controller, AAP role, or stale
+status update may decrement pool capacity directly.
 
 ExternalIPAttachment creates one destination translation from the address in
 `ExternalIP.status.address` to the target's primary private address, without a
@@ -1078,12 +1183,12 @@ The agentless implementation must provide:
 - Generic network resource entrypoints for VirtualNetwork, Subnet,
   ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway.
   fulfillment-service owns ExternalIPPool/API validation and
-  capacity counters; the ExternalIPPool and ExternalIP roles register CIDRs,
-  allocate concrete addresses in the locked state file, and publish the
-  `external_ip_address` AAP result. Attachment and NAT roles consume the
-  resulting `ExternalIP.status.address` when programming whole-address DNAT or
-  explicit-source SNAT. The VirtualNetwork entrypoint allocates and repairs
-  the per-VirtualNetwork transit `/30` and veth pair.
+  capacity and consumer reservations; the ExternalIPPool and ExternalIP roles
+  register CIDRs, allocate concrete addresses in the locked state file, and
+  patch the allocated-address and provider-result annotations. Attachment and
+  NAT roles consume the resulting `ExternalIP.status.address` when programming
+  whole-address DNAT or explicit-source SNAT. The VirtualNetwork entrypoint
+  allocates and repairs the per-VirtualNetwork transit `/30` and veth pair.
 - Generic network attachment entrypoints for create/delete or equivalent
   attach/detach operations. The AgentlessNet implementation must add
   `osac-aap/collections/ansible_collections/osac/templates/roles/agentless_net/tasks/move_network_attachment.yaml`
@@ -1095,6 +1200,13 @@ The agentless implementation must provide:
   and `route_next_hop`; it must verify withdrawal before cleanup proceeds.
 - Role argument validation and idempotent create/delete behavior.
 
+The ExternalIP operator must validate provider-result annotations before treating
+an AAP success as a successful reconciliation. The shared provisioning
+lifecycle therefore needs a pre-success validation callback (or equivalent
+ExternalIP-specific gate) that runs before recording the successful config
+version. A malformed or missing result remains retryable; it must not be
+converted into `ALLOCATED` with an empty address.
+
 The existing 'agentless_net.steps' collection remains reusable where its
 inputs and lifecycle match the unified resource contract. Cluster-specific
 static NMStateConfig and BGP endpoint code is not treated as the generic
@@ -1102,12 +1214,31 @@ Networking API implementation. [Codebase: osac-aap/collections/ansible_collectio
 
 #### Fulfillment-service coordination
 
-No new proto or REST field is required. The service-side work is limited to
-confirming that all active validation and reconciliation paths allow the
-multiple-Subnet behavior required by D12, updating stale 1:1 documentation,
-and preserving existing tenant/owner metadata. The current Subnet server already
-checks CIDR subset and sibling overlap and has tests for multiple Subnets.
-[Codebase: fulfillment-service/internal/servers/private_subnets_server.go]
+In addition to the multi-Subnet validation and tenant metadata work, the
+fulfillment-service adds a migration and DAO for
+`external_ip_reservations`. ExternalIP create locks the pool and reservation
+key, inserts or reuses the `HELD` row, and updates pool counters in one
+transaction. ExternalIP delete accepts `PENDING`, `FAILED`, `ALLOCATED`, and
+`DELETING` reservations, records `release_requested`, and does not change
+capacity until the provider-result handshake succeeds.
+
+ExternalIPAttachment and NATGateway create operations use the same reservation
+row lock to claim the single consumer slot. Their delete operations mark the
+consumer `CLEANUP_PENDING`; the operator sends a private
+`CONSUMER_CLEANUP_COMPLETE` event only after route, DNAT/SNAT, and conntrack
+cleanup is observed. The service then clears `status.attached` and the consumer
+slot with a field-scoped update. A second consumer receives
+`FailedPrecondition` while the slot is reserved, including during cleanup.
+
+The private provider-event operation is idempotent by ExternalIP UUID,
+provider-operation ID, and state digest. It performs compare-and-set
+transitions under the reservation and pool locks and returns an explicit
+acknowledgement or conflict. The service, not the operator or AAP role, is the
+only component that changes pool `allocated`/`available` counters. These are
+fulfillment-service implementation changes even though no tenant-facing proto
+or REST field is added. The current Subnet server still checks CIDR subset and
+sibling overlap and retains its multiple-Subnet tests. [Codebase:
+fulfillment-service/internal/servers/private_subnets_server.go]
 
 If a downstream one-Subnet guard is found, it must be changed in the same
 implementation plan because a backend that can configure multiple VLANs is not
@@ -1170,10 +1301,10 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | Invalid NetworkClass, unsupported IPv6 request, or Subnet prefix `/31`/`/32` | API/controller validation rejects before provisioning | Invalid argument or failed condition names the unsupported address family or prefix; no AAP job or fabric state is created |
 | VLAN state lock unavailable | Retry with backoff; preserve existing allocation | Provisioning remains pending with lock diagnostic |
 | VLAN allocation exhausted or already owned | Do not reuse an allocated ID; fail the requested generation | Failed condition identifies VLAN allocation exhaustion/conflict |
-| ExternalIP state lock unavailable or pool has no free address | Retry without changing an existing UID allocation; do not publish an address | ExternalIP remains non-ready with an allocation diagnostic |
-| ExternalIP allocation artifact is missing, stale, or mismatched | Ignore the artifact and retry the current generation; do not set `status.address` | ExternalIP remains Pending/Progressing with an allocation condition |
-| ExternalIP allocation fails before atomic provider-state commit | Retry using the existing UID-keyed API reservation; if failure becomes terminal or the resource is deleted, release that reservation exactly once because no provider entry exists | ExternalIP remains non-ready during retry and reports the allocation failure; capacity is restored after compensation |
-| ExternalIP deletion races allocation or provider cleanup | Serialize operations by ExternalIP UID; remove a committed provider entry before releasing API capacity, or release the reservation directly when no entry was committed | No address becomes reusable until the provider state and API reservation agree |
+| ExternalIP state lock unavailable or pool has no free address | Retry without changing an existing `HELD` reservation; do not publish an address | ExternalIP remains non-ready with an allocation diagnostic and capacity remains held once |
+| ExternalIP provider-result annotation is missing, stale, malformed, or out of pool | Reject the result before `ALLOCATED`; retain the same reservation and retry the current generation; do not record a successful config version | ExternalIP remains Pending/Progressing with a provider-result condition |
+| ExternalIP allocation fails before atomic provider-state commit | Require a provider `NOT_COMMITTED` result or an inspect job before compensation; retain capacity while retryable and release it exactly once only after terminal failure/deletion | ExternalIP remains non-ready during retry; capacity is restored only after authoritative compensation |
+| ExternalIP deletion races allocation or provider cleanup | Serialize by ExternalIP UUID; keep `release_requested` and the finalizer until `NOT_COMMITTED` or `CLEANUP_COMPLETE` is acknowledged by fulfillment-service | No address becomes reusable until provider state, consumer state, and API reservation agree |
 | Switch VLAN or access-port operation fails | Retry idempotently; leave existing applied state untouched when possible | AAP failure and resource status contain switch error |
 | Transit-pool allocation or veth/router setup partially fails | Reuse the UID-keyed transit `/30` and saved interface/IP values on retry; do not announce any ExternalIP route until the namespace and default route are verified | VirtualNetwork or dependent consumer remains non-ready with a transit-link diagnostic |
 | Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
@@ -1181,9 +1312,12 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | AAP lease artifact is stale or job failed | Ignore artifact, retain current status, retry current generation | Job failure and resource condition remain visible |
 | Forwarding baseline or owned NAT rule application fails | Retry the desired generation without reporting Ready; preserve the saved route/NAT inputs | The affected resource condition and job history identify the forwarding or NAT operation failure |
 | DNAT/SNAT or BGP announcement partially fails | Compare desired state with the saved owner state and repair; do not report Ready until both the exact rule and `/32` route are observed | Attachment/NAT condition identifies the translation or route failure |
-| ExternalIP allocation succeeds but DNAT or route advertisement does not | Keep ExternalIP allocated, keep ExternalIPAttachment non-ready and `status.attached` false, and retry using the same address/next hop; do not release capacity | Attachment condition identifies the DNAT or external-route failure |
+| ExternalIP allocation succeeds but DNAT or route advertisement does not | Keep ExternalIP allocated, keep ExternalIPAttachment non-ready, retain its consumer reservation and `status.attached=true`, and retry using the same address/next hop | Attachment condition identifies the DNAT or external-route failure |
 | External endpoint observes a node address instead of the NATGateway ExternalIP | Remove any MASQUERADE rule from this path, install explicit `SNAT --to-source`, and verify the observed source before Ready | NATGateway remains non-ready with a source-address diagnostic |
 | BGP withdrawal or owned NAT cleanup fails | Retain the consumer and ExternalIP finalizers, keep capacity reserved, and retry from the persisted route/rule state; never release an address while its `/32` or translation remains | Resource remains terminating with external-cleanup condition |
+| Consumer cleanup completes but service acknowledgement is lost | Replay `CONSUMER_CLEANUP_COMPLETE` by UUID and digest; service clears the consumer reservation exactly once | `status.attached` remains true until the acknowledgement is durable |
+| Provider cleanup completes but capacity-release acknowledgement is lost | Replay `CLEANUP_COMPLETE`; the service's `RELEASED` transition is idempotent and the operator retries finalizer removal | Pool capacity changes once and the ExternalIP finalizer eventually clears |
+| Status writers race or return stale snapshots | Patch only owned fields after a fresh read and retry conflicts; never replace full ExternalIP status | Address, attached flag, conditions, and provisioning history are not lost |
 | Delete is interrupted | Finalizer re-enters the ordered cleanup phases after restart | Resource remains terminating with cleanup reason |
 | Net node restarts | Rehydrate transit links, `/32` route ownership, DNAT/SNAT rules, and conntrack prerequisites from the versioned state file; reconcile actual interfaces/rules before reporting Ready | Existing resource statuses remain non-ready until observed state converges |
 
@@ -1221,6 +1355,9 @@ existing controller/AAP boundaries:
 | FabricOperationFailed | Warning | AAP create/update/delete job fails |
 | VLANAllocationFailed | Warning | VLAN allocation cannot complete |
 | TransitLinkFailed | Warning | A per-VirtualNetwork transit `/30`, veth, or namespace route cannot be created or repaired |
+| ExternalIPReservationBlocked | Warning | A durable allocation or consumer reservation cannot advance |
+| ExternalIPProviderResultRejected | Warning | Provider result annotations fail UUID, generation, address, or digest validation |
+| ExternalIPCapacityReleaseBlocked | Warning | Provider or consumer cleanup has not been acknowledged by fulfillment-service |
 | DHCPLeaseUnavailable | Warning | No current lease matches the attachment |
 | ExternalRouteApplyFailed | Warning | The consumer-owned ExternalIP `/32` cannot be announced or verified with its saved next hop |
 | ExternalRouteWithdrawBlocked | Warning | A route cannot be withdrawn during consumer or ExternalIP cleanup |
@@ -1230,9 +1367,10 @@ existing controller/AAP boundaries:
 
 Logs include resource UID, tenant attribution hash or ID permitted by the
 existing logging policy, manager name, desired generation, job ID, route prefix
-and next hop, interface identity, and operation result. NAT validation may log
-the selected address and observed source address, but not credentials or full
-secret contents.
+and next hop, interface identity, reservation state, provider operation ID, and
+operation result. NAT validation may log the selected address and observed
+source address, but not credentials or full secret contents. Provider digests
+are logged as identifiers, not as state-file contents.
 
 ### Risks and Mitigations
 
@@ -1275,6 +1413,16 @@ VirtualNetwork, persists the namespace/host addresses and consumer-owned route
 identity, applies DNAT or explicit SNAT before announcing the route, verifies
 the installed route and observed source address, and withdraws the route before
 removing translation state or releasing the ExternalIP.
+
+#### ExternalIP reservation and handshake correctness
+
+The service database, operator CR, AAP job, and provider state file can observe
+the same ExternalIP at different times. Releasing pool capacity from any one
+of those observations could oversubscribe an address or release it while a
+route is still usable. The UUID-keyed reservation, provider operation ID,
+state digest, consumer reservation, compare-and-set events, and one-time
+`RELEASED` transaction make the fulfillment-service the sole capacity owner.
+Unknown provider outcomes fail closed and require an inspect/cleanup retry.
 
 #### Backend parity
 
@@ -1421,8 +1569,11 @@ not a substitute for that testplan.
 - Verify whole-address/all-protocol DNAT, explicit `SNAT --to-source`, BGP
   announce-after-rule ordering, and route-withdraw-before-release cleanup.
 - Inject an ExternalIP state-file write failure and verify that no partial
-  `external_ips` entry is visible, retries reuse the same UID reservation, and
-  terminal failure compensates the API reservation.
+  `external_ips` entry is visible, retries reuse the same UUID reservation, and
+  terminal failure compensates capacity only after `NOT_COMMITTED`.
+- Verify provider-result annotation validation, idempotent private provider
+  events, consumer exclusivity for Attachment versus NATGateway, field-scoped
+  status updates, and exactly-once `RELEASED` capacity accounting.
 - Verify status condition reason/message mapping for AAP and controller-owned
   allocation errors.
 
@@ -1431,13 +1582,15 @@ not a substitute for that testplan.
 - Render manager ConfigMap and NetworkClass selection with Helm values.
 - Reconcile VirtualNetwork and multiple Subnets through envtest/fake AAP
   providers; verify provider-side ExternalIP allocation
-  artifacts populate status, consumers persist the transit/route state, and
-  DNAT/SNAT actions use that address.
+  annotations populate status only after a committed reservation event,
+  consumers persist the transit/route state, and DNAT/SNAT actions use that
+  address.
 - Exercise BGP `/32` announce/withdraw with a saved namespace-side next hop,
   whole-address DNAT for API/ingress cluster endpoints, and explicit-source
   SNAT without host-side MASQUERADE.
-- Exercise ExternalIP deletion during allocation and verify UID serialization,
-  provider cleanup, and delayed API capacity release.
+- Exercise ExternalIP deletion during allocation and verify UUID serialization,
+  Pending/Failed compensation, provider cleanup, consumer cleanup, and delayed
+  exactly-once API capacity release.
 - Verify tenant and owner annotations survive the service-to-CR path.
 - Exercise generic DHCP job artifact consumption for multi-NIC instances using
   distinct Subnets, and reject duplicate SubnetRefs before lease discovery.
@@ -1460,6 +1613,9 @@ not a substitute for that testplan.
 - Verify ExternalIPAttachment and Subnet/VirtualNetwork deletion order and
   non-interference with other tenants, including route withdrawal and NAT-rule
   removal before ExternalIP reuse.
+- Verify an ExternalIP cannot be acquired by both an ExternalIPAttachment and a
+  NATGateway, and that `status.attached` remains true until consumer cleanup is
+  acknowledged even when child data-plane readiness fails.
 - Keep full CaaS/VMaaS service validation in the downstream follow-up features
   named by the PRD.
 
@@ -1497,6 +1653,14 @@ when the state cannot be parsed or a required route next hop is missing. There
 is no in-place OSAC upgrade guarantee; deployment operators must retain a
 backup of the state file, network inventory, and BGP configuration.
 
+The fulfillment-service migration creates one reservation row for every
+existing ExternalIP before enabling the new create/delete path. Existing
+allocated objects start in `COMMITTED` only when their provider address can be
+verified; otherwise they start in `HELD` with `provider_state=UNKNOWN` and
+remain unavailable for release until an inspect action establishes
+`COMMITTED` or `NOT_COMMITTED`. Existing Attachment/NATGateway references are
+backfilled as consumer reservations under the ExternalIP UUID lock.
+
 To disable the backend, the provider selects another NetworkClass only after
 agentless-managed resources are drained or intentionally retained. Disabling a
 manager does not delete tenant resources or silently release its allocations.
@@ -1518,6 +1682,12 @@ The operator, fulfillment-service, installer, and AAP collections must agree on:
 - whole-address DNAT inputs and explicit-source SNAT inputs. A component that
   still sends the old single-port DNAT or MASQUERADE-only SNAT arguments must
   not report the consumer Ready.
+- ExternalIP reservation states, provider-result annotation names, private
+  provider-event values, consumer cleanup events, and the rule that only
+  fulfillment-service releases pool capacity;
+- ExternalIP status field ownership: fulfillment-service owns `attached`, while
+  the operator owns `address`, `state`, `phase`, `conditions`, and provisioning
+  fields through field-scoped conflict-safe updates.
 
 If the operator cannot discover the configured manager or the AAP role cannot
 accept the job's inputs, the resource remains non-ready with a diagnostic
@@ -1533,12 +1703,15 @@ Support personnel diagnose failures in this order:
 1. Inspect the resource's status conditions and provisioning job history.
 2. Confirm the NetworkClass points to a discovered IPv4-capable
    'agentless_net' ConfigMap.
-3. Inspect AAP job status, 'leases' artifacts, and the agentless role logs.
+3. Inspect AAP job status, 'leases' artifacts, provider-result annotations,
+   reservation events, and the agentless role logs.
 4. Check the lock-protected state file for the resource UID, VLAN,
    gateway/DHCP, namespace, transit `/30`, veth peer addresses, provider-side
    ExternalIP allocation, saved BGP `/32` prefix/next hop, and owned NAT/DNAT
    rule mapping. Compare any ExternalIP address with
-   `ExternalIP.status.address` and the AAP allocation artifact.
+   `ExternalIP.status.address`, the allocated-address annotation, provider
+   operation ID, and state digest. Confirm the fulfillment-service reservation
+   state and pool counters before diagnosing capacity.
 5. Verify Cumulus VLAN/trunk/access-port state and the net-node namespace,
    interfaces, route/BGP installation or withdrawal, exact whole-address DNAT,
    explicit `SNAT --to-source` rules, and conntrack state. Confirm that no
