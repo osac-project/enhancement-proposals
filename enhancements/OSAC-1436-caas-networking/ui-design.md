@@ -155,9 +155,8 @@ Extends `ClusterDetailPage` at `/clusters/:id`.
 - **Security Groups**: resolved names from
   `cluster.network_attachment.security_groups[]`, each linked to the SG detail
   page.
-- **API Endpoint**: `cluster.api_endpoint` when populated; "Pending" with
-  spinner when empty and cluster is provisioning; dash in terminal state.
-- **Ingress Endpoint**: same pattern, using `cluster.ingress_endpoint`.
+- **Ingress Endpoint**: `cluster.ingress_endpoint` when populated; "Pending"
+  with spinner when empty and cluster is provisioning; dash in terminal state.
 
 **Auto-provisioned resources subsection** (visible only when
 `cluster.auto_external_ip_attachment == true`):
@@ -177,17 +176,8 @@ N+1 queries.
 
 #### Cluster List Page
 
-Extends `ClustersPage` at `/clusters`.
-
-**New columns:**
-
-- **Network**: resolved Subnet name from `cluster.network_attachment.subnet`.
-  "Default" when the resolved Subnet matches the tenant's default.
-- **API Endpoint**: `cluster.api_endpoint` when populated; dash when not
-  available.
-
-Populated from the Cluster list response — no additional API calls per row.
-Ingress endpoint omitted from the list table (available on detail page).
+No changes to the cluster list page. Cluster networking details (subnet,
+security groups, endpoints) are available on the cluster detail page only.
 
 #### Cluster Deletion Confirmation
 
@@ -341,5 +331,5 @@ Add to `createMockConnectTransport.ts`:
 | `ClusterNetworkingStep` | Pickers with `allOptional={true}`, `sgRequired="when-non-default-vn"`; auto external IP toggle in payload; empty pickers omit `network_attachment`; `pod_cidr`/`service_cidr` unchanged |
 | `VmNetworkingStep` | Existing tests pass after refactor to shared component |
 | `ClusterDetailPage` | "Pending" endpoints; auto-provisioned section conditional on `auto_external_ip_attachment`; statuses rendered |
-| `ClustersPage` | Network column: Subnet name or "Default"; API Endpoint column: value or dash |
+| `ClustersPage` | No new columns added; networking details on detail page only |
 | `AutoProvisionedBadge` | Tooltip; delete disabled when parent exists; delete enabled when orphaned |
