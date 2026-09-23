@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-3612 — Key Management Service: Key Lifecycle Management
-- **Total test cases:** 30
+- **Total test cases:** 32
 - **Requirements covered:** 9 of 9 derived PRD requirement anchors
 - **Interface changes covered:** 9 of 9
 
@@ -21,18 +21,18 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- OpenBao Transit is ready and the caller is a Tenant Admin in tenant `tenant-a`.
+- HashiCorp Vault Transit and the key-scoped consumer policy are ready, and the caller is a Tenant Admin in tenant `tenant-a`.
 
 ##### Steps
 
-1. Create a ManagedKey named `data-key` without specifying ownership.
-2. Poll Get until the key leaves `PROVISIONING`.
+1. Create a ManagedKey named `data-key` with request ID `create-data-key-1` and without specifying `metadata.tenant`.
+2. Get the returned key.
 3. List ManagedKeys in `tenant-a`.
 
 ##### Expected Results
 
-- Create returns a stable ManagedKey ID, ownership `TENANT`, desired state `ACTIVE`, and no key material.
-- Get reaches state `ACTIVE` with active version `1`.
+- Create returns only after Vault creation is confirmed, with a stable ManagedKey ID, `metadata.tenant=tenant-a`, purpose `ENCRYPT_DECRYPT`, active version `1`, no lifecycle timestamps or pending operation, and no key material.
+- Get reads Vault and reports the same confirmed version.
 - List contains `data-key` only in `tenant-a`.
 
 #### TC-FR1-02: Cloud Provider Admin creates a provider-owned key
@@ -43,18 +43,21 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- OpenBao Transit is ready and the caller has existing Cloud Provider Admin access.
+- HashiCorp Vault Transit is ready and the caller has existing Cloud Provider Admin access.
 
 ##### Steps
 
-1. Create a ManagedKey with ownership `PROVIDER`.
-2. Poll Get until reconciliation reaches a terminal state.
-3. Read the private persisted object as the controller service.
+1. Create a ManagedKey with `metadata.tenant=system` and a request ID.
+2. Read the private persisted object as the service identity.
+3. Attempt creation with `metadata.tenant=shared` and with no tenant specified.
+4. As a Tenant Admin, attempt creation with `metadata.tenant=system`.
 
 ##### Expected Results
 
-- The public resource reaches state `ACTIVE` with active version `1`.
-- The persisted key is attributed to the reserved `system` tenant.
+- Create returns a public resource with active version `1` and no lifecycle timestamps or pending operation.
+- The public and persisted key are attributed to the reserved `system` tenant, with no separate ownership field.
+- The `shared` and unspecified-tenant requests are rejected without creating a key.
+- The Tenant Admin request for `system` returns `PermissionDenied`.
 - Public responses contain neither provider coordinates nor key bytes.
 
 #### TC-FR1-03: CLI creates, lists, and describes a key
@@ -71,17 +74,17 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 1. Run `osac create key --name cli-key`.
 2. Run `osac list keys`.
-3. Run `osac describe key cli-key` after reconciliation.
+3. Run `osac describe key cli-key`.
 
 ##### Expected Results
 
-- Create prints the key ID and its accepted lifecycle state.
+- Create prints the key ID and active version `1` after confirmation.
 - List includes `cli-key`.
-- Describe prints tenant ownership, `ACTIVE`, active version `1`, capabilities, and conditions without backend paths or key material.
+- Describe prints the owning tenant, `ENCRYPT_DECRYPT` purpose, derived active lifecycle, and active version `1` without backend paths or key material.
 
-### FR-2: Expose lifecycle state, active version, retained versions, and meaningful interim states
+### FR-2: Expose confirmed lifecycle facts, active and retained versions, and meaningful interim status
 
-#### TC-FR2-01: API reports interim and final provisioning state
+#### TC-FR2-01: API reports an uncertain create outcome and explicit verification
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -89,18 +92,18 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- The Transit test provider can pause key creation after desired state is persisted.
+- The Transit test provider can apply key creation and then withhold its response until the client request times out.
 
 ##### Steps
 
-1. Create a ManagedKey while the provider is paused.
-2. Get the key before releasing the provider.
-3. Release the provider and get the key after reconciliation.
+1. Create a ManagedKey with request ID `create-timeout-1` and time out after Vault applies the effect.
+2. List the tenant's keys by name before any retry.
+3. Retry Create with `create-timeout-1` after the provider is available.
 
 ##### Expected Results
 
-- The first Get reports `PROVISIONING`, a pending/applying operation, and a Progressing condition.
-- The final Get reports `ACTIVE`, active version `1`, version `1` marked active, and a Ready condition.
+- List contains no unconfirmed key after the timeout; the internal request reservation retains the request ID.
+- The retry observes the existing Vault key and policy, returns a key with active version `1` and no pending operation, and creates no second key.
 
 #### TC-FR2-02: Resource events carry backend-neutral lifecycle status
 
@@ -115,14 +118,34 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 ##### Steps
 
 1. Create and rotate a ManagedKey.
-2. Collect ManagedKey events until rotation reaches `ACTIVE`.
+2. Collect ManagedKey events through the successful Rotate response.
 3. Inspect every public event payload.
 
 ##### Expected Results
 
-- Events include the progressing and resulting lifecycle states.
-- The final payload reports active version `2` and version `1` as retained.
+- Events show `pending_operation.type=ROTATE` while the provider call is in progress and no pending operation after confirmation.
+- The final payload reports active version `2`; version `1` is retained by being listed below the active generation.
 - No event includes a Transit mount, backend object ID, credential, or key material.
+
+#### TC-FR2-03: Get checks Vault while List remains a last-confirmed snapshot
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | critical | automated |
+
+##### Preconditions
+
+- An active key is confirmed at version `1`, and the test can interrupt Vault and remove its key out of band.
+
+##### Steps
+
+1. Make Vault unavailable; call List and Get.
+2. Restore Vault, remove the Transit key without an OSAC Destroy request, and call Get again.
+
+##### Expected Results
+
+- List still shows the last-confirmed key metadata; Get returns `Unavailable` rather than treating the snapshot as a live provider check.
+- The later Get returns a normalized `BackendDrift` error; `destroyed_at` remains absent and OSAC does not label the out-of-band deletion as an authorized destruction.
 
 ### FR-3: Rotate a logical key while preserving its identity and retained material versions
 
@@ -138,15 +161,15 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Steps
 
-1. Update `spec.rotation_trigger` with request ID `rotation-1`.
-2. Poll until the operation reaches a terminal state.
+1. Call Rotate with request ID `rotation-1` and the current metadata version.
+2. Inspect the successful response.
 3. Read the key and its private association.
 
 ##### Expected Results
 
 - The ManagedKey ID and association key reference are unchanged.
-- State returns to `ACTIVE`, active version is `2`, version `1` is retained, and version `2` is active.
-- `status.observed_rotation_trigger` equals `rotation-1`.
+- Active version is `2`, versions `1` and `2` remain listed, and no revocation or destruction timestamp is set.
+- The successful response has no pending operation or completed-operation history.
 
 #### TC-FR3-02: Reusing a rotation request ID is idempotent
 
@@ -160,14 +183,13 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Steps
 
-1. Submit an Update containing the same rotation trigger and current metadata version.
-2. Reconcile the key twice.
-3. Read Transit and ManagedKey status.
+1. Call Rotate again with request ID `rotation-1`.
+2. Read Transit and the ManagedKey.
 
 ##### Expected Results
 
 - Transit latest version remains `2`.
-- ManagedKey active version remains `2` and no new operation is created.
+- ManagedKey active version remains `2`; no new rotation is sent to Vault and no pending operation appears.
 
 #### TC-FR3-03: Ambiguous rotation timeout is resolved by observation
 
@@ -177,19 +199,19 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- The provider test double applies rotation and then returns a timeout before the controller receives a response.
+- The provider test double applies rotation and then returns a timeout before the API handler receives a response.
 
 ##### Steps
 
-1. Request rotation from version `1`.
-2. Allow the controller to retry reconciliation.
-3. Read the final ManagedKey and provider state.
+1. Call Rotate from version `1` with request ID `rotation-timeout-1`.
+2. Confirm the API returns a timeout and Get shows `pending_operation.type=ROTATE` with last confirmed version `1`.
+3. Retry Rotate with `rotation-timeout-1`; read the final ManagedKey and provider state.
 
 ##### Expected Results
 
-- The controller observes provider version `2` and records the operation as succeeded.
+- The retry observes provider version `2`, advances the confirmed active version, and clears the pending marker.
 - Provider version `3` is not created.
-- The public status never reports `DESTROYED` or an unknown active version.
+- The public object never sets `destroyed_at` or reports an unconfirmed active version.
 
 #### TC-FR3-04: CLI rotation exposes request identity and completion
 
@@ -203,17 +225,38 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Steps
 
-1. Run `osac rotate key cli-key --request-id cli-rotation-1 --wait`.
+1. Run `osac rotate key cli-key --request-id cli-rotation-1`.
 2. Run `osac describe key cli-key`.
 
 ##### Expected Results
 
-- The command prints `cli-rotation-1` and exits zero only after the operation reaches `SUCCEEDED`.
+- The command prints `cli-rotation-1` and exits zero only after the new active version is confirmed and persisted.
 - Describe reports active version `2` and retained version `1`.
+
+#### TC-FR3-05: A timed-out rotation still in flight is not repeated
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | critical | automated |
+
+##### Preconditions
+
+- The Transit test provider can hold the first Rotate POST in flight while reads still report version `1`.
+
+##### Steps
+
+1. Call Rotate with request ID `rotation-inflight-1` and let the client time out while the first POST is held.
+2. Retry Rotate with the same request ID before releasing the first POST.
+3. Let the first POST complete, then retry with the same request ID again.
+
+##### Expected Results
+
+- The first retry returns a verification-required error and issues no second Rotate POST; Get reports a pending rotation with last confirmed version `1`.
+- The final retry confirms version `2`, clears the pending marker, and never creates version `3`.
 
 ### FR-4: Revoke all versions, block normal use and new associations, and permit explicit authorized recovery
 
-#### TC-FR4-01: Revocation blocks all Transit cryptographic use and new associations
+#### TC-FR4-01: Revocation blocks existing Vault consumer tokens and new associations
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -221,19 +264,20 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- A key has two material versions and is active.
+- A key has two material versions and is active; a consumer token issued before revocation has only that key's policy.
 
 ##### Steps
 
-1. Update desired state to `REVOKED` and wait for observed state `REVOKED`.
-2. Attempt Transit encrypt and decrypt operations through the test integration.
+1. Call Revoke with a request ID and wait for the synchronous response.
+2. Use the pre-existing consumer token to attempt Vault Transit encrypt and decrypt against both retained versions.
 3. Attempt to create a new ManagedKeyAssociation.
 
 ##### Expected Results
 
-- OpenBao rejects encryption and decryption for the softly deleted key across retained versions.
+- Vault rejects encryption and decryption under the updated key-specific ACL; the Transit key and both material versions still exist.
+- A new normal consumer credential cannot bypass the denied policy, and an unrelated key remains usable.
 - Association creation returns `FailedPrecondition` with reason `KeyNotActive`.
-- ManagedKey status remains `REVOKED` and retains both version metadata records.
+- `revoked_at` is set only after denial is verified, `destroyed_at` is absent, and both version metadata records remain.
 
 #### TC-FR4-02: Authorized recovery restores normal key use
 
@@ -243,18 +287,18 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- A tenant-owned key is `REVOKED` and the caller is its Tenant Admin.
+- A tenant-owned key has `revoked_at` set, the caller is its Tenant Admin, and the provider fixture can pause recovery after the pending marker commits.
 
 ##### Steps
 
-1. Update desired state from `REVOKED` to `ACTIVE`.
-2. Wait for reconciliation.
-3. Perform a Transit encrypt/decrypt round trip through the integration fixture.
+1. Start Recover with a request ID and pause the provider effect.
+2. Get the key, then release the provider call and wait for the synchronous response.
+3. Perform a Vault Transit encrypt/decrypt round trip using a consumer token that existed before revocation.
 
 ##### Expected Results
 
-- The key passes through `RECOVERING` and reaches `ACTIVE` without changing its ID or active version.
-- The round trip returns the original plaintext to the fixture.
+- While Recover is in flight, `pending_operation.type=RECOVER` is visible; success clears both `pending_operation` and `revoked_at` without changing the ID or active version.
+- The restored key-specific policy permits the round trip and returns the original plaintext to the fixture.
 - Existing version metadata remains present.
 
 #### TC-FR4-03: CLI revoke and recover show interim and terminal outcomes
@@ -269,14 +313,14 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Steps
 
-1. Run `osac revoke key cli-key --wait`.
-2. Run `osac recover key cli-key --wait`.
+1. Run `osac revoke key cli-key`.
+2. Run `osac recover key cli-key`.
 
 ##### Expected Results
 
-- Revoke exits zero with terminal state `REVOKED`.
-- Recover exits zero with terminal state `ACTIVE`.
-- Both commands print the operation ID and resulting state.
+- Revoke exits zero only with a confirmed `revoked_at` timestamp.
+- Recover exits zero only after `revoked_at` is cleared.
+- Both commands print the request ID and the lifecycle derived from the confirmed timestamp.
 
 ### FR-5: Maintain consumer-neutral associations and reject destruction while a consumer remains attached
 
@@ -333,13 +377,13 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Steps
 
-1. Update desired state to `DESTROYED`.
+1. Call Destroy with a request ID.
 2. Read the ManagedKey and Transit key.
 
 ##### Expected Results
 
-- Update returns `FailedPrecondition` with reason `KeyInUse` and no consumer identity.
-- Desired and observed state remain `ACTIVE`.
+- Destroy returns `FailedPrecondition` with reason `KeyInUse` and no consumer identity.
+- `destroyed_at` remains absent and no pending destruction or internal destruction record is created.
 - Transit key material remains present.
 
 #### TC-FR5-04: Association creation and destruction admission are race-safe
@@ -354,9 +398,9 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Steps
 
-1. Concurrently submit association creation and desired state `DESTROYED`.
+1. Concurrently submit association creation and a Destroy request.
 2. Allow both transactions to finish.
-3. Inspect key state and association rows.
+3. Inspect the pending/destroyed markers and association rows.
 
 ##### Expected Results
 
@@ -372,17 +416,18 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- A key has no associations and is active or revoked.
+- A key has no associations and is active or revoked; the provider fixture can pause destruction after the pending marker commits.
 
 ##### Steps
 
-1. Run `osac destroy key <key> --wait`.
-2. Verify the provider key is absent.
-3. Call ManagedKeys Delete for the destroyed key.
+1. Start `osac destroy key <key>` and pause the provider deletion.
+2. Get the key, then release the provider call and wait for the CLI result.
+3. Verify the provider key is absent.
+4. Call ManagedKeys Delete for the destroyed key.
 
 ##### Expected Results
 
-- The key passes through `DESTROYING` and reaches `DESTROYED` only after Transit returns not found.
+- The key exposes `pending_operation.type=DESTROY` while deletion is unresolved and sets `destroyed_at` only after Transit returns not found under the committed destroy intent.
 - Delete then removes the OSAC metadata.
 - Calling Delete before provider-confirmed destruction returns `FailedPrecondition`.
 
@@ -396,17 +441,17 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- Tenant-owned keys exist in `tenant-a` and `tenant-b`; caller administers only `tenant-a`.
+- Tenant-owned keys exist in `tenant-a` and `tenant-b`, and a provider-owned key exists in `system`; caller administers only `tenant-a`.
 
 ##### Steps
 
 1. List ManagedKeys.
-2. Get and update the `tenant-b` key by ID.
+2. Get and update the `tenant-b` key by ID, then Get the `system` key by ID.
 
 ##### Expected Results
 
 - List contains only `tenant-a` keys.
-- Get and Update for the `tenant-b` key return `NotFound` without disclosing its existence.
+- Get and Update for the `tenant-b` key and Get for the `system` key return `NotFound` without disclosing their existence.
 
 #### TC-FR6-02: Tenant User has no direct key-management authority
 
@@ -446,7 +491,7 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 ##### Expected Results
 
 - The administrator can access all three keys under existing universal tenancy behavior.
-- Provider-owned and tenant-owned ownership values remain unchanged.
+- Each key's `metadata.tenant` remains unchanged, including `system` for the provider-owned key.
 
 #### TC-FR6-04: Cloud Infrastructure Admin can read only backend health
 
@@ -462,17 +507,17 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 1. List and get KMSBackend status.
 2. Invoke every ManagedKeys method.
-3. Invoke KMSBackends Create, Update, and Delete.
+3. Inspect the available KMSBackends methods and CLI commands.
 
 ##### Expected Results
 
 - KMSBackends Get and List return normalized health data.
 - ManagedKeys requests return `PermissionDenied`.
-- Backend mutations return `PermissionDenied` for this role.
+- KMSBackends exposes only Get and List methods, and the CLI offers no backend mutation command.
 
 ### FR-7: Let Cloud Provider Admins configure transparent platform backends and policies without tenant selection
 
-#### TC-FR7-01: Valid OpenBao Transit configuration becomes ready
+#### TC-FR7-01: Valid HashiCorp Vault Transit configuration becomes ready
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -480,17 +525,17 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- Helm values define an `openbao-transit` backend, tenant/provider default policies, and valid Vault connection data.
+- Helm values define a `vault-transit` backend, tenant/provider default policies, Vault Enterprise or HCP Vault Dedicated namespaces, and a key-scoped consumer credential path.
 
 ##### Steps
 
-1. Deploy the service and controller with the configuration.
+1. Deploy the service with the configuration.
 2. Wait for backend conformance checks.
 3. Create one tenant-owned and one provider-owned key.
 
 ##### Expected Results
 
-- Backend state becomes `READY` and reports rotate, revoke, recover, and destroy capabilities.
+- Backend state becomes `READY` only after the required rotation, revocation, recovery, and destruction checks pass; its public response does not include a capability matrix.
 - Each key privately records the configured immutable backend and corresponding default policy.
 - Tenant-facing requests contain no backend or policy selector.
 
@@ -502,11 +547,11 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- Configuration points to a reachable Transit implementation without required soft-delete/restore behavior or with an inaccessible mount.
+- Configuration points to Vault Transit with an inaccessible mount, missing tenant namespace support, or consumer credentials that bypass the key-specific policy.
 
 ##### Steps
 
-1. Start the KMS controller.
+1. Start the Fulfillment Service.
 2. Read KMSBackend status.
 3. Attempt to create a ManagedKey.
 
@@ -550,13 +595,13 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Steps
 
-1. Get backend status while OpenBao is ready.
-2. Seal or stop OpenBao and wait for the next probe.
+1. Get backend status while HashiCorp Vault is ready.
+2. Seal or stop Vault and wait for the next probe.
 3. Get backend status again.
 
 ##### Expected Results
 
-- The first response reports `READY`, required capabilities, and a last-check timestamp.
+- The first response reports `READY` and a last-check timestamp.
 - The second reports `UNAVAILABLE`, a later timestamp, and a redacted normalized reason.
 - Neither response contains tokens, certificates, tenant key counts, or tenant key identities.
 
@@ -578,7 +623,7 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Expected Results
 
-- List and describe show `UNAVAILABLE`, last check time, capabilities, and normalized reason.
+- List and describe show `UNAVAILABLE`, last check time, and a normalized reason.
 - Output contains no key inventory or credentials.
 - Lifecycle commands invoked by this identity return `PermissionDenied`.
 
@@ -596,16 +641,15 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Steps
 
-1. Request rotation.
-2. Wait for the operation to reach a terminal state.
-3. Get the ManagedKey.
+1. Call Rotate with a request ID.
+2. Get the ManagedKey after the synchronous RPC fails.
 
 ##### Expected Results
 
-- State is `FAILED`, active version remains `1`, and current operation is `FAILED_TERMINAL`.
-- The Failed condition reason is `ProviderPolicyConflict` and its message identifies the corrective configuration category without raw provider data.
+- Rotate returns a gRPC error with reason `ProviderPolicyConflict` and a redacted message identifying the corrective configuration category.
+- Get still reports active version `1`, no revocation or destruction timestamp, and no pending operation because the provider confirmed no effect.
 
-#### TC-FR9-02: Controller restart resumes an in-progress operation
+#### TC-FR9-02: Service restart requires explicit same-ID retry after Vault succeeds
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -613,17 +657,18 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- A rotation desired state is persisted and provider execution is paused.
+- A Rotate request ID and pre-operation version are committed before the provider call.
 
 ##### Steps
 
-1. Stop the controller after the operation enters `APPLYING`.
-2. Allow the provider effect to occur.
-3. Restart the controller and wait for periodic reconciliation.
+1. Apply the Vault rotation, then stop the API process before the final database commit.
+2. Restart the service and Get the key before any retry.
+3. Retry Rotate with the original request ID.
 
 ##### Expected Results
 
-- The restarted controller observes the existing provider effect and records `SUCCEEDED`.
+- The Get response shows `pending_operation.type=ROTATE` and last confirmed version `1`; no background process silently finalizes it.
+- The same-ID retry observes the existing Vault effect, advances the active version to `2`, and clears the pending marker.
 - Exactly one new material generation exists.
 - The key does not remain indefinitely in an unqualified unknown state.
 
@@ -635,19 +680,19 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 
 ##### Preconditions
 
-- A deployed Fulfillment Service, PostgreSQL, Keycloak, and OpenBao 2.6+ Transit backend are available.
+- A deployed Fulfillment Service, PostgreSQL, Keycloak, and supported HashiCorp Vault Transit backend are available.
 
 ##### Steps
 
 1. As Tenant Admin, create and view a key.
 2. As an authorized service, add then remove an association.
-3. Rotate, revoke, recover, and destroy the key through public declarative updates.
+3. Rotate, revoke, recover, and destroy the key through public lifecycle RPCs.
 4. Delete destroyed metadata.
 
 ##### Expected Results
 
-- Each operation exposes its interim and terminal state through the public API.
-- Rotation retains the old generation, revocation blocks Transit use, recovery restores it, and destruction removes the provider key only after association removal.
+- Each successful lifecycle RPC returns confirmed version/timestamp fields; timeouts retain a pending marker and the same request ID for explicit verification and retry.
+- Rotation retains the old generation, revocation denies normal Vault Transit use through existing consumer tokens, recovery restores it, and destruction removes the provider key only after association removal.
 - Cross-tenant and unauthorized access remain denied throughout the journey.
 
 #### TC-FR9-04: CLI end-to-end lifecycle journey
@@ -663,13 +708,13 @@ The PRD has no FR/NFR identifiers. The FR-1 through FR-9 headings below are the 
 ##### Steps
 
 1. Create and describe a key.
-2. Rotate, revoke, and recover with `--wait`.
-3. Destroy the unassociated key with `--wait`.
+2. Rotate, revoke, and recover through synchronous CLI commands.
+3. Destroy the unassociated key.
 
 ##### Expected Results
 
-- Every command exits zero only on its specified terminal state and prints the operation/request identity.
-- Describe output reflects active version `2` after rotation, `REVOKED` after revoke, `ACTIVE` after recovery, and `DESTROYED` after destruction.
+- Every command exits zero only after its requested effect is confirmed and persisted, and prints the request ID.
+- Describe output reflects active version `2` after rotation, `revoked_at` after revoke, cleared `revoked_at` after recovery, and `destroyed_at` after destruction.
 - Any server rejection is printed with its gRPC reason and actionable message.
 
 ## Gaps
@@ -686,12 +731,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 30 |
-| Critical | 21 |
+| Total test cases | 32 |
+| Critical | 23 |
 | High | 9 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 30 |
+| Automated | 32 |
 | Manual | 0 |
 | Requirements with test cases | 9 / 9 |
 | Interface changes with test cases | 9 / 9 |
