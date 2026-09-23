@@ -80,14 +80,13 @@ fields. All new fields are optional — when omitted, the fulfillment-service
 applies the tenant's default Subnet and SecurityGroup
 ([Default Networking PRD](/enhancements/OSAC-1433-default-networking/prd.md)).
 
-**Layout** (top to bottom):
+The step is split into two visually distinct sections using
+`FormSection` headings within the same wizard step form:
 
-1. **NetworkAttachmentPickers** (shared component)
-2. **Auto External IP Attachment** toggle (cluster-specific)
-3. **Pod CIDR** and **Service CIDR** text inputs (existing, unchanged)
+**Infrastructure Networking** (section heading):
 
-**NetworkAttachmentPickers** renders three cascading pickers bound to the
-cluster adapter's Formik paths:
+`NetworkAttachmentPickers` (shared component) renders three cascading pickers
+bound to the cluster adapter's Formik paths:
 
 - **Virtual Network** (`SelectField`): loads from `useVirtualNetworks()`,
   displays Name and IPv4 CIDR. Optional — when left empty, tenant defaults are
@@ -110,12 +109,18 @@ cluster adapter's Formik paths:
   and caching its VN reference. The shared component receives this as
   `defaultVnName` and uses it when `sgRequired` is `"when-non-default-vn"`.
 
-**Auto External IP Attachment** (`SwitchField`): toggle below the pickers.
-Default: off. When enabled, the fulfillment-service auto-provisions ExternalIPs
-and ExternalIPAttachments for both API server and ingress endpoints
-([design.md](/enhancements/OSAC-1436-caas-networking/design.md)).
-Helper text: "Automatically provision external IPs for the cluster API and
-ingress endpoints."
+- **Auto External IP Attachment** (`SwitchField`): toggle below the pickers.
+  Default: off. When enabled, the fulfillment-service auto-provisions
+  ExternalIPs and ExternalIPAttachments for both API server and ingress
+  endpoints
+  ([design.md](/enhancements/OSAC-1436-caas-networking/design.md)).
+  Helper text: "Automatically provision external IPs for the cluster API and
+  ingress endpoints."
+
+**Cluster Networking** (section heading):
+
+- **Pod CIDR** (`InputField`): existing field, unchanged.
+- **Service CIDR** (`InputField`): existing field, unchanged.
 
 **Payload assembly** (`buildClusterCreatePayload`):
 
@@ -140,10 +145,14 @@ security_groups }` (singular). Each adapter's `buildCreatePayload` reads the
 same Formik values from the shared pickers.
 
 **Review step** additions (via `adapter.getReviewSections()`):
-- **Virtual Network**: selected VN name, or "Default" when omitted
-- **Subnet**: selected Subnet name, or "Default" when omitted
-- **Security Groups**: comma-separated SG names, or "Default" when omitted
-- **Auto External IP**: "Enabled" or omitted when disabled
+- **Infrastructure Networking**:
+  - **Virtual Network**: selected VN name, or "Default" when omitted
+  - **Subnet**: selected Subnet name, or "Default" when omitted
+  - **Security Groups**: comma-separated SG names, or "Default" when omitted
+  - **Auto External IP**: "Enabled" or omitted when disabled
+- **Cluster Networking**:
+  - **Pod CIDR**: entered value, or omitted when empty
+  - **Service CIDR**: entered value, or omitted when empty
 
 #### Cluster Detail Page
 
@@ -309,18 +318,22 @@ in `buildCreatePayload`, additional fields.
 ```
 Existing `VmNetworkingStep.test.tsx` tests validate the refactor.
 
-**Cluster adapter** renders:
+**Cluster adapter** renders two `FormSection`s within the step:
 ```tsx
-<NetworkAttachmentPickers
-  fieldPrefix="spec.network_attachment"
-  sgRequired="when-non-default-vn"
-  defaultVnName={defaultSubnet?.virtualNetworkName}
-  allOptional={true}
-  showCidr={true}
-/>
-<AutoExternalIpToggle />
-<PodCidrInput />
-<ServiceCidrInput />
+<FormSection title="Infrastructure Networking">
+  <NetworkAttachmentPickers
+    fieldPrefix="spec.network_attachment"
+    sgRequired="when-non-default-vn"
+    defaultVnName={defaultSubnet?.virtualNetworkName}
+    allOptional={true}
+    showCidr={true}
+  />
+  <AutoExternalIpToggle />
+</FormSection>
+<FormSection title="Cluster Networking">
+  <PodCidrInput />
+  <ServiceCidrInput />
+</FormSection>
 ```
 
 ### Hooks
@@ -416,7 +429,7 @@ Add to `createMockConnectTransport.ts`:
 
 | Suite | Coverage |
 |-------|----------|
-| `ClusterNetworkingStep` | Pickers with `allOptional={true}`, `sgRequired="when-non-default-vn"`; auto external IP toggle in payload; empty pickers omit `network_attachment`; `pod_cidr`/`service_cidr` unchanged |
+| `ClusterNetworkingStep` | Two FormSections rendered ("Infrastructure Networking", "Cluster Networking"); pickers with `allOptional={true}`, `sgRequired="when-non-default-vn"`; auto external IP toggle in Infrastructure section; `pod_cidr`/`service_cidr` in Cluster section; empty pickers omit `network_attachment` |
 | `VmNetworkingStep` | Existing tests pass after refactor to shared component |
 | `ClusterDetailPage` | "Pending" endpoints; auto-provisioned section conditional on `auto_external_ip_attachment`; statuses rendered |
 | `ExternalIpManagementSection` | Attach button shown when no attachment; Detach shown when attached; endpoint details rendered; empty state for no unattached IPs |
