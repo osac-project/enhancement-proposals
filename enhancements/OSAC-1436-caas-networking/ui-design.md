@@ -21,9 +21,10 @@ superseded-by:
 
 Extends the accepted backend design in [design.md](design.md) with the
 `osac-ui` work for OSAC-1436: tenant-controlled cluster networking via the
-cluster provisioning wizard's Networking step, cluster detail page endpoint and
-networking display, auto-provisioned resource indicators in existing networking
-list pages, and cluster deletion confirmation for auto-provisioned cleanup.
+cluster provisioning wizard's Networking step, cluster detail page endpoint
+display and per-endpoint External IP attach/detach management,
+auto-provisioned resource indicators in existing networking list pages, and
+cluster deletion confirmation for auto-provisioned cleanup.
 
 The cluster provisioning wizard
 ([OSAC-1421](/enhancements/OSAC-1421-cluster-and-vm-provisioning-wizard/design.md))
@@ -174,6 +175,46 @@ Fetching: one `ExternalIPs.List` call filtered by label (≤2 results) + one
 `ExternalIPAttachments.List` call filtered by target reference (≤2 results). No
 N+1 queries.
 
+**External IP Management subsection** (per-endpoint attach/detach):
+
+Provides post-creation per-endpoint External IP management following the
+VM/NAT Gateway attach/detach pattern from
+[OSAC-1433](/enhancements/OSAC-1433-unified-networking/ui-design.md). Each
+endpoint row (API, Ingress) shows its current attachment state and offers a
+state-dependent action:
+
+- **API Endpoint** row:
+  - **No ExternalIP attached:** displays "Not attached" with an **Attach
+    External IP** action button. Opens a modal to select from unattached,
+    allocated ExternalIPs (`useExternalIPs({ filter:
+    'this.status.state == EXTERNAL_IP_STATE_ALLOCATED &&
+    this.status.attached == false' })` — same ownership filter as OSAC-1433
+    NAT Gateway attach). On confirm, calls `useCreateExternalIPAttachment()`
+    with `target_endpoint: API` and `target_resource` referencing the cluster.
+  - **ExternalIP attached:** displays the ExternalIP name, allocated address,
+    and status (`ExternalIpStatusLabel`). Shows a **Detach** action button.
+    On confirm (confirmation modal), calls `useDeleteExternalIPAttachment()`
+    to delete the ExternalIPAttachment. The ExternalIP itself is not deleted —
+    it returns to the unattached pool.
+
+- **Ingress Endpoint** row: same pattern as API, with
+  `target_endpoint: INGRESS`.
+
+Changing an endpoint's ExternalIP is Detach (delete ExternalIPAttachment)
+followed by Attach (create new ExternalIPAttachment) with a different
+ExternalIP — not an in-place edit, matching the unified create/read/delete
+contract.
+
+Manually attached ExternalIPAttachments are **not** auto-cleaned on cluster
+delete — only auto-provisioned ones (created via
+`auto_external_ip_attachment`) are cleaned up by the backend finalizer. The
+deletion confirmation dialog mentions this distinction when both auto and
+manual attachments exist.
+
+Fetching: `ExternalIPAttachments.List` filtered by target cluster reference
+(≤2 results, one per endpoint). Shares the query cache with the
+auto-provisioned resources subsection above.
+
 #### Cluster List Page
 
 No changes to the cluster list page. Cluster networking details (subnet,
@@ -220,6 +261,10 @@ Extends the **External IP** list page (`ExternalIpsListPage`) and the
 | Cluster create: BareMetalInstanceType missing fabric port | Server's `INVALID_ARGUMENT` shown as form-level error on Review step. |
 | Cluster delete: auto-provisioned cleanup failure | Backend retries via finalizer. If permanently orphaned, resources appear in list pages with Delete enabled. |
 | Cluster detail: endpoints not yet available | "Pending" with spinner; auto-refreshes via query invalidation. |
+| Cluster detail: attach ExternalIP already consumed | Server's `FAILED_PRECONDITION` shown as form-level error in the attach modal. Modal stays open for retry with a different ExternalIP. |
+| Cluster detail: attach ExternalIP to endpoint that already has one | Client-side guard: Attach button hidden when endpoint already has an ExternalIPAttachment. |
+| Cluster detail: detach ExternalIPAttachment fails | Server error shown in the confirmation modal; Detach action stays available for retry. |
+| Cluster detail: no unattached ExternalIPs available | Attach modal shows empty state: "No unattached External IPs available. Create one in Networking → External IPs." |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
 
 ## Implementation Details
@@ -288,6 +333,21 @@ Existing `VmNetworkingStep.test.tsx` tests validate the refactor.
 `is_default == true`, cached on mount. Provides `defaultVnName` to
 `NetworkAttachmentPickers`.
 
+**New:** `useClusterEndpointAttachments(clusterId)` —
+`ExternalIPAttachments.List` filtered by target cluster reference (≤2
+results). Returns `{ api: ExternalIPAttachment | null, ingress:
+ExternalIPAttachment | null }`. Used by both the auto-provisioned resources
+subsection and the External IP Management subsection. Query key includes
+cluster ID for cache isolation.
+
+**New:** `useCreateExternalIPAttachment()` — mutation hook wrapping
+`ExternalIPAttachments.Create`. Invalidates `useClusterEndpointAttachments`
+and `useExternalIPs` query caches on success.
+
+**New:** `useDeleteExternalIPAttachment()` — mutation hook wrapping
+`ExternalIPAttachments.Delete`. Invalidates `useClusterEndpointAttachments`
+and `useExternalIPs` query caches on success.
+
 **Extended:** `useCluster()` response type adds `network_attachment`,
 `auto_external_ip_attachment`, `api_endpoint`, `ingress_endpoint`.
 `buildClusterCreatePayload` includes `network_attachment` (omitted when empty)
@@ -300,6 +360,31 @@ and `auto_external_ip_attachment` (included only when `true`).
 - `AutoProvisionedBadge` — PatternFly `Label` (compact, blue) with tooltip.
   Accepts `clusterName` prop.
 
+### External IP Management Components
+
+```text
+apps/osac-ui/src/pages/clusters/detail/
+  ExternalIpManagementSection.tsx
+  ExternalIpManagementSection.test.tsx
+  AttachExternalIpModal.tsx
+  AttachExternalIpModal.test.tsx
+```
+
+- `ExternalIpManagementSection` — renders one row per endpoint (API, Ingress).
+  Each row shows the current ExternalIPAttachment state and the
+  state-dependent action (Attach / Detach). Consumes
+  `useClusterEndpointAttachments(clusterId)` and `useExternalIPs({ filter })`
+  for the attached ExternalIP details.
+
+- `AttachExternalIpModal` — modal dialog for selecting an unattached
+  ExternalIP. Renders a `SelectField` loaded from `useExternalIPs({ filter:
+  'this.status.state == EXTERNAL_IP_STATE_ALLOCATED &&
+  this.status.attached == false' })`. Displays Name and allocated address per
+  option. On confirm, calls `useCreateExternalIPAttachment()` with the
+  selected ExternalIP, `target_endpoint` (API or INGRESS), and the cluster
+  target reference. Shows empty state when no unattached ExternalIPs exist.
+  Follows the same modal pattern as OSAC-1433 NAT Gateway attach modal.
+
 ### Test Fixtures
 
 Add to `createMockConnectTransport.ts`:
@@ -307,6 +392,9 @@ Add to `createMockConnectTransport.ts`:
   `auto_external_ip_attachment`, with populated and empty endpoints.
 - `auto-created` labeled ExternalIP and ExternalIPAttachment fixtures.
 - Default Subnet fixture (`is_default == true`).
+- Unattached allocated ExternalIP fixtures for attach modal tests.
+- ExternalIPAttachment fixtures with `target_endpoint: API` and
+  `target_endpoint: INGRESS` for per-endpoint management tests.
 
 ### Component Tests
 
@@ -331,5 +419,7 @@ Add to `createMockConnectTransport.ts`:
 | `ClusterNetworkingStep` | Pickers with `allOptional={true}`, `sgRequired="when-non-default-vn"`; auto external IP toggle in payload; empty pickers omit `network_attachment`; `pod_cidr`/`service_cidr` unchanged |
 | `VmNetworkingStep` | Existing tests pass after refactor to shared component |
 | `ClusterDetailPage` | "Pending" endpoints; auto-provisioned section conditional on `auto_external_ip_attachment`; statuses rendered |
+| `ExternalIpManagementSection` | Attach button shown when no attachment; Detach shown when attached; endpoint details rendered; empty state for no unattached IPs |
+| `AttachExternalIpModal` | Unattached ExternalIPs listed; confirm creates ExternalIPAttachment with correct `target_endpoint`; server error displayed in modal; empty state message |
 | `ClustersPage` | No new columns added; networking details on detail page only |
 | `AutoProvisionedBadge` | Tooltip; delete disabled when parent exists; delete enabled when orphaned |
