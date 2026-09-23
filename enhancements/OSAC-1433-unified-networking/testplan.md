@@ -454,6 +454,44 @@ Use a valid Ready dependency graph and vary only the manager registrations:
   rejection-and-retry flow for VN/Subnet, workload/ACL, ExternalIP/attachment,
   and NATGateway.
 
+#### TC-R2-06: IPv6 fields remain API-compatible while unsupported
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Descriptor/API compatibility, unit, integration, CRD admission | critical | automated |
+
+##### Preconditions
+
+- Use the checked-in public and private protobuf descriptors and generated
+  operator API/CRD schemas for VirtualNetwork, Subnet, and SecurityRule.
+- Create a valid connected single-hub deployment and canonical IPv4 parent
+  data so the address-family result is not masked by an unrelated dependency.
+- Configure a fake manager that records whether a request reaches backend
+  dispatch.
+
+##### Steps
+
+1. Assert that each existing optional `ipv6_cidr` field remains present with
+   its existing wire field number, type, and optional-presence behavior in the
+   public/private descriptors and generated operator API.
+2. Submit omitted and explicitly empty `ipv6_cidr` values through the public
+   and private handlers and through direct CRD admission.
+3. Submit an IPv6-only value and a dual-stack request through the same paths.
+
+##### Expected results
+
+- The legacy fields remain serializable and readable by generated clients and
+  are not removed or renumbered.
+- Omitted and explicitly empty values are accepted for the current IPv4-only
+  contract.
+- Non-empty IPv6 and dual-stack values are rejected with the documented
+  validation error before database persistence, CR creation, reconciliation,
+  or manager/AAP dispatch. No partial resource, allocation, or backend call
+  remains.
+- The compatibility assertion is independent of the negative validation
+  assertion, so a future IPv6 implementation can change support behavior
+  without requiring an API shape migration.
+
 ### R3: SecurityGroup and NetworkACL policy contracts
 
 Positive cases use a NetworkClass whose selected manager(s) are complete

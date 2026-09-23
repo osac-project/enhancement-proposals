@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-16
+last-updated: 2026-09-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -93,6 +93,16 @@ not support multi-NIC or multi-homed tenant attachments.
 
 All networking resources and manager integrations in this design use IPv4.
 IPv6 and dual-stack networking are not supported.
+
+The optional `ipv6_cidr` fields in the public and private `VirtualNetwork`,
+`Subnet`, and `SecurityRule` API messages are intentionally retained for wire
+and generated-API compatibility. They are not removed or renumbered, leaving a
+stable API shape for a future IPv6 implementation. The normative examples in
+this document show only supported IPv4 inputs; they do not authorize removing
+the legacy fields from the API or operator types. For the current IPv4-only
+milestone, omitted or empty values are accepted, while non-empty IPv6 or
+dual-stack values are rejected during API/CRD validation and are not
+persisted, reconciled, or sent to networking providers.
 
 For user stories, goals, and non-goals, see the
 [Requirements Document (PRD)](prd.md).
