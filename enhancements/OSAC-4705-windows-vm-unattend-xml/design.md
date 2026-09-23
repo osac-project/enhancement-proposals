@@ -224,21 +224,44 @@ When `disk_image.guest_os_family != WINDOWS`:
 ```go
 func validateWellFormedXML(content string) error {
     decoder := xml.NewDecoder(strings.NewReader(content))
+    var rootCount int
     for {
-        _, err := decoder.Token()
+        tok, err := decoder.Token()
         if err == io.EOF {
+            if rootCount == 0 {
+                return fmt.Errorf("user_data is not well-formed XML: document is empty")
+            }
             return nil
         }
         if err != nil {
             return fmt.Errorf("user_data is not well-formed XML: %s", err.Error())
         }
+        switch tok.(type) {
+        case xml.Directive:
+            return fmt.Errorf("user_data is not well-formed XML: DOCTYPE declarations are not permitted")
+        case xml.StartElement:
+            rootCount++
+            if rootCount > 1 {
+                return fmt.Errorf("user_data is not well-formed XML: multiple root elements")
+            }
+        }
     }
 }
 ```
 
-Go's `encoding/xml` package is inherently safe against XXE attacks — it does
-not process external entities or DTD declarations. No additional parser
-configuration is needed (see Research §RQ-1).
+The function enforces three invariants beyond basic well-formedness:
+
+1. **Exactly one root element** — rejects empty, whitespace-only, and
+   multi-root-element documents. `encoding/xml.Decoder.Token()` is a
+   token-stream API and does not enforce single-document semantics on its own.
+2. **No DOCTYPE directives** — `encoding/xml` returns `<!DOCTYPE …>` as an
+   `xml.Directive` token without processing it, so the parser does not expand
+   entities, but it also does not reject the directive. The PRD requires
+   explicit DTD rejection, so the validator checks for `xml.Directive` tokens
+   and rejects them.
+3. **XXE-safe by default** — Go's `encoding/xml` does not process external
+   entities or DTD declarations. No additional parser configuration is needed
+   (see Research §RQ-1).
 
 **Error messages:**
 - `"user_data is not well-formed XML: <parser error details>"` — for inline
@@ -382,17 +405,44 @@ user data as a sysprep volume instead of a cloud-init volume.
 when `vm_enable_sysprep` is true.
 
 **After:**
-- When `guest_os_family == 'windows'` AND `vm_user_data_secret_ref` is set:
-  - Read the user data Secret from the management cluster
+- When `guest_os_family == 'windows'` AND user data is present (inline or
+  secret reference):
+  - Read the operator-owned Secret from the hub namespace (see *Content
+    snapshotting* below)
   - Create a new Secret in the VM namespace with key `Unattend.xml` containing
-    the `userdata` value from the source Secret
+    the `userdata` value from the operator-owned Secret
   - Mount as a `sysprep` volume with a `sata` CD-ROM disk
   - **Skip** the platform-generated Jinja2 template rendering
-- When `guest_os_family == 'windows'` AND `vm_user_data_secret_ref` is NOT set
-  AND `vm_enable_sysprep` is true:
+- When `guest_os_family == 'windows'` AND no user data is present AND
+  `vm_enable_sysprep` is true:
   - Existing behavior: render `unattend.xml.j2` and mount as sysprep volume
-- When `guest_os_family == 'linux'` AND `vm_user_data_secret_ref` is set:
+- When `guest_os_family == 'linux'` AND user data is present:
   - Existing behavior: copy Secret and mount as cloudInitNoCloud volume
+
+**Content snapshotting — preserving the validation invariant:**
+
+The fulfillment service validates user data content at create time, but AAP
+executes asynchronously. To guarantee that AAP delivers exactly the bytes that
+were validated, the operator snapshots the validated content into an immutable
+operator-owned Secret on the hub namespace at create time:
+
+- **Inline `user_data`**: The fulfillment service stores the validated XML in
+  the ComputeInstance CR spec. The operator reconciler creates a K8s Secret
+  (with the ComputeInstance as the owner reference) containing the validated
+  content under the `userdata` key. AAP reads from this operator-owned Secret,
+  not from any tenant-controlled resource.
+- **`user_data_secret` (secret reference)**: The fulfillment service resolves
+  the referenced OSAC Secret, validates its content as well-formed XML, and
+  the operator reconciler snapshots the validated `userdata` value into a new
+  operator-owned Secret. AAP reads the snapshot — if the tenant later mutates
+  the source OSAC Secret, the change does not propagate to the already-created
+  ComputeInstance.
+
+In both cases, by the time the AAP role executes, user data is always
+available as an operator-owned Secret referenced by the ComputeInstance CR.
+The mutual exclusion validation (§4.3) prevents both `user_data` and
+`user_data_secret` from being set simultaneously, so there is no precedence
+ambiguity.
 
 ### IC-3: CLI — Unattend.xml Documentation in Help Text
 

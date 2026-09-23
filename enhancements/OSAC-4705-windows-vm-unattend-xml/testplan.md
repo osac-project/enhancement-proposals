@@ -93,11 +93,11 @@ backward compatibility.
    referencing the secret.
 3. Verify: create fails with error that does NOT expose secret content.
 
-#### TC-1.6: Create Windows VM without user_data (no answer file)
+#### TC-1.6: Create Windows VM without user_data (no caller-supplied answer file)
 
 | Field | Value |
 |-------|-------|
-| PRD Requirements | FR: both fields optional; omit = no answer file |
+| PRD Requirements | FR: both fields optional; omit = no caller-supplied answer file |
 | Interface Change | IC-1 |
 | Test Type | Unit (ginkgo) |
 
@@ -105,6 +105,11 @@ backward compatibility.
 1. Call CreateComputeInstance with Windows DiskImage, no `user_data`, no
    `user_data_secret`.
 2. Verify: create succeeds — no XML validation triggered.
+3. Verify: no caller-supplied answer file is attached. (Note: the
+   platform-generated `unattend.xml.j2` template may still be rendered by the
+   AAP role if `vm_enable_sysprep` is true — see TC-3.2. This test validates
+   only that the fulfillment service does not require or validate XML when no
+   user data is supplied.)
 
 #### TC-1.7: Reject empty user_data for Windows VM
 
@@ -131,6 +136,72 @@ backward compatibility.
 1. Call CreateComputeInstance with both `user_data` and `user_data_secret` set.
 2. Verify: create fails with mutual exclusion error. (Existing test — verify
    no regression.)
+
+#### TC-1.9: Reject XML with DOCTYPE declaration for Windows VM
+
+| Field | Value |
+|-------|-------|
+| PRD Requirements | FR: reject DTD declarations in user_data |
+| Interface Change | IC-1 |
+| Test Type | Unit (ginkgo) |
+
+**Steps:**
+1. Call CreateComputeInstance with Windows DiskImage and `user_data` containing
+   an XML document with a DOCTYPE declaration:
+   ```xml
+   <?xml version="1.0"?>
+   <!DOCTYPE unattend SYSTEM "unattend.dtd">
+   <unattend/>
+   ```
+2. Verify: create fails with `INVALID_ARGUMENT` containing
+   `"DOCTYPE declarations are not permitted"`.
+
+#### TC-1.10: Reject whitespace-only user_data for Windows VM
+
+| Field | Value |
+|-------|-------|
+| PRD Requirements | FR: require a valid XML root element |
+| Interface Change | IC-1 |
+| Test Type | Unit (ginkgo) |
+
+**Steps:**
+1. Call CreateComputeInstance with Windows DiskImage and `user_data` containing
+   only whitespace characters (spaces, newlines, tabs).
+2. Verify: create fails with `INVALID_ARGUMENT` containing
+   `"document is empty"`.
+
+#### TC-1.11: Reject XML fragment with multiple root elements for Windows VM
+
+| Field | Value |
+|-------|-------|
+| PRD Requirements | FR: require exactly one XML root element |
+| Interface Change | IC-1 |
+| Test Type | Unit (ginkgo) |
+
+**Steps:**
+1. Call CreateComputeInstance with Windows DiskImage and `user_data` containing
+   multiple root elements:
+   ```xml
+   <unattend/><unattend/>
+   ```
+2. Verify: create fails with `INVALID_ARGUMENT` containing
+   `"multiple root elements"`.
+
+#### TC-1.12: Reject user_data_secret with DOCTYPE declaration for Windows VM
+
+| Field | Value |
+|-------|-------|
+| PRD Requirements | FR: reject DTD declarations via secret-backed delivery |
+| Interface Change | IC-1 |
+| Test Type | Unit (ginkgo) |
+
+**Steps:**
+1. Create an OSAC Secret with `userdata` key containing XML with a DOCTYPE
+   declaration.
+2. Call CreateComputeInstance with Windows DiskImage and `user_data_secret`
+   referencing the secret.
+3. Verify: create fails with error that rejects the DOCTYPE declaration and
+   does NOT expose secret content.
 
 ### AAP Role — User-Supplied Sysprep (IC-2)
 
@@ -333,7 +404,7 @@ appropriate permissions.
 
 | IC | Test Cases | Coverage |
 |----|-----------|----------|
-| IC-1 (XML validation) | TC-1.1, TC-1.2, TC-1.3, TC-1.4, TC-1.5, TC-1.6, TC-1.7, TC-1.8 | Create-time validation for all delivery paths and OS families |
+| IC-1 (XML validation) | TC-1.1, TC-1.2, TC-1.3, TC-1.4, TC-1.5, TC-1.6, TC-1.7, TC-1.8, TC-1.9, TC-1.10, TC-1.11, TC-1.12 | Create-time validation for all delivery paths and OS families, including DOCTYPE rejection, empty/whitespace content, and multi-root fragments |
 | IC-2 (AAP sysprep) | TC-3.1, TC-3.2, TC-3.3, TC-3.4, TC-3.5 | Volume routing for all OS/user-data combinations |
 | IC-3 (CLI help) | TC-4.1 | Help text accuracy |
 | IC-4 (UI adaptation) | TC-5.1, TC-5.2, TC-5.3 | Label switching, no-cache compliance |
