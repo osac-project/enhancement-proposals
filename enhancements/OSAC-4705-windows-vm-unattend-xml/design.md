@@ -237,7 +237,11 @@ func validateWellFormedXML(content string) error {
         if err != nil {
             return fmt.Errorf("user_data is not well-formed XML: %s", err.Error())
         }
-        switch tok.(type) {
+        switch t := tok.(type) {
+        case xml.CharData:
+            if depth == 0 && len(bytes.TrimSpace(t)) > 0 {
+                return fmt.Errorf("user_data is not well-formed XML: non-whitespace content outside root element")
+            }
         case xml.Directive:
             return fmt.Errorf("user_data is not well-formed XML: DOCTYPE declarations are not permitted")
         case xml.StartElement:
@@ -255,17 +259,22 @@ func validateWellFormedXML(content string) error {
 }
 ```
 
-The function enforces three invariants beyond basic well-formedness:
+The function enforces four invariants beyond basic well-formedness:
 
 1. **Exactly one root element** — rejects empty, whitespace-only, and
    multi-root-element documents. `encoding/xml.Decoder.Token()` is a
    token-stream API and does not enforce single-document semantics on its own.
-2. **No DOCTYPE directives** — `encoding/xml` returns `<!DOCTYPE …>` as an
+2. **No non-whitespace text outside the root element** — rejects documents with
+   leading text before the root element or trailing text after the root element
+   closes (e.g. `<unattend/>invalid`). The `xml.CharData` check at `depth == 0`
+   catches both cases, since any character data outside the root element is
+   invalid XML.
+3. **No DOCTYPE directives** — `encoding/xml` returns `<!DOCTYPE …>` as an
    `xml.Directive` token without processing it, so the parser does not expand
    entities, but it also does not reject the directive. The PRD requires
    explicit DTD rejection, so the validator checks for `xml.Directive` tokens
    and rejects them.
-3. **XXE-safe by default** — Go's `encoding/xml` does not process external
+4. **XXE-safe by default** — Go's `encoding/xml` does not process external
    entities or DTD declarations. No additional parser configuration is needed
    (see Research §RQ-1).
 
@@ -429,20 +438,32 @@ when `vm_enable_sysprep` is true.
 
 The fulfillment service validates user data content at create time, but AAP
 executes asynchronously. To guarantee that AAP delivers exactly the bytes that
-were validated, the operator snapshots the validated content into an immutable
-operator-owned Secret on the hub namespace at create time:
+were validated, the fulfillment service writes the validated bytes into the
+ComputeInstance resource, and the reconciler creates the operator-owned hub
+Secret from those stored bytes — never by re-reading the original source.
 
-- **Inline `user_data`**: The fulfillment service stores the validated XML in
-  the ComputeInstance CR spec. The operator reconciler creates a K8s Secret
-  (with the ComputeInstance as the owner reference) containing the validated
-  content under the `userdata` key. AAP reads from this operator-owned Secret,
-  not from any tenant-controlled resource.
+- **Inline `user_data`**: The fulfillment service validates the XML and stores
+  the validated content in the ComputeInstance CR spec (the `user_data` field).
+  On first reconciliation, the operator reconciler creates a K8s Secret (with
+  the ComputeInstance as the owner reference) containing the validated bytes
+  under the `userdata` key. AAP reads from this operator-owned Secret, not
+  from any tenant-controlled resource.
 - **`user_data_secret` (secret reference)**: The fulfillment service resolves
   the referenced OSAC Secret, validates its content as well-formed XML, and
-  the operator reconciler snapshots the validated `userdata` value into a new
-  operator-owned Secret. AAP reads the snapshot — if the tenant later mutates
-  the source OSAC Secret, the change does not propagate to the already-created
-  ComputeInstance.
+  writes the validated `userdata` bytes into the ComputeInstance CR spec. On
+  first reconciliation, the operator reconciler snapshots these stored bytes
+  into a new operator-owned Secret. AAP reads the snapshot — if the tenant
+  later mutates the source OSAC Secret, the change does not propagate to the
+  already-created ComputeInstance.
+
+This is the existing **snapshot-on-create** pattern that the reconciler already
+implements for Linux cloud-init user data: the reconciler creates an
+operator-owned hub Secret from the bytes stored on the CR during its first
+reconciliation pass. No new reconciler logic is required for the Windows path —
+the same snapshot-on-create capability is invoked; only the fulfillment service
+adds the XML validation gate before writing the content. This is consistent
+with §1's statement that the reconciler requires no changes: the snapshot
+mechanism already exists and handles both OS families identically.
 
 In both cases, by the time the AAP role executes, user data is always
 available as an operator-owned Secret referenced by the ComputeInstance CR.
