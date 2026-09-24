@@ -225,6 +225,7 @@ When `disk_image.guest_os_family != WINDOWS`:
 func validateWellFormedXML(content string) error {
     decoder := xml.NewDecoder(strings.NewReader(content))
     var rootCount int
+    var depth int
     for {
         tok, err := decoder.Token()
         if err == io.EOF {
@@ -240,10 +241,15 @@ func validateWellFormedXML(content string) error {
         case xml.Directive:
             return fmt.Errorf("user_data is not well-formed XML: DOCTYPE declarations are not permitted")
         case xml.StartElement:
-            rootCount++
-            if rootCount > 1 {
-                return fmt.Errorf("user_data is not well-formed XML: multiple root elements")
+            if depth == 0 {
+                rootCount++
+                if rootCount > 1 {
+                    return fmt.Errorf("user_data is not well-formed XML: multiple root elements")
+                }
             }
+            depth++
+        case xml.EndElement:
+            depth--
         }
     }
 }
