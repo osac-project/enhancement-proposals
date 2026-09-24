@@ -46,9 +46,9 @@ The proto definitions, operator CRD, and reconciler require no changes — the
 - G-2: The AAP role continues to use the existing KubeVirt sysprep volume API
   (Secret + SATA CD-ROM) with no changes to the KubeVirt resource schema.
 - G-3: No new proto fields, API parameters, or CLI flags are introduced.
-- G-4: The platform-generated Jinja2 Unattend.xml template (`unattend.xml.j2`)
-  is NOT rendered when user-supplied content is present; it is only used as a
-  fallback when `vm_enable_sysprep` is true and no user data is supplied.
+- G-4: There is no platform-generated Unattend.xml. When a Windows VM has no
+  `user_data`, there is no answer file — the golden image either boots normally
+  (non-sysprepped) or runs OOBE interactively (sysprepped).
 - G-5: XML validation is enforced consistently regardless of delivery method
   (inline `user_data` or resolved `user_data_secret` content).
 
@@ -68,9 +68,8 @@ The proto definitions, operator CRD, and reconciler require no changes — the
 
 Linux VMs in OSAC accept cloud-init user data through the `user_data` field at
 creation time, giving tenants full control over first-boot customization.
-Windows VMs have no equivalent self-service path. The platform's AAP role
-generates a default Unattend.xml from internal variables (`vm_sysprep_*`), but
-tenants cannot supply their own.
+Windows VMs have no equivalent self-service path — tenants cannot supply their
+own answer file.
 
 This creates three concrete gaps:
 
@@ -98,22 +97,29 @@ is accepted. The existing AAP `ocp_virt_vm` role already uses this mechanism for
 platform-generated sysprep.
 
 **Existing AAP code paths (`create_secrets.yaml`).** The `ocp_virt_vm` role's
-`create_secrets.yaml` currently implements three independent code paths:
+`create_secrets.yaml` currently implements two independent code paths:
 
 | # | Condition | Behavior |
 |---|-----------|----------|
-| 1 | `guest_os=windows`, `vm_enable_sysprep=true`, no user data | Renders `unattend.xml.j2` Jinja2 template → creates Secret with key `Unattend.xml` → mounts as sysprep volume (SATA CD-ROM) |
-| 2 | `vm_user_data_secret_ref` set (any OS) | Copies user data Secret → mounts as `cloudInitNoCloud` volume (virtio disk) |
-| 3 | No user data, SSH key present (Linux) | Creates minimal `#cloud-config` for SSH key propagation |
+| 1 | `vm_user_data_secret_ref` set (any OS) | Copies user data Secret → mounts as `cloudInitNoCloud` volume (virtio disk) |
+| 2 | No user data, SSH key present (Linux) | Creates minimal `#cloud-config` for SSH key propagation |
 
-**Missing fourth path.** No code path exists for the combination of
+**Missing Windows path.** No code path exists for the combination of
 `guest_os_family == 'windows'` AND user-supplied data. Today, if a tenant
-supplies `user_data` or `user_data_secret` for a Windows VM, path 2 fires and
+supplies `user_data` or `user_data_secret` for a Windows VM, path 1 fires and
 the content is mounted as a `cloudInitNoCloud` volume — a Linux delivery
-mechanism that Windows cannot consume. This feature adds a fourth path that
-reads the tenant's content but delivers it through the sysprep volume machinery
+mechanism that Windows cannot consume. This feature adds a new path that
+reads the tenant's content and delivers it through the sysprep volume machinery
 (Secret with key `Unattend.xml`, SATA CD-ROM) instead of the cloud-init
 machinery.
+
+**No-user-data behavior for Windows.** When a Windows VM is created without
+`user_data` or `user_data_secret`, no answer file is attached. The VM's
+behavior depends on the golden image:
+- **Non-sysprepped image**: boots normally without any first-boot
+  customization.
+- **Sysprepped image**: Windows OOBE runs interactively, prompting the user
+  for locale, account, and other settings.
 
 ---
 
@@ -159,22 +165,18 @@ operator CRD, and reconciler are unaffected — all required fields already exis
 │  ┌──────────────────────────────────────────────────┐                  │
 │  │ create_secrets.yaml                              │                  │
 │  │                                                  │                  │
-│  │  EXISTING path 1 (platform sysprep):             │                  │
-│  │    guest_os=windows + sysprep=true + NO user data│                  │
-│  │    → Render unattend.xml.j2 template             │                  │
-│  │    → Create Secret with key Unattend.xml         │                  │
-│  │    → Mount as sysprep volume (SATA CD-ROM)       │                  │
-│  │                                                  │                  │
 │  │  NEW path (user-supplied sysprep):               │ ◄── NEW         │
 │  │    guest_os=windows + user data present          │                  │
 │  │    → Read user data Secret                       │                  │
 │  │    → Create Secret with key Unattend.xml         │                  │
 │  │    → Mount as sysprep volume (SATA CD-ROM)       │                  │
-│  │    → SKIP Jinja2 template rendering              │                  │
 │  │                                                  │                  │
-│  │  EXISTING path 2 (cloud-init):                   │                  │
+│  │  EXISTING path (cloud-init):                     │                  │
 │  │    guest_os=linux + user data present             │                  │
 │  │    → Copy Secret + cloudInitNoCloud volume       │                  │
+│  │                                                  │                  │
+│  │  No user data (Windows):                         │                  │
+│  │    → No answer file attached                     │                  │
 │  └──────────────────────────────────────────────────┘                  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
@@ -222,82 +224,56 @@ When `disk_image.guest_os_family != WINDOWS`:
 **XML validation specification:**
 
 ```go
-func validateWellFormedXML(content string) error {
-    decoder := xml.NewDecoder(strings.NewReader(content))
-    var rootCount int
-    var depth int
-    for {
-        tok, err := decoder.Token()
-        if err == io.EOF {
-            if rootCount == 0 {
-                return fmt.Errorf("user_data is not well-formed XML: document is empty")
-            }
-            return nil
-        }
-        if err != nil {
-            return fmt.Errorf("user_data is not well-formed XML: %s", err.Error())
-        }
-        switch t := tok.(type) {
-        case xml.CharData:
-            if depth == 0 && len(bytes.TrimSpace(t)) > 0 {
-                return fmt.Errorf("user_data is not well-formed XML: non-whitespace content outside root element")
-            }
-        case xml.Directive:
-            return fmt.Errorf("user_data is not well-formed XML: DOCTYPE declarations are not permitted")
-        case xml.StartElement:
-            if depth == 0 {
-                rootCount++
-                if rootCount > 1 {
-                    return fmt.Errorf("user_data is not well-formed XML: multiple root elements")
-                }
-            }
-            depth++
-        case xml.EndElement:
-            depth--
-        }
+func validateWellFormedXML(content []byte) error {
+    if bytes.Contains(content, []byte("<!DOCTYPE")) {
+        return errors.New("DOCTYPE declarations are not allowed")
     }
+    var doc struct {
+        XMLName xml.Name
+        Inner   []byte `xml:",innerxml"`
+    }
+    return xml.Unmarshal(content, &doc)
 }
 ```
 
-The function enforces four invariants beyond basic well-formedness:
+The function enforces two invariants beyond basic well-formedness:
 
-1. **Exactly one root element** — rejects empty, whitespace-only, and
-   multi-root-element documents. `encoding/xml.Decoder.Token()` is a
-   token-stream API and does not enforce single-document semantics on its own.
-2. **No non-whitespace text outside the root element** — rejects documents with
-   leading text before the root element or trailing text after the root element
-   closes (e.g. `<unattend/>invalid`). The `xml.CharData` check at `depth == 0`
-   catches both cases, since any character data outside the root element is
-   invalid XML.
-3. **No DOCTYPE directives** — `encoding/xml` returns `<!DOCTYPE …>` as an
-   `xml.Directive` token without processing it, so the parser does not expand
-   entities, but it also does not reject the directive. The PRD requires
-   explicit DTD rejection, so the validator checks for `xml.Directive` tokens
-   and rejects them.
-4. **XXE-safe by default** — Go's `encoding/xml` does not process external
+1. **No DOCTYPE declarations** — a prefix scan rejects `<!DOCTYPE` before
+   parsing begins. Go's `encoding/xml` does not expand entities or process
+   DTDs, but it silently accepts the directive token. The PRD requires
+   explicit rejection, so the validator checks for the literal `<!DOCTYPE`
+   byte sequence and rejects it before parsing.
+2. **XXE-safe by default** — Go's `encoding/xml` does not process external
    entities or DTD declarations. No additional parser configuration is needed
    (see Research §RQ-1).
 
+`xml.Unmarshal` inherently enforces single-root-element semantics — it returns
+an error for documents that are empty, contain only whitespace, or have
+multiple root elements. This eliminates the need for manual root-counting and
+depth-tracking logic.
+
 **Error messages:**
+- `"DOCTYPE declarations are not allowed"` — for inline `user_data` or
+  resolved `user_data_secret` content containing a `<!DOCTYPE` declaration
 - `"user_data is not well-formed XML: <parser error details>"` — for inline
-  `user_data` with malformed XML on a Windows DiskImage
-- `"secret '<ref>' referenced by user_data_secret contains user data that is not well-formed XML"` — for `user_data_secret` with malformed XML content; error
-  does not expose the secret content itself
+  `user_data` that fails `xml.Unmarshal` on a Windows DiskImage
+- `"secret '<ref>' referenced by user_data_secret contains user data that is not well-formed XML"` — for `user_data_secret` with content that fails
+  `xml.Unmarshal`; error does not expose the secret content itself
 
 ### 4.4 Scalability and Performance
 
-**Validation cost:** XML well-formedness checking via `xml.NewDecoder().Token()`
-is O(n) in document size and runs in-process. For typical Unattend.xml files
-(2–20 KB), validation completes in microseconds. No external service calls or
-blocking operations are added to the create path.
+**Validation cost:** XML well-formedness checking via `xml.Unmarshal` is O(n)
+in document size and runs in-process. For typical Unattend.xml files (2–20 KB),
+validation completes in microseconds. No external service calls or blocking
+operations are added to the create path.
 
 **Secret resolution:** The existing `user_data_secret` resolution flow already
 fetches and validates the secret at create time. Adding XML parsing to the
 resolved content adds negligible overhead.
 
-**AAP provisioning:** The change replaces one Secret creation operation with
-another (user content vs. template content). The KubeVirt API call pattern is
-identical. No additional provisioning latency is introduced.
+**AAP provisioning:** The change adds a new Secret creation operation for the
+Windows sysprep path. The KubeVirt API call pattern is identical to the
+existing cloud-init path. No additional provisioning latency is introduced.
 
 ### 4.5 Security Considerations
 
@@ -389,24 +365,27 @@ out of scope for the current feature.
 
 ## 5. Interface Changes
 
-### IC-1: Fulfillment Service — XML Validation for Windows user_data
+### IC-1: Fulfillment Service — XML Format Gate for Windows user_data
 
 **Component:** `fulfillment-service/internal/servers/private_compute_instances_server.go`
 
-**Change:** Add guest-OS-family-aware XML validation to the ComputeInstance
-create path.
+**Change:** Add a format gate to the ComputeInstance create path: when the
+DiskImage's `guest_os_family` is `WINDOWS` and `user_data` is present, the
+content MUST be valid XML — any other format (cloud-config YAML, plain text,
+etc.) is rejected.
 
 **Before:** `user_data` content is accepted as an opaque string regardless of
 guest OS family.
 
 **After:** When the resolved DiskImage has `guest_os_family == WINDOWS`:
-- Inline `user_data` is validated as well-formed XML
-- Resolved `user_data_secret` content is validated as well-formed XML
+- Inline `user_data` must be well-formed XML — reject anything else
+- Resolved `user_data_secret` content must be well-formed XML — reject
+  anything else
 - Validation errors return clear messages without exposing secret content
 - Empty content is rejected when the field is present (existing behavior)
 
-**New function:** `validateWellFormedXML(content string) error` — validates XML
-well-formedness using `encoding/xml.NewDecoder`.
+**New function:** `validateWellFormedXML(content []byte) error` — validates XML
+well-formedness using `encoding/xml.Unmarshal`.
 
 ### IC-2: AAP Role — User-Supplied Sysprep Path
 
@@ -416,8 +395,7 @@ well-formedness using `encoding/xml.NewDecoder`.
 user data as a sysprep volume instead of a cloud-init volume.
 
 **Before:** User data Secret is always mounted as a `cloudInitNoCloud` volume
-(virtio disk). Platform-generated sysprep runs unconditionally for Windows VMs
-when `vm_enable_sysprep` is true.
+(virtio disk), regardless of guest OS family.
 
 **After:**
 - When `guest_os_family == 'windows'` AND user data is present (inline or
@@ -427,10 +405,9 @@ when `vm_enable_sysprep` is true.
   - Create a new Secret in the VM namespace with key `Unattend.xml` containing
     the `userdata` value from the operator-owned Secret
   - Mount as a `sysprep` volume with a `sata` CD-ROM disk
-  - **Skip** the platform-generated Jinja2 template rendering
-- When `guest_os_family == 'windows'` AND no user data is present AND
-  `vm_enable_sysprep` is true:
-  - Existing behavior: render `unattend.xml.j2` and mount as sysprep volume
+- When `guest_os_family == 'windows'` AND no user data is present:
+  - No answer file is attached — the golden image boots normally
+    (non-sysprepped) or runs OOBE interactively (sysprepped)
 - When `guest_os_family == 'linux'` AND user data is present:
   - Existing behavior: copy Secret and mount as cloudInitNoCloud volume
 
@@ -574,10 +551,9 @@ include parser error descriptions but not the XML content itself.
 
 - Linux VMs with `user_data` continue to work identically (cloud-init, no XML
   validation)
-- Windows VMs without `user_data` continue to use the platform-generated
-  Unattend.xml template (when `vm_enable_sysprep` is true)
-- Windows VMs without `user_data` and `vm_enable_sysprep` false continue to
-  boot without an answer file
+- Windows VMs without `user_data` continue to boot without an answer file —
+  the golden image boots normally (non-sysprepped) or runs OOBE interactively
+  (sysprepped)
 - All existing API, CLI, and UI workflows are unaffected
 
 ### New Behavior

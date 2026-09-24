@@ -11,7 +11,7 @@ backward compatibility.
 
 ## Test Cases
 
-### Fulfillment Service — XML Validation (IC-1)
+### Fulfillment Service — XML Format Gate (IC-1)
 
 #### TC-1.1: Create Windows VM with well-formed inline Unattend.xml
 
@@ -105,11 +105,9 @@ backward compatibility.
 1. Call CreateComputeInstance with Windows DiskImage, no `user_data`, no
    `user_data_secret`.
 2. Verify: create succeeds — no XML validation triggered.
-3. Verify: no caller-supplied answer file is attached. (Note: the
-   platform-generated `unattend.xml.j2` template may still be rendered by the
-   AAP role if `vm_enable_sysprep` is true — see TC-3.2. This test validates
-   only that the fulfillment service does not require or validate XML when no
-   user data is supplied.)
+3. Verify: no answer file is attached. The VM boots without any answer file —
+   either normally (non-sysprepped golden image) or with interactive OOBE
+   (sysprepped golden image).
 
 #### TC-1.7: Reject empty user_data for Windows VM
 
@@ -154,7 +152,7 @@ backward compatibility.
    <unattend/>
    ```
 2. Verify: create fails with `INVALID_ARGUMENT` containing
-   `"DOCTYPE declarations are not permitted"`.
+   `"DOCTYPE declarations are not allowed"`.
 
 #### TC-1.10: Reject whitespace-only user_data for Windows VM
 
@@ -200,8 +198,8 @@ backward compatibility.
    declaration.
 2. Call CreateComputeInstance with Windows DiskImage and `user_data_secret`
    referencing the secret.
-3. Verify: create fails with error that rejects the DOCTYPE declaration and
-   does NOT expose secret content.
+3. Verify: create fails with error containing `"DOCTYPE declarations are not
+   allowed"` and does NOT expose secret content.
 
 ### AAP Role — User-Supplied Sysprep (IC-2)
 
@@ -213,9 +211,9 @@ backward compatibility.
 | Interface Change | IC-2 |
 | Test Type | Integration (AAP role) |
 
-**Preconditions:** ComputeInstance CR with `guestOSFamily: windows`,
-`vm_enable_sysprep: false`, and `userDataSecretRef` pointing to a Secret
-with user-supplied Unattend.xml content.
+**Preconditions:** ComputeInstance CR with `guestOSFamily: windows` and
+`userDataSecretRef` pointing to a Secret with user-supplied Unattend.xml
+content.
 
 **Steps:**
 1. Run the `ocp_virt_vm` role create workflow.
@@ -223,25 +221,8 @@ with user-supplied Unattend.xml content.
    containing the user's content.
 3. Verify: the VM template spec includes a `sysprep` volume referencing the
    Secret and a `sata` CD-ROM disk.
-4. Verify: the Jinja2 `unattend.xml.j2` template was NOT rendered.
 
-#### TC-3.2: Platform-generated sysprep when no user data (Windows)
-
-| Field | Value |
-|-------|-------|
-| PRD Requirements | FR: omit = no user-supplied answer file |
-| Interface Change | IC-2 |
-| Test Type | Integration (AAP role) |
-
-**Preconditions:** ComputeInstance CR with `guestOSFamily: windows`,
-`vm_enable_sysprep: true`, and NO `userDataSecretRef`.
-
-**Steps:**
-1. Run the `ocp_virt_vm` role create workflow.
-2. Verify: the Jinja2 `unattend.xml.j2` template IS rendered.
-3. Verify: a sysprep Secret and volume are created with the template content.
-
-#### TC-3.3: No sysprep when no user data and sysprep disabled (Windows)
+#### TC-3.2: No answer file when no user data (Windows)
 
 | Field | Value |
 |-------|-------|
@@ -249,12 +230,14 @@ with user-supplied Unattend.xml content.
 | Interface Change | IC-2 |
 | Test Type | Integration (AAP role) |
 
-**Preconditions:** ComputeInstance CR with `guestOSFamily: windows`,
-`vm_enable_sysprep: false`, and NO `userDataSecretRef`.
+**Preconditions:** ComputeInstance CR with `guestOSFamily: windows` and NO
+`userDataSecretRef`.
 
 **Steps:**
 1. Run the `ocp_virt_vm` role create workflow.
 2. Verify: no sysprep Secret, volume, or disk is created.
+3. Verify: the VM boots without any answer file — the golden image either
+   boots normally (non-sysprepped) or runs OOBE interactively (sysprepped).
 
 #### TC-3.4: Linux user data still uses cloudInitNoCloud volume
 
@@ -369,19 +352,20 @@ appropriate permissions.
 3. Verify: the VM's sysprep volume contains the supplied Unattend.xml.
 4. Verify: Windows first boot follows the answer file settings.
 
-#### TC-E2E-2: Windows VM without Unattend.xml (no answer file)
+#### TC-E2E-2: Windows VM without user_data (no answer file)
 
 | Field | Value |
 |-------|-------|
-| PRD Requirements | E2E: create without = no unattend volume |
+| PRD Requirements | E2E: create without = no answer file |
 | Interface Change | IC-1, IC-2 |
 | Test Type | E2E (pytest) |
 
 **Steps:**
 1. Create a ComputeInstance with a Windows DiskImage and no `user_data` or
-   `user_data_secret`, with `vm_enable_sysprep: false`.
+   `user_data_secret`.
 2. Wait for the ComputeInstance to reach Running state.
 3. Verify: no sysprep volume is attached to the VM.
+4. Verify: the VM boots without any answer file.
 
 #### TC-E2E-3: Windows VM with user_data_secret delivery
 
@@ -404,8 +388,8 @@ appropriate permissions.
 
 | IC | Test Cases | Coverage |
 |----|-----------|----------|
-| IC-1 (XML validation) | TC-1.1, TC-1.2, TC-1.3, TC-1.4, TC-1.5, TC-1.6, TC-1.7, TC-1.8, TC-1.9, TC-1.10, TC-1.11, TC-1.12 | Create-time validation for all delivery paths and OS families, including DOCTYPE rejection, empty/whitespace content, and multi-root fragments |
-| IC-2 (AAP sysprep) | TC-3.1, TC-3.2, TC-3.3, TC-3.4, TC-3.5 | Volume routing for all OS/user-data combinations |
+| IC-1 (XML format gate) | TC-1.1, TC-1.2, TC-1.3, TC-1.4, TC-1.5, TC-1.6, TC-1.7, TC-1.8, TC-1.9, TC-1.10, TC-1.11, TC-1.12 | Create-time validation for all delivery paths and OS families, including DOCTYPE rejection, empty/whitespace content, and multi-root fragments |
+| IC-2 (AAP sysprep) | TC-3.1, TC-3.2, TC-3.4, TC-3.5 | Volume routing for all OS/user-data combinations, including no-user-data behavior |
 | IC-3 (CLI help) | TC-4.1 | Help text accuracy |
 | IC-4 (UI adaptation) | TC-5.1, TC-5.2, TC-5.3 | Label switching, no-cache compliance |
 | E2E | TC-E2E-1, TC-E2E-2, TC-E2E-3 | Full create-to-running path |
