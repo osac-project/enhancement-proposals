@@ -20,7 +20,9 @@ A Catalog Item is meant to shape how a resource is provisioned, not to become an
 
 ## In Scope
 
-- Catalog Items govern a supported subset of resource fields during provisioning. Fields that a Catalog Item does not govern keep their normal creation behavior.
+- Catalog Items govern a supported subset of non-network resource fields during provisioning. Fields that a Catalog Item does not govern keep their normal creation behavior.
+
+- Networking is resource-owned and is not a Catalog Item concern. Network attachments, Cluster pod/service CIDRs, and automatic external-IP attachment are supplied, defaulted, and validated by the resource provisioning flow rather than locked, defaulted, or overridden by a Catalog Item.
 
 - Each governed field is either **locked** or **editable**:
 
@@ -40,6 +42,8 @@ A Catalog Item is meant to shape how a resource is provisioned, not to become an
 - Catalog Items are optional for API provisioning. All three resource types can be provisioned either from a Catalog Item or directly without one.
 
 - The initial UI provisioning flow remains Catalog Item-based.
+
+- Provisioning from a Catalog Item continues to expose the normal resource networking inputs. Selecting a Catalog Item must not remove, add, or govern those inputs.
 
 - Cloud Provider Admins can control whether a Catalog Item is published.
 
@@ -74,6 +78,8 @@ A Catalog Item is meant to shape how a resource is provisioned, not to become an
 - Creating tenant-provided images is covered by a separate proposal. Catalog Items may reference tenant-provided images once they are available.
 
 - Governance of nested or structured Template parameters.
+
+- Governance of resource networking, including network attachments, Cluster pod/service CIDRs, and automatic external-IP attachment.
 
 - Unifying the three Catalog Item types into a single `CatalogItem` type.
 
