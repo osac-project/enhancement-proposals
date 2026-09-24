@@ -26,8 +26,9 @@ The feature touches four layers of the OSAC stack:
 
 1. **Fulfillment service** — adds guest-OS-family-aware XML validation at
    create time
-2. **AAP provisioning role** — adds a code path to mount user-supplied content
-   as a sysprep volume instead of a cloud-init volume
+2. **AAP provisioning role** — removes the existing platform-generated sysprep
+   creation and adds a code path to mount user-supplied content as a sysprep
+   volume instead of a cloud-init volume
 3. **CLI** — updates help text to document the Unattend.xml use case
 4. **UI** — adapts the creation form to present Unattend.xml guidance when a
    Windows DiskImage is selected
@@ -97,12 +98,13 @@ is accepted. The existing AAP `ocp_virt_vm` role already uses this mechanism for
 platform-generated sysprep.
 
 **Existing AAP code paths (`create_secrets.yaml`).** The `ocp_virt_vm` role's
-`create_secrets.yaml` currently implements two independent code paths:
+`create_secrets.yaml` currently implements three independent code paths:
 
 | # | Condition | Behavior |
 |---|-----------|----------|
 | 1 | `vm_user_data_secret_ref` set (any OS) | Copies user data Secret → mounts as `cloudInitNoCloud` volume (virtio disk) |
 | 2 | No user data, SSH key present (Linux) | Creates minimal `#cloud-config` for SSH key propagation |
+| 3 | Windows guest OS (any user-data state) | Creates platform-generated sysprep Secret → mounts as sysprep volume (SATA CD-ROM) |
 
 **Missing Windows path.** No code path exists for the combination of
 `guest_os_family == 'windows'` AND user-supplied data. Today, if a tenant
@@ -174,6 +176,9 @@ operator CRD, and reconciler are unaffected — all required fields already exis
 │  │  EXISTING path (cloud-init):                     │                  │
 │  │    guest_os=linux + user data present             │                  │
 │  │    → Copy Secret + cloudInitNoCloud volume       │                  │
+│  │                                                  │                  │
+│  │  REMOVED (platform-generated sysprep):           │ ◄── REMOVED     │
+│  │    → Default sysprep creation stopped            │                  │
 │  │                                                  │                  │
 │  │  No user data (Windows):                         │                  │
 │  │    → No answer file attached                     │                  │
@@ -391,22 +396,32 @@ well-formedness using `encoding/xml.Unmarshal`.
 
 **Component:** `osac-aap/collections/ansible_collections/osac/templates/roles/ocp_virt_vm/tasks/create_secrets.yaml`
 
-**Change:** Add a code path for user-supplied Windows Unattend.xml that mounts
-user data as a sysprep volume instead of a cloud-init volume.
+**Change:** Remove the existing platform-generated sysprep path and add a new
+code path for user-supplied Windows Unattend.xml. The role currently creates a
+platform-generated sysprep mount for all Windows VMs (path 3 in §3.1); this
+default behavior must be removed entirely. When user-supplied content is present,
+the role creates a new sysprep volume from the tenant's content instead of
+mounting it as a cloud-init volume. When no user data is supplied, no sysprep
+volume is created at all — this is a removal of existing behavior, not a no-op.
 
 **Before:** User data Secret is always mounted as a `cloudInitNoCloud` volume
-(virtio disk), regardless of guest OS family.
+(virtio disk), regardless of guest OS family. Additionally, the role creates a
+platform-generated sysprep mount for all Windows VMs — even when no user data is
+supplied (path 3 in §3.1).
 
 **After:**
 - When `guest_os_family == 'windows'` AND user data is present (inline or
   secret reference):
+  - **Remove** the platform-generated sysprep creation (path 3 in §3.1) —
+    user-supplied content replaces it entirely
   - Read the operator-owned Secret from the hub namespace (see *Content
     snapshotting* below)
   - Create a new Secret in the VM namespace with key `Unattend.xml` containing
     the `userdata` value from the operator-owned Secret
   - Mount as a `sysprep` volume with a `sata` CD-ROM disk
 - When `guest_os_family == 'windows'` AND no user data is present:
-  - No answer file is attached — the golden image boots normally
+  - **Remove** the platform-generated sysprep creation (path 3 in §3.1) —
+    no answer file is attached. The golden image boots normally
     (non-sysprepped) or runs OOBE interactively (sysprepped)
 - When `guest_os_family == 'linux'` AND user data is present:
   - Existing behavior: copy Secret and mount as cloudInitNoCloud volume
@@ -473,14 +488,29 @@ Unattend.xml-appropriate guidance when the selected DiskImage has
 
 **After:**
 - When the selected DiskImage has `guest_os_family = WINDOWS`:
-  - Label the user data input as "Unattend.xml" (instead of "Cloud-init user
-    data")
+  - Label the user data input as "Unattend.xml (XML)" (instead of "Cloud-init
+    user data")
   - Show a hint that content must be well-formed XML
   - Offer both inline and secret reference delivery options
 - When the selected DiskImage has `guest_os_family = LINUX` or is unspecified:
   - Existing cloud-init labels and behavior
 - The UI MUST NOT persist inline `user_data` content in browser caches, local
   storage, or session storage
+
+**Format-specific guidance:** The UI dynamically adjusts the user data input
+label and helper text based on the selected DiskImage's `guest_os_family` to
+communicate the expected content format at a glance:
+
+| `guest_os_family` | Input label | Helper text |
+|-------------------|-------------|-------------|
+| `WINDOWS` | "Unattend.xml (XML)" | "Paste a well-formed XML answer file" |
+| `LINUX` | "Cloud-init (YAML)" | "Paste cloud-init user data" |
+| Unspecified | "User data" | (generic, no format hint) |
+
+This format-specific labeling is a UX recommendation, not a functional gate —
+the server-side validation in the fulfillment service (IC-1) remains the single
+enforcement point for content format. The UI team may refine the exact labels
+and helper text during implementation.
 
 ---
 
