@@ -85,8 +85,16 @@ The step is split into two visually distinct sections using
 
 **Infrastructure Networking** (section heading):
 
-`NetworkAttachmentPickers` (shared component) renders three cascading pickers
-bound to the cluster adapter's Formik paths:
+- **Use tenant default network** (`SwitchField`): toggle at the top of the
+  section. Default: on. When enabled, VN/Subnet/SG pickers are hidden — the
+  fulfillment-service uses the tenant's default VirtualNetwork, Subnet, and
+  SecurityGroup. When disabled, the full VN → Subnet → SG picker cascade is
+  shown for custom network selection. This matches the bare metal wizard
+  pattern and will also be added to the VM wizard.
+
+When "Use tenant default network" is disabled, `NetworkAttachmentPickers`
+(shared component) renders three cascading pickers bound to the cluster
+adapter's Formik paths:
 
 - **Virtual Network** (`SelectField`): loads from `useVirtualNetworks()`,
   displays Name and IPv4 CIDR. Optional — when left empty, tenant defaults are
@@ -135,7 +143,8 @@ When pickers have values:
 }
 ```
 
-When all pickers are empty, `network_attachment` is omitted.
+When "Use tenant default network" is enabled (or all pickers are empty),
+`network_attachment` is omitted.
 `auto_external_ip_attachment` is included only when `true`. The VN selection is
 a UI-only filter not included in the payload — the API infers VN from the Subnet.
 
@@ -146,9 +155,10 @@ same Formik values from the shared pickers.
 
 **Review step** additions (via `adapter.getReviewSections()`):
 - **Infrastructure Networking**:
-  - **Virtual Network**: selected VN name, or "Default" when omitted
-  - **Subnet**: selected Subnet name, or "Default" when omitted
-  - **Security Groups**: comma-separated SG names, or "Default" when omitted
+  - **Network**: "Tenant default" when toggle is on, or "Custom" when off
+  - **Virtual Network**: selected VN name (shown only when custom)
+  - **Subnet**: selected Subnet name (shown only when custom)
+  - **Security Groups**: comma-separated SG names (shown only when custom)
   - **Auto External IP**: "Enabled" or omitted when disabled
 - **Cluster Networking**:
   - **Pod CIDR**: entered value, or omitted when empty
@@ -214,11 +224,12 @@ followed by Attach (create new ExternalIPAttachment) with a different
 ExternalIP — not an in-place edit, matching the unified create/read/delete
 contract.
 
-Manually attached ExternalIPAttachments are **not** auto-cleaned on cluster
-delete — only auto-provisioned ones (created via
-`auto_external_ip_attachment`) are cleaned up by the backend finalizer. The
-deletion confirmation dialog mentions this distinction when both auto and
-manual attachments exist.
+Manually created ExternalIPAttachments are **not** auto-deleted on cluster
+delete — they are detached and transition back to **Pending** status (the
+backend removes the DNAT mapping but preserves the attachment resource). Only
+auto-provisioned ones (created via `auto_external_ip_attachment`) are fully
+cleaned up by the backend finalizer. The deletion confirmation dialog
+mentions this distinction when both auto and manual attachments exist.
 
 Fetching: `ExternalIPAttachments.List` filtered by target cluster reference
 (≤2 results, one per endpoint). Shares the query cache with the
@@ -235,8 +246,8 @@ When `cluster.auto_external_ip_attachment == true`, the deletion confirmation
 dialog adds:
 
 > "Deleting this cluster will also delete the auto-provisioned External IPs and
-> External IP Attachments associated with it. Manually created networking
-> resources are not affected."
+> External IP Attachments associated with it. Manually created External IP
+> Attachments will be detached and return to Pending status."
 
 No additional user action — the backend handles phased cleanup
 (ExternalIPAttachments first, then ExternalIPs).
@@ -321,13 +332,16 @@ Existing `VmNetworkingStep.test.tsx` tests validate the refactor.
 **Cluster adapter** renders two `FormSection`s within the step:
 ```tsx
 <FormSection title="Infrastructure Networking">
-  <NetworkAttachmentPickers
-    fieldPrefix="spec.network_attachment"
-    sgRequired="when-non-default-vn"
-    defaultVnName={defaultSubnet?.virtualNetworkName}
-    allOptional={true}
-    showCidr={true}
-  />
+  <UseDefaultNetworkToggle />
+  {!useDefaultNetwork && (
+    <NetworkAttachmentPickers
+      fieldPrefix="spec.network_attachment"
+      sgRequired="when-non-default-vn"
+      defaultVnName={defaultSubnet?.virtualNetworkName}
+      allOptional={true}
+      showCidr={true}
+    />
+  )}
   <AutoExternalIpToggle />
 </FormSection>
 <FormSection title="Cluster Networking">
@@ -429,7 +443,7 @@ Add to `createMockConnectTransport.ts`:
 
 | Suite | Coverage |
 |-------|----------|
-| `ClusterNetworkingStep` | Two FormSections rendered ("Infrastructure Networking", "Cluster Networking"); pickers with `allOptional={true}`, `sgRequired="when-non-default-vn"`; auto external IP toggle in Infrastructure section; `pod_cidr`/`service_cidr` in Cluster section; empty pickers omit `network_attachment` |
+| `ClusterNetworkingStep` | Two FormSections rendered ("Infrastructure Networking", "Cluster Networking"); "Use tenant default network" toggle on by default hides pickers; disabling toggle shows pickers with `allOptional={true}`, `sgRequired="when-non-default-vn"`; re-enabling toggle clears picker values; auto external IP toggle in Infrastructure section; `pod_cidr`/`service_cidr` in Cluster section; default-network-on omits `network_attachment` |
 | `VmNetworkingStep` | Existing tests pass after refactor to shared component |
 | `ClusterDetailPage` | "Pending" endpoints; auto-provisioned section conditional on `auto_external_ip_attachment`; statuses rendered |
 | `ExternalIpManagementSection` | Attach button shown when no attachment; Detach shown when attached; endpoint details rendered; empty state for no unattached IPs |
