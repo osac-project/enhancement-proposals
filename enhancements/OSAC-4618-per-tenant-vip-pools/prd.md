@@ -15,21 +15,20 @@ OSAC currently routes all tenant storage traffic through a single, shared VAST V
 - **Verified ([OSAC-4857](https://redhat.atlassian.net/browse/OSAC-4857)):** All-Tenants-scoped VIP pools break NVMe-TCP block discovery — discovery fails with `err=6` because Global VIP Pools require per-tenant Client IP ranges, which OSAC cannot use (tenant VPCs have overlapping IPs).
 - **Team-reported: Discovery failures.** The shared pool's all-tenants scoping causes NVMe-TCP discovery to fail entirely (VAST returns `err=6 — No such file or directory`), silently blocking block-storage attach for every tenant onboarded through the shared pool.
 
-The global VIP pool approach ([OSAC-5030](https://redhat.atlassian.net/browse/OSAC-5030)) was moved to backlog because it cannot work without client IP ranges that OSAC is unable to use.
+The global VIP pool approach ([OSAC-5030](https://redhat.atlassian.net/browse/OSAC-5030)) was moved to backlog because it cannot work without Client IP ranges that OSAC is currently unable to use.
 
 Tenants need dedicated VIP pools scoped to a single tenant by VAST, eliminating cross-tenant discovery exposure and providing working NVMe-TCP block-storage connectivity. Network path enforcement between workloads and VIP pools ([OSAC-5073](https://redhat.atlassian.net/browse/OSAC-5073)) is parallel work required for end-to-end connectivity but is not the isolation mechanism — pool-level tenant scoping in VAST is.
 
 ## In Scope
 
 - Delivery targets the OSAC 0.3 milestone (Dev Preview).
-- Cloud Infrastructure Admins can configure a naming prefix on a VAST storage backend so that OSAC discovers pre-created VIP pools by that prefix.
+- Cloud Provider Admins can configure a naming prefix on a VAST storage backend so that OSAC discovers pre-created VIP pools by that prefix.
 - During tenant storage onboarding, OSAC automatically selects an available pool from the discovered set and binds it to the tenant. A pool is available when it is unbound and has no attached VAST Views; VAST rejects ownership changes on pools with lingering Views. The tenant's storage workloads then use that pool's VIP for all block-volume operations. No manual pool assignment is required.
 - Pool binding must be reliable and idempotent: a retried or resumed onboarding operation must reuse the same pool rather than claiming a second one. The mechanism is deferred to the design EP.
 - For Dev Preview, onboarding operations are processed one at a time to prevent two operations from claiming the same pool (see Assumptions for the underlying VAST constraint). GA will support concurrent onboarding with production-grade safeguards.
 - When no unbound pools remain, tenant storage onboarding fails with a clear status indicating that pool capacity is exhausted, directing the Cloud Provider Admin to contact the Cloud Infrastructure Admin to create additional pools.
-- Cloud Infrastructure Admins can see how many VIP pools are total, bound, and available on a storage backend so they know when to provision more.
-- The bound pool's connection details are persisted so tenant workloads reach the correct VIP without further manual configuration.
-- When a tenant's storage is removed, the bound VIP pool is released back to the available set (stretch goal). Release requires cleaning up associated VAST Views first, because VAST rejects ownership changes on pools that still have Views attached.
+- Cloud Provider Admins can see how many VIP pools are total, bound, and available on a storage backend so they know when to provision more.
+- Tenant workloads automatically connect through their bound pool's VIP without further manual configuration.
 - **Enablement:** Separate non-production tooling for creating sample VIP pools on a VAST cluster, outside the OSAC runtime and lifecycle API, to support development and testing workflows.
 - **Cleanup:** Remove unused configuration from the superseded supernet-carving approach that is no longer used under the discover-bind-release model.
 
@@ -46,28 +45,23 @@ Tenants need dedicated VIP pools scoped to a single tenant by VAST, eliminating 
 
 ## User Stories
 
-### Cloud Infrastructure Admin
-
-- As a Cloud Infrastructure Admin, I want to configure a naming prefix on a VAST storage backend so that OSAC discovers the VIP pools I pre-created in VAST VMS, without requiring me to register each pool individually.
-- As a Cloud Infrastructure Admin, I want to see how many VIP pools are total, bound, and available on a storage backend so that I know when to create more pools before onboarding capacity is exhausted.
-- As a Cloud Infrastructure Admin, I want to use provided non-production tooling (outside the OSAC runtime) to create sample VIP pools on a VAST cluster so that I can validate the discover-bind-release workflow without manual VAST VMS setup.
-
 ### Cloud Provider Admin
 
+- As a Cloud Provider Admin, I want to configure a naming prefix on a VAST storage backend so that OSAC discovers the VIP pools pre-created in VAST VMS, without requiring me to register each pool individually.
 - As a Cloud Provider Admin, I want OSAC to automatically bind an available VIP pool to a tenant during storage onboarding so that the tenant's block volumes are isolated without manual pool assignment.
 - As a Cloud Provider Admin, I want a clear status failure when no VIP pools are available during tenant storage onboarding so that I can direct the Cloud Infrastructure Admin to provision additional pools rather than troubleshooting an opaque error.
-- As a Cloud Provider Admin, I want a released VIP pool to return to the available set when a tenant's storage is removed so that pools are reused across tenant lifecycles without manual VAST intervention (stretch goal).
+- As a Cloud Provider Admin, I want to see how many VIP pools are total, bound, and available on a storage backend so that I know when to provision more pools before onboarding capacity is exhausted.
 
 ### Tenant Admin / Tenant User
 
-- As a Tenant Admin or Tenant User, I want my block-storage workloads to connect through a dedicated VIP pool without any action on my part so that my storage traffic is isolated from other tenants and NVMe-TCP discovery works correctly.
+- As a Tenant Admin or Tenant User, my block storage volumes mount and discovery works correctly without any action on my part.
 
 ## Assumptions
 
 - Cloud Infrastructure Admins have direct access to VAST VMS to pre-create VIP pools. OSAC does not manage pool lifecycle on the VAST cluster.
 - Pre-created pools follow a naming convention that OSAC can match by prefix. The default naming prefix is `osac-pool-` (e.g., `osac-pool-001`, `osac-pool-002`); Cloud Infrastructure Admins may configure a different prefix per storage backend.
 - Each tenant requires exactly one VIP pool.
-- Pool count is within VAST's supported cluster-wide limits (~500 pools at 4 IPs/pool).
+- Pool count is within VAST's supported cluster-wide limits (~500 pools).
 - VAST provides no server-side protection against concurrent pool binding (no optimistic locking, no 409 Conflict). Two simultaneous bind requests both succeed — last-write-wins. For Dev Preview, this is mitigated by processing onboarding operations one at a time (low concurrent volume is expected). Duplicate bindings are not accepted at any milestone — the serialization guarantee prevents them. Production-grade concurrent-safe binding must be implemented before GA; the mechanism is deferred to the design EP.
 
 ## Resolved Questions
@@ -76,6 +70,10 @@ These questions were investigated during requirements analysis. Answers are inco
 
 - **P1.Q1: Release via tenant_id=null — Confirmed.** VAST accepts the release (200 OK). Caveat: VAST rejects with 400 if Views remain — "tenant can be modified only if there are no view associated with current tenant". Release flow must clean up Views first.
 - **P1.Q2: Concurrent binding (double-bind) — No server-side protection.** See Assumptions for the constraint and mitigation approach.
+
+## Open Questions
+
+- **View cleanup and pool release on tenant teardown.** Whether pool release is in scope for Dev Preview depends on whether OSAC's existing tenant teardown already handles View removal. If it does, pool release is a small addition — release the pool after Views are cleaned up. If not, View cleanup is a larger scope item that may need to be deferred. VAST rejects ownership changes on pools that still have Views attached, so View removal is a prerequisite for pool release.
 
 ## Dependencies
 
