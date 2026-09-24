@@ -155,7 +155,10 @@ same Formik values from the shared pickers.
 
 **Review step** additions (via `adapter.getReviewSections()`):
 - **Infrastructure Networking**:
-  - **Network**: "Tenant default" when toggle is on, or "Custom" when off
+  - **Network**: "Tenant default" when `network_attachment` is omitted from the
+    payload (toggle on, or toggle off with all pickers empty); "Custom" only
+    when `network_attachment` is included in the payload (toggle off and at
+    least one picker has a value)
   - **Virtual Network**: selected VN name (shown only when custom)
   - **Subnet**: selected Subnet name (shown only when custom)
   - **Security Groups**: comma-separated SG names (shown only when custom)
@@ -379,6 +382,11 @@ and `useExternalIPs` query caches on success.
 `auto_external_ip_attachment`, `api_endpoint`, `ingress_endpoint`.
 `buildClusterCreatePayload` includes `network_attachment` (omitted when empty)
 and `auto_external_ip_attachment` (included only when `true`).
+`adapter.getReviewSections()` derives the Network label from the assembled
+payload — not the toggle state — so that "Tenant default" is shown whenever
+`network_attachment` is absent (toggle on, or toggle off with all pickers
+empty) and "Custom" is shown only when a `network_attachment` object is
+present.
 
 ### Status Labels and Components
 
@@ -443,7 +451,7 @@ Add to `createMockConnectTransport.ts`:
 
 | Suite | Coverage |
 |-------|----------|
-| `ClusterNetworkingStep` | Two FormSections rendered ("Infrastructure Networking", "Cluster Networking"); "Use tenant default network" toggle on by default hides pickers; disabling toggle shows pickers with `allOptional={true}`, `sgRequired="when-non-default-vn"`; re-enabling toggle clears picker values; auto external IP toggle in Infrastructure section; `pod_cidr`/`service_cidr` in Cluster section; default-network-on omits `network_attachment` |
+| `ClusterNetworkingStep` | Two FormSections rendered ("Infrastructure Networking", "Cluster Networking"); "Use tenant default network" toggle on by default hides pickers; disabling toggle shows pickers with `allOptional={true}`, `sgRequired="when-non-default-vn"`; re-enabling toggle clears picker values; auto external IP toggle in Infrastructure section; `pod_cidr`/`service_cidr` in Cluster section; default-network-on omits `network_attachment`; review step shows "Tenant default" when toggle off and all pickers empty (payload omits `network_attachment`); review step shows "Custom" only when toggle off and at least one picker has a value |
 | `VmNetworkingStep` | Existing tests pass after refactor to shared component |
 | `ClusterDetailPage` | "Pending" endpoints; auto-provisioned section conditional on `auto_external_ip_attachment`; statuses rendered |
 | `ExternalIpManagementSection` | Attach button shown when no attachment; Detach shown when attached; endpoint details rendered; empty state for no unattached IPs |
