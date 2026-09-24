@@ -12,7 +12,7 @@
 
 OSAC currently routes all tenant storage traffic through a single, shared VAST VIP pool. This shared pool has verified isolation failures:
 
-- **Verified ([OSAC-4857](https://redhat.atlassian.net/browse/OSAC-4857)): Cross-tenant discovery exposure.** VIP pools scoped to all tenants expose cross-tenant volume metadata during NVMe-TCP discovery. A tenant running standard NVMe discovery against a shared pool's IP can see other tenants' storage targets. VAST confirmed this is expected behavior for all-tenants-scoped pools: global pools require per-tenant client IP ranges for multi-tenancy, which OSAC cannot provide because tenants have their own VPCs with potentially overlapping IPs.
+- **Verified ([OSAC-4857](https://redhat.atlassian.net/browse/OSAC-4857)):** All-Tenants-scoped VIP pools break NVMe-TCP block discovery — discovery fails with `err=6` because Global VIP Pools require per-tenant Client IP ranges, which OSAC cannot use (tenant VPCs have overlapping IPs).
 - **Team-reported: Discovery failures.** The shared pool's all-tenants scoping causes NVMe-TCP discovery to fail entirely (VAST returns `err=6 — No such file or directory`), silently blocking block-storage attach for every tenant onboarded through the shared pool.
 
 The global VIP pool approach ([OSAC-5030](https://redhat.atlassian.net/browse/OSAC-5030)) was moved to backlog because it cannot work without client IP ranges that OSAC is unable to use.
