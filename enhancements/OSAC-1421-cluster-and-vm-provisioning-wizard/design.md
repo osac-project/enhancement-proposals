@@ -3,7 +3,7 @@ title: cluster-and-vm-provisioning-wizard
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-22
-last-updated: 2026-07-09
+last-updated: 2026-09-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 prd:
@@ -21,11 +21,11 @@ superseded-by:
 
 ## Summary
 
-Rewrite the osac-ui catalog provision wizard with static fields per resource type, a fixed five-step flow (Catalog Item → General → Configuration → Networking → Review), catalog overlay on Configuration and Networking non-picker fields only, Formik/Yup validation with validate-all-on-Next, `OsacForm` layout wrapper, i18n for all user-visible strings, and dedicated create pages (`/vms/create`, `/clusters/create`) with list-page breadcrumbs. Each adapter supplies its own Configuration and Networking step components. See [PRD](prd.md) for field-level requirements.
+Rewrite the osac-ui catalog provision wizard with static fields per resource type, a fixed five-step flow (Catalog Item → General → Configuration → Networking → Review), Catalog overlay only on non-network Configuration and General basics fields, Formik/Yup validation with validate-all-on-Next, `OsacForm` layout wrapper, i18n for all user-visible strings, and dedicated create pages (`/vms/create`, `/clusters/create`) with list-page breadcrumbs. Each adapter supplies its own Configuration and Networking step components. Networking remains ordinary resource input and is not governed by the selected Catalog Item. See [PRD](prd.md) for field-level requirements.
 
 ### Goals
 
-- Rewrite `catalogProvision/` with Formik/Yup, PatternFly Wizard, `OsacForm`, i18n (`useTranslation`), shared Formik-connected field components, and per-adapter Configuration/Networking step components.
+- Rewrite `catalogProvision/` with Formik/Yup, PatternFly Wizard, `OsacForm`, i18n (`useTranslation`), shared Formik-connected field components, and per-adapter Configuration/Networking step components. Keep networking resource-owned and outside Catalog overlay/default behavior.
 - Host the wizard on routed create pages; list **Create** navigates to `/vms/create` or `/clusters/create`.
 - Implement the cluster adapter end-to-end (catalog, tenant-managed `node_sets` table, create).
 - Next always enabled; validate every field on the current step when Next is clicked, including fields that have not blurred.
@@ -34,9 +34,9 @@ Rewrite the osac-ui catalog provision wizard with static fields per resource typ
 
 ## Proposal
 
-Rewrite under `osac-ui/apps/app-frontend/src/components/catalogProvision/`. `CatalogProvisionWizard` embeds in create pages and owns shared steps (Catalog Item, General, Review). **Configuration** and **Networking** are adapter components — VM pickers and cluster `node_sets`/CIDR fields are not shareable.
+Rewrite under `osac-ui/apps/app-frontend/src/components/catalogProvision/`. `CatalogProvisionWizard` embeds in create pages and owns shared steps (Catalog Item, General, Review). **Configuration** and **Networking** are adapter components — VM pickers and cluster `node_sets`/CIDR fields are not shareable. Networking is a resource-provisioning step, not a Catalog Item policy surface.
 
-Static field paths are hardcoded per resource type (PRD §2.1.1). Catalog `field_definitions` overlay matching static paths on **Configuration**, **Networking** non-picker fields, and **General basics** fields (`ssh_key`, `ssh_public_key`, `pull_secret`) for `display_name`, `editable`, and `validation_schema`. Picker-backed paths (`spec.instance_type`, `spec.network_attachments` and nested paths, cluster `spec.node_sets` host type per row) ignore catalog `field_definitions` in v1. Create payloads include only PRD §2.1.1 paths plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`.
+Static field paths are hardcoded per resource type (PRD §2.1.1). Catalog `field_definitions` overlay matching static paths on non-network **Configuration** fields and **General basics** fields (`ssh_key`, `ssh_public_key`, `pull_secret`) for `display_name`, `editable`, and `validation_schema`. Networking fields are not in the Catalog Item field model and are handled only by resource provisioning. Picker-backed paths (`spec.instance_type`, cluster `spec.node_sets` host type per row) ignore catalog `field_definitions` in v1. Create payloads include only PRD §2.1.1 paths plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`.
 
 New hooks in `libs/ui-components/src/api/v1/`: instance types, virtual networks, subnets, security groups, cluster catalog items, host types (list), cluster create. VM picker fields depend on fulfillment-service `spec.instance_type` and `spec.is_windows` (PRs #735, #734). Cluster Configuration uses `HostTypes.List` for per-row host type pickers; it does **not** call `ClusterTemplates.Get` for `node_sets`.
 
@@ -69,18 +69,18 @@ sequenceDiagram
 | Catalog Item | Shared | `adapter.useCatalogItems()` |
 | General | Shared | Name (required), optional SSH key (catalog `ssh_key` overlay); cluster adds required pull secret and optional `ssh_public_key` overlay |
 | Configuration | Adapter | VM: image, OS family, instance type, user data, boot disk, run strategy. Cluster: release image, tenant-managed `node_sets` table (add/remove rows) |
-| Networking | Adapter | VM: VN → subnet → SG pickers (single `network_attachments` entry). Cluster: pod/service CIDR |
+| Networking | Adapter | Resource-owned VM and Cluster networking inputs; no Catalog overlay or Catalog default |
 | Review | Shared | `adapter.getReviewSections()` — same labels and values as wizard steps; submit via `buildCreatePayload` |
 
 Register `/vms/create` and `/clusters/create` before `:id` routes. On failure: inline errors on the step; any non-2xx create response stays on Review; deprecated instance type warnings from create response are non-blocking and surfaced after submit.
 
-**Catalog overlay (non-picker Configuration/Networking fields and General basics):**
+**Catalog overlay (non-picker non-network Configuration fields and General basics):**
 
 | Aspect | Matching `field_definitions` entry | No matching entry |
 |--------|-----------------------------------|-------------------|
 | Label | `display_name` or wizard default | Wizard default |
 | Editable | `editable: false` → read-only control | Editable |
-| Default | Catalog `default` when set; else blank (Configuration, Networking, and General basics) | Blank |
+| Default | Catalog `default` when set; else blank (Configuration and General basics) | Blank |
 | Validation | `validation_schema` merged into Yup | API/wizard validation |
 
 Non-editable fields without a catalog `default` render blank and read-only (disabled control, same widget type). Fields with a catalog `default` render with the parsed default on catalog selection — read-only when `editable: false`, editable when `editable: true` — and include the wizard value in the client payload when non-blank.
@@ -101,6 +101,7 @@ Non-editable fields without a catalog `default` render blank and read-only (disa
 **VM General specifics:** `spec.ssh_key` is optional — prefill catalog `default` on catalog selection when defined; merge catalog `ssh_key` `field_definition` for label, `editable`, and `validation_schema`. Omit from client payload only when blank (tenant cleared or no catalog default). When non-blank, send the parsed plain string (prefilled default or user edit).
 
 **VM Networking specifics:** Load VN list first; on selection, filter subnets and security groups with `this.spec.virtual_network.name == "<vn-name>"`. Assemble one `network_attachments` element using typed local references: `{ "subnet": { "name": "<subnet-name>" }, "security_groups": [{ "name": "<security-group-name>" }] }`. The API rejects a second entry. The virtual network is inferred from the referenced subnet; its ID is not sent in the attachment payload.
+Catalog Item fields do not provide a default, lock, or validation overlay for this step.
 
 **Cluster Configuration specifics:** `spec.node_sets` is **tenant-composed** — the wizard does **not** load, display, or apply `ClusterTemplate.spec.node_sets`. On Configuration, render an editable table with **Add node set** / **Remove** actions. Each row: **Host type** (`SelectField` from `HostTypes.List` — [PRD §2.1.6](prd.md#216-cluster-host-type-picker-api)) and **Nodes** (`size` number input, > 0). `ClusterNodeSet` requires only `host_type` and `size` — no separate name column. Validation: at least one row required; host type and positive `size` required per row; **duplicate host types blocked** (each host type id at most once). `buildClusterCreatePayload` uses **host type id as the map key** and sets `host_type` on the value to the same id. Review shows host type label and node count per row. Filter or disable host types already selected on other rows in remaining dropdowns. `ClusterConfigurationStep` loads the host type list on mount; no `useClusterTemplate` call.
 
@@ -112,7 +113,7 @@ Non-editable fields without a catalog `default` render blank and read-only (disa
 
 ### API Extensions
 
-No API extensions to create payloads. The wizard consumes existing `ComputeInstanceCatalogItems`, `ClusterCatalogItems`, `InstanceTypes`, networking list APIs (`GET /api/fulfillment/v1/virtual_networks`, `.../subnets`, `.../security_groups`), `HostTypes.List` (`GET /api/fulfillment/v1/host_types`), and create APIs. Server-side catalog validation (`catalog_item_validation.go` / `applyFieldDefinitions`) still applies catalog `field_definitions` on create when the client omits a field the wizard left blank. The wizard does **not** use `ClusterTemplates.Get` for Configuration `node_sets`.
+No API extensions to create payloads. The wizard consumes existing `ComputeInstanceCatalogItems`, `ClusterCatalogItems`, `InstanceTypes`, networking list APIs (`GET /api/fulfillment/v1/virtual_networks`, `.../subnets`, `.../security_groups`), `HostTypes.List` (`GET /api/fulfillment/v1/host_types`), and create APIs. Server-side Catalog validation (`catalog_item_validation.go` / `applyFieldDefinitions`) still applies Catalog `field_definitions` on create when the client omits a non-network field the wizard left blank. It does not apply Catalog networking policy because networking is not a Catalog Item field. The wizard does **not** use `ClusterTemplates.Get` for Configuration `node_sets`.
 
 ### Implementation Details/Notes/Constraints
 
@@ -129,7 +130,7 @@ interface CatalogProvisionAdapter<TItem, TValues, TPayload> {
   getInitialValues: (catalogItem: TItem | null) => TValues;
   buildCreatePayload: (values: TValues, catalogItem: TItem) => TPayload;
   ConfigurationStep: ComponentType<{ catalogItem: TItem | null }>;
-  NetworkingStep: ComponentType<{ catalogItem: TItem | null }>;
+  NetworkingStep: ComponentType;
   generalFields: GeneralFieldDescriptor[];
   resolveGeneralFields?: (catalogItem: TItem | null) => GeneralFieldDescriptor[];
   getWizardSchema: (fieldDefinitions: FieldDefinition[]) => AnyObjectSchema;
@@ -165,13 +166,13 @@ Each component wraps a PatternFly `FormGroup` (label, `fieldId`, `isRequired`, h
 
 **i18n:** All user-visible wizard copy uses i18next via `useTranslation` from `@osac/ui-components/hooks/useTranslation` (never import from `react-i18next` directly). Use hardcoded string keys in `t('...')` so `pnpm i18n` can extract keys into `libs/i18n/locales/en/translation.json` (committed with source changes; CI fails if out of sync). Apply to step titles, intros, field labels (wizard defaults), buttons, validation alert text, node-sets add/remove actions, and Review section headings. Catalog `display_name` from `field_definitions` overrides the wizard default label when present and is shown as-is (server-provided, not passed through `t()`). Pure helpers (e.g. `getReviewSections`, static field descriptors) accept `t: TFunction` from the calling component rather than calling `useTranslation` internally.
 
-Adapter steps use Formik context, own API hooks and loading UI, and export Yup fragments. Shared helpers: `buildWizardSchema` (compose adapter fragments + overlay merge for non-picker Configuration/Networking paths and General basics), `applyCatalogOverlay`, `validateStepFields` (subset validation for the current step). Paths use PRD `spec.*` notation; wire builders output camelCase OpenAPI shapes.
+Adapter steps use Formik context, own API hooks and loading UI, and export Yup fragments. Shared helpers: `buildWizardSchema` (compose adapter fragments + overlay merge for non-network Configuration paths and General basics), `applyCatalogOverlay`, `validateStepFields` (subset validation for the current step). Paths use PRD `spec.*` notation; wire builders output camelCase OpenAPI shapes.
 
-**Formik/Yup:** Single `<Formik>` in the orchestrator with one wizard-level Yup schema from `adapter.getWizardSchema(fieldDefinitions)` — not per-step schemas. A single schema lets future cross-step rules reference values from any step (e.g. Networking validation depending on Configuration choices) without re-plumbing. Validate-on-Next runs Yup against only the current step's field paths via `adapter.getStepFieldPaths(stepId)` while the full schema retains access to all `values`. Each step body: `OsacForm` → shared `InputField` / `SelectField` / `RadioButtonField` from `@osac/ui-components` bound to Formik state — no raw PatternFly `Form` and no duplicated error wiring. Overlay merge applies to General basics and non-picker Configuration and Networking fields. `editable: false` passes `isDisabled` to field components; catalog `default` is applied to Formik on catalog selection when present; merge `validation_schema` into Yup for the supported JSON Schema subset. Validate-on-Next uses the same Formik `errors` / `touched` state those components display. Yup validation messages that surface to the user should use i18n keys where the schema supports message overrides.
+**Formik/Yup:** Single `<Formik>` in the orchestrator with one wizard-level Yup schema from `adapter.getWizardSchema(fieldDefinitions)` — not per-step schemas. A single schema lets future cross-step rules reference values from any step (e.g. resource networking validation depending on Configuration choices) without re-plumbing. Validate-on-Next runs Yup against only the current step's field paths via `adapter.getStepFieldPaths(stepId)` while the full schema retains access to all `values`. Each step body: `OsacForm` → shared `InputField` / `SelectField` / `RadioButtonField` from `@osac/ui-components` bound to Formik state — no raw PatternFly `Form` and no duplicated error wiring. Overlay merge applies only to General basics and non-network Configuration fields. `editable: false` passes `isDisabled` to field components; catalog `default` is applied to Formik on catalog selection when present; merge `validation_schema` into Yup for the supported JSON Schema subset. Validate-on-Next uses the same Formik `errors` / `touched` state those components display. Yup validation messages that surface to the user should use i18n keys where the schema supports message overrides.
 
 **Catalog item change:** Do not use `enableReinitialize` — it would reset user edits whenever `initialValues` changes. Instead, `onCatalogItemSelected` explicitly calls `resetForm({ values: getInitialValues(item) })` and applies catalog overlay defaults so reinitialization happens only on intentional catalog selection, not on unrelated parent re-renders. Cluster catalog selection does **not** fetch `ClusterTemplates.Get` or seed `spec.node_sets` from the template.
 
-**PRD §5 decisions (v1):** Ignore catalog `field_definitions` on picker-backed paths (`spec.instance_type`, `spec.network_attachments`, `spec.node_sets` host type picker). No wizard UI for `spec.additional_disks` — boot disk only. Cluster `node_sets` are tenant-composed (add/remove rows); template `node_sets` are ignored. PRD `?` fields are **optional**: `spec.boot_disk.size_gib`, `spec.network.pod_cidr`, and `spec.network.service_cidr` — omit from payload when blank. `spec.ssh_key` / `spec.ssh_public_key` are optional basics fields — prefill catalog `default` when defined; omit from client payload only when blank.
+**PRD §5 decisions (v1):** Networking fields are resource-owned and outside Catalog `field_definitions`; their picker/default behavior comes only from the resource provisioning flow. Ignore Catalog `field_definitions` on picker-backed paths (`spec.instance_type`, `spec.node_sets` host type picker). No wizard UI for `spec.additional_disks` — boot disk only. Cluster `node_sets` are tenant-composed (add/remove rows); template `node_sets` are ignored. `spec.ssh_key` / `spec.ssh_public_key` are optional basics fields — prefill catalog `default` when defined; omit from client payload only when blank.
 
 **Removed:** `partitionFieldDefinitions`, generic `ConfigurationStep`/`CatalogFieldInput`, `canProceedWizardStep`, text-based networking rows, catalog-driven field discovery. Replaced by static field tables, `OsacForm`, and Formik-connected `InputField` / `SelectField` / `RadioButtonField` components.
 
