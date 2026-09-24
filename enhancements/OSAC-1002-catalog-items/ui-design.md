@@ -56,9 +56,9 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 ## Proposal
 
-The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly `Gallery` of `CatalogItemCard` cards (the same card-based layout as the tenant user `CatalogPage`) with search, scope badges, publication status, and kebab actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (clusters only — pod_cidr, service_cidr) → Access (ssh_key, pull_secret). VM and Bare Metal catalog items auto-include their typed `network_attachments` field policies in the API payload without showing them in the wizard. The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
+The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly `Gallery` of `CatalogItemCard` cards (the same card-based layout as the tenant user `CatalogPage`) with search, scope badges, publication status, and kebab actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Access (ssh_key, pull_secret). Networking is not a Catalog Item field and remains in the ordinary resource provisioning flow. The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
-Each wizard step is a separate per-kind component with static, hardcoded fields — the same pattern as the tenant user provisioning wizard. Individual fields reuse shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that each render an editable toggle, a type-appropriate default value input, and type-specific validation options. `node_sets` (Cluster only) is not one of these primitives — it has a dedicated `NodeSetsFieldEditor` (see §8) that is **template-driven** rather than freely composed: fulfillment-service rejects any `node_sets` entry whose map key or host type isn't defined in the selected `ClusterTemplate`, so the editor renders one fixed row per template node set (host type read-only) and only collects a default `size` per row — no add/remove, no host-type picker. Shared page-level components (`CatalogItemGeneralFields`, `CatalogItemCard`, `CatalogItemActionsMenu`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic.
+Each wizard step is a separate per-kind component with static, hardcoded fields — the same pattern as the tenant user provisioning wizard. Individual fields reuse shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that each render an editable toggle, a type-appropriate default value input, and type-specific validation options. Cluster `node_sets` defaults are not authored by this v1 Catalog UI; their per-node-set size policy is defined separately by Catalog v2. Shared page-level components (`CatalogItemGeneralFields`, `CatalogItemCard`, `CatalogItemActionsMenu`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic.
 
 ### Workflow Description
 
@@ -68,15 +68,11 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
 2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows a gallery of catalog item cards for that resource type across all tenants.
 3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope, and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template. **Scope:** CSP Admin selects between **General** (visible to all tenants) or **Organization** (scoped to a specific tenant, selected from a tenant dropdown).
-5. **Step 2 — Configuration:** A per-kind step component with static fields for the resource spec (excluding access and networking fields). Each field uses a shared field definition primitive (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that renders an editable toggle, a type-appropriate default value input, and type-specific validation options. Default values are pre-populated from the selected template. By default, fields are non-editable; non-editable fields require a default value. For Cluster, includes `NodeSetsFieldEditor` for setting a default `size` per node set defined in the selected template (host type is read-only, inherited from the template) and size constraints. For resource reference fields (`ResourceSelectorFieldDefinition`), the admin selects a default from a dropdown of existing resources — no validation constraints are configured.
-6. **Step 3 — Networking** (clusters only): `ClusterNetworkingStep` with `pod_cidr` and `service_cidr` as `StringFieldDefinition` fields. This step is not shown for VM or Bare Metal catalog items.
-7. **Step 4 — Access:** Per-kind access step component with `ssh_public_key`/`ssh_key` and `pull_secret` (clusters) as `StringFieldDefinition` fields. Both default to editable.
-   For VM and Bare Metal catalog items, the UI automatically includes the field definition in the API payload without showing it in a wizard step. VM uses `fields.network_attachments` with a typed `ComputeNetworkAttachmentListFieldPolicy`; Bare Metal uses the corresponding `BareMetalNetworkAttachmentListFieldPolicy`. An editable policy may include `default_value: { items: [...] }`, while `default_value` may be omitted. During provisioning, the tenant sends `catalog_item` together with tenant-supplied `network_attachments`; an omitted or explicitly empty tenant list is treated as no input, so fulfillment can apply the editable Catalog default and then default-network injection when the resolved list remains empty. Non-empty tenant values override an editable default. Empty locked or default policy values are rejected when the Catalog Item is created or updated. Fulfillment performs final resource validation; the absence of a JSON `validation_schema` does not disable typed policy checks or resource validation.
-   Both VMaaS and BMaaS enforce the maximum of one resolved attachment; the
-   catalog UI does not add or remove NIC rows.
-8. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
-9. The admin is redirected to the detail page for the newly created catalog item.
-10. From the detail page or list page, the admin can publish the item by toggling the publish `Switch`.
+5. **Step 2 — Configuration:** A per-kind step component with static fields for the resource spec (excluding access fields; networking is not a Catalog Item field). Each field uses a shared field definition primitive (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that renders an editable toggle, a type-appropriate default value input, and type-specific validation options. Default values are pre-populated from the selected template. By default, fields are non-editable; non-editable fields require a default value. Cluster `node_sets` defaults are not authored in this v1 flow; Catalog v2 defines the separate per-node-set size policy. For resource reference fields (`ResourceSelectorFieldDefinition`), the admin selects a default from a dropdown of existing resources — no validation constraints are configured.
+6. **Step 3 — Access:** Per-kind access step component with `ssh_public_key`/`ssh_key` and `pull_secret` (clusters) as `StringFieldDefinition` fields. Both default to editable.
+7. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
+8. The admin is redirected to the detail page for the newly created catalog item.
+9. From the detail page or list page, the admin can publish the item by toggling the publish `Switch`.
 
 #### Cloud Provider Admin — Edit, Publish/Unpublish, Delete
 
@@ -92,9 +88,8 @@ The Tenant Admin uses the same wizard flow as the CSP Admin with a different sco
 2. The list page shows three tabs (Clusters, Virtual Machines, Bare Metal). Each tab shows a gallery of the tenant's catalog item cards alongside global items. Global items have a "General" scope badge and no edit/delete actions in the kebab menu. Org-scoped items have an "Organization" scope badge and project-scoped items have a "Project: {name}" scope badge — both with full actions.
 3. Tenant Admin clicks the "Create" button on the active tab. The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description, selects scope, and selects a template. **Scope:** Tenant Admin selects between **Organization** (visible to all projects within the tenant) or **Project** (scoped to a specific project, selected from a project dropdown). The `tenant` field is auto-set by the server.
-5. **Step 2 — Configuration:** Same as CSP Admin — resource spec field definitions (excluding access and networking fields).
-6. **Step 3 — Networking** (clusters only): Same as CSP Admin — pod_cidr and service_cidr.
-7. **Step 4 — Access:** Same as CSP Admin — ssh_public_key and pull_secret field definitions.
+5. **Step 2 — Configuration:** Same as CSP Admin — resource spec field definitions (excluding access fields; networking is not a Catalog Item field).
+6. **Step 3 — Access:** Same as CSP Admin — ssh_public_key and pull_secret field definitions.
 7. Admin clicks "Create". The UI sends a POST. The server auto-sets the `tenant` field; the UI sends `metadata.project` if project-scoped.
 8. The admin is redirected to the detail page.
 
@@ -186,7 +181,6 @@ Rather than a single monolithic component driven by a configuration map, the des
 - `NumberFieldDefinition` — editable toggle, number input for default, min/max validation
 - `ResourceSelectorFieldDefinition` — editable toggle, dropdown of existing resources for default (from API endpoint), no validation constraints
 - `BooleanFieldDefinition` — editable toggle, boolean toggle for default
-- `NodeSetsFieldEditor` — dedicated editor for `node_sets` (Cluster only, see §8)
 
 **Shared page-level components** (used by all three kinds):
 - `CatalogItemGeneralFields` — name, description, scope (role-dependent: CSP Admin sees General/Organization; Tenant Admin sees Organization/Project), and template selector inputs (reused in create/edit)
@@ -195,14 +189,14 @@ Rather than a single monolithic component driven by a configuration map, the des
 - `CatalogItemDetailActionButtons` — action button row for the detail page header (Edit, Delete, publish toggle)
 
 **Per-kind step components** — each wizard step is a separate component with static, hardcoded fields (same pattern as the tenant user provisioning wizard). Individual fields use the shared field definition primitives above:
-- `ClusterConfigurationStep`, `ClusterNetworkingStep`, `ClusterAccessStep`
+- `ClusterConfigurationStep`, `ClusterAccessStep`
 - `VMConfigurationStep`, `VMAccessStep`
 - `BMConfigurationStep`, `BMAccessStep`
 
 **Kind-specific pages** compose the General fields and per-kind step components directly — Formik wiring, initial values, validation schema, submission logic, and data fetching are all explicit at the page level:
 
 ```tsx
-// ClusterCatalogItemCreatePage.tsx — 4 steps (includes Networking)
+// ClusterCatalogItemCreatePage.tsx — 3 steps
 const ClusterCatalogItemCreatePage = () => {
   const { data: templates, isLoading } = useClusterTemplates();
   const { mutateAsync: createClusterCatalogItem } = useCreateClusterCatalogItem();
@@ -220,9 +214,6 @@ const ClusterCatalogItemCreatePage = () => {
         <WizardStep name="Configuration">
           <ClusterConfigurationStep />
         </WizardStep>
-        <WizardStep name="Networking">
-          <ClusterNetworkingStep />
-        </WizardStep>
         <WizardStep name="Access">
           <ClusterAccessStep />
         </WizardStep>
@@ -233,8 +224,7 @@ const ClusterCatalogItemCreatePage = () => {
 
 // ComputeInstanceCatalogItemCreatePage.tsx — 3 steps (no Networking)
 // Uses VMConfigurationStep and VMAccessStep.
-// network_attachments is auto-included in the API payload for VM and Bare Metal.
-// BareMetalInstanceCatalogItemCreatePage.tsx — 3 steps (no Networking wizard; network_attachments is auto-included)
+// BareMetalInstanceCatalogItemCreatePage.tsx — 3 steps (no Networking fields)
 // Uses BMConfigurationStep and BMAccessStep.
 ```
 
@@ -332,7 +322,7 @@ Each kind-specific create page uses a PatternFly Wizard with Formik + Yup that e
 
 **Wizard steps — mirror the provisioning wizard structure:**
 
-The wizard steps are kind-specific: VM and Bare Metal have three steps (General, Configuration, Access). Cluster has four steps (General, Configuration, Networking, Access). Resource type is not shown as a field — it is determined by the tab the admin clicked "Create" from and encoded in the route.
+The wizard steps are kind-specific: all three resource types have three steps (General, Configuration, Access). Resource type is not shown as a field — it is determined by the tab the admin clicked "Create" from and encoded in the route. Networking is not a Catalog Item step or field; it remains in resource provisioning.
 
 **Step 1: General**
 - Name (`NameField`, required) — reuses the existing osac-ui `NameField` component with standard naming validation
@@ -346,29 +336,22 @@ The wizard steps are kind-specific: VM and Bare Metal have three steps (General,
 
 Each resource type has its own configuration step component with static, hardcoded fields using shared field definition primitives. By default, fields are non-editable. Default values are pre-populated from the selected template when they exist. Non-editable fields require a default value.
 
-- **Cluster (`ClusterConfigurationStep`):** `release_image` (`StringFieldDefinition`), `node_sets` (`NodeSetsFieldEditor`).
+- **Cluster (`ClusterConfigurationStep`):** `release_image` (`StringFieldDefinition`). `node_sets` defaults are deferred to Catalog v2.
 - **VM (`VMConfigurationStep`):** `instance_type` (`ResourceSelectorFieldDefinition`), `cores` (`NumberFieldDefinition`), `memory_gib` (`NumberFieldDefinition`), `image` (`ResourceSelectorFieldDefinition`), `boot_disk.size_gib` (`NumberFieldDefinition`), `additional_disks` (array of `NumberFieldDefinition` for size_gib), `run_strategy` (`StringFieldDefinition` with enum), `user_data` (`StringFieldDefinition` textarea), `is_windows` (`BooleanFieldDefinition`).
 - **Bare Metal (`BMConfigurationStep`):** `run_strategy` (`StringFieldDefinition` with enum), `user_data` (`StringFieldDefinition` textarea).
 
-**Step 3: Networking** (clusters only)
+Networking is not a Catalog Item authoring step. Resource provisioning continues to collect and validate networking inputs through the normal resource flow.
 
-`ClusterNetworkingStep` with `pod_cidr` and `service_cidr` as `StringFieldDefinition` fields. This step is not shown for VM or Bare Metal catalog items. VM catalog items emit `fields.network_attachments` as the typed `ComputeNetworkAttachmentListFieldPolicy`; Bare Metal catalog items emit the corresponding `BareMetalNetworkAttachmentListFieldPolicy`. Their `default_value` may be omitted or may contain typed `items`. During provisioning, an omitted or explicitly empty tenant list is treated as no input, allowing the editable Catalog default and subsequent default-network injection; non-empty tenant values override an editable default. Empty locked or default policy values are rejected, and fulfillment performs final resource validation.
-`ComputeNetworkAttachmentListFieldPolicy` and
-`BareMetalNetworkAttachmentListFieldPolicy` both resolve to at most one
-attachment; the service-level cardinality remains authoritative.
-
-**Step 4: Access** (per-kind step component)
+**Step 3: Access** (per-kind step component)
 
 - **Cluster (`ClusterAccessStep`):** `ssh_public_key` and `pull_secret` as `StringFieldDefinition` fields. Both default to editable. If the template does not provide defaults, the UI uses hardcoded defaults (empty string for both — the field definition is created with editable: true and no default value, allowing the tenant to provide their own).
 - **VM (`VMAccessStep`):** `ssh_key` as `StringFieldDefinition`. Defaults to editable.
 - **Bare Metal (`BMAccessStep`):** `ssh_public_key` as `StringFieldDefinition`. Defaults to editable.
 
-**Hardcoded UI validation schemas:** When the selected template does not provide validation for `pod_cidr`, `service_cidr`, `ssh_public_key`, or `pull_secret`, the UI pre-populates the validation schema so the admin always has a reasonable starting point. Default values are never hardcoded — they come only from the selected template or admin input.
+**Hardcoded UI validation schemas:** When the selected template does not provide validation for `ssh_public_key` or `pull_secret`, the UI pre-populates the validation schema so the admin always has a reasonable starting point. Default values are never hardcoded — they come only from the selected template or admin input.
 
 | Field | Hardcoded Default Validation Schema | Notes |
 |-------|-------------------------------------|-------|
-| `pod_cidr` | `{ "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" }` | IPv4 CIDR format. The UI also enforces CIDR correctness via `isValidCidr()` at the Yup layer (same as the tenant provisioning wizard). |
-| `service_cidr` | `{ "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" }` | IPv4 CIDR format. The UI also validates no overlap with `pod_cidr` via `cidrsOverlap()`. |
 | `ssh_public_key` | `{ "pattern": "^(ssh-rsa\|ecdsa-sha2-nistp(256\|384\|521)\|ssh-ed25519) AAAA[0-9A-Za-z+/]+[=]{0,3}( .*)?$" }` | Validates SSH public key format: `[TYPE] key [[EMAIL]]`. Supported types: ssh-rsa, ssh-ed25519, ecdsa-sha2-nistp256/384/521. Reuses the same regex as `credentialValidation.ts`. |
 | `pull_secret` | *(no JSON Schema pattern — validated via custom Yup test)* | Pull secret must be valid JSON with an `auths` key. This cannot be expressed as a JSON Schema `pattern` — the UI enforces it via `isValidPullSecret()` at the Yup layer (same as the tenant provisioning wizard). The admin sees a note: "Must be valid JSON with an `auths` key." |
 
@@ -445,7 +428,7 @@ All actions are hidden for Tenant Admins viewing general (global) items. The pub
 
 **Tabs:**
 - **Overview:** Read-only display of general information (name, description, resource type, scope with level and target name — General/Organization/Project, template name, creation date)
-- **Field Definitions:** Read-only list showing all field definitions with: Path, Editable (Yes/No), Default Value, Validation Constraints. For `node_sets` (Cluster), shows the default node set entries (host type, size) and any size constraints.
+- **Field Definitions:** Read-only list showing all field definitions with: Path, Editable (Yes/No), Default Value, and Validation Constraints.
 - **Provisioned Resources:** Table of resources (Clusters, ComputeInstances, or BareMetalInstances) provisioned from this catalog item, fetched via the resource list endpoint with a `this.spec.catalog_item == "<id>"` CEL filter
 
 #### 8. Shared Field Definition Primitives and Per-Kind Step Components
@@ -460,13 +443,13 @@ Each primitive renders a form section for a single field definition with the fie
 
 | Component | Default Value Input | Validation Options | Use Cases |
 |-----------|--------------------|--------------------|-----------|
-| `StringFieldDefinition` | Text input (or textarea for long values) | Optional regex pattern (`pattern`) | `release_image`, `pod_cidr`, `service_cidr`, `ssh_public_key`, `ssh_key`, `pull_secret`, `user_data`, `run_strategy` (with enum) |
+| `StringFieldDefinition` | Text input (or textarea for long values) | Optional regex pattern (`pattern`) | `release_image`, `ssh_public_key`, `ssh_key`, `pull_secret`, `user_data`, `run_strategy` (with enum) |
 | `NumberFieldDefinition` | Number input | Min/max bounds | `cores`, `memory_gib`, `boot_disk.size_gib` |
 | `ResourceSelectorFieldDefinition` | Dropdown of existing resources from API endpoint | None (backend validates at provisioning) | `instance_type`, `image` |
 | `BooleanFieldDefinition` | Toggle switch | None | `is_windows` |
 
 Each primitive renders:
-- **Path** — read-only label (the field path from the resource spec, e.g., `cores`, `pod_cidr`)
+- **Path** — read-only label (the field path from the resource spec, e.g., `cores`, `user_data`)
 - **Editable** — PatternFly `Switch` toggle
 - **Default Value** — type-specific input. Required when `editable` is false.
 - **Validation** — type-specific constraints (only for `StringFieldDefinition` and `NumberFieldDefinition`)
@@ -490,19 +473,18 @@ const fieldDefinitionSchema = Yup.object({
 Each step component is a static form that explicitly lists its fields using the shared primitives:
 
 **Cluster:**
-- `ClusterConfigurationStep` — `release_image` (`StringFieldDefinition`), `node_sets` (`NodeSetsFieldEditor`)
-- `ClusterNetworkingStep` — `pod_cidr` (`StringFieldDefinition`), `service_cidr` (`StringFieldDefinition`)
+- `ClusterConfigurationStep` — `release_image` (`StringFieldDefinition`); `node_sets` defaults are deferred to Catalog v2
 - `ClusterAccessStep` — `ssh_public_key` (`StringFieldDefinition`, default editable), `pull_secret` (`StringFieldDefinition`, default editable)
 
 **VM (ComputeInstance):**
 - `VMConfigurationStep` — `instance_type` (`ResourceSelectorFieldDefinition`, endpoint: `/v1/instance_types`), `cores` (`NumberFieldDefinition`), `memory_gib` (`NumberFieldDefinition`), `image` (`ResourceSelectorFieldDefinition`), `boot_disk.size_gib` (`NumberFieldDefinition`), `additional_disks` (array of `NumberFieldDefinition` for `size_gib`), `run_strategy` (`StringFieldDefinition` with enum: "Always"/"Halted"), `user_data` (`StringFieldDefinition` textarea), `is_windows` (`BooleanFieldDefinition`)
 - `VMAccessStep` — `ssh_key` (`StringFieldDefinition`, default editable)
-- VM has no Networking step. `network_attachments` is auto-included in the API payload (not shown in wizard) and accepts at most one entry.
+- VM has no Catalog networking fields; resource networking is collected by the resource provisioning flow.
 
 **Bare Metal (BareMetalInstance):**
 - `BMConfigurationStep` — `run_strategy` (`StringFieldDefinition` with enum: "ALWAYS"/"HALTED"), `user_data` (`StringFieldDefinition` textarea)
 - `BMAccessStep` — `ssh_public_key` (`StringFieldDefinition`, default editable)
-- Bare Metal has no Networking wizard step; its typed `network_attachments` field policy is auto-included in the Catalog Item payload.
+- Bare Metal has no Catalog networking fields; resource networking is collected by the resource provisioning flow.
 
 **Example — ClusterConfigurationStep:**
 
@@ -510,79 +492,13 @@ Each step component is a static form that explicitly lists its fields using the 
 const ClusterConfigurationStep = () => (
   <>
     <StringFieldDefinition path="release_image" label="Release Image" />
-    <NodeSetsFieldEditor />
   </>
 );
 ```
 
-**Network attachments handling (VM and Bare Metal):** The `network_attachments` field is not shown in any wizard step. The Catalog Item create payload includes it as `fields.network_attachments`, using `ComputeNetworkAttachmentListFieldPolicy` for VM or `BareMetalNetworkAttachmentListFieldPolicy` for Bare Metal. An editable policy can carry `default_value: { items: [...] }`, but `default_value` can also be omitted. The provisioning request carries `catalog_item` and tenant-supplied `network_attachments`; an omitted or explicitly empty tenant list is treated as no input, while a non-empty list overrides an editable default. Fulfillment resolves the policy, applies default-network injection when the resolved list remains empty, rejects empty locked/default policy values, and performs final resource validation. Omitting a JSON `validation_schema` does not bypass typed policy checks or resource validation; existing workload attachments are not updated in place.
-**NodeSetsFieldEditor (Cluster only) — revised 2026-07-27, template-driven:**
+**Networking handling:** Catalog management does not construct or modify resource networking fields. For Bare Metal, tenant users cannot configure networking until the `BareMetalInstance` networking API exists. Other resource types continue to use their existing resource provisioning flows.
 
-**Location:** `libs/ui-components/src/components/catalogManagement/fieldDefinitions/NodeSetsFieldEditor.tsx`
-
-The `node_sets` field is a `map<string, ClusterNodeSet>` where each entry has a `host_type` (string reference to a HostType resource) and a `size` (int32, number of nodes). **The map key and host type are not admin-composable — they are the same key/host-type pairs already defined on the selected `ClusterTemplate.node_sets`.** fulfillment-service's `PrivateClustersServer.validateNodeSets` (`internal/servers/private_clusters_server.go`) rejects any `node_sets` entry whose map key isn't a key on the template, or whose host type doesn't match the template's value for that key — so an admin cannot construct an invalid default even by mistake. This superseded an earlier revision of this design that had the map key "auto-derived from the host type" and reused the tenant wizard's freely add/remove `ClusterNodeSetsArrayField`; that model didn't hold once the backend validation above was confirmed (see [OSAC-1421 discussion](https://github.com/osac-project/osac-ui/pull/99), [OSAC-2936 PR #102](https://github.com/osac-project/osac-ui/pull/102)).
-
-**Rendering — one fixed row per template node set, no `ClusterNodeSetsArrayField` reuse:** `NodeSetsFieldEditor` takes the selected `ClusterTemplate` as a prop (resolved from the already-fetched template list by the id chosen on the General step) and renders exactly one row per key in `template.nodeSets` — no add, no remove. Each row shows the node-set key as its label and the host type as **read-only** text (resolved to a display name via `useHostTypes()`, falling back to the raw id while loading or if not found); the only input is **Nodes** (`size`, a number field). If no template is selected yet, the editor shows an info message instead of rows; if the selected template has no `node_sets`, it shows a different info message instead of an empty table.
-
-**Admin-specific controls** (rendered above the per-template-key rows):
-
-- **Editable** toggle — controls whether tenant users can modify the size of existing node sets during provisioning. When non-editable, the default sizes are locked.
-- **Size validation constraints** — minimum and maximum number inputs for the `size` field, applied across all node sets.
-
-(The former **Allow add/remove** toggle is removed — it controlled a capability, adding/removing node sets, that tenants can no longer have: the set of node sets is fixed by the template.)
-
-**Formik state for node_sets:**
-
-```typescript
-// fieldDefinitions.node_sets.sizeByKey: Record<string, string> — keyed by the template's own node-set key
-// fieldDefinitions.node_sets.editable: boolean
-// fieldDefinitions.node_sets.sizeMin?: string
-// fieldDefinitions.node_sets.sizeMax?: string
-```
-
-On submission, the `node_sets` field definition is built by iterating the **template's** `node_sets` keys (not the Formik state's keys), pairing each with the admin-entered size and the template's own `host_type`:
-
-```json
-{
-  "path": "node_sets",
-  "editable": true,
-  "default": {
-    "compute": { "host_type": "acme_1tb", "size": 3 },
-    "gpu": { "host_type": "acme_1tb_h100", "size": 1 }
-  },
-  "validationSchema": {
-    "type": "object",
-    "additionalProperties": {
-      "type": "object",
-      "properties": {
-        "size": { "minimum": 1, "maximum": 10 }
-      }
-    }
-  }
-}
-```
-
-**Yup validation for node_sets:** built dynamically from the selected template's current node-set keys — one positive-size check per key, rather than a fixed shape:
-
-```typescript
-const nodeSetsSchema = (templateNodeSetKeys: string[]) =>
-  Yup.object({
-    sizeByKey: Yup.object(
-      Object.fromEntries(
-        templateNodeSetKeys.map((key) => [
-          key,
-          Yup.string().test(
-            'positive-size',
-            'Size must be a positive number',
-            (value) => Number.isFinite(Number(value)) && Number(value) > 0,
-          ),
-        ]),
-      ),
-    ),
-  });
-```
-
-Because `templateNodeSetKeys` comes from the template rather than admin input, there is no duplicate-host-type or minimum-row-count check to write — the template's keys are already unique by construction, and an empty `node_sets` on the template is handled by the empty-state message above rather than a validation error.
+**Cluster node sets:** v1 Catalog authoring does not create `node_sets` field definitions. The v1 provisioning wizard composes node-set rows independently. Catalog v2 defines the future typed per-node-set size policy.
 
 #### 9. Validation Constraints
 
@@ -594,7 +510,6 @@ Validation constraints are built into each shared field definition primitive rat
 | `NumberFieldDefinition` | Min/max number inputs | `{ "minimum": N, "maximum": N }` |
 | `ResourceSelectorFieldDefinition` | None (backend validates at provisioning) | — |
 | `BooleanFieldDefinition` | None | — |
-| `NodeSetsFieldEditor` | Per-entry size min/max | See §8 |
 
 Each primitive constructs its JSON Schema from the structured inputs. When no constraints are configured, `validationSchema` is omitted from the payload (the API treats a missing or empty Struct as no validation).
 
@@ -635,11 +550,9 @@ libs/ui-components/src/
         NumberFieldDefinition.tsx   # number field with min/max validation
         ResourceSelectorFieldDefinition.tsx  # resource dropdown, no validation
         BooleanFieldDefinition.tsx  # boolean toggle
-        NodeSetsFieldEditor.tsx     # node_sets map editor (Cluster only)
       steps/
         cluster/
           ClusterConfigurationStep.tsx
-          ClusterNetworkingStep.tsx
           ClusterAccessStep.tsx
         compute-instance/
           VMConfigurationStep.tsx
@@ -703,7 +616,7 @@ No new observability changes. The UI is a frontend application — observability
 
 Adding a catalog management section increases the UI surface area and introduces the first role-gated navigation in osac-ui. This creates a precedent that future admin features will follow, adding complexity to the navigation and routing system. The alternative — managing catalog items exclusively via CLI — avoids this complexity but provides a poor admin experience for non-technical cloud provider administrators.
 
-Each wizard step is a per-kind component with static, hardcoded fields using shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`). This mirrors the tenant user provisioning wizard pattern but adds editable/default/validation controls per field. The `node_sets` field adds further complexity with its dedicated `NodeSetsFieldEditor` for map-of-objects structure, template-driven rather than freely composed. The implementation will require thorough testing to handle edge cases (validation state management, type-aware default inputs, no-template-selected and template-has-no-node-sets states). All fields from the resource spec are shown as static form fields, which simplifies the UX (no add/remove mechanism for fields) but means each per-kind step component must be kept in sync with the proto definitions.
+Each wizard step is a per-kind component with static, hardcoded fields using shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`). This mirrors the tenant user provisioning wizard pattern but adds editable/default/validation controls per field. Cluster node-set sizing is intentionally deferred to Catalog v2 rather than duplicated in this v1 UI. The implementation will require thorough testing to handle edge cases (validation state management and type-aware default inputs). All supported non-network fields from the resource spec are shown as static form fields, which simplifies the UX (no add/remove mechanism for fields) but means each per-kind step component must be kept in sync with the proto definitions.
 
 The JSX composition approach shares common components across three sets of kind-specific pages. This avoids the indirection of a single config-driven component but introduces more files (three page sets instead of one). The shared components ensure consistency while allowing per-kind divergence where needed.
 
@@ -780,13 +693,11 @@ Testing strategy for the catalog management UI:
 - Scope selector: verify CSP Admin sees General/Organization options; verify Tenant Admin sees Organization/Project options; verify tenant dropdown appears for Organization scope; verify project dropdown appears for Project scope
 - Scope badge: verify badge renders correctly for all three scope levels (General, Organization, Project)
 - Unsupported schema detection: verify schemas with unsupported keywords show read-only "use CLI" message; schemas with only supported keywords show structured controls
-- Network attachments auto-inclusion (VM and Bare Metal): verify both wizards omit the field, use the resource-specific typed policy, support an optional `default_value.items`, preserve the zero-or-one service contract, and allow omitted or explicitly empty tenant lists to resolve through catalog/default-network defaults; verify empty locked/default policies are rejected, omitted JSON `validation_schema` does not bypass typed policy or resource validation, and Cluster uses `pod_cidr`/`service_cidr` in its Networking step
-- NodeSetsFieldEditor: verify rows render one-per-template-node-set with host type read-only; verify no template selected shows an info message; verify template with no node sets shows an info message; verify size constraints serialization
+- Networking ownership: verify Catalog Item payloads contain no networking fields and resource provisioning retains its ordinary networking inputs and validation
 
 **Component-level tests (required):**
 - Per-kind step components: verify each step renders correct static fields for its resource type; verify field definition primitives render editable toggle, default value, and validation; verify ssh_key/pull_secret default to editable in Access steps
 - Field definition primitives: verify StringFieldDefinition renders regex pattern option; verify NumberFieldDefinition renders min/max; verify ResourceSelectorFieldDefinition renders dropdown from API; verify BooleanFieldDefinition renders toggle
-- NodeSetsFieldEditor (Cluster only): verify rows come from the selected template's `node_sets` keys with host type read-only (resolved via HostTypes API for display only); verify size validation (positive number per template key, min/max); verify no-template and template-has-no-node-sets empty states; verify serialization to field definition payload uses the template's keys and host types
 - Validation constraints per primitive: verify StringFieldDefinition produces correct pattern schema; verify NumberFieldDefinition produces correct min/max schema; verify empty constraints produce omitted validationSchema
 - Unsupported schema handling: verify existing CLI-created items with complex schemas show read-only "use CLI" message; verify supported schemas show editable structured controls
 
@@ -806,7 +717,7 @@ The UI feature will be considered complete when:
 - Role-gated navigation is working for all three roles
 - All per-kind step components render the correct static fields with shared field definition primitives
 - All E2E tests pass (scenarios listed in the Test Plan)
-- Unit tests pass for Yup schemas, FieldMask construction, JSON Schema assembly, and network attachments auto-inclusion
+- Unit tests pass for Yup schemas, FieldMask construction, JSON Schema assembly, and Catalog Item exclusion of resource networking
 - Component-level tests pass for per-kind step components and field definition primitives
 - The "Provisioned Resources" tab on the detail page shows related resources (dependent on Open Question 3)
 - Admin user guide is published to the docs repo

@@ -152,7 +152,7 @@ This design replaces `HostType` with `BareMetalInstanceType` and the static agen
 
    This flows through to the proto as `ClusterNodeSet.baremetal_instance_type` (replacing `ClusterNodeSet.host_type`) and to the CRD as `NodeRequest.BareMetalInstanceType` (replacing `NodeRequest.ResourceClass`).
 
-3. Creates the system-owned `BareMetalInstanceCatalogItem` — a pass-through with unlocked parameters so the CaaS controller can set image, user_data, and the single `network_attachments` entry (the field remains plural for API compatibility) (one-time deployment prerequisite):
+3. Creates the system-owned `BareMetalInstanceCatalogItem` — a pass-through for the non-network values the CaaS controller must supply (image and user_data). Resource networking is supplied directly in the resource Create request and is not a Catalog Item field (one-time deployment prerequisite):
 
    ```bash
    osac-admin create baremetalinstancecatalogitem caas-system-bmi --unlocked
@@ -221,7 +221,8 @@ The diagram shows the end-to-end provisioning flow. The controller waits for eac
    | Field | Source | Purpose |
    |---|---|---|
    | `instance_type` | `nodeRequests[i].BareMetalInstanceType` | Hardware profile → host_label_selector → inventory match |
-   | `catalog_item` | System-owned pass-through | Required by private API; CaaS overrides all parameters |
+   | `catalog_item` | System-owned pass-through | CaaS selects the Catalog Item path; Catalog v2 requires exactly one of `catalog_item` or `template` |
+   | `template` | Not set by CaaS | Template-only creates remain valid; requests containing both or neither source are rejected |
    | `image` | `ClusterVersion.disk_image` → DiskImage ID | RHCOS boot image for discovery agent |
    | `user_data` | InfraEnv ignition (inline, ~15KB, max 64KB) | Discovery ignition to register with assisted-service |
    | `network_attachments` | `networkAttachment` + stored node-set `fabric_interface` | The sole attachment from `ClusterNetworkAttachment`; the stored interface was selected from the first `fabric` port during cluster creation, with `primary: true` (see Network Attachment Enrichment); BMaaS rejects additional entries |
@@ -539,13 +540,13 @@ The CLI must support setting the `disk_image` reference on ClusterVersion — th
 
 #### BMI Creation via Private API
 
-For each worker, the controller calls `BareMetalInstances.Create` on the private API. The private API is unchanged — `spec.catalog_item` remains required. CaaS uses a **system-owned `BareMetalInstanceCatalogItem`** with most parameters unlocked, acting as a pass-through. The `BareMetalInstanceType` from the node set determines the hardware profile. The `source_type` value `"disk_image"` on `BareMetalInstanceImage` is introduced by the DiskImage integration (OSAC-1270) — this design consumes it but does not own the proto change:
+For each worker, the controller calls `BareMetalInstances.Create` on the private API. Catalog v2 requires exactly one of `spec.catalog_item` or `spec.template`; the CaaS controller selects the system-owned Catalog Item path. Template-only creates remain valid, while requests containing both or neither source are rejected. CaaS uses a **system-owned `BareMetalInstanceCatalogItem`** with most parameters unlocked, acting as a pass-through. The `BareMetalInstanceType` from the node set determines the hardware profile. The `source_type` value `"disk_image"` on `BareMetalInstanceImage` is introduced by the DiskImage integration (OSAC-1270) — this design consumes it but does not own the proto change:
 
 ```protobuf
 // Existing fields in osac.private.v1.BareMetalInstanceSpec used by CaaS
 // (field numbers omitted for clarity — see baremetal_instance_type.proto for canonical numbering):
 message BareMetalInstanceSpec {
-  BareMetalInstanceCatalogItemReference catalog_item = ...; // system-owned catalog item (pass-through)
+  BareMetalInstanceCatalogItemReference catalog_item = ...; // CaaS selects the Catalog Item path; exactly one source is required
   optional BareMetalInstanceImage image = ...;              // RHCOS DiskImage reference (see RHCOS DiskImage Resolution)
   optional string user_data = ...;                          // inline discovery ignition content (max 64KB)
   repeated BareMetalNetworkAttachment network_attachments = ...; // max 1; plural for API compatibility
@@ -559,7 +560,7 @@ message BareMetalInstanceImage {
 }
 ```
 
-The system-owned catalog item is created automatically, not by an admin. Because CaaS bare-metal provisioning is only usable once (a) CaaS is deployed, (b) a BMaaS backend is integrated, and (c) at least one `BareMetalInstanceType` is registered, the catalog item is seeded by the same automation that enables the CaaS-on-bare-metal integration — not by the base OSAC install (which may run without BMaaS). Concretely, the osac-installer creates it as a `system`-tenant `BareMetalInstanceCatalogItem` with all provisioning parameters unlocked when the bare-metal integration is enabled; the CaaS controller then reconciles against it (creating it if missing) so a fresh deployment is self-healing rather than dependent on install ordering. The item carries unlocked parameters so the controller can set image, user_data, and the one allowed network attachment. The `BareMetalInstanceType` referenced in the `ClusterNodeSet` — not this catalog item — determines which host hardware profile BMaaS allocates.
+The system-owned Catalog Item is created automatically, not by an admin. Because CaaS bare-metal provisioning is only usable once (a) CaaS is deployed, (b) a BMaaS backend is integrated, and (c) at least one `BareMetalInstanceType` is registered, the Catalog Item is seeded by the same automation that enables the CaaS-on-bare-metal integration — not by the base OSAC install (which may run without BMaaS). Concretely, the osac-installer creates it as a `system`-tenant `BareMetalInstanceCatalogItem` with the supported non-network values unlocked when the bare-metal integration is enabled; the CaaS controller then reconciles against it (creating it if missing) so a fresh deployment is self-healing rather than dependent on install ordering. The item carries only the non-network pass-through values. The controller supplies `network_attachments` directly on the resource Create request. The `BareMetalInstanceType` referenced in the `ClusterNodeSet` — not this Catalog Item — determines which host hardware profile BMaaS allocates.
 
 Open item: whether the seed lives in the installer chart or is reconciled entirely by the controller is an implementation choice; either way the contract is that no human creates this item, and it does not exist until a `BareMetalInstanceType` is available to reference.
 

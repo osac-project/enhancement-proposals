@@ -49,7 +49,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to create a catalog item by selecting a resource type and choosing an existing template for that type, so the catalog item is backed by a known, working template.
 
-* As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item. The system presents all fields from the resource spec (e.g., ComputeInstanceSpec or ClusterSpec), and I configure each one — I do not need to manually specify field paths. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist.
+* As a Cloud Provider Admin, I need to configure which supported non-network resource fields are pre-set vs. editable when creating a catalog item. The system presents all supported non-network fields from the resource spec (e.g., ComputeInstanceSpec or ClusterSpec), and I configure each one — I do not need to manually specify field paths. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist.
 
 * As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails. Validation constraints are specified as a JSON Schema (draft 2020-12) object stored in the field definition's `validation_schema` field. Constraint types and examples:
 
@@ -72,11 +72,6 @@ don't have the ability to add or modify ansible roles.
 
   **List and map constraints:**
   - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
-    Example: `network_attachments` with `{"minItems": 1, "maxItems": 1}` locks a VM to exactly one network attachment — the user can choose which subnet and security groups but cannot add a second NIC.
-    `network_attachments` uses `maxItems: 1` for current VMaaS and BMaaS
-    resources. A catalog schema must not advertise more than one attachment;
-    the backend rejects additional entries even when a catalog item omits a
-    field-level schema.
     Example: `additional_disks` with `{"maxItems": 0}` prevents users from adding any additional disks beyond the boot disk.
   - **Map entry count** (`minProperties`, `maxProperties`): same pattern for map fields.
     Example: `node_sets` with `{"minProperties": 2, "maxProperties": 2}` locks a cluster to exactly two node sets (e.g., control-plane + workers) — the user can edit each node set's `size` but cannot add or remove node sets.
@@ -157,7 +152,7 @@ created. Both will have similar properties, so we'll use Cluster as an example:
 
 ClusterCatalogItem
 * references an existing ClusterTemplate by ID
-* includes a list of field definitions, each of which specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The UI always includes all fields from the resource spec, but the API accepts partial field lists (e.g., CLI-created items may include only a subset).
+* includes a list of field definitions, each of which specifies a supported non-network field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The UI always includes all supported non-network fields from the resource spec, but the API accepts partial field lists (e.g., CLI-created items may include only a subset).
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
 * uses the existing `metadata.project` field (available on all OSAC resources) to optionally scope visibility to a specific project within the tenant. When `metadata.project` is empty, the item is visible to all projects within the tenant.
@@ -231,8 +226,8 @@ Two new message types will be added to the proto definitions in
 - `description` (string) - markdown-formatted long description
 - `template` (string) - references a `ClusterTemplate` by ID
 - `fields` (repeated FieldDefinition) - ordered list of field definitions that
-  specify which resource spec fields are pre-defined by the admin and which are
-  editable by the user. The UI includes all resource spec fields; the API
+  specify which supported non-network resource spec fields are pre-defined by the admin and which are
+  editable by the user. The UI includes all supported non-network resource spec fields; the API
   accepts partial lists for CLI and programmatic use
 - `published` (bool) - when false (the default), the item is hidden from Tenant
   Users; Cloud Provider Admins and Tenant Admins can see unpublished items
@@ -307,24 +302,15 @@ Specifically, the server:
 ##### Field definitions
 
 The `fields` list defines the contract between the admin and the user for a
-given catalog item. The UI includes all fields from the resource spec (e.g.,
-all fields in `ComputeInstanceSpec` for a `ComputeInstanceCatalogItem`), but
+given catalog item. The UI includes all supported non-network fields from the resource spec (e.g.,
+all supported non-network fields in `ComputeInstanceSpec` for a `ComputeInstanceCatalogItem`), but
 the API accepts partial field lists — not all fields need to be included.
 Fields not listed in `fields` are not managed by the catalog item. The server
 rejects catalog items that reference fields not defined in the resource spec.
 
-Networking fields (`network_attachments`) are not shown in the catalog item
-creation wizard. The UI includes them in the Catalog Item payload as typed
-field policies: `ComputeNetworkAttachmentListFieldPolicy` for VM items and
-`BareMetalNetworkAttachmentListFieldPolicy` for Bare Metal items. An editable
-policy may omit its `default_value` or provide typed `items`. During
-provisioning, an omitted or explicitly empty tenant list is treated as no
-input, allowing the editable Catalog default and subsequent default-network
-injection; non-empty tenant values override an editable default. Empty locked
-or default policy values are rejected, and normal resource validation remains
-authoritative.
-Both VMaaS and BMaaS still validate that the resolved list contains at most
-one entry; omitting a catalog schema does not enable additional NICs.
+Networking is not a Catalog Item field. Network attachments and other resource
+networking inputs remain part of the ordinary resource provisioning flow and
+are not added, defaulted, validated, or constrained by a Catalog Item.
 
 The dot-notation `path` references fields within the resource spec. Nested
 fields and map entries are supported. For example:

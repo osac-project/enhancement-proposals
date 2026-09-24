@@ -12,6 +12,7 @@ see-also:
   - "/enhancements/tenant-specific-storageclasses"
   - "/enhancements/storage-tier-OSAC-1110"
   - "/enhancements/storage-backend-osac-1111"
+  - "/enhancements/OSAC-3538-catalog-items-v2"
 replaces:
   - N/A
 superseded-by:
@@ -22,7 +23,7 @@ superseded-by:
 
 ## Summary
 
-This enhancement enables per-disk storage tier selection for ComputeInstances. A `storage_tier` field is added to `ComputeInstanceDisk` across the full OSAC stack -- proto definitions, fulfillment-service validation/defaults, CRD types, and AAP roles. Each disk can use a different tier (e.g., "fast" for a boot disk, "archive" for a data disk), with a mandatory resolution chain (user input > CatalogItem defaults > Template defaults) ensuring every disk has a tier before provisioning. See [PRD](prd.md) for detailed requirements.
+This enhancement enables per-disk storage tier selection for ComputeInstances. A `storage_tier` field is added to `ComputeInstanceDisk` across the full OSAC stack -- proto definitions, fulfillment-service validation/defaults, CRD types, and AAP roles. Each disk can use a different tier (e.g., "fast" for a boot disk, "archive" for a data disk). Boot disk tiers resolve from user input or Template defaults; additional disk tiers are explicitly supplied by the user. Catalog governance for `storage_tier` and `additional_disks` is deferred until the typed reference semantics described by [Catalog Items v2](../OSAC-3538-catalog-items-v2/design.md) are available. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -47,14 +48,14 @@ This design adds `storage_tier` to `ComputeInstanceDisk`, making it a required f
 
 The change adds a single field -- `storage_tier` (proto) / `StorageTier` (CRD) -- to the disk specification at every layer: proto definitions (private and public), CRD types, fulfillment-service validation and defaults merging, reconciler mapping, and AAP per-disk StorageClass resolution. The `STORAGE_REQUESTED_TIER` environment variable is removed.
 
-The tier is mandatory. After applying the resolution chain (user input, CatalogItem FieldDefinition defaults, Template SpecDefaults), every disk must have a non-empty `storage_tier`. If resolution fails, the fulfillment-service returns a clear error and does not create the ComputeInstance.
+The tier is mandatory. After applying user input and Template SpecDefaults for the boot disk, and user input for additional disks, every disk must have a non-empty `storage_tier`. If resolution fails, the fulfillment-service returns a clear error and does not create the ComputeInstance.
 
 ### Workflow Description
 
 #### Actors
 
-- **Cloud Provider Admin / Cloud Infrastructure Admin**: Configures StorageTier resources (OSAC-1110) and CatalogItems with tier defaults.
-- **Tenant Admin**: Creates tenant-scoped CatalogItems with pre-configured tier values.
+- **Cloud Provider Admin / Cloud Infrastructure Admin**: Configures StorageTier resources (OSAC-1110) and ComputeInstanceTemplates with boot disk defaults.
+- **Tenant Admin**: Uses CatalogItems for resource selection and chooses explicit storage tiers where Template defaults do not apply.
 - **Tenant User**: Creates ComputeInstances, optionally specifying per-disk tiers.
 
 #### Starting State
@@ -63,88 +64,66 @@ StorageTier resources exist (OSAC-1110). StorageClasses are labeled with `osac.o
 
 #### Happy Path 1: Tenant User Creates a ComputeInstance with Explicit Tiers
 
-1. A CatalogItem exists with FieldDefinitions: `boot_disk.storage_tier` default `"standard"`, `additional_disks` default `[{size_gib: 500, storage_tier: "standard"}]`.
+1. A CatalogItem exists for the selected ComputeInstanceTemplate.
 2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk: {size_gib: 100, storage_tier: "fast"}` and `additional_disks: [{size_gib: 200, storage_tier: "archive"}]`.
-3. Fulfillment-service applies FieldDefinitions — no override needed since user provided all values.
+3. Fulfillment-service preserves the explicitly supplied values.
 4. Fulfillment-service validates that `"fast"` and `"archive"` exist as StorageTier resources via the private StorageTier API.
 5. Fulfillment-service persists the ComputeInstance with the validated tiers.
 6. Reconciler maps proto fields to CRD: `spec.bootDisk.storageTier: "fast"`, `spec.additionalDisks[0].storageTier: "archive"`.
 7. AAP receives the CR payload. The `tenant_storage_class` role resolves each disk's tier to a tenant-specific StorageClass. Each DataVolume uses its own StorageClass.
 
-#### Happy Path 2: Boot Disk Tier Resolved from CatalogItem Defaults
+#### Happy Path 2: Boot Disk Tier Resolved from Template Defaults
 
-1. A CatalogItem exists with a FieldDefinition: `boot_disk.storage_tier` default `"standard"`. No `additional_disks` default.
-2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.size_gib: 100` (no `storage_tier`) and no additional disks.
-3. Fulfillment-service applies FieldDefinitions: `boot_disk.storage_tier` defaults to `"standard"`.
+1. A CatalogItem exists for a ComputeInstanceTemplate whose SpecDefaults define `boot_disk: {size_gib: 50, storage_tier: "standard"}`.
+2. Tenant User creates a ComputeInstance using this CatalogItem with no `boot_disk` at all and no additional disks.
+3. Fulfillment-service merges Template SpecDefaults: the template's `boot_disk` carries `storage_tier: "standard"` and `size_gib: 50`.
 4. Fulfillment-service validates `"standard"` exists.
 5. Provisioning proceeds.
 
-#### Happy Path 3: User Accepts CatalogItem Additional Disks Default
+#### Happy Path 3: User Provides Additional Disk Tiers
 
-1. A CatalogItem exists with a FieldDefinition: `path: "additional_disks"`, `default: [{size_gib: 500, storage_tier: "fast"}]`.
-2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "standard"` and omits `additional_disks` (field not set).
-3. Fulfillment-service detects `additional_disks` is absent (`!HasAdditionalDisks()`), applies the CatalogItem default: `[{size_gib: 500, storage_tier: "fast"}]`.
-4. Fulfillment-service validates that `"standard"` and `"fast"` exist as StorageTier resources.
-5. Provisioning proceeds with boot disk on `"standard"` and one additional disk on `"fast"`.
+1. A CatalogItem exists for a ComputeInstanceTemplate. The Template SpecDefaults do not contain an `additional_disks` field.
+2. Tenant User creates a ComputeInstance with `boot_disk.storage_tier: "standard"` and `additional_disks: [{size_gib: 200, storage_tier: "archive"}]`.
+3. Fulfillment-service preserves the user-provided additional disk and validates both tiers.
+4. Provisioning proceeds with the requested boot and additional disk tiers.
 
-#### Happy Path 4: User Overrides CatalogItem Additional Disks Default
+#### Happy Path 4: User Explicitly Requests No Additional Disks
 
-1. A CatalogItem exists with `additional_disks` default `[{size_gib: 500, storage_tier: "fast"}]`.
-2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "standard"` and `additional_disks: [{size_gib: 200, storage_tier: "archive"}]`.
-3. Fulfillment-service detects `additional_disks` is present (`HasAdditionalDisks()`), uses the user-provided value — the CatalogItem default is ignored.
-4. Fulfillment-service validates that `"standard"` and `"archive"` exist as StorageTier resources.
-5. Provisioning proceeds with boot disk on `"standard"` and one additional disk on `"archive"`.
-
-#### Happy Path 5: User Explicitly Requests No Additional Disks
-
-1. A CatalogItem exists with `additional_disks` default `[{size_gib: 500, storage_tier: "fast"}]`.
-2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "standard"` and `additional_disks: []` (empty array).
-3. Fulfillment-service detects `additional_disks` is present (`HasAdditionalDisks()`) with zero elements — the CatalogItem default is ignored.
-4. Provisioning proceeds with boot disk only, no additional disks.
-
-#### Happy Path 6: Boot Disk Tier Resolved from Template Defaults
-
-1. A CatalogItem exists with no FieldDefinition for `boot_disk.storage_tier`. Template SpecDefaults: `boot_disk: {size_gib: 50, storage_tier: "standard"}`.
-2. Tenant User creates a ComputeInstance using this CatalogItem with no `boot_disk` at all and no additional disks.
-3. Fulfillment-service applies FieldDefinitions — no `boot_disk.storage_tier` default found.
-4. Fulfillment-service merges Template SpecDefaults: the template's `boot_disk` carries `storage_tier: "standard"` and `size_gib: 50`.
-5. Fulfillment-service validates `"standard"` exists.
-6. Provisioning proceeds.
+1. A CatalogItem exists for a ComputeInstanceTemplate.
+2. Tenant User creates a ComputeInstance with `boot_disk.storage_tier: "standard"` and `additional_disks: []`.
+3. Fulfillment-service preserves the explicit empty list.
+4. Provisioning proceeds with the boot disk only.
 
 #### Additional Disk Defaulting Semantics
 
-The boot disk and additional disks follow different defaulting rules:
+Template SpecDefaults cover only `boot_disk`; the template model has no
+`additional_disks` field. The boot disk may therefore receive a Template default
+when the user does not provide one. Additional disks are user supplied: omitting
+the field means no additional disks are created, an empty array explicitly keeps
+the list empty, and every supplied disk must include both `size_gib` and
+`storage_tier`.
 
-- **Boot disk** supports per-field defaults through CatalogItem FieldDefinitions (`boot_disk.storage_tier` path) and Template SpecDefaults (`boot_disk` field). This works because the boot disk is a known, single, always-present disk -- an admin can meaningfully pre-select a tier for it.
-
-- **Additional disks** can be defaulted as a whole array through a CatalogItem FieldDefinition with `path: "additional_disks"`. This follows the same whole-array field-definition mechanism as `network_attachments`: the path resolver does not support per-element field addressing (e.g., `additional_disks[0].storage_tier`), so the default covers the entire array -- size and tier for each element. Its presence semantics are specific to `additional_disks`: an explicit empty array opts out. If the user wants to change anything -- just the size, just the tier, or the number of disks -- they must provide the entire `additional_disks` array, since there is no per-element merging.
-
-When the CatalogItem defines an `additional_disks` default, the distinction between an omitted field and an empty array is significant:
-- **Field omitted** (`!HasAdditionalDisks()`): the CatalogItem default applies. The user accepts whatever additional disks the admin pre-configured.
-- **Empty array** (`additional_disks: []`): the user explicitly opts out of additional disks.
-- **Non-empty array**: the user provides their own additional disks, replacing the CatalogItem default entirely.
-
-This means that choosing a CatalogItem with default additional disks is an implicit acceptance: if the user does not want those disks, they must explicitly opt out by sending an empty array.
-
-When the CatalogItem does not define an `additional_disks` default, omitting the field simply means no additional disks are created. When the user provides additional disks (directly or via CatalogItem default), every disk must include both `size_gib` and `storage_tier`.
+Catalog v2 intentionally defers `storage_tier` and `additional_disks` policy
+support until StorageTier reference, canonicalization, and delete-protection
+semantics are defined. This enhancement does not add CatalogItem defaults or
+locks for either field.
 
 #### Error Path 1: Boot Disk Tier Not Resolved
 
-1. A CatalogItem exists with no FieldDefinition for `boot_disk.storage_tier`. Template SpecDefaults: `boot_disk: {size_gib: 50}` (no `storage_tier`).
-2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.size_gib: 100` (no `storage_tier`).
-3. Fulfillment-service applies FieldDefinitions — no `boot_disk.storage_tier` default found.
-4. Fulfillment-service merges Template SpecDefaults — template's `boot_disk` has no `storage_tier` either.
-5. Fulfillment-service returns `INVALID_ARGUMENT`: `"boot_disk.storage_tier is required but was not provided by user input, catalog item defaults, or template defaults"`.
+1. A CatalogItem exists for a ComputeInstanceTemplate whose SpecDefaults define `boot_disk: {size_gib: 50}` without `storage_tier`.
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.size_gib: 100` and no `storage_tier`.
+3. Fulfillment-service merges Template SpecDefaults, but no storage tier is available.
+4. Fulfillment-service returns `INVALID_ARGUMENT`: `"boot_disk.storage_tier is required but was not provided by user input or template defaults"`.
 
 #### Error Path 2: Additional Disk Missing Tier
 
-1. A CatalogItem exists with `additional_disks` default `[{size_gib: 500, storage_tier: "standard"}]`.
-2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "fast"` and `additional_disks: [{size_gib: 200}]` (no `storage_tier`). The user-provided array replaces the CatalogItem default.
+1. A CatalogItem exists for a ComputeInstanceTemplate.
+2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "fast"` and `additional_disks: [{size_gib: 200}]` (no `storage_tier`).
 3. Fulfillment-service returns `INVALID_ARGUMENT`: `"additional_disks[0].storage_tier is required"`.
 
 #### Error Path 3: Tier Not Available
 
-1. A CatalogItem exists with FieldDefinition: `boot_disk.storage_tier` default `"standard"`.
+1. A CatalogItem exists for a ComputeInstanceTemplate.
 2. Tenant User creates a ComputeInstance using this CatalogItem with `boot_disk.storage_tier: "nonexistent"`.
 3. Fulfillment-service queries the StorageTier API — no match found.
 4. Fulfillment-service returns `INVALID_ARGUMENT`: `"storage tier \"nonexistent\" does not exist"`.
@@ -163,7 +142,6 @@ sequenceDiagram
     participant Role as tenant_storage_class
 
     User->>FS: POST /compute_instances<br/>{boot_disk: {size_gib: 100, storage_tier: "fast"},<br/>additional_disks: [{size_gib: 200, storage_tier: "archive"}]}
-    FS->>FS: Apply CatalogItem FieldDefinitions
     FS->>FS: Apply Template SpecDefaults
     FS->>FS: Validate storage_tier exists (StorageTier API)
     FS->>DB: Persist ComputeInstance
@@ -188,7 +166,7 @@ The diagram shows the full flow from API request through the four-layer stack. T
 
 This enhancement modifies existing API surfaces. No new CRDs, admission webhooks, or finalizers are introduced.
 
-**Proto API (private + public):** `ComputeInstanceDisk` message gains `optional string storage_tier = 2`. Existing CRUD operations on ComputeInstances, Templates, and CatalogItems carry the new field without RPC changes.
+**Proto API (private + public):** `ComputeInstanceDisk` message gains `optional string storage_tier = 2`. Existing CRUD operations on ComputeInstances and Templates carry the new field without RPC changes. CatalogItem storage policy support is deferred.
 
 **CRD (osac-operator):** `DiskSpec` gains `StorageTier string`. The existing `XValidation:rule="self == oldSelf"` on `bootDisk` and `additionalDisks` enforces immutability for the new field automatically.
 
@@ -204,13 +182,17 @@ Add `storage_tier` as field 2 to `ComputeInstanceDisk` in both private and publi
 // In both private and public compute_instance_type.proto
 message ComputeInstanceDisk {
   // Disk size in GiB.
-  int32 size_gib = 1;
+  optional int32 size_gib = 1;
   // Storage tier name. Must reference an existing StorageTier resource.
   optional string storage_tier = 2;
 }
 ```
 
-The `optional` qualifier enables explicit presence: the generated code provides `HasStorageTier()` to distinguish "not provided" from "set to empty string". Defaults merging uses `HasStorageTier()` to decide whether to apply a default; validation checks presence after the full resolution chain.
+The `optional` qualifiers enable explicit presence: the generated code provides
+`HasSizeGib()` and `HasStorageTier()` to distinguish omitted values from explicit
+values. Defaults merging uses these presence checks to apply a default only when
+the corresponding value was omitted; validation checks the resolved values after
+the full resolution chain.
 
 `ComputeInstanceTemplateSpecDefaults` inherits the new field through its existing `optional ComputeInstanceDisk boot_disk = 4` reference. No change to the template proto is needed. [Codebase: fulfillment-service/proto/private/osac/private/v1/compute_instance_template_type.proto]
 
@@ -229,7 +211,7 @@ func mergeBootDiskDefaults(spec *privatev1.ComputeInstanceSpec, defaults *privat
     }
     disk := spec.GetBootDisk()
     defDisk := defaults.GetBootDisk()
-    if disk.GetSizeGib() <= 0 && defDisk.GetSizeGib() > 0 {
+    if !disk.HasSizeGib() && defDisk.HasSizeGib() {
         disk.SetSizeGib(defDisk.GetSizeGib())
     }
     // Merge storage_tier: apply template default only if user did not provide one
@@ -241,41 +223,20 @@ func mergeBootDiskDefaults(spec *privatev1.ComputeInstanceSpec, defaults *privat
 
 The merging follows the same pattern as `size_gib`: if the user provided a value, it is preserved; otherwise the template default is applied. When the spec has no `boot_disk` at all, the entire default disk (including `storage_tier`) is cloned, which is the existing behavior.
 
-Template SpecDefaults only cover `boot_disk`. There is no `additional_disks` field in `ComputeInstanceTemplateSpecDefaults`, so additional disk tiers cannot be defaulted through templates. Additional disk tiers must come from the user or from CatalogItem FieldDefinitions. This is consistent with the existing template model -- templates default single-value spec fields, not repeated collections.
+Template SpecDefaults only cover `boot_disk`. There is no `additional_disks`
+field in `ComputeInstanceTemplateSpecDefaults`, so additional disk tiers cannot
+be defaulted through templates. Additional disk tiers must come from the user.
+This is consistent with the existing template model -- templates default
+single-value spec fields, not repeated collections.
 
-#### 3. CatalogItem FieldDefinition Support
+#### 3. Catalog Storage Governance (Deferred)
 
-CatalogItem FieldDefinitions support the path `boot_disk.storage_tier` through the existing dot-notation path resolution mechanism in `applyFieldDefinitions()`. No code changes are needed -- the `getNestedValue` and `setNestedValue` helpers already walk arbitrary dot-notation paths after marshaling the spec to JSON. [Codebase: fulfillment-service/internal/servers/catalog_item_validation.go]
+Catalog v2 intentionally defers `storage_tier` and `additional_disks` policy
+support until StorageTier reference, canonicalization, and delete-protection
+semantics are defined. This enhancement therefore does not add CatalogItem
+FieldDefinitions, defaults, or locks for either path.
 
-Example FieldDefinition for a CatalogItem that pre-selects a boot disk tier:
-
-```json
-{
-  "path": "boot_disk.storage_tier",
-  "display_name": "Boot Disk Storage Tier",
-  "editable": true,
-  "default": "standard"
-}
-```
-
-Additional disks can be defaulted as a whole array through a FieldDefinition with `path: "additional_disks"`. This follows the same whole-array mechanism as `network_attachments`: the path resolver treats array fields as opaque values, so the default covers the entire array. Unlike workload `network_attachments`, an explicitly empty `additional_disks` array is an opt-out. If the user provides their own non-empty `additional_disks`, the user-provided value replaces the entire default -- no per-element merging occurs.
-
-Example FieldDefinition for a CatalogItem that pre-configures a data disk:
-
-```json
-{
-  "path": "additional_disks",
-  "display_name": "Additional Disks",
-  "editable": true,
-  "default": [
-    {"size_gib": 500, "storage_tier": "fast"}
-  ]
-}
-```
-
-Per-element field addressing (e.g., `additional_disks[0].storage_tier`) is not supported -- the path resolver uses dot-notation only.
-
-#### 4. Fulfillment-Service Validation
+#### 3. Fulfillment-Service Validation
 
 Extend `ValidateRequiredSpecFields()` with a single `validateDisk()` function that validates both boot disk and additional disks. The function performs the full validation: nil check, size, tier presence, and tier existence against the StorageTier API.
 
@@ -314,9 +275,9 @@ for i, disk := range spec.GetAdditionalDisks() {
 }
 ```
 
-After the full resolution chain, a nil boot disk is an error — it means neither the user, CatalogItem, nor Template provided one. Additional disks are user-provided, so nil elements should not occur, but the check is defensive.
+After the supported resolution steps, a nil boot disk is an error — it means neither the user nor Template provided one. Additional disks are user-provided, so nil elements should not occur, but the check is defensive.
 
-#### 5. Reconciler Mapping (Proto to CRD)
+#### 4. Reconciler Mapping (Proto to CRD)
 
 Extend `addExplicitFields()` in `fulfillment-service/internal/controllers/computeinstance/computeinstance_reconciler_function.go` to map `storage_tier`:
 
@@ -339,7 +300,7 @@ if len(ciSpec.GetAdditionalDisks()) > 0 {
 }
 ```
 
-#### 6. CRD Type Changes
+#### 5. CRD Type Changes
 
 Add `StorageTier` to `DiskSpec` in `osac-operator/api/v1alpha1/computeinstance_types.go`:
 
@@ -364,7 +325,7 @@ The `Pattern` validation matches the tier label regex used by `groupByTier()` in
 
 Immutability is inherited: `bootDisk` uses `XValidation:rule="self == oldSelf"` which compares the entire `DiskSpec` struct. Adding `StorageTier` to the struct means it is automatically covered by the immutability check. No additional XValidation rules are needed.
 
-#### 7. AAP Changes
+#### 6. AAP Changes
 
 ##### 7a. Remove `STORAGE_REQUESTED_TIER` Environment Variable
 
@@ -426,28 +387,25 @@ storageClassName: "{{ boot_disk_storage_class }}"
 storageClassName: "{{ additional_disk_storage_classes[disk_index] }}"
 ```
 
-#### 8. Resolution Precedence Summary
+#### 7. Resolution Precedence Summary
 
 The tier resolution chain for boot disk:
 
 ```mermaid
 flowchart TD
     A[User provides boot_disk.storage_tier?] -->|Yes| B[Use user value]
-    A -->|No| C[CatalogItem FieldDefinition has default?]
-    C -->|Yes| D[Apply FieldDefinition default]
-    C -->|No| E[Template SpecDefaults has boot_disk.storage_tier?]
-    E -->|Yes| F[Apply Template default]
-    E -->|No| G[Fail: INVALID_ARGUMENT]
-    B --> H[Validate tier exists]
-    D --> H
-    F --> H
-    H -->|Exists| I[Persist and reconcile]
-    H -->|Not found| J[Fail: tier does not exist]
+    A -->|No| C[Template SpecDefaults has boot_disk.storage_tier?]
+    C -->|Yes| D[Apply Template default]
+    C -->|No| E[Fail: INVALID_ARGUMENT]
+    B --> F[Validate tier exists]
+    D --> F
+    F -->|Exists| G[Persist and reconcile]
+    F -->|Not found| H[Fail: tier does not exist]
 ```
 
-The diagram shows the three-layer precedence chain and the validation gate. User input takes priority, followed by CatalogItem defaults, then Template defaults. If none provides a tier, the request fails. After resolution, the tier is validated against the StorageTier API.
+The diagram shows the two-layer precedence chain and the validation gate. User input takes priority, followed by Template defaults. If neither provides a tier, the request fails. After resolution, the tier is validated against the StorageTier API.
 
-For additional disks, the chain is simpler: user input only (no Template or FieldDefinition defaults apply to repeated collections). Every additional disk must have an explicit `storage_tier` from the user or be omitted entirely.
+For additional disks, the chain is user input only. No Template or CatalogItem defaults apply to repeated collections. Every additional disk must have an explicit `storage_tier` or be omitted entirely.
 
 ### Security Considerations
 
@@ -485,7 +443,7 @@ No new observability changes. Existing monitoring mechanisms apply:
 
 ### Drawbacks
 
-Adding `storage_tier` as a mandatory field increases the minimum information required to create a ComputeInstance. Every Template and CatalogItem must be updated, and every additional disk must carry an explicit tier. This trades simplicity-of-use for explicitness: there is no implicit "just use whatever storage is available" path.
+Adding `storage_tier` as a mandatory field increases the minimum information required to create a ComputeInstance. Every Template that supplies a boot disk default must be updated, and every additional disk must carry an explicit tier. This trades simplicity-of-use for explicitness: there is no implicit "just use whatever storage is available" path.
 
 The trade-off is justified because implicit storage selection produced unpredictable behavior -- tenants could not reason about what storage their VMs would receive. Making the tier explicit aligns with the broader OSAC principle that Templates are fully parameterized and deterministic.
 
@@ -495,7 +453,7 @@ The trade-off is justified because implicit storage selection produced unpredict
 
 Instead of making `storage_tier` mandatory, define a system-wide default tier (e.g., via a ConfigMap or operator setting) that applies when no tier is specified. Per-disk overrides would be optional.
 
-Pros: simpler migration, fewer changes to existing Templates/CatalogItems, lower barrier to ComputeInstance creation.
+Pros: simpler migration, fewer changes to existing Templates, lower barrier to ComputeInstance creation.
 
 Cons: reintroduces implicit behavior that the team explicitly rejected in the design session. The name "default" was also rejected for tier naming. A global default means tenants cannot predict which tier they get unless they read operator configuration, defeating the purpose of per-disk selection.
 
@@ -528,13 +486,12 @@ Rejected because: tier names are data, not code. Runtime validation against the 
 - `validateDisk()` for missing and empty `storage_tier` on boot disk and additional disks.
 - `validateStorageTierExists()` with mock StorageTier client (tier found, tier not found, client error).
 - `addExplicitFields()` mapping `storage_tier` from proto to CRD for boot disk and additional disks.
-- CatalogItem FieldDefinition with `boot_disk.storage_tier` path: default application, editability, JSON Schema validation.
 
 **Unit tests (osac-operator, Ginkgo):**
 - CRD validation: `StorageTier` required, pattern validation, immutability via XValidation.
 
 **Integration tests (fulfillment-service, Kind cluster):**
-- End-to-end ComputeInstance creation with explicit tiers, template defaults, and CatalogItem defaults.
+- End-to-end ComputeInstance creation with explicit tiers and Template defaults.
 - Validation error for nonexistent tier.
 - Validation error when tier is missing after full resolution chain.
 

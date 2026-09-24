@@ -3,7 +3,7 @@ title: Configuration Wizard for Cluster and VM Resources
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-14
-last-updated: 2026-07-09
+last-updated: 2026-09-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 see-also:
@@ -22,14 +22,15 @@ superseded-by:
 ### 1.1 Goals
 
 - Tenants provision VMs and clusters by selecting a catalog offering and completing a guided wizard with a **fixed field set per resource type** ([§2.1.1](#211-static-wizard-fields)).
-- Both resource types use the same five steps: **Catalog Item → General → Configuration → Networking → Review** (submit from Review). **General** collects name and credentials; **Configuration** collects image/release, sizing, and platform parameters — not networking placement.
-- Catalog `field_definitions` overlay matching static paths on **Configuration**, **Networking**, and **General basics** fields (`spec.ssh_key`, `spec.ssh_public_key`, `spec.pull_secret`) for **display name**, **editability**, and **validation_schema**; picker-backed paths ignore overlay in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)).
+- Both resource types use the same five steps: **Catalog Item → General → Configuration → Networking → Review** (submit from Review). **General** collects name and credentials; **Configuration** collects image/release, sizing, and platform parameters — not networking placement. The Networking step collects ordinary resource inputs and is not governed by the selected Catalog Item.
+- Catalog `field_definitions` overlay matching static **non-picker, non-network Configuration** paths and **General basics** fields (`spec.ssh_key`, `spec.ssh_public_key`, `spec.pull_secret`) for **display name**, **editability**, and **validation_schema**. Networking fields are not Catalog Item fields and never receive an overlay or Catalog default.
 
 ### 1.2 Non-Goals
 
 - **BareMetalInstance** provisioning (separate PRD)
 - **Template parameters**
 - **Multi-NIC** — out of scope; the wizard submits at most one `network_attachments` entry (one VN, one subnet, security groups), with no add/remove NIC rows. The plural field is retained for API compatibility.
+- **Catalog networking governance** — network attachments and Cluster network CIDRs remain resource-owned inputs and are not locked, defaulted, or validated by a Catalog Item
 - **Cluster template `node_sets` defaults** — the wizard does **not** load, display, or apply `ClusterTemplate.spec.node_sets` (`host_type` or `size` defaults)
 - **`spec.additional_disks`** — wizard scope undecided ([§5](#5-open-decisions)); default: boot disk only
 
@@ -39,7 +40,7 @@ superseded-by:
 
 #### 2.1.1 Static wizard fields
 
-Fields are hardcoded per resource type, not discovered from `field_definitions`. **General** step always shows the static paths below; catalog `field_definitions` overlay **basics** fields only (`ssh_key` / `ssh_public_key` / `pull_secret`) for label, editability, and validation — not Configuration or Networking paths ([§2.1.2](#212-catalog-overlay-and-defaults)). **Required** column: **?** = resolved in [§5](#5-open-decisions) where noted.
+Fields are hardcoded per resource type, not discovered from `field_definitions`. **General** step always shows the static paths below; catalog `field_definitions` overlay **General basics** fields (`ssh_key` / `ssh_public_key` / `pull_secret`) and **non-picker, non-network Configuration** fields for label, editability, and validation — not networking paths ([§2.1.2](#212-catalog-overlay-and-defaults)). **Required** column: **?** = resolved in [§5](#5-open-decisions) where noted.
 
 **ComputeInstance**
 
@@ -66,6 +67,7 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 - **`spec.ssh_key`**: optional on the General step — prefill from catalog `default` when defined ([§2.1.2](#212-catalog-overlay-and-defaults)); tenant may edit when `editable: true` or clear the field. Omit from the client create payload only when the field is blank after catalog selection or user edits. Include the parsed plain string in the payload when the wizard holds a value (prefilled default or user entry).
 - **Networking**: pickers assemble a single `spec.network_attachments` entry; raw JSON not shown. The API rejects a second entry. Catalog `field_definitions` for this path (including nested paths) are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
 - The direct VM API also permits an omitted or empty attachment list and applies normal tenant-default resolution. The v1 wizard intentionally requires one picker-selected entry and always emits one; this UI requirement does not change the API's zero-or-one contract.
+- These are ordinary resource inputs; Catalog Items do not define or govern them.
 
 **Cluster**
 
@@ -88,20 +90,20 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 
 #### 2.1.2 Catalog overlay and defaults
 
-For each static **non-picker** field, match `field_definitions` by `path` (spec-relative paths such as `ssh_key`, `boot_disk.size_gib`, or `spec.image.source_ref` — fulfillment accepts both forms). **General basics** paths (`spec.ssh_key`, `spec.ssh_public_key`, `spec.pull_secret`) and **Configuration** / **Networking** non-picker paths participate in overlay. Non-matching paths are **ignored** (not on Review, not in payload).
+For each static **non-picker** field, match `field_definitions` by `path` (spec-relative paths such as `ssh_key`, `boot_disk.size_gib`, or `spec.image.source_ref` — fulfillment accepts both forms). **General basics** paths (`spec.ssh_key`, `spec.ssh_public_key`, `spec.pull_secret`) and non-network **Configuration** paths participate in overlay. Networking inputs do not participate in Catalog overlay or defaulting. Non-matching paths are **ignored** (not on Review, not in payload).
 
-**Picker-backed fields (v1):** `spec.instance_type`, `spec.network_attachments` (including nested paths such as `spec.network_attachments.subnet`), and cluster `spec.node_sets` **host type** (per-row dropdown) load options from list APIs ([§2.1.5](#215-vm-instance-type-picker-api), [§2.1.4](#214-vm-networking-picker-apis), [§2.1.6](#216-cluster-host-type-picker-api)). Matching catalog `field_definitions` for these paths are **ignored** — wizard labels, editability, validation, and **defaults** come from wizard defaults and list-API behavior only. **Cluster `spec.node_sets` (v1):** no catalog item defaults apply — the wizard does not prefill node set rows from `field_definitions` on catalog selection; the table starts empty. Catalog overlay on picker fields is **deferred** to a later release ([§5](#5-open-decisions)).
+**Picker-backed fields (v1):** `spec.instance_type` and cluster `spec.node_sets` **host type** (per-row dropdown) load options from list APIs ([§2.1.5](#215-vm-instance-type-picker-api), [§2.1.6](#216-cluster-host-type-picker-api)). Matching catalog `field_definitions` for these paths are **ignored** — wizard labels, editability, validation, and **defaults** come from wizard defaults and list-API behavior only. Networking pickers are ordinary resource inputs and are not Catalog Item fields. **Cluster `spec.node_sets` (v1):** no catalog item defaults apply — the wizard does not prefill node set rows from `field_definitions` on catalog selection; the table starts empty. Catalog overlay on picker fields is **deferred** to a later release ([§5](#5-open-decisions)).
 
 | Aspect     | Matching entry (non-picker fields, including General basics)                | No matching entry     |
 | ---------- | --------------------------------------------------------------------------- | --------------------- |
 | Label      | `display_name` or wizard default                                            | Wizard default        |
-| Editable   | `editable: false` → read-only on wizard step; blank when no catalog `default` | `true`                |
+| Editable   | `editable: false` → read-only on the Configuration or General step; blank when no catalog `default` | `true`                |
 | Default    | Catalog `default` if set; else blank                                        | Blank                 |
 | Validation | `validation_schema` maps to integer/enum/text widgets; inline errors on blur; full step validation on Next (see [§2.2](#22-wizard-behavior)) | API/wizard validation |
 
-**General basics and fulfillment create:** On catalog selection, the wizard prefills General basics fields (`ssh_key`, `ssh_public_key`, `pull_secret`) from catalog `default` when defined, using the same overlay rules as Configuration/Networking. The client create payload includes a basics value when the wizard field is non-blank (catalog default and/or user edit). When the tenant clears an optional basics field, omit it from the client payload; fulfillment may still apply the catalog `default` server-side via `applyFieldDefinitions` if one is defined.
+**General basics and fulfillment create:** On catalog selection, the wizard prefills General basics fields (`ssh_key`, `ssh_public_key`, `pull_secret`) from catalog `default` when defined, using the same overlay rules as non-network Configuration. The client create payload includes a basics value when the wizard field is non-blank (catalog default and/or user edit). When the tenant clears an optional basics field, omit it from the client payload; fulfillment may still apply the catalog `default` server-side via `applyFieldDefinitions` if one is defined.
 
-Non-editable fields (`editable: false`) are **read-only** on the wizard step (Configuration or Networking), not hidden. With a catalog `default`, the value is included in the payload. Without a catalog `default`, the field is **blank and read-only**. Read-only fields use disabled/read-only controls (same widget type as editable fields where applicable).
+Non-editable fields (`editable: false`) are **read-only** on the Configuration wizard step, not hidden. With a catalog `default`, the value is included in the payload. Without a catalog `default`, the field is **blank and read-only**. Read-only fields use disabled/read-only controls (same widget type as editable fields where applicable). Networking inputs remain normally editable and are not affected by Catalog Item state.
 
 **Default rules:** Fields start **blank** unless catalog `default` is set or a **special case** applies:
 
@@ -242,7 +244,7 @@ flowchart LR
 - Wizard provisions VM or Cluster using only [§2.1.1](#211-static-wizard-fields) payload paths plus hardcoded VM `source_type` and catalog item reference.
 - Five-step flow: Catalog Item → General → Configuration → Networking → Review; submit from Review.
 - Review shows the same values as on wizard step fields (blank, default-driven, or user-entered).
-- Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on Configuration and Networking **non-picker** fields and General **basics** fields; picker-backed paths ignore `field_definitions` in v1; catalog `default` prefills matching wizard fields on catalog selection; non-editable fields without `default` appear blank and read-only; non-editable fields with `default` appear read-only with value and are included in the client payload.
+- Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on non-network Configuration **non-picker** fields and General **basics** fields; picker-backed paths ignore `field_definitions` in v1; catalog `default` prefills matching wizard fields on catalog selection; non-editable fields without `default` appear blank and read-only; non-editable fields with `default` appear read-only with value and are included in the client payload. Networking inputs remain resource-owned.
 - VM: single `network_attachments` entry assembled from picker APIs; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
 - Cluster: `node_sets` is tenant-composed on Configuration — add/remove rows; each row has `host_type` from `HostTypes.List` and `size` > 0 only (`ClusterNodeSet`); **unique host type per row**; map key = host type id; wizard does not load or apply `ClusterTemplate.spec.node_sets`; **catalog item defaults for `spec.node_sets` do not apply in v1** (empty table on catalog selection).
 - All **?** requiredness decisions resolved before release ([§5](#5-open-decisions)).
@@ -272,7 +274,7 @@ Resolve before implementation.
 
 ### Catalog overlay on picker-backed fields (deferred)
 
-**Resolved for v1:** Ignore catalog `field_definitions` for picker-backed paths (`spec.instance_type`, `spec.network_attachments`, and nested networking paths). Picker UX is API-driven only; see [§2.1.2](#212-catalog-overlay-and-defaults).
+**Resolved for v1:** Networking fields are outside the Catalog Item field model. Picker UX for resource networking is API-driven only; see [§2.1.4](#214-vm-networking-picker-apis).
 
 **Deferred:** Catalog overlay on picker fields (including `display_name`, `editable`, `default`, `validation_schema`, catalog-default vs auto-select precedence, and defaults not present in list API options) is out of scope for v1 and may be addressed in a later release.
 

@@ -33,8 +33,9 @@ same tier picker is used for every disk, shown directly on the page: inline next
 to the boot disk size, and inline on each additional-disk row. Adding a disk
 appends a new row to the disks list, configured in place — matching the rest of
 the console's collection UX. The list of available tiers comes from the existing
-StorageTier API, and the picker respects any defaults or locked values that a
-catalog item pre-configures.
+StorageTier API. A selected Catalog Item does not pre-configure or lock these
+storage fields; boot disk defaults, when present, come from the selected
+ComputeInstanceTemplate and are resolved by the server.
 
 This is the UI counterpart to the backend design in [design.md](design.md). See
 [PRD](prd.md) for the product requirements.
@@ -43,9 +44,10 @@ This is the UI counterpart to the backend design in [design.md](design.md). See
 
 The backend design ([design.md](design.md)) makes a storage tier a **required**
 part of every disk. Once that ships, a VM can only be created if each disk names
-a tier — supplied either by the user or by a catalog/template default. The
+a tier — supplied by the user or, for the boot disk, by a Template default. The
 console has no way to supply a tier today, so every VM created from the console
-would be rejected by the server unless a default happened to cover every disk.
+would be rejected by the server unless user input or a Template default covered
+every disk.
 This design adds that missing choice to the console.
 
 Today the console treats a disk as size-only: the create wizard shows a size
@@ -64,8 +66,8 @@ choice all the way through to the create request and the VM detail views.
   rest of the console's collection UX. [User]
 - Send the tier the server expects (the tier's **name**) using the existing
   request-building code — no new plumbing. [Codebase: compute-instance-wire.ts]
-- Respect any tier defaults or locked values a catalog item defines, the same
-  way the console already handles other catalog-configured fields.
+- Send explicit user selections and leave supported boot disk Template defaults
+  to the server. Catalog storage policy is deferred to Catalog Items v2.
   [design.md §Resolution Precedence]
 
 ### Non-Goals
@@ -74,8 +76,9 @@ choice all the way through to the create request and the VM detail views.
   detail views only display it. [PRD]
 - No screens for creating or managing storage tiers themselves — a read-only
   tiers page already exists, and tier lifecycle is OSAC-1110's scope.
-- No per-row default handling for additional disks — the backend applies
-  catalog defaults to the additional-disks list as a whole. [design.md §3]
+- No Catalog defaults or locks for storage fields — Catalog Items v2 defers
+  storage policy until typed StorageTier reference semantics are defined.
+  [design.md §3]
 - No backend changes (API, service, operator, or automation) — those belong to
   [design.md]; this design only consumes them.
 
@@ -93,8 +96,8 @@ parts:
 2. **One tier picker** — a searchable single-choice list of the tiers currently
    available to the tenant, reused inline on every disk below.
 3. **Boot disk** — the picker shown directly on the page, next to the boot disk
-   size. If the chosen catalog item locks or pre-fills the tier, the picker shows
-   that value accordingly.
+   size. The user may select a tier; a Template default may be applied by the
+   server when the user leaves it empty.
 4. **Additional disks** — an inline disks list where "Add disk" appends a new
    row; each row holds its own size and tier picker, configured in place, and can
    be removed. No pop-up.
@@ -106,8 +109,8 @@ display the tier after creation.
 
 **Who is involved:** the person creating the VM (Tenant User or Tenant Admin).
 Storage tiers themselves are set up separately by a Cloud Provider Admin, and
-catalog/template defaults are configured in the catalog authoring flow — both are
-outside this design.
+Template defaults are configured in the template authoring flow, outside this
+design. Catalog storage defaults and locks are not supported by this design.
 
 **Starting point:** storage tiers exist and are available to the tenant
 (OSAC-1110); the user is signed in and has reached the new **Storage** step of
@@ -116,19 +119,15 @@ Storage → Networking → Review.
 
 **Boot disk tier (shown on the page):**
 
-1. When the user picks a catalog item, the boot disk tier is pre-filled from the
-   catalog item's default, if it defines one.
-2. If the catalog item locks the tier, the picker is read-only and shows that
-   value (with a lock indicator).
-3. Otherwise the user picks a tier from the searchable list.
+1. When the user reaches the Storage step, the boot disk tier is blank unless
+   the user supplied one in the current form state.
+2. The user picks a tier from the searchable list, or leaves it blank when the
+   selected Template may provide a server-side default.
 
 **Additional disk tier (inline rows):**
 
-1. If the chosen catalog item defines additional-disk defaults, the list is
-   pre-filled with those disks — each an inline row with its own size **and**
-   tier. The user can accept them as-is, change the size and/or tier of any row,
-   or delete all rows. An empty list means "no additional disks", and none are
-   created (an explicit opt-out).
+1. The list starts empty. Catalog Items do not seed additional disks or their
+   tiers. An empty list means "no additional disks", and none are created.
 2. To add a disk, the user clicks "Add disk". A new row is appended to the list
    with a size box (default 30 GiB) and the required tier picker (defaulting to
    the first available tier).
@@ -149,10 +148,9 @@ sequenceDiagram
     participant FS as Fulfillment Service
 
     U->>W: Select CatalogItem
-    W->>W: applyCatalogDefaults (seed boot_disk tier, additional_disks array)
     W->>ST: useStorageTiers() (list available tiers)
     ST-->>W: [Balanced(default), Performance, Capacity, ...]
-    U->>W: Pick boot disk tier (inline, unless catalog-locked)
+    U->>W: Pick boot disk tier (inline, or leave blank for Template default)
     U->>W: Add disk -> inline row -> size + tier
     U->>W: Submit
     W->>FS: POST compute_instances (boot_disk.storage_tier, additional_disks[].storage_tier)
@@ -160,11 +158,10 @@ sequenceDiagram
     W-->>U: Navigate to VM | inline field error
 ```
 
-The diagram shows the console reading the available tiers, applying any catalog
-defaults, collecting a tier for each disk (inline for the boot disk and for each
-additional-disk row), and submitting them. The console does not decide
-what is valid — it reflects the catalog's defaults and locks, and leaves the
-final decision to the server.
+The diagram shows the console reading the available tiers, collecting a tier for
+each disk (inline for the boot disk and for each additional-disk row), and
+submitting them. The console does not decide what is valid; the server applies
+any Template boot disk default and performs final validation.
 
 ### API Extensions
 
@@ -266,8 +263,8 @@ views.
 
 **3. `computeInstance/fields.ts`.** `bootDisk: { sizeGib: string; storageTier:
 string }`; `AdditionalDiskValue = { sizeGib: string; storageTier: string }`;
-add `'spec.boot_disk.storage_tier'` to `CONFIGURATION_CATALOG_PATHS` so the
-catalog lock/default overlay covers it.
+do not add storage paths to `CONFIGURATION_CATALOG_PATHS`; Catalog storage
+policy is deferred.
 
 **4. New Storage wizard step.** Add a `storage` step to the ComputeInstance
 wizard and move all disk UI into it:
@@ -277,9 +274,8 @@ wizard and move all disk UI into it:
   i18n string ("Storage").
 - New `computeInstance/VmStorageStep.tsx`: owns the boot disk (size + inline
   tier picker) and additional disks (inline row list). Boot disk: render
-  the shared picker inline next to the size input; when the catalog overlay for
-  `spec.boot_disk.storage_tier` is `editable: false`, render locked (read-only
-  badge + lock icon, as the image field already does). Additional disks: a disks
+  the shared picker inline next to the size input; do not render a Catalog lock
+  or Catalog default for the storage tier. Additional disks: a disks
   list where each row is an editable size input + inline tier picker + a Delete
   action, plus an "Add disk" button that appends a new empty row.
 - `CatalogProvisionWizard.tsx`: render the step — `{stepId === 'storage' ?
@@ -302,10 +298,9 @@ name/device are display-only and not persisted.
 
 **6. `computeInstance/schemas.ts`.** Move boot/additional disk validation from
 the `configuration` step case to a new `storage` step case (Formik validates
-only the active step's fields). `specBootDisk`: add `storageTier` via
-`mergeCatalogValidation` so a catalog-locked/defaulted tier is treated as
-satisfied; do not unconditionally `.required()` (a Template SpecDefault the UI
-cannot see may supply it — see Open Question 1). `specAdditionalDisks`: add
+  only the active step's fields). `specBootDisk`: add `storageTier` as an
+  optional UI field because a Template SpecDefault the UI cannot see may supply
+  it — see Open Question 1. `specAdditionalDisks`: add
 `storageTier: yup.string().required('Storage tier is required')` — with inline
 rows this is the primary per-row validation, surfaced on the row itself. The
 `configuration` case drops `bootDisk`/`additionalDisks`.
@@ -317,16 +312,10 @@ filter. No `compute-instance-wire.ts` change — `serializeSpecRecordToWire`
 converts `storageTier`→`storage_tier` and omits empties.
 [Codebase: osac-ui/.../api/v1/compute-instance-wire.ts]
 
-**8. `computeInstance/applyCatalogDefaults.ts`.** Add an overlay for
-`spec.boot_disk.storage_tier` and seed `spec.bootDisk.storageTier`. When the
-CatalogItem defines an `additional_disks` array default, seed
-`spec.additionalDisks` from it (each `{ sizeGib, storageTier }`); seeded rows
-appear in the disks list and are editable/removable. Preserve the
-omitted-vs-empty-array distinction: seeding on first catalog selection = accept
-the default; the user clearing all rows = explicit opt-out (empty array). This
-is specific to `additional_disks`; unlike workload `network_attachments`, an
-explicitly empty `additional_disks` array is not treated as default input.
-[design.md §3]
+**8. `computeInstance/applyCatalogDefaults.ts`.** Do not add storage overlays or
+seed storage values from a Catalog Item. The existing helper continues to apply
+Catalog defaults for supported non-network fields; storage values remain user
+input or server-side Template defaults.
 
 **9. Review + read views.** `computeInstanceAdapter.ts`
 `buildReviewSections`: add a "Storage" review section (title
@@ -337,10 +326,10 @@ each disk's tier (display name when resolvable, else raw `storageTier`); no edit
 control (immutable).
 
 Resolution precedence in the UI: the UI reflects but does not own the chain
-(user > CatalogItem > Template). CatalogItem FieldDefinitions surface as
-lock/default via the overlay; Template SpecDefaults are **not visible to the
-UI**, so the UI must not hard-require the boot disk tier when a template default
-may exist — the server resolves and returns `INVALID_ARGUMENT` on failure.
+(user > Template). Template SpecDefaults are **not visible to the UI**, so the
+UI must not hard-require the boot disk tier when a Template default may exist —
+the server resolves and returns `INVALID_ARGUMENT` on failure. CatalogItem
+FieldDefinitions do not govern storage fields.
 
 ### Security Considerations
 
@@ -463,13 +452,13 @@ need the tier field added.
 ### Unit Tests
 
 - `compute-instance-disk.ts`: `storageTier` type; `asDiskWithMeta` passthrough.
-- `schemas.test.ts`: additional-disk tier required; boot disk tier conditional
-  on editability/default (per Open Question 1).
+- `schemas.test.ts`: additional-disk tier required; boot disk tier remains
+  optional because a server-side Template default may supply it.
 - `payload` (via `compute-instance.test.ts`): boot + additional disk
   `storageTier` serialized to `storage_tier` (tier **name**); empty tiers
   omitted; size-truthiness filter preserved.
-- `applyCatalogDefaults`: boot disk tier seeded from overlay; `additional_disks`
-  array seeded from catalog default; omit=accept / empty=opt-out preserved.
+- Catalog overlay regression: storage paths are not added to the overlay and
+  Catalog selection does not seed boot or additional disk tiers.
 - Tier picker: option value is `metadata.name`; available-only filter; default =
   first tier; empty-state error rendered when no available tiers.
 
@@ -477,7 +466,7 @@ need the tier field added.
 
 Component-level (React Testing Library): the wizard shows a Storage step between
 Configuration and Networking; `VmStorageStep` renders the inline boot tier
-picker and, for a catalog-locked field, the read-only locked state; "Add disk"
+picker without a Catalog lock or default; "Add disk"
 appends an inline row and editing a row updates `{ sizeGib, storageTier }` while
 Delete removes it; the Review step shows a Storage section with per-disk tiers;
 server `INVALID_ARGUMENT` maps to the correct inline field error.

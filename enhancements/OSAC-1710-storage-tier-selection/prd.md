@@ -13,10 +13,10 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 ## In Scope
 
 - Storage tier selection for ComputeInstance disks (boot disk and additional disks)
-- Storage tier as a mandatory field — provisioning fails if no tier is resolved after applying the precedence chain (user input, CatalogItem defaults, Template defaults)
+- Storage tier as a mandatory field — provisioning fails if no tier is resolved from user input or a ComputeInstanceTemplate default
 - Boot disk and each additional disk can use different tiers independently
 - Validation that the requested tier exists at request time; clear error on failure
-- Tier resolution precedence: user input, then CatalogItem defaults, then ComputeInstanceTemplate defaults
+- Tier resolution precedence: user input, then ComputeInstanceTemplate defaults; additional disk tiers are explicitly supplied by the user
 - Tier assignment immutability after ComputeInstance creation
 - VMaaS service only
 - UI support for tier selection in the ComputeInstance creation flow
@@ -45,11 +45,11 @@ When a ComputeInstance is provisioned, all disks receive the same storage tier r
 
 ### Cloud Provider Admin
 
-- As a Cloud Provider Admin, I want to configure storage tier defaults in CatalogItems and ComputeInstanceTemplates, so that Tenant Users can provision VMs without needing to know which specific tier to select for each disk.
+- As a Cloud Provider Admin, I want to configure boot disk storage tier defaults in ComputeInstanceTemplates, so that Tenant Users can provision VMs without needing to know which specific tier to select for the boot disk.
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create tenant-scoped CatalogItems with pre-configured storage tier values, so that my organization's users provision VMs with tiers that match our policies without manual selection.
+- As a Tenant Admin, I want to provision VMs using template-provided boot disk defaults where available and choose explicit tiers for additional disks, so that every disk has an intentional storage policy.
 
 ## Dependencies
 
