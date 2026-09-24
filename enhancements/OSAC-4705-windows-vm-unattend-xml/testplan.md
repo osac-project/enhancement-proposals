@@ -213,9 +213,9 @@ backward compatibility.
 | Interface Change | IC-2 |
 | Test Type | Integration (AAP role) |
 
-**Preconditions:** ComputeInstance CR with `guestOSFamily: windows` and
-`userDataSecretRef` pointing to a Secret with user-supplied Unattend.xml
-content.
+**Preconditions:** ComputeInstance CR with `guestOSFamily: windows`,
+`vm_enable_sysprep: false`, and `userDataSecretRef` pointing to a Secret
+with user-supplied Unattend.xml content.
 
 **Steps:**
 1. Run the `ocp_virt_vm` role create workflow.
