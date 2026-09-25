@@ -42,6 +42,7 @@ Tenants need dedicated VIP pools scoped to a single tenant by VAST, eliminating 
 - Non-VAST storage backends.
 - Per-tenant explicit pool name override during onboarding. This is deferred to the vendor-config mechanism ([OSAC-5322](https://redhat.atlassian.net/browse/OSAC-5322)), which provides a general-purpose approach for per-tenant, vendor-specific configuration.
 - Real-time detection of configuration drift on the VAST side (e.g., an admin renaming a pool in the VAST GUI).
+- Pool release and VAST View cleanup on tenant teardown (deferred to a separate feature).
 
 ## User Stories
 
@@ -69,19 +70,15 @@ Tenants need dedicated VIP pools scoped to a single tenant by VAST, eliminating 
 
 These questions were investigated during requirements analysis. Answers are incorporated into the PRD; evidence pointers are preserved here for implementers.
 
-- **P1.Q1: Pool release — Confirmed.** Clearing a pool's tenant association works when no Views are attached. Platform constraint: "tenant can be modified only if there are no view associated with current tenant" — see Dependencies (VAST Views constraint). Release flow must clean up Views first.
+- **P1.Q1: View cleanup and pool release — Deferred.** The team agreed to defer pool release and its prerequisite View cleanup to a separate feature.
 - **P1.Q2: Concurrent binding (double-bind) — No server-side protection.** See Assumptions for the constraint and mitigation approach.
-
-## Open Questions
-
-- **View cleanup and pool release on tenant teardown.** Whether pool release is in scope for Dev Preview depends on whether OSAC's existing tenant teardown already handles View removal. If it does, pool release is a small addition — release the pool after Views are cleaned up. If not, View cleanup is a larger scope item that may need to be deferred. View removal is a prerequisite for pool release (see Dependencies — VAST Views constraint).
 
 ## Dependencies
 
 - **VAST VMS API — query pools by prefix:** OSAC must be able to list VIP pools filtered by a naming prefix. Assumed available based on the VAST VMS REST API.
 - **VAST VMS API — update pool ownership:** OSAC must be able to bind a pool to a tenant by updating the pool's tenant association. Confirmed working via testing.
-- **VAST VMS API — release pool ownership:** OSAC must be able to release a pool by clearing its tenant association. Confirmed working; subject to the Views constraint below.
-- **VAST Views constraint:** Pool release requires prior cleanup of associated VAST Views — the backend rejects ownership changes on pools with active Views ("tenant can be modified only if there are no view associated with current tenant"). All references to this constraint elsewhere in the PRD defer to this definition.
+- **VAST VMS API — release pool ownership:** OSAC must be able to release a pool by clearing its tenant association. Confirmed working; subject to the Views constraint below. Applies to the deferred pool-release feature.
+- **VAST Views constraint (informational):** The VAST backend rejects pool ownership changes when Views are attached ("tenant can be modified only if there are no view associated with current tenant"). This constraint applies to the deferred pool-release feature — View cleanup is a prerequisite for releasing a pool.
 - **OSAC-4857 (NVMe-TCP discovery isolation):** Per-tenant VIP pools directly mitigate this verified bug. All-tenants-scoped pools cause NVMe-TCP discovery failures; tenant-scoped pools work correctly.
 - **OSAC-5073 (Storage network path):** Defines the network data path between workloads and VIP pools. Parallel work; out of scope for this feature but required for end-to-end storage connectivity.
 - **OSAC-5322 (Vendor-config mechanism):** Provides the general-purpose mechanism for per-tenant vendor-specific configuration on the Tenant CR. Required for the deferred per-tenant explicit pool name override capability.
