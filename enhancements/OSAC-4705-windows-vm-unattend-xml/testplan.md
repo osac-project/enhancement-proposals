@@ -105,9 +105,10 @@ backward compatibility.
 1. Call CreateComputeInstance with Windows DiskImage, no `user_data`, no
    `user_data_secret`.
 2. Verify: create succeeds — no XML validation triggered.
-3. Verify: no answer file is attached. The VM boots without any answer file —
-   either normally (non-sysprepped golden image) or with interactive OOBE
-   (sysprepped golden image).
+
+> **Note:** The assertion that no answer file is attached and the VM boots
+> without one is covered by TC-3.2 (AAP role integration) and TC-E2E-2
+> (end-to-end). This unit test verifies only the create-time validation path.
 
 #### TC-1.7: Reject empty user_data for Windows VM
 
@@ -152,7 +153,7 @@ backward compatibility.
    <unattend/>
    ```
 2. Verify: create fails with `INVALID_ARGUMENT` containing
-   `"DOCTYPE declarations are not allowed"`.
+   `"DOCTYPE/DTD not allowed"`.
 
 #### TC-1.10: Reject whitespace-only user_data for Windows VM
 
@@ -198,8 +199,8 @@ backward compatibility.
    declaration.
 2. Call CreateComputeInstance with Windows DiskImage and `user_data_secret`
    referencing the secret.
-3. Verify: create fails with error containing `"DOCTYPE declarations are not
-   allowed"` and does NOT expose secret content.
+3. Verify: create fails with error containing `"DOCTYPE/DTD not allowed"` and
+   does NOT expose secret content.
 
 ### AAP Role — User-Supplied Sysprep (IC-2)
 

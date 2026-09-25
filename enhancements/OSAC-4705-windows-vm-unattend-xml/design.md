@@ -229,45 +229,74 @@ When `disk_image.guest_os_family != WINDOWS`:
 **XML validation specification:**
 
 ```go
-func validateWellFormedXML(content []byte) error {
-    if bytes.Contains(content, []byte("<!DOCTYPE")) {
-        return errors.New("DOCTYPE declarations are not allowed")
+func isPureXMLNoDTD(data []byte) error {
+    dec := xml.NewDecoder(bytes.NewReader(data))
+    depth, roots := 0, 0
+    for {
+        tok, err := dec.Token()
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            return err // catches all malformed XML
+        }
+        switch t := tok.(type) {
+        case xml.Directive:
+            return fmt.Errorf("DOCTYPE/DTD not allowed")
+        case xml.StartElement:
+            if depth == 0 {
+                if roots++; roots > 1 {
+                    return fmt.Errorf("multiple root elements")
+                }
+            }
+            depth++
+        case xml.EndElement:
+            depth--
+        case xml.CharData:
+            if depth == 0 && len(bytes.TrimSpace(t)) > 0 {
+                return fmt.Errorf("non-whitespace text outside root element")
+            }
+        }
     }
-    var doc struct {
-        XMLName xml.Name
-        Inner   []byte `xml:",innerxml"`
+    if roots == 0 {
+        return fmt.Errorf("no root element")
     }
-    return xml.Unmarshal(content, &doc)
+    return nil
 }
 ```
 
-The function enforces two invariants beyond basic well-formedness:
+The function uses a streaming token loop via `xml.NewDecoder` that tracks
+nesting depth and root-element count. It enforces four invariants beyond basic
+well-formedness:
 
-1. **No DOCTYPE declarations** — a prefix scan rejects `<!DOCTYPE` before
-   parsing begins. Go's `encoding/xml` does not expand entities or process
-   DTDs, but it silently accepts the directive token. The PRD requires
-   explicit rejection, so the validator checks for the literal `<!DOCTYPE`
-   byte sequence and rejects it before parsing.
-2. **XXE-safe by default** — Go's `encoding/xml` does not process external
-   entities or DTD declarations. No additional parser configuration is needed
-   (see Research §RQ-1).
+1. **No DOCTYPE/DTD directives** — the `xml.Directive` case rejects any
+   `<!DOCTYPE ...>` token. Go's `encoding/xml` does not expand entities or
+   process DTDs, but it silently accepts the directive token. The PRD requires
+   explicit rejection, so the validator catches it at the token level.
+2. **Exactly one root element** — the `roots` counter increments on each
+   `StartElement` at depth 0. A second root element is rejected immediately.
+3. **No non-whitespace text outside root** — `CharData` tokens at depth 0
+   are checked for non-whitespace content, rejecting trailing text after the
+   root element closes.
+4. **At least one root element** — after the token loop completes, `roots == 0`
+   is rejected, catching empty documents and whitespace-only input.
 
-`xml.Unmarshal` inherently enforces single-root-element semantics — it returns
-an error for documents that are empty, contain only whitespace, or have
-multiple root elements. This eliminates the need for manual root-counting and
-depth-tracking logic.
+Go's `encoding/xml` is XXE-safe by default — it does not process external
+entities, resolve external DTD references, or expand parameter entities. No
+additional parser configuration is needed.
 
 **Error messages:**
-- `"DOCTYPE declarations are not allowed"` — for inline `user_data` or
-  resolved `user_data_secret` content containing a `<!DOCTYPE` declaration
+- `"DOCTYPE/DTD not allowed"` — for inline `user_data` or resolved
+  `user_data_secret` content containing a DOCTYPE/DTD directive
 - `"user_data is not well-formed XML: <parser error details>"` — for inline
-  `user_data` that fails `xml.Unmarshal` on a Windows DiskImage
+  `user_data` that fails `isPureXMLNoDTD` validation on a Windows DiskImage
+  (includes parse errors, multiple root elements, and text outside root)
 - `"secret '<ref>' referenced by user_data_secret contains user data that is not well-formed XML"` — for `user_data_secret` with content that fails
-  `xml.Unmarshal`; error does not expose the secret content itself
+  `isPureXMLNoDTD` validation; error does not expose the secret content itself
 
 ### 4.4 Scalability and Performance
 
-**Validation cost:** XML well-formedness checking via `xml.Unmarshal` is O(n)
+**Validation cost:** XML well-formedness checking via `isPureXMLNoDTD` is O(n)
 in document size and runs in-process. For typical Unattend.xml files (2–20 KB),
 validation completes in microseconds. No external service calls or blocking
 operations are added to the create path.
@@ -389,8 +418,9 @@ guest OS family.
 - Validation errors return clear messages without exposing secret content
 - Empty content is rejected when the field is present (existing behavior)
 
-**New function:** `validateWellFormedXML(content []byte) error` — validates XML
-well-formedness using `encoding/xml.Unmarshal`.
+**New function:** `isPureXMLNoDTD(data []byte) error` — validates XML
+well-formedness using a streaming `encoding/xml` token loop with DOCTYPE
+rejection and root-element enforcement.
 
 ### IC-2: AAP Role — User-Supplied Sysprep Path
 
@@ -577,14 +607,21 @@ include parser error descriptions but not the XML content itself.
 
 ### Backward Compatibility
 
-**Fully backward compatible.** No existing behavior changes:
+**Not fully backward compatible** — this feature introduces one intentional
+behavior change for Windows VMs:
 
-- Linux VMs with `user_data` continue to work identically (cloud-init, no XML
-  validation)
-- Windows VMs without `user_data` continue to boot without an answer file —
-  the golden image boots normally (non-sysprepped) or runs OOBE interactively
-  (sysprepped)
-- All existing API, CLI, and UI workflows are unaffected
+- **Changed:** Windows VMs created without `user_data` or `user_data_secret`
+  no longer receive a platform-generated answer file. Previously, the AAP role
+  created a platform-generated sysprep mount for all Windows VMs (path 3 in
+  §3.1); this default behavior is removed entirely (IC-2). Sysprepped golden
+  images that relied on the platform-generated answer file will now run OOBE
+  interactively instead. This is acceptable pre-GA — the feature is not yet
+  available to external tenants, so no production workloads depend on the
+  previous behavior.
+- **Unchanged:** Linux VMs with `user_data` continue to work identically
+  (cloud-init, no XML validation).
+- **Unchanged:** All existing API, CLI, and UI workflows for Linux VMs are
+  unaffected.
 
 ### New Behavior
 
