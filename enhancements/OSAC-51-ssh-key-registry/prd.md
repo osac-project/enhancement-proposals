@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Ygal Blum |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-51 |
-| Date        | 2026-08-27 |
+| Date        | 2026-09-25 |
 
 ## Problem Statement
 
@@ -12,21 +12,20 @@ When creating a ComputeInstance, tenant users must paste their full SSH public k
 
 ## In Scope
 
-- SSH key registration, listing, and deletion are available via the API, CLI (`osac create/get/delete sshkey`, where `osac get sshkey` with no name lists all keys registered in the tenant), and UI
-- Selecting a registered key when creating a Linux ComputeInstance that uses cloud-init is available via the UI, CLI, and API, with the key injected into the VM on first boot only
-- Deleting a registered SSH key that is referenced by an existing ComputeInstance is rejected with a clear error; the key becomes deletable once no ComputeInstance references it [User]
-- The SSH key registry is a separate resource from ComputeInstance, so registered keys can be referenced across OSAC services in future milestones [Clarify: R1.Q1]
-- SSH public key validation requires a well-formed OpenSSH public key to register successfully [Clarify: R1.Q4]
-- Registered key names must be unique within a tenant, across all of that tenant's users [Clarify: R2.Q1]
+- SSH public key registration, listing, retrieval, and deletion are available through the existing Secret API and CLI.
+- Selecting a registered key when creating a supported ComputeInstance or BareMetalInstance is available through the API and CLI, with the key injected during the instance's initial access configuration.
+- Registered keys are tenant-scoped, visible to authorized users in that tenant, and named uniquely within the tenant.
+- SSH public key validation requires a well-formed OpenSSH public key to register successfully
+- Registered key names must be unique within a tenant, across all of that tenant's users
 
 ## Out of Scope
 
 - Private key storage
 - Multiple SSH keys attached to a single ComputeInstance
 - Updating the SSH key already injected into a running ComputeInstance
-- Renaming a registered key — changing a name requires deleting and re-registering it [Clarify: R3.Q2]
+- Renaming a registered key — changing a name requires deleting and re-registering it
 - Generic secret types such as passwords or tokens, and secret rotation
-- Integration with external secret managers (e.g. Vault), and automated secret syncing into tenant namespaces via an external secrets operator [Clarify: R1.Q5]
+- Integration with external secret managers (e.g. Vault), and automated secret syncing into tenant namespaces via an external secrets operator
 - A limit on the number of SSH keys a tenant may register
 - SSH key injection into ComputeInstances that do not support cloud-init-based first-boot configuration (e.g., Windows guests, or Linux instances configured with non-cloud-init user data)
 
@@ -38,6 +37,7 @@ When creating a ComputeInstance, tenant users must paste their full SSH public k
 - As a Tenant Admin or Tenant User, I want to list the SSH public keys registered in my tenant, so that I can see what keys are available before creating a VM.
 - As a Tenant Admin or Tenant User, I want to delete a registered SSH public key I no longer use, so that my tenant's key registry stays current.
 - As a Tenant Admin or Tenant User, I want to select one registered SSH public key by name when creating a ComputeInstance, so that it is automatically injected into the VM on first boot instead of me pasting the key manually.
+- As a Tenant Admin or Tenant User, I want to select one registered SSH public key by name when creating a BareMetalInstance, so that it is automatically applied during initial host provisioning.
 - As a Tenant Admin or Tenant User, I want key registration to fail with a clear error message when the key I provide is invalid, so that I immediately know to fix or replace it. [User]
 
 ---
