@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-16
+last-updated: 2026-09-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -73,10 +73,11 @@ This section defines key terms used throughout this document.
   egress traffic. Without a NATGateway, resources may still have default
   egress but without a controlled source identity.
 
-- **NetworkClass**: A provider-configured resource that defines how networking
-  is implemented. Specifies which fabric manager and K8s manager handle
-  networking. In the current design, tenants select it when creating a
-  VirtualNetwork (this is one of the gaps — see #2).
+- **NetworkClass**: The single provider-configured networking resource for a
+  deployment. It defines which fabric manager and K8s manager handle
+  networking, plus optional tenant default-networking configuration. Tenants
+  do not select it; a VirtualNetwork with no explicit reference resolves the
+  deployment singleton.
 
 - **Fabric Manager**: A single product (e.g., Netris, Neutron) that manages
   all physical networking: tenant isolation, ACLs, IP allocation, DNAT,
@@ -155,14 +156,14 @@ SecurityGroups, and cannot share a VirtualNetwork between bare-metal servers
 and other resources. Both service types build ad-hoc networking outside the
 API.
 
-#### Gap #2: Tenants must choose networking backends
+#### Gap #2: Legacy tenant selection of networking backends
 
-NetworkClass is modeled after Kubernetes StorageClass — tenants select it when
-creating a VirtualNetwork. But unlike StorageClass (where "fast" vs "cheap" is
-a meaningful tenant choice about capability), NetworkClass exposes network
-backend implementation details ("udn-net" vs "phys-net") that tenants should
-not need to understand. The provider's infrastructure determines the backend,
-not the tenant's preference.
+The legacy model treated NetworkClass like Kubernetes StorageClass and asked
+tenants to select it when creating a VirtualNetwork. NetworkClass exposes
+network backend implementation details ("udn-net" vs "phys-net") that tenants
+should not need to understand. The resolved design has exactly one active
+provider-owned NetworkClass per deployment, removes `is_default`, and makes the
+provider's infrastructure—not a tenant choice—determine the backend.
 
 #### Gap #3: No manager capability discovery or registration
 
@@ -412,6 +413,51 @@ This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
 reference this PRD; those proposals inherit it and do not redefine networking
 operations.
 
+#### FR-9: Canonical provider-owned Hub binding (R9)
+
+Networking resources use exactly one active provider-owned Hub per deployment.
+Tenants and providers do not supply the Hub through `NetworkClass.spec`. A
+`NetworkClass` may initially have an empty `status.hub`; the dedicated
+NetworkClass reconciler resolves the sole active Hub and persists its
+identifier in `NetworkClass.status.hub` as controller-owned status. Consumer
+resource reconcilers read that binding and do not update NetworkClass status.
+
+The persisted identifier is authoritative and sticky. When it is present, the
+NetworkClass reconciler resolves that exact Hub and does not fall back to
+discovery or select a replacement Hub. If no active Hub or multiple active
+Hubs exist, the NetworkClass remains `PENDING` without a new binding. If the
+persisted Hub is not registered, the NetworkClass is `FAILED` while retaining
+the identifier.
+If it is registered but temporarily unavailable, the NetworkClass remains
+`PENDING` while retaining the identifier. These status transitions are
+internal reconciliation and do not add an update operation to the networking
+API.
+
+Hub lifecycle events requeue the NetworkClass reconciler, and NetworkClass
+status events requeue consumer resource reconcilers so resources created while
+the binding is `PENDING` can progress as soon as the canonical Hub is ready.
+
+#### FR-10: Controller-owned tenant default networking (R10)
+
+`NetworkClass.spec.defaults` is optional desired onboarding configuration. When
+it is present, the tenant controller asynchronously ensures an idempotent set
+of default-labeled resources after the tenant is synced and the NetworkClass
+controller has persisted both `READY` status and a canonical
+`status.hub`. The set includes the default VirtualNetwork, configured subnets,
+the default SecurityGroup, and optionally an ExternalIP/NATGateway pair. The
+resources carry tenant attribution and controller ownership metadata, and
+partial failures are resumed by reconciliation.
+
+The API does not synchronously provision or delete this set. A VirtualNetwork
+with an omitted NetworkClass reference resolves and persists the deployment's
+singleton reference, while API admission does not wait for NetworkClass
+readiness. The tenant controller requeues on NetworkClass, Hub, and
+default-resource lifecycle events and reports readiness through the tenant
+condition. The project controller removes the default set when the tenant root
+project is deleted, using the controller identity; direct deletion of
+default-labeled resources remains protected from user and administrator API
+callers.
+
 ### 4.2 Non-Functional Requirements
 
 _No non-functional requirements were specified in the original document._
@@ -444,10 +490,18 @@ _No non-functional requirements were specified in the original document._
 - [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the
   repeated `cidrs` field and rejects empty or multiple entries
 - [ ] Supported networking deployments use exactly one provider-owned hub; multi-hub networking placement, cross-hub resource coordination, and cross-hub network connectivity are unsupported
+- [ ] A NetworkClass can be created without a Hub in its spec; when exactly one active Hub is available, reconciliation persists that Hub's identifier in `NetworkClass.status.hub`
+- [ ] A deployment admits at most one active NetworkClass; the removed `is_default` field cannot be supplied or used to select among classes
+- [ ] A persisted `NetworkClass.status.hub` identifier is reused on subsequent reconciliation and is never replaced by fallback Hub discovery
+- [ ] No active Hub or multiple active Hubs leave the NetworkClass `PENDING` without selecting a Hub
+- [ ] An unregistered persisted Hub leaves the NetworkClass `FAILED` with the identifier retained, while a temporarily unavailable persisted Hub leaves it `PENDING` with the identifier retained
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
 - [ ] ExternalIPAttachment handles inbound traffic only
 - [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity
 - [ ] Inbound and outbound external access works uniformly for all resource types — VMs, BM servers, and cluster nodes
+- [ ] A synced tenant with NetworkClass defaults receives default networking asynchronously only after NetworkClass readiness and Hub binding are persisted
+- [ ] Default networking creation is idempotent, preserves tenant and controller ownership metadata, and resumes after partial failure
+- [ ] Root-project deletion removes default networking through the controller lifecycle while direct default-resource deletion remains protected
 
 ### Provider Architecture
 
