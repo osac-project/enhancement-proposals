@@ -1,8 +1,8 @@
-# Clarification Log — OSAC-4346
+# Clarification Log — OSAC-1610
 
 ## Status
 
-- Rounds completed: 1
+- Rounds completed: 3
 - Open gaps: 0
 - Exit criteria met: Yes
 
@@ -36,7 +36,7 @@ In-tree backend compiled into the operator. Configuration via Helm values proces
 
 #### Impact
 
-NetBox backend is a standard `inventory.Client` implementation self-registered in the operator binary. No separate sidecar or gRPC service. Configuration follows the standard Helm/Enclave pattern for infrastructure admin setup.
+NetBox backend is a standard `inventory.Client` implementation constructed by the operator startup factory with its Metal3 manager dependency. No separate sidecar or gRPC service. Configuration follows the standard Helm/Enclave pattern for infrastructure admin setup.
 
 #### Decision (D2)
 
@@ -80,12 +80,67 @@ NetBox is inventory-only backend. OS provisioning, BMH readiness, and power mana
 
 ---
 
+## Round 2 — Custom-Field Selection (2026-09-22)
+
+### Decision (D5)
+
+Use separate provider-created NetBox Community custom fields instead of tags.
+Capability selectors retain key/value semantics; the adapter adds the API's
+`cf_` prefix to exact field names. The administrator creates and populates
+those fields. No capability or pool tag is required. [User direction]
+
+The local design proposes Boolean `osac_managed=true` for pool membership;
+native device status and `osac_instance_id` continue to record allocation
+state and ownership. This exact pool-field name/type is a design proposal
+for review, not a separately approved user requirement.
+
+### Rationale and impact
+
+Both tags and custom fields support server-side filtering. There is no measured
+performance result favoring tags; the choice follows the existing OSAC
+key/value selector, typed NetBox data, and reuse of compatible field values.
+No hardcoded mapping table is needed. Field schemas and scalar types must be
+validated, and older tag-based selectors require explicit migration. Design,
+test plan, and PRD assumptions use this same contract.
+
+## Round 3 — Unchanged Device Names and Configuration (2026-09-22)
+
+### Decision (D6)
+
+Use the existing NetBox device name unchanged as the BMH name and return
+`<Metal3 namespace>/<device.name>` as the host ID, following the BCM naming
+pattern. Do not generate a prefixed name from the numeric device ID.
+[User direction]
+
+### Implementation impact for local review
+
+The design validates names and uniqueness, persists the separate numeric
+device ID with the host ID/name before claiming, and uses the original ID
+for recovery and release. Provider fabric names must agree, and live renames
+require a drain. These safeguards and their internal annotation/Go fields are
+implementation proposals supporting D6, not previously existing behavior.
+
+Persisted cleanup intent and resource-absence checkpoints prevent retries
+from recreating resources during rollback and allow an old BMI to finish
+after release followed by immediate reallocation. Neither checkpoint grants
+permission to mutate a different owner's NetBox claim or Kubernetes resources.
+
+The credential-loading contract uses mounted `tokenFile`/`caCertFile` paths;
+Secret names remain Helm inputs. NetBox enablement includes Metal3 management
+without a second required flag, and provisioning uses the existing `metal3`
+host class. The design/test plan also cover installer hooks, scoped BMC Secret
+permissions, and explicit restart after configuration or credential updates.
+These are local responses to configuration review feedback, not reviewer
+approval or published resolutions.
+
 ## Summary
 
-Four locked decisions:
+Six locked decisions:
 - **D1:** Transparent NetBox backend; tenants use standard API.
 - **D2:** In-tree backend, Helm + Enclave Wizard config.
 - **D3:** Reuse NetBox native status field for state.
 - **D4:** NetBox inventory-only; OS provisioning orthogonal.
+- **D5:** Custom fields for pool membership and capability equality; preserve selector values and use only NetBox Community features.
+- **D6:** Preserve the NetBox device name as the BMH name; namespace-qualify it for OSAC's host ID.
 
 No remaining gaps blocking design phase.
