@@ -3,7 +3,7 @@ title: catalog-items-v2-field-governance
 authors:
   - Ilya Skornyakov
 creation-date: 2026-08-20
-last-updated: 2026-09-22
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3538
 prd:
@@ -1048,7 +1048,7 @@ Infrastructure: fulfillment-service Ginkgo suite (`ginkgo run -r internal`), whi
 - Template deletion blocked by a materialized resource, then allowed after the resource is gone.
 - Catalog Item deletion succeeds after resource creation.
 - Secret deletion blocked while a Catalog Item references a governed `pull_secret_secret`.
-- Resource subnet and SecurityGroup deletion protection remains covered for resource-owned network references; Catalog-only network policy references are not created.
+- The explicit `Subnet.spec.network_acl` association points to a NetworkACL in the same VirtualNetwork. The existing resource-owned deletion guard rejects deleting a NetworkACL while any Subnet references it; delete the referencing Subnet first; recreate it with a different ACL if a new association is required. Catalog Items do not create or own this association.
 
 **Visibility filtering.**
 
@@ -1096,3 +1096,13 @@ Infrastructure: osac-test-infra pytest against the full stack, fulfillment servi
 ## Graduation criteria
 
 Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview -> Tech Preview -> GA based on production deployment feedback.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

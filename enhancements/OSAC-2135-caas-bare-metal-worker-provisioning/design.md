@@ -3,7 +3,7 @@ title: caas-bare-metal-worker-provisioning
 authors:
   - rpiccoli@redhat.com
 creation-date: 2026-08-06
-last-updated: 2026-08-14
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2135
 prd:
@@ -643,7 +643,7 @@ After the first successful MAC match, the controller labels the Agent with `osac
 
 The BM controller reads the singular cluster-level network attachment from
 `ClusterOrder.spec.networkAttachment` (a `ClusterNetworkAttachment` carrying
-typed subnet and security-group references, defined by OSAC-1436). CaaS
+a typed subnet reference, defined by OSAC-1436). CaaS
 fulfillment resolves omitted, empty, and partial attachment input before the
 ClusterOrder is created; the worker controller does not apply a second set of
 defaults. It enriches the resolved attachment into a one-entry per-BMI
@@ -654,13 +654,13 @@ networking:
 | ClusterNetworkAttachment (input) | BareMetalNetworkAttachment (output) | Source |
 |---|---|---|
 | `subnetRef` | `subnet` | Pass-through |
-| `securityGroupRefs[]` | `security_groups[]` | Pass-through |
 | — | `interface` | The node set's stored `fabric_interface`, resolved from `BareMetalInstanceType.network_ports[]` during cluster creation (first port with role `fabric`) |
 | — | `primary: true` | Always set — CaaS BM workers have a single network attachment |
 
 This enrichment is a read-only consumer of the ClusterOrder's singular
 `networkAttachment` field — the BM controller does not define or modify the
-field shape. The field uses the cluster-specific `ClusterNetworkAttachment`
+field shape. The associated NetworkACL is configured on the Subnet and is not
+added to either workload attachment. The field uses the cluster-specific `ClusterNetworkAttachment`
 type, not ComputeInstance's `ComputeNetworkAttachment`. This design requires
 the field to be present on the ClusterOrder CRD before the BM controller can
 read it.
@@ -883,8 +883,8 @@ Documentation updates required:
 
 ## Provenance
 
-Committed: commit @ design 0.8.0 - a605aa5, workspace design/OSAC-2135 @ 9fd309d (dirty)
+Committed: commit @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
 
 > Authoring phases not recorded this session (commit-time snapshot only).
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.8.0","ai_workflows":"a605aa5","source_repo":"9fd309d (dirty)","source_repo_branch":"design/OSAC-2135","commits_behind_main":0,"commits_ahead_main":641,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

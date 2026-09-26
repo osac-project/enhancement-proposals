@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Benny Kopilov |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-4291 |
-| Date        | 2026-08-30 |
+| Date        | 2026-09-24 |
 
 This Phase 1 PRD inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
@@ -26,15 +26,16 @@ OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a pod w
 
 Without a k8s manager that bridges VMs to the fabric, tenants cannot deploy workloads that span VMs and bare-metal hosts in the same subnet. The CUDN LocalNet approach (OSAC-1511) has been frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support. [Clarify: R1.Q3]
 
-The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join the fabric via BGP EVPN route advertisements, enabling L2 same-subnet and L3 cross-subnet reachability. Phase 1 delivers single-cluster EVPN bridging with a constraint that OVN-Kubernetes does not currently route between separate CUDNs on the same cluster (the Connectors feature is pending). [Clarify: R1.Q4]
+The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join the fabric via BGP EVPN route advertisements and communicate with fabric endpoints on the same Subnet at L2. Phase 1 supports VM placement only while a VirtualNetwork has exactly one Subnet. A second Subnet is allowed after VMs are removed; a VirtualNetwork with multiple Subnets is fabric-only and rejects VM placement. Cross-Subnet L3 validation, if performed, uses fabric and bare-metal endpoints in a multi-Subnet VirtualNetwork with no VMs. OVN-Kubernetes does not currently route between separate CUDNs on the same cluster (the Connectors feature is pending). [Clarify: R1.Q4]
 
 ## In Scope
 
 - **K8s manager registration** for EVPN fabric bridging (IPv4 address family only) [Clarify: R2.Q4]
 - **Fabric-to-k8s manager data dependency** — subnet provisioning must ensure the fabric manager completes and provides network segment identifiers before the k8s manager begins, using a manager-agnostic interface [Clarify: R1.Q3, R2.Q5, D7] [User]
 - **Automatic overlay network provisioning** on hosting clusters that bridges VMs to the physical fabric when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
-- **VM-to-fabric connectivity** — VMs are discoverable and directly reachable from bare-metal servers on the physical fabric (both L2 same-subnet and L3 cross-subnet scenarios)
-- **Single-subnet-per-VirtualNetwork constraint for this k8s manager** — when a VirtualNetwork uses a NetworkClass with this k8s manager, the system rejects additional subnet creation with a clear error [Clarify: R1.Q4, D4]
+- **Same-Subnet VM-to-fabric connectivity** — VMs are discoverable and directly reachable from bare-metal servers on the same Subnet at L2
+- **Subnet and VM placement constraints** — VMs are supported only while their VirtualNetwork has one Subnet; a second Subnet is rejected while VMs exist, and VM placement is rejected whenever the VirtualNetwork has multiple Subnets [Clarify: R1.Q4, D4]
+- **Fabric-only multi-Subnet validation** — where tested, cross-Subnet L3 connectivity uses bare-metal endpoints on a multi-Subnet VirtualNetwork with no VMs
 - **Non-conflicting IP address assignment** — VMs receive IP addresses that do not conflict with fabric DHCP allocations [Clarify: R1.Q5]
 - **Installation prerequisites documentation** — Cloud Infrastructure Admin must complete documented infrastructure prerequisites to enable physical fabric connectivity before creating the first VirtualNetwork [Clarify: R2.Q2, R2.Q3, D6] [User]
 - **Diagnostic tooling documentation** — documented tools for Cloud Infrastructure Admins to verify network segment state and troubleshoot connectivity issues [Clarify: R3.Q2]
@@ -69,15 +70,15 @@ The following are out of scope for Phase 1:
 
 - As a Cloud Infrastructure Admin, I want documented diagnostic tools so that I can verify network segment state and troubleshoot connectivity issues when VMs cannot reach the fabric. [Clarify: R3.Q2]
 
-- As a Cloud Infrastructure Admin, I want to identify which VirtualNetworks have reached the single-subnet limit (via monitoring or status queries) so that I can plan for Phase 2 deployment or guide tenants to create additional VirtualNetworks.
+- As a Cloud Infrastructure Admin, I want to identify which VirtualNetworks are eligible for VM placement based on their Subnet count, so that I can guide tenants to keep VM networks single-Subnet or use multi-Subnet VirtualNetworks for fabric-only workloads.
 
 ### Tenant Admin / Tenant User
 
-- As a Tenant Admin or Tenant User, I want to create VirtualNetworks and Subnets using the existing OSAC API without needing to configure fabric bridging details, so that VMs I provision are automatically reachable from the physical fabric. [Clarify: R1.Q2, D2]
+- As a Tenant Admin or Tenant User, I want to create VirtualNetworks and Subnets with explicit same-VirtualNetwork NetworkACL associations using the existing OSAC API, without needing to configure fabric bridging details, so that VMs on a supported single-Subnet VirtualNetwork are automatically reachable from the physical fabric. [Clarify: R1.Q2, D2]
 
-- As a Tenant Admin or Tenant User, I want VMs I provision on fabric-bridged subnets to be reachable from bare-metal servers, so that my workloads can span VMs and physical hosts. [User]
+- As a Tenant Admin or Tenant User, I want VMs on a single-Subnet VirtualNetwork to be reachable from bare-metal servers on the same Subnet at L2, so that my workloads can span VM and physical hosts within that Subnet. [User]
 
-- As a Tenant Admin or Tenant User, I want the system to reject my second Subnet creation attempt under the same VirtualNetwork with a clear error message, so that I understand the constraint and can structure my networks accordingly. [Clarify: R1.Q4, D4]
+- As a Tenant Admin or Tenant User, I want the system to reject adding a second Subnet while VMs exist and to reject VM placement when a VirtualNetwork has multiple Subnets, so that VM networks retain the supported topology while fabric-only networks can use multiple Subnets. [Clarify: R1.Q4, D4]
 
 ## Assumptions
 
@@ -89,18 +90,22 @@ The following are out of scope for Phase 1:
 
 - A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic.
+- Each Subnet has an explicit association to an independent NetworkACL scoped to its VirtualNetwork. The configured fabric manager owns NetworkACL provisioning and enforcement, and the Subnet becomes READY only after its associated policy is active. This CUDN/K8s integration consumes the Subnet's network-segment data and does not create an ACL per Subnet or implement ACL behavior in the K8s manager.
+
+- A VirtualNetwork with a single Subnet may host VMs. Once VMs exist, adding a second Subnet is rejected. If a second Subnet is added while no VMs exist, the VirtualNetwork becomes fabric-only and VM placement is rejected in all its Subnets.
 
 - Fabric-level NATGateways (SNAT via softgate) apply to fabric-bridged VM egress traffic.
 
 ## Acceptance Criteria
 
-- [ ] A NetworkClass with `fabric_manager: "netris"` and `k8s_manager: "cudn_evpn"` can be created and transitions to READY state
-- [ ] Creating a VirtualNetwork + Subnet with this NetworkClass provisions both Netris VNet and overlay network on OCP
-- [ ] VMs deployed on the subnet receive IP addresses that do not conflict with Netris DHCP allocations
-- [ ] VMs are discoverable and directly reachable from bare-metal servers on the physical fabric (both L2 same-subnet and L3 different-subnet scenarios)
+- [ ] A NetworkClass with `fabric_manager: "primary"` and `k8s_manager: "cudn_evpn"` can be created and transitions to READY state
+- [ ] Each Subnet has an explicit NetworkACL association to a READY ACL scoped to the same VirtualNetwork, and the Subnet becomes READY only after the associated ACL policy is active
+- [ ] Creating a VirtualNetwork, a READY same-VirtualNetwork NetworkACL, and a single Subnet explicitly associated with that ACL provisions both fabric manager VNet and overlay network on OCP
+- [ ] VMs deployed on the subnet receive IP addresses that do not conflict with fabric manager DHCP allocations
+- [ ] VMs are discoverable and directly reachable from bare-metal servers on the same Subnet at L2
+- [ ] Adding a second Subnet while VMs exist is rejected; after VMs are removed, a second Subnet may be added as fabric-only, and VM placement is rejected while the VirtualNetwork has multiple Subnets
+- [ ] Any cross-Subnet L3 connectivity validation uses only fabric and bare-metal endpoints in a multi-Subnet VirtualNetwork with no VMs
 - [ ] FRR diagnostic commands show correct VNI state on OCP workers
-- [ ] Creating a second Subnet under the same VirtualNetwork returns a validation error message referencing OVN Connectors limitation
 
 **Non-Functional:**
 - [ ] Automated integration test in CI verifies end-to-end flow: subnet creation → dual-dispatch provisioning → VM placement → fabric reachability
@@ -113,7 +118,7 @@ The following are out of scope for Phase 1:
 
 - **OSAC-1440 (Dispatcher Core):** Provides dispatcher infrastructure for routing networking operations to fabric and k8s managers based on NetworkClass configuration.
 
-- **Fabric Manager (Netris):** Must support VPC/VNet provisioning with network segment identifier allocation and API return. Physical infrastructure configuration is manual.
+- **Fabric manager:** Must support VirtualNetwork and Subnet provisioning with network segment identifiers, and must satisfy the shared NetworkACL provisioning and readiness contract. Physical infrastructure configuration is manual.
 
 - **OVN-Kubernetes:** Must support overlay network provisioning with fabric bridging. Constraint: does not currently route between separate overlay networks on the same cluster (Connectors feature pending). [Clarify: R1.Q4]
 
@@ -133,11 +138,9 @@ The following are out of scope for Phase 1:
 
 ## Provenance
 
-Authored: commit @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ e18362f (20 behind origin/main)
-Final: revise @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ e69542d (20 behind origin/main)
-
-> Context changed between commit and revise.
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"837cf0d","source_repo":"e69542d","source_repo_branch":"prd/OSAC-4291","commits_behind_main":20,"commits_ahead_main":3,"main_ref":"main","phases":["commit","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

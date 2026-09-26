@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | CrystalChun |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-2476 |
-| Date        | 2026-08-31 |
+| Date        | 2026-09-24 |
 
 ## Problem Statement
 
@@ -14,16 +14,16 @@ Authenticated users (tenant admins and tenant users) currently have no way to ch
 
 - **Permission check API** that allows authenticated users to check their own permissions on OSAC resources without performing the actual operation
 - **Request specification** describing the hypothetical operation to check:
-  - Resource type (e.g., Cluster, ComputeInstance, VirtualNetwork, Subnet, SecurityGroup, User, Tenant)
-  - Verb supported by the resource (create, get, delete, list; update only where the resource API exposes it)
-  - Optional tenant name and resource name to scope the hypothetical operation (the authenticated user's identity is always determined from the request's authentication context, never from request fields)
+  - `spec.service`: fully qualified OSAC service name (e.g., `osac.public.v1.NetworkACLs` or `osac.public.v1.Subnets`)
+  - `spec.method`: capitalized gRPC method supported by that service; networking resources support read, create, and delete operations, with no `Update` method for NetworkACLs or Subnets
+  - Optional scope in top-level `metadata.tenant` and `metadata.name` (tenant context and target resource name); the authenticated user's identity is always determined from request authentication context, never from request fields
 - **Response** indicating whether the authenticated user would be authorized:
   - `allowed` boolean field showing whether the permission check passed
-  - Optional `reason` field providing explanation when permission is denied
+  - The `reason` field is reserved for future use and is always empty in v1; denied checks do not return an explanation
 - **Advisory results** — permission check results reflect authorization state at check time; the actual operation must independently re-evaluate authorization since permissions and resource state may change between the check and the operation
-- **Authorization consistency** — permission check results must match the authorization decision that would be made for the same user attempting the same operation (same resource type, verb, tenant, and resource name) at the time of the check
+- **Authorization consistency** — permission check results must match the authorization decision that would be made for the same user attempting the same service method with the same `metadata.tenant` and `metadata.name` at the time of the check
 - **User identity determination** — the API determines the authenticated user's identity, tenants, and roles automatically from authentication context (no separate identity parameters)
-- **Comprehensive resource coverage** — support permission checks for all OSAC resource types and the verbs each resource supports (networking resources governed by OSAC-1433 omit Update; user management and quota scenarios referenced in user stories translate to permission checks on underlying resource operations like creating/updating User or Tenant resources)
+- **Comprehensive resource coverage** — support permission checks for all OSAC resource types and the methods each resource supports; user management and quota scenarios referenced in user stories translate to permission checks on underlying resource operations like creating/updating User or Tenant resources
 - **Access control** — any authenticated user can call the endpoint to check their own permissions
 - **Validation** — tests must demonstrate that permission check results match actual authorization outcomes for allowed and denied scenarios across different roles (Admin, Tenant Admin, Client) and resource types
 - **API documentation** describing the endpoint, request/response schemas, usage examples, and the advisory nature of results
@@ -43,8 +43,8 @@ Authenticated users (tenant admins and tenant users) currently have no way to ch
 
 ### Tenant User
 
-- As a tenant user, I want to check whether I have permission to create, read, or delete infrastructure resources (ComputeInstance, Subnet, SecurityGroup) in a specific tenant before starting the workflow, while checking workload Update permissions separately where supported, so that the UI and CLI can validate permissions upfront and warn me before I invest effort in changes I cannot save
-- As a tenant user, I want to check resource-scoped delete permissions on a specific networking resource by name, and Update permissions only where the resource API supports Update, before enabling edit or delete actions, so that I know which operations are available before attempting them
+- As a tenant user, I want to check whether I have permission to create, read, or delete infrastructure resources (ComputeInstance, Subnet, NetworkACL) in a specific tenant before starting the workflow, while checking workload Update permissions separately where supported, so that the UI and CLI can validate permissions upfront and warn me before I invest effort in changes I cannot save
+- As a tenant user, I want to check resource-scoped permissions for supported operations before enabling actions, so that I know which operations are available before attempting them
 
 ## Assumptions
 
@@ -58,9 +58,11 @@ This feature depends on internal fulfillment-service components (authentication,
 
 ## Provenance
 
-Authored: draft @ prd 0.9.0 - a17a43d, workspace main @ ed93971 (dirty)
-Final: revise @ prd 0.9.0 - a17a43d, workspace main @ 3c61513
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
 
-> Context changed between draft and revise.
+> Context changed between revise and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"a17a43d","source_repo":"3c61513","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

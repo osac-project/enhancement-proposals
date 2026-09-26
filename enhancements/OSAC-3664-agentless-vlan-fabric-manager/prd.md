@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Yoni Bettan (ybettan@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-3664 |
-| Date        | 2026-08-27 |
+| Date        | 2026-09-24 |
 
 > This PRD covers the **agentless VLAN fabric manager** — a networking backend for
 > OSAC. It builds on the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md),
@@ -12,7 +12,9 @@
 > deployment support boundary. Air-gapped and disconnected networking
 > deployments are not supported. This document defines the requirements for
 > delivering that model on environments that use traditional managed switches
-> (without Netris). It adds a backend, not new API.
+> (without fabric manager). It adds a backend, not new API. This milestone does
+> not implement the mandatory NetworkACL readiness contract, so the backend
+> cannot serve the shared API or be selected as a supported fabric manager yet.
 
 This PRD also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
@@ -25,10 +27,10 @@ explicitly specifies them.
 
 ## 1. Problem Statement
 
-Today OSAC's networking API is served by a single fabric manager (Netris). Cloud
-providers whose environments use traditional managed switches — without Netris —
+Today OSAC's networking API is served by the existing physical fabric manager. Cloud
+providers whose environments use traditional managed switches — without fabric manager —
 have no supported way to deliver API-driven tenant networking, and are effectively
-locked to Netris to offer subnets, external access, and NAT through the API. In
+locked to fabric manager to offer subnets, external access, and NAT through the API. In
 such environments, cluster (CaaS) networking exists only as an inline path that
 bypasses the networking API and does not serve bare-metal or VM workloads, so
 tenants get an inconsistent, partial networking experience. Without a second
@@ -39,39 +41,43 @@ managed-switch infrastructure, limiting where the platform can run.
 
 ### 2.1 Goals
 
-- A Cloud Infrastructure Admin can deploy OSAC with API-driven tenant networking
-  in an environment that uses traditional managed switches (no Netris), by
-  selecting the agentless VLAN backend. [Clarify: D6]
-- Tenants get the same networking API and supported virtual-network, subnet,
-  inbound external access, and outbound NAT behavior regardless of whether the
-  deployment's backend is Netris or agentless VLAN. [Clarify: D6, D8]
-- Bare-metal servers, clusters, and compute instances all use the agentless VLAN
-  backend for their fabric networking through the existing networking API, with no
-  changes to the service provisioning flows (VM IP addressing and VM-to-fabric
-  bridging are provided outside the backend — see Assumptions/Dependencies).
+- After mandatory NetworkACL enforcement is implemented, a Cloud Infrastructure
+  Admin can deploy OSAC with API-driven tenant networking on environments that
+  use traditional managed switches by selecting the agentless VLAN backend.
+  This milestone does not make that backend selectable. [Clarify: D6; User direction]
+- After the backend satisfies the shared NetworkACL readiness contract, tenants
+  use the same networking API and get equivalent behavior. Until then, the
+  backend cannot serve as a supported fabric manager. [Clarify: D6, D8; User direction]
+- After the backend is eligible for supported selection, bare-metal servers,
+  clusters, and compute instances can use its attachment operations through the
+  existing API. Service provisioning flows do not change (VM IP addressing and
+  VM-to-fabric bridging remain outside this backend — see Assumptions/Dependencies).
   [Clarify: D1, D5, D8; PR review: CodeRabbit]
 - A tenant can create a virtual network with multiple subnets: machines in the
   same subnet share a broadcast domain, machines in different subnets of the same
-  network can reach each other through the VirtualNetwork routing path, and
+  network can reach each other through the VirtualNetwork routing path when
+  allowed by their Subnet NetworkACL rules, and
   machines in different networks stay isolated. [Clarify: D12; User direction]
 - Backend networking failures are visible to operators on the affected networking
   resource's status. [Clarify: D9]
 
 ### 2.2 Non-Goals
 
-- No changes to the OSAC networking API or its resource model — the API is
-  inherited from the unified networking work (OSAC-1433) and consumed as-is.
-  [Clarify: D3, D5]
-- The backend does not create networking resources (including default networking
-  or a default SecurityGroup); it configures the fabric only for resources —
-  machines, clusters, VMs — attached to a network resource. [User direction]
+- This feature does not define the OSAC networking API or resource model. The
+  unified networking work (OSAC-1433) defines the NetworkACL resource, stateless
+  ingress and egress rules, and the Subnet association. This backend consumes
+  that shared contract. [Clarify: D3, D5]
+- The backend does not create tenant networking resources, including default
+  networking or a default NetworkACL; tenant onboarding owns those resources.
+  This backend configures networking only for machines, clusters, and VMs
+  attached to a network resource. [User direction]
 - Does not deprecate or remove the existing inline (non-API) CaaS networking path;
   that transition is handled separately by the CaaS agentless-VLAN follow-up.
   [Clarify: D4]
 - DNS record creation is not part of this backend — DNS is a service-integration
   concern handled outside the networking API. [Clarify: D10]
-- IPv6 and dual-stack networking are not supported; the backend
-  supports IPv4, matching the Netris baseline. [Clarify: D11]
+- IPv6 and dual-stack networking are not supported; the backend supports IPv4,
+  matching the unified networking contract. [Clarify: D11]
 - Per-service integration and end-to-end validation for BMaaS, CaaS, and VMaaS are
   tracked as separate follow-up features (OSAC-1562, OSAC-1611, OSAC-3665), not
   delivered here. [Clarify: D1, D2]
@@ -79,16 +85,15 @@ managed-switch infrastructure, limiting where the platform can run.
   part of this backend. [Clarify: D8]
 - No UI is delivered in this milestone; backend selection and networking
   operations are available through configuration and the CLI. [Clarify: D7]
-- SecurityGroup policy enforcement is out of scope for this feature and
-  deferred to a later networking policy design. This feature does not define
-  policy resources, policy semantics, or per-resource traffic restrictions.
-  Until the later policy feature exists, all routed traffic is permitted,
-  including internal traffic within a Subnet, traffic between Subnets in the
-  same VirtualNetwork, and external ingress and egress through the supported
-  external access paths. Same-subnet L2 traffic is also permitted. This
-  default-permit behavior does not create routes between otherwise isolated
-  VirtualNetworks; where the networking topology provides a supported route,
-  the traffic is permitted without provider-managed default-deny controls.
+- NetworkACL data-plane provisioning and rule enforcement are out of scope for
+  this backend milestone. OSAC-1433 defines the NetworkACL resource, stateless
+  ingress and egress rules, a required Subnet association, and mandatory active
+  policy before a Subnet can be Ready in every supported profile. This backend
+  does not satisfy that contract and cannot serve the shared API or be selected
+  as a supported fabric manager until it implements NetworkACL enforcement.
+  Selection validation must reject it; a mismatched configuration must leave the
+  Subnet and dependent resources not Ready. Same-Subnet L2 traffic remains
+  outside subnet ACL filtering.
   [User direction]
 - Broad multi-vendor switch support and switch-configuration concurrency beyond the
   initially supported platform(s) are follow-up work; the supported-switch set for
@@ -102,15 +107,15 @@ managed-switch infrastructure, limiting where the platform can run.
 ### Cloud Infrastructure Admin
 
 - As a Cloud Infrastructure Admin, I want to deploy OSAC networking on an
-  environment with traditional managed switches (no Netris) by selecting the
-  agentless VLAN backend, so that I can offer API-driven tenant networking without
-  Netris. [Clarify: D6]
-- As a Cloud Infrastructure Admin, I want to select the networking backend (Netris
-  or agentless VLAN) through the same configuration mechanism, so that the choice
-  is consistent and requires no API or tenant changes. [Clarify: D7]
+  environment that uses the agentless VLAN backend, so that I can offer
+  API-driven tenant networking on that infrastructure. [Clarify: D6]
+- As a Cloud Infrastructure Admin, I want to select the networking backend
+  through deployment configuration, so that backend choice is consistent and
+  requires no tenant-facing API change. This backend is unavailable for supported
+  selection until it implements mandatory NetworkACL enforcement. [Clarify: D7]
 - As a Cloud Infrastructure Admin, I want external IP ranges I define to be usable
   for tenant external access with the agentless VLAN backend, so that inbound and
-  outbound external connectivity works without Netris.
+  outbound external connectivity works through the supported deployment path.
 - As a Cloud Infrastructure Admin, I want a failed networking operation (for
   example, a machine's port that could not be placed on a subnet's VLAN) reflected
   on the affected resource's status, so that I can diagnose fabric problems.
@@ -119,14 +124,16 @@ managed-switch infrastructure, limiting where the platform can run.
 ### Tenant Admin / Tenant User
 
 - As a Tenant Admin, I want to create and manage networking resources — virtual
-  networks, subnets, external IPs, and NAT gateways — through the
-  same API regardless of whether the deployment uses Netris or agentless VLAN, so
-  that my experience is identical across environments. [Clarify: D6, D8]
+  networks, subnets, external IPs, and NAT gateways — through the shared API,
+  while each supported Subnet becomes Ready only after its associated NetworkACL
+  is actively enforced. The agentless backend remains unsupported until it meets
+  that contract.
+  [Clarify: D6, D8]
 - As a Tenant Admin, I want to create a virtual network with multiple subnets
   where machines in the same subnet share a broadcast domain and machines in
-  different subnets of the same network can communicate, while machines in other
-  networks are isolated, so that I can segment my network without losing
-  connectivity or isolation. [Clarify: D12]
+  different subnets of the same network can communicate when allowed by their
+  Subnet NetworkACL rules, while machines in other networks are isolated, so that
+  I can segment my network without losing connectivity or isolation. [Clarify: D12]
 - As a Tenant User, I want a machine I attach to a subnet to receive an IP address
   automatically and be reachable on that subnet, so that I don't configure
   addressing by hand.
@@ -141,73 +148,69 @@ managed-switch infrastructure, limiting where the platform can run.
 
 #### Backend Selection
 
-- **FR-1:** A provider can configure the agentless VLAN backend as the networking
-  backend for a deployment, using the same configuration mechanism used to select
-  Netris. Backend selection is not visible to tenants and requires no
-  networking-API changes. [Clarify: D3, D7]
+- **FR-1:** The agentless VLAN backend is not advertised or selectable as a
+  supported fabric manager in this milestone because every supported profile
+  requires active NetworkACL enforcement. Selection validation must reject it
+  until the backend implements that contract. The eventual selection remains
+  provider configuration and requires no networking-API changes.
+  [Clarify: D3, D7]
 
 #### Fabric-Manager-Agnostic Networking
 
-- **FR-2:** With the agentless VLAN backend configured, tenants can create and
-  manage the VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and
-  NATGateway resources through the existing networking API, with behavior
-  equivalent to the Netris backend. SecurityGroup resources and policy
-  enforcement are not delivered by this feature. [Clarify: D1, D5, D8;
-  User direction]
+- **FR-2:** The shared VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment,
+  NATGateway, and NetworkACL APIs remain unchanged. This backend milestone does
+  not satisfy their shared networking readiness contract and cannot serve them
+  through supported selection. If a mismatched selection reaches reconciliation,
+  the Subnet and dependent resources remain not Ready. [Clarify: D1, D5, D8; User direction]
 
 #### Multiple Subnets per Virtual Network
 
-- **FR-3:** A tenant can create a VirtualNetwork containing multiple Subnets.
-  Machines attached to the same Subnet share an L2 broadcast domain; machines on
-  different Subnets of the same VirtualNetwork can reach each other through the
-  VirtualNetwork routing path by default, without policy-based blocking in this
-  feature;
-  machines on different VirtualNetworks have no direct connectivity on the
-  internal fabric, even when their address ranges overlap (see NFR-3). Separate
-  Subnets provide broadcast segmentation. This follows the unified networking
-  model (OSAC-1433). [Clarify: D12; User direction]
+- **FR-3:** Topology-level tests may exercise the backend's multiple-VLAN and
+  VirtualNetwork-routing primitives with raw fixtures. They do not create
+  API-Ready Subnets or workloads and do not establish support for the shared
+  networking contract. Once NetworkACL enforcement is implemented, Subnets can
+  provide broadcast segmentation and routed connectivity subject to their
+  associated ACL rules; different VirtualNetworks remain isolated (see NFR-3).
+  [Clarify: D12; User direction]
 
 #### Automatic IP Assignment
 
-- **FR-4:** A bare-metal server or cluster node attached to a subnet is
-  automatically assigned an IP address within that subnet's range by the backend —
-  the tenant does not configure addressing manually — and the assigned address is
-  visible on the resource's status. VM addressing is provided by the OVN overlay
-  and is out of scope (see Assumptions). [Clarify: D9, D13; PR review: CodeRabbit]
+- **FR-4:** After this backend implements ACL enforcement and can report the
+  associated NetworkACL active, a bare-metal server or cluster node can receive
+  an IP address on its Subnet and report it in status. This behavior is not
+  available through this milestone's unsupported backend. VM addressing is
+  provided by the OVN overlay and is out of scope. [Clarify: D9, D13; PR review: CodeRabbit]
 
 #### Inbound External Access
 
-- **FR-5:** A tenant can make a machine reachable from outside its VirtualNetwork
-  by attaching an ExternalIP; inbound traffic addressed to the external IP reaches
-  the machine through the external access path. Routed inbound traffic through
-  that path is permitted by default until a future SecurityGroup-like policy
-  mechanism is delivered; no provider-managed default-deny authorization
-  capability is required for the ExternalIPAttachment to become Ready.
+- **FR-5:** After this backend implements mandatory ACL enforcement and becomes
+  selectable, an ExternalIP can expose a machine through the external path only
+  when the target Subnet and its NetworkACL are Ready. This milestone cannot
+  report that readiness or permit workload use.
   [Jira: OSAC-3664; User direction]
 
 #### Outbound External Connectivity
 
-- **FR-6:** A tenant can provide outbound external connectivity for a subnet's
-  machines through a NATGateway. Outbound traffic is source-address translated
-  so it egresses with the NATGateway's external IP as its source address; many
-  machines share that one external IP for egress. Routed outbound traffic through
-  that path is permitted by default until a future SecurityGroup-like policy
-  mechanism is delivered; no provider-managed default-deny authorization
-  capability is required for the NATGateway to become Ready.
+- **FR-6:** After this backend implements mandatory ACL enforcement and becomes
+  selectable, a NATGateway can provide outbound connectivity only after each
+  source Subnet and its NetworkACL are Ready. This milestone cannot report that
+  readiness or permit workload use.
   [Jira: OSAC-3664; Clarify: D14; User direction]
 
 #### External IP Pools
 
-- **FR-7:** A Cloud Infrastructure Admin can define external IP ranges
-  (ExternalIPPool) from which the agentless VLAN backend allocates ExternalIPs for
-  tenant external access. [Jira: OSAC-3664]
+- **FR-7:** After this backend implements mandatory NetworkACL enforcement and
+  becomes selectable as a supported fabric manager, a Cloud Infrastructure
+  Admin can define external IP ranges (ExternalIPPool) from which tenant
+  ExternalIPs can be allocated for external access. This milestone does not
+  expose tenant ExternalIP allocation through this backend. [Jira: OSAC-3664;
+  User direction]
 
 #### Networking Across All Services
 
-- **FR-8:** The backend implements the network-attachment operations that
-  bare-metal, cluster, and compute-instance attachments require, so that all three
-  service types can use agentless-VLAN subnets through their existing
-  network-attachment API. End-to-end per-service provisioning and validation are
+- **FR-8:** This backend cannot serve workload network attachments through the
+  supported API until it implements mandatory NetworkACL enforcement. After that
+  support is added, service-specific end-to-end provisioning and validation are
   delivered by the follow-up features (see Non-Goals). [Clarify: D1, D8; PR review: CodeRabbit]
 
 #### Failure Visibility
@@ -229,10 +232,10 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - **NFR-1:** The agentless VLAN backend provides networking for the IPv4 address
   family. IPv6 and dual-stack are not supported. [Clarify: D11]
-- **NFR-2:** Tenant-observable networking behavior — reachability, isolation,
-  external access — is equivalent between the agentless VLAN and Netris backends;
-  changing the deployment's backend does not change the tenant-facing API
-  contract. [Clarify: D8]
+- **NFR-2:** A supported fabric manager must satisfy the complete shared
+  networking contract, including mandatory NetworkACL enforcement. This milestone
+  does not satisfy it and cannot claim tenant-observable API parity or supported
+  manager eligibility until enforcement is implemented. [Clarify: D8; User direction]
 - **NFR-3:** Different VirtualNetworks have no direct connectivity on the internal
   fabric — a machine in one VirtualNetwork cannot reach another VirtualNetwork's
   private subnet addresses, even when their address ranges overlap. Machines
@@ -243,54 +246,56 @@ managed-switch infrastructure, limiting where the platform can run.
 
 ## 5. Acceptance Criteria
 
-- [ ] With the agentless VLAN backend configured, a tenant creates a
-  VirtualNetwork and Subnet through the API and they reach a ready state.
-- [ ] A bare-metal server or cluster node attached to an agentless-VLAN subnet
-  automatically receives an IP on that subnet, visible in its status.
-- [ ] A tenant attaches an ExternalIP to a machine and inbound traffic reaches
-  the machine through the external access path.
-- [ ] A tenant creates a NATGateway; a subnet machine's outbound traffic reaches
-  an external endpoint, which observes the NATGateway's external IP as the source
-  address.
-- [ ] An ExternalIPAttachment and NATGateway become Ready without
-  provider-managed default-deny authorization verification, and routed traffic
-  through their supported external paths is permitted by default until a future
-  SecurityGroup-like policy mechanism is delivered.
-- [ ] A tenant creates a VirtualNetwork with two subnets: machines in the same
-  subnet share a broadcast domain, machines in different subnets of that network
-  can reach each other by default through the VirtualNetwork routing path, and machines in a
-  different VirtualNetwork with the same address range cannot reach those private
-  addresses directly on the fabric.
-- [ ] Resources placed in the same Subnet can communicate at L2; internal
-  traffic is permitted by default until the later policy feature is delivered.
+### Current Milestone
+
+- [ ] The agentless implementation is not advertised or selectable as a supported
+  fabric manager until it implements NetworkACL enforcement for the mandatory
+  Subnet readiness contract.
+- [ ] If a stale or otherwise mismatched configuration reaches reconciliation,
+  the Subnet and dependent resources remain not Ready and cannot be used by
+  workloads. No permit-all fallback reports success.
+- [ ] Topology-level checks use raw backend fixtures only. They do not create or
+  claim API-Ready Subnets, API-ready workload attachments, or NetworkACL
+  enforcement by this backend.
+
+### Future Acceptance After NetworkACL Support
+
+The following criteria are not met by this milestone. They become eligible for
+acceptance only after this backend implements NetworkACL enforcement and can be
+selected as a supported fabric manager.
+
+- [ ] A bare-metal server or cluster node attached to a Ready Subnet receives an
+  IP on that Subnet, visible in its status.
+- [ ] Inbound ExternalIP data-plane checks reach a target only after its Subnet
+  NetworkACL is Ready and its rules are enforced.
+- [ ] Outbound NATGateway data-plane checks use its ExternalIP only after the
+  source Subnet NetworkACL is Ready and its rules are enforced.
+- [ ] ExternalIPAttachment and NATGateway resources become Ready only when their
+  dependent Subnet NetworkACL is Ready and enforced.
+- [ ] Permitted cross-Subnet traffic follows the associated ingress and egress
+  rules, and directly routed traffic between overlapping VirtualNetworks remains
+  unreachable.
+- [ ] Same-Subnet traffic remains at L2 and is not filtered by the Subnet ACL,
+  consistent with OSAC-1433.
 - [ ] A machine in one VirtualNetwork can reach a machine in another VirtualNetwork
-  via the target's ExternalIP over the external path, even though the target's
-  private subnet address remains directly unreachable.
-- [ ] A bare-metal server provisions networking end-to-end through the agentless
-  VLAN backend using the same networking API as with Netris (the reference
-  validation path this milestone).
-- [ ] The backend performs the network-attachment operations required by cluster
-  and compute-instance attachments on agentless-VLAN subnets; full end-to-end
-  validation for CaaS and VMaaS is covered by their follow-up features
-  (OSAC-1611, OSAC-3665).
-- [ ] A switch-port/VLAN configuration failure is reflected on the affected
-  networking resource's status with a diagnostic message.
-- [ ] The same networking API requests produce equivalent tenant-observable
-  virtual-network, subnet, inbound external-access, and outbound-NAT results on
-  an agentless-VLAN deployment as on a Netris deployment; all supported routed
-  traffic is permitted by default until the future policy feature is delivered.
-- [ ] Selecting between the Netris and agentless VLAN backends is a provider
-  configuration — not visible to tenants and requiring no API change.
-- [ ] Deleting an ExternalIPAttachment removes the inbound DNAT; deleting its
-  ExternalIP releases it back to the pool; neither affects other resources.
-- [ ] Deleting a Subnet or VirtualNetwork tears down its fabric configuration and
-  releases its addresses without affecting other VirtualNetworks or their
-  resources.
+  through the target's ExternalIP when the policy permits the flow, while the
+  target's private Subnet address remains unreachable.
+- [ ] Bare-metal, cluster, and compute-instance attachments use the backend only
+  after the Subnet and its NetworkACL are Ready; their end-to-end validation is
+  covered by the follow-up features (OSAC-1611, OSAC-3665).
+- [ ] Backend failures surface diagnostics on affected resources after the
+  backend is eligible to manage those resources.
+- [ ] Requests produce equivalent tenant-observable results for capabilities
+  advertised by both supported backends, without any ACL-unaware permit-all
+  fallback.
+- [ ] Backend selection remains provider configuration with no tenant-facing API
+  change. Deleting attachments, Subnets, or VirtualNetworks removes only owned
+  state and leaves unrelated resources intact.
 
 ## 6. Assumptions
 
 - The OSAC networking API and resource model are complete and stable, inherited
-  from the unified networking work and already exercised by the Netris backend;
+  from the unified networking work and already exercised by the fabric manager backend;
   this feature adds a backend, not API changes. [Clarify: D3]
 - The agentless VLAN backend's lower-level building blocks already exist and are
   reused; they are extended only if a gap is found. [Clarify: D3]
@@ -330,11 +335,11 @@ managed-switch infrastructure, limiting where the platform can run.
 
 ## 8. Risks
 
-### 8.1 Feature-parity gaps with the Netris backend
+### 8.1 Feature-parity gaps with the fabric manager backend
 
 - **Owner:** Connectivity & Fabric team
-- **Mitigation:** Mirror the closed Netris fabric-manager feature (OSAC-2043) as
-  the structural template and validate the agentless VLAN backend
+- **Mitigation:** Use the existing physical fabric manager implementation
+  (OSAC-2043) as the structural template and validate the agentless VLAN backend
   capability-by-capability against the same networking API contract. [Clarify: C2]
 
 ### 8.2 Multi-subnet enablement not ready in time
@@ -374,7 +379,8 @@ managed-switch infrastructure, limiting where the platform can run.
 
 ## Provenance
 
-Authored: respond @ prd 0.9.0 - a17a43d, workspace main @ 63b090a
-Phases: draft, revise, revise, respond
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"a17a43d","source_repo":"63b090a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

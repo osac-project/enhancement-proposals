@@ -3,7 +3,7 @@ title: api-quality
 authors:
   - htayrie@redhat.com
 creation-date: 2026-07-26
-last-updated: 2026-09-16
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1577
 prd:
@@ -254,7 +254,8 @@ Tables requiring `active_` companions (based on existing Pattern A triggers):
 | Table | Reason |
 |-------|--------|
 | `active_subnets` | Referenced by each ComputeInstance network attachment |
-| `active_virtual_networks` | Referenced by subnets, security_groups, nat_gateways |
+| `active_virtual_networks` | Referenced by subnets, network_acls, nat_gateways |
+| `active_network_acls` | Referenced by each Subnet's `network_acl` association |
 | `active_instance_types` | Referenced by compute_instances |
 | `active_cluster_catalog_items` | Referenced by clusters |
 | `active_compute_instance_catalog_items` | Referenced by compute_instances |
@@ -319,15 +320,22 @@ CREATE TABLE compute_instance_subnet_refs (
   subnet_id TEXT NOT NULL REFERENCES active_subnets(id),
   PRIMARY KEY (compute_instance_id, attachment_index)
 );
+
+CREATE TABLE subnet_network_acl_refs (
+  subnet_id TEXT NOT NULL REFERENCES subnets(id) ON DELETE CASCADE,
+  network_acl_id TEXT NOT NULL REFERENCES active_network_acls(id),
+  PRIMARY KEY (subnet_id)
+);
 ```
 
 A trigger on `compute_instances` materializes one row for every entry in the
 ComputeInstance network-attachment array from the JSONB `data` column. The
 `attachment_index` is the zero-based position in that immutable array and is
-the attachment-level identity for this dependency table; it allows multiple
-attachments to reference the same subnet. For ComputeInstance network
-attachments governed by [OSAC-1433](../OSAC-1433-unified-networking/design.md),
-the attachment list and its fields are create-time inputs and cannot be
+the attachment-level identity for this dependency table. Under
+[OSAC-1433](../OSAC-1433-unified-networking/design.md), a ComputeInstance has
+at most one tenant network attachment, and that attachment carries only its
+Subnet reference; the Subnet's NetworkACL association supplies traffic policy.
+The attachment list and its fields are create-time inputs and cannot be
 updated in place:
 
 - **INSERT** (active instance): iterate every network attachment, extract its
@@ -346,6 +354,17 @@ updated in place:
 
 The FK from `subnet_id` to `active_subnets(id)` enforces that the referenced subnet is active. Migration backfill inserts refs only for currently active compute instances (`deletion_timestamp = 'epoch'`).
 
+Subnet network policy is also a resource reference: each Subnet has exactly
+one active NetworkACL association. Materialize that association in
+`subnet_network_acl_refs` with `network_acl_id` referencing
+`active_network_acls(id)`. Subnet creation writes this row from the resolved NetworkACL association
+persisted on the Subnet. Soft-delete removes it; undelete restores it from
+that persisted association, and the foreign key rejects restoration if the
+NetworkACL is inactive. Updates to unrelated Subnet fields do not change the
+row because the association is immutable. Hard-delete cascades through
+`subnet_id`. The reference prevents deleting an ACL while any active Subnet
+remains associated with it.
+
 ##### Migration Strategy
 
 A single migration (next available number after 79), executed in one transaction:
@@ -358,10 +377,12 @@ A single migration (next available number after 79), executed in one transaction
 6. Create or migrate materialized ref tables for each parent-child relationship;
    `compute_instance_subnet_refs` uses the composite primary key
    `(compute_instance_id, attachment_index)` rather than one row per instance
-7. Backfill ref tables from existing JSONB data (active instances only:
-   `WHERE deletion_timestamp = 'epoch'`), inserting one row per network
-   attachment with its stable array index
-8. Attach ref materialization triggers to child tables
+7. Backfill ref tables from existing JSONB data for active resources
+   (`WHERE deletion_timestamp = 'epoch'`): insert each ComputeInstance
+   attachment with its stable array index into
+   `compute_instance_subnet_refs`, and insert each active Subnet's
+   persisted NetworkACL association into `subnet_network_acl_refs`
+8. Attach ref materialization triggers to `compute_instances` and `subnets`
 9. Drop the old per-resource Pattern A triggers (e.g., `DROP TRIGGER check_subnets_not_in_use ON subnets`)
 10. Drop the old per-resource Pattern A trigger functions (e.g., `DROP FUNCTION check_subnets_not_in_use()`) from migrations 52, 55, 56, 59, 73, 76
 
@@ -395,6 +416,9 @@ c.relname not in (
     'active_compute_instance_catalog_items',
     'active_storage_backends',
     'compute_instance_subnet_refs',
+    -- OSAC-1433 additions:
+    'active_network_acls',
+    'subnet_network_acl_refs',
     -- ... additional ref tables
 )
 ```
@@ -546,6 +570,7 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 - Verify that soft-deleting a parent with active children raises `ErrInUse`
 - Verify that soft-deleting a parent with no active children succeeds
 - Verify that hard-deleting a row removes it from `active_<table>`
+- Verify that a Subnet's NetworkACL reference is removed on soft-delete, restored on undelete, and blocks NetworkACL soft-delete while the Subnet is active
 
 **OSAC-1540:**
 - Verify that consolidated `translateError` returns correct error types for all SQLSTATE codes across create, update, and delete operations
@@ -561,6 +586,7 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 - Create a parent resource, create a child referencing it, attempt to soft-delete the parent — verify rejection with ErrInUse
 - Create a parent, soft-delete it, attempt to create a child referencing it — verify rejection with ErrReference
 - Create a parent, create a child, delete the child, then soft-delete the parent — verify success
+- Create a Subnet with a NetworkACL association, soft-delete and undelete the Subnet, then verify the ACL reference is restored and prevents ACL deletion
 - Concurrent test: two requests simultaneously — one soft-deleting a parent, one creating a child — verify that exactly one succeeds
 
 ### E2E Tests
@@ -602,3 +628,16 @@ All three epics modify the fulfillment-service only. Since OSAC does not support
 ## Infrastructure Needed
 
 None. All changes use existing build and test infrastructure. protoc-gen-cleanapi is built from source or installed via `go install` — no new external service dependencies.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+
+> Context changed between revise and revise.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

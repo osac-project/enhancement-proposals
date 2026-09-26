@@ -3,7 +3,7 @@ title: baremetal-instance-api
 authors:
   - agentil@redhat.com
 creation-date: 2026-05-29
-last-updated: 2026-07-02
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1118
 see-also:
@@ -19,7 +19,7 @@ superseded-by:
 
 ## Summary
 
-This enhancement introduces `BareMetalInstance` and `BareMetalInstanceCatalogItem` resources to the OSAC fulfillment-service public API, enabling tenants to provision and manage physical bare metal servers through a self-service interface. Catalog items are provider-managed entries that expose available hardware profiles and OS base images to tenants; each is backed by a `BareMetalInstanceTemplate`. Bare Metal networking is outside this EP and is deferred to a future enhancement. The design adopts a pluggable provider architecture — implemented in a dedicated baremetal fulfillment component — so that future bare metal backends can be integrated without breaking the API. This EP is scoped to the fulfillment-service API layer; operator, provisioning, UX, and E2E concerns are tracked as companion work items under OSAC-1118.
+This enhancement introduces `BareMetalInstance` and `BareMetalInstanceCatalogItem` resources to the OSAC fulfillment-service public API, enabling tenants to provision and manage physical bare metal servers through a self-service interface. Catalog items are provider-managed entries that expose available hardware profiles and OS base images to tenants; each is backed by a `BareMetalInstanceTemplate`. Bare-metal networking is defined by the unified networking API: a `BareMetalInstance` attachment identifies a Subnet and may retain physical-interface selection, while the NetworkACL associated with that Subnet controls traffic policy ([OSAC-1433](/enhancements/OSAC-1433-unified-networking), [OSAC-1437](/enhancements/OSAC-1437-bmaas-networking)). The design adopts a pluggable provider architecture — implemented in a dedicated baremetal fulfillment component — so that future bare metal backends can be integrated without breaking the API. This EP is scoped to the fulfillment-service API layer; operator, provisioning, UX, and E2E concerns are tracked as companion work items under OSAC-1118.
 
 ## Motivation
 
@@ -47,7 +47,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 ### Non-Goals
 
-* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement. This EP does not add networking fields to `BareMetalInstanceCatalogItem`; BareMetalInstance users cannot configure networking until a dedicated networking API exists. A dedicated networking enhancement will define how tenants create their own `Subnet` and attach it to a `BareMetalInstance`.
+* Networking API and traffic-policy design — defined by [OSAC-1433](/enhancements/OSAC-1433-unified-networking) and its BMaaS attachment flow in [OSAC-1437](/enhancements/OSAC-1437-bmaas-networking). A `BareMetalInstance` attachment identifies a Subnet and may identify a physical interface; the NetworkACL associated with that Subnet supplies policy. This EP does not put network or traffic-policy fields on `BareMetalInstanceCatalogItem`.
 * Custom hardware profile selection by tenants at provision time — fixed by the catalog item. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new catalog item.
 * AAP playbook, baremetal fulfillment component, UI/UX, and E2E test implementation — covered in companion work.
 * Support for multiple bare metal backends in this initial release — the architecture is designed for future extensibility.
@@ -57,7 +57,7 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 The proposal introduces three new resource types to the fulfillment-service public API:
 
-**`BareMetalInstanceTemplate`** defines a bare metal hardware profile and OS image. Cloud Provider Admins create and manage templates via the private API; tenants can discover available templates via the public API (List/Get only). Resource networking is not defined by this EP and is deferred to a future enhancement. osac-aap is used for the actual host-level provisioning at runtime, not for template management.
+**`BareMetalInstanceTemplate`** defines a bare metal hardware profile and OS image. Cloud Provider Admins create and manage templates via the private API; tenants can discover available templates via the public API (List/Get only). Networking is configured on the `BareMetalInstance` through its Subnet-based attachment; the NetworkACL associated with that Subnet controls traffic. Catalog items and templates remain network agnostic. osac-aap is used for the actual host-level provisioning at runtime, not for template management.
 
 **`BareMetalInstanceCatalogItem`** is a catalog entry that presents an available bare metal configuration to tenants. Cloud Provider Admins publish global catalog items; Tenant Admins can additionally create tenant-scoped catalog items through the public API, referencing available templates. The `published` flag controls visibility and an optional `tenant` field enables scoping to a specific tenant; unpublished or out-of-scope catalog items are invisible to tenant List/Get calls. `FieldDefinition` entries on the catalog item govern which spec fields tenants may override and apply defaults for the rest.
 
@@ -256,8 +256,7 @@ message BareMetalInstanceCatalogItem {
   // The `image` field is controllable via FieldDefinition. When editable is
   // false, the catalog item's default image is forced; when editable is true,
   // the tenant's choice is validated against the provided JSON Schema.
-  // Additional fields will be added in future enhancements (e.g. networking
-  // integration).
+  // Additional fields may be added by later enhancements.
   repeated FieldDefinition field_definitions = 8;
 }
 ```
@@ -281,7 +280,13 @@ message BareMetalInstanceCatalogItem {
 }
 ```
 
-#### Proto: BareMetalInstance
+#### Proto: BareMetalInstance (partial API schema)
+
+This schema sketch predates the networking fields. The authoritative
+`BareMetalNetworkAttachment` and `BareMetalInstanceSpec.network_attachments`
+contract is defined in
+[OSAC-1437](/enhancements/OSAC-1437-bmaas-networking/design.md#api-extensions);
+the Subnet's NetworkACL supplies traffic policy.
 
 ```protobuf
 // Contains the image configuration for a bare metal instance.
@@ -391,7 +396,7 @@ Where possible, the BareMetalInstance API is consistent with ComputeInstance:
 - `BareMetalInstanceTemplate` with `spec_defaults`; managed via private API, readable via public List/Get.
 - `image` field for OS base image selection via `BareMetalInstanceImage` (`source_type` + `source_ref`).
 
-Fields specific to VMs (network attachments, cores, memory) are absent from `BareMetalInstance` in this initial version.
+VM sizing fields (`cores`, `memory`) are not part of `BareMetalInstance`. Bare-metal network placement uses a Subnet attachment, with traffic policy from the NetworkACL associated with that Subnet ([OSAC-1433](/enhancements/OSAC-1433-unified-networking)).
 
 ### Risks and Mitigations
 
@@ -475,3 +480,14 @@ The fulfillment-service, baremetal-fulfillment-operator, and osac-operator must 
 ## Infrastructure Needed
 
 BCM (NVIDIA Base Command Manager) access (credentials, API endpoint) is required for integration and E2E testing. This infrastructure is managed by the cloud provider and must be provisioned as part of the OSAC CI environment setup.
+
+---
+
+## Provenance
+
+Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->

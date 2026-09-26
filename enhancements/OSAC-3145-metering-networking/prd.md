@@ -4,7 +4,7 @@
 |-------------|----------------------|
 | Author(s)   | masayag@redhat.com   |
 | Jira        | [OSAC-3145](https://redhat.atlassian.net/browse/OSAC-3145) |
-| Date        | 2026-07-26           |
+| Date        | 2026-09-24           |
 
 This PRD observes the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
@@ -34,7 +34,7 @@ Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.
 
 OSAC provisions ExternalIPs and NAT Gateways that consume scarce provider infrastructure from allocation until deletion, but has no mechanism to report that consumption to billing. An ExternalIP consumes finite address pool space whether it is attached to a resource or not — the provider's pool is finite and each allocation reduces availability. A NAT Gateway consumes dedicated gateway capacity for as long as it exists. Metering exists to supply billing with usage data for resources that can incur cost — not to enforce quota, and not to inventory every networking object a tenant holds.
 
-VirtualNetworks, Subnets, and SecurityGroups are configuration metadata that will not incur cost — they are free across all surveyed hyperscalers and GPU/AI clouds, none of which meter them on an allocation basis — so metering does not report them.
+VirtualNetworks, Subnets, and NetworkACLs are configuration metadata that will not incur cost — they are free across all surveyed hyperscalers and GPU/AI clouds, none of which meter them on an allocation basis — so metering does not report them.
 
 Without metering for the billable networking resources, Cloud Provider Admins have no usage data to account for the scarce network infrastructure tenants hold, and Tenant Admins have no visibility into their billable networking footprint across projects.
 
@@ -51,7 +51,7 @@ Metered networking resources are service-agnostic — an ExternalIP or NATGatewa
 
 ExternalIP resources support all three services and can be attached to ComputeInstances, Clusters, and BareMetalInstances. Attachment status is tracked as a queryable dimension on the ExternalIP meter, not as a separately metered resource.
 
-VirtualNetwork, Subnet, and SecurityGroup are available on all three services but are not metered — they are configuration metadata that will not incur cost, so metering does not report them.
+VirtualNetwork, Subnet, and NetworkACL are available on all three services but are not metered — they are configuration metadata that will not incur cost, so metering does not report them.
 
 ### 2.2 Capabilities
 
@@ -62,7 +62,7 @@ VirtualNetwork, Subnet, and SecurityGroup are available on all three services bu
 
 ## 3. Out of Scope
 
-- Metering of VirtualNetwork, Subnet, and SecurityGroup — these are configuration metadata that will not incur cost (free across all surveyed hyperscalers and GPU/AI clouds); metering does not report them (per PR #159 review, [comment 5204380439](https://github.com/osac-project/enhancement-proposals/pull/159#issuecomment-5204380439))
+- Metering of VirtualNetwork, Subnet, and NetworkACL — these are configuration metadata that will not incur cost (free across all surveyed hyperscalers and GPU/AI clouds); metering does not report them (per PR #159 review, [comment 5204380439](https://github.com/osac-project/enhancement-proposals/pull/159#issuecomment-5204380439))
 - Quota enforcement and a complete inventory of the networking resources a tenant or user holds — these are not purposes of metering
 - BMaaS compute metering — tracked separately ([OSAC-2506](https://redhat.atlassian.net/browse/OSAC-2506)); ExternalIPs and NATGateways consumed by BMaaS are in scope here
 - Storage metering — tracked separately ([OSAC-3141](https://redhat.atlassian.net/browse/OSAC-3141))
@@ -119,7 +119,7 @@ Each metered networking resource type has a flat allocation meter. Usage is quer
 
 - [ ] Each billable networking resource (ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
 - [ ] An allocated-but-unattached ExternalIP generates usage data
-- [ ] VirtualNetwork, Subnet, and SecurityGroup generate no metering usage data
+- [ ] VirtualNetwork, Subnet, and NetworkACL generate no metering usage data
 - [ ] Networking usage can be broken down by resource type, deployment, tenant, and project; ExternalIPs additionally expose their IPv4 family and attachment status
 - [ ] ExternalIPs attached to a parent resource (ComputeInstances/Clusters/BareMetalInstances) can be attributed to the parent in a unified usage view
 - [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
@@ -158,8 +158,9 @@ This PRD is part of the Metering Part 2 family:
 
 ## Provenance
 
-Committed: commit @ prd 0.9.0 - 562b610, workspace main @ 1095dc5d3
+Authored: revise [manual] @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"1095dc5d3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->

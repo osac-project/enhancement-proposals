@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Dan Manor |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
-| Date        | 2026-07-02 |
+| Date        | 2026-09-24 |
 
 This PRD inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
@@ -23,7 +23,7 @@ explicitly specifies them.
 ## 1. Problem Statement
 
 Creating a reachable resource in OSAC requires 6+ sequential API calls:
-VirtualNetwork, Subnet, SecurityGroup, the resource itself, ExternalIP,
+VirtualNetwork, NetworkACL, Subnet, the resource itself, ExternalIP,
 and ExternalIPAttachment. Every tenant must understand the full networking
 resource model before provisioning their first VM, cluster, or bare-metal
 server. This friction slows onboarding, increases the chance of
@@ -43,12 +43,12 @@ dual-stack networking are not supported.
 - Tenants who need custom networking retain the full explicit workflow —
   simplified creation is additive, not a replacement
 - Auto-provisioned networking resources are visible and follow the unified
-  networking create/read/delete lifecycle; changes require replacement
+  read/create/delete lifecycle; ACL rules and Subnet ACL associations are fixed at creation
 
 ### 2.2 Non-Goals
 
 - Custom default configurations per tenant (all tenants in a deployment
-  receive the same default CIDR and SecurityGroup rules)
+  receive the same default CIDR and NetworkACL rules)
 - Auto-provisioning of VirtualNetworks or Subnets beyond the initial
   default (tenants create additional VNs manually)
 - UI support for simplified creation (deferred — API and CLI only for now)
@@ -82,7 +82,7 @@ dual-stack networking are not supported.
 ### Cloud Infrastructure Admin Stories
 
 - As a Cloud Infrastructure Admin, I want to configure a default CIDR
-  range and default SecurityGroup rules on the NetworkClass, so that the
+  range and default NetworkACL rules on the NetworkClass, so that the
   system can auto-create default networking resources for tenants at
   onboarding
 
@@ -99,26 +99,30 @@ dual-stack networking are not supported.
 #### Default Networking
 
 - **FR-1:** At tenant onboarding, the system provisions a default
-  VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway for the tenant. The tenant
-  transitions to READY only after all
-  default networking resources are also READY. If default networking
+  VirtualNetwork, NetworkACL, IPv4 Subnet, and NATGateway for the tenant.
+  The default Subnet is associated with the default NetworkACL. The tenant
+  transitions to READY only after all default networking resources and the
+  Subnet-to-NetworkACL association are READY. If default networking
   provisioning fails, the tenant remains in a non-READY state with a
   status condition describing the failure. The Cloud Provider Admin can
   inspect the failure and retry by deleting and re-creating the tenant.
   [User]
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
-  parameters (IPv4 CIDRs and SecurityGroup rules) on the
-  NetworkClass. Defaults are required — a NetworkClass without defaults
-  is rejected at creation time. [User]
+  parameters (IPv4 CIDRs and stateless ingress and egress NetworkACL rules) on
+  the NetworkClass. The tenant default ACL denies unmatched ingress and
+  permits egress by default through an `ALLOW ALL` rule for `0.0.0.0/0` at
+  priority `32766`. Since the ACL is stateless, return traffic requires
+  explicit reverse-direction ingress rules. Defaults are required — a
+  NetworkClass without defaults is rejected at creation time. [User]
 - **FR-3:** All tenants receive the same default IPv4 CIDR ranges as
   configured on the NetworkClass. Tenants are isolated at the
   network level — the unified networking API provides VirtualNetworks
   with any IP subnet, and the system enforces isolation regardless of
   overlapping CIDRs between tenants. [User]
 - **FR-4:** Default resources are labeled as defaults and visible in list
-  and detail views. They follow the unified networking create/read/delete
-  contract; changes require delete and recreate, and deletion is blocked while
-  any resource depends on them. [User]
+  and detail views. They follow the unified networking read/create/delete
+  contract; NetworkACL rules and Subnet ACL association are fixed at creation,
+  and deletion is blocked while any resource depends on them. [User]
 - **FR-5:** Creating custom VirtualNetworks does not affect default
   resources — both coexist. [User]
 
@@ -126,18 +130,17 @@ dual-stack networking are not supported.
 
 - **FR-6:** The network attachment configuration on ComputeInstance,
   Cluster, and BaremetalInstance is optional and supports at most one tenant
-  attachment. When omitted or empty, the system populates it with the tenant's
-  default Subnet and default SecurityGroup. When a partial attachment is
-  supplied, only missing fields are defaulted and supplied values are
-  preserved. A missing or explicitly empty `security_groups` list is treated
-  as missing; the default SecurityGroup applies only when the resolved Subnet
-  belongs to the tenant's default VirtualNetwork, otherwise the caller must
-  provide SecurityGroups from the resolved Subnet's VirtualNetwork. The resolved attachment is stored with the resource so the
-  resource is self-describing after creation. VMaaS and BMaaS retain plural
-  field names for API compatibility; CaaS retains its singular field. [User]
-- **FR-7:** When a resource is created with an explicit complete attachment,
-  no values are replaced by defaults. Missing fields in a single explicit
-  attachment receive only their corresponding defaults. [User]
+  attachment. The attachment refers to a Subnet only; the Subnet's associated
+  NetworkACL applies to the workload. When omitted or empty, the system
+  populates the attachment with the tenant's default Subnet. A supplied
+  Subnet is preserved, and a missing Subnet is defaulted. BaremetalInstance
+  also defaults a missing physical interface. The resolved attachment is
+  stored with the resource. VMaaS and BMaaS retain plural field names for API
+  compatibility; CaaS retains its singular field. [User]
+- **FR-7:** When a resource is created with an explicit Subnet attachment, the
+  system preserves it and does not replace it with a default. A missing
+  Subnet receives the tenant default Subnet; a missing BMaaS interface
+  receives the default fabric interface. [User]
 
 #### Auto ExternalIP
 
@@ -186,29 +189,36 @@ dual-stack networking are not supported.
   `--external-ip-attachment` and no explicit network attachments — the
   server is placed on the default subnet with an auto-provisioned
   ExternalIP
-- [ ] Default VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway
-  exist and are READY before the tenant's first resource creation
+- [ ] Default VirtualNetwork, NetworkACL, IPv4 Subnet, and NATGateway exist
+  and are READY before the tenant's first resource creation, and the default
+  Subnet is associated with the default NetworkACL
+- [ ] The tenant default NetworkACL denies unmatched ingress and permits
+  egress with an `ALLOW ALL` rule for `0.0.0.0/0` at priority `32766`; return
+  traffic passes only when a matching reverse-direction rule allows it
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
-- [ ] Default networking resources expose only create/read/delete operations;
-  a Tenant Admin can create replacement resources with customized settings once
-  dependencies on the defaults have been removed
+- [ ] Default networking resources support read/create/delete; NetworkACL
+  rules and the Subnet's NetworkACL association cannot be updated after
+  creation. A Tenant Admin can create replacement resources with customized
+  settings once dependencies on the defaults have been removed
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the
   auto-created ExternalIP and ExternalIPAttachment to be cleaned up
   automatically
-- [ ] Creating a resource with explicit network attachments bypasses
-  defaults entirely — no default resources are referenced
+- [ ] A complete explicit network attachment is preserved and bypasses
+  attachment defaults; an omitted or partial attachment receives defaults for
+  missing fields as specified in FR-6
 - [ ] When no ExternalIPPool has available capacity, the create API call
   returns an error and the resource is not persisted
 - [ ] A resource created without explicit network attachments shows the
-  resolved default attachments when retrieved via the API
+  resolved default Subnet attachment when retrieved via the API, and its
+  effective policy is visible through the Subnet's NetworkACL association
 - [ ] An IPv6 or dual-stack default CIDR is rejected when NetworkClass defaults
   are validated, and no default resource is persisted from the invalid input
 
 ## 6. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking
-  resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP,
+  resource model (VirtualNetwork, Subnet, NetworkACL, ExternalIP,
   ExternalIPAttachment, NATGateway) defined in the
   [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
 - **OSAC-1712 (automatic pool selection)** — the auto ExternalIP pool
@@ -227,11 +237,16 @@ dual-stack networking are not supported.
 - **Mitigation:** Pool capacity visible in status; clear error directs
   tenant to explicit allocation from another pool
 
-### 7.2 Default SecurityGroup too permissive
+### 7.2 Default NetworkACL too permissive
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** Cloud Infrastructure Admin configures default rules on
-  NetworkClass; Tenant Admin can tighten rules after creation
+- **Mitigation:** The tenant default policy denies unmatched ingress and
+  permits egress; Cloud Infrastructure Admin can add ingress exceptions or
+  restrict egress with earlier-priority DENY rules in the NetworkClass before
+  tenant onboarding. Changing NetworkClass defaults does not update existing
+  tenant ACLs; tightening an existing tenant's policy requires the coordinated
+  replacement process in the [default resource lifecycle](design.md#default-resource-lifecycle),
+  including every Subnet referencing that ACL and its dependent workloads.
 
 ### 7.3 Auto ExternalIP orphans on partial failure
 
@@ -259,3 +274,16 @@ Resolved: Return error, no resource persisted.
 ### ~~8.2 E2E test coverage for simplified creation~~ — Resolved
 
 Resolved: E2E tests for simplified creation are defined in each per-service design's test plan (VMaaS, CaaS, BMaaS). No separate test plan needed in the default networking EP.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+
+> Context changed between revise and revise.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

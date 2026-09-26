@@ -3,7 +3,7 @@ title: cluster-and-vm-provisioning-wizard
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-22
-last-updated: 2026-09-22
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 prd:
@@ -38,7 +38,7 @@ Rewrite under `osac-ui/apps/app-frontend/src/components/catalogProvision/`. `Cat
 
 Static field paths are hardcoded per resource type (PRD §2.1.1). Catalog `field_definitions` overlay matching static paths on non-network **Configuration** fields and **General basics** fields (`ssh_key`, `ssh_public_key`, `pull_secret`) for `display_name`, `editable`, and `validation_schema`. Networking fields are not in the Catalog Item field model and are handled only by resource provisioning. Picker-backed paths (`spec.instance_type`, cluster `spec.node_sets` host type per row) ignore catalog `field_definitions` in v1. Create payloads include only PRD §2.1.1 paths plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`.
 
-New hooks in `libs/ui-components/src/api/v1/`: instance types, virtual networks, subnets, security groups, cluster catalog items, host types (list), cluster create. VM picker fields depend on fulfillment-service `spec.instance_type` and `spec.is_windows` (PRs #735, #734). Cluster Configuration uses `HostTypes.List` for per-row host type pickers; it does **not** call `ClusterTemplates.Get` for `node_sets`.
+New hooks in `libs/ui-components/src/api/v1/`: instance types, virtual networks, and subnets, cluster catalog items, host types (list), cluster create. VM picker fields depend on fulfillment-service `spec.instance_type` and `spec.is_windows` (PRs #735, #734). Cluster Configuration uses `HostTypes.List` for per-row host type pickers; it does **not** call `ClusterTemplates.Get` for `node_sets`.
 
 ### Workflow Description
 
@@ -94,13 +94,13 @@ Non-editable fields without a catalog `default` render blank and read-only (disa
 | `spec.run_strategy` | `Always` |
 | VM OS family (`spec.is_windows`) | Linux (`false`); wizard always sends an explicit value |
 | Instance type picker | Auto-select when `InstanceTypes.List` returns exactly one option |
-| Networking pickers | Auto-select when a list returns exactly one option (VN → subnet → SGs) |
+| Networking pickers | Auto-select when a list returns exactly one option (VN → subnet) |
 
 **VM Configuration specifics:** `spec.user_data` and `spec.boot_disk.size_gib` are optional — omit from payload when empty. `spec.is_windows` (OS family) uses `RadioButtonField` (Linux / Windows); wizard always sends an explicit value. `spec.instance_type` sends the type name only (not `cores`/`memory_gib`). Instance type labels show `metadata.name`, cores, memory, and **DEPRECATED** when applicable; OBSOLETE types excluded from the picker.
 
 **VM General specifics:** `spec.ssh_key` is optional — prefill catalog `default` on catalog selection when defined; merge catalog `ssh_key` `field_definition` for label, `editable`, and `validation_schema`. Omit from client payload only when blank (tenant cleared or no catalog default). When non-blank, send the parsed plain string (prefilled default or user edit).
 
-**VM Networking specifics:** Load VN list first; on selection, filter subnets and security groups with `this.spec.virtual_network.name == "<vn-name>"`. Assemble one `network_attachments` element using typed local references: `{ "subnet": { "name": "<subnet-name>" }, "security_groups": [{ "name": "<security-group-name>" }] }`. The API rejects a second entry. The virtual network is inferred from the referenced subnet; its ID is not sent in the attachment payload.
+**VM Networking specifics:** Load the VN list first; on selection, filter subnets with `this.spec.virtual_network.name == "<vn-name>"`. Assemble one `network_attachments` element using a typed subnet reference: `{ "subnet": { "name": "<subnet-name>" } }`. The API rejects a second entry. The Review step shows the selected Subnet and its associated NetworkACL reference as read-only context from the Subnet data; it does not fetch ACL rules or offer an ACL picker. The virtual network and its associated NetworkACL are determined through the subnet; neither reference is repeated in the workload attachment.
 Catalog Item fields do not provide a default, lock, or validation overlay for this step.
 
 **Cluster Configuration specifics:** `spec.node_sets` is **tenant-composed** — the wizard does **not** load, display, or apply `ClusterTemplate.spec.node_sets`. On Configuration, render an editable table with **Add node set** / **Remove** actions. Each row: **Host type** (`SelectField` from `HostTypes.List` — [PRD §2.1.6](prd.md#216-cluster-host-type-picker-api)) and **Nodes** (`size` number input, > 0). `ClusterNodeSet` requires only `host_type` and `size` — no separate name column. Validation: at least one row required; host type and positive `size` required per row; **duplicate host types blocked** (each host type id at most once). `buildClusterCreatePayload` uses **host type id as the map key** and sets `host_type` on the value to the same id. Review shows host type label and node count per row. Filter or disable host types already selected on other rows in remaining dropdowns. `ClusterConfigurationStep` loads the host type list on mount; no `useClusterTemplate` call.
@@ -113,7 +113,7 @@ Catalog Item fields do not provide a default, lock, or validation overlay for th
 
 ### API Extensions
 
-No API extensions to create payloads. The wizard consumes existing `ComputeInstanceCatalogItems`, `ClusterCatalogItems`, `InstanceTypes`, networking list APIs (`GET /api/fulfillment/v1/virtual_networks`, `.../subnets`, `.../security_groups`), `HostTypes.List` (`GET /api/fulfillment/v1/host_types`), and create APIs. Server-side Catalog validation (`catalog_item_validation.go` / `applyFieldDefinitions`) still applies Catalog `field_definitions` on create when the client omits a non-network field the wizard left blank. It does not apply Catalog networking policy because networking is not a Catalog Item field. The wizard does **not** use `ClusterTemplates.Get` for Configuration `node_sets`.
+No API extensions to create payloads. The wizard consumes existing `ComputeInstanceCatalogItems`, `ClusterCatalogItems`, `InstanceTypes`, networking list APIs (`GET /api/fulfillment/v1/virtual_networks`, `.../subnets`), `HostTypes.List` (`GET /api/fulfillment/v1/host_types`), and create APIs. It adds no NetworkACL API calls; ACL management remains outside this provisioning flow. Server-side Catalog validation (`catalog_item_validation.go` / `applyFieldDefinitions`) still applies Catalog `field_definitions` on create when the client omits a non-network field the wizard left blank. It does not apply Catalog networking policy because networking is not a Catalog Item field. The wizard does **not** use `ClusterTemplates.Get` for Configuration `node_sets`.
 
 ### Implementation Details/Notes/Constraints
 
@@ -292,7 +292,7 @@ apps/app-frontend/src/pages/
 | Happy path cluster | Tenant adds one or more node set rows; selects host type from dropdown and node count; Review lists host type and size per row |
 | Optional basics / config fields left blank | Review shows empty/omitted state; client payload omits those keys (assert via mocked create handler) |
 | Catalog ssh_key default on select | General SSH field prefilled with parsed catalog default; create payload includes plain-string `ssh_key` unless tenant clears the field |
-| Single-option picker lists | Instance type / VN / subnet / SG auto-selected; value visible on Review after Back |
+| Single-option picker lists | Instance type / VN / subnet auto-selected; the Subnet's associated NetworkACL is read-only context on Review |
 
 #### Submit and API errors
 
@@ -307,7 +307,7 @@ apps/app-frontend/src/pages/
 #### Adapter-specific component tests
 
 - **VM Configuration:** OS family radio toggles `spec.is_windows`; obsolete instance types excluded from picker options.
-- **VM Networking:** Subnet/SG lists filter after VN selection; changing VN clears dependent picks unless auto-select applies.
+- **VM Networking:** Subnet lists filter after VN selection; changing VN clears dependent picks unless auto-select applies. The selected Subnet determines the NetworkACL; the wizard has no ACL picker.
 - **Cluster Configuration:** Tenant can add/remove node set rows; host type dropdown from `HostTypes.List`; `host_type` and `size` > 0 validated per row; at least one row required; duplicate host types blocked; payload map key = host type id.
 - **Cluster Networking:** Optional CIDR fields — empty allowed; invalid format blocked on Next only when non-empty.
 
@@ -321,3 +321,13 @@ Component tests are required for merge; add cases when fixing wizard regressions
 ### Manual smoke
 
 End-to-end VM and cluster provision via `/vms/create` and `/clusters/create`; cluster wizard with manually added node sets and host type dropdown; submit with optional fields left blank; verify Details page after successful create.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

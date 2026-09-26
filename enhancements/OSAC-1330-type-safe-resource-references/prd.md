@@ -4,11 +4,11 @@
 |-------------|---------|
 | Author(s)   | Haim Tayrie |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1330 |
-| Date        | 2026-07-12 |
+| Date        | 2026-09-24 |
 
 ## Problem Statement
 
-When users create or update OSAC resources that reference other resources — a compute instance referencing a subnet, a cluster order referencing a template, an external IP attachment referencing a target — they provide raw identifier strings. The system cannot distinguish a subnet reference from a security group reference at the schema level; both are opaque strings. Users discover invalid or mismatched references only at runtime through downstream failures that may not clearly indicate which reference was wrong or why. References also carry no context about tenant or project, so users cannot reference shared resources (such as global cluster templates) without out-of-band knowledge of the target's identifier. For networking resources and workload network attachment fields governed by [OSAC-1433](../OSAC-1433-unified-networking/prd.md), references are supplied at creation and changes use delete and recreate; Update wording in this proposal applies only to resource APIs and fields that support Update.
+When users create or update OSAC resources that reference other resources — a compute instance referencing a subnet, a cluster order referencing a template, an external IP attachment referencing a target — they provide raw identifier strings. The system cannot distinguish a subnet reference from a NetworkACL reference at the schema level; both are opaque strings. Users discover invalid or mismatched references only at runtime through downstream failures that may not clearly indicate which reference was wrong or why. References also carry no context about tenant or project, so users cannot reference shared resources (such as global cluster templates) without out-of-band knowledge of the target's identifier. For networking resources and workload network attachment fields governed by [OSAC-1433](../OSAC-1433-unified-networking/prd.md), VirtualNetwork/Subnet address configuration, NetworkACL rule lists, Subnet-to-ACL associations, and workload attachments are fixed at creation. Update wording in this proposal applies only to resource APIs and fields that support Update. [User]
 
 ## In Scope
 
@@ -41,11 +41,11 @@ When users create or update OSAC resources that reference other resources — a 
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create subnets and security groups that reference their parent virtual network by name so that I can set up networking using readable, meaningful names.
+- As a Tenant Admin, I want to create subnets and NetworkACLs that reference their parent virtual network by name, and associate each Subnet with exactly one NetworkACL by name, so that I can set up networking using readable, meaningful names. [User]
 
 ### Tenant User
 
-- As a Tenant User, I want to create a compute instance that references subnets and security groups by name in its network attachments so that I can provision VMs without looking up resource identifiers.
+- As a Tenant User, I want to create a compute instance that references a subnet by name in its network attachment so that the subnet’s associated NetworkACL governs its traffic without adding a policy reference to the workload attachment. [User]
 - As a Tenant User, I want to create a compute instance that references a catalog item or template by name so that I can order resources from the catalog using human-readable names.
 - As a Tenant User, I want to create an external IP attachment that references the external IP and target resource (compute instance, cluster, or bare metal instance) by name so that I can manage IP bindings without identifier lookup.
 - As a Tenant User, I want to receive a clear, immediate error when I reference a resource that doesn't exist or that I don't have access to so that I can fix my request without debugging downstream failures.
@@ -59,3 +59,13 @@ When users create or update OSAC resources that reference other resources — a 
 ## Dependencies
 
 - **(Tenant, project, name) migration:** This feature prepares the foundation for the future migration from identifier-based to (tenant, project, name)-based resource identification. Reference types must land before that migration begins. [Clarify: R1.Q5]
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

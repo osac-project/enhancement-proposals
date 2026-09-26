@@ -3,7 +3,7 @@ title: unified-networking-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-08-12
-last-updated: 2026-09-16
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2632
   - https://redhat.atlassian.net/browse/OSAC-1433
@@ -26,11 +26,11 @@ VirtualNetwork management (shipped under
 [OSAC-1898](https://redhat.atlassian.net/browse/OSAC-1898), per the
 [OSAC-1425](https://redhat.atlassian.net/browse/OSAC-1425) PRD) is summarized below for
 context, since the NAT Gateway field extends its list and detail pages — it is otherwise
-unchanged by this design. Subnet and SecurityGroup management
-([OSAC-1899](https://redhat.atlassian.net/browse/OSAC-1899)) are unchanged and not
-covered here. All networking resources and workload network attachment fields follow
-the unified create/read/delete contract: read uses List/Get, and changes require
-delete and recreate.
+unchanged by this design. NetworkACL management and Subnet association are added below.
+Workload network attachments refer to a Subnet only; the Subnet's ACL is shown as
+read-only context during workload creation. NetworkACL rules and Subnet associations
+are fixed at creation; VirtualNetwork/Subnet address configuration and workload
+attachments also remain immutable after creation.
 
 ## Proposal
 
@@ -66,9 +66,38 @@ Pure consumer of the existing private `ExternalIPPools` service
   — NetworkClass is assigned automatically, not exposed to tenants. Via
   `useCreateVirtualNetwork()`.
 - **Detail page** (`VirtualNetworkDetailPage`) at `/networking/virtual-networks/:id`,
-  with tabs for **Subnets**, **Security Groups**, **Details**.
-- **Delete:** header action, `useDeleteVirtualNetwork()`; blocked if the VN has subnets
-  or security groups.
+  with tabs for **Subnets**, **Network ACLs**, **Details**.
+- **Delete:** header action, `useDeleteVirtualNetwork()`; blocked if the VN has Subnets,
+  NetworkACLs, or NATGateways.
+
+#### NetworkACL Management
+
+- **List:** the VirtualNetwork detail page's **Network ACLs** tab lists the ACLs
+  scoped to that VirtualNetwork. Columns: **Name**, **Associated Subnets**,
+  **Ingress Rules**, **Egress Rules**, **Status** (`NetworkACLStatusLabel`).
+- **Create form:** **Name**, ingress rule table, and egress rule table. Each
+  rule row has **Priority** (1–32766), **Action** (ALLOW or DENY), **Protocol**
+  (ALL, TCP, UDP, ICMP), optional TCP/UDP **Destination Port Range**, and an
+  IPv4 **CIDR**. The UI rejects duplicate priorities within one direction and
+  validates port endpoints and canonical IPv4 CIDRs before submission. The
+  rule set is immutable after creation; order is displayed from lowest to
+  highest priority. Traffic with no matching rule is denied, and the form
+  explains that reply traffic needs a reverse-direction rule. ACL details show
+  the rules read-only.
+- **Delete:** available only when no Subnet references the ACL; the server
+  returns `FAILED_PRECONDITION` if a reference remains.
+
+#### Subnet NetworkACL Association
+
+- **Subnet create form:** requires a NetworkACL selector scoped to the selected
+  VirtualNetwork. A Subnet cannot be created without exactly one ACL.
+- **Subnet list/detail:** show the associated ACL name and status.
+- **Association lifecycle:** the ACL is selected during Subnet creation and
+  cannot be changed later. Subnet details show the associated ACL name and
+  status read-only.
+- **Policy boundary:** same-Subnet traffic is not filtered by the ACL. Cross-Subnet
+  traffic must pass source egress and destination ingress rules. Workload forms
+  display the selected Subnet's ACL but do not provide an ACL picker.
 
 #### NAT Gateway Field in Virtual Network
 
@@ -118,6 +147,9 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 | Pool create: non-IPv4 address family | Server's `INVALID_ARGUMENT` shown as a form-level error. |
 | Pool create: empty, malformed, multiple, or overlapping CIDRs | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
+| NetworkACL create has duplicate priorities or an invalid rule | Validation error is shown beside the rule row; no create is submitted. |
+| Subnet creation references an ACL in another VirtualNetwork or a non-READY ACL | Server's `INVALID_ARGUMENT` or `FAILED_PRECONDITION` is shown in the form; no Subnet is created. |
+| NetworkACL delete while associated with a Subnet | Server's `FAILED_PRECONDITION` is shown; the ACL remains listed. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
 
 ## Implementation details
@@ -138,18 +170,18 @@ followed by Attach (create) with the new External IP, not an in-place edit.
   `@osac/types/private`. Add
   `'v1/private/external_ip_pools'` to `ApiRoute`.
 - **Status labels:** `NatGatewayStatusLabel`, `ExternalIpStatusLabel`,
-  `ExternalIpPoolStatusLabel` — thin wrappers around `ResourceStatusLabel`/`StatusKind`,
-  matching `SecurityGroupStatusLabel`'s shape.
-- **Test fixtures:** add `NATGateways`, `ExternalIPs`, and private `ExternalIPPools` to
-  `createMockConnectTransport.ts`.
+  `ExternalIpPoolStatusLabel`, and `NetworkACLStatusLabel` — wrappers around
+  `ResourceStatusLabel`/`StatusKind`.
+- **Hooks and fixtures:** add NetworkACL list/create/delete hooks, plus
+  `NetworkACLs`, `NATGateways`, `ExternalIPs`, and
+  private `ExternalIPPools` to `createMockConnectTransport.ts`.
 
 ---
 
 ## Provenance
 
-Authored: commit @ design 0.3.0 - 1e226e0 (dirty), workspace design/OSAC-2632-ui @ 7b09375
-Final: respond @ design 0.3.0 - 1e226e0 (dirty), workspace design/OSAC-2632-ui @ 18a72cb (dirty)
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
-> Context changed between commit and respond.
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0 (dirty)","source_repo":"18a72cb (dirty)","source_repo_branch":"design/OSAC-2632-ui","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["commit","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

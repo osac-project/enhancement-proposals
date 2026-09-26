@@ -5,7 +5,7 @@
 | Author(s)   | Crystal Chun |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1061 |
 | Milestone   | 0.2 |
-| Date        | 2026-07-21 |
+| Date        | 2026-09-24 |
 
 ## Problem Statement
 
@@ -58,7 +58,7 @@ OSAC does not enforce naming discipline on resources. Resources can be created w
 
 Name enforcement applies to all OSAC resource types across all services (BMaaS, CaaS, VMaaS, MaaS, Enclave) — enforcement is at the API layer.
 
-**Tenant-scoped resources:** VirtualNetwork, Subnet, SecurityGroup, ComputeInstance, ClusterOrder, PublicIP, PublicIPPool, Project.
+**Tenant-scoped resources:** VirtualNetwork, Subnet, NetworkACL, ComputeInstance, ClusterOrder, PublicIP, PublicIPPool, Project.
 
 **Platform-scoped resources:** NetworkClass, PublicIPPool.
 
@@ -120,6 +120,9 @@ The error experience is consistent across all personas. Platform-scoped resource
 
 ## Provenance
 
-Authored: draft @ prd 0.5.0 - 92734a2, workspace main @ 1ab6ac7
+Authored: revise [manual] @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.5.0","ai_workflows":"92734a2","source_repo":"1ab6ac7","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->

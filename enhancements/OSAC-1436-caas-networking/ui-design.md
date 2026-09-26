@@ -3,7 +3,7 @@ title: caas-networking-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-09-22
-last-updated: 2026-09-22
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -31,7 +31,7 @@ The cluster provisioning wizard
 defines a five-step flow (Catalog Item → General → Configuration → Networking →
 Review) with the Networking step currently limited to optional `pod_cidr` and
 `service_cidr` fields. This design extends that step with `network_attachment`
-fields (VN → Subnet → Security Group pickers) and an
+fields (Virtual Network and Subnet pickers) and an
 `auto_external_ip_attachment` toggle, reusing shared picker components extracted
 from the VM networking adapter. It also extends the cluster detail and list pages
 to surface the new `api_endpoint`, `ingress_endpoint`, and resolved
@@ -44,15 +44,14 @@ creation — the UI does not provide an edit form for it.
 
 ## Shared Picker Design — `NetworkAttachmentPickers`
 
-`VmNetworkingStep` (OSAC-1421) implements VN → Subnet → SG cascading pickers
-but cannot be adopted wholesale for clusters due to four structural differences:
+`VmNetworkingStep` (OSAC-1421) implements VN → Subnet cascading pickers
+but cannot be adopted wholesale for clusters due to three structural differences:
 
 | # | Difference | VM | Cluster |
 |---|-----------|-----|---------|
 | 1 | Payload shape | `network_attachments` (array) | `network_attachment` (singular) |
 | 2 | Optionality | All pickers required | All pickers optional (server defaults) |
-| 3 | SG validation | Always required | Required only for non-default VN |
-| 4 | Extra fields | None | `auto_external_ip_attachment`, `pod_cidr`, `service_cidr` |
+| 3 | Extra fields | None | `auto_external_ip_attachment`, `pod_cidr`, `service_cidr` |
 
 The cascading picker logic is extracted into a shared `NetworkAttachmentPickers`
 component in `libs/ui-components/` that both adapters consume:
@@ -61,8 +60,8 @@ component in `libs/ui-components/` that both adapters consume:
 |--------|-------------------------------------|------------|-----------------|
 | VN picker | `SelectField`, loads `useVirtualNetworks()` | Required | Optional |
 | Subnet picker | `SelectField`, filtered by VN, loads `useSubnets()` | Required | Optional when VN empty; required when VN selected |
-| SG multi-select | `MultiSelectField`, filtered by VN, loads `useSecurityGroups()` | Required | Required only for non-default VN |
-| Cascade reset | Clearing VN resets Subnet + SGs | Same | Same |
+| ACL policy display | Read-only from selected Subnet | Same | Same |
+| Cascade reset | Clearing VN resets Subnet | Same | Same |
 | Auto-select | Single-option list auto-selects | Same | Same |
 | Auto External IP | — | — | `SwitchField` below pickers |
 | Pod/Service CIDR | — | — | `InputField` × 2 (existing) |
@@ -77,7 +76,7 @@ component in `libs/ui-components/` that both adapters consume:
 Extends `ClusterNetworkingStep` (`wizard/adapters/cluster/`) with
 `network_attachment` pickers above the existing `pod_cidr`/`service_cidr`
 fields. All new fields are optional — when omitted, the fulfillment-service
-applies the tenant's default Subnet and SecurityGroup
+applies the tenant's default Subnet and its associated NetworkACL policy
 ([Default Networking PRD](/enhancements/OSAC-1433-default-networking/prd.md)).
 
 The step is split into two visually distinct sections using
@@ -86,36 +85,32 @@ The step is split into two visually distinct sections using
 **Infrastructure Networking** (section heading):
 
 - **Use tenant default network** (`SwitchField`): toggle at the top of the
-  section. Default: on. When enabled, VN/Subnet/SG pickers are hidden — the
-  fulfillment-service uses the tenant's default VirtualNetwork, Subnet, and
-  SecurityGroup. When disabled, the full VN → Subnet → SG picker cascade is
-  shown for custom network selection. This matches the bare metal wizard
+  section. Default: on. When enabled, VN/Subnet pickers are hidden — the
+  fulfillment-service uses the tenant's default VirtualNetwork and Subnet;
+  the Subnet's NetworkACL supplies its policy. When disabled, the VN → Subnet
+  picker cascade is shown for custom network selection. This matches the bare metal wizard
   pattern and will also be added to the VM wizard.
 
 When "Use tenant default network" is disabled, `NetworkAttachmentPickers`
-(shared component) renders three cascading pickers bound to the cluster
+(shared component) renders the Virtual Network and Subnet pickers bound to the cluster
 adapter's Formik paths:
 
 - **Virtual Network** (`SelectField`): loads from `useVirtualNetworks()`,
   displays Name and IPv4 CIDR. Optional — when left empty, tenant defaults are
-  used. Clearing resets Subnet and Security Group pickers. Auto-selects when
+  used. Clearing resets the Subnet picker. Auto-selects when
   the list returns one option.
 
 - **Subnet** (`SelectField`): loads from `useSubnets()` filtered by
   `this.spec.virtual_network.name == "<selected-vn-name>"`. Disabled until a
-  VirtualNetwork is selected. Displays Name and IPv4 CIDR. Optional when VN is
-  also empty; required when a VN is selected. Auto-selects when the filtered
-  list returns one option.
+  VirtualNetwork is selected. Displays Name, IPv4 CIDR, and the associated
+  NetworkACL name and status as read-only context. Only a READY Subnet with a
+  READY associated NetworkACL can be selected. Optional when VN is also empty;
+  required when a VN is selected. Auto-selects when the filtered list returns
+  one option.
 
-- **Security Groups** (`MultiSelectField`): loads from `useSecurityGroups()`
-  filtered by `this.spec.virtual_network.name == "<selected-vn-name>"`. Disabled
-  until a VirtualNetwork is selected. Optional when the selected Subnet belongs
-  to the tenant's default VirtualNetwork (server applies default SG). Required
-  when the Subnet belongs to a non-default VirtualNetwork — validated
-  client-side. The default VN is identified by loading the default Subnet
-  (`is_default == true` from `Subnets.List`) on mount via `useDefaultSubnet()`
-  and caching its VN reference. The shared component receives this as
-  `defaultVnName` and uses it when `sgRequired` is `"when-non-default-vn"`.
+The selected Subnet determines the NetworkACL policy for the entire cluster.
+The workload attachment contains only the Subnet reference; it has no ACL
+selector or policy field.
 
 - **Auto External IP Attachment** (`SwitchField`): toggle below the pickers.
   Default: off. When enabled, the fulfillment-service auto-provisions
@@ -136,8 +131,7 @@ When pickers have values:
 ```json
 {
   "network_attachment": {
-    "subnet": { "name": "<subnet-name>" },
-    "security_groups": [{ "name": "<sg-name>" }]
+    "subnet": { "name": "<subnet-name>" }
   },
   "auto_external_ip_attachment": true
 }
@@ -148,10 +142,10 @@ When "Use tenant default network" is enabled (or all pickers are empty),
 `auto_external_ip_attachment` is included only when `true`. The VN selection is
 a UI-only filter not included in the payload — the API infers VN from the Subnet.
 
-The VM adapter assembles `network_attachments: [{ subnet, security_groups }]`
-(array); the cluster adapter assembles `network_attachment: { subnet,
-security_groups }` (singular). Each adapter's `buildCreatePayload` reads the
-same Formik values from the shared pickers.
+The VM adapter assembles `network_attachments: [{ subnet }]` (array); the
+cluster adapter assembles `network_attachment: { subnet }` (singular). Each
+adapter's `buildCreatePayload` reads the same Formik values from the shared
+pickers. Neither attachment carries ACL policy.
 
 **Review step** additions (via `adapter.getReviewSections()`):
 - **Infrastructure Networking**:
@@ -161,7 +155,8 @@ same Formik values from the shared pickers.
     least one picker has a value)
   - **Virtual Network**: selected VN name (shown only when custom)
   - **Subnet**: selected Subnet name (shown only when custom)
-  - **Security Groups**: comma-separated SG names (shown only when custom)
+  - **Network ACL**: associated ACL name and status from the selected Subnet,
+    shown as read-only context when custom
   - **Auto External IP**: "Enabled" or omitted when disabled
 - **Cluster Networking**:
   - **Pod CIDR**: entered value, or omitted when empty
@@ -175,9 +170,8 @@ Extends `ClusterDetailPage` at `/clusters/:id`.
 
 - **Subnet**: resolved name from `cluster.network_attachment.subnet`, linked to
   the Subnet detail page.
-- **Security Groups**: resolved names from
-  `cluster.network_attachment.security_groups[]`, each linked to the SG detail
-  page.
+- **Network ACL**: associated ACL name and status from the resolved Subnet,
+  shown read-only and linked to the NetworkACL detail page.
 - **Ingress Endpoint**: `cluster.ingress_endpoint` when populated; "Pending"
   with spinner when empty and cluster is provisioning; dash in terminal state.
 
@@ -240,8 +234,8 @@ auto-provisioned resources subsection above.
 
 #### Cluster List Page
 
-No changes to the cluster list page. Cluster networking details (subnet,
-security groups, endpoints) are available on the cluster detail page only.
+No changes to the cluster list page. Cluster networking details (Subnet,
+associated NetworkACL, endpoints) are available on the cluster detail page only.
 
 #### Cluster Deletion Confirmation
 
@@ -276,9 +270,8 @@ Extends the **External IP** list page (`ExternalIpsListPage`) and the
 
 | Scenario | UI behavior |
 |---|---|
-| Cluster create: selected Subnet not Ready | Server's `FAILED_PRECONDITION` shown as form-level error on Networking step. |
-| Cluster create: SGs not in same VN as Subnet | Server's `INVALID_ARGUMENT` shown as form-level error on Networking step. |
-| Cluster create: non-default VN Subnet without SGs | Client-side validation error: "Security groups are required when using a non-default virtual network." |
+| Cluster create: selected Subnet or its associated NetworkACL is not Ready | Server's `FAILED_PRECONDITION` shown as form-level error on Networking step. |
+| Cluster create: selected Subnet is outside the selected Virtual Network | Server's `INVALID_ARGUMENT` shown as form-level error on Networking step. |
 | Cluster create: ExternalIPPool exhausted | Server's `RESOURCE_EXHAUSTED` shown as form-level error on Review step. |
 | Cluster create: no default Subnet configured | Server's `FAILED_PRECONDITION` shown as form-level error when network_attachment omitted. |
 | Cluster create: BareMetalInstanceType missing fabric port | Server's `INVALID_ARGUMENT` shown as form-level error on Review step. |
@@ -304,10 +297,6 @@ libs/ui-components/src/components/form/
 interface NetworkAttachmentPickersProps {
   /** Formik field path prefix. VM: "spec.network_attachments.0", Cluster: "spec.network_attachment" */
   fieldPrefix: string;
-  /** When to require security group selection */
-  sgRequired: 'always' | 'when-non-default-vn' | 'never';
-  /** Default VN name for conditional SG validation (only for 'when-non-default-vn') */
-  defaultVnName?: string;
   /** Whether all pickers are optional (cluster: true, VM: false) */
   allOptional?: boolean;
   /** Whether to show VN/Subnet IPv4 CIDR in picker options */
@@ -315,8 +304,9 @@ interface NetworkAttachmentPickersProps {
 }
 ```
 
-**Shared component owns:** VN/Subnet/SG pickers with data loading, cascade
-reset, auto-select, conditional SG validation, loading/error states.
+**Shared component owns:** VN/Subnet pickers with data loading, cascade reset,
+auto-select, selection validation, loading/error states, and read-only display
+of the ACL associated with a selected Subnet.
 
 **Each adapter owns:** Formik field prefix, Yup schema fragment, payload shape
 in `buildCreatePayload`, additional fields.
@@ -325,7 +315,6 @@ in `buildCreatePayload`, additional fields.
 ```tsx
 <NetworkAttachmentPickers
   fieldPrefix="spec.network_attachments.0"
-  sgRequired="always"
   allOptional={false}
   showCidr={true}
 />
@@ -339,8 +328,6 @@ Existing `VmNetworkingStep.test.tsx` tests validate the refactor.
   {!useDefaultNetwork && (
     <NetworkAttachmentPickers
       fieldPrefix="spec.network_attachment"
-      sgRequired="when-non-default-vn"
-      defaultVnName={defaultSubnet?.virtualNetworkName}
       allOptional={true}
       showCidr={true}
     />
@@ -355,13 +342,9 @@ Existing `VmNetworkingStep.test.tsx` tests validate the refactor.
 
 ### Hooks
 
-**Reused:** `useVirtualNetworks()`, `useSubnets()`, `useSecurityGroups()`
-(OSAC-1421), `useExternalIPs({ filter })`,
+**Reused:** `useVirtualNetworks()`, `useSubnets()` (OSAC-1421),
+`useExternalIPs({ filter })`,
 `useExternalIPAttachments({ filter })` (OSAC-1433).
-
-**New:** `useDefaultSubnet()` — `Subnets.List` filtered by
-`is_default == true`, cached on mount. Provides `defaultVnName` to
-`NetworkAttachmentPickers`.
 
 **New:** `useClusterEndpointAttachments(clusterId)` —
 `ExternalIPAttachments.List` filtered by target cluster reference (≤2
@@ -437,12 +420,10 @@ Add to `createMockConnectTransport.ts`:
 
 | Scenario | Assert |
 |----------|--------|
-| VN selection filters Subnet and SG lists | Options update on VN change |
-| Clearing VN resets Subnet and SG values | Formik values cleared |
+| VN selection filters Subnet list | Options update on VN change |
+| Clearing VN resets Subnet value | Formik value cleared |
 | Single-option list auto-selects | Value auto-selected |
-| `sgRequired="always"` with empty SG | Validation error |
-| `sgRequired="when-non-default-vn"` with default VN, empty SG | No error |
-| `sgRequired="when-non-default-vn"` with non-default VN, empty SG | Validation error |
+| Selected Subnet has no READY ACL association | Subnet cannot be selected and the reason is shown |
 | `allOptional={true}` with all pickers empty | No errors |
 | `allOptional={false}` with VN empty | Validation error |
 | Loading and error states | Pickers disabled during load; error on failure |
@@ -451,10 +432,23 @@ Add to `createMockConnectTransport.ts`:
 
 | Suite | Coverage |
 |-------|----------|
-| `ClusterNetworkingStep` | Two FormSections rendered ("Infrastructure Networking", "Cluster Networking"); "Use tenant default network" toggle on by default hides pickers; disabling toggle shows pickers with `allOptional={true}`, `sgRequired="when-non-default-vn"`; re-enabling toggle clears picker values; auto external IP toggle in Infrastructure section; `pod_cidr`/`service_cidr` in Cluster section; default-network-on omits `network_attachment`; review step shows "Tenant default" when toggle off and all pickers empty (payload omits `network_attachment`); review step shows "Custom" only when toggle off and at least one picker has a value |
+| `ClusterNetworkingStep` | Two FormSections rendered ("Infrastructure Networking", "Cluster Networking"); "Use tenant default network" toggle on by default hides pickers; disabling toggle shows pickers with `allOptional={true}`; re-enabling toggle clears picker values; auto external IP toggle in Infrastructure section; `pod_cidr`/`service_cidr` in Cluster section; default-network-on omits `network_attachment`; review step shows "Tenant default" when toggle off and all pickers empty (payload omits `network_attachment`); review step shows "Custom" only when toggle off and at least one picker has a value |
 | `VmNetworkingStep` | Existing tests pass after refactor to shared component |
 | `ClusterDetailPage` | "Pending" endpoints; auto-provisioned section conditional on `auto_external_ip_attachment`; statuses rendered |
 | `ExternalIpManagementSection` | Attach button shown when no attachment; Detach shown when attached; endpoint details rendered; empty state for no unattached IPs |
 | `AttachExternalIpModal` | Unattached ExternalIPs listed; confirm creates ExternalIPAttachment with correct `target_endpoint`; server error displayed in modal; empty state message |
 | `ClustersPage` | No new columns added; networking details on detail page only |
 | `AutoProvisionedBadge` | Tooltip; delete disabled when parent exists; delete enabled when orphaned |
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+
+> Context changed between revise and revise.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

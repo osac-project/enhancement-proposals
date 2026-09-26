@@ -3,7 +3,7 @@ title: Configuration Wizard for Cluster and VM Resources
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-14
-last-updated: 2026-09-22
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 see-also:
@@ -29,7 +29,7 @@ superseded-by:
 
 - **BareMetalInstance** provisioning (separate PRD)
 - **Template parameters**
-- **Multi-NIC** — out of scope; the wizard submits at most one `network_attachments` entry (one VN, one subnet, security groups), with no add/remove NIC rows. The plural field is retained for API compatibility.
+- **Multi-NIC** — out of scope; the wizard submits at most one `network_attachments` entry (one VN and one subnet), with no add/remove NIC rows. The plural field is retained for API compatibility.
 - **Catalog networking governance** — network attachments and Cluster network CIDRs remain resource-owned inputs and are not locked, defaulted, or validated by a Catalog Item
 - **Cluster template `node_sets` defaults** — the wizard does **not** load, display, or apply `ClusterTemplate.spec.node_sets` (`host_type` or `size` defaults)
 - **`spec.additional_disks`** — wizard scope undecided ([§5](#5-open-decisions)); default: boot disk only
@@ -55,7 +55,7 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 | Configuration   | `spec.user_data`          | User data (cloud-init / Ignition)        | Text (multiline)                       | Optional |
 | Configuration   | `spec.boot_disk.size_gib` | Boot disk size (GiB)                     | Number                                 | ?        |
 | Configuration   | `spec.run_strategy`       | Run strategy                             | Select (`Always`, `Halted`)            | Required |
-| Networking      | `spec.network_attachments` | Virtual network, subnet, security groups | Pickers ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
+| Networking      | `spec.network_attachments` | Virtual network and subnet (the subnet’s NetworkACL applies) | Pickers ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
 
 **Notes:**
 
@@ -113,7 +113,7 @@ Non-editable fields (`editable: false`) are **read-only** on the Configuration w
 | `spec.run_strategy` | Pre-select `Always` when no catalog `default`                                                                            |
 | OS family (VM)      | Pre-select **Linux** (`is_windows: false`) when no catalog `default`                                                     |
 | Instance type (VM)  | **Auto-select** when `InstanceTypes.List` returns exactly one option |
-| Networking pickers  | **Auto-select** when a list returns exactly one option (VN → subnet → SGs) |
+| Networking pickers  | **Auto-select** when a list returns exactly one option (VN → subnet) |
 
 #### 2.1.3 Open required fields
 
@@ -127,11 +127,11 @@ The wizard loads picker options from the **public** fulfillment APIs (`osac.publ
 | ------ | ---- | ---- | ------- |
 | Virtual network | `VirtualNetworks.List` | `GET /api/fulfillment/v1/virtual_networks` | Tenant-visible virtual networks |
 | Subnet | `Subnets.List` | `GET /api/fulfillment/v1/subnets` | Subnets in the selected virtual network |
-| Security groups | `SecurityGroups.List` | `GET /api/fulfillment/v1/security_groups` | Security groups in the selected virtual network |
 
-**List request parameters** (all three): optional query `filter` (CEL), `limit`, `offset`, `order`. Tenant scope is implicit from the authenticated session.
 
-**Subnet and security group filters** (after virtual network selection):
+**List request parameters** (both APIs): optional query `filter` (CEL), `limit`, `offset`, `order`. Tenant scope is implicit from the authenticated session.
+
+**Subnet filter** (after virtual network selection):
 
 ```text
 this.spec.virtual_network.name == "<vn-name>"
@@ -141,22 +141,20 @@ this.spec.virtual_network.name == "<vn-name>"
 
 | Picker | Option label | Selected value |
 | ------ | ------------ | -------------- |
-| Virtual network | `metadata.name` | VirtualNetwork `metadata.name` — drives subnet/SG list filters only |
+| Virtual network | `metadata.name` | VirtualNetwork `metadata.name` — drives the subnet list filter only |
 | Subnet | `metadata.name` | Subnet `metadata.name` |
-| Security group | `metadata.name` | SecurityGroup `metadata.name` (multi-select) |
 
 **Create payload assembly** — one `spec.network_attachments` element:
 
 ```json
 {
-  "subnet": { "name": "<subnet-name>" },
-  "security_groups": [{ "name": "<security-group-name>" }]
+  "subnet": { "name": "<subnet-name>" }
 }
 ```
 
-Per `ComputeNetworkAttachment` in `compute_instance_type.proto`. The wizard does not send virtual network ID in `network_attachments`; placement is implied by the subnet (security groups must belong to the same virtual network).
+Per `ComputeNetworkAttachment` in `compute_instance_type.proto`. The wizard sends only a subnet reference in `network_attachments`; placement and the applicable NetworkACL are determined by the subnet. The NetworkACL reference is not repeated on the workload attachment.
 
-**Load order:** virtual network list → on selection, load filtered subnet and security group lists → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
+**Load order:** virtual network list → on selection, load filtered subnets → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
 ### 2.1.5 VM instance type picker API
 
@@ -245,7 +243,7 @@ flowchart LR
 - Five-step flow: Catalog Item → General → Configuration → Networking → Review; submit from Review.
 - Review shows the same values as on wizard step fields (blank, default-driven, or user-entered).
 - Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on non-network Configuration **non-picker** fields and General **basics** fields; picker-backed paths ignore `field_definitions` in v1; catalog `default` prefills matching wizard fields on catalog selection; non-editable fields without `default` appear blank and read-only; non-editable fields with `default` appear read-only with value and are included in the client payload. Networking inputs remain resource-owned.
-- VM: single `network_attachments` entry assembled from picker APIs; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
+- VM: single `network_attachments` entry containing only the selected subnet, with policy inherited from the subnet’s NetworkACL association; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
 - Cluster: `node_sets` is tenant-composed on Configuration — add/remove rows; each row has `host_type` from `HostTypes.List` and `size` > 0 only (`ClusterNodeSet`); **unique host type per row**; map key = host type id; wizard does not load or apply `ClusterTemplate.spec.node_sets`; **catalog item defaults for `spec.node_sets` do not apply in v1** (empty table on catalog selection).
 - All **?** requiredness decisions resolved before release ([§5](#5-open-decisions)).
 - On Next click, validate all fields on the current step (including untouched fields); surface hidden inline errors; show an alert if invalid; do not advance until the step is valid.
@@ -254,7 +252,7 @@ flowchart LR
 
 - `ComputeInstanceCatalogItem`, `ClusterCatalogItem` (with `field_definitions`)
 - `HostTypes.List` (cluster Configuration step — host type picker per node set row)
-- `VirtualNetworks.List`, `Subnets.List`, `SecurityGroups.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/virtual_networks`, `.../subnets`, `.../security_groups` ([§2.1.4](#214-vm-networking-picker-apis))
+- `VirtualNetworks.List` and `Subnets.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/virtual_networks`, `.../subnets` ([§2.1.4](#214-vm-networking-picker-apis))
 - `InstanceTypes.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/instance_types` ([§2.1.5](#215-vm-instance-type-picker-api))
 - ComputeInstance and Cluster create APIs
 - `spec.instance_type` on ComputeInstance ([OSAC-1217](https://redhat.atlassian.net/browse/OSAC-1217), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735)) — required for VM instance type picker
@@ -290,3 +288,13 @@ Not in [§2.1.1](#211-static-wizard-fields) today. **Unknown** whether v1 needs 
 | ------ | ------- |
 | **No (default)** | Out of scope ([§1.2](#12-non-goals)); boot disk only |
 | **Yes** | Add repeatable `size_gib` rows on Configuration; add to §2.1.1 |
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
