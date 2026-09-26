@@ -3,9 +3,11 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-16
+last-updated: 2026-09-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
+  - https://redhat.atlassian.net/browse/OSAC-4975
+  - https://redhat.atlassian.net/browse/OSAC-4983
 prd: "prd.md"
 see-also:
   - "Unified Networking: /enhancements/OSAC-1433-unified-networking"
@@ -38,7 +40,7 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
-BaremetalInstance supports a repeated `BareMetalNetworkAttachment` field for API compatibility, but accepts at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures the switch port via dispatcher, and IP address feedback via CR status enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
+BaremetalInstance supports a repeated `BareMetalNetworkAttachment` field for API compatibility, but accepts at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures the switch port via dispatcher, and IP address feedback via CR status enables DNAT rule creation. Auto ExternalIP lifecycle (atomic Pending reservation, async Ready/Failed, label-scoped cleanup, UI list/get contract) is hardened under [OSAC-4975](https://redhat.atlassian.net/browse/OSAC-4975) / [OSAC-4983](https://redhat.atlassian.net/browse/OSAC-4983). See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -49,21 +51,23 @@ Bare-metal servers require explicit switch port configuration to participate in 
 ```
 fulfillment-service → creates BaremetalInstance CR → hub cluster
                                                         │
-    bare-metal-fulfillment-operator ─────────────────────┤ (provisioning)
+    bare-metal-fulfillment-operator ─────────────────────┤ (provisioning + auto-EIP CR cleanup)
       - reconcileInventory (Ironic/Metal3)               │
       - reconcileProvisioning (AAP)                      │
       - reconcileNetworking (dispatcher)                 │
       - reconcileReboot (handoff)                        │
       - reconcileIPDiscovery (DHCP lease query)          │
       - reconcilePower (Ironic/Metal3)                   │
+      - baremetalinstance-cleanup finalizer (deletion only; auto ExternalIP CRs) │
       - finalizers: inventory, baremetalinstance,         │
-        baremetalinstance-networking                      │
+        baremetalinstance-networking,                     │
+        baremetalinstance-cleanup                         │
                                                          │
-    osac-operator ───────────────────────────────────────┘ (feedback + cleanup)
+    osac-operator ───────────────────────────────────────┘ (feedback + EIP/EIPA controllers)
       - BareMetalInstanceFeedbackReconciler
       - fires Signal RPC on status change
       - finalizer: baremetalinstance-feedback (removed last)
-      - BareMetalInstance cleanup controller (auto ExternalIP)
+      - ExternalIP / ExternalIPAttachment controllers (allocate + DNAT)
 ```
 
 ### Goals
@@ -235,7 +239,13 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - The optional `interface` references a valid interface name from the BareMetalInstanceType's network ports list
      - If `interface` is omitted, defaults to the first port with `role=fabric` from the BareMetalInstanceType
      - If one attachment is present, it is the implicit primary; omitted or `primary: true` is accepted but redundant, while `primary: false` is rejected
-   - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-created: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
+   - If `auto_external_ip_attachment == true`: in the **same DB transaction as the BareMetalInstance insert**, auto-selects an ExternalIPPool (**READY**, most available capacity, **matching IP family** when a family is specified; today the BMI auto path passes `IP_FAMILY_UNSPECIFIED` so any READY pool is eligible), ties broken by pool ID ascending, creates ExternalIP + ExternalIPAttachment both in **Pending**, decrements pool capacity under row lock, and stamps correlation metadata on both children:
+     - labels: `osac.openshift.io/auto-created: "true"`, `osac.openshift.io/auto-created-for: <baremetal-instance-id>`
+     - annotation: `osac.openshift.io/owner-reference: <baremetal-instance-id>`
+     - `metadata.creator: system`, tenant inherited from the BMI
+     - The ExternalIPAttachment references the BareMetalInstance but has no DNAT target yet (BM primary IP is unknown until `reconcileIPDiscovery`).
+     - **Atomicity:** any failure (no READY pool, capacity race, EIP create, capacity update, EIPA create) rolls back the BMI, children, and capacity change — no partial state. Pool exhaustion returns an error with nothing persisted.
+     - **Synchronous vs async:** create only *reserves* Pending records and capacity (NFR-1). It does **not** wait for Allocated/Ready or return a public address. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types). Follow-up hardening: [OSAC-4975](https://redhat.atlassian.net/browse/OSAC-4975) / [OSAC-4982](https://redhat.atlassian.net/browse/OSAC-4982).
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
 6. **bare-metal-fulfillment-operator BareMetalInstance controller:**
@@ -291,13 +301,23 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - Fabric manager creates DNAT rule: external IP → BM's primary subnet IP
     - ExternalIPAttachment transitions from Pending to Ready
 
-    For auto-provisioned ExternalIPAttachments (`auto_external_ip_attachment=true`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileIPDiscovery` completion (IP discovery by the operator after provisioning completes and the host has received a DHCP lease).
+    For auto-provisioned ExternalIPAttachments (`auto_external_ip_attachment=true`), the same controller flow applies — the attachment is created at API time in **Pending** and activates once the BM primary IP is known (`reconcileIPDiscovery`). Async state model for clients/UI:
+
+    | Resource | After successful create | Success path | Failure path |
+    |----------|-------------------------|--------------|--------------|
+    | ExternalIP | `PENDING` | → `ALLOCATED` (address present) | → `FAILED` (message set); controllers retry per existing EIP lifecycle |
+    | ExternalIPAttachment | `PENDING` | → `READY` after Allocated EIP + primary IP + DNAT | → `FAILED` (message set); controllers retry with backoff |
+    | BareMetalInstance | Created / provisioning continues | Unaffected by EIP/EIPA failure | Remains; inbound access unavailable until Ready |
+
+    Clients must not treat BMI create success as “externally reachable.” Reachability requires auto EIPA `READY` with an address. See [UX Alignment](#ux-alignment).
 
 #### Deletion (reverse order)
 
 10. **Delete BaremetalInstance:**
-    - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-created-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
-    - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
+    - **Auto-provisioned cleanup (API/DB — fulfillment-service):** On `BareMetalInstances.Delete`, if `auto_external_ip_attachment` was true, list ExternalIPAttachments with `auto-created-for=<bmi-id>`, delete each attachment then its ExternalIP (capacity −1) via `externalIPLifecycle`, then delete the BMI. Fail the Delete if cascade fails so retries remain possible.
+    - **Auto-provisioned cleanup (CR — bare-metal-fulfillment-operator):** Finalizer `osac.openshift.io/baremetalinstance-cleanup` lists hub CRs labeled `auto-created=true` and `auto-created-for=<bmi uuid label>`, deletes ExternalIPAttachment CRs first (requeue until gone), then ExternalIP CRs, then removes the finalizer. Cleanup lives on BMFO (not osac-operator) because BMFO already owns the BMI CR finalizer chain and IP-discovery lifecycle; co-locating avoids cross-operator ordering on the same CR. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
+    - **Dual-plane divergence:** The API/DB cascade is the source of truth for client-visible cleanup (BMI Delete succeeds only after auto children are removed from the fulfillment DB). The BMFO finalizer is the source of truth for hub CR garbage collection. If DB cascade completed but CR cleanup lags, the BMI may already be gone from the API while labeled EIP/EIPA CRs remain until the finalizer finishes (or until permanent-failure orphan handling). Orphan detection is by `auto-created` / `auto-created-for` labels with no live parent BMI. Both planes are label-scoped and idempotent so re-runs are safe.
+    - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle (no `auto-created-for` for this BMI, or created without auto labels).
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
       - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
@@ -424,6 +444,22 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 - If `interface` is omitted: defaults to the first port with `role=fabric` from the BareMetalInstanceType (consistent with the omitted-list default)
 - If a single attachment is present: `primary` is implicit; omitted or `true` is accepted and `false` is rejected
 - The complete resolved `network_attachments` list is immutable after creation; changing it requires deleting and recreating the BaremetalInstance
+- `auto_external_ip_attachment` is immutable after creation: Update/PATCH that includes `spec.auto_external_ip_attachment` in the field mask is rejected by the private BareMetalInstances server with `FailedPrecondition` / message containing `auto_external_ip_attachment is immutable` (same pattern as ComputeInstance)
+
+### UX Alignment
+
+UI implementation of the automatic ExternalIP lifecycle (Pending / Ready / Failed placeholders, auto vs manual distinction) is tracked by [OSAC-4985](https://redhat.atlassian.net/browse/OSAC-4985). BMI networking UI consumes existing public List/Get APIs — no dedicated “get auto ExternalIP” RPC.
+
+| UI behavior | API / metadata | Notes |
+|---|---|---|
+| `spec.autoExternalIpAttachment` | `spec.auto_external_ip_attachment` | Direct mapping; immutable |
+| Find auto attachment for a BMI | `ExternalIPAttachments.List` filter `this.spec.baremetal_instance.id == "<bmi-id>"`, prefer `metadata.labels["osac.openshift.io/auto-created"] == "true"` | Optional secondary filter: `auto-created-for` label |
+| Pending | EIPA or EIP `PENDING` | Show in-progress placeholder; **no** public address |
+| Ready | EIPA `READY` **and** address present (`status.external_ip_address` or Get ExternalIP) | Only then present as externally reachable / “Auto-provisioned” Ready |
+| Failed | `FAILED` + `status.message` | Surface message; must not render as Ready |
+| Manual vs auto | Auto requires `auto-created=true` (and typically `auto-created-for=<bmi-id>`) | Manual EIP/EIPA for the same BMI are separate rows, not the auto-provisioned banner |
+
+**Contract:** BMI create success does not imply an ExternalIP address is available. Catalog wizard / details views must poll or refetch until Ready or Failed.
 
 ### Implementation Details/Notes/Constraints
 
@@ -573,11 +609,10 @@ The operator writes both the discovered IP and `primary: true` to the status ent
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP |
-| bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), OS provisioning (AAP), **IP discovery** via `query_dhcp_lease` dispatcher call after provisioning, power management |
+| fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP/ExternalIPAttachment (atomic Pending reservation), cascade-delete auto children on BMI Delete |
+| bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), OS provisioning (AAP), **IP discovery** via `query_dhcp_lease` dispatcher call after provisioning, power management, **auto ExternalIP CR cleanup** (`baremetalinstance-cleanup` finalizer) |
 | AAP BM provisioning template | OS provisioning only (host-side networking handled by DHCP) |
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
-| osac-operator BMI cleanup controller | Clean up auto-provisioned ExternalIPAttachment → ExternalIP on BaremetalInstance deletion (phased requeue, `baremetalinstance-cleanup` finalizer) |
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from CR status, create DNAT via fabric_manager |
 | fabric_manager role (move_network_attachment) | Switch-side only: resolve host → fabric server → fabric port, detach from the source network segment (if set) and attach to the target segment (if set). Waits for target segment active state after attach. Serves both provisioning → tenant (provision) and tenant → provisioning (deprovision) |
 | fabric_manager role (query_dhcp_lease) | Query fabric manager's DHCP lease API for a subnet, match the port MAC (or fall back to server name) to find the DHCP-assigned IP, return it |
@@ -647,14 +682,15 @@ This feature inherits the existing security model:
 
 #### Auto ExternalIP Allocation Failures
 
-- Pool exhaustion: create API call returns error, no resources persisted (pool capacity checked synchronously during the API call — see [auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types))
-- ExternalIP provisioning failure: ExternalIP enters Failed state, BaremetalInstance remains in Pending (external access unavailable, BM may still function without inbound connectivity)
-- ExternalIPAttachment provisioning failure: DNAT rule not created, inbound traffic does not reach BM (BM functional, external access unavailable)
+- Pool exhaustion / no READY pool / capacity race: create API call returns error; BMI, EIP, EIPA, and capacity change are **not** persisted (full rollback — [OSAC-4982](https://redhat.atlassian.net/browse/OSAC-4982))
+- Mid-sequence child create or capacity-update failure during auto provision: same fail-closed rollback
+- ExternalIP provisioning failure (async): ExternalIP enters Failed state; BareMetalInstance continues; external access unavailable; controllers retry per existing EIP lifecycle
+- ExternalIPAttachment provisioning failure (async): DNAT not created; BM functional without inbound; EIPA Failed with message; retry with backoff
 
 #### Cleanup Failures
 
-- Auto-provisioned resource cleanup transient failure: finalizer retries
-- Auto-provisioned resource cleanup permanent failure: after N retries, finalizer is removed, parent resource deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required)
+- Auto-provisioned resource cleanup transient failure: BMFO finalizer requeues; fulfillment Delete returns error until cascade succeeds
+- Auto-provisioned resource cleanup permanent failure: after N retries, finalizer is removed, parent resource deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required) — same policy as [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types)
 
 ### RBAC / Tenancy
 
@@ -662,10 +698,11 @@ The bare-metal-fulfillment-operator needs additional RBAC permissions: get/list/
 
 All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
+- Auto children also carry `osac.openshift.io/owner-reference: <bmi-id>`, `osac.openshift.io/auto-created: "true"`, and `osac.openshift.io/auto-created-for: <bmi-id>` (server-stamped; not tenant-writable for forgery across tenants)
 - OPA policies enforce tenant-scoped operations according to each resource API;
   networking resources use create/list/get/delete and do not expose
   update/patch, while supported non-network workload updates remain available
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
+- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard List/Get APIs
 
 ### Observability and Monitoring
 
@@ -753,16 +790,21 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - fulfillment-service: max-one attachment and primary validation (accept single implicit primary, accept explicit primary)
 - fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
 - fulfillment-service: interface validation (reject an interface not in BareMetalInstanceType)
-- fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
+- fulfillment-service: auto ExternalIP pool selection (READY pool with most capacity, matching IP family when specified; ties by pool ID)
+- fulfillment-service: auto ExternalIP atomicity — pool exhaustion, capacity race, EIP/EIPA/capacity failure roll back BMI with no leak; success stamps Pending EIP+EIPA labels ([OSAC-4982](https://redhat.atlassian.net/browse/OSAC-4982))
+- fulfillment-service: BMI delete cascade removes only auto-created children and restores capacity; manual EIP preserved ([OSAC-4984](https://redhat.atlassian.net/browse/OSAC-4984))
 - bare-metal-fulfillment-operator: reconcileNetworking phase ordering (after provisioning, before reboot; inventory → provisioning → networking → reboot → IP discovery)
 - bare-metal-fulfillment-operator: dispatcher call for the sole attachment (move_network_attachment with correct from/to network segment params, direction from deletionTimestamp)
 - bare-metal-fulfillment-operator: `buildSubnetMACMap` resolves subnetRef → MAC from the interface-macs annotation (single-NIC fallback when interface unset)
+- bare-metal-fulfillment-operator: auto-cleanup finalizer deletes EIPA CRs then EIP CRs by auto-created labels
+- osac-ui: networking detail Pending / Ready / Failed / missing-address cases ([OSAC-4985](https://redhat.atlassian.net/browse/OSAC-4985))
 
 ### Integration Tests
 
 - E2E: create BaremetalInstance with two attachments, verify the API rejects the request
-- E2E: create BaremetalInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
+- E2E: create BaremetalInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created in Pending then become Ready, DNAT rule functional
+- E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up and pool capacity restored
+- E2E: delete BMI with both auto and manual ExternalIP; verify only auto children are removed
 - E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with a second `--network-attachment`, verify the CLI and API return a maximum-one error
 - E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant network, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
@@ -772,9 +814,10 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 ### Tricky Test Cases
 
 - BM with one attachment and omitted `primary` (verify the sole attachment is normalized to `primary: true` in the CR/status and is the default route)
-- ExternalIPPool exhaustion (verify error returned, no resource created)
+- ExternalIPPool exhaustion (verify error returned, no BMI or capacity leak)
+- Concurrent auto create with `available=1` (exactly one winner)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
-- IP address feedback latency (verify ExternalIPAttachment controller waits for IP to appear in status)
+- IP address feedback latency (verify ExternalIPAttachment controller waits for IP to appear in status; UI stays Pending)
 
 ## Long-Term Evolution (The Reboot is the Seam)
 
