@@ -423,20 +423,7 @@ and fabric-agnostic.
 
 ## Open Questions
 
-### 9.1 Should `storage_vip_cidrs` support IPv6?
-
-- **Owner:** Connectivity & Fabric working group
-- **Impact:** §API Extensions — field definition and validation logic. For
-  Dev Preview, VAST block storage uses IPv4 only. IPv6 support can be added
-  later without breaking changes (the field is already a list).
-
-### 9.2 Should existing VirtualNetworks be retroactively validated when Storage VIP CIDR is configured?
-
-- **Owner:** Connectivity & Fabric working group
-- **Impact:** §Failure Handling — determines whether admin must configure
-  the CIDR before any tenants are onboarded, or whether the platform can
-  detect and warn about existing conflicts. Retroactive validation adds
-  complexity and may require a migration path for conflicting VNs.
+None. All questions resolved during drafting.
 
 ## Test Plan
 
