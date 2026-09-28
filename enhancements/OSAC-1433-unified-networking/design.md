@@ -401,7 +401,7 @@ designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 This section defines the contract that every fabric manager and K8s manager
 must fulfill. Individual manager design documents
 ([Netris](/enhancements/OSAC-2434-netris-fabric-manager-networking/design.md),
-[K8s-Only](/enhancements/OSAC-0000-k8s-only-k8s-manager-networking/design.md),
+[K8s-Only](/enhancements/OSAC-2069-k8s-only-k8s-manager-networking/design.md),
 [Agentless VLAN](/enhancements/OSAC-3664-agentless-vlan-fabric-manager-networking/design.md))
 describe how each backend satisfies these requirements. A new manager is
 conformant when it passes acceptance tests derived from this contract.
@@ -441,6 +441,22 @@ Each backend provides an Ansible role (e.g., `osac.templates.netris`,
 `create_virtual_network.yaml`, `delete_virtual_network.yaml`,
 `create_subnet.yaml`, etc. The AAP provider selects the correct task file
 based on the resource kind and operation.
+
+##### Workload Network Operations
+
+These mandatory operations are dispatched independently of per-resource
+create/delete jobs:
+
+| Operation | Manager scope | Contract |
+|-----------|---------------|----------|
+| `move_network_attachment` | Fabric manager only | Move a physical workload port from the configured provisioning segment to the tenant Subnet on attach, and back on detach. Both operations must be safe to retry. |
+| `query_dhcp_lease` | The selected manager when OSAC requests lease discovery, whether Fabric or K8s | Resolve the workload's lease by port MAC and return the address for OSAC status. Netris reads IPAM host entries; server-name lookup is allowed only where the service contract permits it. |
+
+The K8s manager does not implement `move_network_attachment`, because its
+CUDN-based attachments do not move physical fabric ports. `query_dhcp_lease`
+is manager-neutral; each manager must implement it when OSAC routes lease
+discovery to that manager. The current k8s-only path does not invoke lease
+discovery and has no corresponding task.
 
 #### Lifecycle Guarantees
 
@@ -526,13 +542,13 @@ Allocate a single IP from a pool.
 
 ##### ExternalIPAttachment — Fabric Manager
 
-Create an inbound DNAT/L4LB rule.
+Create an inbound DNAT rule.
 
 | Aspect | Requirement |
 |--------|-------------|
 | Input | `spec.externalIP`, target (one of `computeInstance`, `cluster`, `baremetalInstance`), `spec.targetEndpoint` (API or Ingress, required for clusters). Entire spec is immutable. |
-| Create | A load balancer or DNAT rule routing the ExternalIP's allocated address to the target's internal IP |
-| Delete | Remove the DNAT/LB rule. Must be removed before the ExternalIP can be released. |
+| Create | A DNAT rule routing the ExternalIP's allocated address to the target's internal IP |
+| Delete | Remove the DNAT rule. It must be removed before the ExternalIP can be released. |
 | K8sFallback | Yes — K8s manager may implement via MetalLB LoadBalancer Service |
 
 ##### NATGateway — Fabric Manager Only
