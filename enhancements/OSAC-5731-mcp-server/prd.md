@@ -13,6 +13,17 @@ OSAC users can manage infrastructure through existing OSAC interfaces, and the [
 ## In Scope
 
 - Target OSAC 0.6 with staged, end-to-end MCP journeys: tenant networking first, plus VMaaS ComputeInstances, CaaS clusters, BMaaS bare-metal instances, and a later OSAC Volume stage. A stage is complete only when an authorized user can discover eligible choices, handle supported prerequisites, perform applicable existing lifecycle actions, and retrieve the actual outcome in a later session. [Clarify: R2.Q1, R4.Q1, R11.Q3]
+- Each journey below is complete only when an authorized caller can perform these actions and check the actual outcome in a later session. An action is included only when OSAC already supports it for that caller. Start, stop, and restart apply to ComputeInstances and bare-metal instances. [Clarify: R1.Q2, R2.Q2, R11.Q3] [User]
+
+| Journey | In-scope actions |
+|---|---|
+| Networking | Discover, create, and delete VirtualNetworks, Subnets, and SecurityGroups. Allocate and attach external addresses, and set NAT egress where OSAC supports it. A change to an existing network resource is a separately reviewed replacement. |
+| ComputeInstances | Discover eligible choices, request, update, and delete an instance, and start, stop, or restart it. Start, stop, and restart count only after their existing behavior is validated end to end. |
+| CaaS clusters | Discover eligible choices, request, update, and delete a cluster, and check its later outcome. |
+| BMaaS instances | Discover eligible choices, request, update, and delete a bare-metal instance, start, stop, or restart it, and check its later outcome. Start, stop, and restart count only after their existing behavior is validated end to end. |
+| Volumes | Later stage: discover, request, update, and delete an OSAC Volume, and check its later outcome. Its workflow still needs validation against existing storage use. |
+| Prerequisites | Discover and select Projects, catalog offerings, and Secret references the caller may use. An authorized admin can create and update Projects and manage offerings already permitted for that role. A missing Secret value is entered outside the model host. |
+
 - The networking journey covers VirtualNetworks, Subnets, SecurityGroups, external IP allocation and attachment, and NAT egress where OSAC supports them. When an existing network resource cannot be edited in place, the user is told so and may review a supported replacement path; nothing is silently replaced or deleted. [Clarify: R9.Q1, R14.Q1]
 - Catalog offerings and templates, host and instance types, cluster versions, disk images, storage tiers, Projects, and selected prerequisites are discoverable or manageable only to the extent that OSAC already supports the action and authorizes the caller. Authorized admins can manage provider-owned or tenant-scoped offerings and Projects within their existing permissions. [Clarify: R2.Q2, R3.Q1, R3.Q2, R10.Q1]
 - An authorized user can provide a missing deployment Secret through an OSAC-controlled interaction outside the model host, then continue using its reference. Model-facing actions do not accept or reveal plaintext Secret values. [Clarify: R10.Q2]
@@ -60,6 +71,7 @@ OSAC users can manage infrastructure through existing OSAC interfaces, and the [
 - As a Tenant Admin or Tenant User, I want to request a ComputeInstance from a published catalog offering with permitted VM size, image, boot storage, and network choices, so that the requested VM matches my needs and catalog limits. [Clarify: R2.Q1, R11.Q3]
 - As a Tenant Admin or Tenant User, I want to request an eligible cluster through MCP, so that I can complete the CaaS provisioning journey using my existing permissions. [Clarify: R2.Q1, R3.Q1]
 - As a Tenant Admin or Tenant User, I want to request an eligible bare-metal instance through MCP, so that I can complete the BMaaS provisioning journey using my existing permissions. [Clarify: R2.Q1, R3.Q1]
+- As a Tenant Admin or Tenant User, I want to start, stop, or restart an eligible bare-metal instance through explicit actions, so that I can control its power state and check the actual result. [User]
 - As a Tenant Admin or Tenant User, I want to request and manage an OSAC Volume through MCP where my role permits it, so that I can use the supported storage lifecycle without treating a Kubernetes PVC as an MCP resource. [Clarify: R4.Q1, R9.Q2]
 - As a Tenant Admin or Tenant User, I want to update or delete my eligible infrastructure when OSAC supports that action, so that I can manage its lifecycle without a model inventing unsupported operations. [Clarify: R1.Q2, R2.Q2]
 - As a Tenant Admin or Tenant User, I want to start, stop, or restart an eligible ComputeInstance through explicit actions, so that I can control its VM lifecycle and check the actual result. [Clarify: R14.Q2]
@@ -84,6 +96,6 @@ OSAC users can manage infrastructure through existing OSAC interfaces, and the [
 ## Provenance
 
 Authored: respond @ prd 0.11.3 - 2bd6607, workspace OSAC-4388-deployment-mcp-poc @ 199459d7b (dirty)
-Phases: draft, respond
+Phases: draft, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"199459d7b (dirty)","source_repo_branch":"OSAC-4388-deployment-mcp-poc","commits_behind_main":0,"commits_ahead_main":1228,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"199459d7b (dirty)","source_repo_branch":"OSAC-4388-deployment-mcp-poc","commits_behind_main":0,"commits_ahead_main":1228,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
