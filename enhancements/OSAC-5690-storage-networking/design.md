@@ -19,13 +19,14 @@ superseded-by:
   - N/A
 ---
 
-# Storage Networking for Dev Preview (0.4)
+# Storage Networking (Phase 1)
 
 ## Summary
 
 Provide network connectivity from OSAC tenant workloads (VMaaS, CaaS, BMaaS)
-to the external VAST block storage cluster using SNAT via the existing
-NATGateway primitive. Introduce a platform-level Storage VIP CIDR reservation
+to the VAST block storage cluster — located outside the managed network fabric
+gateway — using SNAT via the existing NATGateway primitive. Introduce a
+platform-level Storage VIP CIDR reservation
 that prevents tenant VirtualNetwork CIDRs from overlapping with VAST VIP
 addresses, ensuring storage-bound traffic always routes externally rather than
 being trapped in the fabric. See [PRD](prd.md) for detailed requirements.
@@ -35,8 +36,8 @@ being trapped in the fabric. See [PRD](prd.md) for detailed requirements.
 The storage subsystem (OSAC-1332, OSAC-1111) assumes "CaaS cluster nodes have
 network reachability to the storage backend" without defining how that
 reachability is achieved. Tenant workloads run inside isolated VirtualNetworks
-on the OSAC fabric. The VAST cluster runs outside the datacenter. Without an
-explicit networking path, three problems arise:
+on the OSAC fabric. The VAST cluster runs outside the gateway to the managed
+network fabric. Without an explicit networking path, three problems arise:
 
 1. **No route to storage.** Tenant VirtualNetworks are fabric-isolated. Traffic
    destined for VAST VIPs has no defined exit path.
@@ -49,11 +50,11 @@ explicit networking path, three problems arise:
    operations through the NATGateway. There is no validation that the NAT pool
    supports this load.
 
-The approach proposed here — treating VAST as an external service consumed via
-SNAT — is the simplest viable path for the 0.4 dev preview timeframe. It
-reuses existing networking primitives (VirtualNetwork, NATGateway, ExternalIP)
-and avoids per-tenant VLAN configuration on the VAST side. Storage tenant
-isolation is not required for Dev Preview.
+The approach proposed here — treating VAST as a service outside the managed
+fabric gateway, consumed via SNAT — is the simplest viable path for the first
+phase. It reuses existing networking primitives (VirtualNetwork, NATGateway,
+ExternalIP) and avoids per-tenant VLAN configuration on the VAST side. Storage
+tenant isolation is not required for the first phase.
 
 ### Goals
 
@@ -68,10 +69,11 @@ isolation is not required for Dev Preview.
 
 ### Non-Goals
 
-- Per-tenant VAST VIP pools or storage tenant isolation (deferred to
-  OSAC-5073).
+- Storage tenant isolation at the network level (deferred to OSAC-5073).
+  Per-tenant VAST VIP pools exist but are not network-isolated from each
+  other in the first phase.
 - Direct-attach, VLAN-based, SR-IOV, or RDMA storage networking paths.
-- NFS or file storage — block storage only for 0.4.
+- NFS or file storage — block storage only for the first phase.
 - Per-subnet NAT granularity (NATGateway is per-VirtualNetwork).
 - Network-level QoS or bandwidth reservation for storage traffic.
 - East-west GPU-to-storage paths (deferred per OSAC-1382).
@@ -97,17 +99,19 @@ The design introduces three changes to the existing platform:
 
 No new controllers, CRDs, or networking resources are introduced. The existing
 NATGateway (one per VirtualNetwork, auto-provisioned during tenant onboarding)
-provides the SNAT path from tenant workloads to the external VAST cluster.
+provides the SNAT path from tenant workloads to the VAST cluster.
 
-### Changes Per Repository
+### Changes Per Component
 
-| Repository | Changes |
+All components live in the `osac` monorepo.
+
+| Component | Changes |
 |---|---|
 | **fulfillment-service** | Add `storage_vip_cidrs` field to NetworkClass. Add CIDR overlap validation to VirtualNetwork creation. Validate NetworkClass default VN CIDR against storage VIP CIDRs. |
+| **proto** | Add `storage_vip_cidrs` to the NetworkClass proto definition. |
 | **osac-operator** | No changes. NATGateway already provides SNAT for all egress from a VirtualNetwork. |
 | **osac-aap** | No changes. Storage provisioning playbooks already configure VAST CSI with VIP pool information from the tenant hub Secret. |
 | **osac-installer** | Update NetworkClass manifests to include the Storage VIP CIDR for the deployment. |
-| **fulfillment-api** | Add `storage_vip_cidrs` to the NetworkClass proto definition. |
 
 ### Workflow Description
 
@@ -121,8 +125,8 @@ flowchart LR
     subgraph Fabric
         NG[NATGateway<br/>SNAT: VN CIDR → ExternalIP]
     end
-    subgraph External
-        VAST[VAST Cluster<br/>Global VIP Pool]
+    subgraph Outside Fabric Gateway
+        VAST[VAST Cluster<br/>Per-Tenant VIP Pools]
     end
     W -->|iSCSI to VAST VIP| NG
     NG -->|SNATed traffic| VAST
@@ -155,7 +159,7 @@ reverse NAT path back to the workload.
 #### Prerequisites
 
 1. NetworkClass is configured with the Storage VIP CIDR.
-2. The VAST administrator has allocated a Global VIP Pool with addresses
+2. The VAST administrator has allocated per-tenant VIP pools with addresses
    drawn from the Storage VIP CIDR.
 3. Tenant onboarding has completed, creating a default VirtualNetwork,
    Subnet, and NATGateway with an ExternalIP.
@@ -166,8 +170,8 @@ reverse NAT path back to the workload.
 
 No additional steps beyond standard tenant onboarding and storage onboarding
 (OSAC-1332). When the storage controller provisions the VAST CSI driver and
-StorageClasses on the tenant's cluster, the CSI driver connects to the VAST
-Global VIP Pool. The iSCSI traffic exits the VirtualNetwork through the
+StorageClasses on the tenant's cluster, the CSI driver connects to the
+tenant's VAST VIP pool. The iSCSI traffic exits the VirtualNetwork through the
 NATGateway and reaches VAST. PersistentVolumeClaims work without tenant
 intervention.
 
@@ -238,7 +242,7 @@ VirtualNetwork creation.
 
 No `@temp-api` file exists for NetworkClass or VirtualNetwork in osac-ux.
 Storage VIP CIDR configuration is an admin-level installation concern with
-no UI surface in 0.4.
+no UI surface in the first phase.
 
 ### Implementation Details/Notes/Constraints
 
@@ -272,14 +276,14 @@ NATGateway. The NATGateway performs source NAT using its ExternalIP. A single
 ExternalIP supports approximately 64k concurrent connections (limited by the
 ephemeral port range).
 
-For the 0.4 dev preview, the expected scale is:
+For the first phase, the expected scale is:
 - Single-digit tenants, each with a small number of clusters or VMs.
 - Each cluster or VM mounts a small number of PersistentVolumes.
 - Each PV produces one iSCSI session.
 
 A single ExternalIP per NATGateway is sufficient for this scale. If future
 scale exceeds this, the NATGateway can be extended to support multiple
-ExternalIPs (out of scope for 0.4).
+ExternalIPs (out of scope for the first phase).
 
 #### BMaaS Connectivity
 
@@ -290,7 +294,7 @@ changes are needed.
 
 The BMaaS tenant is responsible for:
 - Installing the VAST CSI driver or iSCSI initiator on their hosts.
-- Configuring the VAST endpoint (Global VIP Pool FQDN or IP).
+- Configuring the VAST endpoint (VIP pool FQDN or IP).
 - Managing VAST credentials for their workloads.
 
 #### Interaction with Storage Onboarding
@@ -298,7 +302,7 @@ The BMaaS tenant is responsible for:
 The storage onboarding flow (OSAC-1332) installs the VAST CSI driver on
 tenant clusters with connection parameters from the hub Secret
 (`vast-tenant-config-<tenant>`). The hub Secret contains `vip_pool_name`
-or `vip_pool_fqdn` — these point to the Global VIP Pool whose addresses
+or `vip_pool_fqdn` — these point to the tenant's VIP pool whose addresses
 are within the Storage VIP CIDR.
 
 No changes to the storage onboarding flow are required. The CSI driver
@@ -335,7 +339,7 @@ No RBAC or tenancy changes required. The Storage VIP CIDR is a
 platform-level (NetworkClass) configuration managed by the Cloud
 Infrastructure Admin. VirtualNetwork CIDR validation is enforced by the
 fulfillment-service for all tenants uniformly. Storage tenant isolation is
-explicitly not required for Dev Preview.
+explicitly not required for the first phase.
 
 ### Observability and Monitoring
 
@@ -357,17 +361,17 @@ Operators debugging storage connectivity issues should check:
 | Admin forgets to configure Storage VIP CIDR before tenant onboarding | Document as a required installation step. Future: add a preflight check that warns if storage backends are registered but no Storage VIP CIDR is configured. |
 | Existing VNs (created before Storage VIP CIDR is configured) have overlapping CIDRs | The validation applies only to new VN creation. Existing VNs are not retroactively checked. Document that the Storage VIP CIDR must be configured before the first tenant is onboarded. |
 | VAST VIP addresses change after deployment | The Storage VIP CIDR is a superset range, not the exact VIP list. As long as new VIPs are allocated within the same CIDR, no platform changes are needed. If the range changes entirely, a new NetworkClass with updated storage_vip_cidrs is required. |
-| Single ExternalIP per NATGateway limits NAT capacity | Sufficient for Dev Preview scale. Monitor connection counts. Future: extend NATGateway to support multiple ExternalIPs. |
+| Single ExternalIP per NATGateway limits NAT capacity | Sufficient for the first phase scale. Monitor connection counts. Future: extend NATGateway to support multiple ExternalIPs. |
 
 ### Drawbacks
 
 The approach assumes VAST is always external and reachable via SNAT. This adds
 latency compared to direct-attach or VLAN-based storage paths, and NAT adds a
-throughput constraint. For Dev Preview this is acceptable — performance-critical
+throughput constraint. For the first phase this is acceptable — performance-critical
 storage networking (GPU-to-storage, RDMA) is explicitly deferred.
 
 The Storage VIP CIDR is a blunt instrument: it reserves an entire range from
-all tenants, even those that don't use storage. For Dev Preview with
+all tenants, even those that don't use storage. For the first phase with
 single-digit tenants this is not a problem, but a more granular approach may
 be needed at scale.
 
@@ -380,8 +384,8 @@ direct L2 connectivity to their VAST VIP pool.
 
 **Pros:** No NAT overhead. True network isolation per tenant.
 **Cons:** Requires VLAN configuration on the VAST cluster for each tenant.
-Significantly more complex operationally. Does not scale within the 0.4
-timeframe.
+Significantly more complex operationally. Does not scale within the first
+phase timeframe.
 **Rejected:** The JIRA feature description explicitly calls for "the simplest
 viable connectivity solution." Per-tenant VLANs are the opposite.
 
@@ -395,7 +399,7 @@ storage workloads.
 **Cons:** Requires dedicated NICs, switch configuration, and a separate
 storage network fabric. Not available in all deployments. Much more complex.
 **Rejected:** Deferred to a future enhancement for performance-sensitive
-workloads. Not viable for Dev Preview.
+workloads. Not viable for the first phase.
 
 ### 3. No CIDR Reservation (Documentation-Only)
 
@@ -468,7 +472,7 @@ Pre-GA change. The `storage_vip_cidrs` field is additive to NetworkClass.
 Existing deployments upgrading to this version have no `storage_vip_cidrs`
 configured, which means no overlap validation is enforced — the behavior is
 identical to before the change. The admin configures the field as part of
-the 0.4 deployment.
+the first phase deployment.
 
 ## Version Skew Strategy
 
