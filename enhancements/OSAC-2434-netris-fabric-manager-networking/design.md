@@ -12,7 +12,7 @@ see-also:
   - Unified Networking: /enhancements/OSAC-1433-unified-networking
   - CaaS Networking: /enhancements/OSAC-1436-caas-networking
   - Agentless VLAN Fabric Manager: /enhancements/OSAC-3664-agentless-vlan-fabric-manager-networking
-  - K8s-Only K8s Manager: /enhancements/OSAC-0000-k8sonly-k8s-manager-networking
+  - K8s-Only K8s Manager: /enhancements/OSAC-0000-k8s-only-k8s-manager-networking
 ---
 
 # Fabric Manager — Netris

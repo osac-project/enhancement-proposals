@@ -1,5 +1,5 @@
 ---
-title: k8sonly-k8s-manager
+title: k8s-only-k8s-manager
 authors:
   - Dan Manor
 creation-date: 2026-09-28

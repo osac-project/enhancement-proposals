@@ -394,6 +394,177 @@ designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 [CaaS](/enhancements/OSAC-1436-caas-networking),
 [BMaaS](/enhancements/OSAC-1437-bmaas-networking).
 
+### Manager Contract
+
+This section defines the contract that every fabric manager and K8s manager
+must fulfill. Individual manager design documents
+([Netris](/enhancements/OSAC-2434-netris-fabric-manager-networking/design.md),
+[K8s-Only](/enhancements/OSAC-0000-k8s-only-k8s-manager-networking/design.md),
+[Agentless VLAN](/enhancements/OSAC-3664-agentless-vlan-fabric-manager-networking/design.md))
+describe how each backend satisfies these requirements. A new manager is
+conformant when it passes acceptance tests derived from this contract.
+
+#### Registration Contract
+
+Each manager registers by deploying a ConfigMap in the operator namespace
+with the appropriate label. See [Manager Registration](#manager-registration-configmap)
+for the ConfigMap schema and examples.
+
+| Requirement | Detail |
+|-------------|--------|
+| Unique name | `data.name` must be unique within the manager type (fabric or K8s). Duplicate names are rejected at discovery. |
+| Non-empty capabilities | `data.capabilities` must contain at least one valid capability from the fixed set (`ipv4`, `ipv6`, `dualStack`, `dpuSupport`). Empty capabilities are rejected. |
+| IPv4-only boundary | Within the current deployment support boundary, managers must declare `ipv4`. Registrations declaring `ipv6` or `dualStack` are rejected. |
+
+#### Provisioning Provider Contract
+
+Managers do not implement a Go interface directly. The operator dispatches
+provisioning work to AAP, which routes to the backend's Ansible roles based
+on the `osac.openshift.io/implementation-strategy` annotation stamped on
+each resource. The AAP provider implements `ProvisioningProvider` on behalf
+of all backends:
+
+```go
+type ProvisioningProvider interface {
+    TriggerProvision(ctx context.Context, resource client.Object) (*ProvisionResult, error)
+    GetProvisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
+    TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []JobStatus) (*DeprovisionResult, error)
+    GetDeprovisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
+    Name() string
+}
+```
+
+Each backend provides an Ansible role (e.g., `osac.templates.netris`,
+`osac.templates.k8s_only`) with task files named by operation:
+`create_virtual_network.yaml`, `delete_virtual_network.yaml`,
+`create_subnet.yaml`, etc. The AAP provider selects the correct task file
+based on the resource kind and operation.
+
+#### Lifecycle Guarantees
+
+All manager operations must satisfy:
+
+| Guarantee | Detail |
+|-----------|--------|
+| Idempotency | Re-provisioning an already-provisioned resource must not create duplicates. Re-deprovisioning an already-removed resource must succeed. |
+| Phase tracking | Resources transition: `Progressing → Ready → Failed → Deleting`. The `DesiredConfigVersion` hash detects spec changes and controls retry/backoff. |
+| Job tracking | Each operation is recorded in `status.provisioningJobs[]`, bounded by `MaxJobHistory`. |
+| Condition reporting | Detailed status via standard Kubernetes conditions (`Ready`, `Progressing`, `Degraded`). |
+| Error surfacing | Backend failures must surface on the resource's status condition with a diagnostic message traceable to the backend's error response. Silent failures are not acceptable. |
+
+#### Per-Resource Contract
+
+The dispatch table in [Dispatcher](#dispatcher-operator-composition-logic)
+defines which manager roles handle each resource kind. The following
+specifies what each manager must accomplish for each resource kind.
+
+##### VirtualNetwork — Fabric Manager
+
+Create an isolated L3 routing domain.
+
+| Aspect | Requirement |
+|--------|-------------|
+| Input | `spec.region` (immutable), `spec.ipv4Cidr` (immutable, canonical IPv4), `spec.networkClass` (immutable) |
+| Create | A routing domain (VRF/VPC) with the specified CIDR, isolated from other VirtualNetworks |
+| Isolation | Different VirtualNetworks must have no direct internal connectivity, even with overlapping CIDRs. Cross-VN traffic is only possible via ExternalIPs over the external path. |
+| Delete | Remove the routing domain and release any associated IPAM allocations |
+| K8sFallback | Yes — K8s manager may implement as a logical grouping if no fabric manager is present |
+
+##### Subnet — Fabric Manager + K8s Manager
+
+Create an L2 segment within a VirtualNetwork.
+
+| Aspect | Requirement |
+|--------|-------------|
+| Input | `spec.virtualNetwork` (parent VN UUID, immutable), `spec.ipv4Cidr` (immutable) |
+| Fabric create | An L2 segment within the parent VN's routing domain, with a gateway address (first usable IP) and DHCP range (second usable to last usable) |
+| K8s create | A K8s overlay (e.g., CUDN) bridged to the fabric segment, so VMs receive IPs and join the tenant network |
+| Constraint | Subnet CIDR must be within parent VN's CIDR. Sibling subnet CIDRs must not overlap. |
+| Dispatch | Only resource dispatched to both Fabric and K8s roles simultaneously |
+| Delete | Remove the L2 segment, IPAM reservations, and K8s overlay resources |
+| K8sFallback | Yes |
+
+##### SecurityGroup — Fabric Manager
+
+Create ACL/firewall rules on a VirtualNetwork.
+
+| Aspect | Requirement |
+|--------|-------------|
+| Input | `spec.virtualNetwork` (parent VN UUID, immutable), `spec.ingressRules[]`, `spec.egressRules[]` |
+| Create | Permit rules for each ingress/egress entry, scoped to the subnets in the VN |
+| Mutability | Rules can be updated; changes trigger re-provisioning via config version change. This is the only networking resource with mutable spec fields. |
+| Delete | Remove all ACL rules associated with this SecurityGroup |
+| K8sFallback | Yes — K8s manager may implement via NetworkPolicy |
+
+##### ExternalIPPool — Fabric Manager
+
+Register an IP pool for allocation.
+
+| Aspect | Requirement |
+|--------|-------------|
+| Input | `spec.cidrs[]` (immutable, exactly one canonical IPv4 CIDR), `spec.ipFamily` (immutable, `IPv4` only) |
+| Create | Pool-level reservations in the backend's IPAM so ExternalIPs can be allocated |
+| Status | Report `total`, `allocated`, and `available` counts |
+| Deletion guard | Cannot be deleted while child ExternalIPs exist |
+| Delete | Remove pool reservations from the backend IPAM |
+| K8sFallback | Yes — K8s manager may implement via MetalLB IPAddressPool |
+
+##### ExternalIP — Fabric Manager
+
+Allocate a single IP from a pool.
+
+| Aspect | Requirement |
+|--------|-------------|
+| Input | `spec.pool` (immutable, ExternalIPPool name) |
+| Allocate | A single IP address from the pool. Write the allocated address to `osac.openshift.io/allocated-address` annotation on the CR. |
+| Status | Report `address`, `state` (Pending/Allocated/Failed), `attached` |
+| Idempotency | Re-reconciliation must return the same previously allocated address |
+| Delete | Release the IP back to the pool |
+| K8sFallback | Yes — K8s manager may implement via MetalLB LoadBalancer Service |
+
+##### ExternalIPAttachment — Fabric Manager
+
+Create an inbound DNAT/L4LB rule.
+
+| Aspect | Requirement |
+|--------|-------------|
+| Input | `spec.externalIP`, target (one of `computeInstance`, `cluster`, `baremetalInstance`), `spec.targetEndpoint` (API or Ingress, required for clusters). Entire spec is immutable. |
+| Create | A load balancer or DNAT rule routing the ExternalIP's allocated address to the target's internal IP |
+| Delete | Remove the DNAT/LB rule. Must be removed before the ExternalIP can be released. |
+| K8sFallback | Yes — K8s manager may implement via MetalLB LoadBalancer Service |
+
+##### NATGateway — Fabric Manager Only
+
+Create an outbound SNAT rule.
+
+| Aspect | Requirement |
+|--------|-------------|
+| Input | `spec.virtualNetwork` (parent VN name, immutable), `spec.externalIP` (ExternalIP name, immutable). Entire spec is immutable. |
+| Create | An SNAT rule so that all egress from the VirtualNetwork's CIDR uses the ExternalIP's allocated address as the source |
+| Delete | Remove the SNAT rule |
+| K8sFallback | **No** — NATGateway requires a fabric manager. K8s-only deployments must reject NATGateway creation with a clear error naming the unsupported resource and backend. |
+
+#### Deletion Guard Contract
+
+Parent resources gate deprovisioning on child removal. See
+[Deletion Dependency Guards](#deletion-dependency-guards) for the full
+dependency chain and controller-level implementation.
+
+| Parent | Gate on removal of |
+|--------|-------------------|
+| VirtualNetwork | All child Subnets, SecurityGroups, NATGateways |
+| Subnet | All child ComputeInstances, BareMetalInstances |
+| ExternalIP | All ExternalIPAttachments, NATGateways referencing it |
+| ExternalIPPool | All child ExternalIPs |
+
+#### Capability Intersection
+
+The `NetworkClassCapabilitiesReconciler` computes the effective capabilities
+of each NetworkClass as the intersection of its fabric manager and K8s
+manager capabilities and publishes them to the fulfillment service. For
+BM-only NetworkClasses without a K8s manager, only the fabric manager's
+capabilities contribute.
+
 ### Resource Hierarchy
 
 ```text
