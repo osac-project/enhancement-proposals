@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-09-28
 last-updated: 2026-09-28
 tracking-link:
-  - TBD
+  - "https://redhat.atlassian.net/browse/OSAC-2069"
 prd:
   - "prd.md"
 ---
@@ -92,6 +92,9 @@ Validation rules:
 The `NetworkClassCapabilitiesReconciler` watches manager ConfigMaps and computes
 each NetworkClass's effective capabilities as the **intersection** of its fabric
 manager and K8s manager capabilities, then writes them to the fulfillment service.
+This capability set advertises address-family support only; it does not encode
+resource-kind support such as NATGateway. NATGateway remains excluded by the
+dispatch table and is reported as Failed before a provisioning job starts.
 
 #### Dispatch
 
@@ -145,12 +148,26 @@ The operator does not call manager implementations directly. Instead:
 3. The Ansible role performs the actual infrastructure work
 4. The operator polls for job completion and updates the resource status
 
+#### Workload Network Operations
+
+`move_network_attachment` is a Fabric Manager operation. The k8s-only manager
+configures VM attachment through CUDNs and does not move physical fabric ports.
+
+`query_dhcp_lease` is manager-neutral: when OSAC requests lease discovery, the
+selected manager must resolve the workload's lease by port MAC and return it for
+resource status. The current k8s-only VM flow does not request this operation,
+and the k8s-only role has no `query_dhcp_lease` task. Add a K8s implementation
+before routing lease-discovery requests to this manager.
+
 #### Lifecycle Guarantees
 
 Every manager must satisfy these lifecycle properties:
 
-- **Idempotency**: Provisioning a resource that already exists must not create
-  duplicates. Deprovisioning a resource that does not exist must succeed.
+- **Idempotent reconciliation**: Repeating provisioning with the same desired
+  spec must not create duplicates. When a mutable spec changes, provisioning
+  must update existing backend resources until they match the new desired state;
+  merely finding an existing resource and returning success leaves it stale.
+  Deprovisioning a resource that does not exist must succeed.
 - **Phase-based status**: Resources transition through: `Progressing → Ready →
   Failed → Deleting`. The manager must report the correct phase.
 - **DesiredConfigVersion**: A hash of the resource spec. The operator uses this
@@ -310,7 +327,8 @@ agentless_net.steps
 Unlike the Netris backend (which creates a VPC/VRF), the k8s-only backend treats
 VirtualNetwork as a logical grouping with no infrastructure. The Ansible role
 logs success and returns immediately. L3 routing isolation between
-VirtualNetworks is provided by the CUDN/EVPN layer at the Subnet level.
+VirtualNetworks is provided by keeping their Subnet CUDNs isolated. Sharing a
+VirtualNetwork does not connect its Subnets in this phase.
 
 ### Subnet — CUDN with EVPN
 
@@ -347,12 +365,21 @@ spec:
       role: Primary
       subnets:
         - "<subnet-ipv4-cidr>"
+    transport: EVPN
+    evpn:
+      vtep: tenant-vtep
+      macVRF:
+        vni: 100  # Replace with the VNI allocated for this Subnet.
 ```
 
-OVN-Kubernetes creates the underlying OVN logical switch with EVPN VNI
-assignment, providing L2 isolation between CUDNs. VMs attached to the same CUDN
-communicate at L2. L3 routing between CUDNs of the same VirtualNetwork is
-handled by OVN's distributed router.
+The hub must have the `tenant-vtep` VTEP and EVPN route-advertisement setup
+installed before this CUDN is created. OVN-Kubernetes advertises the Layer 2
+network as a MAC-VRF, providing L2 connectivity to the fabric. VMs attached to
+the same CUDN communicate at L2. Different CUDNs remain isolated by default;
+this manager does not create a `ClusterNetworkConnect` or provide routed
+connectivity between Subnets. See the
+[OVN-Kubernetes CUDN EVPN configuration](https://ovn-kubernetes.io/master/features/bgp-integration/evpn/)
+and [ClusterNetworkConnect behavior](https://ovn-kubernetes.io/master/features/user-defined-networks/cluster-network-connect/).
 
 Subnet deletion reverses the process: delete the CUDN, then delete the namespace.
 
@@ -408,6 +435,9 @@ ExternalIP allocation uses a "parking" Service pattern:
 2. Wait for MetalLB to assign an IP (poll `status.loadBalancer.ingress`)
 3. Write the allocated address to the `osac.openshift.io/allocated-address`
    annotation on the ExternalIP CR
+4. Pin the parking Service to the assigned address and add a stable sharing key
+   for this ExternalIP before allowing an attachment. Use the address field or
+   annotation supported by the deployed MetalLB version.
 
 The parking Service reserves the IP in MetalLB's allocation table without routing
 any traffic. This IP is later migrated to a target namespace when an
@@ -417,25 +447,44 @@ ExternalIPAttachment is created.
 
 When attaching an ExternalIP to a ComputeInstance:
 
-1. Delete the parking Service in `metallb-system`
-2. Create a new Service of type `LoadBalancer` in the VM's namespace with:
-   - `spec.loadBalancerIP` set to the allocated address
-   - Selector targeting the KubeVirt VM pod
-   - `metallb.universe.tf/address-pool` annotation
+1. Create a new Service of type `LoadBalancer` in the VM's namespace while the
+   parking Service still reserves the address. Configure it with
+   `spec.loadBalancerIP` set to the allocated address (or the equivalent
+   explicit-address field for the pinned MetalLB version), a selector targeting
+   the KubeVirt VM pod, and the pool annotation. Both Services use the same
+   per-ExternalIP MetalLB sharing key (`metallb.io/allow-shared-ip` on current
+   versions), have non-conflicting ports, and use
+   `externalTrafficPolicy: Cluster`.
+2. Wait until MetalLB reports the allocated address on the VM Service, then
+   delete the parking Service in `metallb-system`.
 
-This effectively migrates the IP from the parking namespace to the VM namespace.
+Creating the destination service before releasing the parking reservation
+prevents the address from being reassigned during the handoff. If the deployed
+MetalLB version does not support sharing this address across the two Services,
+the manager must use an explicit reservation mechanism that holds the address
+until the destination claims it. It must not delete the parking Service first.
+The current delete-then-create task order has a reassignment window; restoring
+the parking Service after a failed create is compensating cleanup, not an
+atomic handoff.
+
+See the [MetalLB IP-sharing rules](https://metallb.io/usage/) for the sharing
+key, port, and traffic-policy constraints.
+
 The OVN-K EndpointSlice workaround is applied: the role ensures the
 EndpointSlice for the Service correctly references the VM pod's IP, working around
 a known OVN-Kubernetes issue where EndpointSlices for KubeVirt VMs may not
 populate correctly.
 
-Detaching reverses the process: delete the LB Service in the VM namespace,
-recreate the parking Service in `metallb-system`.
+Detaching reverses the handoff: create a parking Service with the same address
+and sharing key, wait until MetalLB reports that address, then delete the VM
+Service. If reservation restoration fails, keep the VM Service and retry; do not
+leave the address unreserved.
 
 **Limitation**: ExternalIPAttachment only supports `spec.computeInstance` targets.
 `spec.cluster` and `spec.baremetalInstance` targets are not implemented in the
-k8s-only backend. Attempting to attach to a cluster or bare-metal instance will
-fail during the Ansible role execution.
+k8s-only backend. The role must reject these targets with a clear unsupported
+target error before creating a Kubernetes Service; the resource then reports
+Failed status.
 
 ### NATGateway — Rejected at Dispatch
 
@@ -468,9 +517,10 @@ The k8s-only backend inherits the existing OSAC security model:
 - **Credential management**: No external credentials are required (unlike Netris,
   which requires controller credentials). MetalLB and OVN-Kubernetes are
   cluster-local services that use Kubernetes RBAC.
-- **Tenant isolation**: CUDNs with EVPN provide L2/L3 isolation. VMs in
-  different VirtualNetworks cannot reach each other's private addresses, even
-  with overlapping CIDRs. OVN-Kubernetes enforces this at the OVS datapath level.
+- **Tenant isolation**: EVPN Layer 2 CUDNs provide isolated subnet networks.
+  VMs in different CUDNs cannot communicate unless a network connection is
+  explicitly configured; this manager does not configure cross-Subnet
+  connections. OVN-Kubernetes enforces the isolation at the OVS datapath level.
 - **Input validation**: CRD CEL validation rejects invalid CIDRs, non-canonical
   formats, and IPv6 addresses. The operator validates parent-child relationships
   (Subnet within VirtualNetwork CIDR range).
@@ -588,24 +638,6 @@ require direct OVN northbound DB access, bypassing the OVN-Kubernetes abstractio
 layer. This is fragile, unsupported by OVN-K, and could conflict with OVN-K's own
 NAT management.
 
-## Open Questions
-
-### OQ-1: Should ExternalIPAttachment for cluster targets be supported in k8s-only?
-
-- **Owner:** Connectivity & Fabric team
-- **Impact:** If supported, the `metallb_l2` role needs to handle cluster-level
-  L4LB configuration. If not, an admission webhook should reject the attempt
-  upfront rather than failing during provisioning.
-
-### OQ-2: Should the k8s-only backend report capabilities that exclude NATGateway?
-
-- **Owner:** Connectivity & Fabric team
-- **Impact:** Currently, capabilities are declared as `ipv4`. There is no
-  per-resource-kind capability advertisement. If the fulfillment service or UI
-  could surface "NATGateway not available on this NetworkClass," it would prevent
-  tenants from attempting unsupported operations. This may require extending the
-  capability model.
-
 ## Test Plan
 
 ### Unit Tests
@@ -635,13 +667,14 @@ NAT management.
 ### E2E Tests
 
 - Tenant creates a VirtualNetwork and two Subnets; VMs on the same Subnet
-  communicate at L2; VMs on different Subnets communicate at L3
+  communicate at L2; VMs on different Subnets remain isolated
 - VMs on different VirtualNetworks cannot reach each other's private addresses,
   even with overlapping CIDRs
 - Tenant creates an ExternalIPPool, allocates an ExternalIP, and attaches it to
   a VM; inbound traffic reaches the VM
-- Tenant attempts NATGateway creation on k8s-only NetworkClass; receives API
-  error naming the unsupported resource kind and backend
+- Tenant attempts NATGateway creation on k8s-only NetworkClass; the resource
+  reaches Failed with the unsupported resource and backend named before any
+  provisioning job starts
 - Tenant creates a SecurityGroup with ingress/egress rules; traffic is filtered
   according to the rules
 - Full lifecycle: create VN → create Subnet → attach VM → verify connectivity →

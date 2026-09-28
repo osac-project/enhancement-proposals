@@ -3,7 +3,7 @@
 | Field       | Value   |
 |-------------|---------|
 | Author(s)   | Dan Manor |
-| Jira        | TBD |
+| Jira        | [OSAC-2069](https://redhat.atlassian.net/browse/OSAC-2069) |
 | Date        | 2026-09-28 |
 
 > This PRD covers the **k8s-only K8s manager** — the Kubernetes networking
@@ -37,8 +37,8 @@ OSAC networking supports exactly one provider-owned hub per deployment.
   resources it supports.
 
 - **CUDN (ClusterUserDefinedNetwork)**: An OVN-Kubernetes resource that defines
-  a cluster-scoped user-defined network. CUDNs provide L2/L3 isolation between
-  tenants using EVPN as the backend protocol.
+  a cluster-scoped user-defined network. This backend uses isolated Layer 2
+  CUDNs with EVPN transport.
 
 - **NetworkClass**: A provider-configured resource that defines how networking is
   implemented. Specifies which fabric manager and K8s manager handle networking.
@@ -75,15 +75,15 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
 - A Cloud Infrastructure Admin can deploy OSAC networking without an external
   fabric controller by selecting the k8s-only backend, and tenants get a working
   networking experience for the supported resource set
-- The system must clearly reject unsupported operations (NATGateway creation)
-  at the API level with an actionable error message, rather than failing during
-  provisioning
+- The system must clearly report unsupported operations (NATGateway creation)
+  on the resource before any provisioning job starts, rather than leaving the
+  resource indefinitely pending
 - The k8s-only backend provides tenant network isolation using
   Kubernetes-native resources (CUDNs with OVN-Kubernetes EVPN backend),
   without requiring vendor-specific network controllers
-- The capabilities advertised by a k8s-only NetworkClass accurately reflect
-  what the backend supports, so that the fulfillment service and UI can
-  surface limitations before a tenant attempts an unsupported action
+- The k8s-only NetworkClass advertises its supported IP family. Unsupported
+  resource kinds such as NATGateway are reported through resource status
+  because the current capability model does not represent resource support.
 
 ### 2.2 Non-Goals
 
@@ -95,6 +95,8 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
   through the OSAC networking API. Resources may still have default outbound
   connectivity through the cluster's default gateway, but this is outside
   OSAC's networking model
+- Routing between different Subnets in the same VirtualNetwork — each Subnet
+  has an isolated CUDN in this phase
 - SecurityGroup policy enforcement — this is a separate concern shared across
   all backends and is not specific to the k8s-only manager
 - Multi-hub networking — the k8s-only backend operates on a single hub cluster
@@ -111,8 +113,8 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
   Kubernetes-native resources by selecting the k8s-only backend, so that I can
   offer tenant networking on sites without an external fabric controller
 - As a Cloud Infrastructure Admin, I want the k8s-only backend to register its
-  capabilities accurately, so that the platform surfaces limitations (no
-  NATGateway, IPv4 only) before tenants attempt unsupported actions
+  IPv4 capability accurately and report unsupported resource operations, so
+  that I can configure the backend and diagnose rejected requests
 - As a Cloud Infrastructure Admin, I want a failed CUDN or network-attachment
   operation reflected on the affected resource's status, so that I can diagnose
   networking problems without inspecting Kubernetes resources directly
@@ -125,12 +127,11 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
 - As a Tenant Admin, I want to create VirtualNetworks and Subnets through the
   same API regardless of whether the deployment uses a fabric controller or
   k8s-only, so that my workflow is consistent across environments
-- As a Tenant Admin, I want to receive a clear error when I attempt an
-  unsupported operation (e.g., creating a NATGateway on a k8s-only
-  NetworkClass), so that I know to use an alternative approach rather than
-  waiting for a provisioning failure
-- As a Tenant Admin, I want to attach ExternalIPs to my resources for inbound
-  access, so that my VMs are reachable from outside the VirtualNetwork
+- As a Tenant Admin, I want unsupported operations (such as creating a
+  NATGateway on a k8s-only NetworkClass) reported before provisioning starts,
+  so that I can choose a supported approach.
+- As a Tenant Admin, I want to attach ExternalIPs to my VMs for inbound access,
+  so that my VMs are reachable from outside the VirtualNetwork
 
 ### Tenant User
 
@@ -138,8 +139,7 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
   IP addresses and connectivity on that subnet's network, so that I do not
   configure addressing manually
 - As a Tenant User, I want VMs on the same subnet to communicate at L2, and
-  VMs on different subnets of the same VirtualNetwork to communicate at L3,
-  so that network segmentation works as expected
+  so that VMs on that subnet can communicate over their shared network
 
 ## 4. Requirements
 
@@ -151,7 +151,9 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
   `osac.openshift.io/network-k8s-manager: "true"`, name `k8s_only`, and
   capabilities reflecting IPv4 support only. The NetworkClass capabilities
   controller must compute the intersection of fabric and K8s manager
-  capabilities and update the fulfillment service.
+  address-family capabilities and update the fulfillment service. NATGateway
+  support is not represented in this capability set; the dispatcher enforces
+  its unsupported status separately.
 
 - **FR-2:** When a NetworkClass has `fabricManager` empty and `k8sManager` set
   to `k8s_only`, the dispatcher must route supported resource kinds through the
@@ -161,19 +163,21 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
 
 #### Unsupported Operation Rejection
 
-- **FR-3:** NATGateway creation on a NetworkClass using the k8s-only backend
-  must be rejected at the API level with a clear error indicating that
-  NATGateways are not supported by the k8s-only backend. The error must name
-  the unsupported resource kind and the backend that does not support it.
+- **FR-3:** When a NATGateway is created for a NetworkClass using the k8s-only
+  backend, the resource must transition promptly to Failed with a clear status
+  message that names the unsupported resource kind and backend. The API may
+  persist the resource; the unsupported operation must be reported before any
+  provisioning job begins.
 
 - **FR-4:** The dispatcher must not route NATGateway operations through
-  K8sFallback. The rejection must occur before any provisioning work begins.
+  K8sFallback. It must return the unsupported-operation result to the
+  controller before any provisioning job begins.
 
 #### Tenant Network Isolation
 
 - **FR-5:** The k8s-only backend must create CUDNs on the hub cluster for
-  tenant network isolation. Each Subnet must map to a CUDN with a dedicated
-  L2/L3 segment using OVN-Kubernetes with EVPN as the backend protocol.
+  tenant network isolation. Each Subnet must map to an isolated Layer 2 CUDN
+  using OVN-Kubernetes with EVPN transport.
   Different VirtualNetworks must have no direct connectivity — a VM in one
   VirtualNetwork must not reach another VirtualNetwork's private subnet
   addresses, even when their address ranges overlap.
@@ -191,22 +195,21 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
   participates in the tenant network.
 
 - **FR-8:** VMs on the same Subnet must communicate at L2. VMs on different
-  Subnets of the same VirtualNetwork must communicate at L3 through the
-  VirtualNetwork routing path. VMs on different VirtualNetworks must have no
-  direct internal connectivity.
+  Subnets do not have routed connectivity in this phase, even when those
+  Subnets share a VirtualNetwork. VMs on different VirtualNetworks must have
+  no direct internal connectivity.
 
 #### Cluster Network Attachment
 
-- **FR-9:** When a Cluster is attached to a Subnet managed by the k8s-only
-  backend, the backend must configure the CUDN namespace selector to include
-  the cluster's hosted control plane namespace, so that the cluster's nodes
-  can participate in the tenant network.
+- ~~FR-9:~~ Removed — hosted control plane namespace attachment is not part of
+  the k8s-only manager's supported scope in this phase.
 
 #### External Access
 
-- **FR-10:** The k8s-only backend must support ExternalIP and
-  ExternalIPAttachment resources for inbound access to VMs and clusters.
-  ExternalIPPools are provider-defined; ExternalIPs are allocated from them.
+- **FR-10:** The k8s-only backend supports ExternalIP and
+  ExternalIPAttachment resources for inbound access to ComputeInstances
+  (VMs). ExternalIPPools are provider-defined; ExternalIPs are allocated from
+  them. Cluster and bare-metal targets are not supported by this backend.
 
 #### Failure Visibility
 
@@ -252,19 +255,23 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
 - [ ] With the k8s-only backend configured (no fabric manager), a tenant
   creates a VirtualNetwork and Subnet through the API and they reach a ready
   state
-- [ ] A CUDN is created on the hub cluster for each Subnet, providing L2/L3
-  isolation via OVN-Kubernetes EVPN
+- [ ] A Layer 2 CUDN with EVPN transport is created on the hub cluster for
+  each Subnet; CUDNs remain isolated from other Subnets unless a future design
+  explicitly connects them
 - [ ] A VM attached to a k8s-only Subnet receives an IP address on that subnet
   and can communicate with other VMs on the same subnet at L2
-- [ ] VMs on different Subnets of the same VirtualNetwork can communicate at L3
+- [ ] VMs on different Subnets do not gain routed connectivity from sharing a
+  VirtualNetwork in this phase
 - [ ] VMs on different VirtualNetworks cannot reach each other's private
   addresses, even with overlapping CIDRs
-- [ ] Creating a NATGateway on a k8s-only NetworkClass returns an API error
-  naming the unsupported resource and backend — no provisioning work begins
+- [ ] Creating a NATGateway on a k8s-only NetworkClass results in a Failed
+  status naming the unsupported resource and backend before any provisioning
+  job begins; the API may persist the resource
 - [ ] A tenant attaches an ExternalIP to a VM and inbound traffic reaches the
   VM through the external access path
-- [ ] A Cluster attached to a k8s-only Subnet has its hosted control plane
-  namespace included in the CUDN's namespace selector
+- [ ] ExternalIPAttachment to a Cluster or BaremetalInstance is reported as
+  unsupported by the k8s-only backend; only ComputeInstance targets are
+  supported
 - [ ] A CUDN creation failure is reflected on the Subnet's status with a
   diagnostic message naming the failed Kubernetes resource
 - [ ] Deleting a Subnet deletes its CUDN and releases the allocated CIDR
@@ -272,7 +279,7 @@ code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
 - [ ] Subnet CIDR, VirtualNetwork NetworkClass, and NetworkClass k8sManager
   type are immutable after creation — modification attempts are rejected
 - [ ] The k8s-only backend's registered capabilities accurately reflect IPv4
-  support only and no NATGateway support
+  support only; NATGateway support is enforced separately by dispatch
 
 ## 6. Assumptions
 

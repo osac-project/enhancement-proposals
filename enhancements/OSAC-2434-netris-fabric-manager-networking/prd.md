@@ -51,7 +51,8 @@ clear parity baseline.
   capabilities the backend does not support — with clear, user-visible error
   messages.
 - Backend networking failures are visible on the affected resource's status
-  with diagnostic messages traceable to the Netris controller response.
+  with actionable, sanitized diagnostics traceable to the failed operation
+  without exposing raw response bodies or credentials.
 
 ### 2.2 Non-Goals
 
@@ -66,16 +67,19 @@ clear parity baseline.
   backend selection is a provider configuration concern.
 - DNS record creation is not part of this backend — DNS is handled by the
   separate DNS API (OSAC-1050).
-- Multi-site Netris deployments spanning multiple Netris controllers are not
-  supported.
+- Multiple Netris controllers or split-controller topologies are not
+  supported. A single Netris controller may manage multiple sites, mapped from
+  OSAC regions.
 
 ## 3. User Stories
 
 ### Cloud Provider Admin
 
 - As a Cloud Provider Admin, I want to register the Netris fabric manager by
-  deploying its ConfigMap with the required Netris controller credentials and
-  site configuration, so that OSAC can use Netris for tenant networking.
+  deploying its metadata-only manager ConfigMap, configuring site settings
+  through the installer, and supplying Netris credentials through a
+  provider-owned Secret, so that OSAC can use Netris without exposing
+  credentials in the registration ConfigMap.
 - As a Cloud Provider Admin, I want the system to reject a fabric manager
   registration with duplicate names or invalid capability declarations, so
   that misconfiguration is caught at registration time rather than at
@@ -87,9 +91,9 @@ clear parity baseline.
   as the backend for a NetworkClass by referencing its registered name, so that
   all networking resources using that NetworkClass are provisioned through
   Netris.
-- As a Cloud Infrastructure Admin, I want to define ExternalIPPool resources
-  that map to Netris IPAM pools with purpose `l4lb`, so that tenants can
-  allocate ExternalIPs for inbound access and NATGateways for outbound access.
+- As a Cloud Infrastructure Admin, I want to define provider-owned
+  NAT ExternalIPPools backed by Netris IPAM space, so that tenants can allocate
+  ExternalIPs for inbound DNAT and outbound NATGateway use.
 - As a Cloud Infrastructure Admin, I want to see Netris controller errors
   surfaced on the affected networking resource's status, so that I can diagnose
   fabric problems without accessing the Netris controller directly.
@@ -110,7 +114,7 @@ clear parity baseline.
   storage systems outside the fabric gateway) with a stable source IP.
 - As a Tenant Admin, I want to allocate ExternalIPs from a provider-defined
   pool and attach them to workloads, so that my services are reachable from
-  outside the VirtualNetwork through Netris L4 load balancers.
+  outside the VirtualNetwork through Netris DNAT rules.
 - As a Tenant Admin, I want the system to reject attempts to mutate immutable
   fields (NetworkClass, region, CIDRs) on existing resources, so that I
   receive a clear error instead of entering an inconsistent state.
@@ -151,16 +155,25 @@ clear parity baseline.
   backend must create a corresponding Netris VNet with a VXLAN VNI and the
   specified CIDR range.
 - **FR-6:** When a tenant creates a NATGateway, the backend must configure
-  Netris SNAT rules so that outbound traffic from the associated Subnet
+  Netris SNAT rules so that outbound traffic from the associated VirtualNetwork
   egresses with the NATGateway's external IP as its source address.
 - **FR-7:** When a tenant allocates an ExternalIP and creates an
-  ExternalIPAttachment, the backend must configure a Netris L4 load balancer
-  to route inbound traffic to the target resource.
-- **FR-8:** When a tenant creates an ExternalIPPool, the backend must validate
-  that the specified CIDR corresponds to an available Netris IPAM allocation
-  with purpose `l4lb`.
+  ExternalIPAttachment, the backend must configure a Netris DNAT rule to route
+  inbound traffic to the target resource. A tenant workload target must resolve
+  to its tenant VPC; the management VPC may be used only for an explicitly
+  supported cluster-endpoint attachment, never as a fallback for a failed
+  tenant-VPC lookup.
+- **FR-8:** A Cloud Infrastructure Admin creates each ExternalIPPool and
+  defines its CIDR. The current API supports exactly one CIDR per pool. The
+  backend must create or resolve the corresponding provider-owned Netris IPAM
+  allocation; each allocated ExternalIP is reserved as a /32 subnet with
+  `purpose=nat`. Tenants may allocate ExternalIPs from the pool but may not
+  create or change it.
 - **FR-9:** When a tenant creates a SecurityGroup, the backend must translate
-  the rules into Netris ACL configurations on the corresponding VPC.
+  the rules into Netris ACL configurations on the corresponding VPC. The
+  parent VPC and applicable Subnet CIDRs must resolve before ACL creation;
+  missing values must fail closed and must not become a default VPC or a
+  wildcard CIDR.
 
 #### Automatic IP Assignment
 
@@ -187,21 +200,24 @@ clear parity baseline.
 
 - **FR-15:** When a networking resource is deleted (and deletion is not
   blocked by FR-12, FR-13, or FR-14), the backend must remove the
-  corresponding Netris configuration (VPC, VNet, SNAT rule, L4LB, ACL) and
+  corresponding Netris configuration (VPC, VNet, SNAT rule, DNAT rule, ACL) and
   release any IPAM allocations, without affecting other resources.
 - **FR-16:** Teardown must respect dependency order: an ExternalIPAttachment's
-  L4LB configuration is removed before its ExternalIP is released back to the
+  DNAT rule is removed before its ExternalIP is released back to the
   pool.
 
 #### Failure Visibility
 
 - **FR-17:** When a Netris controller API call fails during provisioning or
   teardown, the failure must be reflected on the affected networking
-  resource's status condition with a diagnostic message that includes the
-  Netris error response.
+  resource's status condition with an actionable, sanitized diagnostic, such
+  as the failed operation and Netris error code or request ID. Credentials,
+  authorization data, tenant or network identifiers, and unfiltered response
+  bodies must not be exposed.
 - **FR-18:** When the Netris controller is unreachable, the affected resources
-  must transition to a degraded status condition rather than silently retrying
-  indefinitely.
+  must show a Failed or Degraded condition while retries use bounded
+  exponential backoff; they must not remain indefinitely indistinguishable
+  from successful or in-progress resources.
 
 #### Capability Declaration
 
@@ -210,6 +226,26 @@ clear parity baseline.
   must compute the effective capabilities of each NetworkClass as the
   intersection of its fabric manager and K8s manager capabilities, and
   surface them to the fulfillment service.
+- **FR-20:** A VirtualNetwork with an explicitly configured region that has no
+  Netris site mapping must fail visibly before any Netris resources are
+  created. The default site may be used only when the region is omitted. A
+  Subnet must use the site resolved for its parent VirtualNetwork.
+- **FR-21:** A NATGateway must apply only to its referenced VirtualNetwork. If
+  that VirtualNetwork or its Netris VPC cannot be resolved, the NATGateway
+  must fail visibly without creating a rule in the management VPC.
+
+#### Workload Networking Operations
+
+- **FR-22:** When OSAC attaches or detaches a workload network port, the
+  selected fabric manager must implement the mandatory `move_network_attachment`
+  operation to move the port between its configured provisioning segment and
+  tenant Subnet. The K8s manager does not perform this physical-port operation.
+  Both attach and detach must be safe to retry.
+- **FR-23:** When OSAC requests DHCP lease discovery, the selected manager must
+  implement the manager-neutral `query_dhcp_lease` operation and return the
+  lease address for resource status. Netris resolves the lease from IPAM host
+  entries by port MAC address; server-name lookup is used only where the
+  service contract permits it.
 
 ### 4.2 Non-Functional Requirements
 
@@ -222,9 +258,16 @@ clear parity baseline.
   VirtualNetwork's private subnet addresses, even when their address ranges
   overlap. Cross-VN reachability is only possible via ExternalIPs over the
   external path.
-- **NFR-4:** The backend must be idempotent: re-reconciling a resource that
-  is already provisioned in Netris must not create duplicate VPCs, VNets,
-  L4LBs, or ACLs.
+- **NFR-4:** Provisioning must reconcile Netris to the desired state
+  idempotently. Repeating the same request must not create duplicate VPCs,
+  VNets, NAT rules, or ACLs; an update request must update existing mutable
+  resources to match the new spec without leaving stale configuration. A
+  successful hash for an unchanged spec must not suppress recovery from
+  incomplete provisioning or detected missing Netris resources. Deleting a
+  backend resource that is already absent must succeed as an idempotent no-op.
+- **NFR-5:** Concurrent ExternalIP allocations from the same provider pool
+  must receive distinct addresses. Retrying allocation for the same ExternalIP
+  must return its existing reservation rather than allocate a second address.
 
 ## 5. Acceptance Criteria
 
@@ -237,12 +280,31 @@ clear parity baseline.
   with isolated routing; the resource reaches a ready state.
 - [ ] A tenant creates a Subnet and the backend creates a Netris VNet with a
   VXLAN VNI; the resource reaches a ready state.
+- [ ] A VirtualNetwork with an explicitly unmapped region fails with a clear
+  status and creates no Netris resources at a default site; when region is
+  omitted, the configured default site is used. Its Subnets use the same site.
 - [ ] A bare-metal server attached to a Netris-backed Subnet receives an IP
   from the Subnet's CIDR via Netris IPAM, visible in its status.
+- [ ] Attaching a workload port moves it from the provisioning segment to the
+  tenant Subnet; detaching moves it back, and retrying either operation does
+  not move it to an incorrect segment.
+- [ ] Querying a workload's DHCP lease by port MAC returns the matching Netris
+  IPAM host-entry address for resource status.
 - [ ] A tenant creates a NATGateway; outbound traffic from the associated
-  Subnet egresses with the NATGateway's external IP as the source address.
-- [ ] A tenant attaches an ExternalIP and the backend creates a Netris L4LB;
-  inbound traffic reaches the target workload.
+  VirtualNetwork egresses with the NATGateway's external IP as the source
+  address.
+- [ ] A NATGateway whose tenant VirtualNetwork cannot be resolved fails
+  visibly and creates no NAT rule in the management VPC.
+- [ ] A provider defines a NAT ExternalIPPool with its single supported CIDR;
+  a tenant can allocate an ExternalIP whose Netris /32 reservation has
+  `purpose=nat`.
+- [ ] Concurrent ExternalIP allocations from one pool receive distinct
+  addresses, and retrying the same ExternalIP returns its original address.
+- [ ] A tenant attaches an ExternalIP and the backend creates a Netris DNAT
+  rule; inbound traffic reaches the target workload.
+- [ ] A tenant-targeted DNAT attachment whose VPC cannot be resolved fails
+  without creating the rule in the management VPC; an explicitly supported
+  cluster-endpoint attachment may use the management VPC.
 - [ ] A tenant creates a SecurityGroup and the backend translates its rules
   into Netris ACLs.
 - [ ] Mutating immutable fields (NetworkClass, region, CIDRs) is rejected at
@@ -254,11 +316,18 @@ clear parity baseline.
 - [ ] When deletion is allowed, the backend removes the Netris configuration
   and releases IPAM allocations without affecting other resources.
 - [ ] A Netris controller API failure surfaces on the affected resource's
-  status with a diagnostic message.
-- [ ] Netris controller unreachability transitions affected resources to a
-  degraded status.
+  status with an actionable diagnostic that does not expose credentials or
+  tenant or network identifiers, or unfiltered response bodies.
+- [ ] Netris controller unreachability transitions affected resources to
+  `Failed` or `Degraded` status and retries with bounded exponential backoff.
 - [ ] Re-reconciling an already-provisioned resource does not create duplicate
   Netris objects.
+- [ ] Updating mutable SecurityGroup rules reconciles the Netris ACL set to the
+  new desired rules, removes obsolete rules, and creates no duplicates on retry.
+- [ ] A SecurityGroup with an unresolved parent VPC or Subnet CIDR fails
+  without creating a default-VPC or wildcard-CIDR permit ACL.
+- [ ] Deleting a Netris backend resource that is already absent succeeds as a
+  no-op.
 - [ ] NetworkClass capabilities are computed as the intersection of fabric and
   K8s manager capabilities and surfaced to the fulfillment service.
 
@@ -267,12 +336,15 @@ clear parity baseline.
 - The OSAC networking API and resource model are complete and stable, inherited
   from the unified networking work (OSAC-1433); this PRD documents the
   backend, not the API.
-- A single Netris controller manages the entire fabric for a deployment. The
-  backend does not support split-controller or multi-site Netris topologies.
+- A single Netris controller manages the deployment and may expose multiple
+  sites. Each configured OSAC region maps to one of those sites; multiple
+  controllers and split-controller topologies are unsupported.
 - The Netris controller API is the sole source of truth for fabric state. The
   backend does not maintain a separate state store for Netris objects.
-- Netris IPAM pools are pre-provisioned by the Cloud Infrastructure Admin in
-  the Netris controller before OSAC networking resources reference them.
+- The Netris controller is preconfigured with the required site, tenant, and
+  parent IPAM capacity. Cloud Infrastructure Admins define NAT ExternalIPPools
+  in OSAC; the Netris backend creates the corresponding allocation and
+  per-ExternalIP /32 reservations.
 - VAST and other storage systems outside the fabric gateway are reachable via
   NATGateway SNAT — the backend does not provide a separate storage networking
   path.
@@ -300,8 +372,9 @@ clear parity baseline.
 
 - **Owner:** Cloud Infrastructure Admin
 - **Mitigation:** The backend must surface controller unreachability as a
-  degraded status on affected resources. Recovery is automatic when the
-  controller becomes reachable again through normal reconciliation.
+  `Failed` or `Degraded` status on affected resources and retry with bounded
+  exponential backoff. Recovery is automatic when the controller becomes
+  reachable again through normal reconciliation.
 
 ### 8.2 Netris IPAM exhaustion
 
