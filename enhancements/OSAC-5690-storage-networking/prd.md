@@ -56,7 +56,7 @@ tenant-isolated storage network design. The following problems must be solved:
    fabric instead of externally, breaking storage access silently.
 
 3. **NAT capacity for storage traffic.** Block storage workloads generate
-   concurrent iSCSI sessions and CSI operations. The NATGateway's ExternalIP
+   concurrent NVMe-TCP sessions and CSI operations. The NATGateway's ExternalIP
    must support these connections. There is no guidance or validation today for
    NAT capacity relative to storage consumption.
 
@@ -143,9 +143,9 @@ the first phase.
   the same SNAT path to VAST.
 
 - SNAT via NATGateway is sufficient for block storage data-plane traffic
-  (iSCSI sessions, CSI operations). No inbound (DNAT) connectivity from VAST
-  to tenant workloads is required — all storage connections are initiated by
-  the client side.
+  (NVMe-TCP sessions, CSI operations). No inbound (DNAT) connectivity from
+  VAST to tenant workloads is required — all storage connections are
+  initiated by the client side.
 
 - A single NATGateway ExternalIP per VirtualNetwork provides enough NAT
   capacity for the expected storage connection count in the first phase scope.
