@@ -70,19 +70,20 @@ OSAC users can manage infrastructure through existing OSAC interfaces, and the [
 - As a Tenant Admin or Tenant User, I want to supply missing deployment Secret values through an OSAC-controlled interaction outside the model host and resume using only the reference, so that sensitive values do not enter the model conversation. [Clarify: R10.Q2]
 - As a Tenant Admin or Tenant User, I want to be told when an existing network resource cannot be edited in place and shown a separately reviewable replacement proposal where supported, so that I can decide what happens to the old resource. [Clarify: R14.Q1]
 - As a Tenant Admin or Tenant User, I want to return in a later session and see a resource's ID, actual state, available reasons and timing, and remaining unknowns, so that I can distinguish request acceptance from readiness or failure. [Clarify: R8.Q3, R14.Q3]
-- As a Tenant Admin or Tenant User, I want a partially failed multi-resource request to show which steps succeeded, which failed, and which resources remain, so that I can decide what to do next without an automatic rollback. [Clarify: R5.Q2]
+- As a Tenant Admin or Tenant User, I want a multi-resource request to stop after a failed step without making further changes and show which steps succeeded, which failed, and which resources remain, so that I can decide what to do next without an automatic rollback. [Clarify: R5.Q2]
 - As a Tenant Admin or Tenant User, I want an uncertain create result checked and reported as unknown if it cannot be established, so that an automatic retry does not create duplicate infrastructure. [Clarify: R7.Q2]
 
 ## Dependencies
 
-- **Existing OSAC capabilities:** Each selected journey depends on the public Fulfillment API applying caller authorization, catalog policy, and validation, and on working networking, virtualization, cluster, bare-metal, or storage providers. Each stage must validate its prerequisites and actual outcome, not merely the availability of an operation. [Clarify: R2.Q2, R11.Q3]
-- **Volume integration:** The OSAC Volume journey depends on validating the intended user workflow and its interaction with existing CSI/PVC consumers. [Clarify: R4.Q1, R9.Q2]
+- **Existing OSAC capabilities:** Each selected journey depends on OSAC already offering the relevant actions to authorized users and on the corresponding infrastructure capability being available. A stage is complete only when users can satisfy its prerequisites and verify actual outcomes, not merely discover an operation. [Clarify: R2.Q2, R11.Q3]
+- **Volume integration:** The OSAC Volume journey depends on a working volume lifecycle and a clear user path for using Volumes alongside existing storage workflows. [Clarify: R4.Q1, R9.Q2]
 - **Identity and private connectivity:** Supported hosts depend on a reachable OSAC endpoint, certificate trust, and the existing OSAC/Keycloak sign-in and permissions path. Host-specific instructions may point to the host's official documentation where that behavior is maintained. [Clarify: R3.Q1, R13.Q1, R13.Q3]
 
 ---
 
 ## Provenance
 
-Authored: draft @ prd 0.11.3 - 2bd6607, workspace OSAC-4388-deployment-mcp-poc @ 199459d7b (dirty)
+Authored: respond @ prd 0.11.3 - 2bd6607, workspace OSAC-4388-deployment-mcp-poc @ 199459d7b (dirty)
+Phases: draft, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"199459d7b (dirty)","source_repo_branch":"OSAC-4388-deployment-mcp-poc","commits_behind_main":0,"commits_ahead_main":1228,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"199459d7b (dirty)","source_repo_branch":"OSAC-4388-deployment-mcp-poc","commits_behind_main":0,"commits_ahead_main":1228,"main_ref":"main","phases":["draft","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
