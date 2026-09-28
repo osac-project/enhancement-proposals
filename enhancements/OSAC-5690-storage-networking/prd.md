@@ -28,7 +28,7 @@ see-also:
 | Term | Definition |
 |------|-----------|
 | **VAST VIP** | A Virtual IP address exposed by the VAST storage cluster that workloads connect to for block storage data-plane operations. VIPs are managed by VAST and are located outside the managed network fabric gateway. |
-| **Storage VIP CIDR** | A dedicated IP range reserved at OSAC installation time for VAST VIP addresses. This CIDR must not overlap with any tenant VirtualNetwork CIDR and must route outside the fabric gateway. |
+| **Storage CIDR** | A dedicated IP range reserved at OSAC installation time for VAST VIP addresses. This CIDR must not overlap with any tenant VirtualNetwork CIDR and must route outside the fabric gateway. |
 | **Per-Tenant VIP Pool** | Each tenant receives a dedicated VAST VIP pool. Storage tenant isolation at the network level is not required for the first phase, but per-tenant VIP pools exist on the VAST side. |
 
 ## Problem Statement
@@ -69,10 +69,10 @@ the first phase.
   for use by the VAST CSI Driver.
 - Network connectivity from BMaaS hosts to VAST block storage (network path
   only; tenant-side storage configuration remains manual).
-- A dedicated Storage VIP CIDR configured at OSAC installation time, reserved
+- A dedicated Storage CIDR configured at OSAC installation time, reserved
   for VAST VIP addresses.
 - Validation preventing tenants from creating VirtualNetworks whose CIDRs
-  overlap with the Storage VIP CIDR, ensuring storage-bound packets always
+  overlap with the Storage CIDR, ensuring storage-bound packets always
   route externally.
 - Ensuring VirtualNetworks that host storage-consuming workloads have a
   NATGateway with adequate NAT capacity for storage traffic.
@@ -112,12 +112,12 @@ the first phase.
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to configure a Storage VIP CIDR at
+- As a Cloud Infrastructure Admin, I want to configure a Storage CIDR at
   OSAC installation time so that the platform knows which IP range is reserved
   for VAST VIPs and can prevent conflicts with tenant networks.
 
 - As a Cloud Infrastructure Admin, I want the platform to reject
-  VirtualNetwork creation requests whose CIDR overlaps with the Storage VIP
+  VirtualNetwork creation requests whose CIDR overlaps with the Storage
   CIDR so that storage-bound traffic always routes externally and never gets
   trapped in the fabric.
 
@@ -128,7 +128,7 @@ the first phase.
   without requiring the full tenant-isolated storage network design.
 
 - As a Cloud Provider Admin, I want the default VirtualNetwork CIDR configured
-  in NetworkClass to be validated against the Storage VIP CIDR so that newly
+  in NetworkClass to be validated against the Storage CIDR so that newly
   onboarded tenants do not receive a default network that conflicts with
   storage.
 
@@ -150,7 +150,7 @@ the first phase.
 - A single NATGateway ExternalIP per VirtualNetwork provides enough NAT
   capacity for the expected storage connection count in the first phase scope.
 
-- The Storage VIP CIDR is a single contiguous range configured once at
+- The Storage CIDR is a single contiguous range configured once at
   installation and does not change during the deployment's lifetime.
 
 - All tenant VirtualNetworks that host workloads requiring storage must have a
@@ -176,7 +176,7 @@ the first phase.
   PRD addresses the network reachability prerequisite that OSAC-1332 assumes.
 
 - **Tenant Onboarding (Default Networking — OSAC-1433):** The default
-  networking onboarding flow must validate the Storage VIP CIDR constraint and
+  networking onboarding flow must validate the Storage CIDR constraint and
   ensure NATGateway provisioning.
 
 - **OSAC-5073 (Shared VAST Global VIP Pool):** This feature implements the

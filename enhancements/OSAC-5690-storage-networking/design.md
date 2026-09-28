@@ -26,7 +26,7 @@ superseded-by:
 Provide network connectivity from OSAC tenant workloads (VMaaS, CaaS, BMaaS)
 to the VAST storage cluster — located outside the managed network fabric
 gateway — using SNAT via the existing NATGateway primitive. Introduce a
-platform-level Storage VIP CIDR reservation that prevents tenant
+platform-level Storage CIDR reservation that prevents tenant
 VirtualNetwork CIDRs from overlapping with VAST VIP addresses, ensuring
 storage-bound traffic always routes externally rather than being trapped in
 the fabric.
@@ -64,7 +64,7 @@ tenant isolation is not required for the first phase.
 
 - Reuse existing networking primitives (NATGateway, ExternalIP, NetworkClass).
   No new CRDs or controllers for storage networking.
-- Enforce Storage VIP CIDR reservation via validation in the fulfillment-service,
+- Enforce Storage CIDR reservation via validation in the fulfillment-service,
   preventing VirtualNetwork CIDR overlap at creation time.
 - Ensure the default tenant onboarding flow produces a storage-ready network
   configuration (NATGateway with external connectivity to VAST).
@@ -219,7 +219,7 @@ prerequisite configured at deployment time — the management cluster's
 network is admin-controlled, not tenant-controlled.
 
 The VM guest mount path depends on the tenant VN's NATGateway, which is the
-path that the Storage VIP CIDR reservation in this design protects.
+path that the Storage CIDR reservation in this design protects.
 
 ### CaaS Storage
 
@@ -327,7 +327,7 @@ BM host (tenant VN)
 
 CaaS, BMaaS, and VMaaS guest-mount paths all share the same data-plane
 pattern: tenant VirtualNetwork → NATGateway (SNAT) → upstream routing →
-VAST. The Storage VIP CIDR reservation in this design prevents tenant VN
+VAST. The Storage CIDR reservation in this design prevents tenant VN
 CIDRs from overlapping with VAST VIPs, ensuring this path works by
 construction.
 
@@ -335,7 +335,7 @@ VMaaS CSI-based storage (block and NFS via CSI) takes a different path
 through the management cluster's network. The management cluster's route to
 VAST is an infrastructure prerequisite — the admin ensures this during
 deployment, and the management network's CIDR is admin-controlled (not
-subject to tenant VN creation). The Storage VIP CIDR reservation does not
+subject to tenant VN creation). The Storage CIDR reservation does not
 directly protect this path, but since the management network is not
 tenant-managed, there is no risk of accidental overlap.
 
@@ -345,17 +345,17 @@ tenant-managed, there is no risk of accidental overlap.
 
 The design introduces three changes to the existing platform:
 
-1. **Storage VIP CIDR on NetworkClass** — a new field on the NetworkClass
+1. **Storage CIDR on NetworkClass** — a new field on the NetworkClass
    configuration that declares the IP range reserved for VAST VIP addresses.
    This is set once at installation time.
 
 2. **VirtualNetwork CIDR validation** — the fulfillment-service rejects
    VirtualNetwork creation requests whose IPv4 CIDR overlaps with the Storage
-   VIP CIDR. This prevents tenants from creating networks that would trap
+   CIDR. This prevents tenants from creating networks that would trap
    storage-bound traffic in the fabric.
 
 3. **Default networking validation** — the NetworkClass default VN CIDR is
-   validated against the Storage VIP CIDR at configuration time, ensuring
+   validated against the Storage CIDR at configuration time, ensuring
    auto-provisioned tenant networks are storage-ready.
 
 No new controllers, CRDs, or networking resources are introduced. The existing
@@ -368,11 +368,11 @@ All components live in the `osac` monorepo.
 
 | Component | Changes |
 |---|---|
-| **fulfillment-service** | Add `storage_vip_cidrs` field to NetworkClass. Add CIDR overlap validation to VirtualNetwork creation. Validate NetworkClass default VN CIDR against storage VIP CIDRs. |
-| **proto** | Add `storage_vip_cidrs` to the NetworkClass proto definition. |
+| **fulfillment-service** | Add `storage_cidrs` field to NetworkClass. Add CIDR overlap validation to VirtualNetwork creation. Validate NetworkClass default VN CIDR against storage CIDRs. |
+| **proto** | Add `storage_cidrs` to the NetworkClass proto definition. |
 | **osac-operator** | No changes. NATGateway already provides SNAT for all egress from a VirtualNetwork. |
 | **osac-aap** | No changes. Storage provisioning playbooks already configure VAST CSI with VIP pool information from the tenant hub Secret. |
-| **osac-installer** | Update NetworkClass manifests to include the Storage VIP CIDR for the deployment. |
+| **osac-installer** | Update NetworkClass manifests to include the Storage CIDR for the deployment. |
 
 ### Workflow Description
 
@@ -404,12 +404,12 @@ reverse NAT path back to the workload.
 
 #### Personas
 
-- **Cloud Infrastructure Admin:** Configures the Storage VIP CIDR on
+- **Cloud Infrastructure Admin:** Configures the Storage CIDR on
   NetworkClass at installation time. Provisions ExternalIPPools and
   ExternalIPs for NATGateways.
 - **Cloud Provider Admin:** Validates that the deployment's default VN CIDR
-  does not conflict with the Storage VIP CIDR. Coordinates with the VAST
-  administrator to ensure VIP pool addresses fall within the Storage VIP CIDR.
+  does not conflict with the Storage CIDR. Coordinates with the VAST
+  administrator to ensure VIP pool addresses fall within the Storage CIDR.
 - **Tenant Admin / Tenant User:** Creates VirtualNetworks (or uses defaults).
   Receives a clear error if the chosen CIDR overlaps with the storage range.
   CaaS and VMaaS storage works automatically via VAST CSI once the network is
@@ -419,9 +419,17 @@ reverse NAT path back to the workload.
 
 #### Prerequisites
 
-1. NetworkClass is configured with the Storage VIP CIDR.
-2. The VAST administrator has allocated per-tenant VIP pools with addresses
-   drawn from the Storage VIP CIDR.
+1. NetworkClass is configured with the Storage CIDR. The value must
+   cover the range used by VAST for data-plane VIP pools — this is the
+   `VAST_VIP_POOL_SUPERNET` configured on the storage-operations
+   InstanceGroup (e.g., `10.100.0.0/22`). If VIP pools are pre-created by
+   the cloud admin rather than carved from the supernet, `storage_cidrs`
+   must cover those pool ranges as well.
+2. The VAST management endpoint (VMS API) is reachable from the hub cluster
+   over HTTPS. This is a control-plane path used by the StorageReconciler
+   and AAP to create tenants, VIP pools, views, and credentials — it is
+   separate from the data-plane VIP addresses and is not affected by tenant
+   VirtualNetwork configuration.
 3. Tenant onboarding has completed, creating a default VirtualNetwork,
    Subnet, and NATGateway with an ExternalIP.
 4. The ExternalIP used by the NATGateway is routable to the VAST VIP range
@@ -445,7 +453,7 @@ is available, but the tenant must install and configure the VAST CSI driver
 
 ### API Extensions
 
-#### NetworkClass: `storage_vip_cidrs` Field
+#### NetworkClass: `storage_cidrs` Field
 
 A new repeated field on the NetworkClass configuration:
 
@@ -453,11 +461,11 @@ A new repeated field on the NetworkClass configuration:
 message NetworkClassConfig {
   // ... existing fields ...
 
-  // CIDR ranges reserved for storage backend VIP addresses.
+  // CIDR ranges reserved for storage backend addresses.
   // VirtualNetwork creation is rejected if the VN's IPv4 CIDR
   // overlaps with any of these ranges.
   // Configured at installation time. Immutable after initial set.
-  repeated string storage_vip_cidrs = N;
+  repeated string storage_cidrs = N;
 }
 ```
 
@@ -477,12 +485,12 @@ The fulfillment-service's VirtualNetwork creation handler adds an overlap
 check:
 
 ```
-For each CIDR in NetworkClass.storage_vip_cidrs:
+For each CIDR in NetworkClass.storage_cidrs:
   If VirtualNetwork.ipv4_cidr overlaps with CIDR:
     Reject with INVALID_ARGUMENT:
-      "VirtualNetwork CIDR {vn_cidr} overlaps with storage VIP range
+      "VirtualNetwork CIDR {vn_cidr} overlaps with storage range
        {storage_cidr}. Choose a CIDR that does not overlap with
-       storage VIP ranges."
+       storage ranges."
 ```
 
 This check runs alongside existing VN validation (CIDR format, immutability).
@@ -492,7 +500,7 @@ The error message names both CIDRs so the tenant can make an informed choice.
 
 When a NetworkClass is created or updated, the fulfillment-service validates
 that `defaults.virtual_network_cidr` does not overlap with any entry in
-`storage_vip_cidrs`. This prevents the auto-provisioned default VN from
+`storage_cidrs`. This prevents the auto-provisioned default VN from
 conflicting with storage.
 
 No existing resources are modified by this enhancement. The new field is
@@ -502,7 +510,7 @@ VirtualNetwork creation.
 ## UX Alignment
 
 No `@temp-api` file exists for NetworkClass or VirtualNetwork in osac-ux.
-Storage VIP CIDR configuration is an admin-level installation concern with
+Storage CIDR configuration is an admin-level installation concern with
 no UI surface in the first phase.
 
 ### Implementation Details/Notes/Constraints
@@ -512,14 +520,14 @@ no UI surface in the first phase.
 The overlap check is a standard prefix containment test: two CIDRs overlap if
 either contains the other's first address or last address. Go's `net.IPNet`
 provides `Contains()` for this. The check is O(n) in the number of
-`storage_vip_cidrs` entries, which is expected to be 1–3.
+`storage_cidrs` entries, which is expected to be 1–3.
 
 #### Routing Guarantee
 
-The Storage VIP CIDR reservation ensures correctness by construction:
+The Storage CIDR reservation ensures correctness by construction:
 
-1. The VAST VIP addresses are within the Storage VIP CIDR.
-2. No tenant VirtualNetwork CIDR overlaps with the Storage VIP CIDR.
+1. The VAST VIP addresses are within the Storage CIDR.
+2. No tenant VirtualNetwork CIDR overlaps with the Storage CIDR.
 3. Therefore, when a workload sends a packet to a VAST VIP, the destination
    does not match the VN's local CIDR.
 4. The fabric treats it as external traffic and routes it through the
@@ -564,7 +572,7 @@ The storage onboarding flow (OSAC-1332) installs the VAST CSI driver on
 tenant clusters with connection parameters from the hub Secret
 (`vast-tenant-config-<tenant>`). The hub Secret contains `vip_pool_name`
 or `vip_pool_fqdn` — these point to the tenant's VIP pool whose addresses
-are within the Storage VIP CIDR.
+are within the Storage CIDR.
 
 No changes to the storage onboarding flow are required. The CSI driver
 connects to the VAST VIP, and the network path (NATGateway → external
@@ -580,7 +588,7 @@ This design inherits the existing security model without changes:
   and projected to tenant clusters via AAP. This flow is unchanged.
 - **No DNAT.** VAST does not initiate connections to tenant workloads. All
   storage connections are outbound (client-to-server), using SNAT only.
-- **Storage VIP CIDR.** The CIDR is configured by the Cloud Infrastructure
+- **Storage CIDR.** The CIDR is configured by the Cloud Infrastructure
   Admin at installation time and is immutable. Tenants cannot modify or
   bypass it.
 
@@ -589,14 +597,14 @@ This design inherits the existing security model without changes:
 | Failure Mode | Behavior | Recovery | User Observes |
 |---|---|---|---|
 | NATGateway not provisioned on VN | No external connectivity from VN. Storage unreachable. | Default tenant onboarding creates NATGateway. If missing, admin provisions one manually. | Connection timeouts on PVC mount. |
-| NATGateway ExternalIP not routable to VAST | SNAT succeeds but packets don't reach VAST. | Admin fixes upstream routing to ensure ExternalIP pool can reach the Storage VIP CIDR. | Connection timeouts on PVC mount. |
-| Storage VIP CIDR not configured on NetworkClass | No overlap validation. Tenants can create VNs that conflict with VAST VIPs. | Admin configures the field before tenant onboarding. VNs created before configuration are not retroactively validated. | Storage may or may not work depending on whether the tenant VN CIDR happens to overlap. |
+| NATGateway ExternalIP not routable to VAST | SNAT succeeds but packets don't reach VAST. | Admin fixes upstream routing to ensure ExternalIP pool can reach the Storage CIDR. | Connection timeouts on PVC mount. |
+| Storage CIDR not configured on NetworkClass | No overlap validation. Tenants can create VNs that conflict with VAST VIPs. | Admin configures the field before tenant onboarding. VNs created before configuration are not retroactively validated. | Storage may or may not work depending on whether the tenant VN CIDR happens to overlap. |
 | NAT port exhaustion | New NVMe-TCP / NFS sessions fail. Existing sessions continue. | Reduce concurrent PV count, or (future) expand NAT pool. | PVC mount hangs for new volumes. Existing volumes continue working. |
 | VAST cluster unreachable | Storage connections time out. CSI operations fail. | Restore VAST cluster or upstream network path. | PVC provisioning fails. Existing mounted volumes may hang. |
 
 ### RBAC / Tenancy
 
-No RBAC or tenancy changes required. The Storage VIP CIDR is a
+No RBAC or tenancy changes required. The Storage CIDR is a
 platform-level (NetworkClass) configuration managed by the Cloud
 Infrastructure Admin. VirtualNetwork CIDR validation is enforced by the
 fulfillment-service for all tenants uniformly. Storage tenant isolation is
@@ -612,16 +620,16 @@ provide visibility into the NAT path health.
 Operators debugging storage connectivity issues should check:
 1. VirtualNetwork has a NATGateway in Ready state.
 2. NATGateway's ExternalIP is Allocated and routable.
-3. Upstream routing allows ExternalIP → Storage VIP CIDR.
+3. Upstream routing allows ExternalIP → Storage CIDR.
 4. VAST cluster is healthy and VIP pool is serving.
 
 ### Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
-| Admin forgets to configure Storage VIP CIDR before tenant onboarding | Document as a required installation step. Future: add a preflight check that warns if storage backends are registered but no Storage VIP CIDR is configured. |
-| Existing VNs (created before Storage VIP CIDR is configured) have overlapping CIDRs | The validation applies only to new VN creation. Existing VNs are not retroactively checked. Document that the Storage VIP CIDR must be configured before the first tenant is onboarded. |
-| VAST VIP addresses change after deployment | The Storage VIP CIDR is a superset range, not the exact VIP list. As long as new VIPs are allocated within the same CIDR, no platform changes are needed. If the range changes entirely, a new NetworkClass with updated storage_vip_cidrs is required. |
+| Admin forgets to configure Storage CIDR before tenant onboarding | Document as a required installation step. Future: add a preflight check that warns if storage backends are registered but no Storage CIDR is configured. |
+| Existing VNs (created before Storage CIDR is configured) have overlapping CIDRs | The validation applies only to new VN creation. Existing VNs are not retroactively checked. Document that the Storage CIDR must be configured before the first tenant is onboarded. |
+| VAST VIP addresses change after deployment | The Storage CIDR is a superset range, not the exact VIP list. As long as new VIPs are allocated within the same CIDR, no platform changes are needed. If the range changes entirely, a new NetworkClass with updated storage_cidrs is required. |
 | Single ExternalIP per NATGateway limits NAT capacity | Sufficient for the first phase scale. Monitor connection counts. Future: extend NATGateway to support multiple ExternalIPs. |
 
 ### Drawbacks
@@ -631,7 +639,7 @@ latency compared to direct-attach or VLAN-based storage paths, and NAT adds a
 throughput constraint. For the first phase this is acceptable — performance-critical
 storage networking (GPU-to-storage, RDMA) is explicitly deferred.
 
-The Storage VIP CIDR is a blunt instrument: it reserves an entire range from
+The Storage CIDR is a blunt instrument: it reserves an entire range from
 all tenants, even those that don't use storage. For the first phase with
 single-digit tenants this is not a problem, but a more granular approach may
 be needed at scale.
@@ -695,22 +703,22 @@ None. All questions resolved during drafting.
 ### Unit Tests
 
 - VirtualNetwork CIDR overlap validation: reject creation when VN CIDR
-  overlaps with any entry in `storage_vip_cidrs`. Accept when no overlap.
+  overlaps with any entry in `storage_cidrs`. Accept when no overlap.
   Cover partial overlap, containment in both directions, adjacent
-  non-overlapping ranges, and empty `storage_vip_cidrs`.
+  non-overlapping ranges, and empty `storage_cidrs`.
 - NetworkClass validation: reject default VN CIDR that overlaps with
-  `storage_vip_cidrs`. Accept non-overlapping defaults.
-- `storage_vip_cidrs` field validation: reject malformed CIDRs, reject
+  `storage_cidrs`. Accept non-overlapping defaults.
+- `storage_cidrs` field validation: reject malformed CIDRs, reject
   overlapping entries within the list, accept valid non-overlapping CIDRs.
-- Immutability: reject attempts to modify `storage_vip_cidrs` after initial
+- Immutability: reject attempts to modify `storage_cidrs` after initial
   configuration.
 
 ### Integration Tests
 
-- End-to-end tenant onboarding with Storage VIP CIDR configured: verify
+- End-to-end tenant onboarding with Storage CIDR configured: verify
   default VN is created with non-overlapping CIDR, NATGateway is provisioned,
   and the network path to an external endpoint is functional.
-- VirtualNetwork creation rejection: configure Storage VIP CIDR, attempt
+- VirtualNetwork creation rejection: configure Storage CIDR, attempt
   to create a VN with overlapping CIDR, verify rejection with descriptive
   error message.
 
@@ -729,15 +737,15 @@ N/A. OSAC is in active development and has not been released to customers.
 
 ## Upgrade / Downgrade Strategy
 
-Pre-GA change. The `storage_vip_cidrs` field is additive to NetworkClass.
-Existing deployments upgrading to this version have no `storage_vip_cidrs`
+Pre-GA change. The `storage_cidrs` field is additive to NetworkClass.
+Existing deployments upgrading to this version have no `storage_cidrs`
 configured, which means no overlap validation is enforced — the behavior is
 identical to before the change. The admin configures the field as part of
 the first phase deployment.
 
 ## Version Skew Strategy
 
-The `storage_vip_cidrs` validation is entirely within the fulfillment-service.
+The `storage_cidrs` validation is entirely within the fulfillment-service.
 No operator or AAP changes are required. The fulfillment-service can be
 deployed independently. If the field is configured in the fulfillment-service
 but the VAST cluster is not yet set up, the only effect is that tenants
@@ -747,11 +755,11 @@ cannot create VNs overlapping with the reserved range — a safe precondition.
 
 To diagnose storage connectivity issues:
 
-1. Verify NetworkClass has `storage_vip_cidrs` configured:
+1. Verify NetworkClass has `storage_cidrs` configured:
    check via the fulfillment-service admin API.
 
 2. Verify the tenant's VirtualNetwork CIDR does not overlap:
-   compare VN CIDR against storage VIP CIDRs.
+   compare VN CIDR against storage CIDRs.
 
 3. Verify NATGateway is Ready:
    `kubectl get natgateway -n <tenant-ns>` — check Phase=Ready.
