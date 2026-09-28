@@ -419,21 +419,25 @@ reverse NAT path back to the workload.
 
 #### Prerequisites
 
-1. NetworkClass is configured with the Storage CIDR. The value must
-   cover the range used by VAST for data-plane VIP pools — this is the
-   `VAST_VIP_POOL_SUPERNET` configured on the storage-operations
-   InstanceGroup (e.g., `10.100.0.0/22`). If VIP pools are pre-created by
-   the cloud admin rather than carved from the supernet, `storage_cidrs`
-   must cover those pool ranges as well.
-2. The VAST management endpoint (VMS API) is reachable from the hub cluster
-   over HTTPS. This is a control-plane path used by the StorageReconciler
-   and AAP to create tenants, VIP pools, views, and credentials — it is
-   separate from the data-plane VIP addresses and is not affected by tenant
-   VirtualNetwork configuration.
-3. Tenant onboarding has completed, creating a default VirtualNetwork,
+1. NetworkClass is configured with the Storage CIDR. The value must cover
+   all VAST IP addresses that tenant workloads or CSI node plugins may
+   connect to:
+   - The **data-plane VIP pool range** — this is the
+     `VAST_VIP_POOL_SUPERNET` configured on the storage-operations
+     InstanceGroup (e.g., `10.100.0.0/22`). If VIP pools are pre-created
+     by the cloud admin rather than carved from the supernet,
+     `storage_cidrs` must cover those pool ranges as well.
+   - The **VAST management endpoint** (VMS API) — if its IP is routable
+     from tenant networks. The CSI node plugin on each target cluster
+     contacts the VMS API (`X_CSI_VMS_HOST`) for volume publish/unpublish
+     operations. If the management endpoint is on the same data network as
+     the VIP pools, the supernet already covers it. If it is on a separate
+     management network that is not routable from tenant VNs, it does not
+     need to be included.
+2. Tenant onboarding has completed, creating a default VirtualNetwork,
    Subnet, and NATGateway with an ExternalIP.
-4. The ExternalIP used by the NATGateway is routable to the VAST VIP range
-   (via the datacenter's upstream routing).
+3. The ExternalIP used by the NATGateway is routable to the VAST addresses
+   covered by the Storage CIDR (via the datacenter's upstream routing).
 
 #### VMaaS and CaaS Storage Access
 
