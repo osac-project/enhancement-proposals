@@ -14,7 +14,7 @@ prd:
 
 ## Summary
 
-The design adds a first-class, tenant-scoped `VolumeAttachment` resource for BMaaS, VMaaS, and CaaS storage workflows. For VMaaS, the resource is declarative: the API records the desired attachment, the operator updates the VM provisioning input, AAP creates a PVC and references it from the KubeVirt VM, and the normal OSAC CSI flow binds that PVC to the already-existing OSAC Volume. BMaaS uses the operator's corresponding compute provisioning path; CaaS continues through standard PVC/CSI. The design provides public gRPC, REST, CLI, and UI behavior without exposing vendor-specific APIs or secrets.
+The design adds a first-class, tenant-scoped `VolumeAttachment` resource for BMaaS, VMaaS, and CaaS storage workflows. For VMaaS, the resource is declarative: the API records the desired attachment, the operator updates the VM provisioning input, AAP creates a PVC and references it from the KubeVirt VM, and the normal OSAC CSI flow binds that PVC to the already-existing OSAC Volume. BMaaS uses the operator's corresponding compute provisioning path; CaaS continues through standard PVC/CSI. The canonical project annotation for an existing OSAC Volume on a PVC is `osac.openshift.io/volume-id`. The design provides public gRPC, REST, CLI, and UI behavior without exposing vendor-specific APIs or secrets.
 
 ## Motivation
 
@@ -93,9 +93,9 @@ OSAC already uses a first-class `ExternalIPAttachment` resource for immutable bi
 
 ### 4.1 Architecture
 
-`VolumeAttachment` is a public resource generated from private source protos. The fulfillment service is the API, authorization, persistence, and status authority. It validates the volume, target, tenancy, access mode, and uniqueness constraints, persists the request in `PENDING`, and reconciles it to an operator-side attachment intent. For VMaaS, `osac-operator` adds the attachment intent to the ComputeInstance provisioning input; AAP creates the PVC and adds the PVC to the KubeVirt VM definition. The PVC carries `osac.volume.id`, allowing the CSI driver to bind the existing OSAC Volume instead of provisioning a new one. BMaaS uses its operator/AAP compute provisioning path to consume the same attachment intent. A deletion request removes the attachment intent; AAP removes the PVC/VM disk reference, and CSI performs the normal unpublish path where applicable.
+`VolumeAttachment` is a public resource generated from private source protos. The fulfillment service is the API, authorization, persistence, and status authority. It validates the volume, target, tenancy, access mode, and uniqueness constraints, persists the request in `PENDING`, and reconciles it to an operator-side attachment intent. For VMaaS, `osac-operator` adds the attachment intent to the ComputeInstance provisioning input; AAP creates the PVC and adds the PVC to the KubeVirt VM definition. The PVC carries `osac.openshift.io/volume-id`, allowing the CSI driver to bind the existing OSAC Volume instead of provisioning a new one. BMaaS uses its operator/AAP compute provisioning path to consume the same attachment intent. A deletion request removes the attachment intent; AAP removes the PVC/VM disk reference, and CSI performs the normal unpublish path where applicable.
 
-The CSI driver remains the CaaS and VMaaS data-plane entry point. For VMaaS it receives a normal PVC/CSI request, detects `metadata.annotations["osac.volume.id"]`, and binds that PVC to the existing OSAC Volume by creating a PersistentVolume with the OSAC volume ID and backend-specific context. It must not call CreateVolume for this path. `ControllerPublishVolume` and `ControllerUnpublishVolume` then use the existing vendor CSI proxy behavior. CaaS continues to use its regular PVC/CSI workflow. Kubernetes sidecar retries remain safe because the PVC/PV and VolumeAttachment relationship are keyed by the OSAC volume ID and target.
+The CSI driver remains the CaaS and VMaaS data-plane entry point. For VMaaS it receives a normal PVC/CSI request, detects `metadata.annotations["osac.openshift.io/volume-id"]`, and binds that PVC to the existing OSAC Volume by creating a PersistentVolume with the OSAC volume ID and backend-specific context. It must not call CreateVolume for this path. `ControllerPublishVolume` and `ControllerUnpublishVolume` then use the existing vendor CSI proxy behavior. CaaS continues to use its regular PVC/CSI workflow. Kubernetes sidecar retries remain safe because the PVC/PV and VolumeAttachment relationship are keyed by the OSAC volume ID and target.
 
 ```mermaid
 sequenceDiagram
@@ -133,7 +133,7 @@ Responsibilities:
 
 - **Fulfillment-service:** public API, validation, tenant authorization, persistence, deletion guards, and feedback/status synchronization.
 - **OSAC operator:** owns attachment intent, ComputeInstance/AAP input, BareMetalInstance host identity and host-object/attach operations, target cleanup, and feedback status.
-- **OSAC CSI driver:** handles the normal PVC/PV/CSI path. It recognizes `osac.volume.id`, binds an existing OSAC Volume without CreateVolume, and preserves vendor routing for publish/unpublish.
+- **OSAC CSI driver:** handles the normal PVC/PV/CSI path. It recognizes `osac.openshift.io/volume-id`, binds an existing OSAC Volume without CreateVolume, and preserves vendor routing for publish/unpublish.
 - **CLI/UI:** create/delete or attach/detach through the public resource API, display status conditions, and do not expose vendor details.
 
 Lifecycle sequence: create assigns tenant metadata and the Volume owner-reference, persists `PENDING`, and creates the operator attachment intent. The operator adds its finalizer, updates the ComputeInstance provisioning input, and waits for AAP, PVC, KubeVirt, and CSI status. Delete changes the relationship to `DELETING`; the operator removes the PVC/VM disk intent and waits for normal CSI unpublish before removing its finalizer. Target controllers use the same target deletion guard and cleanup handshake. A terminal detach failure retains the operator finalizer and status for recovery.
@@ -144,15 +144,15 @@ For an existing VMaaS `ComputeInstance`, the user attaches an already-created OS
 
 1. `fulfillment-service` validates that the Volume is available, the ComputeInstance exists in the same tenant, and the relationship is not already present.
 2. The service creates the public `VolumeAttachment` in `PENDING` and creates the operator-side attachment intent. The intent references the Volume ID, ComputeInstance ID, access mode, and desired read-only setting.
-3. `osac-operator` reconciles the intent into the ComputeInstance provisioning input. The input contains the existing OSAC Volume ID and a deterministic PVC name/attachment ID, plus an annotation `osac.openshift.io/volume-id: <osac-volume-id>`.
+3. `osac-operator` reconciles the intent into the ComputeInstance provisioning input. The input contains the existing OSAC Volume ID and a deterministic PVC name/attachment ID, plus the canonical PVC annotation `osac.openshift.io/volume-id: <osac-volume-id>`.
 4. AAP's VM provisioning playbook creates the PVC in the VM tenant namespace and adds that PVC to the KubeVirt VM's disk/volume definition. The PVC is not allowed to request dynamic provisioning; it is a claim for the already-existing OSAC Volume.
-5. The OSAC CSI driver sees the PVC annotation `osac.volume.id: <osac-volume-id>`. Its CreateVolume path resolves the existing OSAC Volume, creates a PersistentVolume whose CSI source contains the OSAC volume ID and backend-specific volume context, and binds the PV to the PVC without provisioning a new backend volume.
+5. The OSAC CSI driver sees the PVC annotation `osac.openshift.io/volume-id: <osac-volume-id>`. Its CreateVolume path resolves the existing OSAC Volume, creates a PersistentVolume whose CSI source contains the OSAC volume ID and backend-specific volume context, and binds the PV to the PVC without provisioning a new backend volume.
 6. KubeVirt causes the normal CSI ControllerPublish/NodeStage/NodePublish sequence. The CSI driver uses the existing backend/vendor routing, including `AlreadyExists`, `NotFound`, `Unimplemented`, and no-attach behavior.
 7. Operator feedback observes the PVC, PV, VM disk, and CSI readiness, then updates the operator intent and fulfillment `VolumeAttachment` to `READY` or `FAILED`.
 
 The reverse path removes the PVC reference from the VM provisioning input, lets AAP remove the PVC/VM disk relationship, and waits for normal CSI unpublish before the operator reports detach complete. The OSAC Volume itself is not deleted by attachment removal. Boot-disk and additional-disk attachments use the same flow; the only difference is which VM disk list receives the PVC reference.
 
-The PVC annotation is the bridge between the declarative VMaaS workflow and the existing CSI driver. `osac.volume.id` is authoritative for this pre-existing-volume path; a PVC with that annotation must not invoke fulfillment `CreateVolume`. A missing or invalid annotation follows the existing dynamic-provisioning behavior only for ordinary CaaS PVCs, not for an OSAC attachment intent.
+The PVC annotation is the bridge between the declarative VMaaS workflow and the existing CSI driver. `osac.openshift.io/volume-id` is authoritative for this pre-existing-volume path; a PVC with that annotation must not invoke fulfillment `CreateVolume`. A missing or invalid annotation follows the existing dynamic-provisioning behavior only for ordinary CaaS PVCs, not for an OSAC attachment intent.
 
 ### 4.1.2 BMaaS Semi-Automatic Attachment Flow
 
@@ -432,7 +432,7 @@ Add authorized Volume and ComputeInstance attach/detach actions and status rende
 
 **Requirements:** FR-3, FR-5, FR-7, FR-8, FR-10
 
-Change the OSAC CSI driver to recognize `osac.volume.id` on VMaaS PVCs, create/bind a PersistentVolume for the pre-existing OSAC Volume without invoking fulfillment CreateVolume, and preserve normal ControllerPublish/ControllerUnpublish, legacy volume-context/vendor-ID routing, and no-op backend behavior where applicable; see sections 4.1.1, 4.2, and 4.6.
+Change the OSAC CSI driver to recognize `osac.openshift.io/volume-id` on VMaaS PVCs, create/bind a PersistentVolume for the pre-existing OSAC Volume without invoking fulfillment CreateVolume, and preserve normal ControllerPublish/ControllerUnpublish, legacy volume-context/vendor-ID routing, and no-op backend behavior where applicable; see sections 4.1.1, 4.2, and 4.6.
 
 ### IC-6: Lifecycle deletion protection
 

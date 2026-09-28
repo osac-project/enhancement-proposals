@@ -137,7 +137,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 ##### Expected Results
 
 - The boot and additional disk relationships reference the same VM target and distinct Volumes.
-- AAP creates PVCs with `osac.volume.id=vol-123` and `osac.volume.id=vol-456`, and references both PVCs from the KubeVirt VM.
+- AAP creates PVCs with `osac.openshift.io/volume-id=vol-123` and `osac.openshift.io/volume-id=vol-456`, and references both PVCs from the KubeVirt VM.
 - CSI creates/binds PVs for the existing OSAC Volumes without calling fulfillment `CreateVolume`.
 - Each relationship reaches `READY` only after PVC/PV binding, VM disk wiring, and CSI publish complete, or exposes a concrete terminal error.
 
