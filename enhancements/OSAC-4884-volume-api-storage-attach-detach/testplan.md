@@ -22,7 +22,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ### FR-1: Equivalent public gRPC, REST, CLI, and UI behavior
 
-#### TC-FR1-01 [AC-FR1-01] [Story: Cloud Provider Admin; Tenant Admin/User]: Create and inspect an attachment through public gRPC and REST
+#### TC-FR1-01 [AC-FR1-01] [Story: Cloud Provider Admin; Tenant Admin/User]: Mutate ComputeInstance and inspect attachment status through public gRPC and REST
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -31,22 +31,22 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 ##### Preconditions
 
 - A tenant owns an available Volume and an eligible ComputeInstance.
-- The public VolumeAttachment API is enabled.
+- ComputeInstance Update and status APIs are enabled.
 
 ##### Steps
 
-1. Create `vol-123` to target `ci-456` through public gRPC using `spec.volume.id = "vol-123"`, `spec.compute_instance.id = "ci-456"`, and `spec.readonly = false`.
-2. Read the returned attachment through `GET /api/fulfillment/v1/volume_attachments/{id}`.
-3. Delete the attachment through public REST.
-4. Read the resource until `GET` returns `NotFound`.
+1. Patch `ci-456` through public gRPC to append an existing-volume disk reference to `vol-123` with `readonly = false`.
+2. Read `ci-456` status through public REST until attachment progress is visible.
+3. Patch `ci-456` to remove the `vol-123` disk reference.
+4. Read `ci-456` until the attachment status is detached.
 
 ##### Expected Results
 
-- Create returns one attachment ID and a state of `PENDING` or `READY`; the returned spec contains `vol-123`, `ci-456`, and `readonly: false`.
-- REST returns the same attachment ID, volume reference, target reference, and lifecycle state.
-- Delete returns success and the attachment transitions through `DELETING` before `GET` returns `NotFound`.
+- The ComputeInstance update persists exactly one existing-volume disk reference for `vol-123`.
+- REST status exposes the attachment ID/state through the target status or attachment condition surface.
+- Removing the disk reference starts detach and eventually removes the internal attachment intent without deleting `vol-123`.
 
-#### TC-FR1-02 [AC-FR1-02] [Story: Cloud Provider Admin; Tenant Admin/User]: Create and delete an attachment through CLI and UI
+#### TC-FR1-02 [AC-FR1-02] [Story: Cloud Provider Admin; Tenant Admin/User]: Add and remove an existing Volume through CLI and UI
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -59,14 +59,14 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Create the attachment with `osac volume-attachment create`.
-2. Confirm the CLI displays the attachment state.
-3. Use the UI to display the same Volume and initiate detach.
+1. Add `vol-123` to `ci-456` with the ComputeInstance CLI disk mutation.
+2. Confirm the CLI displays attachment progress.
+3. Use the UI to remove the existing Volume disk from the ComputeInstance.
 4. Confirm the UI displays progress and completion.
 
 ##### Expected Results
 
-- CLI output contains the attachment ID and one of the documented lifecycle states.
+- CLI output contains the ComputeInstance update result and one of the documented lifecycle states.
 - UI presents attach/detach only to the authorized user and displays `PENDING`, `READY`, `DELETING`, or `FAILED` from the API.
 - UI does not expose vendor IDs, backend credentials, or raw CSI secrets.
 
@@ -82,14 +82,14 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Invoke `POST /api/fulfillment/v1/volume_attachments` with `vol-123`, `ci-456`, and `readonly: false`.
-2. Invoke the canonical list, get, update, and delete routes.
-3. Attempt to update `spec.volume` and `spec.compute_instance`.
+1. Invoke the canonical ComputeInstance REST update with `spec.additional_disks[].existing_volume.id = "vol-123"`.
+2. Read the ComputeInstance and its attachment status.
+3. Attempt to change an existing-volume disk's immutable Volume ID.
 
 ##### Expected Results
 
-- Routes return standard object/list response fields and JSON uses `compute_instance` snake_case.
-- Metadata-only update succeeds; changing an immutable spec field returns `InvalidArgument`.
+- The response contains the ComputeInstance and its existing-volume disk reference.
+- Changing the immutable Volume ID returns `InvalidArgument`; removing the disk reference is the detach operation.
 
 ### FR-2: Direct BMaaS and VMaaS targets, including VM disks
 
@@ -106,8 +106,8 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Create a VolumeAttachment for the BMaaS instance.
-2. Create a VolumeAttachment for the VMaaS ComputeInstance.
+1. Add an existing Volume reference to the BMaaS attachment API.
+2. Append an existing Volume disk reference to the VMaaS ComputeInstance.
 3. Reconcile both attachment intents.
 
 ##### Expected Results
@@ -154,7 +154,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Create a VolumeAttachment from `vol-789` to `bmi-123`.
+1. Add `vol-789` to the BareMetalInstance attachment field for `bmi-123`.
 2. Reconcile the operator attachment intent.
 3. Inspect the generated host identity, vendor calls, status connection data, and CLI/UI output.
 
@@ -614,7 +614,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 ##### Steps
 
 1. Request Volume deletion.
-2. Delete the VolumeAttachment.
+2. Remove the existing-volume disk reference from the target resource.
 3. Retry Volume deletion after detach completes.
 
 ##### Expected Results
@@ -703,16 +703,16 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Create a VolumeAttachment through the public API.
-2. Poll the resource until it reaches `READY`.
-3. Delete the VolumeAttachment.
-4. Poll until detach completes and the relationship is absent.
+1. Mutate the target resource through the public API to add an existing-volume reference.
+2. Poll target/internal attachment status until it reaches `READY`.
+3. Mutate the target resource to remove the existing-volume reference.
+4. Poll until detach completes and the internal relationship is gone.
 
 ##### Expected Results
 
-- The public API returns one attachment ID and the resource reaches `READY`.
+- The public target API returns the updated resource and the internal attachment reaches `READY`.
 - The backend records one attach and one detach operation for the same Volume/target relationship.
-- The attachment is absent after detach and the Volume remains usable for a subsequent operation.
+- The internal attachment is gone after detach and the Volume remains usable for a subsequent operation.
 - The automated test is implemented in `osac/tests/e2e/storage/test_volume_attachment_lifecycle.py` and polls with `tests/e2e/core/runner.py::poll_until`.
 
 ### NFR-1: 0.3 delivery and tenant isolation

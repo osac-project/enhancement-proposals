@@ -14,11 +14,11 @@ prd:
 
 ## Summary
 
-The design adds a first-class, tenant-scoped `VolumeAttachment` resource for BMaaS, VMaaS, and CaaS storage workflows. For VMaaS, the resource is declarative: the API records the desired attachment, the operator updates the VM provisioning input, AAP creates a PVC and references it from the KubeVirt VM, and the normal OSAC CSI flow binds that PVC to the already-existing OSAC Volume. BMaaS uses the operator's corresponding compute provisioning path; CaaS continues through standard PVC/CSI. The canonical project annotation for an existing OSAC Volume on a PVC is `osac.openshift.io/volume-id`. The design provides public gRPC, REST, CLI, and UI behavior without exposing vendor-specific APIs or secrets.
+The design adds an internal, tenant-scoped `VolumeAttachment` CR for BMaaS, VMaaS, and CaaS reconciliation. Public VMaaS intent is expressed by mutating `ComputeInstance.spec.additional_disks` with an existing Volume reference; AAP creates a PVC and references it from the KubeVirt VM, and the normal OSAC CSI flow binds that PVC to the existing OSAC Volume. BMaaS uses its target API and operator flow; CaaS continues through standard PVC/CSI plus private publish/unpublish APIs. The canonical project annotation for an existing OSAC Volume on a PVC is `osac.openshift.io/volume-id`.
 
 ## Motivation
 
-The current Volume API records provisioning but not attachment. VMaaS disk provisioning is driven by ComputeInstance/AAP input and KubeVirt DataVolumes/PVCs, while the CSI driver owns the Kubernetes binding path. A direct vendor attach call would bypass the VM's PVC and KubeVirt disk model. The design therefore makes attachment intent declarative and lets the existing VMaaS provisioning and CSI controllers create the Kubernetes resources that represent the attachment.
+The current Volume API records provisioning but not attachment. VMaaS disk provisioning is driven by ComputeInstance/AAP input and KubeVirt DataVolumes/PVCs, while the CSI driver owns the Kubernetes binding path. A direct vendor attach call would bypass the VM's PVC and KubeVirt disk model. The design therefore makes attachment intent declarative, target-specific, and internal: ComputeInstance mutations, BareMetalInstance mutations, and native PVC/CSI flows create internal attachment CRs that reconcile the relationship.
 
 ## Proposal
 
@@ -26,11 +26,11 @@ The proposal is specified in section 4 Design, with workflow in section 4.1, sch
 
 ### Workflow Description
 
-Clients create and delete an immutable attachment relationship; the API records intent and the controller reconciles it to backend state. CaaS follows the same relationship through CSI publish/unpublish. See sections 4.1 and 4.6.
+Clients mutate the target resource or use the native PVC/CSI flow; the API records target-specific intent and creates/updates an internal attachment CR. CaaS follows the native relationship through private CSI publish/unpublish. See sections 4.1 and 4.6.
 
 ### API Extensions
 
-The new public `VolumeAttachments` service and private CSI target variant are described in sections 4.2 and 4.3. The change is additive and uses generated public protos from private source protos.
+The public ComputeInstance/BareMetalInstance mutations and private CSI `PublishVolume`/`UnpublishVolume` methods are described in sections 4.1, 4.2, and 4.3. The change is additive and uses generated public protos from private source protos.
 
 ### Implementation Details/Notes/Constraints
 
@@ -62,7 +62,7 @@ The first-class resource adds API, persistence, controller, and migration comple
 
 ## 1. Overview
 
-This design adds a first-class `VolumeAttachment` resource that represents the desired and observed relationship between an OSAC Volume and an OSAC-managed BMaaS or VMaaS compute target. Creating the resource requests attachment; deleting it requests detachment. Fulfillment-service persists the relationship and lifecycle status, while the attachment controller dispatches the backend operation and retries until the requested state is reached.
+This design adds an internal `VolumeAttachment` CR that represents the desired and observed relationship between an OSAC Volume and an OSAC-managed compute target. Public target APIs create or remove the relationship; the CR is not a public fulfillment resource. Fulfillment-service persists the relationship and lifecycle status, while target-specific controllers reconcile it through AAP, PVC/KubeVirt, BMaaS host operations, or private CSI publish/unpublish.
 
 The OSAC CSI driver adapts `ControllerPublishVolume` and `ControllerUnpublishVolume` to the same attachment lifecycle for CaaS. Existing volume IDs, vendor routing, idempotency, and no-op backends remain compatible. Public gRPC, REST, CLI, and UI clients consume the generated public resource API. See [PRD](prd.md) for requirements context.
 
@@ -119,8 +119,8 @@ sequenceDiagram
     Vendor-->>CSI: CSI result
     CSI-->>KubeVirt: PVC/PV and attachment state
     Operator->>API: Feedback status and conditions
-    Client->>API: Get/List attachment
-    API-->>Client: Current status and message
+    Client->>API: Get target/status
+    API-->>Client: Target state and attachment progress
     CSI->>API: Converge publish/unpublish relationship
     API->>DB: Reuse same relationship state machine
 ```
@@ -143,7 +143,7 @@ Lifecycle sequence: create assigns tenant metadata and the Volume owner-referenc
 For an existing VMaaS `ComputeInstance`, the user attaches an already-created OSAC Volume by creating a `VolumeAttachment` whose target is the ComputeInstance. The API does not directly call CSI or mutate a vendor attachment:
 
 1. `fulfillment-service` validates that the Volume is available, the ComputeInstance exists in the same tenant, and the relationship is not already present.
-2. The service creates the public `VolumeAttachment` in `PENDING` and creates the operator-side attachment intent. The intent references the Volume ID, ComputeInstance ID, access mode, and desired read-only setting.
+2. The service accepts the ComputeInstance mutation and creates the internal attachment intent in `PENDING`. The intent references the Volume ID, ComputeInstance ID, access mode, and desired read-only setting.
 3. `osac-operator` reconciles the intent into the ComputeInstance provisioning input. The input contains the existing OSAC Volume ID and a deterministic PVC name/attachment ID, plus the canonical PVC annotation `osac.openshift.io/volume-id: <osac-volume-id>`.
 4. AAP's VM provisioning playbook creates the PVC in the VM tenant namespace and adds that PVC to the KubeVirt VM's disk/volume definition. The PVC is not allowed to request dynamic provisioning; it is a claim for the already-existing OSAC Volume.
 5. The OSAC CSI driver sees the PVC annotation `osac.openshift.io/volume-id: <osac-volume-id>`. Its CreateVolume path resolves the existing OSAC Volume, creates a PersistentVolume whose CSI source contains the OSAC volume ID and backend-specific volume context, and binds the PV to the PVC without provisioning a new backend volume.
@@ -176,103 +176,9 @@ Detach reverses the flow: the operator unpublishes the volume from the host, ret
 
 ### 4.2 Data Model / Schema Changes
 
-Add a public `VolumeAttachment` resource following `ExternalIPAttachment`. The private source file imports `cleanapi/cleanapi.proto`, `google/api/annotations.proto`, `google/api/field_behavior.proto`, `google/protobuf/field_mask.proto`, `google/protobuf/timestamp.proto`, `buf/validate/validate.proto`, and the existing metadata, condition, Volume, ComputeInstance, and BareMetalInstance reference types. It declares `option (cleanapi.file).package = "osac.public.v1"` and `option (cleanapi.file).http_route_prefix_map = "private:fulfillment"`.
+There is no public `VolumeAttachment` protobuf resource or public VolumeAttachment CRUD service. The public VMaaS API mutates `ComputeInstance.spec.additional_disks`; BMaaS uses the BareMetalInstance API; CaaS uses the standard PVC/CSI workflow. The operator-side Kubernetes `VolumeAttachment` CR is an internal reconciliation object created by the CSI/target-specific integration and is not exposed through the public fulfillment API.
 
-```protobuf
-message VolumeAttachment {
-  string id = 1;
-  Metadata metadata = 2;
-  VolumeAttachmentSpec spec = 3;
-  VolumeAttachmentStatus status = 4;
-}
-
-message VolumeAttachmentSpec {
-  option (buf.validate.message).cel = { expression: "has(this.compute_instance) || has(this.baremetal_instance) || has(this.csi_node)" };
-  VolumeLocalReference volume = 1 [(google.api.field_behavior) = REQUIRED, (google.api.field_behavior) = IMMUTABLE];
-  oneof target {
-    ComputeInstanceLocalReference compute_instance = 2 [(google.api.field_behavior) = IMMUTABLE];
-    BareMetalInstanceLocalReference baremetal_instance = 3 [(google.api.field_behavior) = IMMUTABLE];
-    CsiNodeReference csi_node = 5 [(cleanapi.field).private = true];
-  }                                           // exactly one, immutable
-  bool readonly = 4 [(google.api.field_behavior) = IMMUTABLE];
-}
-
-message VolumeAttachmentStatus {
-  VolumeAttachmentState state = 1 [(google.api.field_behavior) = OUTPUT_ONLY];
-  optional string message = 2 [(google.api.field_behavior) = OUTPUT_ONLY];
-  string volume_id = 3 [(google.api.field_behavior) = OUTPUT_ONLY];
-  string target_id = 4 [(google.api.field_behavior) = OUTPUT_ONLY];
-  repeated VolumeAttachmentCondition conditions = 5 [(google.api.field_behavior) = OUTPUT_ONLY];
-  string hub = 6 [(cleanapi.field).private = true, (google.api.field_behavior) = OUTPUT_ONLY];
-  int32 attempt_count = 7 [(google.api.field_behavior) = OUTPUT_ONLY];
-  google.protobuf.Timestamp next_attempt_at = 8 [(google.api.field_behavior) = OUTPUT_ONLY];
-  BareMetalConnection connection = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
-}
-```
-
-Add the following messages and service methods to the private source protos; field numbers are reserved and are not reused. Public fields occupy numbers 1-4 and the private `csi_node` member is last at field 5, preserving CleanAPI field-number compatibility. `volume`, each public target, and `readonly` carry `google.api.field_behavior` annotations for `REQUIRED`/`IMMUTABLE`; `status` fields carry `OUTPUT_ONLY`; IDs use `buf.validate` non-empty constraints; a message-level CEL rule requires exactly one target; and `csi_node` plus `hub` use CleanAPI private annotations. `VolumeAttachmentCondition` imports the shared `condition_status_type.proto` and `google/protobuf/timestamp.proto`.
-
-```protobuf
-message VolumeLocalReference { string id = 1 [(buf.validate.field).string.min_len = 1]; }
-message CsiNodeReference {
-  string cluster_id = 1 [(buf.validate.field).string.min_len = 1];
-  string node_id = 2 [(buf.validate.field).string.min_len = 1];
-}
-enum VolumeAttachmentState {
-  VOLUME_ATTACHMENT_STATE_UNSPECIFIED = 0;
-  VOLUME_ATTACHMENT_STATE_PENDING = 1;
-  VOLUME_ATTACHMENT_STATE_READY = 2;
-  VOLUME_ATTACHMENT_STATE_FAILED = 3;
-  VOLUME_ATTACHMENT_STATE_DELETING = 4;
-}
-enum VolumeAttachmentConditionType {
-  VOLUME_ATTACHMENT_CONDITION_TYPE_UNSPECIFIED = 0;
-  VOLUME_ATTACHMENT_CONDITION_TYPE_ATTACHED = 1;
-  VOLUME_ATTACHMENT_CONDITION_TYPE_DETACHED = 2;
-  VOLUME_ATTACHMENT_CONDITION_TYPE_RECONCILING = 3;
-}
-message VolumeAttachmentCondition {
-  VolumeAttachmentConditionType type = 1;
-  ConditionStatus status = 2;
-  string reason = 3;
-  string message = 4;
-  google.protobuf.Timestamp last_transition_time = 5;
-}
-message BareMetalConnection {
-  string protocol = 1;
-  string initiator = 2;
-  string initiator_source = 3;
-  string host_name = 4;
-  repeated string portals = 5;
-  string target_name = 6;
-  optional int32 lun = 7;
-  string commands = 8;
-}
-
-message VolumeAttachmentsListRequest { optional int32 offset = 1; optional int32 limit = 2; optional string filter = 3; optional string order = 4; }
-message VolumeAttachmentsListResponse { int32 size = 1; int32 total = 2; repeated VolumeAttachment items = 3; }
-message VolumeAttachmentsGetRequest { string id = 1; }
-message VolumeAttachmentsGetResponse { VolumeAttachment object = 1; }
-message VolumeAttachmentsCreateRequest { VolumeAttachment object = 1; }
-message VolumeAttachmentsCreateResponse { VolumeAttachment object = 1; }
-message VolumeAttachmentsUpdateRequest { VolumeAttachment object = 1; google.protobuf.FieldMask update_mask = 2; bool lock = 3; }
-message VolumeAttachmentsUpdateResponse { VolumeAttachment object = 1; }
-message VolumeAttachmentsDeleteRequest { string id = 1; }
-message VolumeAttachmentsDeleteResponse {}
-message VolumeAttachmentsSignalRequest { option (cleanapi.message).private = true; string id = 1; }
-message VolumeAttachmentsSignalResponse { option (cleanapi.message).private = true; }
-
-service VolumeAttachments {
-  rpc List(VolumeAttachmentsListRequest) returns (VolumeAttachmentsListResponse) { option (google.api.http) = { get: "/api/fulfillment/v1/volume_attachments" }; }
-  rpc Get(VolumeAttachmentsGetRequest) returns (VolumeAttachmentsGetResponse) { option (google.api.http) = { get: "/api/fulfillment/v1/volume_attachments/{id}" response_body: "object" }; }
-  rpc Create(VolumeAttachmentsCreateRequest) returns (VolumeAttachmentsCreateResponse) { option (google.api.http) = { post: "/api/fulfillment/v1/volume_attachments" body: "object" response_body: "object" }; }
-  rpc Update(VolumeAttachmentsUpdateRequest) returns (VolumeAttachmentsUpdateResponse) { option (google.api.http) = { patch: "/api/fulfillment/v1/volume_attachments/{object.id}" body: "object" response_body: "object" }; }
-  rpc Delete(VolumeAttachmentsDeleteRequest) returns (VolumeAttachmentsDeleteResponse) { option (google.api.http) = { delete: "/api/fulfillment/v1/volume_attachments/{id}" }; }
-  rpc Signal(VolumeAttachmentsSignalRequest) returns (VolumeAttachmentsSignalResponse) { option (cleanapi.method).private = true; }
-}
-```
-
-The operator adds a Kubernetes `VolumeAttachment` CRD (in its own API package), not a fulfillment protobuf:
+The operator adds a Kubernetes `VolumeAttachment` CRD (in its own API package):
 
 ```text
 VolumeAttachmentSpec: volumeID, tenant, targetKind, targetID, readonly
@@ -282,9 +188,9 @@ VolumeAttachmentStatus: state, message, operationToken, claimGeneration,
 
 The CRD carries `osac.openshift.io/tenant` and `osac.openshift.io/owner-reference` metadata, uses the `osac.openshift.io/volume-attachment` finalizer, and is reconciled only by `osac-operator`.
 
-The generated public schema contains `VolumeAttachment`, `VolumeAttachmentSpec` with `compute_instance`, `baremetal_instance`, and `readonly`, and all output fields. The private source marks `csi_node` and `hub` with `[(cleanapi.field).private = true]`; the operator-side Attachment CR and execution status are Kubernetes/operator implementation types and are not part of the public fulfillment API. `UpdateRequest.lock` remains public because it is the standard optimistic-lock field used by public OSAC resources. Every status field carries `(google.api.field_behavior) = OUTPUT_ONLY`. CI runs `uv run dev.py lint proto` and `uv run dev.py build protos` to verify public generation, field numbering, HTTP annotations, and generated Go clients.
+The public ComputeInstance API extends `ComputeInstanceDisk` with an existing-volume reference. The disk message uses a oneof between dynamic disk configuration (`size_gib`/`storage_tier`) and `existing_volume.id`. `additional_disks` accepts append/remove mutations for existing-volume entries; ordinary VM disk configuration remains subject to existing immutability rules. `boot_disk.existing_volume` is allowed only during ComputeInstance creation because replacing a running VM root disk requires separate boot-order and power-state handling. The public ComputeInstance REST/gRPC Update, CLI, and UI are the VMaaS attach/detach interfaces.
 
-`VolumeLocalReference` requires a stable Volume ID. `ComputeInstanceLocalReference` and `BareMetalInstanceLocalReference` resolve by ID; CLI name flags are resolved client-side to IDs before the API request, so the server never rewrites immutable `spec`. `CsiNodeReference` requires both an authorized CaaS cluster ID and non-empty node ID and is marked private with CleanAPI. The resource is immutable after creation; changing a target requires deleting an attachment and creating another one. `readonly` must be compatible with the CSI capability and volume access mode. Conditions use the shared `ConditionStatus` enum (`UNSPECIFIED`, `TRUE`, `FALSE`); top-level state remains the compatibility summary used by existing clients.
+The operator Attachment CR stores the public ComputeInstance ID, attachment ID, existing Volume ID, deterministic PVC/PV names, target disk role, and lifecycle conditions. Its status stores operator execution details; these details are not exposed as a public VolumeAttachment resource.
 
 Add an attachment persistence table and active-relationship helper table using the existing numbered migration convention. The helper stores `(attachment_id, tenant, volume_id, target_kind, target_id, state)` and has a partial unique index for non-deleted relationships on `(volume_id, target_kind, target_id)`. Operator execution state, operation token, claim generation, retry schedule, and vendor result live in the operator Attachment CR status; fulfillment-service stores only the public resource status synchronized by feedback. All database transactions use the same lock order: Volume row, then target mirror row, then helper rows. Create attachment and delete Volume transactions reject objects with a deletion timestamp, then insert/check the helper row or return custom `volume_in_use` SQLSTATE mapped to `FailedPrecondition`.
 
@@ -292,21 +198,22 @@ Target deletion uses an explicit two-phase handshake because fulfillment Postgre
 
 The target finalizer key is `osac.openshift.io/volume-attachment`. The rollout backfill Job upserts a target-mirror row and patches this finalizer only for existing ComputeInstance and BareMetalInstance objects without a deletion timestamp, recording a migration epoch and per-target result. It is idempotent and retries conflicts. A target already marked for deletion is quarantined in the mirror table instead of being patched: new attachment creation is rejected for that target, existing relationships are moved to `DELETING` and drained immediately, and the mirror retains the target ID until `TargetAttachmentsGone`. The feature gate remains disabled until every non-deleting target has the finalizer and every quarantined target has no active relationship. This avoids adding a finalizer after Kubernetes deletion has started.
 
-Volume status gains an output-only attachment summary only if list/get performance requires it; the attachment resource remains authoritative. No vendor volume ID, backend credential, or raw CSI secret is exposed through the public attachment resource.
+Target status and internal Attachment CR status expose lifecycle progress as needed; the public Volume remains an independent resource and does not embed target-specific attachment state. No vendor volume ID, backend credential, or raw CSI secret is exposed through common public status. BMaaS connection details are target-specific and are returned only through authorized connection guidance.
 
 ### 4.3 API Changes
 
-Add `VolumeAttachments` using the standard OSAC resource service pattern. The private source service uses standard request/response messages and CleanAPI generates the public service; `Signal` remains private and is used only for feedback-driven reconciliation:
+Public attachment behavior is exposed through the existing target APIs; no public VolumeAttachment CRUD service is added.
 
-| RPC | Public REST route | Behavior |
+| Public surface | Attach request | Detach request |
 |---|---|---|
-| `List` | `GET /api/fulfillment/v1/volume_attachments` | Lists authorized attachments; supports filter/order. |
-| `Get` | `GET /api/fulfillment/v1/volume_attachments/{id}` | Returns desired target and observed lifecycle state. |
-| `Create` | `POST /api/fulfillment/v1/volume_attachments` | Requests attach; returns `PENDING` or an already-satisfied `READY` object. |
-| `Update` | `PATCH /api/fulfillment/v1/volume_attachments/{object.id}` | Metadata-only update; immutable spec fields are rejected. |
-| `Delete` | `DELETE /api/fulfillment/v1/volume_attachments/{id}` | Requests detach; resource remains until detach completes. |
+| VMaaS gRPC/REST | Patch `ComputeInstance.spec.additional_disks` with an `existing_volume.id`; for creation-time boot disks, set `spec.boot_disk.existing_volume`. | Remove the matching existing-volume disk entry from `spec.additional_disks`. Boot-disk removal/replacement is restricted to ComputeInstance creation workflows. |
+| VMaaS CLI/UI | Add an existing Volume to the ComputeInstance disk list. | Remove the existing Volume entry from the disk list. |
+| BMaaS API | Add an existing Volume reference to the BareMetalInstance attachment field defined by the BMaaS API. | Remove that Volume reference. |
+| CaaS | Standard PVC/CSI workflow; CSI calls private fulfillment `PublishVolume`/`UnpublishVolume`. | Standard PVC/CSI workflow. |
 
-The public Volume API prerequisite `osac#743` must be available first. The private service also includes `Signal` for controller feedback, following existing attachment resources.
+`ComputeInstanceDisk` gains an `existing_volume` reference in a oneof with dynamic disk configuration. Existing-volume entries carry the OSAC Volume ID and are the public VMaaS attachment intent. Additional disk entries are mutable only for adding/removing existing-volume attachments; normal dynamically provisioned disk configuration retains its existing immutability rules. `osac#743` remains a prerequisite for CSI access to the public Volume API.
+
+The private fulfillment API adds `PublishVolume` and `UnpublishVolume` for CSI identities. Each request contains the OSAC Volume ID, target cluster/node identity, PVC identity where applicable, and authenticated caller context. The service authorizes the request against an active internal attachment relationship before forwarding reconciliation to the operator. These methods are not public user operations.
 
 The private service adds these concrete controller messages and RPCs:
 
@@ -327,49 +234,27 @@ service VolumeAttachmentController {
 
 They are private and are called by ComputeInstance and BareMetalInstance controllers during their finalizer workflow. `BeginTargetDeletion` acquires the target deletion guard; `ListByTarget` returns active relationship IDs; `TargetAttachmentsGone` succeeds only when the helper table has no relationship for the target.
 
-Validation rules:
+Validation rules for target mutations:
 
-- `volume` is required and must resolve to an existing, non-deleted Volume in a usable state.
-- Exactly one target oneof member is required; arbitrary node/backend strings are rejected.
-- The referenced target must be an OSAC-managed BMaaS or VMaaS resource visible to the caller.
-- The attachment is rejected if the volume access mode and backend capability do not permit the requested concurrent relationship.
-- An existing active relationship for the same volume and target converges to idempotent success.
-- Concurrent creates for the same `(volume, target, readonly)` lock the Volume row, retry a unique-index conflict by reading the winner, and return that existing object. A concurrent request with a different `readonly` value returns `AlreadyExists` with the existing attachment ID and does not change the desired state.
-- A duplicate relationship to a different target is accepted only for supported multi-attachment modes/backend capabilities.
-- Delete is idempotent when the relationship is already absent or fully detached.
-- Client deadlines apply to the request; a deadline does not cancel durable reconciliation. The response or subsequent Get reports `PENDING`, `READY`, or `FAILED`.
-
-Example:
-
-```json
-POST /api/fulfillment/v1/volume_attachments
-{
-  "object": {
-    "metadata": {"name": "database-disk-vm1"},
-    "spec": {
-      "volume": {"id": "vol-123"},
-      "compute_instance": {"id": "ci-456"},
-      "readonly": false
-    }
-  }
-}
-```
-
-The response contains the attachment ID and `status.state: PENDING` until the backend confirms attachment. A repeated request for the same logical relationship returns the existing object rather than creating duplicate work.
-
-CLI adds public commands equivalent to `osac volume-attachment create`, `get`, `list`, and `delete`; command help follows the existing Markdown help conventions. UI adds attach/detach actions to authorized Volume and ComputeInstance views, shows `PENDING`, `READY`, `FAILED`, and `DELETING`, and disables destructive actions while attachment state makes them unsafe.
+- An existing-volume disk reference must resolve to an existing, non-deleted Volume in a usable state.
+- The target Volume and ComputeInstance/BareMetalInstance must belong to the same tenant.
+- Adding the same Volume to the same target is idempotent; changing immutable disk fields returns `AlreadyExists` or `InvalidArgument` according to the target API contract.
+- Adding a second target is accepted only when the Volume access mode and backend support multi-attachment.
+- Removing an existing-volume disk changes the internal attachment intent to `DELETING`; it does not delete the OSAC Volume.
+- Client deadlines apply to the target mutation; a deadline does not cancel durable operator reconciliation.
+- CaaS private `PublishVolume`/`UnpublishVolume` requests must match an authorized internal attachment relationship before the operator or CSI path is invoked.
 
 ### 4.4 Scalability and Performance
 
-Attachment reconciliation is bounded by the number of active relationships and backend operation time. API writes add one resource row and one status update per state transition. List queries require indexes on tenant, volume, target, and state. The unique relationship index makes idempotency an indexed lookup rather than a full scan.
+Attachment reconciliation is bounded by the number of active internal attachment intents and backend operation time. ComputeInstance updates add one target mutation and one status update per state transition. Relationship queries require indexes on tenant, volume, and target. The unique relationship index makes idempotency an indexed lookup rather than a full scan.
 
 The worker uses bounded concurrency and exponential backoff. It must not create an unbounded goroutine per request. Backend calls use the caller deadline for the initial request and controller-owned deadlines for later retries. The design assumes attachment cardinality is proportional to managed volumes and compute targets, not an unbounded event stream.
 
 ### 4.5 Security Considerations
 
-Authentication remains in the existing gRPC interceptor chain. OPA rules authorize VolumeAttachment operations using the attachment tenant and referenced Volume/target tenants. Tenant users and tenant administrators may access only relationships within their tenant. Provider administrators may operate on resources in multiple tenants only through separately authorized same-tenant requests; no role can create a cross-tenant Volume-to-target relationship.
+Authentication remains in the existing gRPC interceptor chain. OPA rules authorize target mutations and private CSI publish operations using the target tenant and referenced Volume tenant. Tenant users and tenant administrators may access only relationships within their tenant. Provider administrators may operate on resources in multiple tenants only through separately authorized same-tenant requests; no role can create a cross-tenant Volume-to-target relationship.
 
-The server resolves references under authorization before creating the relationship, preventing an unauthorized caller from using an attachment as an existence oracle. Target IDs are validated against OSAC resource types, and vendor IDs, CSI secrets, backend endpoints, and raw node credentials remain private. CSI service identities receive only the internal permissions required to converge relationships for authorized tenant-scoped Volume resources.
+The server resolves Volume references under authorization before mutating the target resource, preventing an unauthorized caller from using an attachment as an existence oracle. Target IDs are validated against OSAC resource types, and vendor IDs, CSI secrets, backend endpoints, and raw node credentials remain private. CSI service identities receive only the internal permissions required to publish/unpublish an authorized relationship.
 
 ### 4.6 Failure Handling and Recovery
 
@@ -392,11 +277,11 @@ No force-detach path is provided. Terminal detach failure remains visible for op
 
 ### 4.7 RBAC / Tenancy
 
-`VolumeAttachment` is tenant-scoped and uses the same tenant metadata and owner-reference conventions as other tenant resources. The service assigns `metadata.annotations["osac.openshift.io/tenant"]` to the resolved tenant ID and `metadata.annotations["osac.openshift.io/owner-reference"]` to the parent Volume ID; callers cannot override either value. The Volume is the logical owner because the attachment protects its deletion, while target controllers discover attachments by indexed target reference for cleanup. Local references never accept a caller-supplied tenant ID. The Volume and target must belong to the same tenant; a cross-tenant relationship is rejected even for a provider administrator. Provider administrators operate across tenant environments by making separately authorized requests within each tenant, not by creating cross-tenant relationships. Names are resolved only within the caller's authorized tenant scope, so identical names in different tenants cannot collide.
+Internal attachment intents are tenant-scoped and use the same tenant metadata and target-reference conventions as other operator resources. The Volume remains independent; the target mutation and internal intent carry the Volume ID and target tenant. Callers cannot override tenant metadata. The Volume and target must belong to the same tenant; a cross-tenant relationship is rejected even for a provider administrator. Provider administrators operate across tenant environments by making separately authorized requests within each tenant, not by creating cross-tenant relationships. Names are resolved only within the caller's authorized tenant scope, so identical names in different tenants cannot collide.
 
-The API adds create/get/list/update/delete permissions for tenant roles and corresponding provider-admin permissions. CSI identities use a dedicated internal policy path and cannot use public provider-admin authority. Attachment deletion and volume deletion checks execute inside the same authorization and persistence boundary to avoid a time-of-check/time-of-use gap.
+The API adds target update permissions for tenant roles and corresponding provider-admin permissions. CSI identities use a dedicated internal publish/unpublish policy path and cannot use public provider-admin authority. Attachment deletion and volume deletion checks execute inside the same authorization and persistence boundary to avoid a time-of-check/time-of-use gap.
 
-The fulfillment-service controller creates/updates the operator Attachment CR and receives status through the existing operator feedback controller. The operator reconciler invokes `AttachmentExecutor` for BMaaS, VMaaS, and private `csi_node` targets. The executor resolves the StorageBackend, translates the request to the vendor CSI controller, and returns status to the reconciler; the CSI driver does not host a second attachment service.
+The fulfillment-service controller creates/updates internal attachment intent records and receives status through the existing operator feedback controller. The operator reconciler owns the internal Attachment CR for VMaaS and BMaaS; the CSI driver invokes private `PublishVolume`/`UnpublishVolume` for CaaS and VMaaS publish events. The CSI driver does not expose a second public attachment service.
 
 ### 4.8 Extensibility / Future-Proofing
 
@@ -404,29 +289,29 @@ The target oneof permits additional OSAC-managed compute target types without ch
 
 ## 5. Interface Changes
 
-### IC-1: Public VolumeAttachment resource API
+### IC-1: Public target-resource attachment API
 
 **Requirements:** FR-1, FR-2, FR-4, FR-5, FR-6, FR-7, FR-9, NFR-1
 
-Add public gRPC and REST List/Get/Create/Update/Delete operations with typed Volume, ComputeInstance, and BareMetalInstance references; see sections 4.2 and 4.3.
+Add target-resource mutations for existing-volume disk references on ComputeInstance and BareMetalInstance, plus private CSI publish/unpublish methods; see sections 4.1.1, 4.1.2, and 4.3.
 
 ### IC-2: Attachment lifecycle status
 
 **Requirements:** FR-4, FR-5, FR-7, FR-9, FR-10
 
-Expose `PENDING`, `READY`, `FAILED`, and `DELETING` state plus observable messages through Get/List and generated client types; see sections 4.2 and 4.6.
+Expose `PENDING`, `READY`, `FAILED`, and `DELETING` through target status/feedback and existing target-resource status surfaces; internal Attachment CR status contains detailed reconciliation stages.
 
 ### IC-3: CLI volume-attachment commands
 
 **Requirements:** FR-1, FR-4, FR-5, FR-9, FR-10
 
-Add public `osac volume-attachment create|get|list|delete` commands that use the resource API and render lifecycle state; see section 4.3.
+Add ComputeInstance/BareMetalInstance CLI mutations for existing-volume disk/attachment references and render target status; see section 4.3.
 
 ### IC-4: UI attach/detach behavior
 
 **Requirements:** FR-1, FR-4, FR-5, FR-9, FR-10
 
-Add authorized Volume and ComputeInstance attach/detach actions and status rendering; see section 4.3. UI field alignment requires validation against `osac-ui` and `osac-ux` when those repositories are available.
+Add authorized ComputeInstance/BareMetalInstance disk attach/detach actions and status rendering; see section 4.3. UI field alignment requires validation against `osac-ui` and `osac-ux` when those repositories are available.
 
 ### IC-5: CSI publish/unpublish adapter
 
@@ -448,17 +333,17 @@ Document gRPC, REST, CLI, UI, progress, error, authorization, migration, and ter
 
 ## 6. Alternatives (Not Implemented)
 
-### First-class VolumeAttachment resource (selected)
+### Internal VolumeAttachment CR (selected)
 
-- **Pros:** Matches `ExternalIPAttachment`, supports durable status and retries, makes deletion protection and target cleanup explicit, and works for BMaaS/VMaaS as well as CSI adapters.
-- **Cons:** Adds a resource, controller, persistence, API surface, and migration logic.
-- **Reason selected:** The PRD requires observable asynchronous lifecycle and a design-defined object model; the existing OSAC attachment pattern provides the closest implementation boundary.
+- **Pros:** Supports durable status and retries, makes deletion protection and target cleanup explicit, and keeps implementation state out of the public API.
+- **Cons:** Adds an operator CR, feedback wiring, persistence, and target-specific reconciliation.
+- **Reason selected:** Public target APIs remain native to VMaaS/BMaaS while the internal CR provides one recoverable relationship model.
 
-### Action-only Attach/Detach RPCs
+### Private Publish/Unpublish APIs
 
-- **Pros:** Smaller initial API surface and direct correspondence to user actions.
-- **Cons:** Does not naturally persist desired state, list relationships, recover after restart, protect deletion, or represent a deadline-exceeded operation.
-- **Reason rejected:** Fails the durable progress, lifecycle safety, and retry requirements without recreating a resource model behind the RPC.
+- **Pros:** Keeps CaaS and VMaaS CSI operations aligned with standard publish/unpublish semantics and avoids exposing internal CRDs.
+- **Cons:** Requires fulfillment authorization against the internal attachment relationship and careful idempotency/error mapping.
+- **Reason selected:** These APIs are internal data-plane operations; public user intent remains expressed through target resources.
 
 ### Kubernetes VolumeAttachment as the public source of truth
 
