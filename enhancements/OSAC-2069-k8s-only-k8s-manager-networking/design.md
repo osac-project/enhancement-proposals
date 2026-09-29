@@ -60,11 +60,13 @@ documented. This design records the as-built implementation.
 
 ### K8s-Only Behavior
 
-In the k8s-only installation, the manager fills the fabric role for
-fallback-enabled resources using the `agentless_net` roles. VirtualNetwork create
-and delete are no-ops; Subnet provisioning creates a Namespace and CUDN;
-NATGateway is rejected before an AAP job because the k8s-only manager has no
-implementation for it.
+In the k8s-only installation, the K8s manager fills the fabric role for
+fallback-enabled resources through its `k8s_only` composite Ansible role.
+That role delegates VirtualNetwork and Subnet operations to `cudn_net`,
+SecurityGroup operations to `network_policy`, and ExternalIP operations to
+`metallb_l2`. VirtualNetwork create and delete are no-ops; Subnet provisioning
+creates a Namespace and CUDN. NATGateway is rejected before an AAP job because
+the k8s-only manager has no implementation for it.
 
 CUDN-based VM attachment does not move a physical fabric port, so this
 manager does not implement `move_network_attachment`. The current k8s-only flow does
@@ -111,25 +113,15 @@ side effects of provisioning OSAC networking resources:
 
 ### Ansible Role Architecture
 
-The k8s-only backend uses the `agentless_net` / `agentless_net.steps` Ansible
-roles, which delegate to composable sub-roles based on resource kind:
+The k8s-only backend uses the `osac.templates.k8s_only` composite Ansible role.
+It provides the resource entrypoints selected by the dispatcher and delegates
+to independent Kubernetes-native roles by resource kind:
 
 ```
-agentless_net.steps
-├── cudn_net            # VirtualNetwork, Subnet, SecurityGroup
-│   ├── create_virtual_network.yaml   # no-op (logs success)
-│   ├── delete_virtual_network.yaml   # no-op
-│   ├── create_subnet.yaml            # → Namespace + CUDN
-│   ├── delete_subnet.yaml            # → delete CUDN + Namespace
-│   ├── create_security_group.yaml    # → network_policy role
-│   └── delete_security_group.yaml    # → delete NetworkPolicy
-└── metallb_l2          # ExternalIPPool, ExternalIP, ExternalIPAttachment
-    ├── create_external_ip_pool.yaml  # → IPAddressPool + L2Advertisement
-    ├── delete_external_ip_pool.yaml
-    ├── allocate_external_ip.yaml     # → parking LB Service
-    ├── release_external_ip.yaml
-    ├── attach_external_ip.yaml       # → LB Service in VM namespace
-    └── detach_external_ip.yaml       # → reverse attach
+osac.templates.k8s_only
+├── osac.templates.cudn_net       # VirtualNetwork (no-op), Subnet (Namespace + CUDN)
+├── osac.templates.network_policy # SecurityGroup (NetworkPolicy)
+└── osac.templates.metallb_l2     # ExternalIPPool, ExternalIP, ExternalIPAttachment
 ```
 
 ### VirtualNetwork — No-Op
