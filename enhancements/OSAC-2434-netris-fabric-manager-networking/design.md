@@ -42,7 +42,7 @@ correctness, validate new backends against a baseline, or identify enforcement
 gaps.
 
 This design documents the Netris-specific resource mapping, Ansible role
-behavior, failure recovery, and current implementation gaps.
+behavior, and failure recovery.
 
 ### Goals
 
@@ -97,9 +97,7 @@ The Netris role implements workload-network operations as follows:
 
 #### Resource Mapping
 
-The following table describes the Netris-specific mapping. Current
-implementation gaps are listed under
-[Current Implementation Gaps](#current-implementation-gaps).
+The following table describes the Netris-specific mapping.
 
 | OSAC Resource | Netris Resources | Ansible Role / Task | Details |
 |---------------|-----------------|---------------------|---------|
@@ -220,52 +218,6 @@ default to VPC ID 1 or `0.0.0.0/0`.
 This expansion is necessary because Netris ACL rules operate on specific
 CIDR prefixes, not on VPC-level abstractions.
 
-### Current Implementation Gaps
-
-The tables above describe the required behavior. Comparison with the current
-OSAC implementation identifies these gaps; they are not intended behavior:
-
-- **Region and Subnet placement:** `create_virtual_network.yaml` falls back to
-  `netris_site_id` when an explicit region has no mapping. The Subnet tasks in
-  `create_subnet.yaml` use `netris_site_id` directly instead of the site
-  resolved for the parent VirtualNetwork. The role references
-  `netris_region_site_map`, but the installer does not currently expose or
-  pass that mapping to AAP.
-- **NAT VPC resolution:** `create_nat_gateway.yaml` starts with the management
-  VPC and replaces it only after resolving the tenant VPC. A failed lookup can
-  therefore create a tenant SNAT rule in the management VPC. The same
-  fail-open pattern exists in `attach_external_ip.yaml`; management-VPC use
-  must be limited to an explicit cluster-endpoint target.
-- **SecurityGroup safety and convergence:** `create_security_group.yaml`
-  defaults a missing VPC ID to `1` and missing subnet CIDRs to `0.0.0.0/0`.
-  The ACL create task treats an existing same-name ACL as complete without
-  updating it, and deletion only enumerates names generated from the current
-  rules and subnets. Missing dependencies must fail closed; updates and deletes
-  must reconcile every ACL owned by the SecurityGroup and remove stale rules.
-- **ExternalIP ownership and concurrency:** the current ExternalIPPool API
-  permits exactly one CIDR, while `create_external_ip.yaml` locates pool
-  allocations by pool name and optional numeric suffix. It selects an address
-  by scanning IPAM and then creates a /32 without an atomic reservation or
-  pool lock. Existing reservations are matched by ExternalIP name rather than
-  verified owner identity. Replace these lookups with stable UID-derived owner
-  keys, reuse an existing reservation before allocating, and refresh the full
-  pool state after a reservation conflict.
-- **Recovery after external drift:** `DesiredConfigVersion` retries failed
-  work, but a successful unchanged hash can suppress another provisioning
-  job. The current reconciliation path does not reliably detect a Netris
-  object manually removed after success; add a recovery trigger so missing
-  managed state is repaired even when the hash is unchanged.
-- **Diagnostic redaction:** `acl/tasks/create.yaml` can emit a raw Netris
-  response body, and the AAP provider copies job traceback text into error
-  details without field-level redaction. Sanitize before data reaches AAP job
-  output, `status.provisioningJobs`, resource conditions, or events.
-- **Credential placement:** the manager registration ConfigMap is metadata
-  only, as required. The installer currently renders `NETRIS_CONTROLLER_URL`
-  and `NETRIS_USERNAME` into the separate AAP runtime ConfigMap and stores
-  `NETRIS_PASSWORD` in a Secret. If NFR-2 requires all three values to be
-  Secret-backed, move the URL and username before claiming that requirement is
-  implemented.
-
 ### Security Considerations
 
 #### Credential Handling
@@ -322,9 +274,7 @@ changes and triggers a new provisioning cycle. A successful job for the same
 version may be skipped only while its managed Netris state is known to match
 desired state. A failed or incomplete job for the same version is retried after
 exponential backoff (2 to 30 minutes), and detected missing Netris resources
-must trigger repair even when the version is unchanged. The current code retries
-failed work but does not reliably detect resources deleted externally after a
-successful job; see [Current Implementation Gaps](#current-implementation-gaps).
+must trigger repair even when the version is unchanged.
 
 ### RBAC / Tenancy
 
@@ -451,11 +401,12 @@ was created or updated.
 
 Add a Netris role integration target under
 `osac-aap/tests/integration/` and register it in `run_tests.sh`. Run the actual
-Ansible tasks against a stateful Netris HTTP API double that records requests
-and models allocations, subnets, VPCs, VNets, ACLs, and NAT rules. Once that
-target is added, `make test` from `osac-aap/` is the execution command. This
-suite exercises the OSAC Ansible roles and request handling; it does not prove
-the real Netris controller's persistence or concurrency semantics. Cover:
+Ansible tasks against a stateful mock Netris REST API server; CI does not need
+access to a live Netris controller. The mock records requests and models
+allocations, subnets, VPCs, VNets, ACLs, and NAT rules. Once that target is
+added, `make test` from `osac-aap/` is the execution command. This suite
+validates role behavior against the API model, not Netris server-side
+persistence or concurrency semantics. Cover:
 
 | Case | Scenario | Required assertions |
 |------|----------|--------------------|
@@ -475,11 +426,11 @@ sanitized failure projection. For workload operations, assert
 `move_network_attachment` dispatches only to a fabric manager and
 `query_dhcp_lease` dispatches to the selected manager when lease discovery is
 requested. Run it with `make integration-tests` from `osac-operator/`. The
-existing Kind test that strips finalizers cannot cover this boundary. A Netris
-API double proves the Ansible client's behavior against that double; validating
-Netris API allocation atomicity and persistence still requires the real
-controller or an explicitly owned provider contract suite (tracked through
-OSAC-4843 where no such suite exists).
+existing Kind test that strips finalizers cannot cover this boundary.
+This AAP-boundary test uses a controllable AAP HTTP server and does not contact
+Netris. A separate test environment with a live Netris controller would be
+needed to validate server-side allocation atomicity and persistence; that is
+outside the CI integration target.
 
 Until these targets are implemented, these are planned cases rather than
 available or passing integration tests. The documented existing commands do
