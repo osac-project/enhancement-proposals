@@ -138,7 +138,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 - The boot and additional disk relationships reference the same VM target and distinct Volumes.
 - AAP creates PVCs with `osac.openshift.io/volume-id=vol-123` and `osac.openshift.io/volume-id=vol-456`, and references both PVCs from the KubeVirt VM.
-- CSI creates/binds PVs for the existing OSAC Volumes without calling fulfillment `CreateVolume`.
+- CSI returns existing-volume details without provisioning a new backend Volume, and the Kubernetes external-provisioner creates/binds the PVs.
 - Each relationship reaches `READY` only after PVC/PV binding, VM disk wiring, and CSI publish complete, or exposes a concrete terminal error.
 
 #### TC-FR2-03 [AC-FR2-03] [Story: Cloud Infrastructure Admin]: BMaaS host identity and semi-automatic connection flow
@@ -177,18 +177,18 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 ##### Preconditions
 
 - A CaaS PVC provisions an existing OSAC Volume.
-- The OSAC CSI driver is configured with the Volume API endpoint.
+- The OSAC CSI driver is configured with the private fulfillment Volume API and authenticated cluster identity.
 
 ##### Steps
 
 1. Cause the CSI external-attacher to invoke `ControllerPublishVolume` for a node.
-2. Observe the VolumeAttachment relationship.
+2. Observe the internal Attachment CR and operator vendor publish call.
 3. Cause `ControllerUnpublishVolume` for the same volume and node.
 
 ##### Expected Results
 
-- Publish creates or converges a relationship for the CSI target and returns success only after `READY` or a deadline error.
-- Unpublish converges the same relationship to detached and does not create a duplicate relationship.
+- Publish calls private fulfillment `PublishVolume`, which authorizes the PVC/cluster/node against the same-tenant intent and causes the operator to call vendor ControllerPublish; CSI returns success only after `READY` or a deadline error.
+- Unpublish calls private fulfillment `UnpublishVolume`, which causes the operator to call vendor ControllerUnpublish and does not create a duplicate relationship.
 - Kubernetes continues using the PVC/CSI workflow; no public CaaS direct-attach resource is required.
 
 ### FR-4: Observable progress, deadlines, and retry
