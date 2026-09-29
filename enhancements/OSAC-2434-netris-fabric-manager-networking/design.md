@@ -439,9 +439,9 @@ provisioning, NAT egress, DHCP-based BareMetalInstance status, ExternalIP
 attachment and ingress, connectivity/isolation, and deletion. Extend that flow
 to verify concurrent ExternalIP allocations from one pool get distinct
 addresses and retries reuse the same ExternalIP reservation. Also verify
-mutable SecurityGroup updates converge to the requested rules when the shared
-API exposes that update. These checks exercise real Netris-backed service flows
-and do not create a separate integration suite. The current flow can be run
+mutable SecurityGroup updates converge to exactly the requested rules,
+including removal of obsolete ACLs. These checks exercise real Netris-backed
+service flows and do not create a separate integration suite. The current flow can be run
 from the OSAC repository root with
 `uv run pytest tests/e2e/bmaas/regression/networking/test_bmaas_networking.py`.
 
@@ -450,7 +450,8 @@ from the OSAC repository root with
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ d165396
+Phases: revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

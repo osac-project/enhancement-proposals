@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-28
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -83,14 +83,15 @@ This section defines key terms used throughout this document.
   SNAT. The physical fabric is one infrastructure — one controller manages
   it all.
 
-- **K8s Manager**: Handles everything needed to make VMs part of the fabric:
-  creates the K8s overlay and bridges it to the fabric segment. Only needed
-  for deployments that host VMs.
+- **K8s Manager**: Provides Kubernetes-native VM networking. With a fabric
+  manager, it connects VM networking to the physical fabric. Without a fabric
+  manager, it provides the primary Subnet network for VMs on the hub; it does
+  not provide fabric connectivity.
 
-- **Fabric**: The physical network infrastructure — switches, routers,
+- **Fabric**: The physical network infrastructure — switches, routers, and
   gateways — that connects bare-metal servers and provides external
-  connectivity. In this design, VMs also participate in the fabric through
-  a K8s manager that bridges the OVN overlay to the physical network.
+  connectivity. Fabric-backed profiles can connect VMs to this network through
+  a K8s manager. A K8s-only profile has no physical-fabric integration.
 
 ## 1. Problem Statement
 
@@ -166,12 +167,13 @@ not the tenant's preference.
 
 #### Gap #3: No manager capability discovery or registration
 
-There is no registry of which networking managers are installed or what each
-supports. A K8s manager like `cudn_localnet` handles VM overlay and bridging
-but not IP allocation or ACLs. A fabric manager like Netris handles
-everything on the physical side. The system has no way to know this — there
-is no machine-readable declaration of manager capabilities, and no validation
-that a manager is assigned to a role it can handle.
+Manager profiles offer different workload targets and network
+operations. A K8s-only profile supports VMs on the hub and inbound access for
+those VMs, but does not support CaaS or bare-metal targets, inter-Subnet
+routing, or outbound NAT. A fabric-backed profile can support shared VM, CaaS,
+and bare-metal networks when its configured managers provide those operations.
+The system needs machine-readable manager capabilities and validation that the
+configured profile supports its assigned operations.
 
 #### Gap #4: ExternalIPAttachment only supports VMs
 
@@ -192,23 +194,22 @@ ingress-only, but this is not documented.
 
 #### Gap #6: VMs are not part of the fabric
 
-VMs running on OpenShift use OVN (User Defined Networks) for isolation. Their
-IP addresses exist only within the OVN overlay and are not visible on the
-physical fabric. When a fabric manager needs to perform DNAT to route
-external traffic to a VM, it cannot reach the VM's OVN-internal IP directly.
-A K8s manager (e.g., CUDN with LocalNet) is needed to bridge VMs to the
-fabric. The current design does not address this, and there is no way for a
-provider to configure which bridging mechanism to use.
+In fabric-backed deployments, VMs running on OpenShift use OVN networks and
+their IP addresses are not visible on the physical fabric. When a Fabric
+Manager must route external traffic directly to a VM, the K8s manager must
+bridge the VM overlay to the fabric. K8s-only deployments use a primary CUDN
+on the hub and intentionally do not require this physical-fabric bridge. The
+design must support both profiles and make their different network behavior
+explicit.
 
 #### Gap #7: VMs and bare metal cannot share a network
 
-VMs use OVN for isolation — a software-defined overlay on the OpenShift
-cluster. Bare-metal servers use physical VLANs configured on switches in the
-fabric. These are fundamentally different L2 domains. A K8s manager using
-LocalNet mode can bridge OVN to the physical fabric, making VMs first-class
-participants alongside BM servers. The current design does not address how
-VMs and bare-metal servers coexist in the same deployment, whether they can share
-a VirtualNetwork, or how traffic flows between them.
+OVN VM networks and physical VLANs are different L2 domains. In a
+fabric-backed profile, a K8s manager using LocalNet can bridge VMs to the
+physical fabric so VMs and bare-metal servers can share a VirtualNetwork.
+A K8s-only profile supports hub-hosted VMs and does not provide cross-type
+placement with bare-metal servers. The design must state which profile offers
+each behavior.
 
 #### Gap #8: Deployment connectivity boundary
 
@@ -224,13 +225,13 @@ reachability.
 
 ~~Cluster worker nodes reach the hosted control plane API server via hairpin
 NAT through ExternalIPs, requiring ExternalIPs and NATGateway to exist before
-provisioning.~~ **Resolved:** The CaaS design eliminates hairpin NAT —
-workers access the API server via the MetalLB VIP directly on the same
-subnet. The pre-provisioning ordering constraint is eliminated. ExternalIPs
-are for external (off-subnet) access only, not for intra-cluster
-communication. ExternalIPAttachments start in Pending state and activate once
-the cluster's VIPs are discovered (see
-[CaaS Networking](/enhancements/OSAC-1436-caas-networking)).
+provisioning.~~ **Resolved:** The CaaS design eliminates hairpin NAT — workers
+access the API server via the MetalLB VIP directly on the same subnet. The
+pre-provisioning ordering constraint is eliminated. ExternalIPs are for
+external (off-subnet) access only, not for intra-cluster communication.
+ExternalIPAttachments for a cluster are created only after the cluster is Ready
+and the ExternalIP is Allocated, in accordance with the shared resource
+lifecycle rules (see [CaaS Networking](/enhancements/OSAC-1436-caas-networking)).
 
 ## 2. Goals and Non-Goals
 
@@ -259,7 +260,9 @@ plural field shape.
 - Provide a unified networking API across VMaaS, CaaS, and BMaaS with a single, consistent resource model
 - Enable tenants to manage networking resources (VirtualNetworks, Subnets, SecurityGroups, ExternalIPs) without choosing implementation backends
 - Support pluggable networking backends that can be added without API changes
-- Enable VMs, clusters, and bare-metal servers to coexist in the same VirtualNetwork
+- Enable VMs, clusters, and bare-metal servers to coexist in the same
+  VirtualNetwork in fabric-backed profiles; provide hub-hosted VM networking
+  through a K8s-only profile without physical-fabric integration
 - Support connected deployments using provider-routable IPs
 - Support one tenant network attachment per workload, with an optional physical-interface selector for BMaaS
 
@@ -305,16 +308,21 @@ explicitly specifies them.
 
 ## 3. User Stories
 
-### Tenant Stories (All Services)
+### Tenant Stories (Shared Networking API)
 
 - As a tenant, I want to create isolated VirtualNetworks and Subnets for my
   workloads without choosing a networking backend
 - As a tenant, I want to define SecurityGroups to control traffic to and
   from my resources
-- As a tenant, I want to allocate ExternalIPs and attach them to my VMs,
-  clusters, or bare-metal servers for inbound access
-- As a tenant, I want to create a NATGateway for outbound access from my
-  VirtualNetwork
+- As a tenant, I want to update a SecurityGroup's ingress and egress
+  rules so that the effective policy can change without recreating the group
+- As a tenant, I want to allocate ExternalIPs and attach them to supported
+  VM, cluster, or bare-metal targets for inbound access
+- As a tenant in a fabric-backed deployment, I want to create a NATGateway
+  for outbound access from my VirtualNetwork
+- As a tenant in a K8s-only deployment, I want to attach VMs to primary
+  Subnets on the hub so I can use Kubernetes-native networking without a
+  physical fabric manager [User]
 - As a tenant, I want resource creation to fail immediately if a referenced
   resource is not fully ready, so that I do not end up with resources stuck
   waiting for prerequisites
@@ -324,23 +332,23 @@ explicitly specifies them.
 
 ### CaaS-Specific Stories
 
-- As a tenant, I want to place my cluster's worker nodes on a Subnet in my
-  VirtualNetwork
-- As a tenant, I want to attach ExternalIPs to my cluster's API server and
-  ingress endpoints after the cluster is ready
-- As a tenant, I want my cluster to work in the provider's connected network
-  using provider-routable IPs
+- As a tenant in a fabric-backed deployment, I want to place my cluster's
+  worker nodes on a Subnet in my VirtualNetwork
+- As a tenant in a fabric-backed deployment, I want to attach ExternalIPs
+  to my cluster's API server and ingress endpoints after the cluster is ready
+- As a tenant in a fabric-backed deployment, I want my cluster to work in
+  the provider's connected network using provider-routable IPs
 
 ### BMaaS-Specific Stories
 
-- As a tenant, I want to place my BaremetalInstance on Subnets in my
-  VirtualNetwork
+- As a tenant in a fabric-backed deployment, I want to place my
+  BaremetalInstance on Subnets in my VirtualNetwork
 - As a tenant, I want to see the available physical interfaces on a bare-metal
   template so I can decide how to attach networks
 - As a tenant, I want to select the physical interface used by my
   BaremetalInstance's single tenant network attachment
-- As a tenant, I want to attach an ExternalIP to my bare-metal server for
-  inbound access
+- As a tenant in a fabric-backed deployment, I want to attach an ExternalIP
+  to my bare-metal server for inbound access
 
 ### Provider Stories
 
@@ -358,23 +366,28 @@ explicitly specifies them.
 
 #### FR-1: Network isolation and connectivity (R1)
 
-VirtualNetworks must provide tenant isolation. Subnets within a VirtualNetwork
-must provide L2 and L3 connectivity. These guarantees must hold regardless of
-the physical location of the resource or the infrastructure it runs on. The
-system enforces isolation uniformly across all resource types.
+VirtualNetworks provide tenant isolation. Subnets provide Layer 2 connectivity
+for workloads supported by the selected manager profile. Fabric-backed
+profiles provide Layer 3 routing between Subnets in the same VirtualNetwork.
+K8s-only networking supports hub-hosted VMs and does not provide routed
+connectivity between Subnets. These guarantees apply to supported workload
+targets; requests for unsupported targets or operations must fail clearly.
 
 #### FR-2: Infrastructure-agnostic subnets (R2)
 
-The same subnet must be able to host VMs, BM servers, and cluster nodes.
-The tenant does not declare the resource type when creating a VirtualNetwork
-or Subnet. Multiple deployment locations are supported — VMs on different
-infrastructure share the same subnet.
+In fabric-backed profiles, the same Subnet can host supported VMs, bare-metal
+servers, and cluster nodes, regardless of physical location or hosting
+infrastructure. The tenant does not declare the resource type when creating a
+VirtualNetwork or Subnet. A K8s-only profile supports VM workloads on the hub
+cluster and does not claim cross-hosting-cluster or cross-service placement.
 
 #### FR-3: Uniform networking across all service types (R3)
 
-All three service types (VMaaS, CaaS, BMaaS) must consume the networking API
-using the same resource model: VirtualNetwork, Subnet, SecurityGroup,
-ExternalIPPool, ExternalIP, ExternalIPAttachment, NATGateway.
+VMaaS, CaaS, and BMaaS consume the same tenant-facing networking resource
+model. The selected manager profile determines which workload targets and
+network operations are available; a K8s-only profile supports VMs on the hub,
+while fabric-backed profiles can support the workload types implemented by
+their configured managers. [User]
 
 #### FR-4: ExternalIP is external to the VirtualNetwork (R4)
 
@@ -388,9 +401,11 @@ The API must clearly separate inbound and outbound external access.
 
 #### FR-6: Pluggable networking backends with transparent selection (R6)
 
-Providers configure which networking backends handle network operations.
-Tenants never choose networking backends — the system selects them based
-on the provider's configuration.
+Providers configure the networking manager profile for a deployment. Tenants
+never choose networking backends; the system selects them based on provider
+configuration. The configured profile determines supported workload targets
+and operations. Requests for an unsupported target or operation fail with a
+clear diagnostic instead of being silently sent to another manager. [User]
 
 #### FR-7: Single network attachment per workload (R7)
 
@@ -400,17 +415,19 @@ interface for that attachment based on the interface descriptions provided by
 the template. The VMaaS and BMaaS repeated fields remain repeated for API
 compatibility, but requests containing more than one entry are rejected.
 
-#### FR-8: Create/read/delete networking contract (R8)
+#### FR-8: Networking resource operations (R8)
 
 The networking resources defined by this PRD — `NetworkClass`,
 `VirtualNetwork`, `Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
-`ExternalIPAttachment`, and `NATGateway` — support only create, read, and
-delete operations. Read includes `List` and `Get`. Their specification and
-metadata are fixed after creation; changing a networking resource requires
-deleting it and creating a replacement. The network attachment fields on
-`ComputeInstance`, `Cluster`, and `BaremetalInstance` are also set at parent
-creation time and cannot be changed in place; changing them requires replacing
-the parent workload.
+`ExternalIPAttachment`, and `NATGateway` — support create, read, and delete
+operations. Read includes `List` and `Get`. SecurityGroup ingress and egress
+rules also support update. An update replaces the effective rule set with the
+requested rules: omitted rules are removed, and repeating the same update
+leaves the same effective policy. This desired-state update behavior is
+required for retries. Other SecurityGroup fields, metadata, all other
+networking resource specifications and metadata, and workload network
+attachments remain immutable after creation; changing them requires deleting
+and recreating the resource or parent workload. [User]
 
 Controller-owned status, condition, readiness, and IP-discovery updates are
 internal reconciliation and do not add a tenant/provider update operation.
@@ -458,21 +475,20 @@ _No non-functional requirements were specified in the original document._
 
 ### Core Networking
 
-- [ ] Resources in different VirtualNetworks cannot communicate (full isolation)
-- [ ] Resources in the same Subnet are in the same L2 broadcast domain
-- [ ] Resources in different Subnets within the same VirtualNetwork can communicate via Layer 3 routing
-- [ ] SecurityGroups control which traffic is permitted within these boundaries — enforced uniformly for all resource types
-- [ ] Bare-metal servers in the same Subnet are in the same broadcast domain regardless of their physical location (rack, switch)
-- [ ] VMs in the same Subnet are in the same broadcast domain regardless of which infrastructure they run on
-- [ ] VMs are reachable at their subnet IP alongside bare-metal servers and cluster nodes
-- [ ] The system provisions all necessary networking infrastructure for each subnet automatically
-- [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
-- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
-- [ ] SecurityGroup enforcement is uniform across all resource types
-- [ ] Each resource type has its own network attachment configuration appropriate to the resource, and VMaaS, BMaaS, and CaaS each enforce at most one tenant attachment per workload
-- [ ] ExternalIPAttachment supports all three service types as targets
-- [ ] The tenant workflow for creating networking resources is identical regardless of service type
-- [ ] Networking resources support only Create, List/Get, and Delete; changing a networking resource or a workload network attachment requires delete and recreate
+- [ ] Resources in different VirtualNetworks cannot communicate
+- [ ] Resources in the same Subnet have Layer 2 connectivity for the workload types supported by the selected profile
+- [ ] Fabric-backed profiles route between Subnets in the same VirtualNetwork; K8s-only networking does not provide inter-Subnet routing
+- [ ] SecurityGroups control permitted traffic for workload targets supported by the selected profile
+- [ ] Fabric-backed profiles can place supported VM, bare-metal, and cluster workloads on shared Subnets regardless of physical location
+- [ ] K8s-only networking supports hub-hosted VMs on primary Subnets and does not claim fabric connectivity
+- [ ] The system provisions the networking resources required by the selected manager profile
+- [ ] Fabric-backed profiles support the workload targets implemented by their configured managers; a K8s-only profile supports VM workloads on the hub, and a fabric-only profile without a K8s manager does not support VMs
+- [ ] SecurityGroup and ExternalIP behavior applies to every workload target supported by the selected profile
+- [ ] Each workload supports at most one tenant network attachment
+- [ ] Fabric-backed profiles support ExternalIPAttachment targets for VMs, clusters, and bare-metal servers; K8s-only networking supports VM targets only
+- [ ] Tenants use the shared networking resource model across service types; available operations and targets depend on the provider-configured profile
+- [ ] Networking resources support Create, List/Get, and Delete; SecurityGroup ingress and egress rules also support Update. Other networking resource fields and workload network attachments remain immutable after creation
+- [ ] Updating SecurityGroup ingress or egress rules sets the effective policy to exactly the requested rule set, removes rules omitted from the update, and repeated identical updates leave the same result
 
 ### Resource Lifecycle Enforcement
 
@@ -499,22 +515,22 @@ _No non-functional requirements were specified in the original document._
 - [ ] ExternalIP semantics do not depend on internet reachability
 - [ ] The supported deployment topology is connected only; air-gapped and disconnected networking deployments are rejected before provisioning
 - [ ] ExternalIPPool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4` and rejects `IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values before persistence
-- [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the
-  repeated `cidrs` field and rejects empty or multiple entries
+- [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the repeated `cidrs` field and rejects empty or multiple entries
 - [ ] Supported networking deployments use exactly one provider-owned hub; multi-hub networking placement, cross-hub resource coordination, and cross-hub network connectivity are unsupported
-- [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
-- [ ] ExternalIPAttachment handles inbound traffic only
-- [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity
-- [ ] Inbound and outbound external access works uniformly for all resource types — VMs, BM servers, and cluster nodes
+- [ ] Fabric-backed CaaS clusters can use provider-routable ExternalIPs for API server and ingress endpoints after the cluster is Ready
+- [ ] ExternalIPAttachment handles inbound traffic only, with supported targets determined by the selected profile
+- [ ] NATGateway is optional and provides a dedicated egress identity in profiles with a fabric manager; K8s-only profiles reject NATGateway requests clearly
+- [ ] Fabric-backed external access applies to workload targets supported by the profile; K8s-only networking provides inbound VM access without managed outbound NAT
 
 ### Provider Architecture
 
 - [ ] Networking backend configuration is not exposed in the tenant API
-- [ ] A single networking backend handles all physical networking operations (isolation, access control, IP allocation, inbound routing, outbound routing)
-- [ ] VM networking is integrated into the same networking layer as bare-metal servers
-- [ ] Networking backends are registered through configuration deployed with the OSAC installation
-- [ ] The system validates that a networking backend supports its assigned role
-- [ ] A new networking backend can be added through configuration — no API changes needed
+- [ ] In fabric-backed profiles, one fabric manager handles physical networking operations; a K8s manager may connect VM networking to the fabric
+- [ ] A K8s-only profile provides VM networking on the hub without physical-fabric integration
+- [ ] VM and bare-metal networking share the fabric when the configured profile supports both
+- [ ] Networking managers are registered through configuration deployed with the OSAC installation
+- [ ] The system validates that the configured profile supports its assigned workload targets and operations
+- [ ] A new networking manager can be added through configuration without changing the tenant-facing API
 
 ### Resource-Specific (Bare Metal)
 
@@ -527,6 +543,18 @@ _No non-functional requirements were specified in the original document._
 ## 6. Dependencies
 
 - **Unified Networking Design**: [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) — Technical design document fulfilling these requirements
+- **K8s-only Manager Design**: [/enhancements/OSAC-2069-k8s-only-k8s-manager-networking](/enhancements/OSAC-2069-k8s-only-k8s-manager-networking) — Defines the K8s-only profile's supported targets and operations
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
 - **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
+Phases: revise, revise, revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
