@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-16
+last-updated: 2026-09-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -169,15 +169,19 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
    osac create computeinstance --template ocp_virt_vm \
      --external-ip-attachment --name my-vm
    ```
-   - fulfillment-service:
+   - fulfillment-service (synchronous, during create API call):
      - Populates the resource-specific network attachment field with defaults (if omitted)
      - Reads `auto_external_ip_attachment: true`
      - Auto-selects an IPv4 ExternalIPPool (READY, most available capacity)
-     - Creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically.
-     - Both labeled `osac.openshift.io/auto-created: "true"`. ExternalIP also labeled `osac.openshift.io/auto-created-for: <resource-id>` for orphan cleanup.
-   - ComputeInstance CR created with `auto_external_ip_attachment: true`
-   - osac-operator reconciles ExternalIP (fabric manager allocates address → Allocated), then VM provisioning, then ExternalIPAttachment controller activates once ExternalIP is Allocated AND `compute_network_attachment_statuses` is populated with the primary attachment's `ip_address`
-   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
+     - Creates ExternalIP in the same DB transaction as the workload. ExternalIP starts in **Pending** state. Pool capacity is decremented atomically.
+     - ExternalIP labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <resource-id>`.
+     - ExternalIPAttachment is **not** created at this point — its dependencies (ExternalIP Allocated + target Ready) are not yet met.
+   - fulfillment-service (asynchronous, internal reconciler):
+     - osac-operator reconciles ExternalIP → fabric manager allocates address → ExternalIP transitions to Allocated
+     - osac-operator reconciles ComputeInstance → VM provisioning → ComputeInstance transitions to Ready
+     - Once ExternalIP is Allocated AND ComputeInstance is Ready: fulfillment-service internal reconciler creates ExternalIPAttachment (readiness gate satisfied). ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`.
+     - osac-operator ExternalIPAttachment controller creates DNAT rule → ExternalIPAttachment transitions to Ready
+   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow
    - Result: VM is reachable via ExternalIP
 
 7. **If ExternalIPPool has no capacity:**
@@ -192,16 +196,19 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
    osac create cluster --template ocp_4_17_small \
      --external-ip-attachment --name my-cluster
    ```
-   - fulfillment-service:
+   - fulfillment-service (synchronous, during create API call):
      - Populates the resource-specific network attachment field with defaults (if omitted)
      - Reads `auto_external_ip_attachment: true`
      - Auto-selects ExternalIPPool (same algorithm)
-     - Creates two ExternalIPs + two ExternalIPAttachments in the same DB transaction — all start in **Pending** state. Pool capacity decremented atomically.
-     - All labeled `osac.openshift.io/auto-created: "true"`
-   - osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (external addresses assigned)
-   - Cluster provisioning proceeds — MetalLB allocates internal VIPs from its IPAddressPool. Template discovers VIPs and writes to ClusterOrder status (`apiEndpoint`, `ingressEndpoint`).
-   - ExternalIPAttachment controllers activate once ExternalIP is Allocated AND ClusterOrder `apiEndpoint`/`ingressEndpoint` are populated → creates DNAT: external IP → internal VIP
-   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
+     - Creates two ExternalIPs in the same DB transaction as the Cluster. Both start in **Pending** state. Pool capacity decremented atomically.
+     - Both labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`.
+     - ExternalIPAttachments are **not** created at this point.
+   - fulfillment-service (asynchronous, internal reconciler):
+     - osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated
+     - Cluster provisioning proceeds — MetalLB allocates internal VIPs. Template discovers VIPs → ClusterOrder status → feedback controller → Cluster status. Cluster transitions to Ready.
+     - Once ExternalIPs are Allocated AND Cluster is Ready: fulfillment-service internal reconciler creates two ExternalIPAttachments (one for API, one for ingress). Readiness gate satisfied.
+     - ExternalIPAttachment controllers create DNAT: external IP → internal VIP → Ready
+   - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow
    - Result: Cluster is reachable via ExternalIPs for both API and ingress
 
 9. **CLI flag mapping for clusters:**
@@ -213,12 +220,15 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
     ```bash
     osac delete computeinstance my-vm
     ```
-    - osac-operator ComputeInstance controller finalizer:
+    - If manually-created ExternalIPAttachments target this resource, the
+      delete is **rejected** — the tenant must remove them first. See
+      [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
+    - If only auto-created ExternalIPAttachments exist (or none), the
+      delete proceeds. osac-operator ComputeInstance controller finalizer:
       - Queries ExternalIPAttachment and ExternalIP labeled `osac.openshift.io/auto-created: "true"` referencing this ComputeInstance
       - Deletes ExternalIPAttachment first (DNAT rule removed)
       - Deletes ExternalIP second (IP returned to pool)
       - If cleanup fails permanently (after retries): finalizer is removed, parent resource deleted, orphaned resources left in cluster
-    - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
 11. **Tenant Admin inspects default resources:**
@@ -418,7 +428,18 @@ type ClusterSpec struct {
 
 #### Default Resource Lifecycle
 
-- **Creation:** fulfillment-service creates default VN, IPv4 Subnet, SG, and NATGateway at tenant onboarding (via its own API — resources are persisted in PostgreSQL and reconciled to K8s CRs like any other resource)
+- **Creation:** fulfillment-service creates default networking resources at
+  tenant onboarding in dependency order, waiting for each to reach its ready
+  state before creating the next. The sequence is:
+  1. Create VirtualNetwork → wait for Ready
+  2. Create Subnet and SecurityGroup → wait for Ready
+  3. Create ExternalIP → wait for Allocated
+  4. Create NATGateway → wait for Ready
+  The fulfillment-service internal reconciler drives this progression,
+  triggered by status updates via Signal RPC. The `DefaultNetworkingReady`
+  tenant condition tracks the overall progress. This follows the same
+  creation readiness rules as tenant-initiated operations — see
+  [Unified Networking — Creation Readiness Gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates).
 - **Labeling:** All default resources labeled `osac.openshift.io/default: "true"`
 - **Visibility:** Default resources appear in list/detail views like any other resource
 - **Mutability:** Default resources are immutable after creation; changes require
@@ -428,12 +449,18 @@ type ClusterSpec struct {
 
 #### Auto-Provisioned Resource Lifecycle
 
-- **Creation:** fulfillment-service creates ExternalIP or ExternalIPAttachment when auto_external_ip_attachment=true
+- **Creation:** fulfillment-service creates ExternalIP at workload creation
+  time when `auto_external_ip_attachment=true` (the ExternalIPPool is already
+  Ready, so the readiness gate is satisfied). ExternalIPAttachment is created
+  later by the fulfillment-service internal reconciler, only after the
+  ExternalIP is Allocated and the target workload is Ready. This follows the
+  same creation readiness rules as tenant-initiated operations — see
+  [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment).
 - **Labeling:** All auto-created resources labeled `osac.openshift.io/auto-created: "true"`
 - **Cleanup:** Parent resource finalizer deletes auto-created ExternalIP/ExternalIPAttachment on parent deletion
 - **Cleanup order:** ExternalIPAttachment → ExternalIP → parent resource removal
 - **Cleanup failure:** If cleanup fails permanently (after retries), finalizer is removed, parent deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required)
-- **Manual resources NOT cleaned up:** If tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
+- **Manual resources block deletion:** If tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they block the parent workload's deletion — the tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)
 
 #### Prerequisite Ordering for Clusters
 
@@ -444,12 +471,13 @@ For clusters, two separate IP allocations happen from different sources:
 
 The DNAT model maps external IPs to internal VIPs:
 
-1. fulfillment-service creates ExternalIP resources (Pending state in DB) and ExternalIPAttachments (Pending, no target VIP yet)
+1. fulfillment-service creates ExternalIP resources at cluster creation time (pool is Ready, readiness gate satisfied). ExternalIPs start Pending.
 2. osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (external addresses assigned, e.g., 203.0.113.10)
 3. Cluster provisioning proceeds — MetalLB allocates internal VIPs from its IPAddressPool on the hosting cluster (e.g., 10.0.1.200 for API, 10.0.1.201 for ingress)
 4. Template discovers VIPs after MetalLB allocation, writes to ClusterOrder status (`apiEndpoint`, `ingressEndpoint`)
 5. VIP feedback loop: ClusterOrder status → feedback controller → fulfillment-service syncs to Cluster status
-6. ExternalIPAttachment controller activates once ExternalIP is Allocated AND the relevant endpoint is populated → creates DNAT: external IP → internal VIP
+6. Once ExternalIP is Allocated AND Cluster is Ready: fulfillment-service internal reconciler creates ExternalIPAttachments (readiness gate satisfied)
+7. ExternalIPAttachment controller creates DNAT: external IP → internal VIP → ExternalIPAttachment transitions to Ready
 
 Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPAddressPool) are separate address spaces managed by separate systems. No IPAM coordination needed between them.
 
