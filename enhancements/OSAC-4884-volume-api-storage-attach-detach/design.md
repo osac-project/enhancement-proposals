@@ -148,7 +148,7 @@ For an existing VMaaS `ComputeInstance`, the user mutates `ComputeInstance.spec.
 2. The service accepts the ComputeInstance mutation and creates the internal attachment intent in `PENDING`. The intent references the Volume ID, ComputeInstance ID, access mode, and desired read-only setting.
 3. `osac-operator` reconciles the intent into the ComputeInstance provisioning input. The input contains the existing OSAC Volume ID and a deterministic PVC name/attachment ID, plus the canonical PVC annotation `osac.openshift.io/volume-id: <osac-volume-id>`.
 4. AAP's VM provisioning playbook creates the PVC in the VM tenant namespace and adds that PVC to the KubeVirt VM's disk/volume definition. The PVC carries `osac.openshift.io/volume-id: <osac-volume-id>` and is handled by the normal dynamic CSI provisioning path.
-5. The CSI chart runs the external-provisioner with `--extra-create-metadata`, so `CreateVolumeRequest.parameters` contains the PVC namespace/name/UID and generated PV name. The OSAC CSI driver uses that identity to call the private fulfillment Volume API, which looks up the matching internal attachment intent and returns the existing Volume details. The annotation is retained for admission/audit and must match the intent, but is not trusted as authorization and is not assumed to arrive in the CSI request. The driver returns the existing CSI volume ID, capacity, and context without provisioning storage; the external-provisioner creates the ordinary PV from that response and binds it to the PVC. No separate static-PV or OSAC wrapper resource is created.
+5. The CSI chart runs the external-provisioner with `--extra-create-metadata`, so `CreateVolumeRequest.parameters` contains the PVC namespace/name/UID and generated PV name. The OSAC CSI driver uses that identity to read the trusted PVC annotation from the Kubernetes API, extracts the OSAC Volume ID, and calls the existing fulfillment `Volumes.Get` API. Fulfillment authorization verifies the authenticated cluster/tenant and matching internal attachment intent before returning the Volume. The annotation is retained for admission/audit and is not trusted by itself. The driver returns the existing CSI volume ID, capacity, and context without provisioning storage; the external-provisioner creates the ordinary PV from that response and binds it to the PVC. No separate static-PV or OSAC wrapper resource is created.
 6. KubeVirt causes the normal CSI ControllerPublish/NodeStage/NodePublish sequence. The CSI driver uses the existing backend/vendor routing, including `AlreadyExists`, `NotFound`, `Unimplemented`, and no-attach behavior.
 7. Operator feedback observes the PVC, PV, VM disk, and CSI readiness, then updates the operator intent and fulfillment `VolumeAttachment` to `READY` or `FAILED`.
 
@@ -156,7 +156,7 @@ The reverse path removes the PVC reference from the VM provisioning input, lets 
 
 VMaaS partial states are explicit and recoverable: `IntentPending`, `PVCRequested`, `VolumeResolved`, `PVBound`, `VMReferenceApplied`, `PublishPending`, `Ready`, `DetachRequested`, `UnpublishPending`, and `Failed`. The operator adopts an existing PVC/PV by deterministic attachment ID, never creates duplicates, and resumes from the first incomplete state after restart. A PV without its PVC is recreated through the normal CSI provisioner path; a PVC without VM wiring is reintroduced into the ComputeInstance provisioning input; a VM reference without a completed publish remains `PublishPending`; and detach retains the internal intent until unpublish and Kubernetes resource cleanup complete. Existing OSAC Volume deletion is never part of PVC/PV cleanup.
 
-The PVC annotation is the declarative marker for the existing-volume path, while the persisted attachment intent and PVC namespace/name/UID are authoritative for authorization. `osac.openshift.io/volume-id` is immutable after PVC creation and may be set only by the trusted VMaaS provisioning path. A PVC with that annotation must not provision a new backend volume. The CSI driver returns the existing volume details to the external-provisioner, which creates the ordinary PV object. When that PV is later deleted, the driver recognizes the existing-volume context and does not invoke fulfillment Volume deletion. A missing or invalid annotation follows ordinary dynamic provisioning only for PVCs without an attachment intent.
+The PVC annotation is the declarative marker for the existing-volume path, while the persisted attachment intent and PVC namespace/name/UID are authoritative for authorization. `osac.openshift.io/volume-id` is immutable after PVC creation and may be set only by the trusted VMaaS provisioning path. A PVC with that annotation must not provision a new backend volume. The CSI driver reads the annotation from Kubernetes, calls the existing fulfillment `Volumes.Get` API by ID, and returns the result to the external-provisioner. When the resulting PV is later deleted, the driver recognizes the existing-volume context and does not invoke fulfillment Volume deletion. A missing or invalid annotation follows ordinary dynamic provisioning only for PVCs without an attachment intent.
 
 ### 4.1.2 BMaaS Semi-Automatic Attachment Flow
 
@@ -218,7 +218,7 @@ Public attachment behavior is exposed through the existing target APIs; no publi
 
 `ComputeInstanceDisk` gains an `existing_volume` reference in a oneof with dynamic disk configuration. Existing-volume entries carry the OSAC Volume ID and are the public VMaaS attachment intent. Additional disk entries are mutable only for adding/removing existing-volume attachments; normal dynamically provisioned disk configuration retains its existing immutability rules. `osac#743` remains a prerequisite for CSI access to the public Volume API.
 
-The private fulfillment API adds `ResolveExistingVolume`, `PublishVolume`, and `UnpublishVolume` for CSI identities. `ResolveExistingVolume` receives the authenticated cluster identity, PVC namespace/name/UID, generated PV name, and the OSAC volume annotation; the service resolves the matching internal attachment intent and returns the existing Volume's CSI handle, capacity, backend, and context. Publish/unpublish requests contain the OSAC Volume ID, `clusterId`, `nodeId`, PVC identity where applicable, the internal attachment correlation ID, and authenticated caller context. The service derives the tenant from the authenticated cluster/service identity, resolves the target intent, and requires that the Volume and target belong to the same tenant. It rejects a PVC annotation that has no matching authorized intent; the annotation alone is never authorization. The service creates or converges the internal relationship and signals `osac-operator`, which owns the vendor publish/unpublish call. These methods are not public user operations.
+The private fulfillment API adds `PublishVolume` and `UnpublishVolume` for CSI identities. For existing-volume provisioning, the CSI driver reads `osac.openshift.io/volume-id` from the PVC and uses the existing `Volumes.Get` API by ID; no new resolve RPC is required. Publish/unpublish requests contain the OSAC Volume ID, `clusterId`, `nodeId`, PVC identity where applicable, the internal attachment correlation ID, and authenticated caller context. The service derives the tenant from the authenticated cluster/service identity, resolves the target intent, and requires that the Volume and target belong to the same tenant. It rejects a PVC annotation that has no matching authorized intent; the annotation alone is never authorization. The service creates or converges the internal relationship and signals `osac-operator`, which owns the vendor publish/unpublish call. These methods are not public user operations.
 
 The private service adds these concrete controller messages and RPCs:
 
@@ -237,24 +237,9 @@ service VolumeAttachmentController {
 }
 ```
 
-The same private service defines the CSI data-plane contract:
+The same private service defines the CSI data-plane contract. Existing-volume resolution uses the existing `Volumes.Get` RPC; no separate resolver method is added:
 
 ```protobuf
-message ResolveExistingVolumeRequest {
-  string cluster_id = 1;
-  string pvc_namespace = 2;
-  string pvc_name = 3;
-  string pvc_uid = 4;
-  string pv_name = 5;
-  string volume_annotation = 6;
-}
-message ResolveExistingVolumeResponse {
-  string volume_id = 1;
-  int64 capacity_bytes = 2;
-  string backend = 3;
-  map<string, string> volume_context = 4;
-  string attachment_id = 5;
-}
 message PublishVolumeRequest {
   string cluster_id = 1;
   string node_id = 2;
@@ -266,7 +251,6 @@ message PublishVolumeRequest {
   bool readonly = 8;
 }
 message PublishVolumeResponse { string operation_id = 1; }
-rpc ResolveExistingVolume(ResolveExistingVolumeRequest) returns (ResolveExistingVolumeResponse);
 rpc PublishVolume(PublishVolumeRequest) returns (PublishVolumeResponse);
 rpc UnpublishVolume(PublishVolumeRequest) returns (PublishVolumeResponse);
 ```
