@@ -140,7 +140,9 @@ Responsibilities:
 
 Lifecycle sequence: create assigns tenant metadata and the Volume owner-reference, persists `PENDING`, and creates the operator attachment intent. The operator adds its finalizer, updates the ComputeInstance provisioning input, and waits for AAP, PVC, KubeVirt, and CSI status. Delete changes the relationship to `DELETING`; the operator removes the PVC/VM disk intent and waits for normal CSI unpublish before removing its finalizer. Target controllers use the same target deletion guard and cleanup handshake. A terminal detach failure retains the operator finalizer and status for recovery.
 
-### 4.1.1 VMaaS Existing-VM Attachment Flow
+### 4.1.1 VMaaS Existing-Volume Disk Flows
+
+For a new VM with an existing OSAC Volume as its boot disk, the user sets `spec.boot_disk.existing_volume.id` during ComputeInstance creation. The operator passes the Volume ID into AAP, AAP creates the annotated DataVolume/PVC and configures the KubeVirt boot disk, and the CSI driver resolves the existing Volume through `Volumes.Get`. Boot replacement on an already-created VM is not supported by this workflow because it changes root-disk ownership and boot order.
 
 For an existing VMaaS `ComputeInstance`, the user mutates `ComputeInstance.spec.additional_disks` with an `existing_volume.id`. The operator creates an internal `VolumeAttachment` whose `target.osacReference` is `{kind: "ComputeInstance", id: "..."}`. The CSI target is resolved later from the PVC/cluster/node workflow; the public API does not directly call CSI or mutate a vendor attachment:
 
@@ -152,7 +154,7 @@ For an existing VMaaS `ComputeInstance`, the user mutates `ComputeInstance.spec.
 6. KubeVirt causes the normal CSI ControllerPublish/NodeStage/NodePublish sequence. The CSI driver uses the existing backend/vendor routing, including `AlreadyExists`, `NotFound`, `Unimplemented`, and no-attach behavior.
 7. Operator feedback observes the PVC, PV, VM disk, and CSI readiness, then updates the operator intent and fulfillment `VolumeAttachment` to `READY` or `FAILED`.
 
-The reverse path removes the PVC reference from the VM provisioning input, lets AAP remove the PVC/VM disk relationship, and waits for normal CSI unpublish before the operator reports detach complete. The OSAC Volume itself is not deleted by attachment removal. Boot-disk and additional-disk attachments use the same flow; the only difference is which VM disk list receives the PVC reference.
+The existing-VM additional-disk reverse path removes the PVC reference from the VM provisioning input, lets AAP remove the PVC/VM disk relationship, and waits for normal CSI unpublish before the operator reports detach complete. The OSAC Volume itself is not deleted by attachment removal. Boot-disk replacement is outside this existing-VM detach path.
 
 VMaaS partial states are explicit and recoverable: `IntentPending`, `PVCRequested`, `VolumeResolved`, `PVBound`, `VMReferenceApplied`, `PublishPending`, `Ready`, `DetachRequested`, `UnpublishPending`, and `Failed`. The operator adopts an existing PVC/PV by deterministic attachment ID, never creates duplicates, and resumes from the first incomplete state after restart. A PV without its PVC is recreated through the normal CSI provisioner path; a PVC without VM wiring is reintroduced into the ComputeInstance provisioning input; a VM reference without a completed publish remains `PublishPending`; and detach retains the internal intent until unpublish and Kubernetes resource cleanup complete. Existing OSAC Volume deletion is never part of PVC/PV cleanup.
 
