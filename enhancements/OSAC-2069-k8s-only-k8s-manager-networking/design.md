@@ -14,45 +14,31 @@ prd:
 
 ## Summary
 
-This design describes how the k8s-only K8s manager implements its assigned
-networking operations using Kubernetes-native resources — CUDNs,
-NetworkPolicies, and MetalLB — without requiring an external fabric controller.
-The shared manager contract is defined in the
+This design documents how the `k8s_only` manager implements its supported
+networking operations with Kubernetes-native resources: CUDNs, NetworkPolicies,
+and MetalLB. The shared manager contract is defined in the
 [Unified Networking design](../OSAC-1433-unified-networking/design.md#manager-contract).
 See [PRD](prd.md) for full requirements.
 
 ## Motivation
 
-OSAC's networking architecture assumes a two-manager model: a fabric manager for
-physical networking and a K8s manager for bridging the Kubernetes OVN overlay to
-the fabric. Not every deployment has a physical fabric controller. Sites with
-only KubeVirt VMs on a single hub cluster need tenant networking without the
-operational cost of deploying and maintaining a Netris controller or equivalent.
-
-The k8s-only backend fills this role by using the dispatcher's K8sFallback
-mechanism: when no fabric manager is configured on a NetworkClass, the K8s manager
-handles both its own responsibilities and the fabric manager's responsibilities
-for resource kinds that support fallback. This gives tenants a consistent
-networking API regardless of backend, while limiting the scope to what
-Kubernetes-native resources can provide.
-
-The k8s-only backend is deployed and operational, but its Kubernetes
-resource mapping, role behavior, and limitations have not been formally
-documented. This design records the as-built implementation.
+The `k8s_only` manager provides tenant networking for KubeVirt workloads using
+OVN-Kubernetes and MetalLB. Its resource mapping, role behavior, and limitations
+have not been formally documented. This design records the as-built
+implementation. The Unified Networking design describes manager selection and
+dispatch behavior.
 
 ### Goals
 
 - Describe how the k8s-only backend implements supported operations using
   Kubernetes-native resources (CUDNs, NetworkPolicies, MetalLB)
-- Define how the k8s-only installation uses K8sFallback and which resource
-  kinds it can handle in the fabric role
 - Establish the supported and unsupported operation set with concrete rejection
   behavior
 
 ### Non-Goals
 
 - NATGateway support — the k8s-only backend does not and will not provide SNAT
-- Bare-metal networking — physical switch configuration requires a fabric manager
+- Bare-metal networking
 - Multi-hub CUDN coordination
 - IPv6 or dual-stack
 
@@ -60,13 +46,13 @@ documented. This design records the as-built implementation.
 
 ### K8s-Only Behavior
 
-For a NetworkClass configured with `k8sManager: k8s_only` and no fabric
-manager, the dispatcher routes supported operations to the `k8s_only`
-composite Ansible role. That role delegates VirtualNetwork and Subnet operations to `cudn_net`,
-SecurityGroup operations to `network_policy`, and ExternalIP operations to
-`metallb_l2`. VirtualNetwork create and delete are no-ops; Subnet provisioning
-creates a Namespace and CUDN. NATGateway is rejected before an AAP job because
-the k8s-only manager has no implementation for it.
+The `k8s_only` composite Ansible role delegates VirtualNetwork and Subnet
+operations to `cudn_net`, SecurityGroup operations to `network_policy`, and
+ExternalIP operations to `metallb_l2`. VirtualNetwork create and delete are
+no-ops; Subnet provisioning creates a Namespace and CUDN. The Unified Networking
+design defines how a NetworkClass selects this manager and how the dispatcher
+handles unsupported operations. NATGateway has no k8s-only implementation and
+is rejected before an AAP job is created.
 
 CUDN-based VM attachment does not move a physical fabric port, so this
 manager does not implement `move_network_attachment`. The current k8s-only flow does
@@ -275,18 +261,11 @@ assertion when that field is absent. It does not implement Cluster or
 BaremetalInstance targets, and this role-level check is not an admission-time
 rejection.
 
-### NATGateway — Rejected at Dispatch
+### NATGateway — Unsupported
 
-NATGateway is the only resource kind with `K8sFallback: false`. When a tenant
-creates a NATGateway on a k8s-only NetworkClass:
-
-1. The controller resolves the NetworkClass via the dispatcher
-2. The dispatcher finds no fabric manager and checks K8sFallback for NATGateway
-3. K8sFallback is false — the dispatcher returns an error
-4. The controller sets the NATGateway's status phase to `Failed` with a condition
-   message indicating NATGateway requires a fabric manager
-
-No provisioning job is created. The rejection is deterministic and immediate.
+The k8s-only manager has no NATGateway implementation. As defined by the shared
+dispatcher contract, the dispatcher rejects a NATGateway operation before
+creating an AAP job and reports the unsupported operation on the resource.
 
 ### Subnet CIDR Input
 
@@ -321,7 +300,7 @@ The k8s-only backend inherits the existing OSAC security model:
 | MetalLB pool or advertisement task fails | AAP job fails; the operator reports the provisioning failure on the ExternalIPPool | Retry the provisioning job after the MetalLB API is available |
 | Parking Service receives no IP | The AAP task times out waiting for Service ingress status and fails; no dedicated “pool exhausted” condition is set | Investigate MetalLB pool configuration/capacity, then retry |
 | EndpointSlice workaround times out | AAP job fails while waiting for the OVN-K mirrored EndpointSlice | Check namespace UDN and Service endpoints, then retry |
-| NATGateway on k8s-only | Dispatcher rejects the operation before creating an AAP job | NATGateway requires a supported fabric manager |
+| NATGateway on k8s-only | Dispatcher rejects the operation before creating an AAP job | NATGateway is unsupported by `k8s_only` |
 | AAP or target-cluster API unavailable | Provisioning job fails or remains pending according to the AAP/dispatcher lifecycle | Restore the service and let reconciliation retry |
 
 The Kubernetes resource tasks use `state: present`/`absent`; ExternalIP
@@ -462,7 +441,8 @@ the current NetworkPolicy resource translation.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (17 behind origin/main)
+Phases: revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
