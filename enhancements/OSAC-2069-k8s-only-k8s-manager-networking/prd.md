@@ -4,336 +4,325 @@
 |-------------|---------|
 | Author(s)   | Dan Manor |
 | Jira        | [OSAC-2069](https://redhat.atlassian.net/browse/OSAC-2069) |
-| Date        | 2026-09-28 |
+| Date        | 2026-09-29 |
 
-> This PRD covers the **k8s-only K8s manager** — the Kubernetes networking
-> backend for OSAC. It builds on the [Unified Networking
-> PRD](/enhancements/OSAC-1433-unified-networking/prd.md), which defines the
-> shared networking model, resources, API, and connected-only deployment support
-> boundary. This document defines the requirements for delivering VM-to-fabric
-> bridging using only Kubernetes-native resources, without an external fabric
-> controller.
+> This PRD covers the k8s_only Kubernetes networking manager. It builds on
+> the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md),
+> which defines the shared networking API and deployment boundaries. This
+> document defines the Kubernetes-native behavior and supported workload scope
+> of the k8s_only manager.
 
-This PRD inherits the [Unified Networking deployment support
-boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
-k8s-only networking supports connected deployments only; air-gapped and
-disconnected networking deployments are not supported.
-
-It also inherits the [Unified Networking hub support
-boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
-OSAC networking supports exactly one provider-owned hub per deployment.
+The k8s_only manager provisions VM networking on the provider-owned hub
+cluster. It uses OVN-Kubernetes primary CUDNs, Kubernetes NetworkPolicy, and
+MetalLB. It does not connect to an external network control plane.
 
 ## Terminology
 
-- **K8s Manager**: The component that bridges the Kubernetes OVN overlay to the
-  physical fabric, making VMs part of the fabric network. It manages
-  Kubernetes-native networking resources (CUDNs, UDNs, NetworkAttachmentDefinitions)
-  on the hub cluster.
-
-- **K8sFallback**: The dispatcher mechanism that allows the K8s manager to fill
-  the fabric manager role for supported resource kinds when no fabric manager is
-  configured on the NetworkClass. This is how k8s-only deployments work — the
-  K8s manager handles both K8s-layer and fabric-layer responsibilities for
-  resources it supports.
-
-- **CUDN (ClusterUserDefinedNetwork)**: An OVN-Kubernetes resource that defines
-  a cluster-scoped user-defined network. This backend uses isolated Layer 2
-  CUDNs with EVPN transport.
-
-- **NetworkClass**: A provider-configured resource that defines how networking is
-  implemented. Specifies which fabric manager and K8s manager handle networking.
-  For k8s-only deployments, `fabricManager` is empty and `k8sManager` is set to
-  `k8s_only`.
+- **K8s-only manager**: The k8s_only NetworkClass manager that provisions
+  supported networking resources on the hub cluster using Kubernetes APIs.
+- **CUDN (ClusterUserDefinedNetwork)**: An OVN-Kubernetes cluster-scoped
+  resource that defines a user network. This manager creates a primary Layer2
+  CUDN for each Subnet.
+- **NetworkClass**: Provider configuration that selects the k8s_only manager.
+  Shared registration and dispatch behavior is defined in the Unified
+  Networking design.
 
 ## 1. Problem Statement
 
-OSAC's networking architecture uses a two-manager model: a fabric manager for
-physical networking and a K8s manager for bridging the Kubernetes OVN overlay to
-the fabric. The K8s manager is responsible for creating the Kubernetes-level
-networking resources that allow VMs running on the hub cluster to participate in
-tenant networks.
-
-The k8s-only K8s manager exists and is deployed, but has no formal requirements
-document. Its behavior, supported operations, and limitations are inferred from
-code, scattered feature docs, and the CUDN/EVPN phase 1 enhancement
-(OSAC-4291). Without a consolidated PRD:
-
-- Cloud Infrastructure Admins have no authoritative reference for what the
-  k8s-only backend supports and what it does not, leading to misconfiguration
-  and unsupported-operation attempts (e.g., creating NATGateways on a k8s-only
-  NetworkClass)
-- Developers implementing new networking features have no requirements baseline
-  to validate against, risking drift between the k8s-only and fabric-backed
-  paths
-- Enforcement of unsupported operations is inconsistent — some are rejected by
-  the dispatcher, others fail silently during provisioning
+The k8s_only manager has no consolidated requirements document describing
+its resource mapping, VM attachment behavior, supported targets, and
+limitations. These details are currently inferred from the Ansible roles and
+scattered feature documentation. Without a requirements baseline, operators
+can attempt unsupported operations, and implementation or test changes can
+silently diverge from the behavior the manager is intended to provide.
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
 
-- A Cloud Infrastructure Admin can deploy OSAC networking without an external
-  fabric controller by selecting the k8s-only backend, and tenants get a working
-  networking experience for the supported resource set
-- The system must clearly report unsupported operations (NATGateway creation)
-  on the resource before any provisioning job starts, rather than leaving the
-  resource indefinitely pending
-- The k8s-only backend provides tenant network isolation using
-  Kubernetes-native resources (CUDNs with OVN-Kubernetes EVPN backend),
-  without requiring vendor-specific network controllers
-- The k8s-only NetworkClass advertises its supported IP family. Unsupported
-  resource kinds such as NATGateway are reported through resource status
-  because the current capability model does not represent resource support.
+- A Cloud Infrastructure Admin can select the k8s_only manager and provide
+  IPv4 VM networking on the hub cluster using Kubernetes-native resources.
+- A tenant can create Subnets and attach VMs through the shared networking API.
+- A VM's primary pod network is the Subnet CUDN; VMs on the same Subnet can
+  communicate at Layer 2.
+- ExternalIP resources provide inbound VM access through MetalLB.
+- Unsupported operations and targets are reported clearly before or during
+  provisioning, at the earliest layer supported by the shared API and current
+  implementation.
+- Resource create, update, retry, and delete requests converge on the requested
+  supported state without duplicate Kubernetes resources.
 
 ### 2.2 Non-Goals
 
-- No changes to the OSAC networking API or its resource model — the API is
-  inherited from the unified networking work (OSAC-1433)
-- IPv6 and dual-stack networking are not supported; the k8s-only backend
-  supports IPv4 only
-- NATGateway support — the k8s-only backend does not provide outbound NAT
-  through the OSAC networking API. Resources may still have default outbound
-  connectivity through the cluster's default gateway, but this is outside
-  OSAC's networking model
-- Routing between different Subnets in the same VirtualNetwork — each Subnet
-  has an isolated CUDN in this phase
-- SecurityGroup policy enforcement — this is a separate concern shared across
-  all backends and is not specific to the k8s-only manager
-- Multi-hub networking — the k8s-only backend operates on a single hub cluster
-- UI support for backend selection — backend selection is a provider
-  configuration, not a tenant-facing action
-- Support for bare-metal workloads — the k8s-only K8s manager provides
-  VM-to-fabric bridging; bare-metal networking requires a fabric manager
+- No changes to the shared OSAC networking API or resource model.
+- IPv6 and dual-stack support.
+- NATGateway or managed outbound SNAT.
+- Routed connectivity between different Subnet CUDNs, including Subnets under
+  the same VirtualNetwork.
+- Bare-metal networking or cluster endpoint ExternalIP attachments.
+- Multi-hub networking.
+- Installing or configuring OVN-Kubernetes or MetalLB.
+- Tenant selection of the backend.
 
 ## 3. User Stories
 
 ### Cloud Infrastructure Admin
 
-- As a Cloud Infrastructure Admin, I want to deploy OSAC networking using only
-  Kubernetes-native resources by selecting the k8s-only backend, so that I can
-  offer tenant networking on sites without an external fabric controller
-- As a Cloud Infrastructure Admin, I want the k8s-only backend to register its
-  IPv4 capability accurately and report unsupported resource operations, so
-  that I can configure the backend and diagnose rejected requests
-- As a Cloud Infrastructure Admin, I want a failed CUDN or network-attachment
-  operation reflected on the affected resource's status, so that I can diagnose
-  networking problems without inspecting Kubernetes resources directly
-- As a Cloud Infrastructure Admin, I want to configure the subnet CIDR pool
-  from which the k8s-only backend allocates tenant subnets, so that I can
-  control the address space used on the hub cluster
+- As a Cloud Infrastructure Admin, I want to select the Kubernetes-native
+  manager and configure the supported IPv4 network behavior, so that VM
+  networking can run on the hub cluster without another networking control
+  plane.
+- As a Cloud Infrastructure Admin, I want the manager's IPv4 capability
+  reflected on its NetworkClass, so that provider configuration describes the
+  network it can provide.
+- As a Cloud Infrastructure Admin, I want unsupported resource operations and
+  provisioning failures surfaced on resource status, so that I can diagnose
+  them without inspecting every Kubernetes object.
+- As a Cloud Infrastructure Admin, I want to configure the default Subnet
+  CIDR used during tenant onboarding, so that I can manage the address space
+  used on the hub cluster.
 
 ### Tenant Admin
 
 - As a Tenant Admin, I want to create VirtualNetworks and Subnets through the
-  same API regardless of whether the deployment uses a fabric controller or
-  k8s-only, so that my workflow is consistent across environments
-- As a Tenant Admin, I want unsupported operations (such as creating a
-  NATGateway on a k8s-only NetworkClass) reported before provisioning starts,
-  so that I can choose a supported approach.
-- As a Tenant Admin, I want to attach ExternalIPs to my VMs for inbound access,
-  so that my VMs are reachable from outside the VirtualNetwork
+  shared API, so that tenant workflows remain consistent across deployments.
+- As a Tenant Admin, I want to attach an ExternalIP to a VM for inbound access.
+- As a Tenant Admin, I want an unsupported NATGateway or workload target to
+  report a clear failure rather than remain pending.
 
 ### Tenant User
 
-- As a Tenant User, I want VMs attached to a subnet to automatically receive
-  IP addresses and connectivity on that subnet's network, so that I do not
-  configure addressing manually
-- As a Tenant User, I want VMs on the same subnet to communicate at L2, and
-  so that VMs on that subnet can communicate over their shared network
+- As a Tenant User, I want a VM attached to a Subnet to receive its address
+  from the Subnet CUDN automatically.
+- As a Tenant User, I want VMs on the same Subnet to communicate over their
+  shared Layer2 network.
 
 ## 4. Requirements
 
 ### 4.1 Functional Requirements
 
-#### Backend Registration and Capabilities
+#### Registration and Capabilities
 
-- **FR-1:** The k8s-only K8s manager must register as a ConfigMap with label
-  `osac.openshift.io/network-k8s-manager: "true"`, name `k8s_only`, and
-  capabilities reflecting IPv4 support only. The NetworkClass capabilities
-  controller must compute the intersection of fabric and K8s manager
-  address-family capabilities and update the fulfillment service. NATGateway
-  support is not represented in this capability set; the dispatcher enforces
-  its unsupported status separately.
+- **FR-1:** The manager registration must use the
+  osac.openshift.io/network-k8s-manager: "true" label, set data.name to
+  k8s_only, and declare IPv4 capability.
+- **FR-2:** A NetworkClass with the k8s_only manager and no fabric manager
+  must resolve to the k8s-only provisioning role for supported resource kinds.
+  The shared dispatcher behavior and per-resource role selection are defined
+  in the Unified Networking design.
+- **FR-3:** Effective NetworkClass capabilities must advertise the K8s
+  manager's IPv4 support when it is the sole manager. The current capabilities
+  reconciler skips synchronization when no fabric manager is configured, so
+  this target behavior is not currently implemented and requires a focused
+  unit test.
 
-- **FR-2:** When a NetworkClass has `fabricManager` empty and `k8sManager` set
-  to `k8s_only`, the dispatcher must route supported resource kinds through the
-  K8sFallback path. The k8s-only backend must handle VirtualNetwork, Subnet,
-  SecurityGroup, ExternalIP, ExternalIPPool, and ExternalIPAttachment
-  operations through this path.
+#### Kubernetes-Native Network Resources
 
-#### Unsupported Operation Rejection
+- **FR-4:** VirtualNetwork is a logical grouping in this manager and does not
+  create a separate Kubernetes network object. Subnet creation must create a
+  namespace and a primary Layer2 CUDN whose namespace selector matches that
+  Subnet.
+- **FR-5:** The CUDN must use the Subnet's supplied canonical IPv4 CIDR and
+  persistent OVN IPAM. The k8s-only manager must not create a per-VM
+  NetworkAttachmentDefinition or move a physical port.
+- **FR-6:** Subnet CIDRs are supplied by the caller and passed to the CUDN
+  unchanged after API validation. The manager does not allocate or release
+  Subnet CIDRs from a provider pool. The installer's subnetIPv4CIDR value is a
+  default used during tenant onboarding, not an allocation pool.
 
-- **FR-3:** When a NATGateway is created for a NetworkClass using the k8s-only
-  backend, the resource must transition promptly to Failed with a clear status
-  message that names the unsupported resource kind and backend. The API may
-  persist the resource; the unsupported operation must be reported before any
-  provisioning job begins.
+#### VM Network Behavior
 
-- **FR-4:** The dispatcher must not route NATGateway operations through
-  K8sFallback. It must return the unsupported-operation result to the
-  controller before any provisioning job begins.
+- **FR-7:** A VM attached to a k8s-only Subnet must use the primary CUDN in
+  that Subnet's namespace. The role creates the namespace and CUDN; it does
+  not create a per-VM NAD or UDN.
+- **FR-8:** VMs on the same Subnet must communicate at Layer 2. Separate
+  Subnet CUDNs do not gain routed connectivity from sharing a VirtualNetwork.
+  Different VirtualNetworks remain isolated, including where their CIDRs
+  overlap.
 
-#### Tenant Network Isolation
+#### Unsupported Operations and External Access
 
-- **FR-5:** The k8s-only backend must create CUDNs on the hub cluster for
-  tenant network isolation. Each Subnet must map to an isolated Layer 2 CUDN
-  using OVN-Kubernetes with EVPN transport.
-  Different VirtualNetworks must have no direct connectivity — a VM in one
-  VirtualNetwork must not reach another VirtualNetwork's private subnet
-  addresses, even when their address ranges overlap.
+- **FR-9:** NATGateway is unsupported in a k8s-only NetworkClass. Reconciliation
+  must set a Failed condition on the NATGateway that identifies the unsupported
+  operation and manager, without creating an AAP job. The current
+  NATGatewayReconciler receives a dispatch resolver but does not validate the
+  NATGateway dispatch plan before provisioning; wire it through the shared
+  dispatch validation and status path. This is asynchronous resource failure,
+  not API admission rejection.
+- **FR-10:** ExternalIPPool must create a MetalLB IPAddressPool and
+  L2Advertisement. ExternalIP allocation must reserve an address through a
+  parking LoadBalancer Service. ExternalIPAttachment supports ComputeInstance
+  (VM) targets by moving the address to a LoadBalancer Service in the VM
+  namespace. Cluster and BaremetalInstance targets are unsupported; current
+  role input validation reports the unsupported target during provisioning,
+  not at admission.
+- **FR-11:** When an ExternalIP is attached to a VM using a primary CUDN, the
+  manager must make the MetalLB ingress Service discoverable through the
+  OVN-Kubernetes mirrored EndpointSlice and the standard Service label
+  expected by MetalLB. The current role waits for the mirrored EndpointSlice
+  and adds kubernetes.io/service-name.
+- **FR-12:** Address migration between parking and VM Services must preserve the
+  exact address throughout attach and detach. Use an atomic transfer or a
+  pool-scoped lock shared by independent AAP jobs; all OSAC operations that can
+  claim an address from the pool must participate. Hold the lock from before
+  deleting the current Service until its replacement is confirmed to own the
+  same address. On failure, restore the previous Service pinned to that address
+  before releasing the lock. The current delete-then-create sequence has a
+  reservation gap and no shared lock.
 
-- **FR-6:** The k8s-only backend must allocate subnet CIDRs from a
-  provider-configurable CIDR pool. Allocated CIDRs must not overlap with
-  each other or with existing allocations.
+#### Failure Handling and Lifecycle
 
-#### VM Network Attachment
+- **FR-13:** CUDN, namespace, NetworkPolicy, MetalLB, and Service failures must
+  be reported on the affected OSAC resource with an actionable diagnostic.
+  Parking Service allocation timeout must be distinguishable from successful
+  allocation.
+- **FR-14:** Deleting a Subnet must delete its CUDN and namespace. Deleting an
+  ExternalIPAttachment must restore the parking Service before the address is
+  released. Cleanup and repeated create/delete requests must be idempotent.
+- **FR-15:** Subnet CIDR and VirtualNetwork NetworkClass are immutable after
+  creation and rejected by CRD validation. NetworkClass manager type is
+  immutable after assignment; current enforcement is Fulfillment Service
+  validation, not CRD validation.
 
-- **FR-7:** When a VM (ComputeInstance) is attached to a Subnet managed by the
-  k8s-only backend, the backend must create the Kubernetes-level network
-  attachment (NetworkAttachmentDefinition / UDN) that bridges the VM's OVN
-  interface to the CUDN, so the VM receives an IP address on the subnet and
-  participates in the tenant network.
-
-- **FR-8:** VMs on the same Subnet must communicate at L2. VMs on different
-  Subnets do not have routed connectivity in this phase, even when those
-  Subnets share a VirtualNetwork. VMs on different VirtualNetworks must have
-  no direct internal connectivity.
-
-#### Cluster Network Attachment
-
-- ~~FR-9:~~ Removed — hosted control plane namespace attachment is not part of
-  the k8s-only manager's supported scope in this phase.
-
-#### External Access
-
-- **FR-10:** The k8s-only backend supports ExternalIP and
-  ExternalIPAttachment resources for inbound access to ComputeInstances
-  (VMs). ExternalIPPools are provider-defined; ExternalIPs are allocated from
-  them. Cluster and bare-metal targets are not supported by this backend.
-
-#### Failure Visibility
-
-- **FR-11:** When a CUDN creation, network attachment, or subnet allocation
-  fails, the failure must be reflected on the affected OSAC networking
-  resource's status with a diagnostic message. The error must be actionable —
-  naming the Kubernetes resource that failed and the reason.
-
-#### Lifecycle and Cleanup
-
-- **FR-12:** Deleting a Subnet must delete its associated CUDN and release the
-  allocated CIDR back to the pool. Deleting a VirtualNetwork must be blocked
-  while child Subnets exist. Deleting an ExternalIPAttachment must remove the
-  inbound path before the ExternalIP can be released.
-
-- **FR-13:** The k8s-only backend must handle CUDN and network-attachment
-  cleanup idempotently — repeated delete attempts must not fail or leave
-  orphaned Kubernetes resources.
-
-#### Immutability
-
-- **FR-14:** A Subnet's CIDR, a VirtualNetwork's NetworkClass, and a
-  NetworkClass's K8s manager type must be immutable after creation. Attempts
-  to change these fields must be rejected by CRD validation.
+- **FR-16:** SecurityGroup ingress and egress rules must be translated into
+  NetworkPolicy rules in every namespace labeled for its VirtualNetwork.
+  Updating the SecurityGroup must update the corresponding NetworkPolicies and
+  remove obsolete policy rules.
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** The k8s-only backend supports IPv4 only. IPv6 and dual-stack
-  are not supported.
-
-- **NFR-2:** Tenant-observable networking behavior — VM connectivity, subnet
-  isolation, external access — must be equivalent between the k8s-only
-  backend (for its supported resource set) and fabric-backed backends. The
-  absence of NATGateway is a documented limitation, not a behavior difference
-  in shared resources.
-
-- **NFR-3:** CUDN creation and network attachment must complete within the
-  existing reconciliation timeout. The k8s-only backend must not introduce
-  additional latency beyond what OVN-Kubernetes CUDN creation requires.
+- **NFR-1:** The manager supports IPv4 only.
+- **NFR-2:** VM networking resources and their associated Kubernetes objects
+  must be scoped to the provider-owned hub cluster.
+- **NFR-3:** CUDN provisioning and VM attachment must complete within the
+  existing reconciliation timeout.
+- **NFR-4:** Create, retry, supported update, and delete requests must be
+  idempotent and converge to desired state. ExternalIP address migration must
+  also protect against concurrent allocation during handoff.
 
 ## 5. Acceptance Criteria
 
-- [ ] With the k8s-only backend configured (no fabric manager), a tenant
-  creates a VirtualNetwork and Subnet through the API and they reach a ready
-  state
-- [ ] A Layer 2 CUDN with EVPN transport is created on the hub cluster for
-  each Subnet; CUDNs remain isolated from other Subnets unless a future design
-  explicitly connects them
-- [ ] A VM attached to a k8s-only Subnet receives an IP address on that subnet
-  and can communicate with other VMs on the same subnet at L2
-- [ ] VMs on different Subnets do not gain routed connectivity from sharing a
-  VirtualNetwork in this phase
-- [ ] VMs on different VirtualNetworks cannot reach each other's private
-  addresses, even with overlapping CIDRs
-- [ ] Creating a NATGateway on a k8s-only NetworkClass results in a Failed
-  status naming the unsupported resource and backend before any provisioning
-  job begins; the API may persist the resource
-- [ ] A tenant attaches an ExternalIP to a VM and inbound traffic reaches the
-  VM through the external access path
+- [ ] With a NetworkClass selecting k8s_only and no fabric manager, a
+  VirtualNetwork and Subnet reach Ready and the Subnet has a namespace and
+  primary Layer2 CUDN.
+- [ ] The CUDN selects only the namespace labeled for its Subnet, uses the
+  supplied canonical IPv4 CIDR, and enables persistent OVN IPAM.
+- [ ] A VM attached to a Subnet uses that Subnet's primary CUDN without a
+  per-VM NAD or physical-port operation.
+- [ ] VMs on the same Subnet communicate at Layer2; VMs on different Subnets
+  do not gain routing through their shared VirtualNetwork; different
+  VirtualNetworks remain isolated even if CIDRs overlap.
+- [ ] The NetworkClass advertises IPv4 capability from the K8s manager. The
+  current reconciler gap is covered by a unit test and fixed before claiming
+  this acceptance criterion is met.
+- [ ] The CUDN uses the caller-supplied Subnet CIDR. The installer default
+  only supplies a default value and does not allocate or reserve CIDRs.
+- [ ] Creating a NATGateway under a k8s-only NetworkClass sets a Failed
+  condition with an unsupported-operation diagnostic and creates no AAP job.
+- [ ] ExternalIPPool creates an IPAddressPool and correctly named
+  L2Advertisement in metallb-system. ExternalIP reserves a MetalLB address
+  through a parking Service.
+- [ ] Attaching an ExternalIP to a VM creates the ingress Service in the VM
+  namespace, pins it to the reserved address, and uses the CUDN EndpointSlice
+  workaround. Detach restores the parking Service.
+- [ ] Attach and detach preserve the same address under concurrent allocation.
+  A failure test verifies that the previous Service is restored with the exact
+  address before the shared pool lock is released.
 - [ ] ExternalIPAttachment to a Cluster or BaremetalInstance is reported as
-  unsupported by the k8s-only backend; only ComputeInstance targets are
-  supported
-- [ ] A CUDN creation failure is reflected on the Subnet's status with a
-  diagnostic message naming the failed Kubernetes resource
-- [ ] Deleting a Subnet deletes its CUDN and releases the allocated CIDR
-- [ ] Deleting a VirtualNetwork is blocked while child Subnets exist
-- [ ] Subnet CIDR, VirtualNetwork NetworkClass, and NetworkClass k8sManager
-  type are immutable after creation — modification attempts are rejected
-- [ ] The k8s-only backend's registered capabilities accurately reflect IPv4
-  support only; NATGateway support is enforced separately by dispatch
+  unsupported. Current code reports this from role validation during
+  provisioning.
+- [ ] A provisioning error appears on the affected resource status with a
+  diagnostic naming the failed Kubernetes resource and reason.
+- [ ] Deleting a Subnet removes its CUDN and namespace. Repeating create,
+  attach, detach, and delete does not create duplicates or leave orphaned
+  resources.
+- [ ] Changes to immutable Subnet CIDR and VirtualNetwork NetworkClass are
+  rejected by CRD validation. NetworkClass manager-type changes are rejected
+  by Fulfillment Service validation.
 
 ## 6. Assumptions
 
-- OVN-Kubernetes with EVPN support is installed and configured on the hub
-  cluster. The k8s-only backend does not install or configure OVN-Kubernetes.
-- The CUDN API (`ClusterUserDefinedNetwork`) is available on the hub cluster
-  as a stable or beta Kubernetes resource.
-- The k8s-only backend operates on a single hub cluster. Cross-hub CUDN
-  coordination is not supported.
-- Bare-metal workloads require a fabric manager for physical switch
-  configuration; the k8s-only backend's K8sFallback handles API-level resource
-  management but does not configure physical switches.
+- OVN-Kubernetes and its CUDN CRD are installed on the hub cluster.
+- MetalLB and its IPAddressPool and L2Advertisement CRDs are installed and
+  configured on the hub cluster.
+- The manager operates on the single provider-owned networking hub.
+- Tenants attach ComputeInstances to Subnets through the shared OSAC networking
+  API; the k8s-only implementation supports only VM targets for ExternalIP.
 
 ## 7. Dependencies
 
-- **Unified Networking EP (OSAC-1433)** — defines the networking model and API
-  this backend implements
-  ([Unified Networking EP](/enhancements/OSAC-1433-unified-networking))
-- **OVN-Kubernetes CUDN/EVPN support** — the underlying Kubernetes networking
-  feature that provides tenant isolation
-- **NetworkClass capabilities controller** — computes and advertises the
-  intersection of manager capabilities to the fulfillment service
-- **Dispatcher K8sFallback** — routes operations to the K8s manager when no
-  fabric manager is configured
+- **Unified Networking EP (OSAC-1433)** — defines the shared networking API,
+  NetworkClass, dispatch behavior, and lifecycle contract.
+- **OVN-Kubernetes CUDN** — provides the primary Layer2 network and IPAM for
+  VM launcher pods in the Subnet namespace.
+- **MetalLB** — allocates and announces ExternalIP addresses on the configured
+  Layer2 network.
+- **Fulfillment Service validation** — enforces NetworkClass manager
+  immutability.
 
 ## 8. Risks
 
-### 8.1 OVN-Kubernetes CUDN API stability
+### 8.1 CUDN API and cluster prerequisites
 
-- **Owner:** Connectivity & Fabric team
-- **Mitigation:** Track upstream OVN-Kubernetes CUDN API maturity. If the CUDN
-  API changes, the k8s-only backend must adapt without breaking existing tenant
-  networks.
+- **Owner:** OSAC networking maintainers
+- **Mitigation:** Check CUDN API availability before rollout and validate the
+  supported OVN-Kubernetes version in the service deployment environment.
 
-### 8.2 CIDR pool exhaustion
+### 8.2 Subnet CIDR validity
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** The default pool (10.0.0.0/8) provides a large address space.
-  Pool utilization should be visible in status. When the pool is exhausted,
-  Subnet creation returns a clear error.
+- **Mitigation:** Subnet CIDRs are caller-supplied and must be valid IPv4,
+  contained within the parent VirtualNetwork, and non-overlapping with sibling
+  Subnets. Validation should reject invalid ranges before CUDN provisioning.
 
-### 8.3 Inconsistent tenant experience without NATGateway
+### 8.3 ExternalIP reservation race
 
-- **Owner:** Connectivity & Fabric team
-- **Mitigation:** Document that k8s-only deployments do not support managed
-  outbound NAT. VMs may still have default outbound connectivity through the
-  cluster's default gateway, but this is outside OSAC's networking model and
-  not guaranteed. Surface this limitation in the NetworkClass capabilities so
-  tenants are aware before creating resources.
+- **Owner:** OSAC networking maintainers
+- **Mitigation:** Replace the delete-then-create Service migration with a
+  serialized or atomic reservation handoff. Until then, concurrent allocations
+  can claim an address during attach or detach.
 
-### 8.4 K8sFallback masking fabric-only failures
+### 8.4 MetalLB Service address discovery
 
-- **Owner:** Connectivity & Fabric team
-- **Mitigation:** K8sFallback silently handles resources that would normally go
-  to a fabric manager. If a resource kind requires fabric-specific behavior
-  that the K8s manager cannot provide, the failure must be surfaced clearly
-  rather than silently producing a degraded resource.
+- **Owner:** OSAC networking maintainers
+- **Mitigation:** The role waits for the OVN-Kubernetes mirrored EndpointSlice
+  and adds the Service label MetalLB expects. Keep this path covered by a
+  fixture in the AAP Kind component tests and by a deployed VM service flow.
+
+## Test Plan
+
+The plan separates operator/API behavior, Ansible resource operations, and
+deployed service behavior. CUDN dataplane behavior and external reachability
+are verified in the existing VMaaS/as-a-service flows.
+
+| Case | Requirement | Tier / owner | Scenario and test environment |
+|---|---|---|---|
+| K8S-UT-1 | FR-1, FR-2, FR-9 | Operator unit/envtest — [DEV] | Verify k8s_only registration and dispatch selection, then reconcile a NATGateway under a K8s-only NetworkClass; assert Failed status identifies the unsupported manager and no provisioning provider/AAP job is invoked. |
+| K8S-UT-2 | FR-3 | Operator unit test — [DEV] | Verify K8s-only NetworkClass capabilities are sourced from the K8s manager when no fabric manager is configured. |
+| K8S-UT-3 | FR-15 | Fulfillment Service unit test — [DEV] | Verify NetworkClass manager type can be set initially but cannot be changed after assignment. |
+| K8S-UT-4 | FR-15 | Operator envtest — [DEV] | Verify served CRD validation rejects changes to Subnet CIDR and VirtualNetwork NetworkClass. |
+| K8S-UT-5 | FR-6 | Fulfillment Service/operator unit tests — [DEV] | Verify supplied Subnet CIDRs are canonical IPv4, contained within the parent VirtualNetwork, do not overlap sibling Subnets, and reject IPv6 or dual-stack input. |
+| K8S-UT-6 | FR-13 | Operator unit/envtest — [DEV] | Simulate a failed Kubernetes provisioning result; assert the affected resource enters Failed with a diagnostic naming the failed resource and reason. |
+| K8S-CI-1 | FR-4, FR-7 | AAP component integration — [DEV] | Run the k8s_only role against Kind; verify VirtualNetwork no-op behavior and delegation to cudn_net, network_policy, and metallb_l2 role entrypoints. |
+| K8S-CI-2 | FR-4, FR-5, FR-6, FR-14 | AAP component integration — [DEV] | Install CUDN CRDs in Kind. Verify namespace labels, primary CUDN fields, supplied CIDR, deletion order, and repeated create/delete behavior. This checks API objects, not OVN dataplane connectivity. |
+| K8S-CI-3 | FR-16 | AAP component integration — [DEV] | Create, update, and delete a SecurityGroup against Kind namespaces; verify NetworkPolicy is created or updated with the expected selector and rules, and is absent from unrelated namespaces. This checks resource translation, not policy enforcement. |
+| K8S-CI-4 | FR-10, FR-11, FR-12, FR-14 | AAP component integration — [DEV] | Install MetalLB CRDs and simulate Service ingress status. Create the mirrored EndpointSlice fixture with endpointslice.kubernetes.io/managed-by=endpointslice-mirror-controller.k8s.ovn.org and k8s.ovn.org/service-name=osac-eip-<external-ip-name>-ingress; verify Service labels and pool selection, pin the VM Service to the allocated IP, and restore the parking Service on detach/failure. Run independent same-pool allocation and attach/detach jobs concurrently; verify the shared lock prevents reassignment and rollback restores the exact address before lock release. |
+| K8S-QE-1 | FR-5, FR-6, FR-7, FR-8, FR-10, FR-11, FR-12, FR-14 | Existing VMaaS/as-a-service flows — [QE] | In a deployed environment with OVN-Kubernetes and MetalLB, provision VMs using caller-supplied Subnet CIDRs; verify same-Subnet connectivity, lack of routing between separate Subnets, isolation between VirtualNetworks including overlapping CIDRs, ExternalIP inbound access, and cleanup after detach. Concurrently allocate ExternalIPs from one pool while another address is attached and detached; verify distinct allocations and that the attached address remains unchanged throughout the handoff. |
+| K8S-QE-2 | FR-9 | Existing VMaaS/as-a-service E2E — [QE] | Create the prerequisites for a NATGateway under a k8s-only NetworkClass; verify the resource reaches Failed with an unsupported-operation diagnostic. K8S-UT-1 verifies that no provisioning provider/AAP job is invoked. |
+
+The current osac-aap/tests/integration Kind setup does not install CUDN or
+MetalLB CRDs/controllers and has no k8s_only role target. The AAP component
+suite must add CRD fixtures, role targets, and MetalLB status simulation as
+described above. A CRD-only Kind test cannot verify actual CUDN dataplane
+behavior or allocate a MetalLB IP. Those behaviors belong in deployed
+VMaaS/as-a-service flows.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

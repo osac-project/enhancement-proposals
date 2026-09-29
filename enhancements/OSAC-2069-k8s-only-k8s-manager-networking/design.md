@@ -3,7 +3,7 @@ title: k8s-only-k8s-manager
 authors:
   - Dan Manor
 creation-date: 2026-09-28
-last-updated: 2026-09-28
+last-updated: 2026-09-29
 tracking-link:
   - "https://redhat.atlassian.net/browse/OSAC-2069"
 prd:
@@ -24,9 +24,9 @@ See [PRD](prd.md) for full requirements.
 
 The `k8s_only` manager provides tenant networking for KubeVirt workloads using
 OVN-Kubernetes and MetalLB. Its resource mapping, role behavior, and limitations
-have not been formally documented. This design records the as-built
-implementation. The Unified Networking design describes manager selection and
-dispatch behavior.
+have not been formally documented. This design records the existing role
+behavior and the target requirements where implementation changes are needed.
+The Unified Networking design describes manager selection and dispatch behavior.
 
 ### Goals
 
@@ -51,10 +51,12 @@ operations to `cudn_net`, SecurityGroup operations to `network_policy`, and
 ExternalIP operations to `metallb_l2`. VirtualNetwork create and delete are
 no-ops; Subnet provisioning creates a Namespace and CUDN. The Unified Networking
 design defines how a NetworkClass selects this manager and how the dispatcher
-handles unsupported operations. NATGateway has no k8s-only implementation and
-is rejected before an AAP job is created.
+handles unsupported operations. NATGateway has no k8s-only implementation. The
+target behavior is to set a Failed condition on the resource before creating an
+AAP job. The current NATGateway reconciler does not validate its dispatch plan
+before provisioning, so this target still requires controller wiring.
 
-CUDN-based VM attachment does not move a physical fabric port, so this
+CUDN-based VM attachment does not move a physical port, so this
 manager does not implement `move_network_attachment`. The current k8s-only flow does
 not request lease discovery and its roles do not implement
 `query_dhcp_lease`; add a K8s task if a service later routes lease-discovery
@@ -81,14 +83,20 @@ metadata:
     osac.openshift.io/network-k8s-manager: "true"
 data:
   name: k8s_only
-  description: "Composite k8s-native networking (CUDN, Kubernetes NetworkPolicy, MetalLB L2) with no separate physical fabric."
+  description: "Hub-cluster VM networking with CUDN, Kubernetes NetworkPolicy, and MetalLB L2."
   capabilities: "ipv4"
 ```
 
-The backend creates the following Kubernetes resources on the cluster targeted
-by the AAP execution environment. The roles use
-`OSAC_REMOTE_CLUSTER_KUBECONFIG` when it is set; otherwise they use the
-execution environment's default Kubernetes context.
+The registration declares IPv4. For a K8s-only NetworkClass, effective
+capabilities must come from this K8s manager when it is the only
+manager configured. The current capability reconciler skips synchronization when
+`fabricManager` is empty, so this declaration is not currently copied to the
+NetworkClass. The central design and K8S-UT-2 treat K8s-only capability
+synchronization as required behavior.
+
+The composite role runs against the cluster targeted by the AAP execution
+environment. The roles use `OSAC_REMOTE_CLUSTER_KUBECONFIG` when set;
+otherwise they use the execution environment's default Kubernetes context.
 
 | OSAC Resource | K8s Resources Created |
 |---|---|
@@ -116,8 +124,8 @@ osac.templates.k8s_only
 
 ### VirtualNetwork — No-Op
 
-Unlike the Netris backend (which creates a VPC/VRF), the k8s-only backend treats
-VirtualNetwork as a logical grouping with no infrastructure. The Ansible role
+The k8s-only backend treats VirtualNetwork as a logical grouping and
+creates no Kubernetes network object. The Ansible role
 logs success and returns immediately. L3 routing isolation between
 VirtualNetworks is provided by keeping their Subnet CUDNs isolated. Sharing a
 VirtualNetwork does not connect its Subnets in this phase.
@@ -197,7 +205,7 @@ ExternalIPPool creates a MetalLB IPAddressPool and L2Advertisement:
 apiVersion: metallb.io/v1beta1
 kind: IPAddressPool
 metadata:
-  name: osac-pool-<pool-uuid>
+  name: <external-ip-pool-metadata-name>
   namespace: metallb-system
 spec:
   addresses:
@@ -208,11 +216,11 @@ spec:
 apiVersion: metallb.io/v1beta1
 kind: L2Advertisement
 metadata:
-  name: osac-pool-<pool-uuid>
+  name: <external-ip-pool-metadata-name>-l2adv
   namespace: metallb-system
 spec:
   ipAddressPools:
-    - osac-pool-<pool-uuid>
+    - <external-ip-pool-metadata-name>
 ```
 
 `autoAssign: false` prevents this pool from being selected for Services without
@@ -244,7 +252,8 @@ The new Service uses the pool annotation, the
 selector for the VM launcher pod, and a TCP port 22 mapping. This delete-then-
 create sequence has a window in which the IP is not reserved. If Service
 creation fails, the role attempts to restore the parking Service. The operation
-is not an atomic IP handoff.
+is not an atomic IP handoff; another allocation can claim the address during
+this gap because there is no shared reservation or serialization mechanism.
 
 For a namespace using a primary UDN, the role waits for the OVN-Kubernetes
 mirrored EndpointSlice and adds the standard `kubernetes.io/service-name` label
@@ -252,9 +261,20 @@ that MetalLB expects. It then annotates the ComputeInstance with the external
 IP address.
 
 Detachment deletes the VM Service first, recreates the parking Service pinned
-to the same IP, and removes the ComputeInstance address annotation. If parking
-Service creation fails, the role attempts to restore the VM Service. This
-sequence also has a reservation gap and is not atomic.
+to the same IP with MetalLB's `metallb.universe.tf/loadBalancerIPs` annotation,
+and removes the ComputeInstance address annotation. If parking Service creation
+fails, the role attempts to restore the VM Service. This sequence also has a
+reservation gap and is not atomic. Concurrent allocation during that gap can
+claim the address before the parking Service is restored.
+
+**Required handoff behavior:** Use an atomic MetalLB address transfer or a
+pool-scoped lock shared by all AAP jobs that can allocate or move addresses from
+that pool. Acquire it before deleting the current Service, keep it until the
+replacement Service reports the same address, and recreate the previous Service
+pinned to that address before releasing the lock if the transfer fails. A
+Kubernetes Lease or equivalent may provide the cross-job lock; lock loss must
+stop further Service mutations. Cover both attach and detach, including a new
+ExternalIP allocation racing with either transition.
 
 **Limitation**: The role requires `spec.computeInstance` and fails its input
 assertion when that field is absent. It does not implement Cluster or
@@ -263,19 +283,25 @@ rejection.
 
 ### NATGateway — Unsupported
 
-The k8s-only manager has no NATGateway implementation. As defined by the shared
-dispatcher contract, the dispatcher rejects a NATGateway operation before
-creating an AAP job and reports the unsupported operation on the resource.
+The k8s-only manager has no NATGateway implementation. The shared dispatch table
+marks NATGateway as having no K8s fallback. The K8s-only implementation must
+surface that dispatch error as a Failed condition on the NATGateway without
+creating an AAP job. Today, `NATGatewayReconciler` inherits the implementation
+strategy from its parent VirtualNetwork and does not validate the dispatch plan;
+wire it through shared dispatch validation and status handling before claiming
+this behavior. The shared API may accept the request and report its unsupported
+manager asynchronously through the resource status; this is not an admission
+rejection.
 
 ### Subnet CIDR Input
 
 The Subnet API supplies `spec.ipv4Cidr`; `cudn_net` passes that value to the
-CUDN. The CRD validates that the CIDR is canonical IPv4 and immutable after
-creation. The current implementation has no provider-configurable CIDR pool,
-allocator, overlap reservation, or CIDR release behavior. The installer's
-`subnetIPv4CIDR` NetworkClass default supplies a default CIDR value; it is not
-an allocator. The PRD's CIDR allocation requirement (FR-6) and release behavior
-(FR-12) are not implemented.
+CUDN. The target and current behavior both use caller-supplied canonical IPv4
+CIDRs. The CRD validates the format and immutability, while the operator
+validates containment within the parent VirtualNetwork and non-overlap with
+sibling Subnets. The installer's `subnetIPv4CIDR` NetworkClass value supplies
+a default during tenant onboarding; it is not an allocation pool. The manager
+does not allocate or release Subnet CIDRs.
 
 ### Security Considerations
 
@@ -300,13 +326,15 @@ The k8s-only backend inherits the existing OSAC security model:
 | MetalLB pool or advertisement task fails | AAP job fails; the operator reports the provisioning failure on the ExternalIPPool | Retry the provisioning job after the MetalLB API is available |
 | Parking Service receives no IP | The AAP task times out waiting for Service ingress status and fails; no dedicated “pool exhausted” condition is set | Investigate MetalLB pool configuration/capacity, then retry |
 | EndpointSlice workaround times out | AAP job fails while waiting for the OVN-K mirrored EndpointSlice | Check namespace UDN and Service endpoints, then retry |
-| NATGateway on k8s-only | Dispatcher rejects the operation before creating an AAP job | NATGateway is unsupported by `k8s_only` |
+| NATGateway on k8s-only | Current controller does not validate the dispatch plan. Target: set a Failed condition with an unsupported-operation diagnostic before creating an AAP job. | Wire the controller to the shared dispatch validation/status path; no K8s implementation exists |
 | AAP or target-cluster API unavailable | Provisioning job fails or remains pending according to the AAP/dispatcher lifecycle | Restore the service and let reconciliation retry |
 
 The Kubernetes resource tasks use `state: present`/`absent`; ExternalIP
 attachment and detachment also check existing Services for job redelivery and
 attempt compensating cleanup on failure. These sequences are idempotent on
-redelivery but are not atomic across the parking and VM Services.
+redelivery but are not atomic across the parking and VM Services. Target
+convergence therefore includes the shared pool lock or atomic handoff above,
+not only repeated execution of individual Service tasks.
 
 ### RBAC / Tenancy
 
@@ -369,18 +397,17 @@ adding admission validation in a future enhancement.
 
 ## Drawbacks
 
-The k8s-only backend provides a reduced feature set compared to fabric-backed
-backends:
+The k8s-only backend supports this feature set:
 
 - No NATGateway — tenants lose managed outbound NAT with stable source IPs
-- No bare-metal networking — physical switch configuration requires a fabric
-  manager
+- No bare-metal networking — physical switch configuration is outside this
+  manager's scope
 - ExternalIPAttachment limited to VMs — no cluster-level external access
 - NetworkPolicy enforcement may differ from Netris ACL enforcement
 
-These limitations are inherent to operating without an external fabric controller.
-The trade-off is reduced operational complexity (no Netris controller to deploy
-and maintain) at the cost of reduced networking capability.
+These limitations follow from the manager's Kubernetes-only resource model.
+The trade-off is reduced dependency on external networking services at the
+cost of a smaller supported workload and operation set.
 
 ## Alternatives (Not Implemented)
 
@@ -418,15 +445,18 @@ belong to `[QE]` work.
 
 | Case | Requirement | Tier / owner | Scenario and test environment |
 |---|---|---|---|
-| K8S-UT-1 | FR-1, FR-2, FR-3, FR-4 | Operator unit/envtest — `[DEV]` | Resolve `k8s_only` from NetworkClass, route fallback-supported kinds, and reject NATGateway before AAP job creation. Use the operator's existing unit/envtest suite. |
-| K8S-UT-2 | FR-14 | Fulfillment Service unit tests — `[DEV]` | Verify `k8sManager` can be set initially but cannot be changed after it has been set. This is enforced by Fulfillment Service validation, not CRD validation. |
-| K8S-UT-3 | FR-14 | Operator envtest — `[DEV]` | Verify the served CRD schemas reject changes to a Subnet's IPv4 CIDR and a VirtualNetwork's NetworkClass. |
-| K8S-CI-1 | FR-1, FR-2 | AAP component integration — `[DEV]` | Add a `k8s_only` composite-role target to the Kind suite; verify VirtualNetwork is a no-op and each supported resource operation reaches its delegated role entrypoint. Dispatcher selection is covered by K8S-UT-1. |
-| K8S-CI-2 | FR-5, FR-13 | AAP component integration — `[DEV]` | Install CUDN CRDs in Kind and verify Namespace labels, primary CUDN fields, supplied CIDR, deletion order, repeated create/delete, and replay of an update converges mutable fields without creating duplicate resources. CIDR changes are rejected by the CRD. CRD-only checks validate objects, not OVN connectivity or dataplane isolation. |
-| K8S-CI-3 | FR-2 | AAP component integration — `[DEV]` | Create, update, and delete a SecurityGroup with namespaces labeled for its VirtualNetwork; verify the NetworkPolicy is rendered in every matching namespace with the expected selector and rules, and is absent from unrelated namespaces. This checks resource translation, not policy enforcement. |
-| K8S-CI-4 | FR-10, FR-12, FR-13 | AAP component integration — `[DEV]` | Install MetalLB CRDs and use a test controller or fixture that assigns Service status. Verify pool/L2Advertisement names, parking/ingress Service fields, EndpointSlice label workaround, repeated attach/detach requests, and compensating cleanup. A CRD-only Kind cluster does not allocate an IP. |
-| K8S-QE-1 | FR-5, FR-7, FR-8, FR-10, FR-12 | Existing VMaaS/as-a-service flows — `[QE]` | In a deployed environment with OVN-Kubernetes and MetalLB, provision VMs on the same Subnet and verify connectivity; verify no routed connectivity between different Subnets and isolation between different VirtualNetworks, including overlapping address ranges; attach an ExternalIP and verify inbound access, then detach and clean up. |
-| K8S-QE-2 | FR-3, FR-4 | VMaaS/as-a-service E2E — `[QE]` | Create a NATGateway with the k8s-only NetworkClass and verify Failed status with no AAP job. |
+| K8S-UT-1 | FR-1, FR-2, FR-9 | Operator unit/envtest — `[DEV]` | Verify k8s_only registration and dispatch selection; reconcile a NATGateway with a K8s-only NetworkClass and assert Failed status with an unsupported-operation diagnostic and no provisioning provider/AAP job call. |
+| K8S-UT-2 | FR-3 | Operator unit test — `[DEV]` | Verify K8s-only NetworkClass capabilities are sourced from this manager when no fabric manager is configured. |
+| K8S-UT-3 | FR-15 | Fulfillment Service unit tests — `[DEV]` | Verify `k8sManager` can be set initially but cannot be changed after it has been set. This is enforced by Fulfillment Service validation, not CRD validation. |
+| K8S-UT-4 | FR-15 | Operator envtest — `[DEV]` | Verify the served CRD schemas reject changes to a Subnet's IPv4 CIDR and a VirtualNetwork's NetworkClass. |
+| K8S-UT-5 | FR-6 | Fulfillment Service/operator unit tests — `[DEV]` | Verify supplied Subnet CIDRs are canonical IPv4, contained within the parent VirtualNetwork, do not overlap sibling Subnets, and reject IPv6 or dual-stack input. |
+| K8S-UT-6 | FR-13 | Operator unit/envtest — `[DEV]` | Simulate a failed Kubernetes provisioning result; assert the affected resource enters Failed with a diagnostic naming the failed resource and reason. |
+| K8S-CI-1 | FR-4, FR-7 | AAP component integration — `[DEV]` | Add a `k8s_only` composite-role target to the Kind suite; verify VirtualNetwork is a no-op and each supported resource operation reaches its delegated role entrypoint. Dispatcher selection is covered by K8S-UT-1. |
+| K8S-CI-2 | FR-4, FR-5, FR-6, FR-14 | AAP component integration — `[DEV]` | Install CUDN CRDs in Kind and verify Namespace labels, primary CUDN fields, supplied CIDR, deletion order, and repeated create/delete. Immutable-field validation is covered by K8S-UT-4. These checks validate Kubernetes objects, not OVN dataplane connectivity. |
+| K8S-CI-3 | FR-16 | AAP component integration — `[DEV]` | Create, update, and delete a SecurityGroup with namespaces labeled for its VirtualNetwork; verify the NetworkPolicy is rendered or updated in each matching namespace with the expected selector and rules, and is absent from unrelated namespaces. This checks resource translation, not policy enforcement. |
+| K8S-CI-4 | FR-10, FR-11, FR-12, FR-14 | AAP component integration — `[DEV]` | Install MetalLB CRDs and use a fixture that assigns Service status. For the primary-UDN path, create the mirrored EndpointSlice fixture and verify MetalLB labels, pool/L2Advertisement names, and that the active Service stays pinned to the allocated IP across attach/detach. Run two independent role executions concurrently against the same Kind cluster to represent separate AAP jobs; verify the shared lock prevents reassignment and failure restores the exact address before lock release. A CRD-only Kind cluster does not allocate an IP. |
+| K8S-QE-1 | FR-5, FR-6, FR-7, FR-8, FR-10, FR-11, FR-12, FR-14 | Existing VMaaS/as-a-service flows — `[QE]` | In a deployed environment with OVN-Kubernetes and MetalLB, provision VMs using caller-supplied Subnet CIDRs; verify same-Subnet connectivity, no routing between separate Subnets, isolation between VirtualNetworks including overlapping ranges, ExternalIP inbound access, and cleanup after detach. Concurrently allocate ExternalIPs from one pool while another address is attached and detached; verify distinct allocations and that the attached address remains unchanged throughout the handoff. |
+| K8S-QE-2 | FR-9 | Existing VMaaS/as-a-service E2E — `[QE]` | Create NATGateway prerequisites under the k8s-only NetworkClass; verify Failed status with an unsupported-operation diagnostic. K8S-UT-1 verifies that no provisioning provider/AAP job is invoked. |
 
 The current `osac-aap/tests/integration` Kind setup does not install CUDN or
 MetalLB CRDs/controllers and has no `k8s_only` role target. The AAP component
@@ -434,15 +464,14 @@ suite must add the CRD fixtures and MetalLB status simulation described above.
 Real CUDN dataplane behavior and external reachability are covered by the
 existing VMaaS/as-a-service flows, not by the Kind resource tests. SecurityGroup
 policy enforcement is outside this enhancement's scope; K8S-CI-3 only verifies
-the current NetworkPolicy resource translation.
+NetworkPolicy resource translation.
 
 ---
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (17 behind origin/main)
-Phases: revise, revise, revise
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ d165396
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
