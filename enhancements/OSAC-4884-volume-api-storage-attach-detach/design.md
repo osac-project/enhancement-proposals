@@ -95,7 +95,7 @@ OSAC already uses a first-class `ExternalIPAttachment` resource for immutable bi
 
 `VolumeAttachment` is a public resource generated from private source protos. The fulfillment service is the API, authorization, persistence, and status authority. It validates the volume, target, tenancy, access mode, and uniqueness constraints, persists the request in `PENDING`, and reconciles it to an operator-side attachment intent. For VMaaS, `osac-operator` adds the attachment intent to the ComputeInstance provisioning input; AAP creates the PVC and adds the PVC to the KubeVirt VM definition. The PVC carries `osac.openshift.io/volume-id`, allowing the CSI driver to bind the existing OSAC Volume instead of provisioning a new one. BMaaS uses its operator/AAP compute provisioning path to consume the same attachment intent. A deletion request removes the attachment intent; AAP removes the PVC/VM disk reference, and CSI performs the normal unpublish path where applicable.
 
-The CSI driver remains the CaaS and VMaaS data-plane entry point. For VMaaS it receives a normal PVC/CSI request, detects `metadata.annotations["osac.openshift.io/volume-id"]`, and binds that PVC to the existing OSAC Volume by creating a PersistentVolume with the OSAC volume ID and backend-specific context. It must not call CreateVolume for this path. `ControllerPublishVolume` and `ControllerUnpublishVolume` then use the existing vendor CSI proxy behavior. CaaS continues to use its regular PVC/CSI workflow. Kubernetes sidecar retries remain safe because the PVC/PV and VolumeAttachment relationship are keyed by the OSAC volume ID and target.
+The CSI driver remains the CaaS and VMaaS data-plane entry point. For VMaaS it receives a normal PVC/CSI request, detects `metadata.annotations["osac.openshift.io/volume-id"]`, and binds that PVC to the existing OSAC Volume by creating a PersistentVolume with the OSAC volume ID and backend-specific context. It must not call CreateVolume for this path. When CSI publish/unpublish occurs, `osac-csi-driver` calls the private fulfillment Volume API `PublishVolume`/`UnpublishVolume`; those methods create or converge the internal `VolumeAttachment` relationship and authorize it against the target intent. For CaaS, the internal Attachment CR uses `target.osacReference {kind: "ClusterOrder", id: "..."}` plus `target.csiTarget {clusterId, nodeId}`; the CSI driver supplies the node identity through the same private API. The operator then performs the durable relationship reconciliation, while the CSI driver continues the concrete vendor CSI proxy call. Kubernetes sidecar retries remain safe because the PVC/PV and internal attachment relationship are keyed by the OSAC volume ID and target.
 
 ```mermaid
 sequenceDiagram
@@ -140,7 +140,7 @@ Lifecycle sequence: create assigns tenant metadata and the Volume owner-referenc
 
 ### 4.1.1 VMaaS Existing-VM Attachment Flow
 
-For an existing VMaaS `ComputeInstance`, the user attaches an already-created OSAC Volume by creating a `VolumeAttachment` whose target is the ComputeInstance. The API does not directly call CSI or mutate a vendor attachment:
+For an existing VMaaS `ComputeInstance`, the user mutates `ComputeInstance.spec.additional_disks` with an `existing_volume.id`. The operator creates an internal `VolumeAttachment` whose `target.osacReference` is `{kind: "ComputeInstance", id: "..."}`. The CSI target is resolved later from the PVC/cluster/node workflow; the public API does not directly call CSI or mutate a vendor attachment:
 
 1. `fulfillment-service` validates that the Volume is available, the ComputeInstance exists in the same tenant, and the relationship is not already present.
 2. The service accepts the ComputeInstance mutation and creates the internal attachment intent in `PENDING`. The intent references the Volume ID, ComputeInstance ID, access mode, and desired read-only setting.
@@ -158,8 +158,8 @@ The PVC annotation is the bridge between the declarative VMaaS workflow and the 
 
 BMaaS does not receive a PVC or KubeVirt disk. Its attachment request identifies a `BareMetalInstance` target and the operator prepares the storage-system host identity before attaching the existing OSAC Volume:
 
-1. The API request targets `spec.baremetal_instance` and may include an attachment protocol preference when the Volume backend supports both iSCSI and NVMe/TCP.
-2. `osac-operator` reads an explicit initiator from the BareMetalInstance's typed storage-initiator status/metadata when available. The preferred future field is `status.storage_initiators`, with protocol, initiator type, and identifier. A compatibility annotation may supply the same value while older BareMetalInstance versions are present.
+1. The internal attachment intent targets `spec.target.osacReference { kind: "BareMetalInstance", id: "..." }` and may include a storage-host protocol preference when the Volume backend supports both iSCSI and NVMe/TCP.
+2. `osac-operator` reads an explicit initiator from the BareMetalInstance's typed storage-initiator status/metadata when available. The preferred future field is `status.storage_initiators`, with protocol, initiator type, and identifier. A compatibility annotation may supply the same value while older BareMetalInstance versions are present, then the reconciler writes the resolved value to `spec.target.storageHost`.
 3. If no explicit initiator exists, the operator derives a stable identity from the BareMetalInstance name and immutable ID. The derived value is persisted in the Attachment status so it remains stable if the resource is renamed or its display metadata changes:
    - iSCSI: `iqn.2026-01.io.osac:bm.<sanitized-name>-<short-id>`
    - NVMe/TCP: `nqn.2014-08.org.nvmexpress:osac:bm:<sanitized-name>-<short-id>`
@@ -181,12 +181,13 @@ There is no public `VolumeAttachment` protobuf resource or public VolumeAttachme
 The operator adds a Kubernetes `VolumeAttachment` CRD (in its own API package):
 
 ```text
-VolumeAttachmentSpec: volumeID, tenant, targetKind, targetID, readonly
+VolumeAttachmentSpec: volumeID, tenant, target, readonly
+target: osacReference { kind, id }, oneof { csiTarget { clusterId, nodeId }, storageHost { protocol, iqn, nqn, fcWwpns } }
 VolumeAttachmentStatus: state, message, operationToken, claimGeneration,
   attemptCount, nextAttemptAt, vendorVolumeID, conditions
 ```
 
-The CRD carries `osac.openshift.io/tenant` and `osac.openshift.io/owner-reference` metadata, uses the `osac.openshift.io/volume-attachment` finalizer, and is reconciled only by `osac-operator`.
+The CRD carries `osac.openshift.io/tenant` metadata, uses the `osac.openshift.io/volume-attachment` finalizer, and is reconciled only by `osac-operator`. `target.osacReference` identifies the OSAC resource: `ComputeInstance` for VMaaS, `ClusterOrder` for CaaS, and `BareMetalInstance` for BMaaS. `target.csiTarget` is the CSI publish identity; `target.storageHost` is the BMaaS storage-system host identity. They are intentionally separate because an OSAC target is not necessarily a Kubernetes node or vendor host.
 
 The public ComputeInstance API extends `ComputeInstanceDisk` with an existing-volume reference. The disk message uses a oneof between dynamic disk configuration (`size_gib`/`storage_tier`) and `existing_volume.id`. `additional_disks` accepts append/remove mutations for existing-volume entries; ordinary VM disk configuration remains subject to existing immutability rules. `boot_disk.existing_volume` is allowed only during ComputeInstance creation because replacing a running VM root disk requires separate boot-order and power-state handling. The public ComputeInstance REST/gRPC Update, CLI, and UI are the VMaaS attach/detach interfaces.
 
@@ -213,7 +214,7 @@ Public attachment behavior is exposed through the existing target APIs; no publi
 
 `ComputeInstanceDisk` gains an `existing_volume` reference in a oneof with dynamic disk configuration. Existing-volume entries carry the OSAC Volume ID and are the public VMaaS attachment intent. Additional disk entries are mutable only for adding/removing existing-volume attachments; normal dynamically provisioned disk configuration retains its existing immutability rules. `osac#743` remains a prerequisite for CSI access to the public Volume API.
 
-The private fulfillment API adds `PublishVolume` and `UnpublishVolume` for CSI identities. Each request contains the OSAC Volume ID, target cluster/node identity, PVC identity where applicable, and authenticated caller context. The service authorizes the request against an active internal attachment relationship before forwarding reconciliation to the operator. These methods are not public user operations.
+The private fulfillment API adds `PublishVolume` and `UnpublishVolume` for CSI identities. Each request contains the OSAC Volume ID, target cluster/node identity, PVC identity where applicable, and authenticated caller context. The service creates or converges the internal `VolumeAttachment` relationship, authorizes it against the target intent, and forwards the resulting reconciliation signal to the operator. These methods are not public user operations.
 
 The private service adds these concrete controller messages and RPCs:
 
@@ -281,7 +282,7 @@ Internal attachment intents are tenant-scoped and use the same tenant metadata a
 
 The API adds target update permissions for tenant roles and corresponding provider-admin permissions. CSI identities use a dedicated internal publish/unpublish policy path and cannot use public provider-admin authority. Attachment deletion and volume deletion checks execute inside the same authorization and persistence boundary to avoid a time-of-check/time-of-use gap.
 
-The fulfillment-service controller creates/updates internal attachment intent records and receives status through the existing operator feedback controller. The operator reconciler owns the internal Attachment CR for VMaaS and BMaaS; the CSI driver invokes private `PublishVolume`/`UnpublishVolume` for CaaS and VMaaS publish events. The CSI driver does not expose a second public attachment service.
+The fulfillment-service controller creates/updates internal attachment intent records and receives status through the existing operator feedback controller. The operator reconciler owns the internal Attachment CR for VMaaS, BMaaS, and CaaS relationships; the CSI driver invokes private `PublishVolume`/`UnpublishVolume` to create/converge the relationship at data-plane time. The CSI driver does not expose a second public attachment service.
 
 ### 4.8 Extensibility / Future-Proofing
 
@@ -399,7 +400,7 @@ Downgrade must leave existing attachment records intact and retain the legacy CS
 
 ## UX Alignment
 
-The `osac-ui` and `osac-ux` checkouts are not present in this workspace, so no matching `@temp-api` TypeScript definition could be inspected. The backend contract uses the existing OSAC resource shape and snake_case proto fields. Before implementation, the UI team must map `spec.volume`, `spec.compute_instance`/`spec.baremetal_instance`, `status.state`, `status.message`, and `status.conditions` to the generated UI types; no backend field should be renamed to match a UI-only convention.
+The `osac-ui` and `osac-ux` checkouts are not present in this workspace, so no matching `@temp-api` TypeScript definition could be inspected. The public UI contract is target-specific: VMaaS maps to `ComputeInstance.spec.additional_disks[].existing_volume`, BMaaS maps to the BareMetalInstance attachment field, and CaaS remains the PVC workflow. Internal `target.osacReference`, `target.csiTarget`, and `target.storageHost` fields are not public UI fields. Before implementation, the UI team must map these target mutations and lifecycle conditions to generated UI types; no backend field should be renamed to match a UI-only convention.
 
 ## 9. Open Questions
 
