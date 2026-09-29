@@ -99,9 +99,11 @@ jobs:
         run: pip install -r .github/scripts/requirements.txt
 
       - name: Clone skills
+        env:
+          SKILLS_TOKEN: ${{ secrets.SKILLS_REPO_TOKEN }}
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/osac-project/osac-ai-skills /opt/skills
+          git clone --depth 1 "https://x-access-token:${SKILLS_TOKEN}@github.com/osac-project/osac-ai-skills" /opt/skills
           skills_sha="$(git -C /opt/skills rev-parse --verify "HEAD^{commit}")"
           if ! [[ "$skills_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::osac-ai-skills resolved to an invalid commit SHA: $skills_sha"
