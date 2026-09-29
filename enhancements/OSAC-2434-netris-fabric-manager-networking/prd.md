@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | [OSAC-2434](https://redhat.atlassian.net/browse/OSAC-2434) |
-| Date        | 2026-09-28 |
+| Date        | 2026-09-29 |
 
 > This PRD covers the **Netris fabric manager** — the production networking
 > backend for OSAC that manages physical network infrastructure through the
@@ -32,8 +32,8 @@ Ansible roles, and feature-level docs, making it difficult to reason about
 supported operations, enforce boundaries, and prevent tenants or operators
 from triggering unsupported or destructive actions. Without a formal PRD, the
 team cannot validate completeness, write acceptance tests against a contract,
-or onboard new fabric managers (such as the agentless VLAN backend) with a
-clear parity baseline.
+or onboard additional fabric managers (such as Agentless VLAN) with a clear
+parity baseline.
 
 ## 2. Goals and Non-Goals
 
@@ -138,8 +138,7 @@ clear parity baseline.
 
 - **FR-1:** The Netris fabric manager must be registered as a ConfigMap with
   the label `osac.openshift.io/network-fabric-manager: "true"`, containing
-  its name, description, and declared capabilities (ipv4, ipv6, dualStack,
-  dpuSupport).
+  its name, description, and its supported IPv4 capability.
 - **FR-2:** The system must reject registration of a fabric manager with a
   name that duplicates an existing registered manager.
 - **FR-3:** A Cloud Infrastructure Admin can select the Netris fabric manager
@@ -155,20 +154,25 @@ clear parity baseline.
   backend must create a corresponding Netris VNet with a VXLAN VNI and the
   specified CIDR range.
 - **FR-6:** When a tenant creates a NATGateway, the backend must configure
-  Netris SNAT rules so that outbound traffic from the associated VirtualNetwork
-  egresses with the NATGateway's external IP as its source address.
+  Netris SNAT rules in the associated tenant VPC so outbound traffic from its
+  VirtualNetwork egresses with the NATGateway's external IP as its source
+  address. An unresolved tenant VPC must fail closed rather than use the
+  management VPC; current tasks still retain that management-VPC default.
 - **FR-7:** When a tenant allocates an ExternalIP and creates an
   ExternalIPAttachment, the backend must configure a Netris DNAT rule to route
   inbound traffic to the target resource. A tenant workload target must resolve
   to its tenant VPC; the management VPC may be used only for an explicitly
   supported cluster-endpoint attachment, never as a fallback for a failed
-  tenant-VPC lookup.
+  tenant-VPC lookup. Current tasks retain a management-VPC default when the
+  tenant VPC is missing or unresolved.
 - **FR-8:** A Cloud Infrastructure Admin creates each ExternalIPPool and
   defines its CIDR. The current API supports exactly one CIDR per pool. The
   backend must create or resolve the corresponding provider-owned Netris IPAM
-  allocation; each allocated ExternalIP is reserved as a /32 subnet with
-  `purpose=nat`. Tenants may allocate ExternalIPs from the pool but may not
-  create or change it.
+  allocation. Pool CIDRs must be /30 or wider so at least one usable address
+  remains for allocation; each allocated ExternalIP is reserved as a /32 subnet
+  with `purpose=nat`. Tenants may allocate ExternalIPs from the pool but may not
+  create or change it. The current role assumes /30 or wider but does not
+  validate this minimum.
 - **FR-9:** When a tenant creates a SecurityGroup, the backend must translate
   the rules into Netris ACL configurations on the corresponding VPC. The
   parent VPC and applicable Subnet CIDRs must resolve before ACL creation;
@@ -177,17 +181,20 @@ clear parity baseline.
 
 #### Automatic IP Assignment
 
-- **FR-10:** A bare-metal server, cluster node, or VM attached to a
-  Netris-backed Subnet must automatically receive an IP address from the
-  Subnet's CIDR range, allocated through Netris IPAM. The assigned address
-  must be visible on the resource's status.
+- **FR-10:** When Netris DHCP assigns an address to a fabric-managed workload
+  on a Netris-backed Subnet, OSAC must be able to query the lease from Netris
+  IPAM and publish it in network attachment status. Bare-metal hosts are
+  matched by port MAC; named fabric servers may be matched by server name when
+  the service flow permits it. VM addresses on a K8s primary CUDN are assigned
+  by OVN-Kubernetes DHCP and are not discovered from Netris IPAM.
 
 #### Immutability and Boundary Enforcement
 
 - **FR-11:** The system must reject mutations to immutable fields on
-  networking resources: NetworkClass on VirtualNetwork, region on
-  VirtualNetwork, and CIDRs on Subnet and ExternalIPPool. Rejection must
-  occur at admission time with a clear error message.
+  networking resources: NetworkClass and region on VirtualNetwork, and CIDRs
+  on Subnet and ExternalIPPool. SecurityGroup ingress and egress rules may be
+  updated in place and the Netris ACL set must converge to the new rules.
+  Immutable-field rejection must occur at admission time with a clear error.
 - **FR-12:** The system must prevent deletion of a VirtualNetwork that has
   active child Subnets, SecurityGroups, or NATGateways. The status must
   indicate which dependents block deletion.
@@ -202,9 +209,9 @@ clear parity baseline.
   blocked by FR-12, FR-13, or FR-14), the backend must remove the
   corresponding Netris configuration (VPC, VNet, SNAT rule, DNAT rule, ACL) and
   release any IPAM allocations, without affecting other resources.
-- **FR-16:** Teardown must respect dependency order: an ExternalIPAttachment's
-  DNAT rule is removed before its ExternalIP is released back to the
-  pool.
+- **FR-16:** Teardown must respect dependency order: remove an
+  ExternalIPAttachment's DNAT rule before releasing its ExternalIP, and remove
+  a NATGateway's SNAT rule before releasing the ExternalIP it references.
 
 #### Failure Visibility
 
@@ -221,11 +228,10 @@ clear parity baseline.
 
 #### Capability Declaration
 
-- **FR-19:** The Netris fabric manager must declare its supported capabilities
-  in its registration ConfigMap. The NetworkClass Capabilities Controller
-  must compute the effective capabilities of each NetworkClass as the
-  intersection of its fabric manager and K8s manager capabilities, and
-  surface them to the fulfillment service.
+- **FR-19:** The Netris registration ConfigMap must declare its supported
+  capabilities, including IPv4. Effective NetworkClass capability calculation
+  and publication follow the shared requirements in the Unified Networking
+  design.
 - **FR-20:** A VirtualNetwork with an explicitly configured region that has no
   Netris site mapping must fail visibly before any Netris resources are
   created. The default site may be used only when the region is omitted. A
@@ -236,16 +242,16 @@ clear parity baseline.
 
 #### Workload Networking Operations
 
-- **FR-22:** When OSAC attaches or detaches a workload network port, the
-  selected fabric manager must implement the mandatory `move_network_attachment`
-  operation to move the port between its configured provisioning segment and
-  tenant Subnet. The K8s manager does not perform this physical-port operation.
-  Both attach and detach must be safe to retry.
-- **FR-23:** When OSAC requests DHCP lease discovery, the selected manager must
-  implement the manager-neutral `query_dhcp_lease` operation and return the
-  lease address for resource status. Netris resolves the lease from IPAM host
-  entries by port MAC address; server-name lookup is used only where the
-  service contract permits it.
+- **FR-22:** For a Netris-backed fabric attachment, the Netris role moves the
+  workload port between its provisioning V-Net and tenant Subnet V-Net on
+  attach, and restores it on detach. Both operations must be safe to retry.
+  Shared operation names and dispatch rules are defined in the Unified
+  Networking design.
+- **FR-23:** When a Netris-backed fabric workload requests lease discovery, the
+  Netris role queries the Subnet's IPAM host entries and returns the matching
+  address. Bare-metal hosts are matched by port MAC; named fabric servers may
+  be matched by server name where the service flow supports it. K8s-only VM
+  leases come from OVN-Kubernetes and do not use this Netris operation.
 
 ### 4.2 Non-Functional Requirements
 
@@ -283,21 +289,24 @@ clear parity baseline.
 - [ ] A VirtualNetwork with an explicitly unmapped region fails with a clear
   status and creates no Netris resources at a default site; when region is
   omitted, the configured default site is used. Its Subnets use the same site.
-- [ ] A bare-metal server attached to a Netris-backed Subnet receives an IP
-  from the Subnet's CIDR via Netris IPAM, visible in its status.
+- [ ] When Netris DHCP assigns a lease to a fabric-managed workload, the
+  Netris manager discovers the lease from IPAM and OSAC publishes it in
+  network attachment status. K8s-only VM leases are supplied by
+  OVN-Kubernetes DHCP.
 - [ ] Attaching a workload port moves it from the provisioning segment to the
   tenant Subnet; detaching moves it back, and retrying either operation does
   not move it to an incorrect segment.
-- [ ] Querying a workload's DHCP lease by port MAC returns the matching Netris
-  IPAM host-entry address for resource status.
+- [ ] Querying a fabric-managed workload lease by port MAC returns the matching
+  Netris IPAM host-entry address for resource status when OSAC requests lease
+  discovery.
 - [ ] A tenant creates a NATGateway; outbound traffic from the associated
   VirtualNetwork egresses with the NATGateway's external IP as the source
   address.
 - [ ] A NATGateway whose tenant VirtualNetwork cannot be resolved fails
   visibly and creates no NAT rule in the management VPC.
-- [ ] A provider defines a NAT ExternalIPPool with its single supported CIDR;
-  a tenant can allocate an ExternalIP whose Netris /32 reservation has
-  `purpose=nat`.
+- [ ] A provider defines a NAT ExternalIPPool with one supported CIDR of /30
+  or wider; a tenant can allocate an ExternalIP whose Netris /32 reservation
+  has `purpose=nat`. Current code does not reject /31 or narrower CIDRs.
 - [ ] Concurrent ExternalIP allocations from one pool receive distinct
   addresses, and retrying the same ExternalIP returns its original address.
 - [ ] A tenant attaches an ExternalIP and the backend creates a Netris DNAT
@@ -328,8 +337,9 @@ clear parity baseline.
   without creating a default-VPC or wildcard-CIDR permit ACL.
 - [ ] Deleting a Netris backend resource that is already absent succeeds as a
   no-op.
-- [ ] NetworkClass capabilities are computed as the intersection of fabric and
-  K8s manager capabilities and surfaced to the fulfillment service.
+- [ ] The Netris manager registration declares IPv4 capability. Effective
+  NetworkClass capability calculation and publication follow the Unified
+  Networking requirements.
 
 ## 6. Assumptions
 
@@ -396,3 +406,14 @@ clear parity baseline.
 - **Owner:** Connectivity & Fabric team
 - **Mitigation:** Pin the supported Netris controller version range. Validate
   backend compatibility when upgrading the Netris controller.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
+Phases: revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
