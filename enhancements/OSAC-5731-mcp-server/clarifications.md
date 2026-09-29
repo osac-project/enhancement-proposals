@@ -862,9 +862,13 @@ Authorized operators can correlate an MCP write with its Fulfillment resource an
 
 ---
 
+## Subsequent override — 2026-09-29
+
+During PR review, the user approved keeping the target release and delivery order out of the PRD. D5 and D10 still include networking, VMs, clusters, bare metal, and Volumes in this Feature. The PRD no longer states which journey comes first or names a release. Jira tracks that planning.
+
 ## Remaining Gaps
 
-None blocking PRD drafting. The design and staged implementation must verify the end-to-end behavior and permissions of each selected resource journey; public API methods alone are not evidence of a working journey.
+None blocking PRD drafting. The design and implementation must verify the end-to-end behavior and permissions of each selected resource journey; public API methods alone are not evidence of a working journey.
 
 ## Research Notes
 
@@ -876,4 +880,4 @@ The current `proto/public/osac/public/v1/*_service.proto` contracts define List/
 
 ## Design and Decomposition Handoff — not a product requirement
 
-The user raised the expectation that implementation begin by improving the existing ComputeInstance MCP PoC to a mergeable baseline. That is a sensible first enabling task to evaluate during design/decomposition; it does not replace the agreed networking-first sequence for new end-to-end resource journeys (D5), and the exact PR/task boundary remains subject to code review and design planning.
+The user raised the expectation that implementation begin by improving the existing ComputeInstance MCP PoC to a mergeable baseline. That is a sensible first enabling task to evaluate during design/decomposition. Delivery order is tracked in Jira rather than restated in the PRD, and the exact PR/task boundary remains subject to code review and design planning.

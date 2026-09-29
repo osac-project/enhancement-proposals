@@ -8,11 +8,11 @@
 
 ## Problem Statement
 
-OSAC users can manage infrastructure through existing OSAC interfaces, and the [ComputeInstance MCP PoC](https://redhat.atlassian.net/browse/OSAC-4388) demonstrates one catalog-backed VM request, but that PoC is not a supported product experience. Tenant users cannot yet rely on a documented model-host connection to discover eligible infrastructure, handle authorized prerequisites, review writes, and check actual outcomes across the selected resource journeys. Administrators also need a way to attribute and diagnose model-initiated requests within their permitted scope. Without this feature, model-assisted deployment remains demo-specific, and an accepted request can be mistaken for a ready resource.
+OSAC users can manage infrastructure through existing OSAC interfaces. They cannot yet use a supported model-host connection to discover eligible infrastructure, handle authorized prerequisites, review writes, and check actual outcomes. Administrators also need to attribute and diagnose model-initiated requests within their permitted scope. Without this capability, an accepted request can be mistaken for a ready resource.
 
 ## In Scope
 
-- Target OSAC 0.6 with staged, end-to-end MCP journeys: tenant networking first, plus VMaaS ComputeInstances, CaaS clusters, BMaaS bare-metal instances, and a later OSAC Volume stage. A stage is complete only when an authorized user can discover eligible choices, handle supported prerequisites, perform applicable existing lifecycle actions, and retrieve the actual outcome in a later session. [Clarify: R2.Q1, R4.Q1, R11.Q3]
+- End-to-end MCP journeys cover tenant networking, VMaaS ComputeInstances, CaaS clusters, BMaaS bare-metal instances, and OSAC Volumes. A journey is complete only when an authorized user can discover eligible choices, handle supported prerequisites, perform applicable existing lifecycle actions, and retrieve the actual outcome in a later session. [Clarify: R2.Q1, R4.Q1, R11.Q3] [User]
 - Each journey below is complete only when an authorized caller can perform these actions and check the actual outcome in a later session. An action is included only when OSAC already supports it for that caller. Start, stop, and restart apply to ComputeInstances and bare-metal instances. [Clarify: R1.Q2, R2.Q2, R11.Q3] [User]
 
 | Journey | In-scope actions |
@@ -21,14 +21,14 @@ OSAC users can manage infrastructure through existing OSAC interfaces, and the [
 | ComputeInstances | Discover eligible choices, request, update, and delete an instance, and start, stop, or restart it. Start, stop, and restart count only after their existing behavior is validated end to end. |
 | CaaS clusters | Discover eligible choices, request, update, and delete a cluster, and check its later outcome. |
 | BMaaS instances | Discover eligible choices, request, update, and delete a bare-metal instance, start, stop, or restart it, and check its later outcome. Start, stop, and restart count only after their existing behavior is validated end to end. |
-| Volumes | Later stage: discover, request, update, and delete an OSAC Volume, and check its later outcome. Its workflow still needs validation against existing storage use. |
+| Volumes | Discover, request, update, and delete an OSAC Volume, and check its later outcome. Its workflow still needs validation against existing storage use. |
 | Prerequisites | Discover and select Projects, catalog offerings, and Secret references the caller may use. An authorized admin can create and update Projects and manage offerings already permitted for that role. A missing Secret value is entered outside the model host. |
 
 - The networking journey covers VirtualNetworks, Subnets, SecurityGroups, external IP allocation and attachment, and NAT egress where OSAC supports them. When an existing network resource cannot be edited in place, the user is told so and may review a supported replacement path; nothing is silently replaced or deleted. [Clarify: R9.Q1, R14.Q1]
 - Catalog offerings and templates, host and instance types, cluster versions, disk images, storage tiers, Projects, and selected prerequisites are discoverable or manageable only to the extent that OSAC already supports the action and authorizes the caller. Authorized admins can manage provider-owned or tenant-scoped offerings and Projects within their existing permissions. [Clarify: R2.Q2, R3.Q1, R3.Q2, R10.Q1]
 - An authorized user can provide a missing deployment Secret through an OSAC-controlled interaction outside the model host, then continue using its reference. Model-facing actions do not accept or reveal plaintext Secret values. [Clarify: R10.Q2]
 - Supported connections are the locally running Cursor editor and CLI, Codex CLI and app/IDE, and Claude Code CLI and Desktop Code experience, against an OSAC endpoint reachable from the user's environment. The OSAC UI provides a discoverable entry point and copyable endpoint, trust, sign-in, and read-only verification guidance. Each supported host surface is verified with a deployment journey. [Clarify: R4.Q2, R13.Q1, R13.Q2, R13.Q3]
-- Discovery and writes are authorized as the signed-in caller, retaining OSAC tenancy, catalog limits, and validation. Users review a multi-step plan and may deny each write; higher-impact writes have separate confirmation. Authorized admins can inspect who initiated an MCP write, its MCP origin, tenant, action, resource, and outcome, and authorized operators can follow it to the related provisioning work. [Clarify: R5.Q1, R5.Q3, R8.Q1, R8.Q2, R14.Q4]
+- Discovery and writes are authorized as the signed-in caller, retaining OSAC tenancy, catalog limits, and validation. Users review a multi-step plan and may deny each write. A write does not proceed until the signed-in user approves that specific action. Agreement in the conversation is not approval. Deletion, public exposure, and offering publication require separate confirmation. Authorized admins can inspect who initiated an MCP write, its MCP origin, tenant, action, resource, and outcome, and authorized operators can follow it to the related provisioning work. [Clarify: R5.Q1, R5.Q3, R8.Q1, R8.Q2, R14.Q4] [User]
 - The supported MCP actions, deployment, onboarding, and diagnostics are documented. Resource journeys are validated through appropriate automated and end-to-end tests, including failure and later-session status paths. [Clarify: R11.Q3, R13.Q3, R14.Q3]
 
 ## Out of Scope
@@ -87,7 +87,7 @@ OSAC users can manage infrastructure through existing OSAC interfaces, and the [
 
 ## Dependencies
 
-- **Existing OSAC capabilities:** Each selected journey depends on OSAC already offering the relevant actions to authorized users and on the corresponding infrastructure capability being available. A stage is complete only when users can satisfy its prerequisites and verify actual outcomes, not merely discover an operation. [Clarify: R2.Q2, R11.Q3]
+- **Existing OSAC capabilities:** Each selected journey depends on OSAC already offering the relevant actions to authorized users and on the corresponding infrastructure capability being available. A journey is complete only when users can satisfy its prerequisites and verify actual outcomes, not merely discover an operation. [Clarify: R2.Q2, R11.Q3]
 - **Volume integration:** The OSAC Volume journey depends on a working volume lifecycle and a clear user path for using Volumes alongside existing storage workflows. [Clarify: R4.Q1, R9.Q2]
 - **Identity and private connectivity:** Supported hosts depend on a reachable OSAC endpoint, certificate trust, and the existing OSAC/Keycloak sign-in and permissions path. Host-specific instructions may point to the host's official documentation where that behavior is maintained. [Clarify: R3.Q1, R13.Q1, R13.Q3]
 
@@ -96,6 +96,6 @@ OSAC users can manage infrastructure through existing OSAC interfaces, and the [
 ## Provenance
 
 Authored: respond @ prd 0.11.3 - 2bd6607, workspace OSAC-4388-deployment-mcp-poc @ 199459d7b (dirty)
-Phases: draft, respond, respond
+Phases: draft, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"199459d7b (dirty)","source_repo_branch":"OSAC-4388-deployment-mcp-poc","commits_behind_main":0,"commits_ahead_main":1228,"main_ref":"main","phases":["draft","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"199459d7b (dirty)","source_repo_branch":"OSAC-4388-deployment-mcp-poc","commits_behind_main":0,"commits_ahead_main":1228,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
