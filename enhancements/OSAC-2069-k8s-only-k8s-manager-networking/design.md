@@ -14,12 +14,12 @@ prd:
 
 ## Summary
 
-This design describes how the k8s-only K8s manager implements OSAC's networking
-manager contract using only Kubernetes-native resources — CUDNs, NetworkPolicies,
-and MetalLB — without requiring an external fabric controller. It also documents
-the manager contract itself: the interface, lifecycle guarantees, and dispatch
-rules that every OSAC networking manager must fulfill. See [PRD](prd.md) for full
-requirements.
+This design describes how the k8s-only K8s manager implements its assigned
+networking operations using Kubernetes-native resources — CUDNs,
+NetworkPolicies, and MetalLB — without requiring an external fabric controller.
+The shared manager contract is defined in the
+[Unified Networking design](../OSAC-1433-unified-networking/design.md#manager-contract).
+See [PRD](prd.md) for full requirements.
 
 ## Motivation
 
@@ -36,25 +36,21 @@ for resource kinds that support fallback. This gives tenants a consistent
 networking API regardless of backend, while limiting the scope to what
 Kubernetes-native resources can provide.
 
-The k8s-only backend is deployed and operational, but its implementation details,
-contract fulfillment, and limitations have not been formally documented. This
-design codifies the as-built architecture.
+The k8s-only backend is deployed and operational, but its Kubernetes
+resource mapping, role behavior, and limitations have not been formally
+documented. This design records the as-built implementation.
 
 ### Goals
 
-- Document the OSAC networking manager contract: registration, dispatch,
-  provisioning interface, lifecycle guarantees, and per-resource requirements
-- Describe how the k8s-only backend fulfills each contract obligation using
+- Describe how the k8s-only backend implements supported operations using
   Kubernetes-native resources (CUDNs, NetworkPolicies, MetalLB)
-- Define the K8sFallback mechanism and its boundaries — which resource kinds
-  the k8s-only backend can handle in the fabric role and which it cannot
+- Define how the k8s-only installation uses K8sFallback and which resource
+  kinds it can handle in the fabric role
 - Establish the supported and unsupported operation set with concrete rejection
   behavior
 
 ### Non-Goals
 
-- Defining a new manager interface or changing the existing contract — this
-  design documents what exists
 - NATGateway support — the k8s-only backend does not and will not provide SNAT
 - Bare-metal networking — physical switch configuration requires a fabric manager
 - Multi-hub CUDN coordination
@@ -62,205 +58,19 @@ design codifies the as-built architecture.
 
 ## Proposal
 
-### The Manager Contract
+### K8s-Only Behavior
 
-Every OSAC networking manager — fabric or K8s — must satisfy a common contract
-enforced by the operator's dispatcher and provisioning framework.
+In the k8s-only installation, the manager fills the fabric role for
+fallback-enabled resources using the `agentless_net` roles. VirtualNetwork create
+and delete are no-ops; Subnet provisioning creates a Namespace and CUDN;
+NATGateway is rejected before an AAP job because the k8s-only manager has no
+implementation for it.
 
-#### Registration
-
-Each manager registers as a labeled ConfigMap in the operator namespace:
-
-| Manager Type | Label |
-|---|---|
-| Fabric Manager | `osac.openshift.io/network-fabric-manager: "true"` |
-| K8s Manager | `osac.openshift.io/network-k8s-manager: "true"` |
-
-Required `data` fields:
-
-| Field | Description | Example |
-|---|---|---|
-| `name` | Unique identifier within the manager type | `k8s_only` |
-| `description` | Human-readable description | `K8s-only networking` |
-| `capabilities` | Comma-separated: `ipv4`, `ipv6`, `dualStack`, `dpuSupport` | `ipv4` |
-
-Validation rules:
-- `capabilities` must be non-empty and contain only recognized values
-- `dualStack` implies both `ipv4` and `ipv6`
-- Duplicate `name` within a manager type is rejected
-
-The `NetworkClassCapabilitiesReconciler` watches manager ConfigMaps and computes
-each NetworkClass's effective capabilities as the **intersection** of its fabric
-manager and K8s manager capabilities, then writes them to the fulfillment service.
-This capability set advertises address-family support only; it does not encode
-resource-kind support such as NATGateway. NATGateway remains excluded by the
-dispatch table and is reported as Failed before a provisioning job starts.
-
-#### Dispatch
-
-The `Dispatcher` resolves a `NetworkClass` to its managers and builds a
-`DispatchPlan`. The dispatch table defines which manager role(s) handle each
-resource kind:
-
-| Resource Kind | Role(s) | K8sFallback |
-|---|---|---|
-| VirtualNetwork | Fabric | Yes |
-| Subnet | Fabric + K8s | Yes |
-| SecurityGroup | Fabric | Yes |
-| ExternalIP | Fabric | Yes |
-| ExternalIPPool | Fabric | Yes |
-| ExternalIPAttachment | Fabric | Yes |
-| NATGateway | Fabric | **No** |
-
-When a resource kind has `K8sFallback: true` and no fabric manager is configured,
-the dispatcher assigns the fabric role to the K8s manager. This is how the
-k8s-only deployment works — the K8s manager fills both roles.
-
-When a resource kind has `K8sFallback: false` (NATGateway) and no fabric manager
-is configured, the dispatcher returns an error. The controller surfaces this as a
-status condition on the resource.
-
-The controller stamps the selected manager name onto the resource via annotations:
-- `osac.openshift.io/implementation-strategy` — fabric manager name (or K8s
-  manager name when filling via fallback)
-- `osac.openshift.io/k8s-implementation-strategy` — K8s manager name (Subnet
-  only, when both roles are active)
-
-#### Provisioning Interface
-
-Every manager implementation exposes Ansible roles callable via AAP that
-implement the `ProvisioningProvider` interface:
-
-```go
-type ProvisioningProvider interface {
-    TriggerProvision(ctx context.Context, resource client.Object) (*ProvisionResult, error)
-    GetProvisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
-    TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []JobStatus) (*DeprovisionResult, error)
-    GetDeprovisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
-    Name() string
-}
-```
-
-The operator does not call manager implementations directly. Instead:
-1. The controller stamps the implementation-strategy annotation
-2. The provisioning provider (AAP) serializes the resource and routes to the
-   correct Ansible role based on the annotation value
-3. The Ansible role performs the actual infrastructure work
-4. The operator polls for job completion and updates the resource status
-
-#### Workload Network Operations
-
-`move_network_attachment` is a Fabric Manager operation. The k8s-only manager
-configures VM attachment through CUDNs and does not move physical fabric ports.
-
-`query_dhcp_lease` is manager-neutral: when OSAC requests lease discovery, the
-selected manager must resolve the workload's lease by port MAC and return it for
-resource status. The current k8s-only VM flow does not request this operation,
-and the k8s-only role has no `query_dhcp_lease` task. Add a K8s implementation
-before routing lease-discovery requests to this manager.
-
-#### Lifecycle Guarantees
-
-Every manager must satisfy these lifecycle properties:
-
-- **Idempotent reconciliation**: Repeating provisioning with the same desired
-  spec must not create duplicates. When a mutable spec changes, provisioning
-  must update existing backend resources until they match the new desired state;
-  merely finding an existing resource and returning success leaves it stale.
-  Deprovisioning a resource that does not exist must succeed.
-- **Phase-based status**: Resources transition through: `Progressing → Ready →
-  Failed → Deleting`. The manager must report the correct phase.
-- **DesiredConfigVersion**: A hash of the resource spec. The operator uses this
-  to detect spec changes and trigger re-provisioning. The manager sees the
-  current spec and must converge to it.
-- **ProvisioningJobs**: The operator tracks job history (bounded by
-  `MaxJobHistory`). Each provision/deprovision attempt is recorded.
-- **Conditions**: Standard Kubernetes conditions for detailed status. The manager
-  must report actionable error messages when operations fail.
-
-#### Per-Resource Contract
-
-Each resource kind imposes specific requirements on the manager:
-
-**VirtualNetwork**: Create a logical L3 routing domain. Report
-`status.backendNetworkId`. Immutable fields: `spec.region`,
-`spec.ipv4Cidr`, `spec.networkClass`. Deletion blocked while child Subnets,
-SecurityGroups, or NATGateways exist (matched by
-`osac.openshift.io/virtualnetwork-uuid` label).
-
-**Subnet**: Create an L2 segment within the parent VirtualNetwork. Configure
-gateway IP (first usable), DHCP range. Immutable fields: `spec.virtualNetwork`
-(parent VN UUID), `spec.ipv4Cidr`. Deletion blocked while child
-ComputeInstances or BareMetalInstances are attached. Only resource dispatched
-to both Fabric and K8s roles simultaneously.
-
-**SecurityGroup**: Create firewall/ACL rules enforcing the specified
-ingress/egress policy on the parent VirtualNetwork. Mutable: rules can be
-updated, triggering re-provisioning via config version change. Immutable field:
-`spec.virtualNetwork`.
-
-**ExternalIPPool**: Create the IP address pool for allocation. Immutable fields:
-`spec.cidrs` (exactly 1 canonical IPv4 CIDR), `spec.ipFamily` (only `IPv4`),
-`spec.implementationStrategy`. Deletion blocked while child ExternalIPs exist.
-Report `status.total`, `status.allocated`, `status.available`.
-
-**ExternalIP**: Allocate an IP from the pool. Write the allocated address to
-`osac.openshift.io/allocated-address` annotation. Report `status.address`,
-`status.state` (Pending/Allocated/Failed), `status.attached`. Immutable field:
-`spec.pool`.
-
-**ExternalIPAttachment**: Create DNAT/LB rule routing external IP to target.
-Entire spec is immutable after creation. Exactly one target: `computeInstance`,
-`cluster`, or `baremetalInstance`. `targetEndpoint` (API/Ingress) required for
-clusters.
-
-**NATGateway**: Create SNAT rule routing VirtualNetwork egress through the
-specified ExternalIP. Entire spec is immutable. **K8sFallback: false** — not
-available without a fabric manager.
-
-### Workflow Description
-
-The following sequence shows the lifecycle of a tenant creating networking
-resources on a k8s-only deployment:
-
-```mermaid
-sequenceDiagram
-    participant T as Tenant Admin
-    participant API as OSAC API
-    participant D as Dispatcher
-    participant C as Controller
-    participant AAP as AAP
-    participant K8s as Hub Cluster
-
-    T->>API: Create VirtualNetwork (networkClass: k8s-only)
-    API->>D: Resolve NetworkClass
-    D->>D: No fabric manager → K8sFallback for VirtualNetwork
-    D->>C: DispatchPlan (k8s_only fills fabric role)
-    C->>C: Stamp implementation-strategy: k8s_only
-    C->>AAP: TriggerProvision (VirtualNetwork)
-    AAP->>AAP: agentless_net.steps → cudn_net (no-op, logs success)
-    AAP->>C: Job complete
-    C->>API: Phase: Ready
-
-    T->>API: Create Subnet (parent: VirtualNetwork)
-    API->>D: Resolve NetworkClass
-    D->>C: DispatchPlan (k8s_only for both roles)
-    C->>AAP: TriggerProvision (Subnet)
-    AAP->>K8s: Create Namespace (labeled for CUDN)
-    AAP->>K8s: Create CUDN (Layer2, EVPN, subnet CIDRs)
-    AAP->>C: Job complete
-    C->>API: Phase: Ready
-
-    T->>API: Create NATGateway
-    API->>D: Resolve NetworkClass
-    D->>D: NATGateway has K8sFallback: false, no fabric manager
-    D->>C: Error: NATGateway requires a fabric manager
-    C->>API: Phase: Failed (unsupported by k8s-only backend)
-```
-
-The rejection path for NATGateway is visible in the last sequence: the dispatcher
-refuses to build a DispatchPlan because NATGateway has `K8sFallback: false` and
-no fabric manager is configured.
+CUDN-based VM attachment does not move a physical fabric port, so this
+manager does not implement `move_network_attachment`. The current k8s-only flow does
+not request lease discovery and its roles do not implement
+`query_dhcp_lease`; add a K8s task if a service later routes lease-discovery
+requests to this manager.
 
 ### API Extensions
 
@@ -642,11 +452,16 @@ NAT management.
 
 ### Unit Tests
 
-- Dispatcher correctly applies K8sFallback when no fabric manager is configured
-- Dispatcher rejects NATGateway dispatch when K8sFallback is false
-- CIDR allocator assigns non-overlapping CIDRs and releases them on delete
-- Capability intersection computes correctly with k8s-only (no fabric) manager
-- ConfigMap registration rejects duplicate names and invalid capabilities
+K8s-only role tests should cover:
+
+- VirtualNetwork create and delete tasks succeed without creating Kubernetes
+  resources
+- Subnet tasks render the expected Namespace labels and Layer2/EVPN CUDN
+- SecurityGroup rules map to the expected NetworkPolicy
+- ExternalIPPool and ExternalIP tasks render the MetalLB pool, advertisement,
+  and parking Service with the expected allocation annotations
+- ExternalIPAttachment moves the allocated address between the parking Service
+  and the VM namespace Service
 
 ### Integration Tests
 

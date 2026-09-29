@@ -35,37 +35,28 @@ OSAC networking relies on a pluggable fabric manager to translate
 infrastructure-agnostic networking resources (VirtualNetwork, Subnet,
 SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway) into physical
 network configuration. The Netris fabric manager is the first production
-backend and serves as the reference implementation of the fabric manager
-contract. Its behavior is scattered across Ansible roles, operator
+backend and serves as the reference backend. Its behavior is scattered
+across Ansible roles, operator
 controllers, and feature-level docs, making it difficult to reason about
 correctness, validate new backends against a baseline, or identify enforcement
 gaps.
 
-This design document serves three purposes:
-
-1. **Codify the fabric manager contract** — the interface and lifecycle
-   guarantees that any fabric manager must implement.
-2. **Document how Netris fulfills each contract requirement** — the mapping
-   from OSAC resources to Netris constructs.
-3. **Establish a parity baseline** for future fabric managers (e.g., the
-   agentless VLAN backend, OSAC-3664).
+This design documents the Netris-specific resource mapping, Ansible role
+behavior, failure recovery, and current implementation gaps.
 
 ### Goals
 
-- Document the fabric manager contract as a reusable specification that
-  future backends implement against.
 - Map each OSAC networking resource to the specific Netris resources the
   backend creates, updates, and deletes.
-- Document the data flow from user action through the operator dispatcher
-  to the AAP provisioning provider to the Netris controller API.
+- Describe how Netris Ansible tasks call the Netris controller API.
 - Define failure modes, error surfaces, and recovery behavior.
 
 ### Non-Goals
 
 - Changes to the Netris backend implementation — this document describes
   the existing design.
-- The K8s manager contract or implementation — that is covered by a
-  separate design document.
+- K8s-only implementation details — see the
+  [K8s-only manager design](../OSAC-2069-k8s-only-k8s-manager-networking/design.md).
 - SecurityGroup policy semantics (allow/deny evaluation, rule ordering,
   stateful tracking) — that is a cross-backend concern.
 - Multiple Netris controllers, split-controller topologies, or Netris
@@ -74,226 +65,40 @@ This design document serves three purposes:
 
 ## Proposal
 
-### The Fabric Manager Contract
-
-Any fabric manager must satisfy the following contract. The Netris backend
-is the reference implementation; future backends (agentless VLAN, Neutron)
-must fulfill the same contract.
-
-#### Registration
-
-A fabric manager registers by deploying a ConfigMap in the operator
-namespace with the label `osac.openshift.io/network-fabric-manager: "true"`.
-The OSAC chart renders the Netris registration ConfigMap as
-`osac-network-fabric-manager-netris`; its `data.name` is `netris`, matching the
-`NetworkClass.spec.fabricManager` value. The registration ConfigMap contains
-metadata and capabilities only; Netris credentials are supplied separately
-through a Kubernetes Secret.
-
-Required data fields:
-
-| Field | Key | Description |
-|-------|-----|-------------|
-| Name | `data.name` | Unique identifier (e.g., `netris`). Duplicate names within a manager type are rejected at discovery. |
-| Description | `data.description` | Human-readable summary. |
-| Capabilities | `data.capabilities` | Comma-separated list from the fixed set: `ipv4`, `ipv6`, `dualStack`, `dpuSupport`. Must not be empty. `dualStack` implies both `ipv4` and `ipv6`. |
-
-Example:
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: osac-network-fabric-manager-netris
-  namespace: osac
-  labels:
-    osac.openshift.io/network-fabric-manager: "true"
-data:
-  name: netris
-  description: "Netris SDN — tenant isolation, ACL, IPAM, DNAT, SNAT"
-  capabilities: "ipv4"
-```
-
-The `networkmanager.ParseConfigMap()` function validates the ConfigMap
-structure and capabilities at discovery time. Invalid ConfigMaps are
-rejected with a descriptive error.
-
-#### Provisioning Provider Interface
-
-Fabric managers do not implement a Go interface directly. Instead, the
-operator dispatches provisioning work to AAP, which routes to the
-backend's Ansible roles based on the `osac.openshift.io/implementation-strategy`
-annotation stamped on each resource. The AAP provider implements the
-`ProvisioningProvider` interface on behalf of all backends:
-
-```go
-type ProvisioningProvider interface {
-    TriggerProvision(ctx context.Context, resource client.Object) (*ProvisionResult, error)
-    GetProvisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
-    TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []JobStatus) (*DeprovisionResult, error)
-    GetDeprovisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
-    Name() string
-}
-```
-
-Each backend provides an Ansible role (e.g., `osac.templates.netris`) with
-task files named by operation: `create_virtual_network.yaml`,
-`delete_virtual_network.yaml`, `create_subnet.yaml`, etc. The AAP provider
-selects the correct task file based on the resource kind and operation.
-
-OSAC dispatches workload-network operations independently of resource
-create/delete. Their manager scope differs:
-
-| Operation | Manager scope | Role task contract |
-|-----------|---------------|--------------------|
-| Move a workload port between network segments | Fabric Manager only | `move_network_attachment` moves the port from the configured provisioning segment to the tenant segment on attach, and back on detach. Both directions must be safe to retry. |
-| Discover a workload's DHCP address | The manager selected for the workload's network, whether Fabric or K8s, when OSAC requests lease discovery | `query_dhcp_lease` resolves the lease by the port MAC. Netris reads its IPAM host entries; server-name lookup is used only where the service contract permits it. Return the address for OSAC status. |
-
-The K8s manager does not perform `move_network_attachment`: its CUDN-based
-attachments do not move physical fabric ports. `query_dhcp_lease` is
-manager-neutral and must be implemented by whichever manager OSAC selects when
-it requests lease discovery. The current repository has this task in the Netris
-role, used by the bare-metal IP-discovery flow. The current k8s-only path does
-not invoke lease discovery and has no corresponding task; add one before routing
-lease-discovery requests to the K8s manager.
-
-#### Dispatch Table
-
-The dispatcher maps resource kinds to manager roles. A fabric manager
-must handle all resource kinds assigned to the `Fabric` role:
-
-| Resource Kind | Roles | K8sFallback | Contract |
-|---------------|-------|-------------|----------|
-| VirtualNetwork | Fabric | Yes | Create isolated L3 routing domain |
-| Subnet | Fabric + K8s | Yes | Create L2 segment with gateway and DHCP |
-| SecurityGroup | Fabric | Yes | Create ACL/firewall rules |
-| ExternalIP | Fabric | Yes | Allocate IP from pool |
-| ExternalIPPool | Fabric | Yes | Register IP pool for allocation |
-| ExternalIPAttachment | Fabric | Yes | Create inbound DNAT rule |
-| NATGateway | Fabric | No | Create outbound SNAT rule |
-
-`K8sFallback: true` means that in deployments without a fabric manager
-(k8s-only mode), the K8s manager handles this resource kind instead. The
-only exception is `NATGateway` — it requires a fabric manager and cannot
-fall back to the K8s manager.
-
-#### Per-Resource Contract
-
-For each resource kind, the fabric manager must:
-
-**VirtualNetwork — create an isolated L3 routing domain.**
-- Accept: `spec.region`, `spec.ipv4Cidr`, `spec.networkClass` (all immutable after creation).
-- Create: A routing domain (VRF/VPC) with the specified CIDR, isolated from other VirtualNetworks.
-- Constraint: Different VirtualNetworks must have no direct internal connectivity, even with overlapping CIDRs. Cross-VN traffic is only possible via ExternalIPs.
-
-**Subnet — create an L2 segment within a VirtualNetwork.**
-- Accept: `spec.virtualNetwork` (parent VN UUID, immutable), `spec.ipv4Cidr` (immutable).
-- Create: An L2 segment within the parent VN's routing domain, with a gateway address (first usable IP in CIDR) and DHCP range (second usable to last usable).
-- Placement: Use the Netris site resolved for the parent VirtualNetwork's region. Use the configured default site only when the parent VirtualNetwork omits its region.
-- Constraint: The subnet CIDR must be within the parent VN's CIDR, and the parent VirtualNetwork and its site must resolve before Netris resources are created.
-- Note: Subnet is the only resource dispatched to both Fabric and K8s roles.
-
-**SecurityGroup — create ACL/firewall rules.**
-- Accept: `spec.virtualNetwork` (parent VN UUID, immutable), `spec.ingressRules[]`, `spec.egressRules[]`.
-- Create: Permit rules for each ingress/egress entry. Rules are applied per-subnet CIDR (the product of rules × subnets in the VN). Resolve the parent VPC and all applicable subnet CIDRs first; unresolved values fail closed and never become a default VPC or wildcard CIDR.
-- Mutable: Rule updates reconcile existing ACLs to the new desired set, updating changed rules and removing obsolete rules. A retry must not create duplicates.
-
-**ExternalIPPool — register an IP pool for allocation.**
-- Accept: `spec.cidrs` (immutable, canonical IPv4; the current API permits exactly one CIDR), `spec.ipFamily` (immutable, `IPv4` only).
-- Owner: Cloud Infrastructure Admin. Tenants can allocate ExternalIPs from a provider-defined pool but cannot create or change it.
-- Purpose: This is a NAT pool. The Netris pool allocation itself has no `purpose` field; its common parent subnet uses `purpose=common`, and each allocated ExternalIP /32 subnet uses `purpose=nat`.
-- Create: A provider-owned IPAM allocation and common parent subnet for the pool CIDR, identified by a stable owner key rather than a name suffix.
-- Deletion guard: Cannot be deleted while child ExternalIPs exist.
-
-**ExternalIP — allocate an IP from a pool.**
-- Accept: `spec.pool` (immutable, ExternalIPPool name).
-- Allocate: A single IP address from the pool and reserve it as a Netris /32 subnet with `purpose=nat`. Resolve reservations by a stable owner key derived from the immutable ExternalIP UID, not by resource name alone.
-- Idempotent: Reuse the same reservation on retry and restore the `osac.openshift.io/allocated-address` annotation if it is missing. Allocate only when no reservation exists for that ExternalIP.
-
-**ExternalIPAttachment — create an inbound DNAT rule.**
-- Accept: `spec.externalIP`, target (one of `computeInstance`, `cluster`, `baremetalInstance`), `spec.targetEndpoint` (API or Ingress, required for clusters). Entire spec is immutable after creation.
-- Create: A DNAT rule routing the ExternalIP's allocated address to the target's internal IP. A workload target must resolve to its tenant VPC; use the management VPC only for an explicitly requested, supported cluster endpoint. An unresolved tenant VPC fails closed.
-
-**NATGateway — create an outbound SNAT rule.**
-- Accept: `spec.virtualNetwork` (parent VN name, immutable), `spec.externalIP` (ExternalIP name, immutable). Entire spec is immutable after creation.
-- Create: An SNAT rule so that all egress from the VirtualNetwork's CIDR uses the ExternalIP's allocated address as the source. Resolve the tenant VirtualNetwork and VPC before creating the rule; unresolved lookups fail closed and never select the management VPC.
-- No K8sFallback: This resource requires a fabric manager. K8s-only deployments cannot create NATGateways.
-
-#### Lifecycle Guarantees
-
-All operations must be:
-
-- **Idempotent.** Re-provisioning an already-provisioned resource must not create duplicates. Deleting a backend resource that is already absent succeeds as a no-op.
-- **Convergent on updates.** A mutable spec change updates existing Netris resources and removes stale configuration until the backend matches desired state. A successful `DesiredConfigVersion` may skip redundant work only while the managed state is known to match; failed or incomplete work and detected missing resources must be retried even when the spec hash is unchanged.
-- **Phase-tracked.** Resources transition through phases: `Progressing → Ready → Failed → Deleting`. `DesiredConfigVersion` detects spec changes and participates in retry behavior; it does not replace backend-state recovery.
-- **Job-tracked.** Each provisioning or deprovisioning operation is recorded in the resource's `status.provisioningJobs[]` array, bounded by `MaxJobHistory`.
-- **Condition-reported.** Detailed status is reported via standard Kubernetes conditions.
-
-#### Deletion Guards
-
-- VirtualNetwork deletion waits for all child Subnets, SecurityGroups, and NATGateways (matched by `osac.openshift.io/virtualnetwork-uuid` label) to be deleted first.
-- Subnet deletion waits for all child ComputeInstances and BareMetalInstances to be removed.
-- ExternalIPPool deletion waits for all child ExternalIPs to be released.
-- Teardown respects dependency order: ExternalIPAttachment's DNAT rule is removed before the ExternalIP is released.
-
 ### Netris Implementation
 
-The Netris fabric manager fulfills the contract through Ansible roles in
-the `osac.templates.netris` collection, invoked by AAP.
+The Netris backend implements the fabric-manager role through Ansible roles
+in the `osac.templates.netris` collection, invoked by AAP.
 
-#### Workflow Description
+#### Manager Registration
 
-The following diagram shows the data flow from a tenant action to the
-Netris controller:
+The OSAC chart renders the Netris registration ConfigMap as
+- `metadata.name`: `osac-network-fabric-manager-netris`
+- `data.name`: `netris`, matching `NetworkClass.spec.fabricManager`
+- `data.capabilities`: `ipv4`
 
-```mermaid
-sequenceDiagram
-    participant Tenant
-    participant API as Fulfillment API
-    participant Operator as osac-operator
-    participant Dispatcher
-    participant AAP as AAP Provider
-    participant Netris as Netris Controller
+The ConfigMap contains registration metadata; Netris credentials are supplied
+separately through a Kubernetes Secret.
 
-    Tenant->>API: Create VirtualNetwork
-    API->>Operator: CR created on hub cluster
-    Operator->>Dispatcher: Resolve NetworkClass
-    Dispatcher-->>Operator: DispatchPlan (fabric: netris)
-    Operator->>Operator: Stamp implementation-strategy annotation
-    Operator->>AAP: TriggerProvision(VirtualNetwork)
-    AAP->>Netris: create_virtual_network.yaml
-    Note over AAP,Netris: VPC + IPAM allocation
-    Netris-->>AAP: VPC ID
-    AAP-->>Operator: ProvisionResult (jobID)
-    Operator->>AAP: GetProvisionStatus(jobID)
-    AAP-->>Operator: JobState: Succeeded
-    Operator->>Operator: Update status → Ready
-```
+#### Netris Role Operations
 
-Step by step:
+The role tasks in `osac.templates.netris` call the Netris controller REST API
+using its authentication configuration. Resource-specific task and API
+mappings are listed below.
 
-1. The tenant creates a networking resource (e.g., VirtualNetwork) via the
-   fulfillment API or CLI. The API creates the CR on the hub cluster.
-2. The osac-operator controller detects the new CR and calls
-   `Dispatcher.Dispatch(kind, networkClassID)`.
-3. The dispatcher resolves the NetworkClass, looks up the fabric manager
-   ConfigMap by name, and returns a `DispatchPlan` with the Netris manager.
-4. The controller stamps `osac.openshift.io/implementation-strategy: netris`
-   on the CR.
-5. The controller calls `TriggerProvision()` on the AAP provisioning
-   provider, which serializes the CR and launches the appropriate Ansible
-   role task (e.g., `create_virtual_network.yaml`).
-6. The Ansible role authenticates with the Netris controller
-   (`netris.controller.auth`) and calls the Netris REST API to create the
-   required resources.
-7. The controller polls `GetProvisionStatus()` until the AAP job completes.
-8. On success, the controller transitions the resource to `Ready`. On
-   failure, it transitions to `Failed` with a diagnostic message.
+The Netris role implements workload-network operations as follows:
+
+- `move_network_attachment` moves the workload port from the configured
+  provisioning segment to the tenant segment on attach and restores it on
+  detach; retries are safe.
+- `query_dhcp_lease` resolves the address from Netris IPAM host entries by
+  port MAC. Server-name lookup is used only for service flows that permit it;
+  the current bare-metal IP-discovery flow uses this task.
 
 #### Resource Mapping
 
-The following table describes the target Netris mapping. Current differences
-from this contract are listed under
+The following table describes the Netris-specific mapping. Current
+implementation gaps are listed under
 [Current Implementation Gaps](#current-implementation-gaps).
 
 | OSAC Resource | Netris Resources | Ansible Role / Task | Details |
@@ -328,8 +133,8 @@ backend is selected through provider-level configuration (NetworkClass
 `fabricManager` field), not through API changes visible to tenants.
 
 The only annotation the backend writes is `osac.openshift.io/allocated-address`
-on ExternalIP CRs, which is part of the ExternalIP allocation contract shared
-by all fabric managers. Backend ownership is recovered from a stable key
+on ExternalIP CRs to record the allocated address. Backend ownership is
+recovered from a stable key
 derived from the immutable OSAC object UID and stored in Netris; it does not
 require extra CRD fields or infer ownership from a human-readable name.
 
@@ -377,7 +182,8 @@ ExternalIP allocation must be serialized per pool, either by using an atomic
 Netris allocation operation or by holding a pool-scoped lock across selection
 and reservation. The current scan-then-reserve implementation is not atomic
 and can assign the same address to concurrent requests; it must not be treated
-as concurrency-safe until this contract is implemented. The current lookup
+as concurrency-safe until an atomic allocation operation or pool-scoped
+lock is implemented. The current lookup
 also matches pool allocations by name and optional numeric suffix and matches
 an existing reservation by ExternalIP name; neither lookup proves ownership.
 
@@ -620,9 +426,9 @@ Run from `osac-operator/` with `make test`. Existing package and envtest suites
 cover manager registration, dispatch, controller state, and Kubernetes API
 behavior. Extend these suites to assert:
 
-- **UT-1 — Manager selection:** valid and invalid ConfigMaps, the installer
-  registration name and `data.name`, the complete dispatch table, K8s
-  fallback behavior, and the effective capability intersection.
+- **UT-1 — Netris registration and selection:** the installer renders the
+  expected Netris registration name and `data.name`, and a
+  NetworkClass naming `netris` selects the Netris role.
 - **UT-2 — Desired state updates:** the same successfully applied spec does
   not launch duplicate work; a mutable spec change after success launches a
   new job; changed SecurityGroup rules are part of the new desired version.
