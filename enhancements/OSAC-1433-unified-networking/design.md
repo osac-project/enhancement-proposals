@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-16
+last-updated: 2026-09-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -61,8 +61,9 @@ allocation, DNAT, and SNAT for everything.
 
 The design introduces:
 
-- **NetworkClass** with two fields: `fabricManager` (handles all physical
-  networking) and optional `k8sManager` (bridges VMs to the fabric)
+- **NetworkClass** as a deployment singleton with provider-selected manager
+  fields, desired default-networking configuration, and controller-owned Hub
+  status
 - **Infrastructure-agnostic subnets** where the same subnet can host VMs,
   BM servers, and cluster nodes
 - **ExternalIP** (renamed from PublicIP) to clarify that addresses are
@@ -114,6 +115,24 @@ NetworkClass is the provider-level CRD that defines which managers handle
 networking for the deployment. Tenants never interact with it. One
 NetworkClass per deployment.
 
+#### Singleton ownership and lifecycle
+
+There is exactly one active `NetworkClass` per OSAC deployment. The private
+NetworkClass API enforces this invariant at admission and the database keeps a
+partial unique index as the race-free backstop. The legacy `is_default` field
+is removed and its field number/name are reserved; “default” is no longer a
+property that can be selected among multiple NetworkClasses.
+
+NetworkClass creation accepts provider desired configuration only. The API
+clears caller-supplied status and does not synthesize readiness or Hub values.
+The dedicated NetworkClass controller owns `status.state`, `status.message`,
+and `status.hub`. It resolves the canonical Hub described below and persists
+the result. Tenants do not select a NetworkClass: when a VirtualNetwork omits
+`spec.network_class`, the API resolves the one active NetworkClass and stores
+that reference on the VirtualNetwork. The API validates that an explicit
+reference exists, but does not require the NetworkClass to be `READY` or to
+have a Hub before accepting the VirtualNetwork.
+
 #### Two Managers
 
 OSAC networking is handled by two managers:
@@ -149,6 +168,44 @@ options. The goal is always the same: make VMs part of the fabric. A single
 Once VMs are on the fabric, the fabric manager handles everything for all
 resource types uniformly. There is no VM-vs-BM distinction for security,
 ExternalIP, DNAT, or SNAT.
+
+#### Tenant default-networking lifecycle
+
+`NetworkClass.spec.defaults` is desired onboarding configuration; it is not a
+second NetworkClass selector. After a tenant reaches `SYNCED`, the tenant
+controller invokes an idempotent default-networking manager. The manager first
+requires the singleton NetworkClass to be `READY` and to contain its persisted
+`status.hub`. Until then, the tenant remains waiting with a
+`NetworkClassNotReady` default-networking condition and no default resources
+are created.
+
+When the NetworkClass is usable, the manager creates or adopts the configured
+tenant resources asynchronously:
+
+1. a `VirtualNetwork` named `default`, labeled
+   `osac.openshift.io/default=true`, owned by the tenant, created by the
+   controller, and referencing the singleton NetworkClass;
+2. configured default IPv4/IPv6 subnets, labeled as defaults and annotated
+   with the default VirtualNetwork owner reference;
+3. the default `SecurityGroup` with configured ingress and egress rules; and
+4. optionally, a default `ExternalIP` and `NATGateway` when
+   `enable_nat_gateway` is true. The ExternalIP is allocated from a ready
+   pool with capacity, using a deterministic pool choice.
+
+Each create is idempotent and can resume after a partial failure. Resource
+controllers use the NetworkClass's persisted Hub binding when dispatching to
+the provider; the default-networking manager does not write consumer status or
+select a Hub itself. NetworkClass, Hub, and default-resource lifecycle events
+requeue the affected tenant so readiness progresses without a synchronous API
+request or periodic polling dependency.
+
+The tenant root project owns the default-resource cleanup boundary. During root
+project deletion, the project controller calls the same manager through the
+authenticated controller identity. Cleanup deletes NAT gateways and ExternalIP
+children before security groups, subnets, and the default VirtualNetwork, and
+retries while finalizers complete. The API rejects direct deletion of
+default-labeled networking resources from users and ordinary administrators;
+only the controller lifecycle may remove them.
 
 #### NetworkClass Examples
 
@@ -1265,6 +1322,54 @@ resource lifecycle and reconciliation.
 This boundary applies only to the networking area and does not define hub
 behavior for other OSAC areas. The fabric can still span multiple hosting
 clusters where the relevant networking feature supports that topology.
+
+##### Canonical Hub resolution
+
+The provider-owned canonical networking Hub is not a tenant-supplied
+`NetworkClass.spec` field. A `NetworkClass` may be created with an empty
+`status.hub`; the dedicated NetworkClass reconciler resolves and persists the
+canonical Hub as controller-owned status during reconciliation. That controller
+also owns `status.state` and `status.message`. Consumer reconcilers, including
+VirtualNetwork and default-networking reconciliation, only read
+`NetworkClass.status.hub` and never update NetworkClass status.
+
+The resolver applies the following contract:
+
+1. It finds exactly one active `NetworkClass` and exactly one active Hub. An
+   active resource is one without a deletion timestamp. Resolution cannot
+   proceed when there is no active `NetworkClass`, or when there are zero or
+   multiple active Hubs. When a single active `NetworkClass` exists, zero or
+   multiple active Hubs leave it in `PENDING` and do not select a Hub.
+2. If `NetworkClass.status.hub` is empty, the resolver selects the sole active
+   Hub, persists its identifier in `status.hub`, and then resolves the Hub's
+   Kubernetes client. The status is `PENDING` while the binding is being
+   resolved and `READY` once the client is available.
+3. If `NetworkClass.status.hub` is already set, that identifier is
+   authoritative. The resolver resolves that exact Hub through the Hub cache;
+   it does not fall back to Hub discovery or silently select another Hub.
+4. If the persisted Hub is not registered, the `NetworkClass` enters `FAILED`
+   while retaining the persisted identifier. If the Hub is registered but its
+   client is unavailable, the `NetworkClass` remains `PENDING`, also retaining
+   the identifier. Both cases are retried without changing the binding.
+
+The status write is internal reconciliation, not a provider or tenant update
+operation. It updates only `status.hub`, `status.state`, and
+`status.message`, and is serialized by the fulfillment-service update lock.
+Hub lifecycle events requeue the NetworkClass reconciler, and NetworkClass
+status events requeue consumer reconcilers, so a VirtualNetwork that was
+created while the binding was `PENDING` progresses after the canonical Hub
+becomes available without waiting for the periodic sync interval.
+List requests use a bounded result set and the server-reported total so that
+the resolver can distinguish zero, one, and multiple active resources without
+unbounded discovery. Concurrent resolution attempts share one in-flight
+resolution; successful results are revalidated through the Hub cache and
+transient failures use a short-lived negative cache to avoid retry storms.
+
+OSAC-5387 introduces the dedicated NetworkClass reconciler and this read-only
+consumer contract for the VirtualNetwork reconciliation path. Other networking
+resource controllers must adopt the same contract as they are migrated to the
+canonical Hub resolver; they must not reintroduce random Hub selection or
+fallback from a persisted assignment.
 
 #### Cross-VN Communication
 
