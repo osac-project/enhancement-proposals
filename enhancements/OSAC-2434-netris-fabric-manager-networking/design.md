@@ -418,19 +418,22 @@ persistence or concurrency semantics. Cover:
 | IT-6 | Error redaction | A synthetic Netris failure containing credentials, response body, hostnames, tenant data, and network addresses does not expose those values in Ansible output, AAP job details, resource status, conditions, or events. |
 | IT-7 | Deprovisioning | Delete removes all Netris objects owned by the resource and is safe to repeat, including when an object is already absent. |
 
-The operator's AAP boundary needs a separate controllable-provider test in
+Plan a separate AAP-boundary integration test in
 `osac-operator/test/integration/networking_test.go`. Keep the resource
-finalizer and point the controller at a controllable AAP HTTP test server;
-assert the selected template, job variables, status transition, retry, and
-sanitized failure projection. For workload operations, assert
+finalizer and configure the Kind test deployment to use a controllable mock
+AAP HTTP server that the operator pod can reach, for example, a test Service
+deployed inside the cluster. Adding the server fixture and wiring its endpoint
+into the test deployment are part of implementing this target. Assert the
+selected template, job variables, status transition, retry, and sanitized
+failure projection. For workload operations, assert
 `move_network_attachment` dispatches only to a fabric manager and
 `query_dhcp_lease` dispatches to the selected manager when lease discovery is
 requested. Run it with `make integration-tests` from `osac-operator/`. The
-existing Kind test that strips finalizers cannot cover this boundary.
-This AAP-boundary test uses a controllable AAP HTTP server and does not contact
-Netris. A separate test environment with a live Netris controller would be
-needed to validate server-side allocation atomicity and persistence; that is
-outside the CI integration target.
+existing Kind test that strips finalizers cannot cover this boundary. This
+test exercises the controller-to-AAP HTTP boundary using mocked AAP responses;
+it does not contact Netris. A separate test environment with a live Netris
+controller would be needed to validate server-side allocation atomicity and
+persistence, outside the CI integration target.
 
 Until these targets are implemented, these are planned cases rather than
 available or passing integration tests. The documented existing commands do
