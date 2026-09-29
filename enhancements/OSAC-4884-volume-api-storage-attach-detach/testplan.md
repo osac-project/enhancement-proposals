@@ -129,14 +129,14 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Create attachments for `vol-123` as the VM boot disk and `vol-456` as an additional disk on `ci-456`.
-2. Observe the operator attachment intent and AAP provisioning input.
-3. Observe the PVCs, PVs, and KubeVirt VM disk definition.
-4. Observe the CSI controller path for the annotated PVCs.
+1. Create a new ComputeInstance with `vol-123` as `spec.boot_disk.existing_volume`.
+2. Wait for the VM to be created with its boot PVC/PV and existing-volume CSI path.
+3. Mutate the existing `ci-456` to append `vol-456` to `spec.additional_disks[].existing_volume` while the VM is running.
+4. Observe the operator attachment intent, AAP provisioning input, PVC/PV, KubeVirt VM disk definition, and CSI controller path.
 
 ##### Expected Results
 
-- The boot and additional disk relationships reference the same VM target and distinct Volumes.
+- The boot and additional disk references use the same VM target and distinct Volumes; boot reference is accepted only at creation, while the additional disk is appendable after VM creation.
 - AAP creates PVCs with `osac.openshift.io/volume-id=vol-123` and `osac.openshift.io/volume-id=vol-456`, and references both PVCs from the KubeVirt VM.
 - CSI returns existing-volume details without provisioning a new backend Volume, and the Kubernetes external-provisioner creates/binds the PVs.
 - Each relationship reaches `READY` only after PVC/PV binding, VM disk wiring, and CSI publish complete, or exposes a concrete terminal error.

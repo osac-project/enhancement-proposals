@@ -193,7 +193,19 @@ VolumeAttachmentStatus: state, message, operationToken, claimGeneration,
 
 The CRD carries `osac.openshift.io/tenant` metadata, uses the `osac.openshift.io/volume-attachment` finalizer, and is reconciled only by `osac-operator`. `target.osacReference` identifies the OSAC resource: `ComputeInstance` for VMaaS, `ClusterOrder` for CaaS, and `BareMetalInstance` for BMaaS. `target.csiTarget` is the CSI publish identity; `target.storageHost` is the BMaaS storage-system host identity. They are intentionally separate because an OSAC target is not necessarily a Kubernetes node or vendor host.
 
-The public ComputeInstance API extends `ComputeInstanceDisk` with an existing-volume reference. The disk message uses a oneof between dynamic disk configuration (`size_gib`/`storage_tier`) and `existing_volume.id`. `additional_disks` accepts append/remove mutations for existing-volume entries; ordinary VM disk configuration remains subject to existing immutability rules. `boot_disk.existing_volume` is allowed only during ComputeInstance creation because replacing a running VM root disk requires separate boot-order and power-state handling. The public ComputeInstance REST/gRPC Update, CLI, and UI are the VMaaS attach/detach interfaces.
+The public ComputeInstance API extends `ComputeInstanceDisk` additively:
+
+```protobuf
+message ComputeInstanceDisk {
+  optional int32 size_gib = 1;
+  optional string storage_tier = 2;
+  VolumeReference existing_volume = 3;
+  optional bool readonly = 4;
+}
+message VolumeReference { string id = 1; }
+```
+
+`existing_volume` is mutually exclusive with `size_gib`/`storage_tier`; a message-level validation rule rejects a disk that specifies both sources. `additional_disks` accepts append/remove mutations for existing-volume entries, keyed by `existing_volume.id`; ordinary dynamically provisioned disk entries remain immutable. The server uses field-mask validation and optimistic locking, rejects duplicate Volume IDs across boot/additional disks, and does not treat list order as identity. `boot_disk.existing_volume` is allowed only during ComputeInstance creation because replacing a running VM root disk requires separate boot-order and root-disk ownership handling. Existing-volume additional disks are supported for running and stopped VMs; running VMs use KubeVirt hotplug when available, while stopped VMs reach configured/bound state before runtime publish. The public ComputeInstance REST/gRPC Update, CLI, and UI are the VMaaS attach/detach interfaces.
 
 The operator Attachment CR stores the ComputeInstance ID, attachment ID, existing Volume ID, deterministic PVC name, target disk role, and lifecycle conditions. The PV name and UID are observed from the external-provisioner after binding; the CR does not claim ownership of a separate wrapper object. Its status stores operator execution details; these details are not exposed as a public VolumeAttachment resource.
 
