@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-16
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -38,33 +38,52 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
-BaremetalInstance supports a repeated `BareMetalNetworkAttachment` field for API compatibility, but accepts at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures the switch port via dispatcher, and IP address feedback via CR status enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
+`BaremetalInstance` keeps its repeated `BareMetalNetworkAttachment` field for API compatibility, with a contract of at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. Fulfillment-service copies that desired attachment into the BaremetalInstance CR. At the networking handoff, BMF creates and owns a private `SubnetAttachment` CR targeting the BMI; the networking controller reconciles its spec and writes only its status. BMF reads that status and mirrors the network conditions and discovered IP into BMI status. This same BMI-target path applies to direct BMaaS instances and CaaS worker BMIs. VMaaS uses a ComputeInstance-target request. No Cluster-target request is needed because CaaS workers are BMIs. BMF retains host provisioning, reboot, and lifecycle orchestration. See [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller) for the shared proto and [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
 Bare-metal servers require explicit switch port configuration to participate in the OSAC Networking API. Unlike VMs (which live inside an OVN overlay bridged to the fabric), BM servers connect directly to the physical fabric — each NIC's switch port must be moved between network segments during the provisioning lifecycle.
 
-### Architecture: Two Operators on One CR
+### Architecture: Lifecycle Owner, Attachment Request, and Networking Controller
 
 ```
-fulfillment-service → creates BaremetalInstance CR → hub cluster
-                                                        │
-    bare-metal-fulfillment-operator ─────────────────────┤ (provisioning)
-      - reconcileInventory (Ironic/Metal3)               │
-      - reconcileProvisioning (AAP)                      │
-      - reconcileNetworking (dispatcher)                 │
-      - reconcileReboot (handoff)                        │
-      - reconcileIPDiscovery (DHCP lease query)          │
-      - reconcilePower (Ironic/Metal3)                   │
-      - finalizers: inventory, baremetalinstance,         │
-        baremetalinstance-networking                      │
-                                                         │
-    osac-operator ───────────────────────────────────────┘ (feedback + cleanup)
+fulfillment-service → BaremetalInstance CR → hub cluster
+       │                                         │
+       │                         bare-metal-fulfillment-operator
+       │                           - inventory and OS provisioning
+       │                           - creates/owns SubnetAttachment CR
+       │                           - reads request status and updates BMI status
+       │                           - handoff reboot; waits for IPDiscoveryComplete
+       │                           - host power and lifecycle finalizers
+       │                                         │
+                                              │
+                                              └→ osac-operator SubnetAttachment controller
+                                                    - resolves BMI's existing attachment intent
+                                                    - moves the fabric port and queries DHCP
+                                                    - writes only SubnetAttachment status
+                                                    - holds finalizer on its own CR through offboarding
+
+    osac-operator feedback / cleanup controllers
       - BareMetalInstanceFeedbackReconciler
       - fires Signal RPC on status change
       - finalizer: baremetalinstance-feedback (removed last)
       - BareMetalInstance cleanup controller (auto ExternalIP)
 ```
+
+The nested `BareMetalNetworkAttachment` on the BaremetalInstance CR remains the
+sole desired-state input. When BMF reaches the network handoff after
+`ProvisionTemplateComplete=True`, it creates one internal SubnetAttachment CR
+using the private target-only proto. BMF owns that CR and its target reference;
+the CR does not copy the BMI's subnet or interface fields. It is a shared
+asynchronous work record, not a second tenant attachment or source of desired
+state. The networking controller reconciles the request and writes its status;
+BMF reads that status and updates the BMI status it owns to sequence reboot and
+readiness.
+
+The private spec is `SubnetAttachment{baremetal_instance: {id: <bmi-id>}}`.
+It identifies the BMI only; the nested `BareMetalNetworkAttachment` remains
+the desired attachment configuration. The generic proto contract is defined in
+the [Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller).
 
 ### Goals
 
@@ -82,9 +101,9 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 - Resource-specific attachment message (`BareMetalNetworkAttachment`) with `interface` and `primary` fields
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
-- bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher moves the selected interface's fabric port onto the tenant subnet's network segment (provisioning network → tenant) via the generic `move_network_attachment` role
+- osac-operator networking controller: after OS provisioning, dispatches the selected interface's fabric port move (provisioning network → tenant), waits for fabric readiness, then queries DHCP after the BMF handoff reboot
 - Provisioning network: an idle (unassigned) server keeps its fabric NIC on an OSAC-owned provisioning network (DHCP + gateway + SNAT) so it has internet during metal3 inspection; provisioning moves the port provisioning network → tenant, deletion moves it tenant → provisioning network (see [Provisioning Network and Port Moves](#provisioning-network-and-port-moves))
-- IP discovery after provisioning: operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches the port MAC (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to the DHCP-assigned IP, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
+- IP discovery after handoff: osac-operator networking controller queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches the port MAC (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to the DHCP-assigned IP, writes it to SubnetAttachment status, BMF mirrors it into BMI status, and the feedback controller syncs BMI status to fulfillment-service for ExternalIPAttachment's primary-IP DNAT target
 - BareMetalInstanceType `network_ports` list with structured port definitions (name, role, type, speed)
 - Remove unused `networkClass` field from BareMetalInstance spec entirely (unused per reviewer feedback)
 
@@ -158,10 +177,10 @@ The [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types)
 
 - BMaaS tenants discover available interfaces via the BareMetalInstanceType API (with type + speed info)
 - Interface validation uses BareMetalInstanceType's `network_ports` list
-- CaaS fulfillment resolves the fabric interface from `BareMetalInstanceType.network_ports[].role=fabric` at cluster creation and stores it on the node set
+- CaaS fulfillment resolves the fabric interface from `BareMetalInstanceType.network_ports[].role=fabric` at cluster creation and stores it on the corresponding `ClusterOrder.spec.nodeRequests[]` entry
 - `BareMetalInstanceType.host_label_selector` provides direct inventory matching (OSAC-1201), replacing the former HostType reverse lookup
 
-> **CaaS network attachment source:** For CaaS bare-metal workers, the network attachment originates from the private `ClusterOrder.spec.networkAttachment` (`ClusterNetworkAttachment`) and is enriched per-BMI by the `BareMetalWorkerReconciler` with the immutable `fabric_interface` already resolved and stored on the node set during cluster creation. See [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full enrichment flow.
+> **CaaS network attachment source:** For CaaS bare-metal workers, the network attachment originates from the private `ClusterOrder.spec.networkAttachment` (`ClusterNetworkAttachment`) and is enriched per-BMI by the `BareMetalWorkerReconciler` with the immutable `fabric_interface` resolved for that node set and stored on its corresponding `ClusterOrder.spec.nodeRequests[]` entry. See [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full enrichment flow.
 
 #### Interface Role Convention
 
@@ -235,7 +254,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - The optional `interface` references a valid interface name from the BareMetalInstanceType's network ports list
      - If `interface` is omitted, defaults to the first port with `role=fabric` from the BareMetalInstanceType
      - If one attachment is present, it is the implicit primary; omitted or `primary: true` is accepted but redundant, while `primary: false` is rejected
-   - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-created: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
+   - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-created: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP; the address is unknown until the networking controller completes DHCP discovery. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
 6. **bare-metal-fulfillment-operator BareMetalInstance controller:**
@@ -250,22 +269,22 @@ Same as VMaaS/CaaS — the networking API is uniform.
       - Server stays on the provisioning network during this phase
       - Host-side networking is handled by DHCP — the template does NOT configure static IPs, gateway, or DNS. The host receives its IP automatically from the provisioning network DHCP server.
 
-   c. **`reconcileNetworking` (runs after provisioning is complete):**
-      - Reads `network_attachments` from the CR spec
-      - **Operator dispatches switch-side config:** For the sole attachment, the operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant network segment name and moves the server's selected fabric port **provisioning network → tenant network** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = fabric server name from ExternalHostID, `logical_interface_name` = interface from the resolved attachment, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant network segment). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
-      - **Network segment readiness wait:** After each port attach, the move playbook polls the fabric manager until the target network segment reaches active/ready state. This ensures the switch fabric has fully converged before the operator triggers the handoff reboot — without this wait, the host may DHCP on the wrong network.
-      - Sets condition: `NetworkAttachmentsReady=True`
+   c. Reads SubnetAttachment status and waits for `NetworkAttachmentsReady=True`, set by the osac-operator networking controller after the port move and fabric readiness check.
 
    d. **`reconcileReboot` (runs after networking):**
       - Issues reboot via BareMetalHost annotation so the OS re-DHCPs on the tenant network
       - Waits for reboot to complete
       - Sets condition: `NetworkHandoffComplete=True`
 
-   e. `reconcilePower` (unchanged)
+   e. Reads SubnetAttachment status, mirrors the discovered attachment IP and `IPDiscoveryComplete` to BMI status, and only then can the BaremetalInstance reach `Ready`.
 
-7. **IP discovery and feedback (`reconcileIPDiscovery` — runs after reboot):**
-   - After `reconcileReboot` completes and the host has received a DHCP lease on the tenant network, the operator queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the tenant subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP on the tenant network.
-   - Operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR
+   f. `reconcilePower` (unchanged)
+
+7. **osac-operator networking controller (after reboot):**
+   - Waits for BMF to set `NetworkHandoffComplete=True`, then queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the tenant subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP on the tenant network.
+   - Records the discovered IP and `IPDiscoveryComplete=True` in the
+     SubnetAttachment CR status. BMF observes that status and mirrors the
+     address and condition into BMI status.
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern
 
@@ -285,13 +304,13 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - ExternalIPAttachment controller resolves the BaremetalInstance target by UUID label
     - Checks two preconditions before dispatching (requeues if either is not met):
       1. **ExternalIP must be Allocated** (have an allocated address from the fabric manager)
-      2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachmentStatuses[].ipAddress` for the attachment where `primary: true`. This IP is written by the operator during `reconcileIPDiscovery` (step 7) and synced to the fulfillment-service via the feedback controller.
+      2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachmentStatuses[].ipAddress` for the attachment where `primary: true`. The networking controller writes the IP to SubnetAttachment status after `NetworkHandoffComplete`; BMF mirrors it to BMI status and the feedback controller syncs it to fulfillment-service.
     - Once both preconditions are met: writes `osac.openshift.io/target-ip` annotation on the ExternalIPAttachment CR
     - Calls `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
     - Fabric manager creates DNAT rule: external IP → BM's primary subnet IP
     - ExternalIPAttachment transitions from Pending to Ready
 
-    For auto-provisioned ExternalIPAttachments (`auto_external_ip_attachment=true`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileIPDiscovery` completion (IP discovery by the operator after provisioning completes and the host has received a DHCP lease).
+    For auto-provisioned ExternalIPAttachments (`auto_external_ip_attachment=true`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on the networking controller completing DHCP discovery after the BMF handoff reboot.
 
 #### Deletion (reverse order)
 
@@ -299,11 +318,11 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-created-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
-    - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
-      - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
-      - `reconcileNetworking` (delete): dispatches the same `osac-move-network-attachment` job — because the CR now carries a `deletionTimestamp`, the playbook moves each port **tenant network → provisioning network** (`from_vnet_name` = tenant network segment, `to_vnet_name` = provisioning network), returning the fabric NIC to the provisioning network so the freed server keeps internet for its next inspection. The host is off at this point, so nothing runs on the provisioning network. A missing tenant Subnet CR is tolerated (detach skipped, port still returned to provisioning network).
-      - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown. Ironic powers the host back on via BMC and PXE-boots a cleaning ramdisk on the provisioning network — not the tenant OS.
-      - Removes management finalizer
+    - bare-metal-fulfillment-operator and osac-operator networking controller (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
+      - BMF `reconcileNetworkOffboardShutdown` powers off the host **while the port is still on the tenant network**, then sets `NetworkOffboardShutdownComplete=True`. If the host is already powered off, this is a no-op. The condition means it is safe for networking to move the port.
+      - The networking controller waits for `NetworkOffboardShutdownComplete=True` on the target BMI, then dispatches the same `osac-move-network-attachment` job to move the fabric NIC **tenant network → provisioning network**. A missing tenant Subnet CR is tolerated; the controller still returns the port to the configured provisioning network when its fabric manager operation permits it. Once the move completes, it sets `NetworkOffboardComplete=True` in SubnetAttachment status and removes its finalizer from that request CR.
+      - BMF reads `NetworkOffboardComplete=True` from SubnetAttachment status before `reconcileDeprovisioning`. Ironic then powers the host back on via BMC and PXE-boots a cleaning ramdisk on the provisioning network — not the tenant OS. BMF's existing host-lifecycle finalizer remains on the BMI until deprovisioning completes.
+      - BMF removes its host-management finalizer after deprovisioning; inventory reconciliation unassigns the host and removes the inventory finalizer.
     - `reconcileInventory` deletion: UnassignHost from Ironic/Metal3, removes inventory finalizer
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
 
@@ -323,13 +342,13 @@ for the full guard table covering all networking resources.
 
 **IP discovery lease validation:**
 
-The IP discovery phase (`reconcileIPDiscovery`) requires that all network
-attachments have a valid DHCP lease before marking `IPDiscoveryComplete=True`.
-If the AAP `query_dhcp_lease` job returns no artifacts, or returns leases
-that do not cover all attachments, the operator treats this as a failure
-and backs off with exponential retry. A BareMetalInstance cannot reach
-`Ready` phase (and therefore `RUNNING` state) without all attachment IPs
-discovered. This prevents the scenario where a DHCP lease is not yet
+The networking controller requires a valid DHCP lease for the sole attachment
+before marking `IPDiscoveryComplete=True`.
+If the AAP `query_dhcp_lease` job returns no artifact or no lease for the
+selected port MAC, the networking controller records a failed condition and
+retries with backoff. BMF keeps the BareMetalInstance from reaching `Ready`
+(and therefore `RUNNING`) until `IPDiscoveryComplete=True`. This prevents the
+scenario where a DHCP lease is not yet
 available (e.g., the fabric manager's DHCP server has not propagated the
 lease to the new network segment) and the BMI appears as RUNNING with
 no internal IP.
@@ -372,7 +391,16 @@ message BareMetalNetworkAttachmentStatus {
 }
 ```
 
-#### Operator CRD (bare-metal-fulfillment-operator)
+The existing private `BareMetalNetworkAttachment` message remains nested in
+`BareMetalInstanceSpec` and is the BMI's sole desired-state attachment. The
+shared private `SubnetAttachment` proto/RPC and internal request CR identify
+the BMI target and provide the asynchronous networking handoff; they do not
+duplicate subnet, security-group, or interface intent. The networking
+controller writes `NetworkAttachmentStatuses`, conditions, and job history on
+the BMI CR. No standalone tenant-facing attachment resource or desired-state
+API is introduced.
+
+#### BaremetalInstance CRD (served to both controllers)
 
 ```go
 type BareMetalInstanceSpec struct {
@@ -407,8 +435,13 @@ attachment are immutable after creation, including `subnetRef`,
 CEL validation rule:
 ```yaml
 - rule: "self.networkAttachments.size() <= 1"
-  message: "at most one network attachment is supported"
+message: "at most one network attachment is supported"
 ```
+
+The CRD remains the shared BaremetalInstance API used by BMF and
+osac-operator; handing reconciliation to osac-operator does not introduce a
+second CRD. The max-one CEL rule is required before enabling BMaaS network
+attachments.
 
 #### fulfillment-service Controller (mutateBMI)
 
@@ -416,7 +449,9 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 #### Server Validation Rules
 
-- At most one network attachment may be specified
+- The API and CRD validators reject more than one network attachment. The
+  single-attachment contract is defined here; implementing and enabling this
+  validation is a prerequisite for rollout.
 - An omitted or empty list receives the tenant defaults; a supplied single entry receives defaults only for missing fields
 - The resolved subnet and security groups must belong to the same VirtualNetwork
 - The `interface` must reference a valid port name from the BareMetalInstanceType (its network ports list defines available ports)
@@ -452,7 +487,7 @@ network segment to another.** The port lifecycle is:
 | Flow | Trigger | Move (from → to) | When |
 |------|---------|------------------|------|
 | Initial | Deployment bootstrap (deployment infrastructure) | — → provisioning network | Pre-deployment |
-| Provision | BMI `reconcileNetworking` (after ProvisionTemplateComplete) | provisioning network → tenant subnet's network segment | **POST-provisioning** |
+| Provision | osac-operator networking controller after `ProvisionTemplateComplete` | provisioning network → tenant subnet's network segment | **POST-provisioning** |
 | Deprovision | BMI deletion (networking cleanup) | tenant subnet's network segment → provisioning network | Deletion |
 
 **Key difference from the previous design:** The port move now happens **AFTER
@@ -491,27 +526,70 @@ move_network_attachment(host_name, logical_interface_name,
   mean (tenant, provisioning, …), so CaaS can reuse it for its own
   provisioning-network flow.
 
-**Single move playbook, direction from the CR.** One AAP job template
+**Single move playbook, direction from the target lifecycle.** One AAP job template
 (`osac-move-network-attachment`, playbook
 `playbook_osac_move_network_attachment.yml`) serves both provision and
-deprovision. It derives direction from the CR: a resource carrying
-`metadata.deletionTimestamp` is **offboarding** (tenant → provisioning network);
-otherwise it is **onboarding** (provisioning network → tenant). The tenant network
-segment is resolved from the sole attachment's `subnetRef` (Subnet CR `metadata.name`
-== fabric network segment name); the provisioning network name comes from
-configuration. The
-bare-metal-fulfillment-operator therefore points **both** its networking-provision
-and networking-deprovision providers at the same `osac-move-network-attachment`
-template — no direction plumbing in the operator.
+deprovision. The osac-operator networking controller determines direction from
+the target BMI lifecycle: a BMI with `metadata.deletionTimestamp` is
+**offboarding** (tenant → provisioning network), gated on
+`NetworkOffboardShutdownComplete=True`; otherwise the operation is
+**onboarding** (provisioning network → tenant). The SubnetAttachment CR remains
+present while the consumer's BMI finalizer retains the target. The tenant
+network segment is resolved from the sole attachment's `subnetRef` (Subnet CR
+`metadata.name` == fabric network segment name); the provisioning network name
+comes from configuration. The networking controller passes the resolved
+direction to the job rather than relying on the SubnetAttachment CR's
+deletionTimestamp. It uses the shared networking dispatcher and
+the same `osac-move-network-attachment` template for both directions. It
+resolves the sole attachment's subnet through the existing private Subnet,
+VirtualNetwork, and NetworkClass APIs, then dispatches through the resolved
+fabric manager. BMF does not create a networking AAP job or resolve
+NetworkClass for this operation.
+
+#### Controller Boundary and Status Ownership
+
+The networking controller watches the internal `SubnetAttachment` CR created
+and owned by BMF. The CR references the existing BaremetalInstance and does
+not copy its nested `spec.networkAttachments`; that field remains the sole
+desired-state source. The private proto defines the target reference written
+to the request spec and is shared by VMaaS and CaaS, with one work record per
+target attachment. The networking controller adds its finalizer to the
+SubnetAttachment CR before starting any AAP job and holds that finalizer until
+tenant-network cleanup is complete. It uses the shared NetworkClass resolver with dedicated providers for
+`osac-move-network-attachment` and `osac-query-dhcp-lease`; the resolver selects
+the manager-specific role for each job.
+
+BMF creates the request after `ProvisionTemplateComplete=True`. The networking
+controller owns creation and updates of `NetworkAttachmentsReady` in
+SubnetAttachment status. When it first reconciles the request CR, it creates
+the condition as Unknown while the port move is pending; it sets False with a
+reason if the operation fails, and True only after the fabric manager reports
+the target segment ready. BMF reads that condition and mirrors it into the BMI
+status it owns, then consumes it to gate the handoff reboot.
+
+| Owner | Status and lifecycle fields | Purpose |
+|---|---|---|
+| bare-metal-fulfillment-operator | BMI status, including inventory/provisioning/power status, mirrored network conditions and attachment IP; `ProvisionTemplateComplete`; `NetworkHandoffComplete`; `NetworkOffboardShutdownComplete`; private `SubnetAttachment` CR | Owns host lifecycle and BMI status, creates/owns the request after provisioning, reads its status, and reports when the handoff reboot or safe-to-offboard shutdown has completed. |
+| osac-operator SubnetAttachment controller | `SubnetAttachment.status`; `NetworkAttachmentsReady`; `IPDiscoveryComplete`; `NetworkOffboardComplete`; attachment result; `NetworkingJobs`; `IPDiscoveryJobs`; finalizer on the SubnetAttachment CR | Owns fabric attachment and DHCP discovery, records job history and the discovered address in its own CR status, and prevents its request from being removed before network cleanup. It does not write BMI status. |
+| osac-operator feedback controller | Feedback finalizer and fulfillment-service Signal RPC | Observes the combined status and synchronizes it to the fulfillment-service. |
+
+`NetworkOffboardComplete` means the fabric port has returned to the provisioning
+network. It does not mean only that the host has shut down. The networking
+controller sets it in SubnetAttachment status after the move succeeds; BMF
+sets `NetworkOffboardShutdownComplete` after powering off the host, reads the
+request status, and waits for `NetworkOffboardComplete` before deprovisioning
+or releasing the host. BMF writes BMI status and the networking controller
+writes SubnetAttachment status, so each controller owns a separate status
+subresource and no cross-controller status merge is required.
 
 #### Topology-Agnostic Operator (Transport is Environment Config)
 
-The operator owns **network segment membership + lifecycle orchestration only**,
-referenced by segment **name** (config/CR), never by physical transport:
-
-- moves the fabric port between provisioning and tenant network segments,
-- patches `spec.image`, reboots via the BMH annotation,
-- discovers the tenant lease (`query_dhcp_lease`, MAC match).
+The controllers divide responsibilities by domain. The osac-operator
+networking controller owns **network segment membership and DHCP discovery**,
+referenced by segment **name** (config/CR), never by physical transport. BMF
+owns host provisioning, image changes, power, and the BMH-annotation reboot
+used for the network handoff. The networking controller does not configure
+host-side networking.
 
 The **transport** is environment config, not code:
 
@@ -537,57 +615,86 @@ image/callback (no egress checks, no SNAT logic).
 
 #### Tenant Handoff Signaling
 
-The operator uses conditions and phase to signal tenant handoff readiness:
+The controllers use conditions to hand off work without duplicating AAP
+operations:
 
-- `NetworkAttachmentsReady` — the tenant port is attached to the tenant network
-  segment (set after the move + segment active wait).
-- `NetworkHandoffComplete` — the port has been moved and the server has been
-  rebooted; the OS is running on the tenant network.
-- `IPDiscoveryComplete` — the tenant-network DHCP IP is discovered and valid.
-  The orchestration function (`reconcileNetworkProvisionAndDiscovery`)
-  explicitly checks this condition after `reconcileIPDiscovery` returns —
-  if `IPDiscoveryComplete=False/TemplateFailed`, the phase is set to `Failed`
-  and the flow stops. Without this explicit check, the phase could briefly
-  reach `Ready` between IP discovery retry cycles.
-- `NetworkOffboardComplete` (deletion only) — the host has been powered off
-  while still on the tenant network, prior to the port moving back to the
-  provisioning network. Tracked by `reconcileNetworkOffboardShutdown`.
-- Phase `Ready` — fully provisioned + on the tenant network + IP known.
+- After BMF reports `ProvisionTemplateComplete=True`, it creates and owns the
+  private `SubnetAttachment` request CR. The osac-operator networking
+  controller reconciles that CR.
+- The networking controller sets `NetworkAttachmentsReady` in SubnetAttachment
+  status after the tenant port move and fabric readiness wait. BMF reads the
+  condition and mirrors it into BMI status.
+- BMF waits for `NetworkAttachmentsReady`, reboots the host so its OS re-DHCPs,
+  then sets `NetworkHandoffComplete`.
+- The networking controller waits for `NetworkHandoffComplete`, discovers the
+  tenant DHCP lease, and writes the address plus `IPDiscoveryComplete` in
+  SubnetAttachment status. BMF reads that status and mirrors the result into
+  BMI status.
+- BMF waits for the mirrored `IPDiscoveryComplete` before reporting the
+  instance `Ready`.
+- During deletion, BMF sets `NetworkOffboardShutdownComplete` after power-off;
+  the networking controller returns the port to the provisioning network
+  and sets `NetworkOffboardComplete` in SubnetAttachment status. BMF reads that
+  result before deprovisioning; the networking controller removes its request
+  finalizer after offboarding completes.
 
-**Gating rule:** the operator must not surface a tenant IP or report `Ready`
-until after move + segment active + reboot + discovery. The provisioning-network
-IP is never exposed to the tenant. External access is signaled separately by
-the `ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
+The networking controller owns SubnetAttachment status, its AAP job histories,
+and its finalizer on that CR. BMF owns BMI status, including the mirrored
+conditions and `NetworkAttachmentStatuses`, plus `NetworkHandoffComplete`,
+`NetworkOffboardShutdownComplete`, and host lifecycle status. **Gating rule:**
+neither operator reports `Ready` or surfaces a tenant IP until the port move,
+fabric readiness, handoff reboot, and DHCP discovery have all completed. The
+provisioning-network IP is never exposed to the tenant.
+External access is signaled separately by the `ExternalIPAttachment` (DNAT) and
+`NATGateway` (SNAT) CR statuses.
 
 #### IP Discovery
 
-IP discovery is decoupled from switch port configuration. The `move_network_attachment` role is switch-side only — it moves the server's fabric port onto the tenant subnet's network segment during `reconcileNetworking`, after OS provisioning and before the handoff reboot. It does not query DHCP leases or return an IP address.
+IP discovery is decoupled from switch port configuration. The
+`move_network_attachment` role is switch-side only — it moves the server's
+fabric port onto the tenant subnet's network segment after OS provisioning and
+before the handoff reboot. It does not query DHCP leases or return an IP
+address.
 
-After `reconcileProvisioning` completes and the host has received a DHCP lease from the fabric's DHCP server, the operator runs `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing the sole attachment's subnet reference and the server's selected port MAC address. The role queries the fabric manager's DHCP lease API for the subnet, matches the port MAC to find the corresponding DHCP-assigned IP, and returns it. The operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
+After BMF sets `NetworkHandoffComplete=True`, the osac-operator networking
+controller dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`,
+passing the sole attachment's subnet reference and selected port MAC address.
+The role queries the fabric manager's DHCP lease API for the subnet, matches
+the port MAC to find the DHCP-assigned IP, and returns it. The networking
+controller records the discovered IP and sets `IPDiscoveryComplete=True` in
+SubnetAttachment status. BMF reads that status and writes the IP and mirrored
+condition to `status.networkAttachmentStatuses[].ipAddress` on the
+BaremetalInstance CR.
 
-**MAC resolution — the `osac.openshift.io/interface-macs` contract.** Bare-metal servers are not registered as named fabric servers, so their DHCP leases appear in the fabric manager's IPAM as MAC-only host entries (no server name). To match a lease, the operator must know the selected NIC MAC. Inventory tooling annotates each `BareMetalHost` with a JSON map of OSAC interface name → NIC MAC, e.g. `{"eth9":"52:54:00:16:04:83"}`, under the `osac.openshift.io/interface-macs` annotation. During `reconcileIPDiscovery` the operator reads this annotation, resolves the sole attachment's interface to a MAC, and passes it to the job as an extra var. The `query_dhcp_lease` role matches the IPAM host by MAC (the fabric manager stores lease MACs lowercase; the role compares against the lowercased `mac[].address` values). When no MAC is supplied, the role falls back to matching by server name — the path named CaaS fabric servers use, which BMaaS is converging onto.
+**MAC resolution — the `osac.openshift.io/interface-macs` contract.** Bare-metal servers are not registered as named fabric servers, so their DHCP leases appear in the fabric manager's IPAM as MAC-only host entries (no server name). To match a lease, the networking controller reads the selected NIC MAC from a JSON map of OSAC interface name → NIC MAC on the associated `BareMetalHost`, e.g. `{"eth9":"52:54:00:16:04:83"}`, under the `osac.openshift.io/interface-macs` annotation. It resolves the sole attachment's interface to a MAC and passes it to the job as an extra var. The `query_dhcp_lease` role matches the IPAM host by MAC (the fabric manager stores lease MACs lowercase; the role compares against the lowercased `mac[].address` values). When no MAC is supplied, the role falls back to matching by server name — the path named CaaS fabric servers use. The osac-operator service account therefore needs read access to the `BareMetalHost` annotation; inventory tooling must populate it before DHCP discovery.
 
-The operator writes both the discovered IP and `primary: true` to the status entry for the resolved attachment (the status-side reflection of the implicit-primary rule). The feedback controller syncs this to the fulfillment-service DB via the existing Signal / `syncStatus()` pattern, and the ExternalIPAttachment controller has one deterministic IP to read for DNAT creation.
+The networking controller writes the discovered IP and observed attachment
+data only to SubnetAttachment status. BMF mirrors the IP and `primary: true`
+to BMI status (the status-side reflection of the implicit-primary rule). The
+feedback controller syncs BMI status to the fulfillment-service DB via the
+existing Signal / `syncStatus()` pattern, and the ExternalIPAttachment
+controller has one deterministic IP to read for DNAT creation.
 
 #### Component Responsibility Summary
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP |
-| bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), OS provisioning (AAP), **IP discovery** via `query_dhcp_lease` dispatcher call after provisioning, power management |
+| fulfillment-service | Validate and default `network_attachments`, copy the single resolved attachment to the BMI CR via mutateBMI, auto-provision ExternalIP |
+| bare-metal-fulfillment-operator | Own BMI lifecycle and status; create/own the SubnetAttachment CR; read request status; perform the handoff reboot and offboard shutdown; manage host power |
+| osac-operator networking controller | Resolve the attachment's NetworkClass, dispatch the port move and DHCP lease query, own SubnetAttachment status/job history and the finalizer on that CR |
 | AAP BM provisioning template | OS provisioning only (host-side networking handled by DHCP) |
-| osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
+| osac-operator feedback controller | Signal fulfillment-service on BMI status changes (unchanged), sync BMF-projected IP addresses from BMI status to DB |
 | osac-operator BMI cleanup controller | Clean up auto-provisioned ExternalIPAttachment → ExternalIP on BaremetalInstance deletion (phased requeue, `baremetalinstance-cleanup` finalizer) |
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from CR status, create DNAT via fabric_manager |
-| fabric_manager role (move_network_attachment) | Switch-side only: resolve host → fabric server → fabric port, detach from the source network segment (if set) and attach to the target segment (if set). Waits for target segment active state after attach. Serves both provisioning → tenant (provision) and tenant → provisioning (deprovision) |
-| fabric_manager role (query_dhcp_lease) | Query fabric manager's DHCP lease API for a subnet, match the port MAC (or fall back to server name) to find the DHCP-assigned IP, return it |
+| fabric_manager role (`move_network_attachment`) | Switch-side only: resolve host → fabric server → fabric port, detach from the source network segment (if set) and attach to the target segment (if set). Waits for target segment active state after attach. The osac-operator networking controller calls it for both provisioning → tenant and tenant → provisioning moves. |
+| fabric_manager role (`query_dhcp_lease`) | Query fabric manager's DHCP lease API for a subnet, match the port MAC (or fall back to server name) to find the DHCP-assigned IP, return it to the osac-operator networking controller. |
 
 #### Reconciliation Phase Ordering
 
 **Target reconcile flow (provision-then-handoff):**
 
 ```
-bare-metal-fulfillment-operator BareMetalInstance controller phases:
+BMF BareMetalInstance controller:
 1. reconcileInventory → allocate host, populate HostClass
    Sets condition: InventoryAssigned=True
 
@@ -595,38 +702,50 @@ bare-metal-fulfillment-operator BareMetalInstance controller phases:
    Host PXE boots and gets IP from DHCP on the provisioning network.
    Requires: InventoryAssigned=True
    Sets condition: ProvisionTemplateComplete=True
+   Creates the private SubnetAttachment CR for this BMI
 
-3. reconcileNetworking → move fabric port provisioning network → tenant network
-   (dispatcher, switch-side only; waits for network segment active after attach)
+osac-operator SubnetAttachment controller:
+3. Resolve the referenced BMI's Subnet → VirtualNetwork → NetworkClass,
+   add the networking finalizer to the SubnetAttachment CR,
+   then dispatch move_network_attachment: provisioning network → tenant network
+   Wait for target segment active; record NetworkingJobs.
    Requires: ProvisionTemplateComplete=True
-   Sets condition: NetworkAttachmentsReady=True
+   Sets condition in SubnetAttachment status: NetworkAttachmentsReady=True
 
+BMF BareMetalInstance controller:
 4. reconcileReboot → reboot server (BMH annotation) so OS re-DHCPs on tenant network
    Requires: NetworkAttachmentsReady=True
    Sets condition: NetworkHandoffComplete=True
 
-5. reconcileIPDiscovery → query fabric manager's DHCP lease API via dispatcher
-   (query_dhcp_lease), match port MAC to assigned IP on tenant network, write to CR status
+osac-operator networking controller:
+5. Query fabric manager's DHCP lease API via dispatcher (query_dhcp_lease),
+   match port MAC from the BareMetalHost annotation, and write the IP and
+   IPDiscoveryComplete=True to SubnetAttachment status.
    Requires: NetworkHandoffComplete=True
    Sets condition: IPDiscoveryComplete=True
 
+BMF BareMetalInstance controller:
 6. Phase Ready → fully provisioned + on tenant network + IP known
    Requires: IPDiscoveryComplete=True
 
 7. reconcilePower → power state management (independent)
 
 Deletion (power-off-first — tenant workloads never touch provisioning network):
-1. reconcileNetworkOffboardShutdown → power off while port is still on tenant network
-   Sets condition: NetworkOffboardComplete=True
-2. reconcileNetworking (delete) → move port tenant network → provisioning network
-   Host is off — nothing runs on provisioning network
-3. reconcileDeprovisioning → Ironic PXE boots cleaning ramdisk (not tenant OS)
+1. BMF reconcileNetworkOffboardShutdown → power off while port is on tenant network
+   Sets condition: NetworkOffboardShutdownComplete=True
+2. Networking controller waits for shutdown condition, moves port tenant network →
+   provisioning network, sets NetworkOffboardComplete=True in SubnetAttachment status,
+   removes its finalizer from that request CR
+3. BMF reads NetworkOffboardComplete from the request status, then
+   reconcileDeprovisioning → Ironic PXE boots cleaning ramdisk (not tenant OS)
 4. reconcileInventory (delete) → unassign host
 ```
 
-The server sits on the **provisioning network** (config identifier `netris_bm_provisioning_vnet`, with DHCP + gateway + egress) from bootstrap through the entire metal3 deploy and first boot. First-boot cloud-init runs there **with egress**, so first-boot pulls succeed. Only after `ProvisionTemplateComplete` does the operator move the fabric port to the tenant network (waiting for the network segment to reach active state) and perform the handoff reboots so the OS re-DHCPs on the tenant network (see DHCP lease handoff below).
+Only the networking controller starts or polls `move_network_attachment` and
+`query_dhcp_lease` jobs. BMF only consumes the networking controller's
+conditions to order its host lifecycle operations.
 
-**DHCP lease handoff — deterministic second reboot.** Moving the fabric port from the provisioning network to the tenant network moves the host's NIC to the tenant V-Net, so the host must obtain a fresh DHCP lease there. This does not complete on the first post-switch reboot; a second reboot is deterministically required before the host holds a tenant-V-Net lease. This is expected, deterministic behavior — not a timing or race condition. The operator performs the second reboot as a standard step of the handoff, after which `reconcileIPDiscovery` reads the tenant-V-Net lease. (Fabric managers that scope DHCP strictly per segment may not require the second reboot.)
+The server sits on the **provisioning network** (config identifier `netris_bm_provisioning_vnet`, with DHCP + gateway + egress) from bootstrap through the entire metal3 deploy and first boot. First-boot cloud-init runs there **with egress**, so first-boot pulls succeed. Only after `ProvisionTemplateComplete` does the networking controller move the fabric port to the tenant network (waiting for the network segment to reach active state). BMF then performs one handoff reboot when the host is powered on so the OS re-DHCPs on the tenant network. If the host is already powered off, BMF skips the reboot; its next power-on boots directly on the tenant network. The networking controller queries DHCP only after BMF sets `NetworkHandoffComplete`.
 
 ### Security Considerations
 
@@ -639,11 +758,17 @@ This feature inherits the existing security model:
 
 ### Failure Handling and Recovery
 
-#### bare-metal-fulfillment-operator Reconciliation Failures
+#### BMF Host Lifecycle Reconciliation Failures
 
 - Inventory assignment failure (no free hosts): BaremetalInstance enters Failed state with condition, retries when host becomes available
-- Networking failure (dispatcher call failed, switch port config failed): BaremetalInstance enters Failed state with condition, retries on manual correction
-- AAP job failure (template execution error): BaremetalInstance enters Failed state with AAP job ID in status, manual investigation required
+- OS provisioning, reboot, or power failure: BMF records the failing host-lifecycle condition/job and does not advance to the next gate.
+
+#### osac-operator Networking Controller Failures
+
+- Port-move dispatch or fabric-readiness failure: the networking controller records the AAP job in `NetworkingJobs`, sets `NetworkAttachmentsReady=False` with a failure reason, and retries after the operator or fabric issue is corrected. BMF waits on this condition and does not reboot the host.
+- DHCP query returns no lease or cannot read the selected interface MAC: the networking controller records the job in `IPDiscoveryJobs`, sets `IPDiscoveryComplete=False`, and retries with backoff. BMF does not report `Ready` until discovery succeeds.
+- Offboard move failure: the networking finalizer remains on the SubnetAttachment CR, while BMF's host-lifecycle finalizer keeps the BMI and host from being deprovisioned or released before port cleanup succeeds.
+- Controller restart during an AAP operation: the controller resumes polling the job ID in the existing job-history status field; all AAP operations must remain idempotent when retried.
 
 #### Auto ExternalIP Allocation Failures
 
@@ -658,7 +783,17 @@ This feature inherits the existing security model:
 
 ### RBAC / Tenancy
 
-The bare-metal-fulfillment-operator needs additional RBAC permissions: get/list/watch on Subnet and NetworkClass CRs, required for the dispatcher to resolve networking configuration during `reconcileNetworking`.
+The osac-operator networking controller needs permission to watch and read
+BaremetalInstance CRs; create/read/update SubnetAttachment CRs, including their
+status and finalizer; read the associated BareMetalHost to obtain
+`osac.openshift.io/interface-macs`; and read the networking resources needed
+to resolve the sole attachment and NetworkClass.
+It uses the existing fulfillment-service private APIs and shared dispatcher
+credentials. Its BMI watch is restricted to the configured BM namespace, and
+it never writes BMI status or metadata. BMF creates and owns the request and is
+the only controller that mirrors request results into BMI status. BMF no longer
+needs Subnet/NetworkClass access or dispatcher permissions for BM port moves
+and DHCP discovery.
 
 All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
@@ -670,12 +805,13 @@ All new resources (BaremetalInstance with new fields, auto-provisioned ExternalI
 ### Observability and Monitoring
 
 New structured log events:
-- bare-metal-fulfillment-operator: `NetworkingReconciled` (info), `NetworkingReconciliationFailed` (error), `SwitchPortConfigured` (info), `IPAddressAllocated` (info)
+- osac-operator networking controller: `BareMetalNetworkAttachmentReconciling`, `BareMetalNetworkAttachmentReady`, `BareMetalIPDiscovered`, `BareMetalNetworkOffboarded` (info), `BareMetalNetworkingFailed` (error)
+- bare-metal-fulfillment-operator: lifecycle/provisioning, handoff reboot, and offboard shutdown events (info/error); it does not log or own AAP port-move or DHCP-query jobs
 - fulfillment-service: `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error), `InterfaceValidationFailed` (error)
 
 New Kubernetes events on BaremetalInstance:
-- `NetworkingConfigured`: switch ports configured, IPs allocated
-- `NetworkingConfigurationFailed`: networking reconciliation failed (dispatcher error, switch port config error)
+- osac-operator emits `NetworkingConfigured`, `IPAddressDiscovered`, and `NetworkingConfigurationFailed` for its port-move and DHCP operations
+- BMF emits handoff-reboot and offboard-shutdown events for host lifecycle transitions
 - `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
 
 No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
@@ -698,35 +834,52 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Reviewed by:** Cloud Provider Admin
 
-#### Risk: Two-operator architecture synchronization
+#### Risk: Consumer proceeds before SubnetAttachment reports completion
 
-**Impact:** bare-metal-fulfillment-operator and osac-operator feedback controller both watch BaremetalInstance CR. Reconciliation phases must be carefully ordered to avoid race conditions.
+**Impact:** If BMF advances the host lifecycle before reading the SubnetAttachment status, the BMI could be reported Ready without a tenant IP or the host could be released while its switch port remains on the tenant network.
 
-**Mitigation:** Reconciliation phase ordering enforced via status conditions: inventory → provisioning → networking → reboot → IP discovery. Integration tests covering full lifecycle. Document finalizer dependencies.
+**Mitigation:** The networking controller writes only SubnetAttachment status and its finalizer on that CR; BMF writes BMI status and its host-lifecycle finalizer. BMF gates reboot, Ready, and deprovisioning on the corresponding request status. Its BMI finalizer is installed before network handoff begins, so it does not depend on a late networking finalizer on the BMI. If deletion begins before BMF creates a SubnetAttachment request, no request-driven port move has started and BMF can proceed with its normal host cleanup. Cover status observation, restarts, and deletion ordering in integration tests.
 
 **Reviewed by:** osac-operator / bare-metal-fulfillment-operator teams
 
 ### Drawbacks
 
-#### Two-operator architecture complexity
+#### Coordinating lifecycle and networking controllers
 
-bare-metal-fulfillment-operator handles provisioning and networking, osac-operator feedback controller only watches status changes. This split adds synchronization complexity compared to a single-operator model.
+The BMF and osac-operator networking controller coordinate through the
+SubnetAttachment CR status while reconciling separate resources. BMF owns BMI
+status and the host-lifecycle finalizer; the networking controller owns the
+request status and its request finalizer.
 
-**Trade-off:** Separation of concerns (provisioning vs. feedback) vs. operational simplicity. Chosen approach: maintain two-operator architecture to avoid merging codebases. Document reconciliation phase ordering and finalizer dependencies.
+**Trade-off:** Networking ownership matches the networking API and shared
+dispatcher, while host lifecycle ownership remains with the Ironic/Metal3
+operator. The consumer must observe and act on request status before advancing
+its own lifecycle.
 
 ## Alternatives (Not Implemented)
 
-### Alternative 1: Single-operator architecture
+### Alternative 1: Keep all BM networking operations in BMF
 
-Merge bare-metal-fulfillment-operator into osac-operator to simplify reconciliation and eliminate feedback controller.
+Leave port moves and DHCP queries in BMF, which already owns BM provisioning and host lifecycle operations.
 
-**Rejected because:** bare-metal-fulfillment-operator is a separate codebase with its own Ironic/Metal3 integration. Merging would require significant refactoring and change ownership model. Current two-operator architecture is stable and proven.
+**Rejected because:** it gives the BM lifecycle operator ownership of fabric operations, DHCP lease lookup, and networking AAP job history, duplicating networking responsibilities already centralized in osac-operator. BMF remains the source of host lifecycle sequencing but consumes networking-owned conditions.
 
 ### Alternative 2: Operator IPAM (pre-allocate IPs)
 
-Operator pre-allocates IPs from subnet CIDR during reconcileNetworking and writes static config (IP, gateway, prefix, DNS) to CR status. Template applies static config to host.
+The operator pre-allocates IPs from the subnet CIDR and writes static config (IP, gateway, prefix, DNS) to CR status. The host provisioning template applies that configuration.
 
 **Rejected because:** DHCP is simpler, OS-agnostic, and already provided by the fabric infrastructure. Static config requires per-OS template logic (cloud-init, NMState, kickstart) and adds IPAM complexity (allocation tracking, cross-operator concurrency, gateway/DNS discovery). DHCP handles all of this automatically.
+
+### Alternative 3: Reconcile BaremetalInstance directly without an internal request CR
+
+Let the networking controller watch the BaremetalInstance directly and omit the
+shared private `SubnetAttachment` proto and internal CR.
+
+**Rejected because:** VMaaS, CaaS, and BMaaS need one explicit asynchronous
+handoff to the networking owner, while their workload CRs and lifecycle gates
+differ. The internal CR provides that common request/status boundary and
+references the workload; it does not duplicate the nested attachment intent or
+create a second tenant-facing attachment.
 
 ## Open Questions
 
@@ -744,7 +897,7 @@ Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's
 
 ### ~~4. How is the host's runtime IP discovered after network reconfiguration?~~ — Resolved
 
-Resolved: After `reconcileProvisioning` completes and the host has received a DHCP lease, the operator queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role). The role matches the server's port MAC address — resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to find the assigned IP (falling back to server-name matching for named fabric servers). The operator writes to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR. The feedback controller then syncs to fulfillment-service via Signal RPC. `move_network_attachment` remains switch-side only (moves the fabric port between network segments).
+Resolved: After BMF sets `NetworkHandoffComplete=True`, the osac-operator networking controller queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease`). It matches the server's port MAC — resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to find the assigned IP (falling back to server-name matching for named fabric servers), records it and sets `IPDiscoveryComplete=True` only in SubnetAttachment status. BMF reads the request status and mirrors the IP to `status.networkAttachmentStatuses[].ipAddress`; the feedback controller syncs BMI status to fulfillment-service via Signal RPC. `move_network_attachment` remains switch-side only (moves the fabric port between network segments).
 
 ## Test Plan
 
@@ -754,9 +907,13 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
 - fulfillment-service: interface validation (reject an interface not in BareMetalInstanceType)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- bare-metal-fulfillment-operator: reconcileNetworking phase ordering (after provisioning, before reboot; inventory → provisioning → networking → reboot → IP discovery)
-- bare-metal-fulfillment-operator: dispatcher call for the sole attachment (move_network_attachment with correct from/to network segment params, direction from deletionTimestamp)
-- bare-metal-fulfillment-operator: `buildSubnetMACMap` resolves subnetRef → MAC from the interface-macs annotation (single-NIC fallback when interface unset)
+- bare-metal-fulfillment-operator: creates and owns one BMI-target `SubnetAttachment` CR after `ProvisionTemplateComplete=True`, with no copied subnet/interface payload
+- osac-operator: SubnetAttachment reconcile is idempotent for its target and writes its readiness, IP, and offboard result only to SubnetAttachment status
+- bare-metal-fulfillment-operator: reads and mirrors `NetworkAttachmentsReady`, performs the single handoff reboot when powered on, sets `NetworkHandoffComplete`, and waits for the request's `IPDiscoveryComplete` before Ready
+- osac-operator: attachment controller dispatches one `move_network_attachment` job only after provisioning completion, resolves the correct fabric manager, and waits for target-segment readiness
+- osac-operator: DHCP discovery waits for BMF's `NetworkHandoffComplete`, resolves the sole interface MAC from the BareMetalHost annotation, and writes the IP plus `IPDiscoveryComplete` only to SubnetAttachment status; BMF mirrors them into BMI status
+- osac-operator: offboard waits for BMF shutdown, returns the port to provisioning, and records `NetworkOffboardComplete` only in SubnetAttachment status; BMF waits for that result before deprovisioning, then owner-reference garbage collection removes the request
+- ownership test: the networking controller cannot write BMI status or finalizers; BMF reads request status and mirrors the required conditions and IP into BMI status
 
 ### Integration Tests
 
@@ -765,8 +922,8 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with a second `--network-attachment`, verify the CLI and API return a maximum-one error
-- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant network, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
-- E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network + reboots; delete BMI returns it tenant → provisioning network (confirm in fabric manager; a freed server can re-inspect with internet)
+- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after BMF's one handoff reboot, matches port MAC to assigned IP on tenant network, networking controller writes SubnetAttachment status, BMF mirrors BMI status, feedback controller syncs to fulfillment-service, ExternalIPAttachment reads primary IP)
+- E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network and BMF performs one handoff reboot if powered on; delete BMI returns it tenant → provisioning network before BMF deprovisions (confirm in fabric manager; a freed server can re-inspect with internet)
 - E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network
 
 ### Tricky Test Cases
@@ -775,6 +932,9 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
 - IP address feedback latency (verify ExternalIPAttachment controller waits for IP to appear in status)
+- Delete while provisioned on tenant network (verify BMF powers off first; SubnetAttachment status reports offboard completion before BMF deprovisions/releases the host; the BMI host-lifecycle finalizer prevents early deletion)
+- Delete begins before SubnetAttachment creation (verify no port move is started for a deleting BMI and BMF completes host cleanup without waiting for a request)
+- Legacy `NetworkOffboardComplete=True` on an upgraded BMI (verify the networking controller does not interpret the old shutdown-only meaning as proof the port was returned)
 
 ## Long-Term Evolution (The Reboot is the Seam)
 
@@ -807,12 +967,15 @@ Proposed maturity level: **Tech Preview** → **GA**
 Tech Preview criteria:
 - [ ] API fields (`network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
 - [ ] BaremetalInstance CRD updated with `NetworkAttachments` field, CEL validation, and status field for IP addresses
-- [ ] bare-metal-fulfillment-operator `reconcileNetworking` phase implemented (provision-then-handoff flow)
+- [ ] osac-operator BaremetalInstance networking controller implemented (shared dispatcher, provision-then-handoff port move, fabric readiness wait, DHCP lease query)
 - [ ] bare-metal-fulfillment-operator `reconcileReboot` phase implemented (BMH annotation-based reboot after port move)
+- [ ] BMF waits on networking-owned conditions and does not dispatch BM port moves or DHCP queries
+- [ ] Networking controller writes only SubnetAttachment status and its finalizer; BMF mirrors request results into BMI status and owns the BMI lifecycle finalizer
+- [ ] Networking controller owns the offboard move and reports completion in SubnetAttachment status; BMF waits before deprovisioning/releasing the host
 - [ ] Dispatcher integration for `move_network_attachment` (provision + deprovision via one job template); provisioning network provisioned and initial per-server attach done at deployment
 - [ ] BareMetalInstanceType with network ports (`BareMetalNetworkPortSpec`) available and tested
 - [ ] Auto ExternalIP attachment provisioning functional
-- [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant network, operator writes to CR status, feedback syncs to fulfillment-service)
+- [ ] IP discovery implemented in osac-operator (`query_dhcp_lease` role queries fabric manager DHCP lease API after BMF handoff reboot, matches port MAC to assigned IP on tenant network, networking controller writes SubnetAttachment status, BMF mirrors it to BMI status, feedback syncs to fulfillment-service)
 - [ ] Tenant handoff signaling (NetworkAttachmentsReady, NetworkHandoffComplete, IPDiscoveryComplete, Ready) implemented
 - [ ] Integration tests pass (E2E coverage for max-one validation, auto ExternalIP, IP feedback, isolation-until-ready)
 - [ ] Documentation: API reference, user guide for simplified BM creation
@@ -829,20 +992,31 @@ GA criteria:
 
 ### Upgrade
 
-Micro version upgrades (`x.y.N → x.y.N+2`):
-- New fields (`network_attachments`, `auto_external_ip_attachment`) are additive — existing BaremetalInstance resources continue to work without networking fields
-- No user action required
+This controller-ownership change keeps the existing BMI attachment as the
+desired-state source and adds the shared private `SubnetAttachment` proto and
+internal CR as the request/status boundary. Upgrade fulfillment-service,
+osac-operator, and BMF together. Before enabling the new networking controller,
+complete any in-flight legacy BMF networking jobs or migrate their job IDs and
+desired-version state into SubnetAttachment status so operations resume rather
+than dispatching a second time. Deployment configuration must not run the old
+BMF networking reconciler and the new osac-operator networking controller
+against the same attachment at once.
 
-Minor version upgrades (`x.N → x.N+1`):
-- Tenant User encouraged to migrate to new networking fields by upgrading the
-  CLI (`osac-cli` supports the new `--network-attachment` flag with `--interface`
-  and `--primary`)
-- No breaking changes — networking fields remain optional
+For a BMI already being deleted, BMF must set the new
+`NetworkOffboardShutdownComplete` condition after shutdown. The networking
+controller must not treat a legacy `NetworkOffboardComplete=True` condition on
+the BMI as proof that the port has returned to the provisioning network; it
+runs or resumes the idempotent offboard move and records completion in
+SubnetAttachment status. BMF reads that request status before deprovisioning.
+
+The maximum-one validation is a release prerequisite in the fulfillment API
+and BaremetalInstance CRD. Existing resources without an attachment remain
+valid; resources with an attachment continue to use the same nested field.
 
 ### Downgrade
 
 If `N+1` upgrade fails or cluster is misbehaving:
-- Manual rollback: update fulfillment-service and bare-metal-fulfillment-operator images to `N`
+- Manual rollback: update fulfillment-service, osac-operator, and bare-metal-fulfillment-operator images to `N` as one compatible set
 - Existing BaremetalInstance resources with new `network_attachments` field will be unrecognized by `N` operator
 - Manual cleanup required: delete BaremetalInstance resources created with new field, re-create without networking fields
 - Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
@@ -856,7 +1030,13 @@ Acceptable downgrade steps:
 
 ### Control Plane Skew
 
-fulfillment-service, osac-operator, and bare-metal-fulfillment-operator are deployed together in the same namespace and upgraded atomically (all controlled by osac-installer). No skew expected.
+fulfillment-service, osac-operator, and bare-metal-fulfillment-operator are
+deployed together and upgraded atomically by osac-installer. The networking
+controller and BMF must use compatible condition semantics and the shared BMI
+job-history fields. A supported deployment must not enable both versions of
+the networking reconciler simultaneously: exactly one controller may dispatch
+BM port-move and DHCP-query jobs. During rollout, retain the networking
+finalizer until the selected controller completes offboarding.
 
 ### Client Skew
 
@@ -880,11 +1060,11 @@ kubectl describe baremetalinstance <name> -n <namespace>
 # Check status.conditions for NetworkingConfigurationFailed
 ```
 
-**Cause:** Dispatcher call failed or switch port config failed
+**Cause:** The osac-operator networking controller could not resolve the fabric manager, move the port, or confirm target-segment readiness.
 
 **Resolution:**
-1. Check bare-metal-fulfillment-operator logs for networking phase errors (dispatcher)
-2. Check AAP job logs for `move_network_attachment` role errors (switch-side) — e.g. port not found on the server, or the provisioning/tenant network segment not resolvable
+1. Check osac-operator networking-controller logs and the BMI `NetworkingJobs` history for the dispatch or readiness error.
+2. Check AAP job logs for `move_network_attachment` role errors (switch-side) — e.g. port not found on the server, or the provisioning/tenant network segment not resolvable.
 3. If fabric manager unreachable, investigate connectivity
 4. If switch port config failed, investigate switch configuration
 
@@ -906,7 +1086,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 **Cause:** Finalizer cleanup failed permanently
 
 **Resolution:**
-1. Check BaremetalInstance deletion logs (bare-metal-fulfillment-operator logs) for cleanup errors
+1. Check osac-operator cleanup-controller logs for cleanup errors
 2. Manually delete orphaned ExternalIPAttachment: `kubectl delete externalipattachment <name> -n <namespace>`
 3. Manually delete orphaned ExternalIP: `kubectl delete externalip <name> -n <namespace>`
 
@@ -918,10 +1098,26 @@ kubectl describe baremetalinstance <name> -n <namespace>
 
 **Resolution:**
 1. Check BaremetalInstance status: `kubectl get baremetalinstance <name> -n <namespace> -o jsonpath='{.status.networkAttachmentStatuses[?(@.primary==true)].ipAddress}'`
-2. If IP is missing, check bare-metal-fulfillment-operator logs for provisioning phase completion
-3. If provisioning completed but IP missing, investigate `query_dhcp_lease` dispatcher call (DHCP lease query may have failed, returned empty, or port MAC did not match any lease). Confirm the BareMetalHost carries the `osac.openshift.io/interface-macs` annotation with the attachment's interface — without it, MAC matching is skipped and only named fabric servers resolve
+2. If IP is missing, check BMF logs for provisioning and `NetworkHandoffComplete` completion.
+3. If handoff completed but IP is missing, inspect osac-operator networking-controller logs, `IPDiscoveryJobs`, and the `query_dhcp_lease` result. Confirm the BareMetalHost carries the `osac.openshift.io/interface-macs` annotation with the attachment's interface.
+
+### Symptom: BaremetalInstance deletion is waiting for network offboarding
+
+**Detection:** The BMI has a deletion timestamp and its SubnetAttachment
+request does not have `status.conditions[NetworkOffboardComplete]=True`.
+
+**Resolution:** Check the BMF `NetworkOffboardShutdownComplete` condition first.
+Then inspect the osac-operator networking-controller logs and AAP job history
+for the tenant-to-provisioning port move. BMF must retain its host-lifecycle
+finalizer and must not deprovision or return the host to inventory first.
 
 ### Disabling the feature
+
+Do not disable BMaaS networking reconciliation while any SubnetAttachment has
+its networking finalizer or an in-flight move/discovery job. Disabling the networking
+controller before offboarding can leave the port on the tenant network and
+block host deprovisioning. Resume the networking controller and complete the
+owned operation before removing its finalizer.
 
 To disable auto ExternalIP attachment:
 - Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
@@ -934,7 +1130,8 @@ Consequences:
 
 ## Infrastructure Needed
 
-- AAP execution environment with the fabric manager `move_network_attachment` role
+- osac-operator networking controller enabled with the shared dispatcher, fulfillment-service private API access, and read-only access to the associated BareMetalHost MAC annotation
+- AAP execution environment with the fabric manager `move_network_attachment` and `query_dhcp_lease` roles
 - A provisioned provisioning network segment (DHCP + gateway + SNAT, config identifier `netris_bm_provisioning_vnet`) and the initial per-server attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (deployment infrastructure)
 - Dispatcher core (OSAC-1457, OSAC-1458, OSAC-1460)
 - Integration test environment with fabric manager and Ironic/Metal3 backend
@@ -951,7 +1148,8 @@ Consequences:
 | Primary field on BareMetalNetworkAttachment | OSAC-2042 | New |
 | Immutability + interface + primary validation | OSAC-1509 | New |
 | CLI --network-attachment for BareMetalInstance | OSAC-2075 | New |
-| BM provisioning flow — reconcileNetworking dispatcher logic (dispatches move_network_attachment after provisioning, provisioning network → tenant). Note: the upstream producers that populate `network_attachments` on the K8s CR — BareMetalInstance CRD field and mutateBMI copy — are tracked separately below as open GAPs | OSAC-2047 | Closed |
+| Existing BMF networking orchestration must create/own SubnetAttachment, read its status, and mirror network results into BMI status | Not tracked | **GAP** |
+| Private SubnetAttachment target proto, CRD, and BMF create/own integration | Not tracked | **GAP** |
 | BM reboot flow (reconcileReboot issues BMH annotation-based reboot after port move) | Not tracked | **GAP** |
 | Integration test | OSAC-1510 | New |
 | Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | Closed |
@@ -959,7 +1157,21 @@ Consequences:
 | BareMetalHost `osac.openshift.io/interface-macs` annotation (inventory tooling) | osac-deployment infrastructure | New |
 | BareMetalInstance CRD: add NetworkAttachments | Not tracked | **GAP** |
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |
-| IP discovery: `query_dhcp_lease` role matches port MAC (from interface-macs annotation) to lease, operator writes to CR status | Not tracked | **GAP** |
-| bare-metal-fulfillment-operator dispatcher capability + RBAC for Subnet/NetworkClass CRs | Not tracked | **GAP** |
+| osac-operator BaremetalInstance networking controller: dispatcher move, readiness wait, DHCP query, status ownership and networking finalizer | Not tracked | **GAP** |
+| osac-operator RBAC: SubnetAttachment status/finalizer updates, BaremetalInstance and BareMetalHost reads, Subnet/NetworkClass resolution | Not tracked | **GAP** |
+| BMF status projection from SubnetAttachment status and network lifecycle gates | Not tracked | **GAP** |
 | Remove unused BareMetalInstance spec.networkClass field | Not tracked | **GAP** |
 | BareMetalInstanceType: network ports (BareMetalNetworkPortSpec) with name, role, type, speed | Not tracked | **GAP** |
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (22 behind origin/main)
+Final: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 06d340f90 (39 behind origin/main)
+
+> Context changed between revise and revise.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
