@@ -102,7 +102,6 @@ flowchart LR
     Ful[Public Fulfillment APIs]
     UI[OSAC UI]
     Cfg[Installer runtime config]
-    DB[(Fulfillment PostgreSQL)]
     Rec[Controllers and operators]
     Prov[Providers and AAP]
 
@@ -113,7 +112,6 @@ flowchart LR
     UI -->|non-secret MCP metadata| Cfg
     User -->|/secrets/create| UI
     UI -->|Secrets APIs| Ful
-    Ful --> DB
     Ful --> Rec
     Rec --> Prov
     Rec -->|status| Ful
@@ -722,6 +720,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond, revise
+Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
