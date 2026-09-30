@@ -14,8 +14,8 @@ values use existing `/secrets/create`.
 ## Test Infrastructure
 
 Kind MCP integration tests rebuild and extend
-`fulfillment-service/it/it_mcp_server_test.go` (PoC path; first implementation
-PR lands it on `main`). New `it_mcp_*.go` files copy that file's pattern:
+`fulfillment-service/it/it_mcp_server_test.go` on `main`. New `it_mcp_*.go`
+files copy that file's pattern:
 
 - Kind suite connections: `tool.InternalView().AdminConn()`,
   `tool.ExternalView().UserConn()`, `tool.UserTokenSource()`, `tool.CaPool()`
@@ -1421,7 +1421,7 @@ Working-directory convention: repository-root commands use `$REPO_ROOT`;
 | Component / behavior and boundary | Requirements / ICs | Test case IDs | Tier / owner | Existing or proposed path and command | Prerequisites | Real dependencies | Simulated or omitted dependencies | Unresolved gap |
 |---|---|---|---|---|---|---|---|---|
 | MCP registry, schemas, outcomes, redaction | FR-18; NFR-2; NFR-6; IC-3, IC-5 | TC-FR18-01, TC-NFR2-01, TC-NFR2-02, TC-NFR6-01, TC-NFR6-02 | Unit / [DEV] | `ginkgo run -r internal` from `fulfillment-service/` | Go toolchain | MCP package | Public clients mocked | MCP package not on `main` |
-| First-PR MCP HTTP client journey | FR-3; NFR-1, NFR-5; IC-3, IC-5 | TC-NFR5-01, TC-NFR5-03 | Component integration / [DEV] | Rebuild existing `fulfillment-service/it/it_mcp_server_test.go`; Kind fulfillment suite | Kind `osac-dev` | SDK client, Fulfillment, token | Providers omitted; writes gated off by default | Rebuild, do not cherry-pick |
+| First-PR MCP HTTP client journey | FR-3; NFR-1, NFR-5; IC-3, IC-5 | TC-NFR5-01, TC-NFR5-03 | Component integration / [DEV] | Rebuild `fulfillment-service/it/it_mcp_server_test.go`; Kind fulfillment suite | Kind `osac-dev` | SDK client, Fulfillment, token | Providers omitted; writes gated off by default | Rebuild onto `main`; do not merge OSAC-4388 |
 | Sequential writes, authz, partial/unknown failure | FR-13, FR-15, FR-16, FR-17; IC-4, IC-6, IC-7 | TC-FR13-01, TC-FR13-02, TC-FR13-03, TC-FR15-01, TC-FR16-01, TC-FR17-01, TC-FR17-02 | Component integration / [DEV] | proposed `it_mcp_sequential_writes_test.go` and related `it_mcp_*.go` | Kind | Fulfillment, PostgreSQL | Providers omitted | Proposed files |
 | Typed family tools | FR-2, FR-6, FR-7, FR-8; IC-5 | TC-FR2-02, TC-FR6-01, TC-FR7-01, TC-FR7-02, TC-FR8-01, TC-FR8-02 | Component integration / [DEV] | proposed family `it_mcp_*.go` | Kind | Public APIs | Providers omitted | Proposed files |
 | Destructive-hint annotations | FR-14; IC-6 | TC-FR14-01, TC-FR14-02, TC-FR14-03 | Unit / [DEV] | MCP package tests | Go toolchain | Registry | None | Proposed files |

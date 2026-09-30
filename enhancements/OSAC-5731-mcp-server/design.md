@@ -57,19 +57,18 @@ See the [PRD](prd.md) for the detailed product requirements.
 
 # 3. Motivation / Background
 
-Current `main` has no MCP implementation. The OSAC-4388 PoC already proved
-Streamable HTTP, caller token forwarding, allowlisted list/get, and typed
-ComputeInstance create/delete that mutate on the tool call. The first
-implementation PR rebuilds that fulfillment-service package and
-`it_mcp_server_test.go` on current `main`, with write tools registered only
-when a development-only flag is set. [User] [Codebase:
-OSAC-4388-deployment-mcp-poc:fulfillment-service/it/it_mcp_server_test.go]
-[Codebase: OSAC-4388-deployment-mcp-poc:tools/mcp-oauth-demo-client/]
+Current `main` has no MCP implementation. OSAC-4388 already proved Streamable
+HTTP, caller token forwarding, allowlisted list/get, and typed ComputeInstance
+create/delete that mutate on the tool call. The first implementation PR
+rebuilds that fulfillment-service MCP package and
+`fulfillment-service/it/it_mcp_server_test.go` on current `main`, with write
+tools registered only when a development-only flag is set. It does not merge
+the experimental branch. [User] [Jira: OSAC-4388]
 
 That path is enough for first delivery: host prompt plus the caller's token,
 public resource status, and Secret bytes kept out of the model. This Feature
-extends the PoC across the PRD resource families instead of introducing an
-MCP coordination control plane. [User]
+extends that adapter across the PRD resource families instead of introducing
+an MCP coordination control plane. [User]
 
 Fulfillment already authenticates the caller, enforces tenant and Project
 visibility, validates catalog policy, persists desired state, and reports
@@ -587,7 +586,7 @@ requirements to the ICs above.
 ## Durable MCP plans and `execute_plan_step`
 
 A frozen plan would make FR-13 a server-side object and would support
-digest-stable replay. It adds schema, APIs, and UX the PoC did not need.
+digest-stable replay. It adds schema, APIs, and UX OSAC-4388 did not need.
 First delivery uses sequential typed writes with host confirmation. [User]
 
 ## OSAC UI as the write gate
@@ -609,8 +608,7 @@ This design never uses a privileged identity, so grants are omitted. [User]
 ## Generic Fulfillment method dispatcher
 
 A `service/method/payload` tool expands quickly but weakens schemas and the
-supported boundary. Typed family tools are selected, as in the PoC and Google
-Cloud's typed servers.
+supported boundary. Typed family tools are selected.
 
 ## MCP Tasks as the status record
 
@@ -688,11 +686,12 @@ gated off by default.
 
 Implementation dependency order is:
 
-1. Rebuild the fulfillment-service ComputeInstance PoC package, official MCP
+1. Rebuild the fulfillment-service ComputeInstance MCP package, official MCP
    Go SDK dependency, unit tests, command registration, and
-   `it/it_mcp_server_test.go` on current `main`. Keep writes disabled unless
-   the development-only flag is supplied. Use `tools/mcp-oauth-demo-client/`
-   only as an OAuth/Inspector reference. [User]
+   `fulfillment-service/it/it_mcp_server_test.go` on current `main`. Keep
+   writes disabled unless the development-only flag is supplied. Any OAuth
+   demo client stays a test and Inspector reference, not a supported CLI.
+   [User] [Jira: OSAC-4388]
 2. Add remaining typed family write tools and `get_resource_outcome`. Jira
    determines journey order; none is removed from Feature scope.
 3. Add the supported chart/installer, OAuth clients, health, replicas, limits,
@@ -730,6 +729,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise
+Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
