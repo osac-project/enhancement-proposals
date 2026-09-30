@@ -505,9 +505,10 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Configure Cursor editor from `/connect/mcp` and complete PKCE sign-in.
-2. Run `check_connection` and one host-confirmed typed write.
-3. Reopen the editor and call `get_resource_outcome`.
+1. Copy OSAC URL, client, and trust values from `/connect/mcp`.
+2. Add the server using Cursor's current remote MCP documentation and complete PKCE.
+3. Run `check_connection` and one host-confirmed typed write.
+4. Reopen the editor and call `get_resource_outcome`.
 
 ##### Expected Results
 
@@ -529,9 +530,10 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Configure Cursor CLI from OSAC instructions and sign in.
-2. Run `check_connection` and one host-confirmed typed write.
-3. Start a fresh CLI process and retrieve the resource outcome.
+1. Copy OSAC values from `/connect/mcp`.
+2. Add the server using Cursor CLI's current MCP documentation and sign in.
+3. Run `check_connection` and one host-confirmed typed write.
+4. Start a fresh CLI process and retrieve the resource outcome.
 
 ##### Expected Results
 
@@ -552,9 +554,10 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Configure Codex CLI and sign in.
-2. Run `check_connection` and one typed write after host confirmation.
-3. Restart Codex CLI and retrieve the later outcome.
+1. Copy OSAC values from `/connect/mcp`.
+2. Add the server using Codex CLI's current MCP documentation and sign in.
+3. Run `check_connection` and one typed write after host confirmation.
+4. Restart Codex CLI and retrieve the later outcome.
 
 ##### Expected Results
 
@@ -575,9 +578,10 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Use app/IDE-specific setup instructions.
-2. Complete `check_connection` and one host-confirmed write.
-3. Reopen the app/IDE and retrieve the resource.
+1. Copy OSAC values from `/connect/mcp`.
+2. Add the server using Codex app/IDE current MCP documentation.
+3. Complete `check_connection` and one host-confirmed write.
+4. Reopen the app/IDE and retrieve the resource.
 
 ##### Expected Results
 
@@ -598,9 +602,10 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Configure Claude Code CLI and sign in.
-2. Run `check_connection` and one host-confirmed typed write.
-3. Start another CLI session and retrieve the outcome.
+1. Copy OSAC values from `/connect/mcp`.
+2. Add the server using Claude Code CLI's current MCP documentation and sign in.
+3. Run `check_connection` and one host-confirmed typed write.
+4. Start another CLI session and retrieve the outcome.
 
 ##### Expected Results
 
@@ -621,9 +626,10 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Follow Desktop Code setup and local OAuth.
-2. Run `check_connection` and one host-confirmed write.
-3. Restart Desktop Code and retrieve the outcome.
+1. Copy OSAC values from `/connect/mcp`.
+2. Add the server using Claude Desktop Code's current MCP documentation and complete local OAuth.
+3. Run `check_connection` and one host-confirmed write.
+4. Restart Desktop Code and retrieve the outcome.
 
 ##### Expected Results
 
@@ -633,7 +639,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ### FR-11: UI onboarding
 
-#### TC-FR11-01: Render copyable host-specific setup and trust guidance from runtime metadata
+#### TC-FR11-01: Copy OSAC endpoint values and link official host MCP docs
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -647,11 +653,14 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 ##### Steps
 
 1. Render `/connect/mcp` with runtime metadata.
-2. Inspect endpoint, CA, login, and `check_connection` instructions for six surfaces.
+2. Inspect `publicURL`, per-host client and callback, CA fingerprint when
+   configured, `check_connection`, and host MCP documentation links.
 
 ##### Expected Results
 
-- Copyable host-specific values are present.
+- Copyable OSAC values are present for the six named local surfaces.
+- Official Cursor, Codex, and Claude remote MCP documentation is linked.
+- The page is not a complete host-product tutorial.
 - No write-approval or Secret-handoff MCP page is advertised.
 
 ### FR-12: Read-only connection check

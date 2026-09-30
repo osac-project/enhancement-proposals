@@ -33,8 +33,10 @@ See the [PRD](prd.md) for the detailed product requirements.
 - Expose allowlisted generic reads and typed resource-family write tools,
   never an unrestricted service or Kubernetes proxy.
 - Use the model-host tool prompt as the per-write human gate.
-- Provide one supported deployment and onboarding contract across the required
-  local Cursor, Codex, and Claude surfaces.
+- Publish one OSAC MCP endpoint contract (`publicURL`, OAuth resource, trust
+  metadata, and `check_connection`) for the required local Cursor, Codex, and
+  Claude surfaces. Harness install and sign-in follow each host's current MCP
+  documentation. [Locked: D31, D32]
 
 ## 2.2 Non-Goals
 
@@ -47,8 +49,9 @@ See the [PRD](prd.md) for the detailed product requirements.
   rollback, automatic retry of an uncertain create, a separate dry-run, or an
   OSAC UI write-approval page. [Locked: D13, D16-D18] [User]
 - Configure model hosts through the OSAC CLI, provide a one-click installer,
-  or support cloud-brokered agents and Claude Desktop Chat for private
-  endpoints. [Locked: D11, D30-D33]
+  duplicate Cursor, Codex, or Claude MCP product documentation, or support
+  cloud-brokered agents and Claude Desktop Chat for private endpoints.
+  [Locked: D11, D30-D33]
 - Add a dedicated Secret-handoff API or page. Missing values use existing
   `/secrets/create`. [Locked: D25] [User]
 
@@ -88,9 +91,10 @@ Four surfaces change:
 2. **Existing public resource services:** perform every infrastructure
    mutation and remain authoritative for authorization, tenancy, catalog
    policy, references, validation, and resource status.
-3. **OSAC UI and proxy:** render `/connect/mcp` setup instructions. Missing
-   Secret values use the existing Secret create wizard. No MCP plan-review or
-   handoff page is added.
+3. **OSAC UI and proxy:** `/connect/mcp` copies OSAC endpoint, client, and
+   trust values and links official host MCP docs. Missing Secret values use
+   the existing Secret create wizard. No MCP plan-review or handoff page is
+   added.
 4. **Installer and identity configuration:** deploy the endpoint, TLS,
    readiness, OAuth clients, replicas, and non-secret runtime configuration.
 
@@ -118,8 +122,9 @@ flowchart LR
 ```
 
 The host confirms a typed tool. MCP forwards the caller token on one public
-RPC and keeps no plan, grant, or session tables. Setup copy comes from
-installer runtime metadata through the UI proxy, not from resource APIs.
+RPC and keeps no plan, grant, or session tables. `/connect/mcp` copies
+installer runtime metadata and links official host MCP docs; it is not a
+host-product tutorial.
 Missing Secret values use the existing `/secrets/create` wizard; MCP then
 selects the reference. Later status is the public Fulfillment resource, so a
 pod restart does not lose infrastructure state.
@@ -532,9 +537,12 @@ subject, plus MCP logs (tool, hashed `sub`, resource, time).
 **Requirements:** FR-11, FR-12, NFR-3, NFR-4
 
 The role-neutral `/connect/mcp` UI page uses
-`GET /api/integrations/mcp` and the optional CA endpoint to render copyable
-Cursor, Codex, and Claude endpoint, trust, login, and `check_connection`
-instructions.
+`GET /api/integrations/mcp` and the optional CA endpoint to copy the OSAC
+`publicURL`, per-host public client and callback, CA fingerprint when
+configured, and `check_connection` as the verification tool. It links the
+current official Cursor, Codex, and Claude remote MCP documentation for how
+that host adds a server and completes PKCE. OSAC does not maintain a full
+host-product tutorial. [Locked: D31, D32]
 
 ## IC-11: Supported Helm and installer configuration
 
@@ -565,9 +573,11 @@ for Cursor, Codex, and Claude with minimal scopes and no client secrets.
 
 **Requirements:** FR-10, FR-11, FR-12, NFR-4
 
-First-party documentation lists supported tools/actions, installation,
-per-host onboarding, private trust, host confirmation, Secret create in
-existing UI, asynchronous outcomes, and error categories.
+First-party documentation lists supported tools/actions, installation, OSAC
+endpoint and trust values, links to official host MCP docs, private trust,
+host confirmation, Secret create in existing UI, asynchronous outcomes, and
+OSAC-side error categories. Host-harness errors defer to vendor
+documentation. [Locked: D32]
 
 NFR-5 creates no separate product interface. `testplan.md` maps
 requirements to the ICs above.
@@ -720,6 +730,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise
+Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
