@@ -15,12 +15,11 @@ caller's token, exposes allowlisted discovery plus typed resource-family write
 tools, and leaves authorization, tenancy, validation, and resource status to
 Fulfillment.
 
-This matches how current AWS, Azure, and Google Cloud MCP servers operate:
-host tool confirmation is the human gate, IAM/RBAC is authorization, and
-mutating tools call the platform API directly. OSAC does not add a durable
-plan service, execution grants, or a second approval UI. Missing Secret values
-are created in the existing OSAC Secret UI; MCP then selects the reference.
-[Locked: D16, D20, D25] [User]
+Host tool confirmation is the human gate, Fulfillment authorization is
+authoritative, and mutating tools call the public API directly. OSAC does not
+add a durable plan service, execution grants, or a second approval UI. Missing
+Secret values are created in the existing OSAC Secret UI; MCP then selects
+the reference. [Locked: D16, D20, D25] [User]
 
 See the [PRD](prd.md) for the detailed product requirements.
 
@@ -55,21 +54,19 @@ See the [PRD](prd.md) for the detailed product requirements.
 
 # 3. Motivation / Background
 
-Current `main` has no MCP implementation. The OSAC-4388 PoC already proved the
-vendor-shaped path: Streamable HTTP, caller token forwarding, allowlisted
-list/get, and typed ComputeInstance create/delete that mutate on the tool
-call. The first implementation PR rebuilds that fulfillment-service package
-and `it_mcp_server_test.go` on current `main`, with write tools registered
-only when a development-only flag is set. [User] [Codebase:
+Current `main` has no MCP implementation. The OSAC-4388 PoC already proved
+Streamable HTTP, caller token forwarding, allowlisted list/get, and typed
+ComputeInstance create/delete that mutate on the tool call. The first
+implementation PR rebuilds that fulfillment-service package and
+`it_mcp_server_test.go` on current `main`, with write tools registered only
+when a development-only flag is set. [User] [Codebase:
 OSAC-4388-deployment-mcp-poc:fulfillment-service/it/it_mcp_server_test.go]
 [Codebase: OSAC-4388-deployment-mcp-poc:tools/mcp-oauth-demo-client/]
 
-Comparable cloud MCP servers do not persist a frozen plan or open a console
-to authorize each write. They rely on the host prompt plus the caller's
-cloud identity, poll existing operation or resource status, and keep Secret
-bytes out of the model. OSAC follows that pattern and extends the PoC across
-the PRD resource families instead of introducing an MCP coordination control
-plane. [User]
+That path is enough for first delivery: host prompt plus the caller's token,
+public resource status, and Secret bytes kept out of the model. This Feature
+extends the PoC across the PRD resource families instead of introducing an
+MCP coordination control plane. [User]
 
 Fulfillment already authenticates the caller, enforces tenant and Project
 visibility, validates catalog policy, persists desired state, and reports
@@ -110,10 +107,9 @@ flowchart LR
     Reconcilers -->|status feedback| Resources
 ```
 
-The diagram is the vendor pattern: the host confirms a typed tool, MCP calls
-Fulfillment as that user, and later status is the public resource. A pod
-restart does not lose infrastructure state because Fulfillment already owns
-it.
+The host confirms a typed tool, MCP calls Fulfillment as that user, and later
+status is the public resource. A pod restart does not lose infrastructure
+state because Fulfillment already owns it.
 
 ### Write path
 
@@ -343,8 +339,8 @@ defaults are Open Question 9.1.
 - Tool inputs, schemas, traces, and logs exclude bearer tokens, Secret bytes,
   private keys, unrestricted prompts, and raw upstream responses. [PRD: NFR-2]
 - `Secrets/Get` is absent. Secret discovery is reference-only.
-- Host auto-approval of write tools is an accepted residual risk, as with
-  other vendor MCP servers. [Locked: D16] [User]
+- Host auto-approval of write tools is an accepted residual risk.
+  [Locked: D16] [User]
 - The endpoint validates HTTP `Origin`, TLS hostname, OAuth resource and
   issuer metadata, callback URIs, and request audience. Private-CA bypass flags
   are not part of the supported configuration.
@@ -521,9 +517,8 @@ requirements to the ICs above.
 ## Durable MCP plans and `execute_plan_step`
 
 A frozen plan would make FR-13 a server-side object and would support
-digest-stable replay. It is not how AWS, Azure, or Google Cloud MCP servers
-work, and it adds schema, APIs, and UX the PoC did not need. First delivery
-uses sequential typed writes with host confirmation. [User]
+digest-stable replay. It adds schema, APIs, and UX the PoC did not need.
+First delivery uses sequential typed writes with host confirmation. [User]
 
 ## OSAC UI as the write gate
 
@@ -591,7 +586,7 @@ This approach is weaker than a server-verified OSAC UI approval and weaker
 than a frozen plan digest. Partial failure handling is the client's
 responsibility (stop calling later tools). MCP origin for FR-19 is logs plus
 existing resource creator fields, not a dedicated audit list. Those are
-accepted to stay aligned with vendor MCP servers. [User]
+accepted so MCP stays a thin adapter over existing APIs. [User]
 
 # 7. Observability and Monitoring
 
@@ -662,6 +657,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise
+Phases: draft, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
