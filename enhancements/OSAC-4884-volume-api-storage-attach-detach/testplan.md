@@ -154,7 +154,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Add `vol-789` to the BareMetalInstance attachment field for `bmi-123`.
+1. Append `{name: "data", osacVolumeId: "vol-789"}` to `bmi-123.spec.storageAttachments`.
 2. Reconcile the operator attachment intent.
 3. Inspect the generated host identity, vendor calls, status connection data, and CLI/UI output.
 

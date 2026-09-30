@@ -164,7 +164,7 @@ The PVC annotation is the declarative marker for the existing-volume path, while
 
 BMaaS does not receive a PVC or KubeVirt disk. Its attachment request identifies a `BareMetalInstance` target and the operator prepares the storage-system host identity before attaching the existing OSAC Volume:
 
-1. The internal attachment intent targets `spec.target.osacReference { kind: "BareMetalInstance", id: "..." }` and may include a storage-host protocol preference when the Volume backend supports both iSCSI and NVMe/TCP.
+1. The user adds a `spec.storageAttachments[]` entry with a stable `name`, `osacVolumeId`, optional `readOnly`, and optional protocol preference. The internal attachment intent targets `spec.target.osacReference { kind: "BareMetalInstance", id: "..." }` and carries the storage-attachment name.
 2. `osac-operator` reads an explicit initiator from the BareMetalInstance's typed storage-initiator status/metadata when available. The preferred future field is `status.storage_initiators`, with protocol, initiator type, and identifier. A compatibility annotation may supply the same value while older BareMetalInstance versions are present, then the reconciler writes the resolved value to `spec.target.storageHost`.
 3. If no explicit initiator exists, the operator derives a stable identity from the BareMetalInstance name and immutable ID. The derived value is persisted in the Attachment status so it remains stable if the resource is renamed or its display metadata changes:
    - iSCSI: `iqn.2026-01.io.osac:bm.<sanitized-name>-<short-id>`
@@ -182,7 +182,26 @@ Detach reverses the flow: the operator unpublishes the volume from the host, ret
 
 ### 4.2 Data Model / Schema Changes
 
-There is no public `VolumeAttachment` protobuf resource or public VolumeAttachment CRUD service. The public VMaaS API mutates `ComputeInstance.spec.additional_disks`; BMaaS uses the BareMetalInstance API; CaaS uses the standard PVC/CSI workflow. The operator-side Kubernetes `VolumeAttachment` CR is an internal reconciliation object created by the CSI/target-specific integration and is not exposed through the public fulfillment API.
+There is no public `VolumeAttachment` protobuf resource or public VolumeAttachment CRUD service. The public VMaaS API mutates `ComputeInstance.spec.additional_disks`; BMaaS mutates `BareMetalInstance.spec.storage_attachments`; CaaS uses the standard PVC/CSI workflow. The operator-side Kubernetes `VolumeAttachment` CR is an internal reconciliation object created from those target mutations and is not exposed through the public fulfillment API.
+
+The public BareMetalInstance API adds a storage-attachment list; this feature does not add a new-volume provisioning list:
+
+```text
+BareMetalInstanceSpec.storageAttachments[]:
+  name: string                 # required, unique within the instance
+  osacVolumeId: string         # required, existing OSAC Volume
+  readOnly: bool
+  protocol: optional ISCSI | NVME_TCP | FC
+
+BareMetalInstanceStatus.storageAttachments[]:
+  name: string
+  osacVolumeId: string
+  attachmentId: string
+  state: PENDING | READY | FAILED | DELETING
+  conditions: []
+```
+
+`storageAttachments` is mutable by append/remove operations; entries are keyed by `name`, not list position. `osacVolumeId` is immutable for an entry. `spec.volumes` with size/tier provisioning is explicitly outside this feature.
 
 The operator adds a Kubernetes `VolumeAttachment` CRD (in its own API package):
 
@@ -209,6 +228,22 @@ message VolumeReference { string id = 1; }
 
 `osac_volume_id` is mutually exclusive with `size_gib`/`storage_tier`; a message-level validation rule rejects a disk that specifies both sources. Its generated JSON field is `osacVolumeId`. `additional_disks` accepts append/remove mutations for `osac_volume_id` entries, keyed by the Volume ID; ordinary dynamically provisioned disk entries remain immutable. The server uses field-mask validation and optimistic locking, rejects duplicate Volume IDs across boot/additional disks, and does not treat list order as identity. `boot_disk.osac_volume_id` is allowed only during ComputeInstance creation because replacing a running VM root disk requires separate boot-order and root-disk ownership handling. Existing-volume additional disks are supported for running and stopped VMs; running VMs use KubeVirt hotplug when available, while stopped VMs reach configured/bound state before runtime publish. The public ComputeInstance REST/gRPC Update, CLI, and UI are the VMaaS attach/detach interfaces.
 
+The public BareMetalInstance API adds a mutable disk list:
+
+```protobuf
+message BareMetalInstanceDisk {
+  string osac_volume_id = 1; // JSON: osacVolumeId
+  bool readonly = 2;
+  optional StorageProtocol protocol = 3;
+}
+
+message BareMetalInstanceSpec {
+  repeated BareMetalInstanceDisk disks = 11;
+}
+```
+
+BareMetal disk entries are keyed by `osac_volume_id`; duplicate entries are rejected. Adding or removing a disk entry creates or removes the internal attachment intent. The operator derives or resolves `target.storageHost` while reconciling the intent. BareMetalInstance lifecycle remains owned by `bare-metal-fulfillment-operator`; the Volume API attachment reconciler consumes the disk list and owns storage host/volume mapping.
+
 The operator Attachment CR stores the ComputeInstance ID, attachment ID, existing Volume ID, deterministic DataVolume/PVC name, target disk role, adopted-volume marker, PVC UID, PV name/UID, and lifecycle conditions. The external-provisioner owns the PV object; AAP/CDI owns the DataVolume/PVC desired flow. The attachment finalizer remains until unpublish and PV/PVC deletion are observed. CSI DeleteVolume for an adopted-volume marker is an authorized no-op and never invokes fulfillment Volume deletion. Its status stores operator execution details; these details are not exposed as a public VolumeAttachment resource.
 
 Add an attachment persistence table and active-relationship helper table using the existing numbered migration convention. The helper stores `(attachment_id, tenant, volume_id, target_kind, target_id, state)` and has a partial unique index for non-deleted relationships on `(volume_id, target_kind, target_id)`. Operator execution state, operation token, claim generation, retry schedule, and vendor result live in the operator Attachment CR status; fulfillment-service stores only the public resource status synchronized by feedback. All database transactions use the same lock order: Volume row, then target mirror row, then helper rows. Create attachment and delete Volume transactions reject objects with a deletion timestamp, then insert/check the helper row or return custom `volume_in_use` SQLSTATE mapped to `FailedPrecondition`.
@@ -227,10 +262,10 @@ Public attachment behavior is exposed through the existing target APIs; no publi
 |---|---|---|
 | VMaaS gRPC/REST | Patch `ComputeInstance.spec.additional_disks` with an `osac_volume_id`; for creation-time boot disks, set `spec.boot_disk.osac_volume_id`. | Remove the matching OSAC Volume ID entry from `spec.additional_disks`. Boot-disk removal/replacement is restricted to ComputeInstance creation workflows. |
 | VMaaS CLI/UI | Add an existing Volume to the ComputeInstance disk list. | Remove the existing Volume entry from the disk list. |
-| BMaaS API | Add an existing Volume reference to the BareMetalInstance attachment field defined by the BMaaS API. | Remove that Volume reference. |
+| BMaaS API | Append `spec.storage_attachments[]` with `name`, `osac_volume_id`, and optional protocol/read-only fields. | Remove the matching named storage-attachment entry. |
 | CaaS | Standard PVC/CSI workflow; CSI calls private fulfillment `PublishVolume`/`UnpublishVolume`. | Standard PVC/CSI workflow. |
 
-`ComputeInstanceDisk` gains an `osac_volume_id` field alongside dynamic disk configuration. Existing-volume entries carry the OSAC Volume ID and are the public VMaaS attachment intent. Additional disk entries are mutable only for adding/removing `osac_volume_id` entries; normal dynamically provisioned disk configuration retains its existing immutability rules. `osac#743` remains a prerequisite for CSI access to the public Volume API.
+`ComputeInstanceDisk` gains an `osac_volume_id` field alongside dynamic disk configuration. Existing-volume entries carry the OSAC Volume ID and are the public VMaaS attachment intent. Additional disk entries are mutable only for adding/removing `osac_volume_id` entries; normal dynamically provisioned disk configuration retains its existing immutability rules. BMaaS uses the separate `BareMetalInstance.spec.storage_attachments` list. `osac#743` remains a prerequisite for CSI access to the public Volume API.
 
 The private fulfillment API adds `PublishVolume` and `UnpublishVolume` for CSI identities. For existing-volume provisioning, the CSI driver reads `osac.openshift.io/volume-id` from the PVC and uses the existing `Volumes.Get` API by ID; no new resolve RPC is required. During `CreateVolume`, the CSI driver also records the PVC namespace/name/UID and configured cluster ID in the returned CSI volume context so `ControllerPublishVolume` can correlate the later publish request. Publish/unpublish requests contain the OSAC Volume ID, `clusterId`, opaque `nodeId`, PVC identity where available, the internal attachment correlation ID when VMaaS already created one, and authenticated caller context.
 
@@ -445,7 +480,7 @@ Downgrade must leave existing attachment records intact and retain the legacy CS
 
 ## UX Alignment
 
-The `osac-ui` and `osac-ux` checkouts are not present in this workspace, so no matching `@temp-api` TypeScript definition could be inspected. The public UI contract is target-specific: VMaaS maps to `ComputeInstance.spec.additional_disks[].osac_volume_id`, BMaaS maps to the BareMetalInstance attachment field, and CaaS remains the PVC workflow. Internal `target.osacReference`, `target.csiTarget`, and `target.storageHost` fields are not public UI fields. Before implementation, the UI team must map these target mutations and lifecycle conditions to generated UI types; no backend field should be renamed to match a UI-only convention.
+The `osac-ui` and `osac-ux` checkouts are not present in this workspace, so no matching `@temp-api` TypeScript definition could be inspected. The public UI contract is target-specific: VMaaS maps to `ComputeInstance.spec.additional_disks[].osac_volume_id`, BMaaS maps to `BareMetalInstance.spec.storage_attachments[]`, and CaaS remains the PVC workflow. Internal `target.osacReference`, `target.csiTarget`, and `target.storageHost` fields are not public UI fields. Before implementation, the UI team must map these target mutations and lifecycle conditions to generated UI types; no backend field should be renamed to match a UI-only convention.
 
 ## 9. Open Questions
 
