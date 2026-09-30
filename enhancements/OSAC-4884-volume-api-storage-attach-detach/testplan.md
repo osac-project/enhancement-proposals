@@ -184,11 +184,13 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 1. Cause the CSI external-attacher to invoke `ControllerPublishVolume` for a node.
 2. Observe the internal Attachment CR and operator vendor publish call.
 3. Cause `ControllerUnpublishVolume` for the same volume and node.
+4. Repeat publish with a different cluster ID, node ID, PVC UID, and tenant context.
 
 ##### Expected Results
 
 - Publish calls private fulfillment `PublishVolume`, which authorizes the PVC/cluster/node against the same-tenant intent and causes the operator to call vendor ControllerPublish; CSI returns success only after `READY` or a deadline error.
 - Unpublish calls private fulfillment `UnpublishVolume`, which causes the operator to call vendor ControllerUnpublish and does not create a duplicate relationship.
+- The mismatched cluster/node/PVC/tenant request returns `PermissionDenied` or `FailedPrecondition` and does not invoke the vendor.
 - Kubernetes continues using the PVC/CSI workflow; no public CaaS direct-attach resource is required.
 
 ### FR-4: Observable progress, deadlines, and retry
