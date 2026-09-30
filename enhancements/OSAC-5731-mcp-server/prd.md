@@ -10,6 +10,140 @@
 
 OSAC users can manage infrastructure through existing OSAC interfaces. They cannot yet use a supported model-host connection to discover eligible infrastructure, handle authorized prerequisites, review writes, and check actual outcomes. Administrators also need to attribute and diagnose model-initiated requests within their permitted scope. Without this capability, an accepted request can be mistaken for a ready resource.
 
+## Requirements
+
+The identifiers in this section provide stable traceability for design,
+implementation, and testing. They consolidate the approved scope and user
+stories below without changing their meaning.
+
+### Functional Requirements
+
+- **FR-1 — Complete resource journeys:** MCP must provide complete
+  end-to-end journeys for tenant networking, VMaaS ComputeInstances, CaaS
+  clusters, BMaaS bare-metal instances, and OSAC Volumes. A journey is
+  complete only when an authorized caller can discover eligible choices,
+  handle supported prerequisites, perform applicable existing lifecycle
+  actions, and retrieve the actual outcome in a later session.
+  [Clarify: R2.Q1, R4.Q1, R11.Q3]
+- **FR-2 — Networking lifecycle:** Authorized callers must be able to
+  discover, create, and delete VirtualNetworks, Subnets, and SecurityGroups;
+  allocate and attach external addresses; and set NAT egress where OSAC
+  supports those actions. Unsupported in-place changes must be explained and
+  may use only a separately reviewed replacement path; existing resources
+  must not be silently replaced or deleted.
+  [Clarify: R9.Q1, R14.Q1]
+- **FR-3 — ComputeInstance lifecycle:** Authorized callers must be able to
+  discover eligible choices, request, update, delete, start, stop, and restart
+  ComputeInstances where those existing actions are verified end to end.
+  [Clarify: R1.Q2, R2.Q2, R14.Q2]
+- **FR-4 — CaaS lifecycle:** Authorized callers must be able to discover
+  eligible choices, request, update, and delete CaaS clusters and retrieve
+  their actual later outcomes.
+  [Clarify: R1.Q2, R2.Q1, R2.Q2, R11.Q3]
+- **FR-5 — BMaaS lifecycle:** Authorized callers must be able to discover
+  eligible choices, request, update, delete, start, stop, and restart
+  bare-metal instances where those existing actions are verified end to end.
+  [Clarify: R1.Q2, R2.Q1, R2.Q2, R11.Q3]
+- **FR-6 — Volume lifecycle:** Authorized callers must be able to discover,
+  request, update, and delete OSAC Volumes and retrieve their actual later
+  outcomes. CSI/PVC behavior is an integration dependency, not a separate MCP
+  PVC journey.
+  [Clarify: R4.Q1, R9.Q2]
+- **FR-7 — Prerequisite handling:** MCP must discover and select Projects,
+  catalog offerings, Secret references, and other eligible prerequisites.
+  Authorized callers may create supported missing prerequisites within their
+  existing OSAC role and resource-tenancy boundaries.
+  [Clarify: R1.Q3, R2.Q4, R3.Q1, R10.Q1]
+- **FR-8 — Project and catalog administration:** Authorized administrators
+  must be able to create and update Projects and manage supported
+  provider-owned or tenant-scoped catalog offerings within their existing
+  permissions.
+  [Clarify: R3.Q1, R3.Q2, R10.Q1]
+- **FR-9 — Secret-value handoff:** Model-facing actions may discover and
+  select authorized Secret references but must not accept or reveal plaintext
+  Secret values. An authorized user must be able to provide a missing value
+  through an OSAC-controlled interaction outside the model host and resume
+  with the resulting reference.
+  [Clarify: R10.Q2]
+- **FR-10 — Supported host surfaces:** Cursor editor and CLI, Codex CLI and
+  app/IDE, and Claude Code CLI and Desktop Code must connect locally to an
+  OSAC endpoint reachable from the user's environment. Each selected surface
+  must complete a deployment journey.
+  [Clarify: R4.Q2, R13.Q1]
+- **FR-11 — UI onboarding:** The OSAC UI must provide a discoverable entry
+  point with copyable host-specific endpoint, certificate-trust, sign-in, and
+  read-only verification guidance.
+  [Clarify: R13.Q2]
+- **FR-12 — Read-only connection check:** Users must be able to verify MCP
+  access without creating a resource and receive actionable distinctions
+  among connectivity or certificate-trust, authentication, authorization, and
+  MCP service failures.
+  [Clarify: R13.Q3]
+- **FR-13 — Plan review and per-write approval:** A multi-resource request
+  must show its complete proposed sequence before execution. The signed-in
+  caller must be able to approve or deny each write, and changed actions,
+  targets, or settings must require renewed approval. Conversational agreement
+  is not approval.
+  [Clarify: R5.Q1, R6.Q2, R7.Q1]
+- **FR-14 — Higher-impact confirmation:** Deletion, public exposure, and
+  provider-offering publication must each require separate explicit
+  confirmation of the target and effect.
+  [Clarify: R5.Q3, R9.Q1]
+- **FR-15 — Permission-blocked prerequisite:** If the caller cannot create a
+  required prerequisite, MCP must identify what is missing, explain the
+  permission boundary, and stop without identity escalation or an approval
+  handoff.
+  [Clarify: R2.Q4]
+- **FR-16 — Partial failure:** After a failed step, a multi-resource request
+  must stop before further mutations, report succeeded and failed steps and
+  remaining resources, and perform no automatic rollback or retry.
+  [Clarify: R5.Q2]
+- **FR-17 — Uncertain create outcome:** After an uncertain create, MCP must
+  check for a trustworthy result. If the outcome remains unknown, it must
+  report that uncertainty and stop without automatically retrying the create.
+  [Clarify: R7.Q2]
+- **FR-18 — Actual outcome report:** Later-session reports must include the
+  resource ID, actual state, available condition reasons, messages and timing,
+  established facts, remaining unknowns, and an appropriate next
+  investigative step. Request acceptance must not be presented as readiness.
+  [Clarify: R8.Q3, R14.Q3]
+- **FR-19 — Write audit and provisioning correlation:** Authorized
+  administrators must be able to inspect the authenticated caller, tenant,
+  action, resource, MCP origin, and outcome for writes in their permitted
+  scope. Authorized operators must be able to correlate a write to the
+  Fulfillment resource and provisioning work.
+  [Clarify: R8.Q1, R8.Q2, R14.Q4]
+
+### Non-Functional Requirements
+
+- **NFR-1 — Authorization and tenant isolation:** Every discovery and
+  mutation must execute as the signed-in caller through existing OSAC
+  authorization, tenancy, project, catalog, validation, and resource-ownership
+  boundaries. MCP must not use a privileged service identity.
+  [Clarify: R1.Q3, R3.Q1, R8.Q2]
+- **NFR-2 — Sensitive-data confidentiality:** Plaintext Secret values,
+  credentials, and bearer tokens must not enter model-facing tool arguments or
+  responses, model context, audit records, or unrestricted logs.
+  [Clarify: R10.Q2]
+- **NFR-3 — Host interoperability:** The supported local Cursor, Codex, and
+  Claude surfaces must interoperate with OSAC's private endpoint, OAuth path,
+  and certificate trust without relying on cloud-brokered agents or Claude
+  Desktop Chat.
+  [Clarify: R4.Q2, R13.Q1]
+- **NFR-4 — Operability:** The MCP service must have a supported installation
+  path, health and connection checks, actionable diagnostics, and documented
+  supported actions, onboarding, and failure handling.
+  [Clarify: R13.Q2, R13.Q3, R14.Q3]
+- **NFR-5 — Verification:** Resource journeys must have appropriate automated
+  and deployed end-to-end coverage, including authorization failures, partial
+  failure, uncertain outcomes, approval behavior, and later-session status
+  paths.
+  [Clarify: R11.Q3, R13.Q3, R14.Q3]
+- **NFR-6 — Existing-capability boundary:** MCP must expose only underlying
+  infrastructure-management actions that OSAC already supports and must not
+  become an unrestricted Fulfillment or Kubernetes proxy.
+  [Clarify: R2.Q2, R11.Q1]
+
 ## In Scope
 
 - End-to-end MCP journeys cover tenant networking, VMaaS ComputeInstances, CaaS clusters, BMaaS bare-metal instances, and OSAC Volumes. A journey is complete only when an authorized user can discover eligible choices, handle supported prerequisites, perform applicable existing lifecycle actions, and retrieve the actual outcome in a later session. [Clarify: R2.Q1, R4.Q1, R11.Q3] [User]

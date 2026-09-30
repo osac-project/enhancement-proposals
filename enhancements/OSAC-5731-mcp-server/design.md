@@ -1,0 +1,667 @@
+# OSAC MCP Server for infrastructure provisioning
+
+| Field | Value |
+| --- | --- |
+| Author(s) | Tommy Hughes |
+| Jira | [OSAC-5731](https://redhat.atlassian.net/browse/OSAC-5731) |
+| PRD | [prd.md](prd.md) |
+| Date | 2026-09-30 |
+
+# 1. Overview
+
+OSAC will provide a supported remote Model Context Protocol (MCP) endpoint as a
+stateless adapter over public Fulfillment APIs. It forwards the signed-in
+caller's token, exposes allowlisted discovery plus typed resource-family write
+tools, and leaves authorization, tenancy, validation, and resource status to
+Fulfillment.
+
+This matches how current AWS, Azure, and Google Cloud MCP servers operate:
+host tool confirmation is the human gate, IAM/RBAC is authorization, and
+mutating tools call the platform API directly. OSAC does not add a durable
+plan service, execution grants, or a second approval UI. Missing Secret values
+are created in the existing OSAC Secret UI; MCP then selects the reference.
+[Locked: D16, D20, D25] [User]
+
+See the [PRD](prd.md) for the detailed product requirements.
+
+# 2. Goals and Non-Goals
+
+## 2.1 Goals
+
+- Preserve public Fulfillment APIs as the authorization, tenancy, validation,
+  and lifecycle boundary for every MCP operation.
+- Keep the MCP process stateless: no plan, grant, handoff, or audit tables.
+- Expose allowlisted generic reads and typed resource-family write tools,
+  never an unrestricted service or Kubernetes proxy.
+- Use the model-host tool prompt as the per-write human gate.
+- Provide one supported deployment and onboarding contract across the required
+  local Cursor, Codex, and Claude surfaces.
+
+## 2.2 Non-Goals
+
+- Add infrastructure actions that existing OSAC public APIs do not support, or
+  add FabricDomain, identity administration, console, SSH, event-streaming, or
+  in-guest application-management journeys. [Locked: D6, D26-D29]
+- Provide a general Observability MCP or a separately verified model or agent
+  identity. [Locked: D20, D37]
+- Add a durable MCP plan, `execute_plan_step`, plan-wide approval, automatic
+  rollback, automatic retry of an uncertain create, a separate dry-run, or an
+  OSAC UI write-approval page. [Locked: D13, D16-D18] [User]
+- Configure model hosts through the OSAC CLI, provide a one-click installer,
+  or support cloud-brokered agents and Claude Desktop Chat for private
+  endpoints. [Locked: D11, D30-D33]
+- Add a dedicated Secret-handoff API or page. Missing values use existing
+  `/secrets/create`. [Locked: D25] [User]
+
+# 3. Motivation / Background
+
+Current `main` has no MCP implementation. The OSAC-4388 PoC already proved the
+vendor-shaped path: Streamable HTTP, caller token forwarding, allowlisted
+list/get, and typed ComputeInstance create/delete that mutate on the tool
+call. The first implementation PR rebuilds that fulfillment-service package
+and `it_mcp_server_test.go` on current `main`, with write tools registered
+only when a development-only flag is set. [User] [Codebase:
+OSAC-4388-deployment-mcp-poc:fulfillment-service/it/it_mcp_server_test.go]
+[Codebase: OSAC-4388-deployment-mcp-poc:tools/mcp-oauth-demo-client/]
+
+Comparable cloud MCP servers do not persist a frozen plan or open a console
+to authorize each write. They rely on the host prompt plus the caller's
+cloud identity, poll existing operation or resource status, and keep Secret
+bytes out of the model. OSAC follows that pattern and extends the PoC across
+the PRD resource families instead of introducing an MCP coordination control
+plane. [User]
+
+Fulfillment already authenticates the caller, enforces tenant and Project
+visibility, validates catalog policy, persists desired state, and reports
+provider outcomes. MCP maps tools onto those APIs. [Codebase:
+fulfillment-service/internal/servers/]
+
+# 4. Design
+
+## 4.1 Architecture
+
+### Components and responsibilities
+
+Four surfaces change:
+
+1. **MCP edge process:** terminates Streamable HTTP, validates `aud=osac-api`,
+   registers allowlisted tools, forwards the caller bearer token on each
+   public Fulfillment RPC, and maps results into bounded MCP responses. It
+   retains no cross-request state.
+2. **Existing public resource services:** perform every infrastructure
+   mutation and remain authoritative for authorization, tenancy, catalog
+   policy, references, validation, and resource status.
+3. **OSAC UI and proxy:** render `/connect/mcp` setup instructions. Missing
+   Secret values use the existing Secret create wizard. No MCP plan-review or
+   handoff page is added.
+4. **Installer and identity configuration:** deploy the endpoint, TLS,
+   readiness, OAuth clients, replicas, and non-secret runtime configuration.
+
+```mermaid
+flowchart LR
+    Host[Model host] -->|OAuth + MCP| MCP[MCP edge]
+    User[Signed-in user] -->|tool confirm| Host
+    MCP -->|caller token| Resources[Public Fulfillment APIs]
+    Resources --> DB[(PostgreSQL)]
+    User -->|setup and Secrets| UI[OSAC UI]
+    UI -->|Connect API| Resources
+    Resources --> Reconcilers[Controllers and operators]
+    Reconcilers --> Providers[Providers and AAP]
+    Reconcilers -->|status feedback| Resources
+```
+
+The diagram is the vendor pattern: the host confirms a typed tool, MCP calls
+Fulfillment as that user, and later status is the public resource. A pod
+restart does not lose infrastructure state because Fulfillment already owns
+it.
+
+### Write path
+
+1. Read-only tools discover eligible offerings, Projects, networking, Secret
+   **references**, and current resource state.
+2. A typed `*_action` tool validates the action against the same field,
+   catalog, and reference rules as the target public API, then invokes that
+   API with the caller token. The host prompt on that tool shows the action,
+   target, and settings and is the per-write gate. Conversational agreement
+   is not a write. A later uncalled tool is not previewed by the server; a
+   multi-resource sequence is a series of confirmed calls. [Locked: D12, D16]
+   [User]
+3. Deletion, public exposure, and offering publication set `destructiveHint`
+   so the host can prompt more strongly. The prompt includes the typed target
+   and action; OSAC does not add a second confirmation protocol.
+   [Locked: D14] [User]
+4. After a definite failure, MCP returns the error and does not invoke later
+   tools. It does not roll back earlier resources. [Locked: D13]
+5. After an uncertain create, MCP checks for a trustworthy public resource
+   record. If the outcome remains unknown, it reports that and does not retry
+   the create. [Locked: D17]
+6. `get_resource_outcome` reads the public Get as the caller so later sessions
+   see actual state. Request acceptance is not readiness. [Locked: D21]
+
+Changed targets or settings are a new tool call with new arguments, which
+receives a new host prompt. [Locked: D15]
+
+### Tool surface
+
+Common tools:
+
+<!-- markdownlint-disable MD013 -->
+
+| Tool | Behavior |
+| --- | --- |
+| `check_connection` | Authenticated read-only check of endpoint, server version, enabled capabilities, caller context, and permission summary. |
+| `list_resources` | Bounded, allowlisted discovery; Secret results contain metadata and references only. |
+| `get_resource` | Allowlisted retrieval; `Secrets/Get` is never registered. |
+| `get_resource_outcome` | Normalized actual state, conditions, timing, facts, unknowns, and next action. |
+
+<!-- markdownlint-enable MD013 -->
+
+Write tools (mutate on the confirmed call):
+
+<!-- markdownlint-disable MD013 -->
+
+| Tool | Allowlisted actions |
+| --- | --- |
+| `networking_action` | Create/delete VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, and NATGateway. |
+| `compute_instance_action` | Create, update, delete, start, stop, and restart. |
+| `cluster_action` | Create, update, and delete. |
+| `bare_metal_instance_action` | Create, update, delete, start, stop, and restart. |
+| `volume_action` | Create, allowed metadata update, and delete. |
+| `project_action` | Create and update. |
+| `catalog_action` | Create, update, delete, and publish supported ComputeInstance, Cluster, and BareMetalInstance offerings. |
+
+<!-- markdownlint-enable MD013 -->
+
+Each write tool has an action discriminator and an action-specific JSON
+Schema. The server converts the validated input to the target protobuf request
+and calls the public RPC. It does not accept an arbitrary service name, method
+name, protobuf type, CEL expression, or raw JSON RPC payload. [Locked: D2]
+
+Read tools set `readOnlyHint`. Write tools set `destructiveHint` for delete,
+public exposure, and publication, and omit `readOnlyHint`. Annotations are
+hints for the host, not authorization.
+
+ComputeInstance and bare-metal start/stop update existing `run_strategy`
+fields; restart updates the existing restart trigger. Networking has no public
+Update. An in-place edit returns `unsupported_in_place` and may describe
+create/delete replacements in the error details; it never silently replaces a
+resource. Volume Update is metadata-only. Project Update is not registered
+until its public wrapper propagates `lock=true`. [Locked: D34-D35]
+[Codebase: proto/private/osac/private/v1/volume_type.proto]
+[Codebase: fulfillment-service/internal/servers/projects_server.go]
+
+Prerequisite creates are ordinary typed writes when the caller is authorized.
+If the caller cannot create a required prerequisite, MCP returns
+`authorization`, names what is missing, and stops. It does not escalate
+identity or open an approval handoff. [Locked: D3, D7]
+
+### Secret values
+
+MCP may list and select authorized Secret references. It never accepts or
+returns Secret bytes. `Secrets/Get` is not registered.
+
+When a required Secret is missing, the tool result names the gap and points
+the user to the existing `/secrets/create` wizard. After the Secret exists,
+the caller resumes with `list_resources` / `get_resource` and continues the
+typed write. That is the OSAC-controlled interaction required by D25; no new
+handoff resource is added. [Locked: D25] [User]
+
+### Later-session outcomes and correlation
+
+`get_resource_outcome` is the later-session contract. MCP Tasks are not
+required.
+
+Administrators inspect MCP-initiated writes the same way they inspect UI/CLI
+writes: Fulfillment resource creator, tenant, and status. MCP origin is the
+tool name and MCP-origin indication in operational logs, not a separate audit
+product. Operators correlate a Fulfillment ID through existing diagnostics.
+[Locked: D19, D20, D37] [User]
+
+## 4.2 Data Model / Schema Changes
+
+No new PostgreSQL schema is required. MCP does not persist plans, confirmations,
+attempts, grants, handoffs, or write records. Resource state remains in existing
+Fulfillment tables.
+
+## 4.3 API Changes
+
+No new public Fulfillment RPCs are added for MCP coordination. Tool JSON
+schemas live in the fulfillment-service MCP package and map to existing public
+methods. After proto changes that already exist for resources, regenerate with
+`make -C proto generate` as usual; this Feature does not introduce MCP
+protobuf services. [Codebase: proto/AGENTS.md]
+
+The MCP edge calls existing public gRPC methods with the caller token. It does
+not add execution-grant metadata or a private MCP listener.
+
+### MCP result and error envelopes
+
+Mutation acceptance is not readiness. A successful write result contains:
+
+```json
+{
+  "resource": {
+    "type": "ComputeInstance",
+    "id": "uuid",
+    "version": 1
+  },
+  "next_action": "Call get_resource_outcome with the resource reference."
+}
+```
+
+Errors use stable categories:
+
+```json
+{
+  "category": "authorization",
+  "grpc_code": "PermissionDenied",
+  "message": "The caller cannot create the required Subnet.",
+  "retryable": false,
+  "details": []
+}
+```
+
+Categories are `connectivity`, `tls_trust`, `authentication`,
+`authorization`, `protocol_incompatible`, `invalid_request`, `not_found`,
+`conflict`, `service_unavailable`, `upstream_failure`, `rate_limited`, and
+`unknown_outcome`. Raw upstream payloads are not returned.
+
+### Normalized resource outcome
+
+`get_resource_outcome` accepts `{resource_type, resource_id}` and performs the
+allowlisted public Get as the caller:
+
+```json
+{
+  "resource": {"type": "ComputeInstance", "id": "uuid", "version": 4},
+  "lifecycle_state": "running",
+  "conditions": [{
+    "type": "ready",
+    "status": "true",
+    "reason": "Provisioned",
+    "message": "The instance is ready.",
+    "last_transition_time": "2026-09-30T14:08:00Z"
+  }],
+  "timing": {"observed_at": "2026-09-30T14:09:00Z"},
+  "facts": [{"name": "internal_ip_address", "value": "10.0.0.8"}],
+  "unknowns": [],
+  "next_actions": []
+}
+```
+
+The mapper uses only fields visible through the public API:
+
+<!-- markdownlint-disable MD013 -->
+
+| Family | State, conditions, timing, and facts |
+| --- | --- |
+| Networking | Family `status.state` and safe `status.message`; public transition time where present; allocated address and attachment relationships as facts. Families without conditions return an empty list, not invented conditions. |
+| ComputeInstance | `status.state`, all public condition type/status/reason/message/transition times, state transition/restart times, and internal/external addresses. |
+| Cluster | `status.state`, public conditions and transition time, API/console endpoints, node-set summaries, and Secret references without values. |
+| BareMetalInstance | `status.state`, public conditions and transition time, restart observation, attachment addresses, and non-sensitive hardware facts. |
+| Volume | `status.state` and safe message. Public metadata timestamps are reported; the private backend transition time, provider, vendor ID, protocol, and vendor context are not exposed. |
+| Project and catalog | Current metadata/version and public spec/status fields; no asynchronous provider state is implied. |
+
+<!-- markdownlint-enable MD013 -->
+
+Missing or private evidence is named in `unknowns`. Request acceptance is
+never mapped to resource readiness. [Locked: D21, D28, D36]
+
+### UI proxy integration
+
+The authenticated UI proxy adds:
+
+- `GET /api/integrations/mcp` for non-secret endpoint, OAuth client, trust,
+  supported-host, and verification-tool metadata;
+- `GET /api/integrations/mcp/ca` for the public CA bundle and SHA-256
+  fingerprint when private trust is configured.
+
+No MCP-specific Secret-handoff or plan-approval routes are added.
+
+## 4.4 Scalability and Performance
+
+The MCP edge is stateless and runs at least two replicas behind a ClusterIP
+Service, with configurable resources, a PodDisruptionBudget, topology spread,
+graceful drain, probes, and `maxUnavailable: 0`. No workflow state is stored
+in a pod.
+
+Each tool call is one public Fulfillment RPC plus mapping. Database load is
+the existing resource write/read path. Request bodies are capped at 1 MiB at
+the MCP edge. Per-subject and per-tenant rate limits apply. Product rate
+defaults are Open Question 9.1.
+
+## 4.5 Security Considerations
+
+- The MCP server validates issuer, signature, time claims, token type,
+  subject, and `aud=osac-api`, then forwards the bearer token per gRPC call.
+  It never caches or stores the token. [PRD: NFR-1]
+- Public resource services and OPA remain authoritative. MCP has no privileged
+  service identity and no execution grant. [Locked: D20]
+- Separate public OAuth clients are registered for Cursor, Codex, and Claude
+  with PKCE S256, exact callback allowlists, `fullScopeAllowed=false`, no
+  client secret, and only required scopes. DCR/CIMD is not enabled.
+- Tool inputs, schemas, traces, and logs exclude bearer tokens, Secret bytes,
+  private keys, unrestricted prompts, and raw upstream responses. [PRD: NFR-2]
+- `Secrets/Get` is absent. Secret discovery is reference-only.
+- Host auto-approval of write tools is an accepted residual risk, as with
+  other vendor MCP servers. [Locked: D16] [User]
+- The endpoint validates HTTP `Origin`, TLS hostname, OAuth resource and
+  issuer metadata, callback URIs, and request audience. Private-CA bypass flags
+  are not part of the supported configuration.
+
+## 4.6 Failure Handling and Recovery
+
+<!-- markdownlint-disable MD013 -->
+
+| Failure | Server behavior | User-visible result |
+| --- | --- | --- |
+| Invalid or missing prerequisite | Reject the write tool; perform no write. | `invalid_request` or `not_found` with the missing reference. |
+| Caller lacks prerequisite permission | Do not call the target RPC. | `authorization`; names the prerequisite; no identity elevation. |
+| Host rejects the write tool | MCP is not invoked. | No infrastructure change. |
+| Changed arguments | New tool call with new payload. | New host prompt; previous call cannot be reused as a different mutation. |
+| Definite target API error | Return the mapped error. | No rollback of earlier successful writes. |
+| Response lost after a create | Public Get/list for the intended identity if one exists; otherwise `unknown_outcome`. | Do not retry the create. |
+| Provisioning later fails | Resource status remains authoritative. | `get_resource_outcome` shows actual failure. |
+| Downstream unavailable | Do not invent success. | `service_unavailable` or `upstream_failure`. |
+| Rate limit exceeded | Reject before the Fulfillment RPC. | `rate_limited` with `retry_after_seconds`. |
+| Missing Secret value | Do not accept Secret bytes. | Point to existing `/secrets/create`; resume with the reference. |
+
+<!-- markdownlint-enable MD013 -->
+
+Network replacement is non-atomic. Deletion is never inferred from an edit
+request. [Locked: D34]
+
+## 4.7 RBAC / Tenancy
+
+No new Keycloak user role is introduced.
+
+- Every discovery and mutation runs as the signed-in caller through existing
+  public method, tenant, Project, ownership, catalog, and reference policies.
+- Users see only resources they are already allowed to see through Fulfillment.
+- Tenant and platform administrators retain existing Project, catalog, and
+  diagnostic rights. MCP does not add a parallel audit ACL.
+
+[Locked: D3, D8-D9, D19-D20, D24, D27]
+
+## 4.8 Extensibility / Future-Proofing
+
+An internal action registry maps each tool action to input schema, target gRPC
+method, risk annotations, and outcome formatter. Adding an action requires an
+explicit registry entry, tests, and deployed journey evidence. Public API
+discovery never automatically publishes a new MCP action.
+
+If tool count becomes a measured host limitation, the same registry can
+publish compute, networking, storage, and administration profiles.
+
+# 5. Interface Changes
+
+## IC-1: Remote MCP endpoint and OAuth resource
+
+**Requirements:** FR-10, NFR-1, NFR-3, NFR-4
+
+The installer exposes one configured HTTPS `publicURL` for Streamable HTTP and
+RFC 9728 protected-resource metadata. The endpoint validates `aud=osac-api`,
+uses separate public PKCE clients for Cursor, Codex, and Claude, and preserves
+the caller token on public Fulfillment calls.
+
+## IC-2: Read-only MCP connection check
+
+**Requirements:** FR-12, NFR-3, NFR-4
+
+`check_connection` returns endpoint/server version, authenticated caller
+context, enabled resource families, and a tenant-safe permission summary
+without creating or changing a resource.
+
+## IC-3: Allowlisted discovery and normalized outcomes
+
+**Requirements:** FR-1, FR-2, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8, FR-18,
+NFR-2, NFR-6
+
+`list_resources`, `get_resource`, and `get_resource_outcome` expose bounded,
+allowlisted infrastructure and prerequisites. Secret discovery is
+reference-only.
+
+## IC-4: Sequential host-confirmed writes
+
+**Requirements:** FR-1, FR-13, FR-15, FR-16, FR-17
+
+There is no durable plan object. A multi-resource request is a sequence of
+typed write tools. Each write is a separate host-confirmed call whose
+arguments are the review of that step. A denied or uninvoked tool performs no
+mutation. A later tool is not called after a definite failure.
+[Locked: D12, D13, D16] [User]
+
+## IC-5: Typed resource-family write tools
+
+**Requirements:** FR-2, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8, NFR-6
+
+Seven `*_action` tools add allowlisted networking, ComputeInstance, Cluster,
+BareMetalInstance, Volume, Project, and catalog mutations. They accept typed
+inputs and invoke the matching public RPC on the confirmed call.
+
+## IC-6: Host tool confirmation
+
+**Requirements:** FR-8, FR-13, FR-14, NFR-1
+
+The model-host prompt on each write tool is the human gate. Delete, public
+exposure, and publication set `destructiveHint`. OSAC does not record a
+server-side approval object. [Locked: D14, D16] [User]
+
+## IC-7: Direct public API execution
+
+**Requirements:** FR-13, FR-16, FR-17, NFR-1
+
+The MCP edge calls the existing public resource API with the caller token. It
+does not issue execution grants or persist attempts. Uncertain creates are
+not retried. [Locked: D17] [User]
+
+## IC-8: Existing Secret create UI
+
+**Requirements:** FR-9, NFR-2
+
+MCP selects Secret references only. Missing values are created in the
+existing `/secrets/create` wizard; the journey resumes with the resulting
+reference. [Locked: D25] [User]
+
+## IC-9: MCP origin in existing audit surfaces
+
+**Requirements:** FR-19, NFR-1, NFR-2
+
+Administrators use existing Fulfillment resource creator, tenant, and status
+plus MCP operational logs (tool, hashed subject, resource). No
+`MCPWriteRecords` API is added. [Locked: D19] [User]
+
+## IC-10: MCP setup page and runtime metadata
+
+**Requirements:** FR-11, FR-12, NFR-3, NFR-4
+
+The role-neutral `/connect/mcp` UI page uses
+`GET /api/integrations/mcp` and the optional CA endpoint to render copyable
+Cursor, Codex, and Claude endpoint, trust, login, and `check_connection`
+instructions.
+
+## IC-11: Supported Helm and installer configuration
+
+**Requirements:** FR-10, NFR-3, NFR-4
+
+`global.mcp` supplies `enabled`, `publicURL`, OAuth issuer/audience/client
+configuration, trust mode, CA source, replica count, resources, request limits,
+and rate/concurrency settings. `osac-infra` owns idempotent Keycloak client
+reconciliation; the platform chart owns endpoint resources. Both are
+conditional on MCP enablement.
+
+## IC-12: MCP health, readiness, and overload behavior
+
+**Requirements:** FR-12, NFR-4
+
+Internal `/livez` and `/readyz` probes, graceful drain, two-replica rollout,
+request-size bounds, concurrency limits, and stable `rate_limited` responses
+are part of the supported service contract.
+
+## IC-13: Host-specific OAuth client registrations
+
+**Requirements:** FR-10, NFR-1, NFR-3
+
+The installer registers separate public PKCE clients and exact local callbacks
+for Cursor, Codex, and Claude with minimal scopes and no client secrets.
+
+## IC-14: Supported action and troubleshooting documentation
+
+**Requirements:** FR-10, FR-11, FR-12, NFR-4
+
+First-party documentation lists supported tools/actions, installation,
+per-host onboarding, private trust, host confirmation, Secret create in
+existing UI, asynchronous outcomes, and error categories.
+
+NFR-5 creates no separate product interface. `testplan.md` maps
+requirements to the ICs above.
+
+# 6. Alternatives Considered
+
+## Durable MCP plans and `execute_plan_step`
+
+A frozen plan would make FR-13 a server-side object and would support
+digest-stable replay. It is not how AWS, Azure, or Google Cloud MCP servers
+work, and it adds schema, APIs, and UX the PoC did not need. First delivery
+uses sequential typed writes with host confirmation. [User]
+
+## OSAC UI as the write gate
+
+A review page would survive host auto-approval but duplicates the host prompt
+and leaves the harness. Rejected. [Locked: D16] [User]
+
+## Dedicated Secret-handoff saga
+
+A handoff resource would bind type/name/expiry more tightly than
+`/secrets/create`. Existing Secret create already collects values outside the
+model. First delivery reuses that UI. [Locked: D25] [User]
+
+## Execution grants and a private MCP write listener
+
+Grants reduce confused-deputy risk if MCP ever gained a privileged identity.
+This design never uses a privileged identity, so grants are omitted. [User]
+
+## Generic Fulfillment method dispatcher
+
+A `service/method/payload` tool expands quickly but weakens schemas and the
+supported boundary. Typed family tools are selected, as in the PoC and Google
+Cloud's typed servers.
+
+## MCP Tasks as the status record
+
+Tasks are optional in hosts. Public resource status is the portable contract.
+
+## Dynamic OAuth client registration
+
+DCR/CIMD expands Keycloak attack surface. Pre-registered public PKCE clients
+are selected.
+
+## Cherry-pick or merge the complete PoC branch
+
+The branch is stale and mixed. The first PR rebuilds the MCP package and tests
+on current `main`. [User]
+
+## Ship the PoC OAuth demo client as a supported CLI
+
+Keep it as a test and Inspector reference only. [Locked: D33]
+
+## Do nothing
+
+Leaves no supported model-host interface.
+
+## Risks and Mitigations
+
+- **Host auto-approval:** some hosts can skip prompts. Mitigation: caller
+  token and existing Fulfillment authorization still apply; support docs tell
+  operators to keep write confirmation enabled. [Locked: D16] [User]
+- **No frozen multi-step preview:** the server does not show uncalled later
+  writes before the first mutation. Mitigation: each host prompt carries that
+  write's full arguments; FR-13 is sequential per-write review, not a plan
+  object. [User]
+- **Uncertain creates without MCP idempotency keys:** a lost response may not
+  have a client token. Mitigation: Get/list before any retry; never blindly
+  recreate. [Locked: D17]
+- **Volume journey:** public Volume APIs exist; the real CSI consumer path is
+  unresolved. Mitigation: Open Question 9.2; do not claim FR-6 E2E pass until
+  it is answered.
+
+## Drawbacks
+
+This approach is weaker than a server-verified OSAC UI approval and weaker
+than a frozen plan digest. Partial failure handling is the client's
+responsibility (stop calling later tools). MCP origin for FR-19 is logs plus
+existing resource creator fields, not a dedicated audit list. Those are
+accepted to stay aligned with vendor MCP servers. [User]
+
+# 7. Observability and Monitoring
+
+The implementation adds:
+
+- counters and latency histograms for MCP requests by tool, read/write class,
+  result category, and protocol version;
+- gauges for active requests and readiness dependencies;
+- trace spans for MCP invocation and the downstream resource RPC;
+- sanitized structured logs with caller subject hash, tenant, tool, resource,
+  gRPC code, and duration;
+- alerts for sustained readiness failure, elevated authentication/5xx errors,
+  and rate-limit spikes.
+
+Tokens, Secret values, raw prompts, and unbounded bodies are excluded.
+Tenant and resource IDs are OSAC control-plane identifiers, not Secret values.
+
+# 8. Impact and Compatibility
+
+No new Fulfillment protobuf services or MCP tables are added. Existing public
+resource requests, UI, CLI, and direct API workflows are unchanged.
+
+MCP tool names become supported only after deployment and host-matrix tests.
+The first implementation PR rebuilds the experimental MCP package with writes
+gated off by default.
+
+Implementation dependency order is:
+
+1. Rebuild the fulfillment-service ComputeInstance PoC package, official MCP
+   Go SDK dependency, unit tests, command registration, and
+   `it/it_mcp_server_test.go` on current `main`. Keep writes disabled unless
+   the development-only flag is supplied. Use `tools/mcp-oauth-demo-client/`
+   only as an OAuth/Inspector reference. [User]
+2. Add remaining typed family write tools and `get_resource_outcome`. Jira
+   determines journey order; none is removed from Feature scope.
+3. Add the supported chart/installer, OAuth clients, health, replicas, limits,
+   `/connect/mcp` setup page, and first-party documentation.
+4. Add deployed MCP, resource-family, real-host, failure, and compatibility
+   suites required for support.
+
+The initial SDK version and protocol advertisement are Open Question 9.3.
+
+# 9. Open Questions
+
+## 9.1 What supported rate and availability targets should size the endpoint?
+
+- **Owner:** Cloud Infrastructure maintainers
+- **Impact:** §4.4 replica/resources defaults, load tests, alerts, and
+  installer values.
+
+## 9.2 What deployed workflow proves the OSAC Volume journey?
+
+- **Owner:** Storage and CSI maintainers
+- **Impact:** FR-6 acceptance and the deployed test boundary in NFR-5.
+
+The public Volume API supports lifecycle methods, but current deployed storage
+tests do not prove a Volume-to-consumer create, attach/mount, I/O, and cleanup
+journey. [Related: OSAC-4845]
+
+## 9.3 Which SDK and protocol revision should be the initial support baseline?
+
+- **Owner:** Fulfillment MCP and QE maintainers
+- **Impact:** §8 protocol advertisement, dependency version, callback
+  registrations, and host certification.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
+Phases: draft, revise, revise
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
