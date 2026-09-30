@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-4884 - Volume API Storage Attach and Detach
-- **Total test cases:** 32
+- **Total test cases:** 33
 - **Requirements covered:** 12 of 12
 - **Interface changes covered:** 7 of 7
 
@@ -165,6 +165,30 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 - The attachment status includes protocol, initiator, target portal/IQN, and redacted `iscsiadm` commands.
 - Reconciliation reaches `READY` after host creation and attach; repeated reconciliation produces no duplicate effective attach.
 - No command containing credentials is emitted.
+
+#### TC-FR2-04 [AC-FR2-04] [Story: Cloud Infrastructure Admin]: BMaaS host reuse and conflict handling
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1, IC-2, IC-6 | critical | automated |
+
+##### Preconditions
+
+- `bmi-123` reports an explicit iSCSI initiator and `vol-789` is available.
+- The fake vendor contains an OSAC-owned host with that initiator and a second host with a conflicting initiator.
+
+##### Steps
+
+1. Add `vol-789` to `bmi-123.spec.storageAttachments`.
+2. Reconcile the attachment twice.
+3. Attempt reconciliation with a conflicting explicit initiator.
+4. Remove the storage attachment while another Volume still references the host.
+
+##### Expected Results
+
+- The matching host object is adopted/reused and only one effective host-volume mapping is created.
+- The conflicting identity reaches `FAILED` with a concrete conflict reason and does not attach the Volume.
+- Detach retains the shared host object while another attachment references it.
 
 ### FR-3: CaaS uses PVC/CSI and the Volume API adapter
 
@@ -775,7 +799,7 @@ The per-test `Story` and `AC` fields are keyed by test-case ID in the `Per-test 
 | Requirement | PRD user story | Acceptance behavior | Test cases |
 |---|---|---|---|
 | FR-1 | Cloud Provider Admin; Tenant Admin/User | gRPC, REST, CLI, and UI expose equivalent lifecycle behavior | TC-FR1-01, TC-FR1-02, TC-FR1-03 |
-| FR-2 | Cloud Infrastructure Admin; Tenant Admin/User | BMaaS and VMaaS targets, including boot/additional disks | TC-FR2-01, TC-FR2-02, TC-FR2-03 |
+| FR-2 | Cloud Infrastructure Admin; Tenant Admin/User | BMaaS and VMaaS targets, including boot/additional disks | TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-FR2-04 |
 | FR-3 | Cloud Infrastructure Admin; Tenant Admin/User | CaaS remains PVC/CSI and uses the Volume API adapter | TC-FR3-01 |
 | FR-4 | Cloud Provider Admin | Pending, retry, deadline, terminal failure, and final outcomes are observable | TC-FR4-01, TC-FR4-02, TC-FR4-03, TC-FR4-04 |
 | FR-5 | Tenant Admin/User | Repeated desired-state requests converge without duplicate effects | TC-FR5-01, TC-FR5-02, TC-FR5-03 |
@@ -797,6 +821,7 @@ The per-test `Story` and `AC` fields are keyed by test-case ID in the `Per-test 
 | TC-FR2-01 | Cloud Infrastructure Admin | AC-FR2-01: BMaaS and VMaaS typed targets are accepted; CaaS direct target rejected |
 | TC-FR2-02 | Tenant Admin/User | AC-FR2-02: VM boot and additional disks use attachment lifecycle |
 | TC-FR2-03 | Cloud Infrastructure Admin | AC-FR2-03: BMaaS host identity and semi-automatic connection flow |
+| TC-FR2-04 | Cloud Infrastructure Admin | AC-FR2-04: BMaaS host reuse and conflict handling |
 | TC-FR3-01 | Cloud Infrastructure Admin; Tenant Admin/User | AC-FR3-01: CaaS PVC/CSI publish/unpublish uses the private relationship |
 | TC-FR4-01 | Cloud Provider Admin | AC-FR4-01: Deadline leaves observable pending state |
 | TC-FR4-02 | Cloud Provider Admin | AC-FR4-02: Transient backend failure is retried with progress |
@@ -838,12 +863,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 32 |
-| Critical | 15 |
+| Total test cases | 33 |
+| Critical | 16 |
 | High | 16 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 30 |
+| Automated | 31 |
 | Manual | 2 |
 | Requirements with test cases | 12 / 12 |
 | Interface changes with test cases | 7 / 7 |

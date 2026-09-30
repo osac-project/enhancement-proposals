@@ -165,20 +165,20 @@ The PVC annotation is the declarative marker for the existing-volume path, while
 BMaaS does not receive a PVC or KubeVirt disk. Its attachment request identifies a `BareMetalInstance` target and the operator prepares the storage-system host identity before attaching the existing OSAC Volume:
 
 1. The user adds a `spec.storageAttachments[]` entry with a stable `name`, `osacVolumeId`, optional `readOnly`, and optional protocol preference. The internal attachment intent targets `spec.target.osacReference { kind: "BareMetalInstance", id: "..." }` and carries the storage-attachment name.
-2. `osac-operator` reads an explicit initiator from the BareMetalInstance's typed storage-initiator status/metadata when available. The preferred future field is `status.storage_initiators`, with protocol, initiator type, and identifier. A compatibility annotation may supply the same value while older BareMetalInstance versions are present, then the reconciler writes the resolved value to `spec.target.storageHost`.
+2. `bare-metal-fulfillment-operator` remains the BareMetalInstance lifecycle controller and reports explicit storage initiators in status. `osac-operator` reads that status through the watched BareMetalInstance object. Explicit initiator data has precedence over a compatibility annotation; if neither exists, `osac-operator` derives and persists the stable identity, then writes the resolved value to `spec.target.storageHost`.
 3. If no explicit initiator exists, the operator derives a stable identity from the BareMetalInstance name and immutable ID. The derived value is persisted in the Attachment status so it remains stable if the resource is renamed or its display metadata changes:
    - iSCSI: `iqn.2026-01.io.osac:bm.<sanitized-name>-<short-id>`
    - NVMe/TCP: `nqn.2014-08.org.nvmexpress:osac:bm:<sanitized-name>-<short-id>`
 
    The operator validates IQN/NQN character and length rules, uses the immutable ID to prevent collisions, and records whether the identity was `Explicit` or `Derived`.
-4. The operator's backend adapter ensures the storage-system host object exists for the resolved IQN or NQN. Host creation is idempotent; an existing host with a conflicting initiator is a terminal failure. The adapter uses the concrete vendor storage/CSI-controller integration, not a public backend-specific API.
+4. The `osac-operator` VolumeAttachment reconciler owns the storage-system host object and the Volume-to-host mapping. It ensures the host object exists for the resolved IQN or NQN through the concrete vendor storage/CSI-controller integration, not a public backend-specific API. Host creation is idempotent; an existing host with a conflicting initiator is a terminal failure. `bare-metal-fulfillment-operator` does not mutate vendor host objects.
 5. After the host is ready, the adapter attaches the existing OSAC vendor volume to that host. It uses the Volume's resolved backend, vendor volume ID, protocol, and the requested read-only mode. Repeated attach treats vendor `AlreadyExists` as success.
 6. The operator reports `READY` only after host creation and volume attach succeed. Status includes the resolved protocol, initiator, host identity, target portals/endpoints, target IQN/NQN, LUN or namespace information when supplied by the backend, and a generated connection-command template.
 7. The user performs the final host-side discovery and connection. The UI and CLI expose the generated instructions, and the operator logs the same redacted instructions without credentials:
    - iSCSI uses `iscsiadm` discovery/login with the target portal and IQN.
    - NVMe/TCP uses `nvme discover` and `nvme connect` with the portal, port, and NQN.
 
-Detach reverses the flow: the operator unpublishes the volume from the host, retains the host object when other attachments use it, and removes the host object only when no attachment references it and the backend policy permits cleanup. The design does not claim that OSAC can execute `iscsiadm` or `nvme connect` inside the user's bare-metal operating system; those commands are deliberately user/operator actions.
+Detach reverses the flow: `osac-operator` unpublishes the volume from the host, retains the host object when other attachments use it, and removes the host object only when no attachment references it and the backend policy permits cleanup. A host object discovered with a matching explicit or derived identity may be adopted; a conflicting identity or ownership marker is a terminal failure. The design does not claim that OSAC can execute `iscsiadm` or `nvme connect` inside the user's bare-metal operating system; those commands are deliberately user/operator actions.
 
 ### 4.2 Data Model / Schema Changes
 
@@ -212,7 +212,7 @@ VolumeAttachmentStatus: state, message, operationToken, claimGeneration,
   attemptCount, nextAttemptAt, vendorVolumeID, conditions
 ```
 
-The CRD carries `osac.openshift.io/tenant` metadata, uses the `osac.openshift.io/volume-attachment` finalizer, and is reconciled only by `osac-operator`. `target.osacReference` identifies the OSAC resource: `ComputeInstance` for VMaaS, `ClusterOrder` for CaaS, and `BareMetalInstance` for BMaaS. `target.csiTarget` is the CSI publish identity; `target.storageHost` is the BMaaS storage-system host identity. They are intentionally separate because an OSAC target is not necessarily a Kubernetes node or vendor host.
+The CRD carries `osac.openshift.io/tenant` metadata, uses the `osac.openshift.io/volume-attachment` finalizer, and is reconciled only by `osac-operator`. `target.osacReference` identifies the OSAC resource: `ComputeInstance` for VMaaS, `ClusterOrder` for CaaS, and `BareMetalInstance` for BMaaS. `target.csiTarget` is the CSI publish identity; `target.storageHost` is the BMaaS storage-system host identity. They are intentionally separate because an OSAC target is not necessarily a Kubernetes node or vendor host. `bare-metal-fulfillment-operator` supplies BareMetalInstance lifecycle and initiator status but is not the owner of this CR or the vendor host object.
 
 The public ComputeInstance API extends `ComputeInstanceDisk` additively:
 
