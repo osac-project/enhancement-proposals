@@ -232,7 +232,11 @@ Public attachment behavior is exposed through the existing target APIs; no publi
 
 `ComputeInstanceDisk` gains an `osac_volume_id` field alongside dynamic disk configuration. Existing-volume entries carry the OSAC Volume ID and are the public VMaaS attachment intent. Additional disk entries are mutable only for adding/removing `osac_volume_id` entries; normal dynamically provisioned disk configuration retains its existing immutability rules. `osac#743` remains a prerequisite for CSI access to the public Volume API.
 
-The private fulfillment API adds `PublishVolume` and `UnpublishVolume` for CSI identities. For existing-volume provisioning, the CSI driver reads `osac.openshift.io/volume-id` from the PVC and uses the existing `Volumes.Get` API by ID; no new resolve RPC is required. Publish/unpublish requests contain the OSAC Volume ID, `clusterId`, `nodeId`, PVC identity where applicable, the internal attachment correlation ID, and authenticated caller context. The service derives the tenant from the authenticated cluster/service identity, resolves the target intent, and requires that the Volume and target belong to the same tenant. It rejects a PVC annotation that has no matching authorized intent; the annotation alone is never authorization. The service creates or converges the internal relationship and signals `osac-operator`, which owns the vendor publish/unpublish call. These methods are not public user operations.
+The private fulfillment API adds `PublishVolume` and `UnpublishVolume` for CSI identities. For existing-volume provisioning, the CSI driver reads `osac.openshift.io/volume-id` from the PVC and uses the existing `Volumes.Get` API by ID; no new resolve RPC is required. During `CreateVolume`, the CSI driver also records the PVC namespace/name/UID and configured cluster ID in the returned CSI volume context so `ControllerPublishVolume` can correlate the later publish request. Publish/unpublish requests contain the OSAC Volume ID, `clusterId`, opaque `nodeId`, PVC identity where available, the internal attachment correlation ID when VMaaS already created one, and authenticated caller context.
+
+The CSI `clusterId` is not discovered from or supplied by the user. It is configured on the CSI controller deployment (`controller.clusterID` in the CSI Helm values), passed into the driver at startup, and bound to the authenticated CSI service identity. Fulfillment-service maps that identity to the authorized `ClusterOrder` and tenant record. The request field is checked against the authenticated configuration and is not trusted as a standalone claim. `nodeId` remains the opaque identity received from the CSI external-attacher; it is not resolved by looking up a Kubernetes Node object in a separate vendor cluster.
+
+The service derives the tenant from the authenticated cluster/service identity, verifies that the cluster belongs to the same tenant as the Volume, and rejects forged cluster IDs, PVC identities, or Volume IDs. For CaaS, `PublishVolume` creates or converges the internal attachment relationship using `target.osacReference.kind = ClusterOrder` and `target.csiTarget = {clusterId, nodeId}`. For VMaaS, it must match the existing ComputeInstance attachment intent before allowing publish. `UnpublishVolume` finds the relationship by authenticated cluster, Volume ID, and node ID because CSI unpublish requests do not carry the original PVC context. The service signals `osac-operator`, which owns the vendor ControllerPublish/ControllerUnpublish operation. A pending operator result remains durable; CSI returns a deadline/unavailable result and the Kubernetes external-attacher retries. These methods are not public user operations.
 
 The CSI controller ServiceAccount has read-only access to PVC metadata in the tenant namespaces it serves; it cannot set or change `osac.openshift.io/volume-id`. AAP/operator provisioning is the only writer in this stage. A validating admission policy or webhook is a follow-up hardening option to consider after the initial implementation; it is not a prerequisite for this design. Fulfillment-service still verifies the PVC UID, cluster identity, tenant, and internal attachment intent before honoring the Volume ID.
 
@@ -260,16 +264,19 @@ message PublishVolumeRequest {
   string cluster_id = 1;
   string node_id = 2;
   string volume_id = 3;
-  string attachment_id = 4;
+  string attachment_id = 4; // required for VMaaS, empty for first CaaS publish
   string pvc_namespace = 5;
   string pvc_name = 6;
   string pvc_uid = 7;
   bool readonly = 8;
+  int64 attachment_generation = 9;
 }
 message PublishVolumeResponse { string operation_id = 1; }
 rpc PublishVolume(PublishVolumeRequest) returns (PublishVolumeResponse);
 rpc UnpublishVolume(PublishVolumeRequest) returns (PublishVolumeResponse);
 ```
+
+For an existing-volume `CreateVolume` request, the CSI driver returns volume context containing `osac.volume-source=existing`, `osac.volume-id`, `osac.pvc-namespace`, `osac.pvc-name`, `osac.pvc-uid`, and `osac.cluster-id`. The CSI driver keeps these values in the PV/CSI context so later publish/unpublish calls can be correlated; the fulfillment service remains the authorization authority.
 
 They are private and are called by ComputeInstance and BareMetalInstance controllers during their finalizer workflow. `BeginTargetDeletion` acquires the target deletion guard; `ListByTarget` returns active relationship IDs; `TargetAttachmentsGone` succeeds only when the helper table has no relationship for the target.
 
