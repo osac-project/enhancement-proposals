@@ -142,9 +142,9 @@ Lifecycle sequence: create assigns tenant metadata and the Volume owner-referenc
 
 ### 4.1.1 VMaaS Existing-Volume Disk Flows
 
-For a new VM with an existing OSAC Volume as its boot disk, the user sets `spec.boot_disk.existing_volume.id` during ComputeInstance creation. The operator passes the Volume ID into AAP, AAP creates the annotated DataVolume/PVC and configures the KubeVirt boot disk, and the CSI driver resolves the existing Volume through `Volumes.Get`. Boot replacement on an already-created VM is not supported by this workflow because it changes root-disk ownership and boot order.
+For a new VM with an existing OSAC Volume as its boot disk, the user sets `spec.boot_disk.osac_volume_id` during ComputeInstance creation. The operator passes the Volume ID into AAP, AAP creates the annotated DataVolume/PVC and configures the KubeVirt boot disk, and the CSI driver resolves the existing Volume through `Volumes.Get`. Boot replacement on an already-created VM is not supported by this workflow because it changes root-disk ownership and boot order.
 
-For an existing VMaaS `ComputeInstance`, the user mutates `ComputeInstance.spec.additional_disks` with an `existing_volume.id`. The operator creates an internal `VolumeAttachment` whose `target.osacReference` is `{kind: "ComputeInstance", id: "..."}`. The CSI target is resolved later from the PVC/cluster/node workflow; the public API does not directly call CSI or mutate a vendor attachment:
+For an existing VMaaS `ComputeInstance`, the user mutates `ComputeInstance.spec.additional_disks` with an `osac_volume_id`. The operator creates an internal `VolumeAttachment` whose `target.osacReference` is `{kind: "ComputeInstance", id: "..."}`. The CSI target is resolved later from the PVC/cluster/node workflow; the public API does not directly call CSI or mutate a vendor attachment:
 
 1. `fulfillment-service` validates that the Volume is available, the ComputeInstance exists in the same tenant, and the relationship is not already present.
 2. The service accepts the ComputeInstance mutation and creates the internal attachment intent in `PENDING`. The intent references the Volume ID, ComputeInstance ID, access mode, and desired read-only setting.
@@ -201,13 +201,13 @@ The public ComputeInstance API extends `ComputeInstanceDisk` additively:
 message ComputeInstanceDisk {
   optional int32 size_gib = 1;
   optional string storage_tier = 2;
-  VolumeReference existing_volume = 3;
+  string osac_volume_id = 3; // JSON: osacVolumeId
   optional bool readonly = 4;
 }
 message VolumeReference { string id = 1; }
 ```
 
-`existing_volume` is mutually exclusive with `size_gib`/`storage_tier`; a message-level validation rule rejects a disk that specifies both sources. `additional_disks` accepts append/remove mutations for existing-volume entries, keyed by `existing_volume.id`; ordinary dynamically provisioned disk entries remain immutable. The server uses field-mask validation and optimistic locking, rejects duplicate Volume IDs across boot/additional disks, and does not treat list order as identity. `boot_disk.existing_volume` is allowed only during ComputeInstance creation because replacing a running VM root disk requires separate boot-order and root-disk ownership handling. Existing-volume additional disks are supported for running and stopped VMs; running VMs use KubeVirt hotplug when available, while stopped VMs reach configured/bound state before runtime publish. The public ComputeInstance REST/gRPC Update, CLI, and UI are the VMaaS attach/detach interfaces.
+`osac_volume_id` is mutually exclusive with `size_gib`/`storage_tier`; a message-level validation rule rejects a disk that specifies both sources. Its generated JSON field is `osacVolumeId`. `additional_disks` accepts append/remove mutations for `osac_volume_id` entries, keyed by the Volume ID; ordinary dynamically provisioned disk entries remain immutable. The server uses field-mask validation and optimistic locking, rejects duplicate Volume IDs across boot/additional disks, and does not treat list order as identity. `boot_disk.osac_volume_id` is allowed only during ComputeInstance creation because replacing a running VM root disk requires separate boot-order and root-disk ownership handling. Existing-volume additional disks are supported for running and stopped VMs; running VMs use KubeVirt hotplug when available, while stopped VMs reach configured/bound state before runtime publish. The public ComputeInstance REST/gRPC Update, CLI, and UI are the VMaaS attach/detach interfaces.
 
 The operator Attachment CR stores the ComputeInstance ID, attachment ID, existing Volume ID, deterministic PVC name, target disk role, and lifecycle conditions. The PV name and UID are observed from the external-provisioner after binding; the CR does not claim ownership of a separate wrapper object. Its status stores operator execution details; these details are not exposed as a public VolumeAttachment resource.
 
@@ -225,12 +225,12 @@ Public attachment behavior is exposed through the existing target APIs; no publi
 
 | Public surface | Attach request | Detach request |
 |---|---|---|
-| VMaaS gRPC/REST | Patch `ComputeInstance.spec.additional_disks` with an `existing_volume.id`; for creation-time boot disks, set `spec.boot_disk.existing_volume`. | Remove the matching existing-volume disk entry from `spec.additional_disks`. Boot-disk removal/replacement is restricted to ComputeInstance creation workflows. |
+| VMaaS gRPC/REST | Patch `ComputeInstance.spec.additional_disks` with an `osac_volume_id`; for creation-time boot disks, set `spec.boot_disk.osac_volume_id`. | Remove the matching OSAC Volume ID entry from `spec.additional_disks`. Boot-disk removal/replacement is restricted to ComputeInstance creation workflows. |
 | VMaaS CLI/UI | Add an existing Volume to the ComputeInstance disk list. | Remove the existing Volume entry from the disk list. |
 | BMaaS API | Add an existing Volume reference to the BareMetalInstance attachment field defined by the BMaaS API. | Remove that Volume reference. |
 | CaaS | Standard PVC/CSI workflow; CSI calls private fulfillment `PublishVolume`/`UnpublishVolume`. | Standard PVC/CSI workflow. |
 
-`ComputeInstanceDisk` gains an `existing_volume` reference in a oneof with dynamic disk configuration. Existing-volume entries carry the OSAC Volume ID and are the public VMaaS attachment intent. Additional disk entries are mutable only for adding/removing existing-volume attachments; normal dynamically provisioned disk configuration retains its existing immutability rules. `osac#743` remains a prerequisite for CSI access to the public Volume API.
+`ComputeInstanceDisk` gains an `osac_volume_id` field alongside dynamic disk configuration. Existing-volume entries carry the OSAC Volume ID and are the public VMaaS attachment intent. Additional disk entries are mutable only for adding/removing `osac_volume_id` entries; normal dynamically provisioned disk configuration retains its existing immutability rules. `osac#743` remains a prerequisite for CSI access to the public Volume API.
 
 The private fulfillment API adds `PublishVolume` and `UnpublishVolume` for CSI identities. For existing-volume provisioning, the CSI driver reads `osac.openshift.io/volume-id` from the PVC and uses the existing `Volumes.Get` API by ID; no new resolve RPC is required. Publish/unpublish requests contain the OSAC Volume ID, `clusterId`, `nodeId`, PVC identity where applicable, the internal attachment correlation ID, and authenticated caller context. The service derives the tenant from the authenticated cluster/service identity, resolves the target intent, and requires that the Volume and target belong to the same tenant. It rejects a PVC annotation that has no matching authorized intent; the annotation alone is never authorization. The service creates or converges the internal relationship and signals `osac-operator`, which owns the vendor publish/unpublish call. These methods are not public user operations.
 
@@ -436,7 +436,7 @@ Downgrade must leave existing attachment records intact and retain the legacy CS
 
 ## UX Alignment
 
-The `osac-ui` and `osac-ux` checkouts are not present in this workspace, so no matching `@temp-api` TypeScript definition could be inspected. The public UI contract is target-specific: VMaaS maps to `ComputeInstance.spec.additional_disks[].existing_volume`, BMaaS maps to the BareMetalInstance attachment field, and CaaS remains the PVC workflow. Internal `target.osacReference`, `target.csiTarget`, and `target.storageHost` fields are not public UI fields. Before implementation, the UI team must map these target mutations and lifecycle conditions to generated UI types; no backend field should be renamed to match a UI-only convention.
+The `osac-ui` and `osac-ux` checkouts are not present in this workspace, so no matching `@temp-api` TypeScript definition could be inspected. The public UI contract is target-specific: VMaaS maps to `ComputeInstance.spec.additional_disks[].osac_volume_id`, BMaaS maps to the BareMetalInstance attachment field, and CaaS remains the PVC workflow. Internal `target.osacReference`, `target.csiTarget`, and `target.storageHost` fields are not public UI fields. Before implementation, the UI team must map these target mutations and lifecycle conditions to generated UI types; no backend field should be renamed to match a UI-only convention.
 
 ## 9. Open Questions
 

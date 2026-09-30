@@ -82,7 +82,7 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Invoke the canonical ComputeInstance REST update with `spec.additional_disks[].existing_volume.id = "vol-123"`.
+1. Invoke the canonical ComputeInstance REST update with `spec.additional_disks[].osac_volume_id = "vol-123"`.
 2. Read the ComputeInstance and its attachment status.
 3. Attempt to change an existing-volume disk's immutable Volume ID.
 
@@ -129,9 +129,9 @@ The published PRD has no formal FR/NFR labels. The FR-1 through FR-10 and NFR-1 
 
 ##### Steps
 
-1. Create a new ComputeInstance with `vol-123` as `spec.boot_disk.existing_volume`.
+1. Create a new ComputeInstance with `vol-123` as `spec.boot_disk.osac_volume_id`.
 2. Wait for the VM to be created with its boot PVC/PV and existing-volume CSI path.
-3. Mutate the existing `ci-456` to append `vol-456` to `spec.additional_disks[].existing_volume` while the VM is running.
+3. Mutate the existing `ci-456` to append `vol-456` to `spec.additional_disks[].osac_volume_id` while the VM is running.
 4. Observe the operator attachment intent, AAP provisioning input, PVC/PV, KubeVirt VM disk definition, and CSI controller path.
 
 ##### Expected Results
