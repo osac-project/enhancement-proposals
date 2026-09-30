@@ -11,6 +11,29 @@ Host confirmation is the per-write gate. There is no durable MCP plan,
 `execute_plan_step`, execution grant, or Secret-handoff API. Missing Secret
 values use existing `/secrets/create`.
 
+## Test Infrastructure
+
+Kind MCP integration tests rebuild and extend
+`fulfillment-service/it/it_mcp_server_test.go` (PoC path; first implementation
+PR lands it on `main`). New `it_mcp_*.go` files copy that file's pattern:
+
+- Kind suite connections: `tool.InternalView().AdminConn()`,
+  `tool.ExternalView().UserConn()`, `tool.UserTokenSource()`, `tool.CaPool()`
+- Streamable HTTP client: `mcp.StreamableClientTransport` and `mcp.NewClient`
+- Bearer forwarding of `tool.UserTokenSource()` on each MCP HTTP request
+- Shared helper `callMCPTool` for typed tool invocation
+
+Proposed `tests/e2e/mcp/` files use the same tool names and envelopes. Catalog
+CIDRs, offering IDs, and other fixture values come from objects the Kind suite
+creates at runtime, not from this testplan.
+
+Tool errors use the JSON envelope in design.md §4.3. Assert both `category`
+and `grpc_code` from that table (`authorization`/`PermissionDenied`,
+`invalid_request`/`InvalidArgument`, `authentication`/`Unauthenticated`,
+`conflict`/`Aborted`, `rate_limited`/`ResourceExhausted`, and the rest).
+Successful writes and later outcomes match the mutation-acceptance and
+normalized-outcome JSON examples in the same section.
+
 ## Test Cases
 
 ### FR-1: Complete resource journeys
@@ -109,7 +132,8 @@ values use existing `/secrets/create`.
 
 ##### Expected Results
 
-- The edit returns `invalid_request` with reason `unsupported_in_place`; no update RPC is dispatched.
+- The edit returns `invalid_request` / `InvalidArgument` with reason
+  `unsupported_in_place`; no update RPC is dispatched.
 - Error details may name create/delete replacements; no resource is silently replaced.
 - Original IDs, versions, and the dependent relationship are unchanged.
 
@@ -136,8 +160,13 @@ values use existing `/secrets/create`.
 ##### Expected Results
 
 - Discovery never returns Secret bytes.
-- Create and update each produce one public resource version increment for the update.
-- Later outcome names UUID, lifecycle state, public conditions, addresses, facts, unknowns, and next actions.
+- Create and update envelopes match design.md §4.3 mutation acceptance JSON:
+  `resource.type` is `ComputeInstance`, plus `resource.id`, `resource.version`,
+  and `next_action`.
+- The update increments `resource.version`.
+- Later `get_resource_outcome` matches the §4.3 normalized-outcome JSON:
+  UUID, `lifecycle_state`, public `conditions`, address `facts`, `unknowns`,
+  and `next_actions`.
 
 #### TC-FR3-02: Start, stop, restart, and delete a ComputeInstance through explicit actions
 
@@ -360,7 +389,8 @@ values use existing `/secrets/create`.
 - Create succeeds.
 - Update remains unregistered if `lock=true` is not proven.
 - When registered, current-version update succeeds.
-- Stale version fails with `Aborted`; unauthorized caller gets `authorization`.
+- Stale version fails with `conflict` / `Aborted`; unauthorized caller gets
+  `authorization` / `PermissionDenied`.
 
 #### TC-FR8-02: Manage supported catalog offerings and confirm publication in the host
 
@@ -382,7 +412,8 @@ values use existing `/secrets/create`.
 ##### Expected Results
 
 - Only the three supported offering families appear in the schema.
-- Publish is a distinct destructive action; unauthorized callers get `authorization`.
+- Publish is a distinct destructive action; unauthorized callers get
+  `authorization` / `PermissionDenied`.
 
 ### FR-9: Secret-value handling
 
@@ -411,6 +442,13 @@ values use existing `/secrets/create`.
 - The write uses only `SecretLocalReference`.
 - No MCP-specific handoff URL is required.
 
+###### Pass/fail checklist
+
+- Pass: missing-Secret guidance names existing `/secrets/create`.
+- Pass: after UI create, resume uses a Secret reference, not bytes.
+- Fail: any Secret value appears in MCP tool args, results, or logs.
+- Fail: an MCP-specific handoff URL is required.
+
 #### TC-FR9-02: MCP never accepts or returns Secret bytes
 
 | Interface Change | Priority | Automation |
@@ -430,7 +468,7 @@ values use existing `/secrets/create`.
 
 ##### Expected Results
 
-- Secret-value fields are rejected with `invalid_request`.
+- Secret-value fields are rejected with `invalid_request` / `InvalidArgument`.
 - List/get return metadata and references only.
 - `Secrets/Get` is not registered.
 
@@ -439,6 +477,20 @@ values use existing `/secrets/create`.
 Host certification is blocked by Open Question 9.3. Each case is E2E / [QE],
 manual, and uses a released host against a deployed private endpoint. Generic
 clients cannot substitute. Secret gaps use existing `/secrets/create`.
+
+Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
+
+- Pass: sign-in uses that surface's registered public PKCE client and exact
+  callback; token audience is `osac-api`.
+- Pass: `check_connection` succeeds and creates no resource.
+- Pass: the host prompt is the write gate; rejecting the tool performs no
+  mutation.
+- Pass: one confirmed typed write creates exactly one Fulfillment resource.
+- Pass: a later session `get_resource_outcome` returns that UUID and public
+  state.
+- Pass: the tool list is the allowlisted registry.
+- Fail: an OSAC plan-approval or Secret-handoff URL is required.
+- Fail: Claude Desktop Chat or a cloud-brokered agent is required.
 
 #### TC-FR10-01: Certify a deployment journey from Cursor editor
 
@@ -462,6 +514,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 - Cursor editor uses its registered public client and exact callback.
 - Rejecting the write tool performs no mutation.
 - Later session returns the Fulfillment resource outcome.
+- Shared host-certification checklist passes for Cursor editor.
 
 #### TC-FR10-02: Certify a deployment journey from Cursor CLI
 
@@ -484,6 +537,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 - Token audience is `osac-api`.
 - Host prompt, not an OSAC review URL, is the write gate.
+- Shared host-certification checklist passes for Cursor CLI.
 
 #### TC-FR10-03: Certify a deployment journey from Codex CLI
 
@@ -506,6 +560,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 - Tool list is the allowlisted registry.
 - Restarted CLI returns the durable resource ID from Fulfillment.
+- Shared host-certification checklist passes for Codex CLI.
 
 #### TC-FR10-04: Certify a deployment journey from Codex app or IDE
 
@@ -528,6 +583,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 - Callback and client ID match that surface.
 - No OSAC plan-approval page is required.
+- Shared host-certification checklist passes for Codex app/IDE.
 
 #### TC-FR10-05: Certify a deployment journey from Claude Code CLI
 
@@ -550,6 +606,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 - Local private-endpoint connection succeeds.
 - Rejecting the write tool performs no mutation.
+- Shared host-certification checklist passes for Claude Code CLI.
 
 #### TC-FR10-06: Certify a deployment journey from Claude Desktop Code
 
@@ -572,6 +629,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 - Exact local callback is used.
 - Claude Desktop Chat and cloud brokers are not required.
+- Shared host-certification checklist passes for Claude Desktop Code.
 
 ### FR-11: UI onboarding
 
@@ -637,7 +695,10 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 ##### Expected Results
 
-- Categories `tls_trust`, `authentication`, `authorization`, `protocol_incompatible`, and `service_unavailable` respectively.
+- Categories and `grpc_code` values are `tls_trust`/`FailedPrecondition`,
+  `authentication`/`Unauthenticated`, `authorization`/`PermissionDenied`,
+  `protocol_incompatible`/`FailedPrecondition`, and
+  `service_unavailable`/`Unavailable` respectively.
 - No resource is created.
 
 ### FR-13: Sequential write review and per-write confirmation
@@ -687,7 +748,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 ##### Expected Results
 
 - No invocation means zero mutations.
-- Other-subject call returns `authorization` or `PermissionDenied`.
+- Other-subject call returns `authorization` / `PermissionDenied`.
 - Authorized call creates exactly one resource.
 
 #### TC-FR13-03: Changed settings require a new confirmed tool call
@@ -867,7 +928,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 ##### Expected Results
 
-- Category is `unknown_outcome`.
+- Category is `unknown_outcome` with `grpc_code` `Unknown`.
 - Create handler is not invoked a second time.
 
 ### FR-18: Actual outcome report
@@ -891,7 +952,10 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 ##### Expected Results
 
-- Mapping matches design §4.3 family table.
+- Mapping matches the design.md §4.3 family table.
+- Serialized outcome matches the §4.3 normalized-outcome JSON shape
+  (`resource`, `lifecycle_state`, `conditions`, `timing`, `facts`, `unknowns`,
+  `next_actions`).
 - Missing or private data is named in `unknowns`.
 
 #### TC-FR18-02: Keep request acceptance distinct from later readiness or failure
@@ -1114,6 +1178,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 - Same tool names, schemas, host-prompt gate, and outcome shape.
 - No OSAC approval URL is required.
+- Shared host-certification checklist passes on all six surfaces.
 
 #### TC-NFR3-02: Exclude unsupported cloud and Claude Desktop Chat connection modes
 

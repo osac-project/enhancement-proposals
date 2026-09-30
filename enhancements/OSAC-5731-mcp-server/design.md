@@ -265,7 +265,28 @@ Errors use stable categories:
 Categories are `connectivity`, `tls_trust`, `authentication`,
 `authorization`, `protocol_incompatible`, `invalid_request`, `not_found`,
 `conflict`, `service_unavailable`, `upstream_failure`, `rate_limited`, and
-`unknown_outcome`. Raw upstream payloads are not returned.
+`unknown_outcome`. Assert both `category` and `grpc_code`:
+
+<!-- markdownlint-disable MD013 -->
+
+| category | grpc_code |
+| --- | --- |
+| connectivity | Unavailable |
+| tls_trust | FailedPrecondition |
+| authentication | Unauthenticated |
+| authorization | PermissionDenied |
+| protocol_incompatible | FailedPrecondition |
+| invalid_request | InvalidArgument |
+| not_found | NotFound |
+| conflict | Aborted |
+| service_unavailable | Unavailable |
+| upstream_failure | Unknown |
+| rate_limited | ResourceExhausted |
+| unknown_outcome | Unknown |
+
+<!-- markdownlint-enable MD013 -->
+
+Raw upstream payloads are not returned.
 
 ### Normalized resource outcome
 
@@ -668,6 +689,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond
+Phases: draft, revise, revise, revise, respond, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
