@@ -688,6 +688,9 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 ##### Expected Results
 
 - Connection succeeds and names caller, version, and capabilities.
+- The result is OSAC-authored: no resource `status.message`, condition text,
+  or raw upstream body.
+- `openWorldHint` is false.
 - Resource counts are unchanged.
 
 #### TC-FR12-02: Distinguish trust, authentication, authorization, protocol, and service failures
@@ -875,7 +878,8 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - Annotation tuples match design.md §4.1.
 - Create tools set `destructiveHint` false and `idempotentHint` false.
 - `set_*_power` tools set `idempotentHint` true.
-- `openWorldHint` is true on every Fulfillment-backed tool.
+- `check_connection` sets `openWorldHint` false.
+- Every other Fulfillment-backed tool sets `openWorldHint` true.
 
 ### FR-15: Permission-blocked prerequisite
 

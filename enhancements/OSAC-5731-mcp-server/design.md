@@ -181,7 +181,8 @@ writes default to destructive and non-idempotent.
 
 | Class | Tools | readOnlyHint | destructiveHint | idempotentHint | openWorldHint |
 | --- | --- | --- | --- | --- | --- |
-| Read | `check_connection`, `list_resources`, `get_resource`, `get_resource_outcome` | true | — | — | true |
+| Connection check | `check_connection` | true | — | — | false |
+| Resource read | `list_resources`, `get_resource`, `get_resource_outcome` | true | — | — | true |
 | Create | `create_network_resource`, `create_compute_instance`, `create_cluster`, `create_bare_metal_instance`, `create_volume`, `create_project`, `create_catalog_offering` | false | false | false | true |
 | Set power | `set_compute_instance_power`, `set_bare_metal_instance_power` | false | false | true | true |
 | Volume metadata update | `update_volume` | false | false | true | true |
@@ -193,8 +194,25 @@ writes default to destructive and non-idempotent.
 
 <!-- markdownlint-enable MD013 -->
 
-Each tool also sets a human-readable `title`. `openWorldHint` is true because
-every tool calls live Fulfillment APIs.
+Each tool also sets a human-readable `title`.
+
+`openWorldHint` is not "calls an API." It asks whether the tool interacts
+with an open world of external entities versus a closed domain (MCP's example:
+web search is open; a memory tool is closed). Default is true. Hosts may
+scrutinize open-world output for untrusted content and treat the call as a
+trust-boundary cross. The other hints are mostly preflight; this one is also
+about what comes back.
+
+OSAC sets `openWorldHint` true on every tool that reads or writes Fulfillment
+resources. Those tools reach operators, providers, and AAP. List/get/outcome
+can return public `status.message` and condition text the MCP process does
+not author. An allowlisted type set is a closed *schema*, not a closed world.
+
+`check_connection` is the closed-domain exception: `openWorldHint` false. Its
+result is OSAC-authored session metadata (endpoint version, caller, enabled
+tools, tenant-safe permission summary). It must not return resource status,
+condition messages, provider text, or raw upstream bodies. If that payload
+gains those fields, set `openWorldHint` true.
 
 Create is not idempotent: there is no OSAC create idempotency key, and FR-17
 forbids retrying an uncertain create. Delete is not MCP-idempotent: a second
@@ -449,6 +467,10 @@ Question 9.1.
 - Host auto-approval of write tools is an accepted residual risk.
   MCP annotations are untrusted host hints, not authorization; write tools
   are split so those hints stay honest. [Locked: D16] [User]
+- `openWorldHint` is true on resource list/get/outcome and all writes so
+  hosts can treat returned status and condition text as untrusted content.
+  `check_connection` stays closed-domain only while its payload is
+  OSAC-authored.
 - The endpoint validates HTTP `Origin`, TLS hostname, OAuth resource and
   issuer metadata, callback URIs, and request audience. Private-CA bypass flags
   are not part of the supported configuration.
@@ -515,7 +537,9 @@ the caller token on public Fulfillment calls.
 
 `check_connection` returns endpoint/server version, authenticated caller
 context, enabled resource families, and a tenant-safe permission summary
-without creating or changing a resource.
+without creating or changing a resource. The payload is OSAC-authored, so
+this tool sets `openWorldHint` false. It must not include resource status,
+condition messages, or raw upstream bodies.
 
 ## IC-3: Allowlisted discovery and normalized outcomes
 
@@ -543,7 +567,8 @@ mutation. A later tool is not called after a definite failure.
 Write tools are split so each tool has one MCP annotation tuple. Create is
 never combined with delete, public exposure, publication, or restart. Each
 tool accepts typed inputs and invokes the matching public RPC on the
-confirmed call.
+confirmed call. `openWorldHint` is true on resource reads and writes;
+`check_connection` is the closed-domain exception.
 
 ## IC-6: Host tool confirmation
 
@@ -779,6 +804,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
