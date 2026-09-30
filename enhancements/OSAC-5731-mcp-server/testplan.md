@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-5731 — OSAC MCP Server for infrastructure provisioning
-- **Total test cases:** 56
+- **Total test cases:** 57
 - **Requirements covered:** 25 of 25
 - **Interface changes covered:** 14 of 14
 
@@ -24,7 +24,7 @@ values use existing `/secrets/create`.
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- **Execution:** No runnable command; proposed path: `tests/e2e/mcp/test_complete_journeys.py`. Working directory: `/Users/tohughes/workspace/osac`.
+- **Execution:** No runnable command; proposed path: `tests/e2e/mcp/test_complete_journeys.py`. Working directory: `$REPO_ROOT`.
 - **Boundary:** Deployed MCP, Keycloak, Fulfillment, PostgreSQL, operators, and configured providers run for real.
 
 ##### Steps
@@ -386,12 +386,13 @@ values use existing `/secrets/create`.
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-8 | critical | automated |
+| IC-8 | critical | manual |
 
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- **Execution:** proposed `tests/e2e/mcp/test_secret_create_resume.py`. Harness gap: no committed browser E2E suite.
+- **Execution:** Manual until a committed browser E2E harness exists. Proposed
+  record: `tests/e2e/mcp/host-certification/secret-create-resume.md`.
 - **Boundary:** Existing `/secrets/create`, MCP discovery, and Fulfillment Secrets APIs.
 
 ##### Steps
@@ -1183,10 +1184,13 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 ##### Steps
 
 1. Send oversized bodies and over-limit write rates.
+2. Send concurrent requests above the configured concurrency bound.
+3. Route one subject's over-limit traffic across replicas.
 
 ##### Expected Results
 
-- `rate_limited` or size rejection occurs before the resource RPC.
+- Size, concurrency, and rate rejection occur before the resource RPC.
+- The per-subject and per-tenant quota is the aggregate across replicas.
 
 #### TC-NFR4-04: Keep supported actions, onboarding, failures, and correlation documentation executable
 
@@ -1219,7 +1223,10 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 ##### Preconditions
 
 - **Tier / owner:** Component integration / [DEV].
-- **Execution:** Kind fulfillment suite; first PR rebuilds `it_mcp_server_test.go`.
+- **Execution:** Kind fulfillment suite. First PR rebuilds the existing
+  `fulfillment-service/it/it_mcp_server_test.go` HTTP-client pattern
+  (SDK session, caller token, allowlisted tools) rather than introducing a
+  new harness.
 
 ##### Steps
 
@@ -1228,6 +1235,7 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 ##### Expected Results
 
 - Named cases exist and pass in the deployed harness.
+- New cases follow the existing `it_mcp_server_test.go` client setup.
 
 #### TC-NFR5-02: Gate support on deployed resource-family, host, and later-session evidence
 
@@ -1248,6 +1256,29 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 ##### Expected Results
 
 - Missing evidence is not converted to pass.
+
+#### TC-NFR5-03: Keep write tools unregistered until the development-only flag is set
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5 | critical | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Component integration / [DEV].
+- **Execution:** Kind fulfillment suite; extend `it_mcp_server_test.go`.
+
+##### Steps
+
+1. Start MCP with the default configuration and list tools, then invoke a
+   typed write.
+2. Restart with the development-only write flag and retry the same write.
+
+##### Expected Results
+
+- Default configuration omits mutating tools and performs no Fulfillment
+  write RPC.
+- The flag registers write tools; a host-confirmed call may mutate.
 
 ### NFR-6: Existing-capability boundary
 
@@ -1294,17 +1325,19 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 ## Planning Evidence Matrix
 
-Working-directory convention: repository-root commands use `/Users/tohughes/workspace/osac`; `ginkgo run -r internal` uses `/Users/tohughes/workspace/osac/fulfillment-service`; `pnpm` uses `/Users/tohughes/workspace/osac/osac-ui`.
+Working-directory convention: repository-root commands use `$REPO_ROOT`;
+`ginkgo run -r internal` uses `$REPO_ROOT/fulfillment-service`; `pnpm` uses
+`$REPO_ROOT/osac-ui`.
 
 | Component / behavior and boundary | Requirements / ICs | Test case IDs | Tier / owner | Existing or proposed path and command | Prerequisites | Real dependencies | Simulated or omitted dependencies | Unresolved gap |
 |---|---|---|---|---|---|---|---|---|
 | MCP registry, schemas, outcomes, redaction | FR-18; NFR-2; NFR-6; IC-3, IC-5 | TC-FR18-01, TC-NFR2-01, TC-NFR2-02, TC-NFR6-01, TC-NFR6-02 | Unit / [DEV] | `ginkgo run -r internal` from `fulfillment-service/` | Go toolchain | MCP package | Public clients mocked | MCP package not on `main` |
-| First-PR MCP HTTP client journey | FR-3; NFR-1, NFR-5; IC-3, IC-5 | TC-NFR5-01 | Component integration / [DEV] | Rebuild `it_mcp_server_test.go`; Kind fulfillment suite | Kind `osac-dev` | SDK client, Fulfillment, token | Providers omitted; writes gated | Rebuild, do not cherry-pick |
+| First-PR MCP HTTP client journey | FR-3; NFR-1, NFR-5; IC-3, IC-5 | TC-NFR5-01, TC-NFR5-03 | Component integration / [DEV] | Rebuild existing `fulfillment-service/it/it_mcp_server_test.go`; Kind fulfillment suite | Kind `osac-dev` | SDK client, Fulfillment, token | Providers omitted; writes gated off by default | Rebuild, do not cherry-pick |
 | Sequential writes, authz, partial/unknown failure | FR-13, FR-15, FR-16, FR-17; IC-4, IC-6, IC-7 | TC-FR13-01, TC-FR13-02, TC-FR13-03, TC-FR15-01, TC-FR16-01, TC-FR17-01, TC-FR17-02 | Component integration / [DEV] | proposed `it_mcp_sequential_writes_test.go` and related `it_mcp_*.go` | Kind | Fulfillment, PostgreSQL | Providers omitted | Proposed files |
 | Typed family tools | FR-2, FR-6, FR-7, FR-8; IC-5 | TC-FR2-02, TC-FR6-01, TC-FR7-01, TC-FR7-02, TC-FR8-01, TC-FR8-02 | Component integration / [DEV] | proposed family `it_mcp_*.go` | Kind | Public APIs | Providers omitted | Proposed files |
 | Destructive-hint annotations | FR-14; IC-6 | TC-FR14-01, TC-FR14-02, TC-FR14-03 | Unit / [DEV] | MCP package tests | Go toolchain | Registry | None | Proposed files |
 | Tenant isolation and caller token | NFR-1; IC-1, IC-3, IC-7 | TC-NFR1-01, TC-NFR1-02, TC-NFR1-03 | Contract + component / [DEV] | proposed `mcp_auth/` and `it_mcp_tenant_isolation_test.go` | Two tenants | Auth, Fulfillment | Providers omitted | No contract harness Jira |
-| Secret bytes excluded; existing UI create | FR-9; NFR-2; IC-8 | TC-FR9-01, TC-FR9-02 | E2E + unit | proposed secret resume E2E; schema tests | Live UI for TC-FR9-01 | Existing Secret wizard | Handoff API omitted on purpose | No UI E2E harness Jira |
+| Secret bytes excluded; existing UI create | FR-9; NFR-2; IC-8 | TC-FR9-01, TC-FR9-02 | E2E (manual) + unit | proposed secret-resume record; schema tests | Live UI for TC-FR9-01 | Existing Secret wizard | Handoff API omitted on purpose | No UI E2E harness; TC-FR9-01 is manual |
 | Setup page | FR-11; NFR-3; IC-10 | TC-FR11-01, TC-NFR3-02 | Unit / [DEV] | `pnpm test` from `osac-ui/` | pnpm | React | Runtime metadata simulated | Proposed page |
 | Installer, health, replicas, limits | NFR-4; IC-11, IC-12 | TC-NFR4-01, TC-NFR4-02, TC-NFR4-03 | E2E + component | proposed `tests/e2e/mcp/` and `it_mcp_limits_test.go` | MCP chart | Cluster, Keycloak | Handler controlled for counts | No MCP install profile |
 | Host certification | FR-10; NFR-3; IC-13 | TC-FR10-01–06, TC-NFR3-01 | E2E / [QE] | proposed `tests/e2e/mcp/host-certification/` | Released hosts | Real OAuth + write | Generic client forbidden | Open Question 9.3 |
@@ -1318,7 +1351,7 @@ Working-directory convention: repository-root commands use `/Users/tohughes/work
 All 25 PRD requirements have behavioral test cases.
 
 - **FR-6 / NFR-5 — Volume real-backend:** TC-FR6-02 blocked by [OSAC-4845](https://redhat.atlassian.net/browse/OSAC-4845) and Open Question 9.2.
-- **FR-9 — UI E2E:** existing Secret create resume needs a browser harness. No owning Jira.
+- **FR-9 — UI E2E:** TC-FR9-01 is manual until a browser harness exists. No owning Jira.
 - **FR-10 / NFR-3 — six hosts:** Open Question 9.3. No owning Jira.
 - **NFR-1 — Keycloak/token contracts:** proposed contract harnesses have no owning Jira.
 - **NFR-4 — production sizing:** Open Question 9.1.
@@ -1332,12 +1365,12 @@ All 14 ICs have planned cases. Execution gaps remain for IC-1/11/13/14 (hosts/OQ
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 56 |
-| Critical | 41 |
+| Total test cases | 57 |
+| Critical | 42 |
 | High | 13 |
 | Medium | 2 |
 | Low | 0 |
 | Automated | 49 |
-| Manual | 7 |
+| Manual | 8 |
 | Requirements with test cases | 25 / 25 |
 | Interface changes with test cases | 14 / 14 |

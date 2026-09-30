@@ -323,8 +323,10 @@ in a pod.
 
 Each tool call is one public Fulfillment RPC plus mapping. Database load is
 the existing resource write/read path. Request bodies are capped at 1 MiB at
-the MCP edge. Per-subject and per-tenant rate limits apply. Product rate
-defaults are Open Question 9.1.
+the MCP edge. Per-subject and per-tenant rate and concurrency limits apply
+across the replica set, not per pod: a shared limiter or cluster-wide
+ingress policy enforces the aggregate quota. Product rate defaults are Open
+Question 9.1.
 
 ## 4.5 Security Considerations
 
@@ -491,8 +493,8 @@ conditional on MCP enablement.
 **Requirements:** FR-12, NFR-4
 
 Internal `/livez` and `/readyz` probes, graceful drain, two-replica rollout,
-request-size bounds, concurrency limits, and stable `rate_limited` responses
-are part of the supported service contract.
+request-size bounds, cluster-wide concurrency and rate limits, and stable
+`rate_limited` responses are part of the supported service contract.
 
 ## IC-13: Host-specific OAuth client registrations
 
@@ -656,7 +658,7 @@ journey. [Related: OSAC-4845]
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise
+Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
+Phases: draft, revise, revise, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
