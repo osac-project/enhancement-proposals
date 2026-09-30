@@ -96,20 +96,53 @@ Four surfaces change:
 
 ```mermaid
 flowchart LR
-    Host[Model host] -->|OAuth + MCP| MCP[MCP edge]
-    User[Signed-in user] -->|tool confirm| Host
-    MCP -->|caller token| Resources[Public Fulfillment APIs]
-    Resources --> DB[(PostgreSQL)]
-    User -->|setup and Secrets| UI[OSAC UI]
-    UI -->|Connect API| Resources
-    Resources --> Reconcilers[Controllers and operators]
-    Reconcilers --> Providers[Providers and AAP]
-    Reconcilers -->|status feedback| Resources
+    User[Signed-in user]
+    Host[Model host]
+    MCP[Stateless MCP edge]
+    Ful[Public Fulfillment APIs]
+    UI[OSAC UI]
+    Cfg[Installer runtime config]
+    DB[(Fulfillment PostgreSQL)]
+    Rec[Controllers and operators]
+    Prov[Providers and AAP]
+
+    User -->|confirm tool| Host
+    Host -->|Streamable HTTP and caller token| MCP
+    MCP -->|public RPC as caller| Ful
+    User -->|/connect/mcp| UI
+    UI -->|non-secret MCP metadata| Cfg
+    User -->|/secrets/create| UI
+    UI -->|Secrets APIs| Ful
+    Ful --> DB
+    Ful --> Rec
+    Rec --> Prov
+    Rec -->|status| Ful
 ```
 
-The host confirms a typed tool, MCP calls Fulfillment as that user, and later
-status is the public resource. A pod restart does not lose infrastructure
-state because Fulfillment already owns it.
+The host confirms a typed tool. MCP forwards the caller token on one public
+RPC and keeps no plan, grant, or session tables. Setup copy comes from
+installer runtime metadata through the UI proxy, not from resource APIs.
+Missing Secret values use the existing `/secrets/create` wizard; MCP then
+selects the reference. Later status is the public Fulfillment resource, so a
+pod restart does not lose infrastructure state.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Host as Model host
+    participant MCP as MCP edge
+    participant API as Public Fulfillment API
+    User->>Host: confirm typed write tool
+    Host->>MCP: tool call with caller token
+    MCP->>API: matching public RPC
+    API-->>MCP: resource id and version
+    MCP-->>Host: bounded result
+    Note over MCP: no plan, grant, or session state
+    Host->>MCP: later get_resource_outcome
+    MCP->>API: public Get as caller
+    API-->>MCP: current public status
+    MCP-->>Host: normalized outcome
+```
 
 ### Write path
 
@@ -688,7 +721,7 @@ journey. [Related: OSAC-4845]
 
 ## Provenance
 
-Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
+Phases: draft, revise, revise, revise, respond, respond, respond, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
