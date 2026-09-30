@@ -90,6 +90,7 @@ jobs:
         with:
           ref: ${{ needs.resolve-pr.outputs.base_ref }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -131,21 +132,25 @@ jobs:
             fi
           done
 
-      - name: Stage reference docs for skill lookups
-        # Optional grounding the skills read if present; these live in
-        # osac/docs, not the skills repo. Best-effort: a missing doc must
-        # not fail the review.
+      - name: Stage canonical OSAC context for skill lookups
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p /opt/skills/reference
-          for f in ARCHITECTURE CONVENTIONS; do
-            if ! gh api "repos/osac-project/osac/contents/docs/${f}.md" \
-                 --jq '.content' | base64 -d > "/opt/skills/reference/${f}.md"; then
-              echo "::warning::optional reference doc ${f}.md unavailable, continuing"
-              rm -f "/opt/skills/reference/${f}.md"
-            fi
+          set -euo pipefail
+          osac_sha="$(gh api repos/osac-project/osac/commits/main --jq '.sha')"
+          echo "Resolved OSAC context commit: $osac_sha"
+          echo "OSAC review context commit: $osac_sha" >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p /opt/skills/reference/agent-context
+          # Fetch full documents at one commit; any failed or empty download
+          # stops the job before either review workspace is created.
+          for doc in \
+            agent-context/{enclave-wizard-pipeline,networking-decisions,osac-dimensions,review-patterns} \
+            ARCHITECTURE CONVENTIONS personas INTEGRATION-TESTING; do
+            gh api "repos/osac-project/osac/contents/docs/${doc}.md?ref=${osac_sha}" \
+              -H 'Accept: application/vnd.github.raw+json' > "/opt/skills/reference/${doc}.md"
+            test -s "/opt/skills/reference/${doc}.md"
           done
+          echo "$osac_sha" > /opt/skills/reference/osac-context-sha.txt
 
       - name: Stage enhancement-proposals content for skill lookups
         # Reuses the repo already checked out by the first step above (at
