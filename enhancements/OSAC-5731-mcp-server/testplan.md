@@ -655,7 +655,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Render `/connect/mcp` with runtime metadata.
+1. Render `/connect/mcp` from installer-injected UI/proxy runtime config.
 2. Inspect `publicURL`, per-host client and callback, CA fingerprint when
    configured, `check_connection`, and host MCP documentation links.
 

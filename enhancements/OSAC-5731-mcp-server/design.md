@@ -432,12 +432,18 @@ never mapped to resource readiness. [Locked: D21, D28, D36]
 
 ### UI proxy integration
 
-The authenticated UI proxy adds:
+`/connect/mcp` is authenticated like the rest of the UI. Non-secret MCP
+runtime values come from installer-injected UI/proxy configuration, the same
+way the UI chart ConfigMap already supplies `FULFILLMENT_API_URL`. They are
+not a Fulfillment Connect RPC and not a new `/api/integrations` namespace.
 
-- `GET /api/integrations/mcp` for non-secret endpoint, OAuth client, trust,
-  supported-host, and verification-tool metadata;
-- `GET /api/integrations/mcp/ca` for the public CA bundle and SHA-256
-  fingerprint when private trust is configured.
+The proxy today serves `/api/login*` and `/api/fulfillment/*`. MCP setup may
+add a small authenticated JSON handler next to the login routes, or equivalent
+chart-injected config the SPA already loads. Exact path is an implementation
+choice. The payload is `publicURL`, per-host public client IDs and callbacks,
+trust mode, CA fingerprint when private trust is on, and `check_connection`
+as the verification tool. The PEM bundle may travel in that payload or as a
+sibling GET if it should not sit in JSON.
 
 No MCP-specific Secret-handoff or plan-approval routes are added.
 
@@ -613,13 +619,14 @@ subject, plus MCP logs (tool, hashed `sub`, resource, time).
 
 **Requirements:** FR-11, FR-12, NFR-3, NFR-4
 
-The role-neutral `/connect/mcp` UI page uses
-`GET /api/integrations/mcp` and the optional CA endpoint to copy the OSAC
-`publicURL`, per-host public client and callback, CA fingerprint when
-configured, and `check_connection` as the verification tool. It links the
-current official Cursor, Codex, and Claude remote MCP documentation for how
-that host adds a server and completes PKCE. OSAC does not maintain a full
-host-product tutorial. [Locked: D31, D32]
+The role-neutral `/connect/mcp` UI page copies installer-injected MCP runtime
+configuration through the existing authenticated UI proxy: `publicURL`,
+per-host public client and callback, CA fingerprint when configured, and
+`check_connection` as the verification tool. It links the current official
+Cursor, Codex, and Claude remote MCP documentation for how that host adds a
+server and completes PKCE. OSAC does not maintain a full host-product
+tutorial. Exact config URL is an implementation choice next to `/api/login`;
+it is not a Fulfillment method. [Locked: D31, D32]
 
 ## IC-11: Supported Helm and installer configuration
 
@@ -808,6 +815,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
