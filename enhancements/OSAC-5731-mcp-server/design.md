@@ -11,8 +11,8 @@
 
 OSAC will provide a supported remote Model Context Protocol (MCP) endpoint as a
 stateless adapter over public Fulfillment APIs. It forwards the signed-in
-caller's token, exposes allowlisted discovery plus typed resource-family write
-tools, and leaves authorization, tenancy, validation, and resource status to
+caller's token, exposes allowlisted discovery plus typed write tools, and
+leaves authorization, tenancy, validation, and resource status to
 Fulfillment.
 
 Host tool confirmation is the human gate, Fulfillment authorization is
@@ -30,8 +30,9 @@ See the [PRD](prd.md) for the detailed product requirements.
 - Preserve public Fulfillment APIs as the authorization, tenancy, validation,
   and lifecycle boundary for every MCP operation.
 - Keep the MCP process stateless: no plan, grant, handoff, or audit tables.
-- Expose allowlisted generic reads and typed resource-family write tools,
-  never an unrestricted service or Kubernetes proxy.
+- Expose allowlisted generic reads and typed write tools split so each tool
+  has one MCP annotation tuple, never an unrestricted service or Kubernetes
+  proxy.
 - Use the model-host tool prompt as the per-write human gate.
 - Publish one OSAC MCP endpoint contract (`publicURL`, OAuth resource, trust
   metadata, and `check_connection`) for the required local Cursor, Codex, and
@@ -150,17 +151,15 @@ sequenceDiagram
 
 1. Read-only tools discover eligible offerings, Projects, networking, Secret
    **references**, and current resource state.
-2. A typed `*_action` tool validates the action against the same field,
-   catalog, and reference rules as the target public API, then invokes that
-   API with the caller token. The host prompt on that tool shows the action,
-   target, and settings and is the per-write gate. Conversational agreement
+2. A typed write tool validates the same field, catalog, and reference rules
+   as the target public API, then invokes that API with the caller token. The
+   host prompt on that tool is the per-write gate. Conversational agreement
    is not a write. A later uncalled tool is not previewed by the server; a
    multi-resource sequence is a series of confirmed calls. [Locked: D12, D16]
    [User]
-3. Deletion, public exposure, and offering publication set `destructiveHint`
-   so the host can prompt more strongly. The prompt includes the typed target
-   and action; OSAC does not add a second confirmation protocol.
-   [Locked: D14] [User]
+3. Delete, public exposure, publication, and restart are separate tools from
+   create so `destructiveHint` and `idempotentHint` stay honest. OSAC does
+   not add a second confirmation protocol. [Locked: D14] [User]
 4. After a definite failure, MCP returns the error and does not invoke later
    tools. It does not roll back earlier resources. [Locked: D13]
 5. After an uncertain create, MCP checks for a trustworthy public resource
@@ -174,7 +173,39 @@ receives a new host prompt. [Locked: D15]
 
 ### Tool surface
 
-Common tools:
+MCP tool annotations are per-tool. Each registered tool has exactly one hint
+tuple. Annotations are untrusted host hints, not authorization. Unspecified
+writes default to destructive and non-idempotent.
+
+<!-- markdownlint-disable MD013 -->
+
+| Class | Tools | readOnlyHint | destructiveHint | idempotentHint | openWorldHint |
+| --- | --- | --- | --- | --- | --- |
+| Read | `check_connection`, `list_resources`, `get_resource`, `get_resource_outcome` | true | — | — | true |
+| Create | `create_network_resource`, `create_compute_instance`, `create_cluster`, `create_bare_metal_instance`, `create_volume`, `create_project`, `create_catalog_offering` | false | false | false | true |
+| Set power | `set_compute_instance_power`, `set_bare_metal_instance_power` | false | false | true | true |
+| Volume metadata update | `update_volume` | false | false | true | true |
+| Update | `update_compute_instance`, `update_cluster`, `update_bare_metal_instance`, `update_project`, `update_catalog_offering` | false | true | false | true |
+| Restart | `restart_compute_instance`, `restart_bare_metal_instance` | false | true | false | true |
+| Delete | `delete_network_resource`, `delete_compute_instance`, `delete_cluster`, `delete_bare_metal_instance`, `delete_volume`, `delete_catalog_offering` | false | true | false | true |
+| Public exposure | `expose_network_resource` | false | true | false | true |
+| Publish | `publish_catalog_offering` | false | true | false | true |
+
+<!-- markdownlint-enable MD013 -->
+
+Each tool also sets a human-readable `title`. `openWorldHint` is true because
+every tool calls live Fulfillment APIs.
+
+Create is not idempotent: there is no OSAC create idempotency key, and FR-17
+forbids retrying an uncertain create. Delete is not MCP-idempotent: a second
+call returns `not_found`. Start/stop set `run_strategy` and are hinted
+idempotent when the identical Update is a no-op. Restart retriggers, so it
+is not idempotent. Volume Update is metadata-only. Other Updates may change
+disks, networking, or catalog content, so they are hinted destructive and
+non-idempotent. Project Update stays unregistered until the public wrapper
+propagates `lock=true`.
+
+Read tools:
 
 <!-- markdownlint-disable MD013 -->
 
@@ -187,37 +218,50 @@ Common tools:
 
 <!-- markdownlint-enable MD013 -->
 
-Write tools (mutate on the confirmed call):
+Write tools (mutate on the confirmed call). A resource-type discriminator is
+allowed only inside a class that shares the same hint tuple (for example
+`create_network_resource` for VirtualNetwork, Subnet, and SecurityGroup).
+Create is never combined with delete, publish, public exposure, or restart.
 
 <!-- markdownlint-disable MD013 -->
 
-| Tool | Allowlisted actions |
+| Tool | Allowlisted mutations |
 | --- | --- |
-| `networking_action` | Create/delete VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, and NATGateway. |
-| `compute_instance_action` | Create, update, delete, start, stop, and restart. |
-| `cluster_action` | Create, update, and delete. |
-| `bare_metal_instance_action` | Create, update, delete, start, stop, and restart. |
-| `volume_action` | Create, allowed metadata update, and delete. |
-| `project_action` | Create and update. |
-| `catalog_action` | Create, update, delete, and publish supported ComputeInstance, Cluster, and BareMetalInstance offerings. |
+| `create_network_resource` | Create VirtualNetwork, Subnet, or SecurityGroup. |
+| `expose_network_resource` | Create ExternalIP, ExternalIPAttachment, or NATGateway. |
+| `delete_network_resource` | Delete those networking resources. |
+| `create_compute_instance` | Create. |
+| `update_compute_instance` | Update. |
+| `set_compute_instance_power` | Start or stop via existing `run_strategy`. |
+| `restart_compute_instance` | Restart via the existing restart trigger. |
+| `delete_compute_instance` | Delete. |
+| `create_cluster` | Create. |
+| `update_cluster` | Update. |
+| `delete_cluster` | Delete. |
+| `create_bare_metal_instance` | Create. |
+| `update_bare_metal_instance` | Update. |
+| `set_bare_metal_instance_power` | Start or stop via existing `run_strategy`. |
+| `restart_bare_metal_instance` | Restart via the existing restart trigger. |
+| `delete_bare_metal_instance` | Delete. |
+| `create_volume` | Create. |
+| `update_volume` | Allowed metadata update. |
+| `delete_volume` | Delete. |
+| `create_project` | Create. |
+| `update_project` | Update, only after `lock=true` is proven. |
+| `create_catalog_offering` | Create supported ComputeInstance, Cluster, or BareMetalInstance offerings. |
+| `update_catalog_offering` | Update those offerings. |
+| `delete_catalog_offering` | Delete those offerings. |
+| `publish_catalog_offering` | Publish those offerings. |
 
 <!-- markdownlint-enable MD013 -->
 
-Each write tool has an action discriminator and an action-specific JSON
-Schema. The server converts the validated input to the target protobuf request
-and calls the public RPC. It does not accept an arbitrary service name, method
+The server converts the validated input to the target protobuf request and
+calls the public RPC. It does not accept an arbitrary service name, method
 name, protobuf type, CEL expression, or raw JSON RPC payload. [Locked: D2]
 
-Read tools set `readOnlyHint`. Write tools set `destructiveHint` for delete,
-public exposure, and publication, and omit `readOnlyHint`. Annotations are
-hints for the host, not authorization.
-
-ComputeInstance and bare-metal start/stop update existing `run_strategy`
-fields; restart updates the existing restart trigger. Networking has no public
-Update. An in-place edit returns `unsupported_in_place` and may describe
-create/delete replacements in the error details; it never silently replaces a
-resource. Volume Update is metadata-only. Project Update is not registered
-until its public wrapper propagates `lock=true`. [Locked: D34-D35]
+Networking has no public Update. An in-place edit returns
+`unsupported_in_place` and may describe create/delete replacements in the
+error details; it never silently replaces a resource. [Locked: D34-D35]
 [Codebase: proto/private/osac/private/v1/volume_type.proto]
 [Codebase: fulfillment-service/internal/servers/projects_server.go]
 
@@ -444,13 +488,14 @@ No new Keycloak user role is introduced.
 
 ## 4.8 Extensibility / Future-Proofing
 
-An internal action registry maps each tool action to input schema, target gRPC
-method, risk annotations, and outcome formatter. Adding an action requires an
-explicit registry entry, tests, and deployed journey evidence. Public API
-discovery never automatically publishes a new MCP action.
+An internal registry maps each tool to input schema, target gRPC method,
+annotation tuple, and outcome formatter. Adding a tool requires an explicit
+registry entry, tests, and deployed journey evidence. Public API discovery
+never automatically publishes a new MCP tool.
 
 If tool count becomes a measured host limitation, the same registry can
-publish compute, networking, storage, and administration profiles.
+publish compute, networking, storage, and administration profiles. Profile
+cuts must not recombine tools that have different annotation tuples.
 
 # 5. Interface Changes
 
@@ -490,21 +535,24 @@ arguments are the review of that step. A denied or uninvoked tool performs no
 mutation. A later tool is not called after a definite failure.
 [Locked: D12, D13, D16] [User]
 
-## IC-5: Typed resource-family write tools
+## IC-5: Typed write tools with honest annotations
 
-**Requirements:** FR-2, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8, NFR-6
+**Requirements:** FR-2, FR-3, FR-4, FR-5, FR-6, FR-7, FR-8, FR-14, NFR-6
 
-Seven `*_action` tools add allowlisted networking, ComputeInstance, Cluster,
-BareMetalInstance, Volume, Project, and catalog mutations. They accept typed
-inputs and invoke the matching public RPC on the confirmed call.
+Write tools are split so each tool has one MCP annotation tuple. Create is
+never combined with delete, public exposure, publication, or restart. Each
+tool accepts typed inputs and invokes the matching public RPC on the
+confirmed call.
 
 ## IC-6: Host tool confirmation
 
 **Requirements:** FR-8, FR-13, FR-14, NFR-1
 
 The model-host prompt on each write tool is the human gate. Delete, public
-exposure, and publication set `destructiveHint`. OSAC does not record a
-server-side approval object. [Locked: D14, D16] [User]
+exposure, publication, restart, and non-volume Update tools set
+`destructiveHint`. Create tools set `destructiveHint` false and
+`idempotentHint` false. Annotations are hints, not authorization. OSAC does
+not record a server-side approval object. [Locked: D14, D16] [User]
 
 ## IC-7: Direct public API execution
 
@@ -692,7 +740,7 @@ Implementation dependency order is:
    writes disabled unless the development-only flag is supplied. Any OAuth
    demo client stays a test and Inspector reference, not a supported CLI.
    [User] [Jira: OSAC-4388]
-2. Add remaining typed family write tools and `get_resource_outcome`. Jira
+2. Add remaining typed write tools and `get_resource_outcome`. Jira
    determines journey order; none is removed from Feature scope.
 3. Add the supported chart/installer, OAuth clients, health, replicas, limits,
    `/connect/mcp` setup page, and first-party documentation.
@@ -729,6 +777,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

@@ -3,11 +3,12 @@
 ## Overview
 
 - **Feature:** OSAC-5731 — OSAC MCP Server for infrastructure provisioning
-- **Total test cases:** 57
+- **Total test cases:** 58
 - **Requirements covered:** 25 of 25
 - **Interface changes covered:** 14 of 14
 
-Host confirmation is the per-write gate. There is no durable MCP plan,
+Host confirmation is the per-write gate. Write tools are split so each tool
+has one MCP annotation tuple. There is no durable MCP plan,
 `execute_plan_step`, execution grant, or Secret-handoff API. Missing Secret
 values use existing `/secrets/create`.
 
@@ -102,9 +103,11 @@ normalized-outcome JSON examples in the same section.
 
 ##### Steps
 
-1. Discover eligible network choices and create VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, and NATGateway in dependency order.
+1. Discover eligible network choices. Create VirtualNetwork, Subnet, and
+   SecurityGroup through `create_network_resource`. Create ExternalIP,
+   ExternalIPAttachment, and NATGateway through `expose_network_resource`.
 2. Poll each public resource through `get_resource_outcome`.
-3. Delete in dependency-safe order using `networking_action` with `destructiveHint`.
+3. Delete in dependency-safe order using `delete_network_resource`.
 
 ##### Expected Results
 
@@ -126,7 +129,7 @@ normalized-outcome JSON examples in the same section.
 
 ##### Steps
 
-1. Create a VirtualNetwork with a dependent Subnet and request an in-place CIDR edit through `networking_action`.
+1. Create a VirtualNetwork with a dependent Subnet through `create_network_resource`. Request an in-place CIDR edit.
 2. Inspect the error details.
 3. Retrieve the original VirtualNetwork and Subnet.
 
@@ -182,8 +185,8 @@ normalized-outcome JSON examples in the same section.
 
 ##### Steps
 
-1. For a running ComputeInstance, invoke stop, start, and restart through `compute_instance_action`.
-2. Invoke delete with `destructiveHint` for the current version.
+1. For a running ComputeInstance, invoke `set_compute_instance_power` stop then start, then `restart_compute_instance`.
+2. Invoke `delete_compute_instance` for the current version.
 3. Retrieve public Get after deletion.
 
 ##### Expected Results
@@ -210,7 +213,7 @@ normalized-outcome JSON examples in the same section.
 
 1. Discover offering, version, networking, Project, and pull-Secret reference.
 2. Create, update, reconnect, and poll `get_resource_outcome`.
-3. Delete through `cluster_action`.
+3. Delete through `delete_cluster`.
 
 ##### Expected Results
 
@@ -235,7 +238,7 @@ normalized-outcome JSON examples in the same section.
 ##### Steps
 
 1. Discover offerings, hardware, Project, networking, and Secret references.
-2. Create and update through `bare_metal_instance_action`.
+2. Create and update through `create_bare_metal_instance` and `update_bare_metal_instance`.
 3. Reconnect and retrieve the outcome.
 
 ##### Expected Results
@@ -258,8 +261,8 @@ normalized-outcome JSON examples in the same section.
 
 ##### Steps
 
-1. Invoke stop, start, and restart separately.
-2. Delete through the destructive write tool.
+1. Invoke `set_bare_metal_instance_power` stop then start, then `restart_bare_metal_instance`.
+2. Delete through `delete_bare_metal_instance`.
 
 ##### Expected Results
 
@@ -282,9 +285,9 @@ normalized-outcome JSON examples in the same section.
 
 ##### Steps
 
-1. Create a Volume through `volume_action`.
+1. Create a Volume through `create_volume`.
 2. Apply a metadata-only update and attempt a spec-field update.
-3. Delete the Volume.
+3. Delete the Volume through `delete_volume`.
 
 ##### Expected Results
 
@@ -378,9 +381,9 @@ normalized-outcome JSON examples in the same section.
 
 ##### Steps
 
-1. As a tenant administrator, create a Project through `project_action`.
+1. As a tenant administrator, create a Project through `create_project`.
 2. Assert the public Project Update wrapper passes `lock=true`. Register
-   `project_action` Update only if that assertion holds.
+   `update_project` only if that assertion holds.
 3. Update against the current version.
 4. Retry with a stale version and as an ordinary member.
 
@@ -405,14 +408,14 @@ normalized-outcome JSON examples in the same section.
 
 ##### Steps
 
-1. Create and update supported ComputeInstance, Cluster, and BareMetalInstance offerings.
-2. Invoke publish and assert `destructiveHint` is set on that action.
+1. Create and update through `create_catalog_offering` and `update_catalog_offering`.
+2. Invoke `publish_catalog_offering` and assert `destructiveHint` is set.
 3. Repeat an administration action as an unauthorized caller.
 
 ##### Expected Results
 
 - Only the three supported offering families appear in the schema.
-- Publish is a distinct destructive action; unauthorized callers get
+- Publish is a distinct `publish_catalog_offering` tool; unauthorized callers get
   `authorization` / `PermissionDenied`.
 
 ### FR-9: Secret-value handling
@@ -797,12 +800,15 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Inspect delete actions for ComputeInstance, Cluster, BareMetalInstance, Volume, and networking deletes.
+1. Inspect `delete_compute_instance`, `delete_cluster`,
+   `delete_bare_metal_instance`, `delete_volume`, `delete_network_resource`,
+   and `delete_catalog_offering`.
 2. Invoke delete in integration after host-confirm stand-in.
 
 ##### Expected Results
 
-- Those actions set `destructiveHint` and are not `readOnlyHint`.
+- Those tools set `destructiveHint` true, `idempotentHint` false, and are not
+  `readOnlyHint`.
 - Delete RPCs run only when the tool is invoked.
 
 #### TC-FR14-02: Public-exposure actions advertise `destructiveHint`
@@ -818,7 +824,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Inspect ExternalIP attach / public-exposure actions.
+1. Inspect `expose_network_resource`.
 2. Invoke the action as the caller.
 
 ##### Expected Results
@@ -838,13 +844,38 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Inspect `catalog_action` publish.
+1. Inspect `publish_catalog_offering`.
 2. Invoke publish as a provider administrator and as an unauthorized caller.
 
 ##### Expected Results
 
 - Publish is destructive-hinted.
 - Unauthorized publish returns `authorization`.
+
+#### TC-FR14-04: Each write tool has one honest annotation tuple
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-5 | critical | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Unit / [DEV].
+- **Execution:** `ginkgo run -r internal` from `fulfillment-service`.
+
+##### Steps
+
+1. List all registered tools and their `readOnlyHint`, `destructiveHint`,
+   `idempotentHint`, and `openWorldHint` values.
+2. Confirm no tool schema combines create with delete, publish, public
+   exposure, or restart.
+
+##### Expected Results
+
+- Annotation tuples match design.md §4.1.
+- Create tools set `destructiveHint` false and `idempotentHint` false.
+- `set_*_power` tools set `idempotentHint` true.
+- `openWorldHint` is true on every Fulfillment-backed tool.
 
 ### FR-15: Permission-blocked prerequisite
 
@@ -1384,12 +1415,12 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Enumerate tools and actions.
+1. Enumerate tools and annotation tuples from design.md §4.1.
 2. Submit arbitrary service/method/payload inputs.
 
 ##### Expected Results
 
-- Only documented actions convert to public RPCs.
+- Only documented tools convert to public RPCs.
 - Arbitrary dispatch returns `invalid_request`.
 
 #### TC-NFR6-02: Reject unsupported lifecycle operations without silent replacement
@@ -1423,8 +1454,8 @@ Working-directory convention: repository-root commands use `$REPO_ROOT`;
 | MCP registry, schemas, outcomes, redaction | FR-18; NFR-2; NFR-6; IC-3, IC-5 | TC-FR18-01, TC-NFR2-01, TC-NFR2-02, TC-NFR6-01, TC-NFR6-02 | Unit / [DEV] | `ginkgo run -r internal` from `fulfillment-service/` | Go toolchain | MCP package | Public clients mocked | MCP package not on `main` |
 | First-PR MCP HTTP client journey | FR-3; NFR-1, NFR-5; IC-3, IC-5 | TC-NFR5-01, TC-NFR5-03 | Component integration / [DEV] | Rebuild `fulfillment-service/it/it_mcp_server_test.go`; Kind fulfillment suite | Kind `osac-dev` | SDK client, Fulfillment, token | Providers omitted; writes gated off by default | Rebuild onto `main`; do not merge OSAC-4388 |
 | Sequential writes, authz, partial/unknown failure | FR-13, FR-15, FR-16, FR-17; IC-4, IC-6, IC-7 | TC-FR13-01, TC-FR13-02, TC-FR13-03, TC-FR15-01, TC-FR16-01, TC-FR17-01, TC-FR17-02 | Component integration / [DEV] | proposed `it_mcp_sequential_writes_test.go` and related `it_mcp_*.go` | Kind | Fulfillment, PostgreSQL | Providers omitted | Proposed files |
-| Typed family tools | FR-2, FR-6, FR-7, FR-8; IC-5 | TC-FR2-02, TC-FR6-01, TC-FR7-01, TC-FR7-02, TC-FR8-01, TC-FR8-02 | Component integration / [DEV] | proposed family `it_mcp_*.go` | Kind | Public APIs | Providers omitted | Proposed files |
-| Destructive-hint annotations | FR-14; IC-6 | TC-FR14-01, TC-FR14-02, TC-FR14-03 | Unit / [DEV] | MCP package tests | Go toolchain | Registry | None | Proposed files |
+| Typed write tools | FR-2, FR-6, FR-7, FR-8, FR-14; IC-5 | TC-FR2-02, TC-FR6-01, TC-FR7-01, TC-FR7-02, TC-FR8-01, TC-FR8-02, TC-FR14-04 | Component integration / [DEV] | proposed family `it_mcp_*.go` | Kind | Public APIs | Providers omitted | Proposed files |
+| Tool annotations | FR-14; IC-5, IC-6 | TC-FR14-01, TC-FR14-02, TC-FR14-03, TC-FR14-04 | Unit / [DEV] | MCP package tests | Go toolchain | Registry | None | Proposed files |
 | Tenant isolation and caller token | NFR-1; IC-1, IC-3, IC-7 | TC-NFR1-01, TC-NFR1-02, TC-NFR1-03 | Contract + component / [DEV] | proposed `mcp_auth/` and `it_mcp_tenant_isolation_test.go` | Two tenants | Auth, Fulfillment | Providers omitted | No contract harness Jira |
 | Secret bytes excluded; existing UI create | FR-9; NFR-2; IC-8 | TC-FR9-01, TC-FR9-02 | E2E (manual) + unit | proposed secret-resume record; schema tests | Live UI for TC-FR9-01 | Existing Secret wizard | Handoff API omitted on purpose | No UI E2E harness; TC-FR9-01 is manual |
 | Setup page | FR-11; NFR-3; IC-10 | TC-FR11-01, TC-NFR3-02 | Unit / [DEV] | `pnpm test` from `osac-ui/` | pnpm | React | Runtime metadata simulated | Proposed page |
@@ -1454,12 +1485,12 @@ All 14 ICs have planned cases. Execution gaps remain for IC-1/11/13/14 (hosts/OQ
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 57 |
-| Critical | 42 |
+| Total test cases | 58 |
+| Critical | 43 |
 | High | 13 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 49 |
+| Automated | 50 |
 | Manual | 8 |
 | Requirements with test cases | 25 / 25 |
 | Interface changes with test cases | 14 / 14 |
