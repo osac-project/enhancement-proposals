@@ -59,7 +59,7 @@ normalized-outcome JSON examples in the same section.
 
 ##### Expected Results
 
-- Each write tool payload names the exact action, target, and settings before the matching public RPC runs.
+- Each write tool's name and arguments identify the mutation, target, and settings before the matching public RPC runs.
 - Each successful write returns one resource type, UUID, and version; the provider contains exactly one corresponding resource.
 - The later session returns current public state without transport-session state.
 
@@ -83,7 +83,7 @@ normalized-outcome JSON examples in the same section.
 
 ##### Expected Results
 
-- The replacement pod returns the same Fulfillment resource UUID and public state from PostgreSQL.
+- The replacement pod returns the same Fulfillment resource UUID and public state.
 - No second create RPC runs.
 - Outcome mapping does not depend on the previous MCP process.
 
@@ -111,7 +111,7 @@ normalized-outcome JSON examples in the same section.
 
 ##### Expected Results
 
-- Only typed networking actions appear; no arbitrary service or method.
+- Only documented networking tools appear; no arbitrary service or method.
 - Each created resource reaches the public state exposed by its Fulfillment API.
 - Deletes remove only the named targets.
 
@@ -165,13 +165,13 @@ normalized-outcome JSON examples in the same section.
 - Discovery never returns Secret bytes.
 - Create and update envelopes match design.md §4.3 mutation acceptance JSON:
   `resource.type` is `ComputeInstance`, plus `resource.id`, `resource.version`,
-  and `next_action`.
+  and `next_actions`.
 - The update increments `resource.version`.
 - Later `get_resource_outcome` matches the §4.3 normalized-outcome JSON:
   UUID, `lifecycle_state`, public `conditions`, address `facts`, `unknowns`,
   and `next_actions`.
 
-#### TC-FR3-02: Start, stop, restart, and delete a ComputeInstance through explicit actions
+#### TC-FR3-02: Start, stop, restart, and delete a ComputeInstance through explicit tools
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -777,7 +777,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 ##### Steps
 
 1. Create a resource with payload A.
-2. Send an update with different settings and current `metadata.version`.
+2. Invoke the matching `update_*` tool with different settings and current `metadata.version`.
 
 ##### Expected Results
 
@@ -811,7 +811,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
   `readOnlyHint`.
 - Delete RPCs run only when the tool is invoked.
 
-#### TC-FR14-02: Public-exposure actions advertise `destructiveHint`
+#### TC-FR14-02: Public-exposure tools advertise `destructiveHint`
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1212,7 +1212,9 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. For each of the six surfaces, sign in, run `check_connection`, and complete one host-confirmed write.
+1. For each of the six surfaces, copy OSAC values from `/connect/mcp`, add
+   the server using that host's current remote MCP documentation, sign in,
+   run `check_connection`, and complete one host-confirmed write.
 
 ##### Expected Results
 

@@ -325,7 +325,7 @@ Mutation acceptance is not readiness. A successful write result contains:
     "id": "uuid",
     "version": 1
   },
-  "next_action": "Call get_resource_outcome with the resource reference."
+  "next_actions": ["Call get_resource_outcome with the resource reference."]
 }
 ```
 
@@ -447,7 +447,8 @@ Question 9.1.
   private keys, unrestricted prompts, and raw upstream responses. [PRD: NFR-2]
 - `Secrets/Get` is absent. Secret discovery is reference-only.
 - Host auto-approval of write tools is an accepted residual risk.
-  [Locked: D16] [User]
+  MCP annotations are untrusted host hints, not authorization; write tools
+  are split so those hints stay honest. [Locked: D16] [User]
 - The endpoint validates HTTP `Origin`, TLS hostname, OAuth resource and
   issuer metadata, callback URIs, and request audience. Private-CA bypass flags
   are not part of the supported configuration.
@@ -616,7 +617,7 @@ request-size bounds, cluster-wide concurrency and rate limits, and stable
 The installer registers separate public PKCE clients and exact local callbacks
 for Cursor, Codex, and Claude with minimal scopes and no client secrets.
 
-## IC-14: Supported action and troubleshooting documentation
+## IC-14: Supported tool and troubleshooting documentation
 
 **Requirements:** FR-10, FR-11, FR-12, NFR-4
 
@@ -656,7 +657,8 @@ This design never uses a privileged identity, so grants are omitted. [User]
 ## Generic Fulfillment method dispatcher
 
 A `service/method/payload` tool expands quickly but weakens schemas and the
-supported boundary. Typed family tools are selected.
+supported boundary. Typed write tools with one annotation tuple each are
+selected.
 
 ## MCP Tasks as the status record
 
@@ -777,6 +779,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
