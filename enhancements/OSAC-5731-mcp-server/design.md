@@ -207,11 +207,16 @@ handoff resource is added. [Locked: D25] [User]
 `get_resource_outcome` is the later-session contract. MCP Tasks are not
 required.
 
-Administrators inspect MCP-initiated writes the same way they inspect UI/CLI
-writes: Fulfillment resource creator, tenant, and status. MCP origin is the
-tool name and MCP-origin indication in operational logs, not a separate audit
-product. Operators correlate a Fulfillment ID through existing diagnostics.
-[Locked: D19, D20, D37] [User]
+Administrators inspect MCP-initiated writes using existing Fulfillment
+diagnostics plus MCP operational logs. `metadata.creator` identifies the
+create caller only; it is not the actor for a later update or delete.
+
+MCP origin is the tool name in MCP logs. Unrestricted MCP logs hash the JWT
+`sub`. Access-controlled Fulfillment RPC diagnostics for that public method
+record the authenticated subject, the same way UI/CLI writes are attributed.
+Operators correlate by resource ID and time. Given a known user, they confirm
+by hashing that user's `sub` and matching the MCP log field. No
+`MCPWriteRecords` API is added. [Locked: D19] [User]
 
 ## 4.2 Data Model / Schema Changes
 
@@ -465,9 +470,10 @@ reference. [Locked: D25] [User]
 
 **Requirements:** FR-19, NFR-1, NFR-2
 
-Administrators use existing Fulfillment resource creator, tenant, and status
-plus MCP operational logs (tool, hashed subject, resource). No
-`MCPWriteRecords` API is added. [Locked: D19] [User]
+Administrators use existing Fulfillment RPC diagnostics for the authenticated
+subject, plus MCP logs (tool, hashed `sub`, resource, time).
+`metadata.creator` is create-only. No `MCPWriteRecords` API is added.
+[Locked: D19] [User]
 
 ## IC-10: MCP setup page and runtime metadata
 
@@ -586,9 +592,9 @@ Leaves no supported model-host interface.
 
 This approach is weaker than a server-verified OSAC UI approval and weaker
 than a frozen plan digest. Partial failure handling is the client's
-responsibility (stop calling later tools). MCP origin for FR-19 is logs plus
-existing resource creator fields, not a dedicated audit list. Those are
-accepted so MCP stays a thin adapter over existing APIs. [User]
+responsibility (stop calling later tools). MCP origin for FR-19 is
+Fulfillment RPC identity plus MCP logs, not a dedicated audit list. Those
+are accepted so MCP stays a thin adapter over existing APIs. [User]
 
 # 7. Observability and Monitoring
 
@@ -605,6 +611,9 @@ The implementation adds:
 
 Tokens, Secret values, raw prompts, and unbounded bodies are excluded.
 Tenant and resource IDs are OSAC control-plane identifiers, not Secret values.
+The hashed `sub` in unrestricted MCP logs is matched by hashing a known
+user's subject; the admin-visible caller for FR-19 is the authenticated
+subject on the corresponding Fulfillment RPC.
 
 # 8. Impact and Compatibility
 
@@ -659,6 +668,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond
+Phases: draft, revise, revise, revise, respond, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

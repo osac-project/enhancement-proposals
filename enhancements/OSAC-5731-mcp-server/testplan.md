@@ -350,12 +350,16 @@ values use existing `/secrets/create`.
 ##### Steps
 
 1. As a tenant administrator, create a Project through `project_action`.
-2. Update against the current version.
-3. Retry with a stale version and as an ordinary member.
+2. Assert the public Project Update wrapper passes `lock=true`. Register
+   `project_action` Update only if that assertion holds.
+3. Update against the current version.
+4. Retry with a stale version and as an ordinary member.
 
 ##### Expected Results
 
-- Create and current-version update succeed.
+- Create succeeds.
+- Update remains unregistered if `lock=true` is not proven.
+- When registered, current-version update succeeds.
 - Stale version fails with `Aborted`; unauthorized caller gets `authorization`.
 
 #### TC-FR8-02: Manage supported catalog offerings and confirm publication in the host
@@ -926,13 +930,19 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 
 ##### Steps
 
-1. Create a resource through MCP as tenant A.
+1. Create a resource through MCP as tenant A, then update it as the same
+   caller.
 2. List as tenant-A admin, as a regular user, and as tenant B.
-3. Inspect logs for tool name and hashed subject.
+3. Inspect unrestricted MCP logs for tool name and hashed `sub`.
+4. Correlate resource ID and time to the Fulfillment RPC diagnostic for that
+   public method.
 
 ##### Expected Results
 
-- Resource creator and tenant match the caller.
+- On create, resource creator and tenant match the caller.
+- On update, the actor is the Fulfillment RPC authenticated subject, not a
+  change to `metadata.creator`.
+- Hashing the caller's JWT `sub` matches the MCP log field.
 - Tenant B does not see tenant A's resource.
 - Logs include MCP tool origin without Secret bytes or tokens.
 - No `MCPWriteRecords` API is required.
@@ -1186,11 +1196,16 @@ clients cannot substitute. Secret gaps use existing `/secrets/create`.
 1. Send oversized bodies and over-limit write rates.
 2. Send concurrent requests above the configured concurrency bound.
 3. Route one subject's over-limit traffic across replicas.
+4. From two subjects in the same tenant, send traffic that stays under each
+   per-subject limit while the combined rate exceeds the tenant limit, routed
+   across replicas.
 
 ##### Expected Results
 
 - Size, concurrency, and rate rejection occur before the resource RPC.
-- The per-subject and per-tenant quota is the aggregate across replicas.
+- The per-subject quota is the aggregate across replicas.
+- The per-tenant quota is enforced even when no single subject exceeds their
+  own limit.
 
 #### TC-NFR4-04: Keep supported actions, onboarding, failures, and correlation documentation executable
 
