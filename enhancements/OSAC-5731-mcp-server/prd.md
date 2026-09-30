@@ -79,12 +79,13 @@ stories below without changing their meaning.
   among connectivity or certificate-trust, authentication, authorization, and
   MCP service failures.
   [Clarify: R13.Q3]
-- **FR-13 — Plan review and per-write approval:** A multi-resource request
-  must show its complete proposed sequence before execution. The signed-in
-  caller must be able to approve or deny each write, and changed actions,
-  targets, or settings must require renewed approval. Conversational agreement
-  is not approval.
-  [Clarify: R5.Q1, R6.Q2, R7.Q1]
+- **FR-13 — Sequential write review and per-write approval:** A
+  multi-resource request is a sequence of writes. The signed-in caller must
+  be able to approve or deny each write in the host before that mutation
+  runs. Changed actions, targets, or settings must require a new
+  confirmation. Conversational agreement is not approval. The server does
+  not present uncalled later writes before the first mutation.
+  [Clarify: R5.Q1, R6.Q2, R7.Q1] [User]
 - **FR-14 — Higher-impact confirmation:** Deletion, public exposure, and
   provider-offering publication must each require separate explicit
   confirmation of the target and effect.
@@ -162,7 +163,7 @@ stories below without changing their meaning.
 - Catalog offerings and templates, host and instance types, cluster versions, disk images, storage tiers, Projects, and selected prerequisites are discoverable or manageable only to the extent that OSAC already supports the action and authorizes the caller. Authorized admins can manage provider-owned or tenant-scoped offerings and Projects within their existing permissions. [Clarify: R2.Q2, R3.Q1, R3.Q2, R10.Q1]
 - An authorized user can provide a missing deployment Secret through an OSAC-controlled interaction outside the model host, then continue using its reference. Model-facing actions do not accept or reveal plaintext Secret values. [Clarify: R10.Q2]
 - Supported connections are the locally running Cursor editor and CLI, Codex CLI and app/IDE, and Claude Code CLI and Desktop Code experience, against an OSAC endpoint reachable from the user's environment. The OSAC UI provides a discoverable entry point and copyable endpoint, trust, sign-in, and read-only verification guidance. Each supported host surface is verified with a deployment journey. [Clarify: R4.Q2, R13.Q1, R13.Q2, R13.Q3]
-- Discovery and writes are authorized as the signed-in caller, retaining OSAC tenancy, catalog limits, and validation. Users review a multi-step plan and may deny each write. A write does not proceed until the signed-in user approves that specific action. Agreement in the conversation is not approval. Deletion, public exposure, and offering publication require separate confirmation. Authorized admins can inspect who initiated an MCP write, its MCP origin, tenant, action, resource, and outcome, and authorized operators can follow it to the related provisioning work. [Clarify: R5.Q1, R5.Q3, R8.Q1, R8.Q2, R14.Q4] [User]
+- Discovery and writes are authorized as the signed-in caller, retaining OSAC tenancy, catalog limits, and validation. Users approve or deny each write in the host before that mutation runs. Changed actions, targets, or settings require a new confirmation. Agreement in the conversation is not approval. The server does not present uncalled later writes before the first mutation. Deletion, public exposure, and offering publication require separate confirmation. Authorized admins can inspect who initiated an MCP write, its MCP origin, tenant, action, resource, and outcome, and authorized operators can follow it to the related provisioning work. [Clarify: R5.Q1, R5.Q3, R8.Q1, R8.Q2, R14.Q4] [User]
 - The supported MCP actions, deployment, onboarding, and diagnostics are documented. Resource journeys are validated through appropriate automated and end-to-end tests, including failure and later-session status paths. [Clarify: R11.Q3, R13.Q3, R14.Q3]
 
 ## Out of Scope
@@ -209,9 +210,9 @@ stories below without changing their meaning.
 - As a Tenant Admin or Tenant User, I want to request and manage an OSAC Volume through MCP where my role permits it, so that I can use the supported storage lifecycle without treating a Kubernetes PVC as an MCP resource. [Clarify: R4.Q1, R9.Q2]
 - As a Tenant Admin or Tenant User, I want to update or delete my eligible infrastructure when OSAC supports that action, so that I can manage its lifecycle without a model inventing unsupported operations. [Clarify: R1.Q2, R2.Q2]
 - As a Tenant Admin or Tenant User, I want to start, stop, or restart an eligible ComputeInstance through explicit actions, so that I can control its VM lifecycle and check the actual result. [Clarify: R14.Q2]
-- As a Tenant Admin or Tenant User, I want to review the full sequence of a multi-resource request before execution, so that I understand its dependencies and proposed changes. [Clarify: R5.Q1]
-- As a Tenant Admin or Tenant User, I want to approve or deny each write before execution, so that I control which resources change. If an action, target, or setting changes, I see the revised proposal before that write proceeds. [Clarify: R5.Q1, R6.Q2, R7.Q1]
-- As a Tenant Admin or Tenant User, I want any deletion, public exposure, or offering publication my role permits to require separate confirmation of its specific effect, so that a general plan review cannot authorize a higher-impact change. [Clarify: R5.Q3]
+- As a Tenant Admin or Tenant User, I want each write in a multi-resource request confirmed in the host before it runs, so that I control which resources change without a server-side plan preview. [Clarify: R5.Q1] [User]
+- As a Tenant Admin or Tenant User, I want to approve or deny each write before execution, so that I control which resources change. If an action, target, or setting changes, I see a new confirmation before that write proceeds. [Clarify: R5.Q1, R6.Q2, R7.Q1]
+- As a Tenant Admin or Tenant User, I want any deletion, public exposure, or offering publication my role permits to require separate confirmation of its specific effect, so that a general write confirmation cannot authorize a higher-impact change. [Clarify: R5.Q3]
 - As a Tenant Admin or Tenant User, I want a missing prerequisite I cannot create to be identified and the request stopped, so that I know what requires an authorized administrator rather than an identity escalation. [Clarify: R2.Q4]
 - As a Tenant Admin or Tenant User, I want to supply missing deployment Secret values through an OSAC-controlled interaction outside the model host and resume using only the reference, so that sensitive values do not enter the model conversation. [Clarify: R10.Q2]
 - As a Tenant Admin or Tenant User, I want to be told when an existing network resource cannot be edited in place and shown a separately reviewable replacement proposal where supported, so that I can decide what happens to the old resource. [Clarify: R14.Q1]

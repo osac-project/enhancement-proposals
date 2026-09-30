@@ -568,8 +568,9 @@ reference-only.
 There is no durable plan object. A multi-resource request is a sequence of
 typed write tools. Each write is a separate host-confirmed call whose
 arguments are the review of that step. A denied or uninvoked tool performs no
-mutation. A later tool is not called after a definite failure.
-[Locked: D12, D13, D16] [User]
+mutation. A later tool is not called after a definite failure. Uncalled later
+writes are not previewed by the server.
+[Locked: D12 subsequent override 2026-09-30, D13, D16] [User]
 
 ## IC-5: Typed write tools with honest annotations
 
@@ -670,9 +671,10 @@ requirements to the ICs above.
 
 ## Durable MCP plans and `execute_plan_step`
 
-A frozen plan would make FR-13 a server-side object and would support
-digest-stable replay. It adds schema, APIs, and UX OSAC-4388 did not need.
-First delivery uses sequential typed writes with host confirmation. [User]
+A frozen plan would restore the complete-sequence preview D12 originally
+required and would support digest-stable replay. It adds schema, APIs, and UX
+OSAC-4388 did not need. FR-13 now requires sequential typed writes with host
+confirmation. [User]
 
 ## OSAC UI as the write gate
 
@@ -723,10 +725,9 @@ Leaves no supported model-host interface.
 - **Host auto-approval:** some hosts can skip prompts. Mitigation: caller
   token and existing Fulfillment authorization still apply; support docs tell
   operators to keep write confirmation enabled. [Locked: D16] [User]
-- **No frozen multi-step preview:** the server does not show uncalled later
-  writes before the first mutation. Mitigation: each host prompt carries that
-  write's full arguments; FR-13 is sequential per-write review, not a plan
-  object. [User]
+- **No frozen multi-step preview:** FR-13 does not require the server to show
+  uncalled later writes before the first mutation. Mitigation: each host
+  prompt carries that write's full arguments. [User]
 - **Uncertain creates without MCP idempotency keys:** a lost response may not
   have a client token. Mitigation: Get/list before any retry; never blindly
   recreate. [Locked: D17]
@@ -815,6 +816,6 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise, revise, revise, revise
+Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
