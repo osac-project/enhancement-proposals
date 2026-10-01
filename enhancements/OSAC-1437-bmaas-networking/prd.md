@@ -99,7 +99,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto External IP
 
-- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system auto-selects the external IP pool with the most available capacity, allocates an external IP, and creates an external IP attachment binding it to the server's primary attachment subnet IP. The external IP and attachment are labeled as auto-provisioned. [User]
+- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system auto-selects the external IP pool with the most available capacity, reserves an external IP and attachment (Pending) against that pool, and later binds inbound routing to the server's primary attachment subnet IP once the fabric address is allocated and the server IP is known. The external IP and attachment are labeled as auto-provisioned. [User]
 
 #### Network Connectivity Configuration
 
@@ -127,7 +127,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Auto external IP allocation completes synchronously within the create API call (no async allocation delay). If no pool has available capacity, the create API call returns an error. [User]
+- **NFR-1:** Auto external IP *reservation* completes synchronously within the create API call: pool capacity is reserved and Pending ExternalIP / ExternalIPAttachment records are created (or the call fails with nothing persisted if no pool has available capacity). Fabric address allocation (`ALLOCATED`) and attachment readiness (`READY`) proceed asynchronously after create returns. [User]
 
 - **NFR-2:** Network attachment provisioning (connectivity configuration) completes within 2 minutes for the selected interface. [User]
 
