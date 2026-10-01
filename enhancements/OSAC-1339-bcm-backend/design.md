@@ -69,25 +69,26 @@ The BCM backend consists of three components:
    authentication that wraps BCM's `cmdevice` service calls (`getDevices`,
    `getDevice`, `updateDevice`).
 
-2. **BMH lifecycle manager** (`internal/inventory/bmh_lifecycle.go`) — a
-   concrete struct for on-demand BareMetalHost CR creation, deletion, and
-   readiness checking. Automatically wired in when the management backend
-   is Metal3 — any inventory backend paired with Metal3 can use it for
-   on-demand BMH CRs.
+2. **Metal3Client BMH operations** — the existing Metal3 inventory client
+   (`internal/inventory/metal3.go`) is extended with `CreateBMH`,
+   `DeleteBMH`, and `IsBMHReady` methods for on-demand BareMetalHost CR
+   management. Since BMH CRs are Metal3 resources, these operations
+   belong on Metal3Client. Both `bcm.go` and `metal3.go` are in the same
+   package (`internal/inventory`), so BCM references Metal3Client directly.
 
 3. **BCM inventory client** (`internal/inventory/bcm.go`) — implements the
    `inventory.Client` interface. `FindFreeHost` queries BCM for unassigned
    LiteNodes. `AssignHost` writes the assignment identifier to BCM
-   `extra_values` and delegates BMH creation to the BMH lifecycle manager.
-   `UnassignHost` clears `extra_values` and delegates BMH deletion to the
-   same manager.
+   `extra_values` and delegates BMH creation to Metal3Client.
+   `UnassignHost` clears `extra_values` and delegates BMH deletion to
+   Metal3Client.
 
 The BCM backend integrates through two new components: a BCM HTTP client
-for inventory operations and a BMH lifecycle manager for on-demand
+for inventory operations and Metal3Client's BMH operations for on-demand
 BareMetalHost CR management. The on-demand BMH readiness delay (unique
 to BCM because BMH CRs are created at assignment time) is handled within
-the inventory path — the BMH lifecycle manager's `IsBMHReady` polls the
-BMH provisioning state until it reaches `available`. The BMI stays in
+the inventory path — Metal3Client's `IsBMHReady` polls the BMH
+provisioning state until it reaches `available`. The BMI stays in
 `Allocating` phase (`Allocated=False`) until the BMH is ready, then
 `HostClass` is set and the controller routes to the management path. The
 existing controller, CRDs, and API remain unchanged.
@@ -143,7 +144,7 @@ sequenceDiagram
     participant CTRL as BMI Controller
     participant INV as BCM Inventory Client
     participant BCM as BCM JSON API
-    participant BMHLM as BMH Lifecycle Manager
+    participant BMHLM as Metal3Client (BMH)
     participant MGMT as Metal3 Management Client
     participant BMH as BareMetalHost CR
     participant M3 as Metal3/BMO
@@ -341,14 +342,14 @@ error. The client must always use `getDevice`.
 | `null` response for `getDevice` | Not an error — device not found |
 | HTTP 5xx | `ErrBCMServerError` |
 
-#### BMH Lifecycle Manager
+#### Metal3Client BMH Operations
 
-A concrete struct in `internal/inventory/bmh_lifecycle.go` that handles
-on-demand BareMetalHost CR creation, deletion, and readiness checking.
-Automatically wired in when the management backend is Metal3 — any
-inventory backend paired with Metal3 can use it for on-demand BMH CRs.
-The BCM backend is the first consumer, but future backends (e.g., Netbox)
-can reuse it without duplicating BMH lifecycle logic.
+The existing Metal3 inventory client (`internal/inventory/metal3.go`) is
+extended with three methods for on-demand BareMetalHost CR management.
+Since BMH CRs are Metal3 resources, these operations belong on
+Metal3Client. Both `bcm.go` and `metal3.go` are in the same package
+(`internal/inventory`), so BCM references `*Metal3Client` directly
+without cross-package coupling.
 
 ```go
 type BMHCreateParams struct {
@@ -360,20 +361,10 @@ type BMHCreateParams struct {
     Labels            map[string]string
 }
 
-type BMHLifecycleManager struct {
-    client    client.Client
-    namespace string
-}
-
-func NewBMHLifecycleManager(client client.Client, namespace string) *BMHLifecycleManager
-func (m *BMHLifecycleManager) CreateBMH(ctx context.Context, params BMHCreateParams) error
-func (m *BMHLifecycleManager) DeleteBMH(ctx context.Context, name string) error
-func (m *BMHLifecycleManager) IsBMHReady(ctx context.Context, name string) (bool, error)
+func (m *Metal3Client) CreateBMH(ctx context.Context, params BMHCreateParams) error
+func (m *Metal3Client) DeleteBMH(ctx context.Context, name string) error
+func (m *Metal3Client) IsBMHReady(ctx context.Context, name string) (bool, error)
 ```
-
-**`NewBMHLifecycleManager`** constructs the manager with a k8s client and
-the Metal3 namespace (from management config). The namespace is
-encapsulated — callers pass only the BMH name, not the namespace.
 
 **`CreateBMH`** creates a BareMetalHost CR in the configured namespace.
 Sets `spec.online = false` (the controller manages power via
@@ -391,34 +382,37 @@ and is ready for power management. Returns `true` when
 `bmh.Status.Provisioning.State` is `available` and
 `bmh.Status.OperationalStatus` is `OK`. Returns `false` while the BMH is
 in `registering`, `inspecting`, or `preparing` state. Returns an error if
-the BMH does not exist or has an error status.
+the BMH does not exist or has an error status. Callers distinguish
+not-found from error-status via `apierrors.IsNotFound(err)` — no
+additional method or typed error is needed.
 
-**Wiring:** The BMH lifecycle manager is automatically created when the
-management backend is Metal3. `main.go` detects `managementConfig.Type ==
-"metal3"`, creates the lifecycle manager with the Metal3 namespace, and
-sets it on the inventory `Config` before calling `NewClient`:
+**Wiring:** `main.go` creates the Metal3 inventory client when
+`managementConfig.Type == "metal3"` and passes it to the BCM client
+via the inventory `Config`:
 
 ```go
 // main.go — automatic when management backend is Metal3
 if managementConfig.Type == "metal3" {
-    metal3Namespace := managementConfig.Options["metal3"]["namespace"]
-    bmhManager := inventory.NewBMHLifecycleManager(k8sClient, metal3Namespace)
-    inventoryConfig.BMHLifecycleManager = bmhManager
+    metal3Client, err := inventory.NewMetal3ClientForBMH(mgr.GetClient(), metal3Namespace)
+    if err != nil {
+        return fmt.Errorf("failed to create Metal3 BMH client: %w", err)
+    }
+    inventoryConfig.Metal3Client = metal3Client
 }
-inventoryClient, _ := inventory.NewClient(ctx, &inventoryConfig)
+inventoryClient, err := inventory.NewClient(ctx, &inventoryConfig)
+if err != nil {
+    return fmt.Errorf("failed to create inventory client: %w", err)
+}
 ```
 
-Any inventory backend paired with Metal3 management may need on-demand
-BMH creation — wiring the lifecycle manager automatically avoids
-per-backend conditional logic. The `NewClientFunc` signature and
-`NewClient` function are unchanged. The `Config` struct gains an optional
-`BMHLifecycleManager` field. The BCM constructor validates that
-`BMHLifecycleManager` is set during initialization — if missing (i.e.,
-management backend is not Metal3), the constructor returns an error:
-"BCM inventory backend requires Metal3 management backend." This
+The `Config` struct gains an optional `Metal3Client` field. The BCM
+constructor validates that `Metal3Client` is set during initialization —
+if missing (i.e., management backend is not Metal3), the constructor
+returns an error: "BCM inventory backend requires Metal3 management
+backend." This
 fail-fast validation prevents runtime panics from a nil lifecycle
 manager. The Metal3 namespace is encapsulated in the manager — the
-BCM client uses `bmhManager.namespace` to construct `namespace/name`
+BCM client uses `metal3Client.namespace` to construct `namespace/name`
 format `ExternalHostID` values in `FindFreeHost`. Inventory backends that
 do not need on-demand BMH CRs (Metal3, OpenStack) ignore the field.
 
@@ -468,7 +462,7 @@ Implements `inventory.Client` and registers as `newClientFuncs["bcm"]` via
    `cmdevice.getDevice(hostname)` to get the full device object.
    If `getDevice` returns `null` (device was removed from BCM), checks
    whether a BMH with that hostname already exists via
-   `bmhManager.IsBMHReady`. If a BMH exists (CreateBMH succeeded in a
+   `metal3Client.IsBMHReady`. If a BMH exists (CreateBMH succeeded in a
    prior reconcile), returns an error: "BCM device (hostname) no longer
    exists in BCM inventory but BareMetalHost CR exists — delete the
    BareMetalInstance or re-register the device in BCM." This prevents
@@ -505,7 +499,7 @@ Implements `inventory.Client` and registers as `newClientFuncs["bcm"]` via
    extra check because BCM lacks the optimistic concurrency that Kubernetes
    provides for Metal3 BMH updates.
 6. Delegates BMH creation to the BMH lifecycle manager by calling
-   `bmhManager.CreateBMH(ctx, BMHCreateParams{...})` with:
+   `metal3Client.CreateBMH(ctx, BMHCreateParams{...})` with:
    - `Name` = hostname extracted from `ParseHostID` (step 1)
    - `Labels`:
      - `osac.openshift.io/managed-by` = `"baremetal"`
@@ -520,7 +514,7 @@ Implements `inventory.Client` and registers as `newClientFuncs["bcm"]` via
    The namespace is encapsulated in the manager (from management config).
    `CreateBMH` sets `spec.online = false` — the controller manages power
    via `reconcileManagement`.
-7. Calls `bmhManager.IsBMHReady(ctx, hostname)` to check BMH readiness:
+7. Calls `metal3Client.IsBMHReady(ctx, hostname)` to check BMH readiness:
    - If not ready (`registering`, `inspecting`, `preparing`): returns
      `Host` **without** `HostClass`. The controller stays in
      `reconcileInventory` with `Allocated=False`.
@@ -541,15 +535,19 @@ Implements `inventory.Client` and registers as `newClientFuncs["bcm"]` via
 2. Calls `cmdevice.getDevice(hostname)` to get the full device. If BCM
    returns `null` (device not found), treats the device as already cleaned
    up and skips to step 5.
-3. Removes `osac_instance_id` AND the labels passed in the `labels`
-   parameter from `extra_values`. Preserves admin-configured keys
-   (`osac_bmc_address`, `osac_bmc_credentials_secret`, `resource_class`)
-   and any non-OSAC metadata. This ensures the host is immediately
-   available for re-assignment without repeating Day-0 setup or BMC
-   discovery.
+3. Reads `extra_values.osac_instance_id`. If the ID is absent (already
+   cleared in a prior attempt), skips to step 5 (BMH cleanup only).
+   If the ID is present, checks the existing BMH's `ConsumerRef.Name`
+   — if it differs from the device's `osac_instance_id`, the host was
+   reassigned during a crash-recovery retry, so skips steps 4-5 and
+   returns `nil`. If ownership is confirmed, removes `osac_instance_id`
+   AND the labels passed in the `labels` parameter from `extra_values`.
+   Preserves admin-configured keys (`osac_bmc_address`,
+   `osac_bmc_credentials_secret`, `resource_class`) and any non-OSAC
+   metadata.
 4. Calls `cmdevice.updateDevice` with the modified device.
-5. Delegates BMH deletion to the BMH lifecycle manager by calling
-   `bmhManager.DeleteBMH(ctx, name)`. The BMC credentials Secret
+5. Delegates BMH deletion to Metal3Client by calling
+   `metal3Client.DeleteBMH(ctx, name)`. The BMC credentials Secret
    is not touched — it is admin-managed and reusable for future assignments
    of the same host.
 
@@ -1052,7 +1050,7 @@ AssignHost:
 - Returns nil when host already assigned to different instance
 - Succeeds when host already assigned to same instance (idempotent)
 - Verify-after-write detects race condition (another writer overwrote)
-- Calls `BMHLifecycleManager.CreateBMH` with correct params: name =
+- Calls `Metal3Client.CreateBMH` with correct params: name =
   hostname, managed-by label, BMC address, credentials secret, boot
   MAC, consumerRef
 - Reads `CredentialsSecret` from
@@ -1066,12 +1064,12 @@ AssignHost:
 UnassignHost:
 - Removes only `osac_instance_id` from `extra_values` (preserves
   other keys)
-- Calls `BMHLifecycleManager.DeleteBMH` with correct name
+- Calls `Metal3Client.DeleteBMH` with correct name
 - Does NOT delete BMC credentials Secret
 - Handles already-unassigned host (null `extra_values`)
 - Handles already-deleted BMH (DeleteBMH ignores NotFound)
 
-**BMH lifecycle manager (`internal/inventory/bmh_lifecycle_test.go`):**
+**BMH lifecycle manager (`internal/inventory/metal3_test.go`):**
 
 CreateBMH:
 
@@ -1088,7 +1086,7 @@ DeleteBMH:
 - Idempotent: ignores NotFound
 - Does NOT delete BMC credentials Secret
 
-**BMH readiness (`internal/inventory/bmh_lifecycle_test.go`):**
+**BMH readiness (`internal/inventory/metal3_test.go`):**
 
 - `IsBMHReady` returns `false` for BMH in registering state
 - `IsBMHReady` returns `false` for BMH in inspecting state
