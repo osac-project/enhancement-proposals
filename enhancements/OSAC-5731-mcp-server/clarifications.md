@@ -874,6 +874,10 @@ During design, the user approved restating FR-13 to sequential host confirmation
 
 The user confirmed that tenant-admin audit history is a broader OSAC concern and that this MCP Feature should use the Fulfillment and operational diagnostics OSAC already provides. This supersedes D19's requirement for an admin-visible MCP write-record inspection path in this Feature. MCP still forwards the authenticated caller to the public Fulfillment API and supplies sanitized operational details that let authorized operators correlate an MCP tool call with the resulting Fulfillment resource and provisioning work. D37 is limited to that existing-stack operator correlation; it does not require a new Fulfillment audit API, database record, or tenant-admin read view. D20 remains unchanged: no separately verified agent identity is required.
 
+## Subsequent override — 2026-10-01: Identifier-free MCP diagnostics
+
+The user approved removing the stable caller pseudonym and shared HMAC key after review identified that the pseudonym, tenant, and resource identifiers in MCP logs could expose customer activity. MCP logs carry a fresh random request ID, action, immediate result, and timing, but no caller-derived, tenant, or resource identifier. The caller-facing tool result carries the same request ID and the resource ID when known. An authorized operator uses those IDs supplied from the result to inspect the MCP attempt and follow the resource through existing Fulfillment, CR, and provider diagnostics. No MCP diagnostic key Secret, core audit service, or tenant-admin write-history view is introduced. This narrows the operational details in the preceding override without changing its existing-stack boundary.
+
 ## Remaining Gaps
 
 None blocking PRD drafting. The design and implementation must verify the end-to-end behavior and permissions of each selected resource journey; public API methods alone are not evidence of a working journey.

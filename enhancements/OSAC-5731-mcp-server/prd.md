@@ -109,12 +109,13 @@ stories below without changing their meaning.
   investigative step. Request acceptance must not be presented as readiness.
   [Clarify: R8.Q3, R14.Q3]
 - **FR-19 — Existing-stack write attribution and correlation:** MCP writes
-  must execute as the signed-in OSAC caller and provide sanitized operational
-  diagnostics identifying the MCP action, affected resource where known, and
-  immediate result. When a write produces a resource, authorized operators
-  must be able to correlate that MCP call with its Fulfillment resource and
-  provisioning work through existing OSAC operational surfaces. This Feature
-  does not require new core audit storage or a tenant-admin write-history view.
+  must execute as the signed-in OSAC caller. A per-call request ID must join
+  sanitized MCP action and immediate-result diagnostics to the caller-facing
+  tool result, which identifies the affected resource when known. Given that
+  result, authorized operators must be able to follow the Fulfillment resource
+  and provisioning work through existing OSAC operational surfaces. MCP logs
+  must not expose caller, tenant, or resource identifiers. This Feature does
+  not require new core audit storage or a tenant-admin write-history view.
   [Clarify: R8.Q1, R8.Q2, R14.Q4; subsequent override 2026-10-01] [User]
 
 ### Non-Functional Requirements
@@ -233,8 +234,8 @@ stories below without changing their meaning.
 ## Provenance
 
 Authored: draft @ prd 0.11.3 - 2bd6607, workspace OSAC-4388-deployment-mcp-poc @ 199459d7b (dirty)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 0d3997211
+Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 0d3997211
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0d3997211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1331,"main_ref":"main","phases":["draft","respond","respond","respond","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0d3997211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1331,"main_ref":"main","phases":["draft","respond","respond","respond","manual-edit","revise","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
