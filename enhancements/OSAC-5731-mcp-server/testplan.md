@@ -373,7 +373,7 @@ normalized-outcome JSON examples in the same section.
 
 ### FR-8: Project and catalog administration
 
-#### TC-FR8-01: Create and update a Project with optimistic locking
+#### TC-FR8-01: Create and update Project display fields through the public API
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -383,23 +383,32 @@ normalized-outcome JSON examples in the same section.
 
 - **Tier / owner:** Component integration / [DEV].
 - **Execution:** Kind fulfillment suite; proposed `fulfillment-service/it/it_mcp_project_test.go`.
-- **Boundary:** Project Update remains unregistered until `lock=true` is proven.
+- **Boundary:** Public Projects/Create and Update, tenant and Project
+  authorization, and PostgreSQL are real. The public Update wrapper does not
+  provide an optimistic version precondition; no core fix is in this Feature.
 
 ##### Steps
 
 1. As a tenant administrator, create a Project through `create_project`.
-2. Assert the public Project Update wrapper passes `lock=true`. Register
-   `update_project` only if that assertion holds.
-3. Update against the current version.
-4. Retry with a stale version and as an ordinary member.
+2. Call `update_project` with a new title only, then a new description only;
+   capture the public requests and read the Project after each call.
+3. Try to supply tenant, hierarchy, name, status, or membership changes to
+   `update_project`. Repeat an allowed title update after another allowed
+   title update to observe the current last-write behavior.
+4. Attempt an allowed update as a Project manager, an ordinary member without
+   manager rights, and a caller from another tenant.
 
 ##### Expected Results
 
-- Create succeeds.
-- Update remains unregistered if `lock=true` is not proven.
-- When registered, current-version update succeeds.
-- Stale version fails with `conflict` / `Aborted`; unauthorized caller gets
-  `authorization` / `PermissionDenied`.
+- Create returns the new Project identity. Each update changes only the named
+  display field and forwards an exact `spec.title` or `spec.description` mask;
+  other Project fields are preserved.
+- The tool rejects unsupported fields before a public Update call. A later
+  same-field update can replace an earlier value; the tool neither sends
+  `lock=true` nor promises a stale-version `Aborted` result.
+- Existing Project manager and tenant-admin permissions work; an ordinary
+  member without manager rights and another tenant receive
+  `authorization` / `PermissionDenied` without a mutation.
 
 #### TC-FR8-02: Manage supported catalog offerings and confirm publication in the host
 
@@ -786,7 +795,8 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 ##### Steps
 
 1. Create a resource with payload A.
-2. Invoke the matching `update_*` tool with different settings and current `metadata.version`.
+2. Invoke `update_compute_instance` with different settings and the current
+   `metadata.version`.
 3. Change the target UUID and then the action/tool name in separate calls.
 
 ##### Expected Results

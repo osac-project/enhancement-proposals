@@ -233,8 +233,14 @@ call returns `not_found`. Start/stop set `run_strategy` and are hinted
 idempotent when the identical Update is a no-op. Restart retriggers, so it
 is not idempotent. Volume Update is metadata-only. Other Updates may change
 disks, networking, or catalog content, so they are hinted destructive and
-non-idempotent. Project Update stays unregistered until the public wrapper
-propagates `lock=true`.
+non-idempotent. `update_project` uses the existing public Projects/Update API
+only for `spec.title` and `spec.description`, with an explicit field mask for
+the fields supplied. The public Project wrapper currently does not forward its
+advertised `lock` flag to the private update, so MCP does not claim optimistic
+conflict rejection or require a version precondition. Concurrent changes to
+the same allowed field can be overwritten by the later update; an explicit
+mask preserves other fields. MCP adds no core Fulfillment change for this
+journey. [User: 2026-10-01]
 
 Read tools:
 
@@ -278,7 +284,7 @@ Create is never combined with delete, publish, public exposure, or restart.
 | `update_volume` | Allowed metadata update. |
 | `delete_volume` | Delete. |
 | `create_project` | Create. |
-| `update_project` | Update, only after `lock=true` is proven. |
+| `update_project` | Update title and description only through public Projects/Update with an exact field mask; no stale-version guarantee. |
 | `create_catalog_offering` | Create supported ComputeInstance, Cluster, or BareMetalInstance offerings. |
 | `update_catalog_offering` | Update those offerings. |
 | `delete_catalog_offering` | Delete those offerings. |
@@ -854,4 +860,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 0d3997211
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0d3997211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1331,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0d3997211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1331,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
