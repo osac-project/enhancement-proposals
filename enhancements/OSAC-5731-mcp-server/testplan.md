@@ -1682,14 +1682,15 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - **Boundary:** Continuous acceptance for Story 1.01's opt-in MCP endpoint.
   Real SDK client, public Fulfillment API, caller tokens, and PostgreSQL;
   providers and released-host confirmation are outside this test.
+- **Fixture:** An existing ComputeInstance belongs to a second tenant and is
+  invisible to the authorized test caller.
 
 ##### Steps
 
 1. Enable the endpoint through its documented opt-in setting, then list tools
    as an authorized caller.
-2. Invoke
-   `create_compute_instance`, `get_resource`, and
-   `delete_compute_instance` through the SDK client.
+2. Invoke `create_compute_instance`, `list_resources`, `get_resource`, and
+   `delete_compute_instance` through the SDK client as the authorized caller.
 3. Attempt invalid and unauthorized create/delete calls with caller tokens.
 
 ##### Expected Results
@@ -1698,6 +1699,8 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
   `create_compute_instance`, and `delete_compute_instance` without a second
   write flag. Story 1.01's Helm/schema checks verify that installation is
   disabled by default.
+- After create, `list_resources` includes the created ComputeInstance for the
+  authorized caller and excludes a fixture owned by another tenant.
 - Authorized create persists the caller's tenant and creator, and delete uses
   the caller's token. Both return accepted results without claiming provider
   readiness; invalid and denied calls cause no Fulfillment mutation. Story
