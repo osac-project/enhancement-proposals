@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-OSAC users can manage infrastructure through existing OSAC interfaces. They cannot yet use a supported model-host connection to discover eligible infrastructure, handle authorized prerequisites, review writes, and check actual outcomes. Administrators also need to attribute and diagnose model-initiated requests within their permitted scope. Without this capability, an accepted request can be mistaken for a ready resource.
+OSAC users can manage infrastructure through existing OSAC interfaces. They cannot yet use a supported model-host connection to discover eligible infrastructure, handle authorized prerequisites, review writes, and check actual outcomes. Operators also need to correlate model-initiated requests with existing OSAC diagnostics and provisioning work. Without this capability, an accepted request can be mistaken for a ready resource.
 
 ## Requirements
 
@@ -108,12 +108,14 @@ stories below without changing their meaning.
   established facts, remaining unknowns, and an appropriate next
   investigative step. Request acceptance must not be presented as readiness.
   [Clarify: R8.Q3, R14.Q3]
-- **FR-19 — Write audit and provisioning correlation:** Authorized
-  administrators must be able to inspect the authenticated caller, tenant,
-  action, resource, MCP origin, and outcome for writes in their permitted
-  scope. Authorized operators must be able to correlate a write to the
-  Fulfillment resource and provisioning work.
-  [Clarify: R8.Q1, R8.Q2, R14.Q4]
+- **FR-19 — Existing-stack write attribution and correlation:** MCP writes
+  must execute as the signed-in OSAC caller and provide sanitized operational
+  diagnostics identifying the MCP action, affected resource where known, and
+  immediate result. When a write produces a resource, authorized operators
+  must be able to correlate that MCP call with its Fulfillment resource and
+  provisioning work through existing OSAC operational surfaces. This Feature
+  does not require new core audit storage or a tenant-admin write-history view.
+  [Clarify: R8.Q1, R8.Q2, R14.Q4; subsequent override 2026-10-01] [User]
 
 ### Non-Functional Requirements
 
@@ -163,7 +165,7 @@ stories below without changing their meaning.
 - Catalog offerings and templates, host and instance types, cluster versions, disk images, storage tiers, Projects, and selected prerequisites are discoverable or manageable only to the extent that OSAC already supports the action and authorizes the caller. Authorized admins can manage provider-owned or tenant-scoped offerings and Projects within their existing permissions. [Clarify: R2.Q2, R3.Q1, R3.Q2, R10.Q1]
 - An authorized user can provide a missing deployment Secret through an OSAC-controlled interaction outside the model host, then continue using its reference. Model-facing actions do not accept or reveal plaintext Secret values. [Clarify: R10.Q2]
 - Supported connections are the locally running Cursor editor and CLI, Codex CLI and app/IDE, and Claude Code CLI and Desktop Code experience, against an OSAC endpoint reachable from the user's environment. The OSAC UI provides a discoverable entry point and copyable endpoint, trust, sign-in, and read-only verification guidance. Each supported host surface is verified with a deployment journey. [Clarify: R4.Q2, R13.Q1, R13.Q2, R13.Q3]
-- Discovery and writes are authorized as the signed-in caller, retaining OSAC tenancy, catalog limits, and validation. Users approve or deny each write in the host before that mutation runs. Changed actions, targets, or settings require a new confirmation. Agreement in the conversation is not approval. The server does not present uncalled later writes before the first mutation. Deletion, public exposure, and offering publication require separate confirmation. Authorized admins can inspect who initiated an MCP write, its MCP origin, tenant, action, resource, and outcome, and authorized operators can follow it to the related provisioning work. [Clarify: R5.Q1, R5.Q3, R8.Q1, R8.Q2, R14.Q4] [User]
+- Discovery and writes are authorized as the signed-in caller, retaining OSAC tenancy, catalog limits, and validation. Users approve or deny each write in the host before that mutation runs. Changed actions, targets, or settings require a new confirmation. Agreement in the conversation is not approval. The server does not present uncalled later writes before the first mutation. Deletion, public exposure, and offering publication require separate confirmation. MCP provides sanitized operational diagnostics so authorized operators can follow a tool call to its Fulfillment resource and related provisioning work using existing OSAC surfaces. [Clarify: R5.Q1, R5.Q3, R8.Q2, R14.Q4; subsequent override 2026-10-01] [User]
 - The supported MCP actions, deployment, onboarding, and diagnostics are documented. Resource journeys are validated through appropriate automated and end-to-end tests, including failure and later-session status paths. [Clarify: R11.Q3, R13.Q3, R14.Q3]
 
 ## Out of Scope
@@ -171,6 +173,7 @@ stories below without changing their meaning.
 - An Observability MCP, event streaming, interactive serial or VNC console access, SSH or other in-guest access, and application deployment or configuration inside provisioned infrastructure. Resource status and conditions remain part of the deployment journey. [Clarify: R12.Q1]
 - An unrestricted proxy into Fulfillment or Kubernetes, new underlying OSAC infrastructure-management actions, and dedicated user, identity-provider, role, role-binding, or project-membership administration. [Clarify: R2.Q2, R11.Q1]
 - A separately verified model or agent identity beyond the authenticated caller and MCP-origin indication. [Clarify: R8.Q2]
+- New core Fulfillment audit storage or APIs, a tenant-admin MCP write-history view, and broader OSAC audit coverage across other clients. Those are separate OSAC auditing work. [User: 2026-10-01]
 - Cloud-run agents and Claude Desktop's separate Chat connector for a private OSAC endpoint, a one-click host installer, MCP/OSAC-CLI action parity, and CLI-driven model-host configuration. [Clarify: R13.Q1, R13.Q2, R13.Q4]
 - A separate dry-run operation, a required plan-wide “approve all” choice, and a separate Kubernetes PVC-management journey. [Clarify: R7.Q1, R7.Q3, R9.Q2]
 - A complete FabricDomain journey without verified underlying OSAC provisioning and role support. [Clarify: R10.Q3]
@@ -182,7 +185,6 @@ stories below without changing their meaning.
 - As a Cloud Provider Admin, I want MCP requests to honor the catalog and tenant controls I configure, so that a model host cannot bypass OSAC governance.
 - As a Cloud Provider Admin, I want to create, update, and publish provider-owned VM, cluster, and bare-metal catalog offerings through MCP within my existing permissions, so that users can request governed infrastructure without an administrative shortcut. [Clarify: R3.Q2]
 - As a Cloud Provider Admin, I want to confirm each provider-offering publication before it changes what tenants may request, so that catalog exposure is intentional. [Clarify: R5.Q3]
-- As a Cloud Provider Admin, I want to inspect MCP write records showing the caller, tenant, action, resource, and outcome within my authorized visibility, so that I can audit model-initiated changes. [Clarify: R8.Q1, R8.Q2]
 
 ### Cloud Infrastructure Admin
 
@@ -195,7 +197,6 @@ stories below without changing their meaning.
 - As a Tenant Admin, I want my organization's catalog visibility and member permissions to apply to MCP requests, so that members see and request only what their OSAC roles allow.
 - As a Tenant Admin, I want to create and update Projects through MCP when my role permits it, so that a deployment can use the intended Project. [Clarify: R10.Q1]
 - As a Tenant Admin, I want to create or update tenant-scoped catalog offerings when my existing role permits it, so that tenant members can request eligible resources without a privileged MCP identity. [Clarify: R3.Q1, R3.Q2]
-- As a Tenant Admin, I want to inspect MCP write records for my permitted tenant scope, so that I can identify the caller, change, and outcome without seeing another tenant's activity. [Clarify: R8.Q1]
 
 ### Tenant Admin / Tenant User
 
@@ -225,12 +226,15 @@ stories below without changing their meaning.
 - **Existing OSAC capabilities:** Each selected journey depends on OSAC already offering the relevant actions to authorized users and on the corresponding infrastructure capability being available. A journey is complete only when users can satisfy its prerequisites and verify actual outcomes, not merely discover an operation. [Clarify: R2.Q2, R11.Q3]
 - **Volume integration:** The OSAC Volume journey depends on a working volume lifecycle and a clear user path for using Volumes alongside existing storage workflows. [Clarify: R4.Q1, R9.Q2]
 - **Identity and private connectivity:** Supported hosts depend on a reachable OSAC endpoint, certificate trust, and the existing OSAC/Keycloak sign-in and permissions path. Host-specific instructions may point to the host's official documentation where that behavior is maintained. [Clarify: R3.Q1, R13.Q1, R13.Q3]
+- **Operational correlation:** Operators use their existing access to OSAC service and provisioning diagnostics; MCP supplies sanitized tool-call context and does not create an administrator audit-history interface. [User: 2026-10-01]
 
 ---
 
 ## Provenance
 
-Authored: respond @ prd 0.11.3 - 2bd6607, workspace OSAC-4388-deployment-mcp-poc @ 199459d7b (dirty)
-Phases: draft, respond, respond, respond
+Authored: draft @ prd 0.11.3 - 2bd6607, workspace OSAC-4388-deployment-mcp-poc @ 199459d7b (dirty)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 0d3997211
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"199459d7b (dirty)","source_repo_branch":"OSAC-4388-deployment-mcp-poc","commits_behind_main":0,"commits_ahead_main":1228,"main_ref":"main","phases":["draft","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0d3997211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1331,"main_ref":"main","phases":["draft","respond","respond","respond","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

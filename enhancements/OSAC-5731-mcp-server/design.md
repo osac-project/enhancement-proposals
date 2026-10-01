@@ -5,7 +5,7 @@
 | Author(s) | Tommy Hughes |
 | Jira | [OSAC-5731](https://redhat.atlassian.net/browse/OSAC-5731) |
 | PRD | [prd.md](prd.md) |
-| Date | 2026-09-30 |
+| Date | 2026-10-01 |
 
 # 1. Overview
 
@@ -30,6 +30,8 @@ See the [PRD](prd.md) for the detailed product requirements.
 - Preserve public Fulfillment APIs as the authorization, tenancy, validation,
   and lifecycle boundary for every MCP operation.
 - Keep the MCP process stateless: no plan, grant, handoff, or audit tables.
+- Correlate MCP writes with existing OSAC operational diagnostics without adding
+  a core Fulfillment audit interface or tenant-admin write-history view.
 - Expose allowlisted generic reads and typed write tools split so each tool
   has one MCP annotation tuple, never an unrestricted service or Kubernetes
   proxy.
@@ -46,6 +48,8 @@ See the [PRD](prd.md) for the detailed product requirements.
   in-guest application-management journeys. [Locked: D6, D26-D29]
 - Provide a general Observability MCP or a separately verified model or agent
   identity. [Locked: D20, D37]
+- Add core Fulfillment audit storage, a new audit-read API, or a tenant-admin
+  history view for MCP writes. [D19 subsequent override 2026-10-01] [User]
 - Add a durable MCP plan, `execute_plan_step`, plan-wide approval, automatic
   rollback, automatic retry of an uncertain create, a separate dry-run, or an
   OSAC UI write-approval page. [Locked: D13, D16-D18] [User]
@@ -60,11 +64,16 @@ See the [PRD](prd.md) for the detailed product requirements.
 
 Current `main` has no MCP implementation. OSAC-4388 already proved Streamable
 HTTP, caller token forwarding, allowlisted list/get, and typed ComputeInstance
-create/delete that mutate on the tool call. The first implementation PR
-rebuilds that fulfillment-service MCP package and
-`fulfillment-service/it/it_mcp_server_test.go` on current `main`, with write
-tools registered only when a development-only flag is set. It does not merge
-the experimental branch. [User] [Jira: OSAC-4388]
+create/delete that mutate on the tool call. The first implementation PR ports
+and cleans up the complete MCP-specific PoC baseline on current `main` in one
+change: fulfillment-service command, server and tests, plus its opt-in chart,
+installer values/schema, and OAuth development wiring. When the opt-in
+endpoint is enabled, its two read and two write tools are available together;
+there is no additional development-only write flag. The first PR tests
+caller-authorized create/get/delete. The mixed, stale experimental branch is
+audited rather than merged wholesale; useful development helpers may remain
+as test fixtures, while demo-only and unrelated changes are dropped in that
+same PR. [User] [Jira: OSAC-4388]
 
 That path is enough for first delivery: host prompt plus the caller's token,
 public resource status, and Secret bytes kept out of the model. This Feature
@@ -308,16 +317,18 @@ handoff resource is added. [Locked: D25] [User]
 `get_resource_outcome` is the later-session contract. MCP Tasks are not
 required.
 
-Administrators inspect MCP-initiated writes using existing Fulfillment
-diagnostics plus MCP operational logs. `metadata.creator` identifies the
-create caller only; it is not the actor for a later update or delete.
-
-MCP origin is the tool name in MCP logs. Unrestricted MCP logs hash the JWT
-`sub`. Access-controlled Fulfillment RPC diagnostics for that public method
-record the authenticated subject, the same way UI/CLI writes are attributed.
-Operators correlate by resource ID and time. Given a known user, they confirm
-by hashing that user's `sub` and matching the MCP log field. No
-`MCPWriteRecords` API is added. [Locked: D19] [User]
+MCP forwards the signed-in caller token to each public Fulfillment write.
+`metadata.creator` identifies the create caller only; it does not identify
+later update or delete actors. MCP emits sanitized operational diagnostics for
+each attempted write: a stable hash of the authenticated subject, tenant when
+known, tool/action, resource ID when known, immediate gRPC result, and time.
+The tool name is the MCP-origin indication. An authorized operator can use the
+resource ID and time to follow existing Fulfillment resource state, reconciler
+and Kubernetes CR diagnostics, and provider work. If a create fails before an
+ID exists, the diagnostic records the attempt and failure without inventing a
+resource or provider outcome. The immediate API result is not provisioning
+readiness. No tenant-admin history lookup, `MCPWriteRecords` API, or core audit
+schema is added. [D19 subsequent override 2026-10-01, D20, D37] [User]
 
 ## 4.2 Data Model / Schema Changes
 
@@ -514,10 +525,11 @@ No new Keycloak user role is introduced.
 - Every discovery and mutation runs as the signed-in caller through existing
   public method, tenant, Project, ownership, catalog, and reference policies.
 - Users see only resources they are already allowed to see through Fulfillment.
-- Tenant and platform administrators retain existing Project, catalog, and
-  diagnostic rights. MCP does not add a parallel audit ACL.
+- Tenant and platform administrators retain existing Project and catalog
+  rights. Operators use the diagnostic access they already have; MCP adds no
+  tenant-admin audit-read permission or parallel audit ACL.
 
-[Locked: D3, D8-D9, D19-D20, D24, D27]
+[Locked: D3, D8-D9, D20, D24, D27] [D19 subsequent override 2026-10-01]
 
 ## 4.8 Extensibility / Future-Proofing
 
@@ -607,14 +619,18 @@ MCP selects Secret references only. Missing values are created in the
 existing `/secrets/create` wizard; the journey resumes with the resulting
 reference. [Locked: D25] [User]
 
-## IC-9: MCP origin in existing audit surfaces
+## IC-9: MCP write diagnostics and existing-stack correlation
 
 **Requirements:** FR-19, NFR-1, NFR-2
 
-Administrators use existing Fulfillment RPC diagnostics for the authenticated
-subject, plus MCP logs (tool, hashed `sub`, resource, time).
-`metadata.creator` is create-only. No `MCPWriteRecords` API is added.
-[Locked: D19] [User]
+The MCP edge forwards the signed-in caller token to public Fulfillment APIs
+and emits sanitized write diagnostics with hashed subject, tenant when known,
+tool/action, resource ID when known, immediate result, and time. Authorized
+operators follow the resource ID through existing Fulfillment state, CR, and
+provider diagnostics. `metadata.creator` is create-only; these surfaces do
+not promise a tenant-admin update/delete actor history. No core Fulfillment
+audit API, `MCPWriteRecords` service, or audit schema is added.
+[D19 subsequent override 2026-10-01, D20, D37] [User]
 
 ## IC-10: MCP setup page and runtime metadata
 
@@ -709,12 +725,15 @@ are selected.
 
 ## Cherry-pick or merge the complete PoC branch
 
-The branch is stale and mixed. The first PR rebuilds the MCP package and tests
-on current `main`. [User]
+The branch is stale and mixed. The first PR ports and cleans up the complete
+MCP-specific server, opt-in deployment wiring, OAuth development configuration,
+and tests on current `main` as one coherent change. Demo-only and unrelated
+branch edits are reviewed and dropped in that PR. [User]
 
 ## Ship the PoC OAuth demo client as a supported CLI
 
-Keep it as a test and Inspector reference only. [Locked: D33]
+Retain it only if useful as a development test or Inspector reference; never
+ship it as a supported CLI. [Locked: D33]
 
 ## Do nothing
 
@@ -739,9 +758,10 @@ Leaves no supported model-host interface.
 
 This approach is weaker than a server-verified OSAC UI approval and weaker
 than a frozen plan digest. Partial failure handling is the client's
-responsibility (stop calling later tools). MCP origin for FR-19 is
-Fulfillment RPC identity plus MCP logs, not a dedicated audit list. Those
-are accepted so MCP stays a thin adapter over existing APIs. [User]
+responsibility (stop calling later tools). FR-19 correlation uses sanitized
+MCP logs and existing Fulfillment/resource/provider diagnostics. This does
+not provide tenant-admin write history or a complete audit trail for other
+OSAC clients. [D19 subsequent override 2026-10-01] [User]
 
 # 7. Observability and Monitoring
 
@@ -751,38 +771,52 @@ The implementation adds:
   result category, and protocol version;
 - gauges for active requests and readiness dependencies;
 - trace spans for MCP invocation and the downstream resource RPC;
-- sanitized structured logs with caller subject hash, tenant, tool, resource,
-  gRPC code, and duration;
+- sanitized structured logs for attempted writes with caller subject hash,
+  tenant and resource ID when known, tool/action, immediate gRPC code,
+  timestamp, and duration;
 - alerts for sustained readiness failure, elevated authentication/5xx errors,
   and rate-limit spikes.
 
 Tokens, Secret values, raw prompts, and unbounded bodies are excluded.
 Tenant and resource IDs are OSAC control-plane identifiers, not Secret values.
-The hashed `sub` in unrestricted MCP logs is matched by hashing a known
-user's subject; the admin-visible caller for FR-19 is the authenticated
-subject on the corresponding Fulfillment RPC.
+The subject hash supports operator investigation when a caller is already
+known. MCP logs do not expose raw subjects or provide an administrator audit
+lookup. A public resource's `metadata.creator` can corroborate its create
+caller; it cannot establish the actor of a later update or delete. Existing
+Fulfillment and provider diagnostics supply the downstream correlation where
+the resource ID is known.
 
 # 8. Impact and Compatibility
 
-No new Fulfillment protobuf services or MCP tables are added. Existing public
+No new Fulfillment protobuf services, core audit schema, or MCP tables are
+added. Existing public
 resource requests, UI, CLI, and direct API workflows are unchanged.
 
 MCP tool names become supported only after deployment and host-matrix tests.
-The first implementation PR rebuilds the experimental MCP package with writes
-gated off by default.
+The first implementation PR ports the complete MCP-specific experimental
+baseline, including its opt-in deployment wiring and tests. The endpoint is
+disabled by default; enabling it exposes the PoC's two read and two write
+tools together under the caller's Fulfillment authorization. No later
+implementation story ports another PoC file.
 
 Implementation dependency order is:
 
-1. Rebuild the fulfillment-service ComputeInstance MCP package, official MCP
-   Go SDK dependency, unit tests, command registration, and
-   `fulfillment-service/it/it_mcp_server_test.go` on current `main`. Keep
-   writes disabled unless the development-only flag is supplied. Any OAuth
-   demo client stays a test and Inspector reference, not a supported CLI.
-   [User] [Jira: OSAC-4388]
-2. Add remaining typed write tools and `get_resource_outcome`. Jira
-   determines journey order; none is removed from Feature scope.
-3. Add the supported chart/installer, OAuth clients, health, replicas, limits,
-   `/connect/mcp` setup page, and first-party documentation.
+1. Port and clean up the MCP-specific OSAC-4388 PoC as one first PR on current
+   `main`: fulfillment-service ComputeInstance MCP package, official MCP Go
+   SDK dependency, unit and HTTP-client integration tests, command registration,
+   opt-in chart/installer values/schema, and OAuth development configuration.
+   An enabled endpoint exposes all four existing tools without an extra write
+   flag. Verify authorized create/get/delete and denial through public
+   Fulfillment APIs. Decide whether demo helpers remain as development/test
+   fixtures in this PR; none becomes a supported CLI. [User] [Jira: OSAC-4388]
+2. Harden the existing create/delete pair with the shared supported-write
+   contract, then add Update, power/restart, remaining typed resource tools,
+   and `get_resource_outcome`. Jira determines journey order; none is removed
+   from Feature scope.
+3. Harden the ported chart/installer for supported deployments, migrating the
+   PoC's `service.mcp` values to IC-11's `global.mcp` contract; add the
+   remaining OAuth clients, health, replicas, limits, `/connect/mcp` setup
+   page, and first-party documentation.
 4. Add deployed MCP, resource-family, real-host, failure, and compatibility
    suites required for support.
 
@@ -815,7 +849,9 @@ journey. [Related: OSAC-4845]
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Phases: draft, revise, revise, revise, respond, respond, respond, revise, revise, revise, revise, revise, revise, revise, revise, revise, revise
+Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 0d3997211
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"8e3e2c790","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1308,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0d3997211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1331,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
