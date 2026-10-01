@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-5731 — OSAC MCP Server for infrastructure provisioning
-- **Total test cases:** 66
+- **Total test cases:** 67
 - **Requirements covered:** 25 of 25
 - **Interface changes covered:** 14 of 14
 
@@ -665,7 +665,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
+- **Tier / owner:** Unit / [UI].
 - **Execution:** `pnpm test` from `osac-ui`.
 
 ##### Steps
@@ -680,6 +680,35 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - Official Cursor, Codex, and Claude remote MCP documentation is linked.
 - The page is not a complete host-product tutorial.
 - No write-approval or Secret-handoff MCP page is advertised.
+
+#### TC-FR11-02: Serve MCP setup metadata only through the authenticated UI proxy
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-10 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Component integration / [UI].
+- **Execution:** proposed `osac-ui/proxy/auth/mcp_config_test.go`; run `go test ./...`
+  from `osac-ui/proxy` after Story 8.03 adds the handler and fixture.
+- **Boundary:** The real proxy router, auth middleware, and runtime-config
+  handler run in process. Signed-in and anonymous sessions and installer
+  metadata are fixtures; Keycloak and host applications are omitted.
+
+##### Steps
+
+1. Request the MCP setup metadata route with an authenticated tenant session,
+   an anonymous session, and a session without an eligible tenant role.
+2. Repeat with MCP disabled and with runtime metadata containing only the
+   configured public URL, per-host client IDs, callbacks, and trust data.
+
+##### Expected Results
+
+- Only the authorized session receives non-secret MCP setup metadata;
+  anonymous and ineligible sessions cannot read it.
+- Disabled MCP produces the documented empty-state response. No bearer token,
+  client secret, or other Secret value appears in the response.
 
 ### FR-12: Read-only connection check
 
@@ -1347,7 +1376,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
+- **Tier / owner:** Unit / [UI].
 - **Execution:** `pnpm test` from `osac-ui`.
 
 ##### Steps
@@ -1508,11 +1537,16 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 ##### Steps
 
 1. Compare docs to the runtime registry.
-2. Check host setup, Secret create in existing UI, host confirmation, and error categories.
+2. Compare documented write-result fields with representative tool results,
+   including the per-call request ID and resource ID when available.
+3. Check host setup, Secret create in existing UI, host confirmation, error
+   categories, and examples of sanitized MCP diagnostics.
 
 ##### Expected Results
 
-- Documented tools exist in the registry and conversely.
+- Documented tools exist in the registry and conversely. Write-result examples
+  show the request ID and available resource ID; MCP diagnostic examples use
+  the same request ID without caller, tenant, or resource identifiers.
 
 #### TC-NFR4-05: Enclave plugin picks up MCP installer schema
 
@@ -1702,7 +1736,8 @@ Working-directory convention: repository-root commands use `$REPO_ROOT`;
 | Tool annotations | FR-14; IC-5, IC-6 | TC-FR14-01, TC-FR14-02, TC-FR14-03, TC-FR14-04 | Unit / [DEV] | MCP package tests | Go toolchain | Registry | None | Proposed files |
 | Tenant isolation and caller token | NFR-1; IC-1, IC-3, IC-7 | TC-NFR1-01, TC-NFR1-02, TC-NFR1-03 | Contract + component / [DEV] | proposed `mcp_auth/` and `it_mcp_tenant_isolation_test.go` | Two tenants | Auth, Fulfillment | Providers omitted | No contract harness Jira |
 | Secret bytes excluded; existing UI create | FR-9; NFR-2; IC-8 | TC-FR9-01, TC-FR9-02 | E2E (manual) + unit | proposed secret-resume record; schema tests | Live UI for TC-FR9-01 | Existing Secret wizard | Handoff API omitted on purpose | No UI E2E harness; TC-FR9-01 is manual |
-| Setup page | FR-11; NFR-3; IC-10 | TC-FR11-01, TC-NFR3-02 | Unit / [DEV] | `pnpm test` from `osac-ui/` | pnpm | React | Runtime metadata simulated | Proposed page |
+| Setup page | FR-11; NFR-3; IC-10 | TC-FR11-01, TC-NFR3-02 | Unit / [UI] | `pnpm test` from `osac-ui/` | pnpm | React | Runtime metadata simulated | Proposed page |
+| Authenticated setup metadata proxy | FR-11; IC-10 | TC-FR11-02 | Component integration / [UI] | proposed `go test ./...` from `osac-ui/proxy` | Go proxy, auth middleware, runtime-config handler; session and installer metadata fixtures | UI proxy and HTTP boundary | Keycloak and host apps omitted | Story 8.03 owns the proposed handler test and records its final path |
 | Installer, health, replicas, limits | NFR-4; IC-11, IC-12 | TC-NFR4-01, TC-NFR4-02, TC-NFR4-03 | E2E + component | proposed `tests/e2e/mcp/` and `it_mcp_limits_test.go` | MCP chart | Cluster, Keycloak | Handler controlled for counts | No MCP install profile |
 | Enclave schema pickup and Wizard controls | FR-10; NFR-4; IC-11 | TC-NFR4-05, TC-NFR4-06 | Contract/component / [DEV] and UI integration / [UI] | proposed Enclave plugin/Wizard tests; command and cwd must be recorded in external checkout | Installer values/schema Task 1.05 and plugin Task 8.01 | Versioned installer schema, plugin, rendered Wizard | Provider omitted | No known test command or owning Jira until /sync; Stories 8.01/8.02 own discovery and implementation |
 | Host-family OAuth/metadata/trust contracts | FR-10; NFR-3; IC-13 | TC-NFR3-03, TC-NFR3-04, TC-NFR3-05 | Contract / [DEV] | proposed `ginkgo run -r test/contract/mcp_auth` from `fulfillment-service/` and `pytest -q osac-installer/tests/contract/mcp_keycloak/` from repository root | SDK, Keycloak, per-family callback fixtures | Real Keycloak, MCP metadata, TLS/CA | Released host prompts omitted; QE host cases own them | Paths/harness proposed; Stories 8.05/8.07/8.09 own creation and execution |
@@ -1722,6 +1757,8 @@ All 25 PRD requirements have behavioral test cases.
 - **FR-10 / NFR-3 — six hosts:** Open Question 9.3. No owning Jira.
 - **NFR-3 — family contracts:** TC-NFR3-03/04/05 are newly planned; Stories 8.05/8.07/8.09 own the proposed fixtures and harness before they can report a pass.
 - **NFR-1 — Keycloak/token contracts:** proposed contract harnesses have no owning Jira.
+- **FR-11 — authenticated setup metadata:** TC-FR11-02 is proposed; Story 8.03
+  owns the proxy handler fixture, final test path, and execution record.
 - **NFR-4 — production sizing:** Open Question 9.1.
 - **NFR-4 — Enclave schema/Wizard checks:** TC-NFR4-05/06 are newly planned; external runner command/cwd must be recorded by Stories 8.01/8.02 before either is executable.
 - **Provider-backed E2E:** [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843), [OSAC-4850](https://redhat.atlassian.net/browse/OSAC-4850).
@@ -1734,12 +1771,12 @@ All 14 ICs have planned cases. Execution gaps remain for IC-1/11/13/14 (hosts/OQ
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 66 |
+| Total test cases | 67 |
 | Critical | 46 |
-| High | 18 |
+| High | 19 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 55 |
+| Automated | 56 |
 | Manual | 11 |
 | Requirements with test cases | 25 / 25 |
 | Interface changes with test cases | 14 / 14 |
