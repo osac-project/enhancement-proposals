@@ -38,6 +38,8 @@ Tool errors use the JSON envelope in design.md §4.3. Assert both `category`
 and `grpc_code` from that table (`authorization`/`PermissionDenied`,
 `invalid_request`/`InvalidArgument`, `authentication`/`Unauthenticated`,
 `conflict`/`Aborted`, `rate_limited`/`ResourceExhausted`, and the rest).
+For every delivered write result, assert its MCP-edge `request_id` matches one
+sanitized MCP diagnostic; it is not a Fulfillment-generated resource ID.
 Successful writes and later outcomes match the mutation-acceptance and
 normalized-outcome JSON examples in the same section.
 
@@ -114,12 +116,18 @@ normalized-outcome JSON examples in the same section.
    ExternalIPAttachment, and NATGateway through `expose_network_resource`.
 2. Poll each public resource through `get_resource_outcome`.
 3. Delete in dependency-safe order using `delete_network_resource`.
+4. Reject IPv6 and dual-stack network inputs, and extra attachments on the
+   workload create tools, before a public resource RPC, including values still
+   expressible in legacy public fields. Keep NetworkClass and ExternalIPPool
+   out of tenant write tools.
 
 ##### Expected Results
 
 - Only documented networking tools appear; no arbitrary service or method.
 - Each created resource reaches the public state exposed by its Fulfillment API.
 - Deletes remove only the named targets.
+- The successful deployment uses the accepted connected IPv4 contract;
+  invalid network inputs cause no resource mutation.
 
 #### TC-FR2-02: Reject an unsupported in-place network edit
 
@@ -136,8 +144,10 @@ normalized-outcome JSON examples in the same section.
 ##### Steps
 
 1. Create a VirtualNetwork with a dependent Subnet through `create_network_resource`. Request an in-place CIDR edit.
-2. Inspect the error details.
-3. Retrieve the original VirtualNetwork and Subnet.
+2. Submit IPv6 and dual-stack inputs expressible in legacy public fields;
+   inspect the MCP error and public RPC count.
+3. Inspect the error details.
+4. Retrieve the original VirtualNetwork and Subnet.
 
 ##### Expected Results
 
@@ -145,6 +155,7 @@ normalized-outcome JSON examples in the same section.
   `unsupported_in_place`; no update RPC is dispatched.
 - Error details may name create/delete replacements; no resource is silently replaced.
 - Original IDs, versions, and the dependent relationship are unchanged.
+- Unsupported network inputs are rejected before a public Create or Update RPC.
 
 ### FR-3: ComputeInstance lifecycle
 
@@ -1170,6 +1181,9 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 5. Verify MCP logs, traces, and metrics exclude bearer tokens, raw and derived
    caller identities, tenant and resource IDs, Secret values, prompts, and
    unrestricted request/response bodies.
+6. Drop a write response after MCP has accepted the call. Check that the
+   diagnostic may exist without a caller-visible result and that recovery
+   does not invent a request ID or retry an uncertain create.
 
 ##### Expected Results
 
@@ -1184,6 +1198,8 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - On create, `metadata.creator` and tenant match the caller. Later update and
   delete do not treat the create-only creator field as actor history.
 - A failed create with no ID has no invented resource or provider outcome.
+- A transport loss before the host receives a result provides no reliable
+  caller-side request ID; the host follows uncertain-outcome recovery.
 - No diagnostic pseudonym key or shared key Secret is deployed. No sensitive
   payload is logged and no new core audit API/schema is required.
 
@@ -1468,11 +1484,16 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 1. Install with `global.mcp` enabled.
 2. Query `/livez`, `/readyz`, PRM, and the public MCP endpoint.
+3. Verify the disabled default; migrate a PoC `service.mcp` configuration to
+   `global.mcp`, then roll back and confirm the endpoint is disabled while
+   Fulfillment resources remain intact.
 
 ##### Expected Results
 
 - One public URL, clients, Service, and probes exist only when enabled.
 - `/readyz` fails when a required dependency is down.
+- Migration validates URL, OAuth, and trust settings; rollback does not delete
+  existing Fulfillment resources.
 
 #### TC-NFR4-02: Serve the same Fulfillment state from two MCP replicas
 
@@ -1515,6 +1536,9 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 4. From two subjects in the same tenant, send traffic that stays under each
    per-subject limit while the combined rate exceeds the tenant limit, routed
    across replicas.
+5. Record the selected shared enforcement mechanism, configured defaults,
+   measured load, and alert thresholds before marking the supported service
+   check complete. An ingress mechanism must use authenticated claims.
 
 ##### Expected Results
 
@@ -1522,6 +1546,8 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - The per-subject quota is the aggregate across replicas.
 - The per-tenant quota is enforced even when no single subject exceeds their
   own limit.
+- Independent pod-local counters do not pass; the selected shared boundary
+  rejects above-limit traffic before the public Fulfillment RPC.
 
 #### TC-NFR4-04: Keep supported actions, onboarding, failures, and correlation documentation executable
 
