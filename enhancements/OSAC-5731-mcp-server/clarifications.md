@@ -866,6 +866,10 @@ Authorized operators can correlate an MCP write with its Fulfillment resource an
 
 During PR review, the user approved keeping the target release and delivery order out of the PRD. D5 and D10 still include networking, VMs, clusters, bare metal, and Volumes in this Feature. The PRD no longer states which journey comes first or names a release. Jira tracks that planning.
 
+## Subsequent override — 2026-09-30
+
+During design, the user approved restating FR-13 to sequential host confirmation. Each write is deniable in the host before that mutation runs; changed arguments require a new confirmation; conversational agreement is not approval. D12's complete plan-preview MUST and the in-scope "multi-step plan" language are superseded. D16's per-write approval remains. A durable plan object and a plan-wide "approve all" choice are still not required.
+
 ## Remaining Gaps
 
 None blocking PRD drafting. The design and implementation must verify the end-to-end behavior and permissions of each selected resource journey; public API methods alone are not evidence of a working journey.
