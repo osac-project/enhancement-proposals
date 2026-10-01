@@ -3,7 +3,7 @@ title: cluster-and-vm-provisioning-wizard
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-22
-last-updated: 2026-07-09
+last-updated: 2026-09-30
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 prd:
@@ -21,7 +21,7 @@ superseded-by:
 
 ## Summary
 
-Rewrite the osac-ui catalog provision wizard with static fields per resource type, a fixed five-step flow (Catalog Item → General → Configuration → Networking → Review), catalog overlay on Configuration and Networking non-picker fields only, Formik/Yup validation with validate-all-on-Next, `OsacForm` layout wrapper, i18n for all user-visible strings, and dedicated create pages (`/vms/create`, `/clusters/create`) with list-page breadcrumbs. Each adapter supplies its own Configuration and Networking step components. See [PRD](prd.md) for field-level requirements.
+Rewrite the osac-ui catalog provision wizard with static fields per resource type, a fixed five-step flow (Catalog Item → General → Configuration → Networking → Review), existing Catalog overlays on applicable non-network fields, and typed Catalog policies for Cluster CIDRs and VM network attachments as defined in [OSAC-3538](/enhancements/OSAC-3538-catalog-items-v2/design.md). Use Formik/Yup validation with validate-all-on-Next, `OsacForm` layout, i18n for all user-visible strings, and dedicated create pages (`/vms/create`, `/clusters/create`) with list-page breadcrumbs. Each adapter supplies its own Configuration and Networking step components. See [PRD](prd.md) for field-level requirements and the VM attachment policy behavior.
 
 ### Goals
 
@@ -36,9 +36,9 @@ Rewrite the osac-ui catalog provision wizard with static fields per resource typ
 
 Rewrite under `osac-ui/apps/app-frontend/src/components/catalogProvision/`. `CatalogProvisionWizard` embeds in create pages and owns shared steps (Catalog Item, General, Review). **Configuration** and **Networking** are adapter components — VM pickers and cluster `node_sets`/CIDR fields are not shareable.
 
-Static field paths are hardcoded per resource type (PRD §2.1.1). Catalog `field_definitions` overlay matching static paths on **Configuration**, **Networking** non-picker fields, and **General basics** fields (`ssh_key`, `ssh_public_key`, `pull_secret`) for `display_name`, `editable`, and `validation_schema`. Picker-backed paths (`spec.instance_type`, `spec.network_attachments` and nested paths, cluster `spec.node_sets` host type per row) ignore catalog `field_definitions` in v1. Create payloads include only PRD §2.1.1 paths plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`.
+Static field paths are hardcoded per resource type (PRD §2.1.1). Existing `field_definitions` overlays apply only to applicable non-network Configuration fields and General basics (`ssh_key`, `ssh_public_key`, `pull_secret`). Network fields use the typed Catalog policies from OSAC-3538: Cluster CIDRs honor policy states and the VM `network_attachments` field remains governable. The VM Catalog Item picker does not filter on attachment policy. For a locked attachment list, the wizard displays its Subnet read-only and omits `network_attachments` from the request so fulfillment applies the locked value; when policy is absent or editable without a default, the normal Subnet picker is available. V1 assumes no editable attachment default or field-specific validation is configured. Generic `field_definitions` remain ignored for `spec.instance_type` and cluster `spec.node_sets` host type. Create payloads include only PRD §2.1.1 paths plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`.
 
-New hooks in `libs/ui-components/src/api/v1/`: instance types, virtual networks, subnets, security groups, cluster catalog items, host types (list), cluster create. VM picker fields depend on fulfillment-service `spec.instance_type` and `spec.is_windows` (PRs #735, #734). Cluster Configuration uses `HostTypes.List` for per-row host type pickers; it does **not** call `ClusterTemplates.Get` for `node_sets`.
+New hooks in `libs/ui-components/src/api/v1/`: instance types, virtual networks, and subnets, cluster catalog items, host types (list), cluster create. VM picker fields depend on fulfillment-service `spec.instance_type` and `spec.is_windows` (PRs #735, #734). Cluster Configuration uses `HostTypes.List` for per-row host type pickers; it does **not** call `ClusterTemplates.Get` for `node_sets`.
 
 ### Workflow Description
 
@@ -69,19 +69,19 @@ sequenceDiagram
 | Catalog Item | Shared | `adapter.useCatalogItems()` |
 | General | Shared | Name (required), optional SSH key (catalog `ssh_key` overlay); cluster adds required pull secret and optional `ssh_public_key` overlay |
 | Configuration | Adapter | VM: image, OS family, instance type, user data, boot disk, run strategy. Cluster: release image, tenant-managed `node_sets` table (add/remove rows) |
-| Networking | Adapter | VM: VN → subnet → SG pickers (single `network_attachments` entry). Cluster: pod/service CIDR |
+| Networking | Adapter | VM: VN → Subnet picker (single `network_attachments` entry; associated ACL shown read-only). Cluster: pod/service CIDR |
 | Review | Shared | `adapter.getReviewSections()` — same labels and values as wizard steps; submit via `buildCreatePayload` |
 
 Register `/vms/create` and `/clusters/create` before `:id` routes. On failure: inline errors on the step; any non-2xx create response stays on Review; deprecated instance type warnings from create response are non-blocking and surfaced after submit.
 
-**Catalog overlay (non-picker Configuration/Networking fields and General basics):**
+**Existing Catalog overlay (applicable non-network Configuration fields and General basics):**
 
 | Aspect | Matching `field_definitions` entry | No matching entry |
 |--------|-----------------------------------|-------------------|
 | Label | `display_name` or wizard default | Wizard default |
 | Editable | `editable: false` → read-only control | Editable |
-| Default | Catalog `default` when set; else blank (Configuration, Networking, and General basics) | Blank |
-| Validation | `validation_schema` merged into Yup | API/wizard validation |
+| Default | Catalog `default` when set; else blank (applicable non-network and General basics fields) | Blank |
+| Validation | `validation_schema` merged into Yup for supported non-network fields | API/wizard validation |
 
 Non-editable fields without a catalog `default` render blank and read-only (disabled control, same widget type). Fields with a catalog `default` render with the parsed default on catalog selection — read-only when `editable: false`, editable when `editable: true` — and include the wizard value in the client payload when non-blank.
 
@@ -94,25 +94,25 @@ Non-editable fields without a catalog `default` render blank and read-only (disa
 | `spec.run_strategy` | `Always` |
 | VM OS family (`spec.is_windows`) | Linux (`false`); wizard always sends an explicit value |
 | Instance type picker | Auto-select when `InstanceTypes.List` returns exactly one option |
-| Networking pickers | Auto-select when a list returns exactly one option (VN → subnet → SGs) |
+| Networking pickers | Auto-select when a list returns exactly one option (VN → subnet) |
 
-**VM Configuration specifics:** `spec.user_data` and `spec.boot_disk.size_gib` are optional — omit from payload when empty. `spec.is_windows` (OS family) uses `RadioButtonField` (Linux / Windows); wizard always sends an explicit value. `spec.instance_type` sends the type name only (not `cores`/`memory_gib`). Instance type labels show `metadata.name`, cores, memory, and **DEPRECATED** when applicable; OBSOLETE types excluded from the picker.
+**VM Configuration specifics:** `spec.user_data` is optional and omitted from the payload when empty. Requiredness and blank-payload behavior for `spec.boot_disk.size_gib` remain unresolved in PRD §5 and must follow that decision. `spec.is_windows` (OS family) uses `RadioButtonField` (Linux / Windows); wizard always sends an explicit value. `spec.instance_type` sends the type name only (not `cores`/`memory_gib`). Instance type labels show `metadata.name`, cores, memory, and **DEPRECATED** when applicable; OBSOLETE types excluded from the picker.
 
 **VM General specifics:** `spec.ssh_key` is optional — prefill catalog `default` on catalog selection when defined; merge catalog `ssh_key` `field_definition` for label, `editable`, and `validation_schema`. Omit from client payload only when blank (tenant cleared or no catalog default). When non-blank, send the parsed plain string (prefilled default or user edit).
 
-**VM Networking specifics:** Load VN list first; on selection, filter subnets and security groups with `this.spec.virtual_network.name == "<vn-name>"`. Assemble one `network_attachments` element using typed local references: `{ "subnet": { "name": "<subnet-name>" }, "security_groups": [{ "name": "<security-group-name>" }] }`. The API rejects a second entry. The virtual network is inferred from the referenced subnet; its ID is not sent in the attachment payload.
+**VM Networking specifics:** Load the VN list first; on selection, filter subnets with `this.spec.virtual_network.name == "<vn-name>"`. The VM Catalog Item remains selectable regardless of its typed `network_attachments` policy. For a locked list, show the locked Subnet read-only on Networking and Review and omit `network_attachments` from the client create request so fulfillment applies the locked value under OSAC-3538. The Review shows that Subnet and, when present, its associated NetworkACL reference as read-only context from Subnet data. When policy is absent or editable without a default, show the normal Subnet picker and assemble one `network_attachments` element using a typed subnet reference: `{ "subnet": { "name": "<subnet-name>" } }`. V1 assumes no editable attachment default or field-specific validation is configured. No Catalog-specific validation schema is supported for this typed field; normal resource/API validation applies. If no ACL is associated, Review says unmatched traffic follows the deployment policy; it does not display a configured `PERMIT`/`DENY` value because the provider-only NetworkClass is not available through this flow's APIs. It does not fetch ACL rules or offer an ACL picker. The virtual network and optional NetworkACL association are determined through the Subnet; neither reference is repeated in the workload attachment.
 
 **Cluster Configuration specifics:** `spec.node_sets` is **tenant-composed** — the wizard does **not** load, display, or apply `ClusterTemplate.spec.node_sets`. On Configuration, render an editable table with **Add node set** / **Remove** actions. Each row: **Host type** (`SelectField` from `HostTypes.List` — [PRD §2.1.6](prd.md#216-cluster-host-type-picker-api)) and **Nodes** (`size` number input, > 0). `ClusterNodeSet` requires only `host_type` and `size` — no separate name column. Validation: at least one row required; host type and positive `size` required per row; **duplicate host types blocked** (each host type id at most once). `buildClusterCreatePayload` uses **host type id as the map key** and sets `host_type` on the value to the same id. Review shows host type label and node count per row. Filter or disable host types already selected on other rows in remaining dropdowns. `ClusterConfigurationStep` loads the host type list on mount; no `useClusterTemplate` call.
 
 **Cluster General specifics:** `spec.ssh_public_key` and `spec.pull_secret` follow the same General basics overlay rules as VM `spec.ssh_key` (prefill catalog `default`, label, editable, validation). `spec.pull_secret` remains required on the wizard when no catalog rule makes it optional.
 
-**Cluster Networking specifics:** `spec.network.pod_cidr` and `spec.network.service_cidr` are optional — omit from payload when empty. Yup validates format only when a value is present.
+**Cluster Networking specifics:** Cluster Catalog Item `fields.network.pod_cidr` and `fields.network.service_cidr` use the typed `StringFieldPolicy` fields defined by OSAC-3538 to govern resource `spec.network.pod_cidr` and `spec.network.service_cidr`. An absent policy follows normal resource behavior. A locked value is displayed read-only and omitted from the Create payload; an editable policy displays an active input and prefills `default_value` when present. An untouched Catalog default is omitted from the payload so fulfillment resolves the policy; tenant-supplied values are sent explicitly. When a policy is absent or editable without a default, the field's requiredness and blank-payload behavior remain unresolved in PRD §5 and must follow that decision. Yup validates CIDR format for supplied values, and final API/resource validation remains authoritative; these typed policies do not provide `validation_schema`.
 
 **Step validation:** Next is always enabled. On click, run the step Yup schema, `setTouched` for all step fields, surface inline errors for untouched fields, and show an alert if invalid; do not advance until the step passes.
 
 ### API Extensions
 
-No API extensions to create payloads. The wizard consumes existing `ComputeInstanceCatalogItems`, `ClusterCatalogItems`, `InstanceTypes`, networking list APIs (`GET /api/fulfillment/v1/virtual_networks`, `.../subnets`, `.../security_groups`), `HostTypes.List` (`GET /api/fulfillment/v1/host_types`), and create APIs. Server-side catalog validation (`catalog_item_validation.go` / `applyFieldDefinitions`) still applies catalog `field_definitions` on create when the client omits a field the wizard left blank. The wizard does **not** use `ClusterTemplates.Get` for Configuration `node_sets`.
+No API extensions to create payloads. The wizard consumes existing `ComputeInstanceCatalogItems`, `ClusterCatalogItems`, `InstanceTypes`, networking list APIs (`GET /api/fulfillment/v1/virtual_networks`, `.../subnets`), `HostTypes.List` (`GET /api/fulfillment/v1/host_types`), and create APIs. It adds no NetworkACL API calls; ACL management remains outside this provisioning flow. It also does not read the provider-only NetworkClass, so Review reports the deployment-policy fallback generically when a Subnet has no associated NetworkACL. Catalog network policies are resolved server-side as defined in OSAC-3538: Cluster CIDR policies affect the materialized Cluster, and the `network_attachments` policy remains Catalog-governable but does not filter items in the wizard. For a locked attachment list, the UI displays its Subnet read-only and omits the attachment field from the create request so fulfillment applies the policy. When policy is absent or editable without a default, the normal picker is used. V1 assumes no editable attachment default or field-specific validation; normal policy resolution and API/resource validation apply. Existing non-network Catalog behavior is described separately; the wizard does **not** use `ClusterTemplates.Get` for Configuration `node_sets`.
 
 ### Implementation Details/Notes/Constraints
 
@@ -165,13 +165,13 @@ Each component wraps a PatternFly `FormGroup` (label, `fieldId`, `isRequired`, h
 
 **i18n:** All user-visible wizard copy uses i18next via `useTranslation` from `@osac/ui-components/hooks/useTranslation` (never import from `react-i18next` directly). Use hardcoded string keys in `t('...')` so `pnpm i18n` can extract keys into `libs/i18n/locales/en/translation.json` (committed with source changes; CI fails if out of sync). Apply to step titles, intros, field labels (wizard defaults), buttons, validation alert text, node-sets add/remove actions, and Review section headings. Catalog `display_name` from `field_definitions` overrides the wizard default label when present and is shown as-is (server-provided, not passed through `t()`). Pure helpers (e.g. `getReviewSections`, static field descriptors) accept `t: TFunction` from the calling component rather than calling `useTranslation` internally.
 
-Adapter steps use Formik context, own API hooks and loading UI, and export Yup fragments. Shared helpers: `buildWizardSchema` (compose adapter fragments + overlay merge for non-picker Configuration/Networking paths and General basics), `applyCatalogOverlay`, `validateStepFields` (subset validation for the current step). Paths use PRD `spec.*` notation; wire builders output camelCase OpenAPI shapes.
+Adapter steps use Formik context, own API hooks and loading UI, and export Yup fragments. Shared helpers: `buildWizardSchema` (compose adapter fragments + existing non-network Catalog overlay for Configuration and General basics), `applyCatalogOverlay`, and `validateStepFields` (subset validation for the current step). Network policy resolution and presentation use the typed Catalog contracts in OSAC-3538; normal Yup and API/resource validation remains in force. Paths use PRD `spec.*` notation; wire builders output camelCase OpenAPI shapes.
 
-**Formik/Yup:** Single `<Formik>` in the orchestrator with one wizard-level Yup schema from `adapter.getWizardSchema(fieldDefinitions)` — not per-step schemas. A single schema lets future cross-step rules reference values from any step (e.g. Networking validation depending on Configuration choices) without re-plumbing. Validate-on-Next runs Yup against only the current step's field paths via `adapter.getStepFieldPaths(stepId)` while the full schema retains access to all `values`. Each step body: `OsacForm` → shared `InputField` / `SelectField` / `RadioButtonField` from `@osac/ui-components` bound to Formik state — no raw PatternFly `Form` and no duplicated error wiring. Overlay merge applies to General basics and non-picker Configuration and Networking fields. `editable: false` passes `isDisabled` to field components; catalog `default` is applied to Formik on catalog selection when present; merge `validation_schema` into Yup for the supported JSON Schema subset. Validate-on-Next uses the same Formik `errors` / `touched` state those components display. Yup validation messages that surface to the user should use i18n keys where the schema supports message overrides.
+**Formik/Yup:** Single `<Formik>` in the orchestrator with one wizard-level Yup schema from the adapter's non-network Catalog overlay and field schema — not per-step schemas. A single schema lets future cross-step rules reference values from any step without re-plumbing. Validate-on-Next runs Yup against only the current step's field paths via `adapter.getStepFieldPaths(stepId)` while the full schema retains access to all `values`. Each step body: `OsacForm` → shared `InputField` / `SelectField` / `RadioButtonField` from `@osac/ui-components` bound to Formik state — no raw PatternFly `Form` and no duplicated error wiring. Existing overlays apply to General basics and applicable non-network Configuration fields. Typed Catalog network policy states are presented according to OSAC-3538; locked values and untouched defaults are omitted from the client payload for server-side resolution. No `validation_schema` is merged for typed network policies. Normal Yup and final API/resource validation apply, and Validate-on-Next uses the same Formik `errors` / `touched` state those components display.
 
 **Catalog item change:** Do not use `enableReinitialize` — it would reset user edits whenever `initialValues` changes. Instead, `onCatalogItemSelected` explicitly calls `resetForm({ values: getInitialValues(item) })` and applies catalog overlay defaults so reinitialization happens only on intentional catalog selection, not on unrelated parent re-renders. Cluster catalog selection does **not** fetch `ClusterTemplates.Get` or seed `spec.node_sets` from the template.
 
-**PRD §5 decisions (v1):** Ignore catalog `field_definitions` on picker-backed paths (`spec.instance_type`, `spec.network_attachments`, `spec.node_sets` host type picker). No wizard UI for `spec.additional_disks` — boot disk only. Cluster `node_sets` are tenant-composed (add/remove rows); template `node_sets` are ignored. PRD `?` fields are **optional**: `spec.boot_disk.size_gib`, `spec.network.pod_cidr`, and `spec.network.service_cidr` — omit from payload when blank. `spec.ssh_key` / `spec.ssh_public_key` are optional basics fields — prefill catalog `default` when defined; omit from client payload only when blank.
+**PRD §5 decisions (v1):** Generic `field_definitions` remain ignored on picker-backed `spec.instance_type` and `spec.node_sets` host type. `network_attachments` is governable through its OSAC-3538 typed policy; the wizard does not filter Catalog Items. A locked list is shown read-only and omitted from the client payload so fulfillment applies it; normal policy resolution does not reject a value that the wizard never sends. V1 assumes no editable attachment default or field-specific validation. Cluster CIDR fields honor typed `StringFieldPolicy` states. No wizard UI for `spec.additional_disks` — boot disk only. Cluster `node_sets` are tenant-composed (add/remove rows); template `node_sets` are ignored. Requiredness and blank-payload behavior for PRD `?` fields — `spec.boot_disk.size_gib`, `spec.network.pod_cidr`, and `spec.network.service_cidr` — remain unresolved in PRD §5; this design does not mark them optional or specify omission when blank. Locked Catalog CIDRs and untouched editable defaults are omitted from the client payload for server-side policy resolution as defined by OSAC-3538. `spec.ssh_key` / `spec.ssh_public_key` are optional basics fields — prefill catalog `default` when defined; omit from client payload only when blank.
 
 **Removed:** `partitionFieldDefinitions`, generic `ConfigurationStep`/`CatalogFieldInput`, `canProceedWizardStep`, text-based networking rows, catalog-driven field discovery. Replaced by static field tables, `OsacForm`, and Formik-connected `InputField` / `SelectField` / `RadioButtonField` components.
 
@@ -289,9 +289,14 @@ apps/app-frontend/src/pages/
 |----------|--------|
 | Happy path VM | Select catalog item → fill required fields on each step → Review shows same labels/values as steps |
 | Happy path cluster | Tenant adds one or more node set rows; selects host type from dropdown and node count; Review lists host type and size per row |
-| Optional basics / config fields left blank | Review shows empty/omitted state; client payload omits those keys (assert via mocked create handler) |
+| PRD-resolved optional fields left blank | Review shows the empty/omitted state defined for those fields; the client omits their keys as specified by the PRD |
+| Unresolved boot-disk size or Cluster CIDR requiredness | Do not assert these fields are optional or omitted when blank; implement payload and validation coverage after the PRD decision |
 | Catalog ssh_key default on select | General SSH field prefilled with parsed catalog default; create payload includes plain-string `ssh_key` unless tenant clears the field |
-| Single-option picker lists | Instance type / VN / subnet / SG auto-selected; value visible on Review after Back |
+| VM Catalog attachment policy is locked | Catalog Item remains selectable; locked Subnet appears read-only on Networking and Review; client omits `network_attachments` so fulfillment applies the locked list; Review shows the Subnet's associated NetworkACL context when present |
+| VM Catalog attachment policy is absent or editable without a default | Normal Subnet picker is available and its selected attachment is sent; API validates reference scope and the one-attachment limit |
+| No-ACL Subnet Review, deployment action `PERMIT` | Review shows the generic deployment-policy fallback note; it does not claim to read or display the provider-only action value |
+| No-ACL Subnet Review, deployment action `DENY` | Review shows the same generic deployment-policy fallback note; it does not claim to read or display the provider-only action value |
+| Single-option picker lists | Instance type / VN / subnet auto-selected when each list returns exactly one option; the Subnet's optional ACL is read-only context on Review, or generic deployment-policy fallback guidance is shown when none is associated |
 
 #### Submit and API errors
 
@@ -306,9 +311,9 @@ apps/app-frontend/src/pages/
 #### Adapter-specific component tests
 
 - **VM Configuration:** OS family radio toggles `spec.is_windows`; obsolete instance types excluded from picker options.
-- **VM Networking:** Subnet/SG lists filter after VN selection; changing VN clears dependent picks unless auto-select applies.
+- **VM Networking:** Subnet lists filter after VN selection; changing VN clears dependent picks unless auto-select applies. Cover absent, locked, and editable-without-default `network_attachments` policies: Catalog Items remain selectable; a locked Subnet is read-only and the request omits `network_attachments`; absent/editable-without-default policies use the normal picker and send the selected Subnet. API/resource validation checks the reference and one-attachment limit. The selected Subnet determines the optional NetworkACL association; the wizard has no ACL picker and shows generic deployment-policy fallback guidance when no ACL is associated.
 - **Cluster Configuration:** Tenant can add/remove node set rows; host type dropdown from `HostTypes.List`; `host_type` and `size` > 0 validated per row; at least one row required; duplicate host types blocked; payload map key = host type id.
-- **Cluster Networking:** Optional CIDR fields — empty allowed; invalid format blocked on Next only when non-empty.
+- **Cluster Networking:** Cover absent, locked, editable-without-default, and editable-with-default `StringFieldPolicy` states for both CIDRs; locked values are read-only and omitted from the request, untouched defaults are prefilled but omitted, tenant changes are sent, and normal CIDR/API validation applies without Catalog `validation_schema`.
 
 Component tests are required for merge; add cases when fixing wizard regressions.
 
@@ -320,3 +325,18 @@ Component tests are required for merge; add cases when fixing wizard regressions
 ### Manual smoke
 
 End-to-end VM and cluster provision via `/vms/create` and `/clusters/create`; cluster wizard with manually added node sets and host type dropdown; submit with optional fields left blank; verify Details page after successful create.
+
+---
+
+---
+
+## Provenance
+
+Authored: manual-edit [manual] @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82
+
+> Context changed between manual-edit and revise.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["manual-edit","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-28
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -18,7 +18,7 @@ superseded-by:
 
 # VMaaS Networking — Optional Attachments and Auto External Access
 
-This enhancement extends the unified networking API to support VMaaS-specific requirements: a single ComputeInstance network attachment with an implicit primary/default route, optional network attachments with tenant defaults, and auto-provisioned external access (ExternalIP). The repeated attachment field is retained for API compatibility and is validated to contain at most one entry.
+This enhancement extends the unified networking API to support VMaaS-specific requirements: a single ComputeInstance network attachment with an implicit primary/default route, optional network attachments with tenant defaults, subnet-associated NetworkACL policy, and auto-provisioned external access (ExternalIP). The repeated attachment field is retained for API compatibility and is validated to contain at most one entry.
 
 ## Summary
 
@@ -38,13 +38,13 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
-ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhancement keeps the existing repeated attachment field optional (populating it with tenant defaults when omitted), enforces a maximum of one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. See [PRD](prd.md) for detailed requirements.
+ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhancement keeps the existing repeated attachment field optional (populating its subnet from tenant defaults when omitted), enforces a maximum of one entry, applies the policy of the NetworkACL associated with that subnet, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
 ComputeInstance already participates in the networking API. Today's flow:
 
-1. Tenant creates VirtualNetwork, Subnet, SecurityGroup via API
+1. Tenant creates VirtualNetwork and Subnet, and associates a NetworkACL with the Subnet via API
 2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
 3. Tenant creates ComputeInstance with `network_attachments` (`ComputeNetworkAttachment`, no `primary` field, single-NIC only)
 4. osac-operator's ComputeInstance controller resolves subnet → namespace, triggers AAP job
@@ -94,23 +94,36 @@ ComputeInstance already participates in the networking API. Today's flow:
    - fulfillment-service → creates VirtualNetwork CR
    - osac-operator VirtualNetwork controller → dispatcher resolves NetworkClass → calls `osac.templates.{{ fabric_manager }}.create_virtual_network`
    - Fabric manager creates isolated tenant segment on the fabric
+   - Wait until `VirtualNetwork.status.phase == "Ready"` before creating a NetworkACL or Subnet. This gate also applies when creating a Subnet without an ACL association.
 
-2. **Tenant creates Subnet:**
+2. **Tenant creates NetworkACL:**
    ```bash
-   osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
+   osac create network-acl --virtual-network my-net --name my-acl \
+     --ingress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
+     --ingress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
+   - NetworkACLs have no seeded rules. An ACL with empty ingress and egress lists contributes no matching decisions, so the required deployment default ACL action decides traffic. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range and include explicit reverse-direction rules for replies. The higher destination-port ranges also permit new TCP connections from those peer CIDRs to ports in those ranges; a stateless ACL cannot distinguish replies from new connections. Restrict both peer CIDRs and port ranges to the intended trust boundary, and replace the documentation CIDRs with trusted deployment ranges. The reverse rules are needed to permit replies under a `DENY` fallback; with `PERMIT`, unmatched replies pass unless a matching reverse-direction `DENY` rule applies.
+   - The NetworkACL has independent ingress and egress rules. Rules contain an allow or deny action, protocol, optional TCP/UDP destination port range, and IPv4 CIDR.
+   - Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic uses the required deployment default ACL action.
+   - The ACL is stateless. Ingress and egress, including replies in the reverse direction, are evaluated independently. Under a `DENY` fallback, the reverse rules above permit response packets to their destination ephemeral ports; under `PERMIT`, unmatched replies pass unless a matching reverse-direction `DENY` rule applies.
+   - Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
+   - NetworkACL rule lists are fixed at creation. Changing policy requires deleting and recreating the affected networking resources; workload attachments are also immutable.
+
+3. **Tenant creates Subnet:**
+   - If using `--network-acl`, first wait until
+     `NetworkACL.status.phase == "Ready"`; the API rejects a non-READY ACL
+     before persisting or provisioning the Subnet.
+   ```bash
+   osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
+     --network-acl my-acl --name my-subnet
+   ```
+   - `Subnet.spec.network_acl` may be omitted or reference one READY NetworkACL in the same VirtualNetwork. An omitted reference remains unset and the deployment default ACL action applies where no rule matches. An ACL may be reused by other Subnets in that VirtualNetwork; any explicit association is immutable after Subnet creation.
    - osac-operator Subnet controller → dispatcher resolves NetworkClass → triggers TWO AAP jobs (multi-job tracking per OSAC-1459):
      - `osac.templates.{{ fabric_manager }}.create_subnet` — creates VLAN / fabric segment
      - `osac.templates.{{ k8s_manager }}.create_subnet` — creates CUDN overlay on each hosting cluster, bridges to the fabric segment
-   - After both complete: subnet is Ready. The CUDN namespace is the deployment target for VMs.
-
-3. **Tenant creates SecurityGroup:**
-   ```bash
-   osac create security-group --virtual-network my-net --name my-sg \
-     --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
-   ```
-   - Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
-   - Fabric manager creates ACL rules on the fabric
+   - After subnet and ACL association are Ready: the CUDN namespace is the deployment target for VMs.
 
 #### VM Creation
 
@@ -118,7 +131,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    ```bash
    # Explicit networking:
    osac create computeinstance --template ocp_virt_vm \
-     --network-attachment subnet=my-subnet,security-groups=my-sg \
+     --network-attachment subnet=my-subnet \
      --name my-vm
 
    # Or with defaults + auto external access:
@@ -126,10 +139,11 @@ ComputeInstance already participates in the networking API. Today's flow:
      --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
-     - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet and default SecurityGroup (see Default Networking PRD)
-     - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, and a missing or empty SecurityGroup list receives the tenant default SecurityGroup only when the resolved Subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork; supplied values are preserved
-     - Validates: at most one attachment; the subnet is Ready and the security groups belong to the same VN
-     - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP in the same DB transaction as the ComputeInstance — ExternalIP starts in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. ExternalIPAttachment is **not** created at this point — it is deferred to the fulfillment-service internal reconciler, which creates it only after the ExternalIP is Allocated and the ComputeInstance is Ready. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow.
+     - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet (see Default Networking PRD)
+     - If one attachment is supplied, defaults only a missing Subnet; supplied values are preserved
+     - Validates: at most one attachment; the Subnet is Ready, including completion of any NetworkACL association. With the `cudn_evpn` manager, VM placement also requires that the parent VirtualNetwork has exactly one Subnet and that the target Subnet has a READY CUDN and an Active, non-terminating target Namespace, as defined in the OSAC-4291 design.
+     - Any NetworkACL associated with the Subnet refines the deployment default policy for this VM and every other workload attached to the Subnet; if no ACL is associated, the deployment default action applies. ACL rules and the Subnet association are immutable after creation; changing them requires recreating the affected networking resources.
+     - If `auto_external_ip_attachment == true`: selects a READY ExternalIPPool with the most available capacity, reserves capacity, and creates an ExternalIP in the same DB transaction as the ComputeInstance. The ExternalIP starts in **Pending** state. If the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachment is created only after the ExternalIP is Allocated and the ComputeInstance is READY. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment).
    - Creates ComputeInstance CR with `network_attachments`
 
 5. **osac-operator ComputeInstance controller:**
@@ -146,7 +160,6 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Reads `subnet-target-namespace` → deployment namespace
    - Reads `network_attachments`:
      - With one attachment: creates VM with one `l2bridge` interface in the subnet's CUDN namespace. That attachment gets the default gateway.
-   - Reads `securityGroupRefs` → adds as pod labels
    - Creates DataVolume + KubeVirt VirtualMachine
    - VM gets IP from each CUDN (via DHCP)
    - VM is on the fabric (overlay bridged at subnet creation)
@@ -179,8 +192,8 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 9. **Delete ComputeInstance:**
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-created: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
-   - **Manually created ExternalIPAttachments block deletion** — if the tenant created ExternalIPAttachments explicitly (not labeled `osac.openshift.io/auto-created`), the delete request is rejected. The tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
-   - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
+   - **Manually created ExternalIPAttachments block workload deletion** — the tenant must remove any active attachment targeting the ComputeInstance before deleting it. Other manually created ExternalIPs remain tenant-managed and are not cascade-deleted.
+   - **Default networking resources (VirtualNetwork, Subnet, and NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
    - Template deletes KubeVirt VM + DataVolume
    - No `move_network_attachment` call — the VM lives on the CUDN overlay, not a fabric switch port, so it is never parked or port-moved (the port-move primitive and parking apply only to fabric-attached BM servers and CaaS agents)
@@ -198,7 +211,7 @@ Use the existing `ComputeNetworkAttachment` field with a single-entry limit:
 ```protobuf
 message ComputeNetworkAttachment {
   SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
-  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
+  reserved 2; // Former attachment-level policy reference; policy is configured on Subnet
 }
 
 message ComputeInstanceSpec {
@@ -267,9 +280,9 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 | fulfillment-service | Validate network_attachments, create CR, auto-provision ExternalIP, write `compute_network_attachment_statuses` from feedback |
 | osac-operator ComputeInstance controller | Resolve subnet → namespace, trigger AAP, clean up auto-provisioned resources |
 | osac-operator ComputeInstance feedback controller | Watch KubeVirt VMI network status, discover per-attachment IPs, Signal fulfillment-service |
-| osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SG, ExternalIP) |
+| osac-operator networking controllers | Dispatch VirtualNetwork, Subnet, NetworkACL, and ExternalIP operations; keep Subnet readiness gated on ACL association |
 | AAP template (ocp_virt_vm) | Create single-NIC KubeVirt VM in correct namespace |
-| fabric_manager (Ansible role) | VN/Subnet/SG/ExternalIP provisioning; no per-VM call |
+| fabric_manager (Ansible role) | VN/Subnet/NetworkACL/ExternalIP provisioning; no per-VM call |
 | k8s_manager (Ansible role) | Create CUDN overlay at subnet creation; no per-VM call |
 
 #### Primary Attachment Resolution
@@ -288,20 +301,25 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 
 The existing repeated `network_attachments` field is retained unchanged for API
 compatibility. The server and operator validate that it contains at most one
-entry; omitted and empty lists invoke default resolution, while a supplied
-single entry receives defaults only for missing fields. No new singular field or
-dual-field migration is required. The sole VM attachment is implicitly
-primary/default, and changing any resolved attachment field requires deleting
-and recreating the VM.
+entry; omitted and empty lists resolve to the tenant's default Subnet, while a
+supplied single entry receives a default only for a missing Subnet. The
+attachment carries no policy reference: the Subnet's `network_acl` association
+controls traffic for every attached workload. The sole VM attachment is
+implicitly primary/default, and changing its resolved Subnet requires deleting
+and recreating the VM. NetworkACL rules and Subnet-to-ACL associations are
+immutable after creation; changing policy requires recreating affected
+networking resources and may require recreating dependent workloads.
 
 ### Security Considerations
 
-This feature inherits the existing security model:
+This feature inherits the existing tenant isolation model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control VM inbound traffic (tenant-configurable via explicit SG or default SG)
-- The sole VM attachment uses the same SecurityGroup enforcement as the rest of the fabric
+- Any NetworkACL associated with the VM's Subnet refines the deployment default policy for every workload on that Subnet; if no ACL is associated, the deployment default action applies. The ACL is not stored on the VM attachment
+- Ingress and egress are evaluated independently using the shared match-specificity order; the first matching rule allows or denies traffic, and unmatched traffic uses the deployment default ACL action
+- Return traffic is evaluated independently in the reverse direction. With a `DENY` deployment fallback, a matching reverse-direction `ALLOW` rule must win precedence to permit a reply; with `PERMIT`, unmatched replies pass unless a matching reverse-direction `DENY` rule applies.
+- Same-Subnet traffic is not filtered by the Subnet NetworkACL. Cross-Subnet traffic must pass source-Subnet egress and destination-Subnet ingress policy
 
 ### Failure Handling and Recovery
 
@@ -327,8 +345,9 @@ This feature inherits the existing security model:
 No RBAC or tenancy changes. All new resources (ComputeInstance with its existing fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
 - OPA policies enforce tenant-scoped operations according to each resource API;
-  networking resources use create/list/get/delete and do not expose
-  update/patch, while supported non-network workload updates remain available
+  networking resources use read/create/delete; NetworkACL rules and
+  Subnet-to-ACL associations are immutable after creation. Supported
+  non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -404,7 +423,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 - fulfillment-service: max-one validation (accept no attachment or one attachment)
 - fulfillment-service: max-one `network_attachments` validation
-- fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
+- fulfillment-service: omitted and partial attachment defaulting (an omitted Subnet resolves to the unassociated tenant default Subnet and uses the deployment default action; an explicitly selected Subnet may have an optional NetworkACL association that refines the deployment default policy for all workloads there)
 - fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (implicit single attachment)
@@ -412,10 +431,12 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 ### Integration Tests
 
 - E2E: create ComputeInstance with two attachments, verify the API rejects the request
-- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
+- E2E on `cudn_evpn`: reject VM placement unless the parent VirtualNetwork has exactly one Subnet and the target Subnet has a READY CUDN and Active, non-terminating Namespace
+- E2E: create ComputeInstance with `--external-ip-attachment`, verify the ExternalIPAttachment is created only after the ExternalIP is Allocated and the ComputeInstance is READY, then verify DNAT is functional
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance in BM-only deployment, verify error returned
-- E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route
+- E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route and any ACL associated with the Subnet refines the deployment default policy; otherwise the deployment default action governs unmatched traffic
+- E2E: verify specificity-based matching, first-match allow/deny, both deployment fallback actions, unmatched replies under `PERMIT`, reverse-direction `ALLOW` rules under `DENY`, same-Subnet bypass, and independent source-egress/destination-ingress checks across Subnets
 
 ### Tricky Test Cases
 
@@ -448,21 +469,25 @@ GA criteria:
 ### Upgrade
 
 Micro version upgrades (`x.y.N → x.y.N+2`):
-- The repeated `network_attachments` field remains wire-compatible, with validation limiting new requests to one entry
-- No user action required
+- The repeated `network_attachments` field remains wire-compatible for the Subnet-only attachment shape. Existing network policies must be mapped to NetworkACL rules on READY Subnets, including reverse-direction rules when needed to permit replies under the selected deployment fallback and matching rules.
+- Tenants may need to recreate workloads when different policies require separate Subnets. Existing single-attachment resources remain usable after their Subnets have READY NetworkACL associations.
 
 Minor version upgrades (`x.N → x.N+1`):
 - The CLI and API continue using the existing `--network-attachment` flag and `network_attachments` field
-- No breaking changes — existing single-attachment resources remain functional
+- The single-attachment shape remains compatible after each workload's Subnet has a READY NetworkACL association. Workloads that need policy separation across Subnets require recreation.
 
 ### Downgrade
 
-If `N+1` upgrade fails or cluster is misbehaving:
-- Manual rollback: update fulfillment-service and osac-operator images to `N`
-- Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
-
-Acceptable downgrade steps:
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`)
+VMaaS rollback follows the coordinated procedure in the
+[Unified Networking Downgrade section](/enhancements/OSAC-1433-unified-networking/design.md#downgrade).
+After ACL cutover begins, rolling back only fulfillment-service or
+osac-operator is unsupported. Freeze network and workload writes, restore the
+pre-upgrade database, networking resources, NetworkClass configuration, and
+workload attachment state with no ACL-only objects or Subnet associations,
+then roll back the API and CRD schemas, fulfillment-service, osac-operator,
+networking controllers, configured networking manager, and clients together.
+If the pre-upgrade state cannot be restored, keep the ACL-aware release and
+fix forward.
 
 ## Version Skew Strategy
 
@@ -535,3 +560,15 @@ Consequences:
 - AAP execution environment with `osac.templates.ocp_virt_vm` role updated for single-NIC support
 - k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
 - Integration test environment with CUDN or EVPN fabric
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+
+> Context changed between revise and respond.
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

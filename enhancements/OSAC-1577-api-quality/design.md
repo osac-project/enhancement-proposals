@@ -3,7 +3,7 @@ title: api-quality
 authors:
   - htayrie@redhat.com
 creation-date: 2026-07-26
-last-updated: 2026-09-16
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1577
 prd:
@@ -254,7 +254,8 @@ Tables requiring `active_` companions (based on existing Pattern A triggers):
 | Table | Reason |
 |-------|--------|
 | `active_subnets` | Referenced by each ComputeInstance network attachment |
-| `active_virtual_networks` | Referenced by subnets, security_groups, nat_gateways |
+| `active_virtual_networks` | Referenced by subnets, network_acls, nat_gateways |
+| `active_network_acls` | Referenced by Subnets that have a `network_acl` association |
 | `active_instance_types` | Referenced by compute_instances |
 | `active_cluster_catalog_items` | Referenced by clusters |
 | `active_compute_instance_catalog_items` | Referenced by compute_instances |
@@ -319,15 +320,22 @@ CREATE TABLE compute_instance_subnet_refs (
   subnet_id TEXT NOT NULL REFERENCES active_subnets(id),
   PRIMARY KEY (compute_instance_id, attachment_index)
 );
+
+CREATE TABLE subnet_network_acl_refs (
+  subnet_id TEXT NOT NULL REFERENCES subnets(id) ON DELETE CASCADE,
+  network_acl_id TEXT NOT NULL REFERENCES active_network_acls(id),
+  PRIMARY KEY (subnet_id)
+);
 ```
 
 A trigger on `compute_instances` materializes one row for every entry in the
 ComputeInstance network-attachment array from the JSONB `data` column. The
 `attachment_index` is the zero-based position in that immutable array and is
-the attachment-level identity for this dependency table; it allows multiple
-attachments to reference the same subnet. For ComputeInstance network
-attachments governed by [OSAC-1433](../OSAC-1433-unified-networking/design.md),
-the attachment list and its fields are create-time inputs and cannot be
+the attachment-level identity for this dependency table. Under
+[OSAC-1433](../OSAC-1433-unified-networking/design.md), a ComputeInstance has
+at most one tenant network attachment, and that attachment carries only its
+Subnet reference; the Subnet's NetworkACL association supplies traffic policy.
+The attachment list and its fields are create-time inputs and cannot be
 updated in place:
 
 - **INSERT** (active instance): iterate every network attachment, extract its
@@ -346,6 +354,19 @@ updated in place:
 
 The FK from `subnet_id` to `active_subnets(id)` enforces that the referenced subnet is active. Migration backfill inserts refs only for currently active compute instances (`deletion_timestamp = 'epoch'`).
 
+Subnet network policy is an optional resource reference: a Subnet may have
+zero or one active NetworkACL association. For each explicit association,
+materialize one row in `subnet_network_acl_refs` with `network_acl_id`
+referencing `active_network_acls(id)`; an unassociated Subnet has no row. The
+table's primary key on `subnet_id` enforces at most one association. Subnet
+creation writes a row only when its persisted `spec.network_acl` is set.
+Soft-delete removes that row; undelete restores it only when the persisted
+association is set, and the foreign key rejects restoration if the NetworkACL
+is inactive. Updates to unrelated Subnet fields do not change the row because
+the association is immutable. Hard-delete cascades through `subnet_id`. The
+reference prevents deleting an ACL while any active Subnet remains associated
+with it.
+
 ##### Migration Strategy
 
 A single migration (next available number after 79), executed in one transaction:
@@ -357,24 +378,44 @@ A single migration (next available number after 79), executed in one transaction
 5. Attach `maintain_active_objects` triggers to parent tables
 6. Create or migrate materialized ref tables for each parent-child relationship;
    `compute_instance_subnet_refs` uses the composite primary key
-   `(compute_instance_id, attachment_index)` rather than one row per instance
-7. Backfill ref tables from existing JSONB data (active instances only:
-   `WHERE deletion_timestamp = 'epoch'`), inserting one row per network
-   attachment with its stable array index
-8. Attach ref materialization triggers to child tables
-9. Drop the old per-resource Pattern A triggers (e.g., `DROP TRIGGER check_subnets_not_in_use ON subnets`)
-10. Drop the old per-resource Pattern A trigger functions (e.g., `DROP FUNCTION check_subnets_not_in_use()`) from migrations 52, 55, 56, 59, 73, 76
+   (`compute_instance_id, attachment_index`) rather than one row per instance
+7. For each active Subnet with an explicit `spec.network_acl` association,
+   preflight its persisted `spec.network_acl.id` and verify it resolves to an
+   active row in `active_network_acls`. Run this check after source tables are
+   locked and active tables are populated, within the same transaction. If an
+   explicit association is unresolved or inactive, raise an error that
+   identifies its tenant and Subnet and abort before ACL-reference backfill.
+   An unset association is valid and requires no ACL-reference row. Do not
+   infer or assign an ACL to legacy Subnets automatically.
+8. Backfill ref tables from existing JSONB data for active resources
+   (`WHERE deletion_timestamp = 'epoch'`): insert each ComputeInstance
+   attachment with its stable array index into
+   `compute_instance_subnet_refs`, and insert each active Subnet's persisted
+   NetworkACL association into `subnet_network_acl_refs` only when one is set
+9. Attach ref materialization triggers to `compute_instances` and `subnets`
+10. Drop the old per-resource Pattern A triggers (e.g., `DROP TRIGGER check_subnets_not_in_use ON subnets`)
+11. Drop the old per-resource Pattern A trigger functions (e.g., `DROP FUNCTION check_subnets_not_in_use()`) from migrations 52, 55, 56, 59, 73, 76
 
 The existing Pattern B helper tables (`tenant_domains`, `project_membership_subjects`, `storage_tier_backends`) are unaffected — they enforce uniqueness constraints, not soft-deletion constraints.
 
 ##### DAO Error Translation
 
-PostgreSQL FK violations produce SQLSTATE `23503` (foreign_key_violation). The generic DAO's `translateError` must map `23503` to either `ErrReference` (Z0002) or `ErrInUse` (Z0003) based on the constraint name, not the operation type alone:
+PostgreSQL FK violations produce SQLSTATE `23503` (foreign_key_violation).
+The generic DAO's `translateError` uses both the constraint and the DAO
+operation context to map `23503` to `ErrReference` (Z0002) or `ErrInUse`
+(Z0003). Constraint name alone is insufficient when the same relationship
+constraint can fail in opposite directions:
 
-- FK on `<child>_refs` table referencing `active_<parent>(id)` → `ErrReference` (child references inactive parent). Triggered by INSERT or UPDATE on the child.
-- FK on `active_<parent>(id)` referenced by a `_refs` table → `ErrInUse` (parent has active children). Triggered by DELETE from `active_<parent>` during soft-delete.
+- A child-reference write that targets an inactive parent → `ErrReference` (Z0002).
+- A parent soft-delete blocked by an active child reference → `ErrInUse` (Z0003).
 
-Constraint names follow a naming convention that encodes direction: `<child_table>_<parent>_id_fkey` for child-to-parent references, allowing the error translator to classify without relying on the calling operation.
+For the Subnet-to-NetworkACL relationship, the same foreign-key constraint on
+`subnet_network_acl_refs.network_acl_id` can fail while inserting an
+association to an inactive ACL or while deleting an ACL that an active Subnet
+still references. The first is `ErrReference`; the second is `ErrInUse`. The
+translator must use the operation context as well as the SQLSTATE and
+constraint details rather than assuming the constraint name identifies the
+failure direction.
 
 ##### CheckSchema Updates
 
@@ -395,6 +436,9 @@ c.relname not in (
     'active_compute_instance_catalog_items',
     'active_storage_backends',
     'compute_instance_subnet_refs',
+    -- OSAC-1433 additions:
+    'active_network_acls',
+    'subnet_network_acl_refs',
     -- ... additional ref tables
 )
 ```
@@ -544,8 +588,12 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 - Verify that inserting a child referencing an active parent succeeds
 - Verify that inserting a child referencing a soft-deleted parent raises `ErrReference`
 - Verify that soft-deleting a parent with active children raises `ErrInUse`
+- Verify that a Subnet association insert referencing an inactive NetworkACL
+  raises `ErrReference`, while deleting that referenced ACL raises `ErrInUse`
+  even though both failures involve the same foreign-key constraint.
 - Verify that soft-deleting a parent with no active children succeeds
 - Verify that hard-deleting a row removes it from `active_<table>`
+- Verify that an explicitly associated Subnet's NetworkACL reference is removed on soft-delete, restored on undelete, and blocks NetworkACL soft-delete while the Subnet is active; an ACL-less Subnet has no reference row
 
 **OSAC-1540:**
 - Verify that consolidated `translateError` returns correct error types for all SQLSTATE codes across create, update, and delete operations
@@ -560,7 +608,12 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 **OSAC-1331:**
 - Create a parent resource, create a child referencing it, attempt to soft-delete the parent — verify rejection with ErrInUse
 - Create a parent, soft-delete it, attempt to create a child referencing it — verify rejection with ErrReference
+- For the Subnet-to-NetworkACL relationship, verify that the same foreign-key
+  constraint maps a failed association create to ErrReference and a blocked ACL
+  delete to ErrInUse.
 - Create a parent, create a child, delete the child, then soft-delete the parent — verify success
+- Create a Subnet with a NetworkACL association, soft-delete and undelete the Subnet, then verify the ACL reference is restored and prevents ACL deletion
+- Run the migration preflight with an active Subnet whose ACL association is unset and verify migration succeeds without an ACL-reference row. With an explicit association that is unresolved or inactive, verify the transaction aborts with tenant and Subnet details before inserting ACL-reference rows. After repairing the explicit association to an active ACL, verify the backfill succeeds.
 - Concurrent test: two requests simultaneously — one soft-deleting a parent, one creating a child — verify that exactly one succeeds
 
 ### E2E Tests
@@ -602,3 +655,16 @@ All three epics modify the fulfillment-service only. Since OSAC does not support
 ## Infrastructure Needed
 
 None. All changes use existing build and test infrastructure. protoc-gen-cleanapi is built from source or installed via `go install` — no new external service dependencies.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+
+> Context changed between revise and respond.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

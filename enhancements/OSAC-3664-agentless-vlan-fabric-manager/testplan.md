@@ -2,12 +2,37 @@
 
 ## Overview
 
+**Last updated:** 2026-09-24
+
+**Mandatory support boundary:** Every supported profile must enforce the
+deployment-wide default ACL action on each Subnet before it can be Ready. If a
+Subnet has an explicit NetworkACL association, that ACL's rules must also be
+actively enforced before readiness. The agentless backend does not implement
+that policy enforcement, so this milestone cannot serve the shared networking
+API or be selected as a supported fabric manager. Reject selection; if a
+mismatch reaches reconciliation, the Subnet and its dependents remain not
+Ready. No API-ready workload/data-plane case is executable against this
+backend in this milestone. Future positive cases must configure the deployment
+default action and verify its enforcement; if a test Subnet has an explicit ACL,
+verify that policy is active before readiness.
+
+**Current positive data-plane cases:** TC-FR3-01 through TC-FR3-03 and
+TC-NFR3-01 through TC-NFR3-02 are raw topology tests only. Their fixtures create
+VLAN/namespace/route state directly; they must not create API Subnets, attach API
+workloads, assert Ready status, or claim NetworkACL enforcement. Other positive
+API/resource cases in this test plan are future acceptance criteria and are
+deferred until this backend enforces the deployment default action and any
+explicitly associated NetworkACL rules.
+
+
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
 - **Design task:** OSAC-4307
 - **Design:** [design.md](design.md)
 - **Authority:** This requirement-anchored test plan is part of the design PR;
   the design document's Test Plan section is only a short strategy summary.
-- **Total test cases:** 34
+- **Total test cases (including future-gated cases):** 35
+- **Currently executable cases:** 8 (selection/rejection and raw topology only)
+- **Deferred until effective policy enforcement:** 27
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 6 of 6
 
@@ -15,7 +40,7 @@
 
 ### FR-1: Backend selection
 
-#### TC-FR1-01: Register agentless_net as an IPv4 fabric manager
+#### TC-FR1-01: Keep agentless_net ineligible without effective policy enforcement
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -34,11 +59,12 @@
 
 ##### Expected Results
 
-- The ConfigMap has name agentless_net, role fabric, and capability ipv4.
-- The NetworkClass exposes agentless_net as the selected fabric manager.
+- A candidate ConfigMap may identify agentless_net and its IPv4 topology
+  capability, but it is not advertised as a supported fabric manager.
+- The registration cannot claim NetworkACL enforcement.
 - IPv6 and dual-stack capabilities are absent.
 
-#### TC-FR1-02: Select the backend through the existing provider configuration
+#### TC-FR1-02: Reject agentless_net as a supported fabric manager
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -46,22 +72,62 @@
 
 ##### Preconditions
 
-- The deployment supports the existing Netris backend selection mechanism.
-- Equivalent tenant networking requests are available for both backend profiles.
+- Every supported networking profile requires the deployment default action to
+  be enforced on each Subnet and requires any explicitly associated NetworkACL
+  rules to be enforced.
+- agentless_net does not implement or advertise that effective policy
+  enforcement.
 
 ##### Steps
 
-1. Select agentless_net through the provider configuration.
-2. Submit the same VirtualNetwork and Subnet requests used with the Netris
-   profile.
+1. Attempt to select agentless_net through provider configuration and through a
+   NetworkClass reference.
+2. Submit a Subnet request against a fixture containing a stale agentless
+   selection to exercise controller-side rejection.
 
 ##### Expected Results
 
-- Backend selection is changed only in provider configuration.
-- Tenant API request shapes and fields are unchanged.
-- The resources are dispatched to agentless_net rather than Netris.
+- Both selection attempts are rejected because agentless_net cannot satisfy the
+  effective Subnet policy readiness contract.
+- A stale selection does not dispatch a data-plane job; the Subnet and dependent
+  resources remain not Ready.
+- Tenant API requests do not gain backend-specific fields.
 
-### FR-2: Fabric-manager-agnostic networking
+#### TC-FR1-03: Keep mismatched Subnets and dependents not Ready
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1 | critical | automated |
+
+##### Preconditions
+
+- agentless_net is registered but does not advertise NetworkACL enforcement.
+- NetworkClass configures the deployment default action as `DENY`.
+- A Subnet has no ACL association, but the raw permit-all forwarding baseline
+  would pass unmatched traffic without enforcing that action.
+
+##### Steps
+
+1. In a controller test, inject a stale selection of agentless_net to exercise
+   the defensive readiness check.
+2. Attempt to attach a workload to the affected Subnet and observe Subnet and
+   attachment status and backend dispatch.
+
+##### Expected Results
+
+- The stale selection is rejected before a supported backend dispatch.
+- The Subnet and dependent attachment remain not Ready; the workload is not
+  permitted to use the Subnet.
+- The raw permit-all baseline is not treated as enforcement of the deployment
+  default action; the mismatched backend is rejected before API traffic can use it.
+
+### FR-2: Fabric-manager-agnostic networking (deferred until policy enforcement)
+
+These scenarios are future acceptance criteria. Their Ready outcomes are valid
+only after this backend enforces the deployment default action for every Subnet
+and the rules of any explicitly associated NetworkACL. A positive case may use
+an ACL-less Subnet when its configured deployment action permits the tested
+traffic.
 
 #### TC-FR2-01: Create the existing networking resource set
 
@@ -71,24 +137,45 @@
 
 ##### Preconditions
 
-- agentless_net is Ready in NetworkClass.
+- Run this case only after `agentless_net` enforces the deployment default
+  action and any explicitly associated NetworkACL rules and is eligible for
+  selection in NetworkClass.
 - The test tenant has the required authorization and tenant metadata.
 - A Cloud Infrastructure Admin fixture can create the provider-scoped
   ExternalIPPool; the tenant fixture cannot create or update that pool.
+- The test tenant can create tenant-scoped networking resources.
+- A test host is available for creating a BareMetalInstance on the Subnet.
+- The ExternalIPPool has capacity for at least two distinct allocations.
 
 ##### Steps
 
 1. Create an ExternalIPPool with the provider-admin fixture.
-2. Create a VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and
-   NATGateway with the tenant fixture through the existing API.
-3. Attempt to create or update the ExternalIPPool with the tenant fixture.
-4. Poll the corresponding CRs and fulfillment-service resources.
+2. Create a VirtualNetwork with the tenant fixture.
+3. Create a NetworkACL scoped to that VirtualNetwork, with explicit ingress
+   and egress rules for the flows under test. Wait until its policy is active
+   and it reaches Ready.
+4. Create a Subnet whose `spec.network_acl` explicitly references that
+   same-VirtualNetwork ACL. Wait until the policy is enforced on the Subnet and
+   the Subnet reaches Ready.
+5. Create a BareMetalInstance on the Ready Subnet with the test host fixture.
+   Wait until its primary private address is available.
+6. Create two ExternalIPs from the pool and wait until both are Allocated with
+   distinct addresses.
+7. Create an ExternalIPAttachment using the first ExternalIP and the
+   BareMetalInstance target. Create a NATGateway using the second ExternalIP
+   and the VirtualNetwork.
+8. Attempt to create or update the ExternalIPPool with the tenant fixture.
+9. Poll the corresponding CRs and fulfillment-service resources.
 
 ##### Expected Results
 
 - Each request is accepted without an agentless-specific API field.
 - The tenant cannot create or modify the provider-scoped ExternalIPPool.
-- Each corresponding resource reaches its expected Ready or Allocated state.
+- The Subnet references the READY NetworkACL in its VirtualNetwork, and its
+  readiness follows confirmation that the policy is enforced.
+- Each ExternalIP reaches Allocated with a distinct address. The
+  ExternalIPAttachment reaches Ready after the target address is available and
+  DNAT succeeds; the NATGateway reaches Ready after SNAT succeeds.
 - Each tenant-scoped CR retains both required tenant-isolation annotations.
 
 #### TC-FR2-02: Preserve the existing API contract for external access
@@ -99,13 +186,17 @@
 
 ##### Preconditions
 
-- An allocated ExternalIP has an address in status.
+- Two allocated ExternalIPs have distinct addresses in status.
 - A target resource has a primary private address.
+- The target Subnet is Ready under the deployment default action and any
+  explicitly associated NetworkACL policy.
 
 ##### Steps
 
-1. Create an ExternalIPAttachment with the existing externalIP and target fields.
-2. Create a NATGateway with the existing virtualNetwork and externalIP fields.
+1. Create an ExternalIPAttachment with the first ExternalIP and the existing
+   target fields.
+2. Create a NATGateway with the existing VirtualNetwork and the second
+   ExternalIP.
 3. Query the resources through the existing API.
 
 ##### Expected Results
@@ -115,9 +206,9 @@
   existing status path and reaches Ready only after DNAT succeeds.
 - NATGateway reports Ready after its SNAT job reaches a terminal success state.
 
-### FR-3: Multiple Subnets per VirtualNetwork
+### FR-3: Multiple Subnets per VirtualNetwork (raw topology tests only)
 
-#### TC-FR3-01: Keep same-Subnet traffic in one broadcast domain
+#### TC-FR3-01: Keep same-VLAN traffic in one broadcast domain (topology only)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -125,8 +216,8 @@
 
 ##### Preconditions
 
-- One Ready VirtualNetwork contains one Ready Subnet.
-- Two test interfaces are bound to the same Subnet VLAN.
+- The raw topology fixture creates one VirtualNetwork namespace and one VLAN.
+- Two test interfaces are bound to the VLAN; no OSAC API objects are created.
 
 ##### Steps
 
@@ -137,9 +228,10 @@
 
 - Both interfaces use the same VLAN and broadcast domain.
 - ARP resolves without a routed hop.
-- IPv4 traffic reaches the peer while the Subnet remains a single L2 domain.
+- IPv4 traffic reaches the peer in the raw topology fixture. No Subnet API
+  readiness or workload support is asserted.
 
-#### TC-FR3-02: Route cross-Subnet traffic by default
+#### TC-FR3-02: Route between raw VLAN segments (topology only)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -147,21 +239,21 @@
 
 ##### Preconditions
 
-- One Ready VirtualNetwork contains two Ready Subnets.
-- Test interfaces are bound to different Subnets.
+- The raw topology fixture creates two VLAN segments and their VirtualNetwork
+  namespace routes; no OSAC API objects or ACL readiness conditions are used.
 
 ##### Steps
 
-1. Send traffic between the Subnets.
+1. Send a flow between the raw VLAN segments.
 2. Repeat the traffic attempt after reconciliation and a controller restart.
 
 ##### Expected Results
 
-- The permit-all baseline routes the flow between Subnets.
-- Reconciliation and restart do not introduce a policy-dependent readiness gate
-  or change the routed result.
+- The raw flow follows the namespace routing table.
+- This case validates topology only; it does not represent an API-ready Subnet,
+  a workload attachment, or NetworkACL enforcement.
 
-#### TC-FR3-03: Isolate overlapping VirtualNetworks on the internal fabric
+#### TC-FR3-03: Isolate raw overlapping VirtualNetworks (topology only)
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -169,8 +261,9 @@
 
 ##### Preconditions
 
-- Two VirtualNetworks use overlapping IPv4 CIDRs.
-- Each VirtualNetwork has a Ready Subnet and an attached test interface.
+- The raw topology fixture uses overlapping IPv4 address ranges in separate
+  namespaces and attaches test interfaces directly; no OSAC API objects are
+  created.
 
 ##### Steps
 
@@ -183,7 +276,7 @@
 - Direct traffic to the other private address receives no successful response.
 - Each namespace contains only its own VirtualNetwork routing state.
 
-### FR-4: Automatic IP assignment
+### FR-4: Automatic IP assignment (deferred until policy enforcement)
 
 #### TC-FR4-01: Assign a DHCP address to a bare-metal attachment
 
@@ -326,7 +419,7 @@
 - The daemon restarts with the preserved lease and the same MAC/Subnet receives
   the same valid address without a duplicate lease.
 
-### FR-5: Inbound external access
+### FR-5: Inbound external access (deferred until policy enforcement)
 
 #### TC-FR5-01: Create DNAT after the target address is ready
 
@@ -338,8 +431,12 @@
 
 - An ExternalIP is Allocated with status.address populated.
 - The target has no primary private address at first, then receives one.
-- The supported external path is available, so the default forwarding baseline
-  permits the inbound test flow.
+- The target Subnet has a READY, explicitly associated NetworkACL whose policy
+  is enforced.
+- The supported external path is available, and the target Subnet NetworkACL
+  explicitly permits the inbound test flow and the corresponding egress reply
+  to the test client, including its destination port range. This makes the
+  data-plane check pass with either supported deployment fallback.
 - The provider-owned BGP peer is established and can report learned `/32`
   routes.
 
@@ -360,11 +457,12 @@
   the upstream BGP peer learns the route.
 - The attachment remains non-ready if ExternalIP allocation succeeds but the
   DNAT operation fails.
-- Inbound traffic reaches the target under the permit-all baseline, and the
-  attachment becomes Ready only after DNAT success and status feedback
-  confirmation.
+- Inbound data-plane checks pass only when the effective Subnet policy permits
+  both the inbound flow and its reply. An associated ACL must be active; when
+  no ACL is associated, the deployment default action decides whether each
+  direction is permitted.
 
-### FR-6: Outbound external connectivity
+### FR-6: Outbound external connectivity (deferred until policy enforcement)
 
 #### TC-FR6-01: SNAT permitted egress through the NATGateway ExternalIP
 
@@ -378,17 +476,27 @@
 - A NATGateway references that ExternalIP and a Ready VirtualNetwork.
 - The VirtualNetwork has two Ready Subnets, and the NATGateway state contains
   both source CIDRs.
-- The supported external path is available, so the permit-all baseline permits
-  the test egress flow.
+- Both source Subnets explicitly reference READY NetworkACLs in the same
+  VirtualNetwork, and enforcement is active on both before the NATGateway may
+  become Ready.
+- Test traffic originates from one of the source Subnets. Its NetworkACL permits
+  the egress flow and the corresponding response on ingress after reverse NAT.
+  Use an external endpoint that returns a response to the test traffic. If
+  enforcement is absent or unready on either source Subnet, the NetworkClass is
+  rejected or the dependent NATGateway remains not Ready.
 
 ##### Steps
 
-1. Send traffic from a Subnet interface to an external endpoint.
+1. Send traffic from a Subnet interface to an external endpoint that returns a
+   response.
 2. Inspect the endpoint's observed source address and the NATGateway status.
+3. Verify that the response reaches the originating Subnet interface.
 
 ##### Expected Results
 
 - The endpoint observes the NATGateway ExternalIP as the source address.
+- The external endpoint's response passes the source Subnet ingress policy after
+  reverse NAT and reaches the originating interface.
 - One explicit `SNAT --to-source` rule exists for each source CIDR; no
   host-side MASQUERADE changes the observed source.
 - The consumer-owned `/32` route is learned by the provider BGP peer.
@@ -420,7 +528,7 @@
   the Subnet VLAN, gateway, or DHCP state is released.
 - The NATGateway remains usable for the first Subnet throughout the churn.
 
-### FR-7: External IP pools
+### FR-7: External IP pools (deferred until policy enforcement)
 
 #### TC-FR7-01: Allocate an ExternalIP from the agentless state-file pool
 
@@ -532,7 +640,7 @@
 - Concurrent writers serialize on the stable sidecar lock and do not duplicate
   an ExternalIP or release capacity twice.
 
-### FR-8: Networking across all services
+### FR-8: Networking across all services (deferred until policy enforcement)
 
 #### TC-FR8-01: Perform BMF port bind and unbind through the generic contract
 
@@ -594,7 +702,7 @@
   change.
 - Full service provisioning remains assigned to OSAC-1611 and OSAC-3665.
 
-### FR-9: Failure visibility
+### FR-9: Failure visibility (deferred until policy enforcement)
 
 #### TC-FR9-01: Surface a switch-port or VLAN failure
 
@@ -671,7 +779,7 @@
 - New routes are advertised only after the restored data path is verified, and
   resources return to Ready after reconciliation.
 
-### FR-10: Lifecycle cleanup
+### FR-10: Lifecycle cleanup (deferred until policy enforcement)
 
 #### TC-FR10-01: Remove DNAT before releasing an ExternalIP
 
@@ -793,7 +901,7 @@
   consumer reservation remains held until the service acknowledges cleanup.
 - Pool capacity increases only after the reservation reaches `RELEASED`.
 
-### NFR-1: IPv4-only capability
+### NFR-1: IPv4-only capability (deferred until policy enforcement)
 
 #### TC-NFR1-01: Reject unsupported IPv6 and dual-stack requests
 
@@ -824,7 +932,9 @@
 
 ##### Preconditions
 
-- `agentless_net` is Ready with IPv4 capability.
+- `agentless_net` is Ready with IPv4 capability in a future supported
+  implementation, after it enforces the deployment default action on every
+  Subnet and rules for any explicitly associated NetworkACL.
 - A Ready VirtualNetwork has a supernet containing the candidate Subnet CIDRs.
 
 ##### Steps
@@ -844,9 +954,9 @@
 - The `/30` request is accepted with `10.20.2.5` as the gateway and the
   remaining usable address available to DHCP.
 
-### NFR-2: Netris parity for in-scope tenant behavior
+### NFR-2: physical fabric manager parity (future after effective Subnet policy enforcement)
 
-#### TC-NFR2-01: Compare core API behavior with the Netris backend
+#### TC-NFR2-01: Compare core API behavior with the physical fabric manager backend
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -854,7 +964,7 @@
 
 ##### Preconditions
 
-- Equivalent Netris and agentless test environments expose the same API.
+- Equivalent physical fabric manager and agentless test environments expose the same API.
 - The same tenant scenario is runnable against both backends.
 
 ##### Steps
@@ -865,15 +975,16 @@
 
 ##### Expected Results
 
-- Resource shapes and tenant-visible status fields match the existing API
-  contract.
+- After effective Subnet policy enforcement is implemented, resource shapes and
+  tenant-visible status fields match the existing API contract.
 - Same-Subnet, permitted cross-Subnet, and topology-isolation outcomes match
   for the in-scope backend behavior.
 - Backend selection does not add tenant-visible API fields.
-- SecurityGroup provisioning and policy enforcement are excluded from this
-  parity comparison.
+- Until that implementation exists, supported NetworkClass selection is rejected;
+  a mismatched configuration leaves the Subnet and dependent attachments not
+  Ready. The backend does not apply a permit-all fallback or claim ACL readiness.
 
-#### TC-NFR2-02: Compare external access behavior with the Netris backend
+#### TC-NFR2-02: Compare external access behavior with the physical fabric manager backend
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -893,15 +1004,17 @@
 
 ##### Expected Results
 
-- Both backends expose the same in-scope resource and status behavior.
+- After effective Subnet policy enforcement is implemented, both backends expose
+  the same in-scope resource and status behavior.
 - Inbound traffic reaches the target only through its ExternalIP after the
   attachment is Ready.
 - Outbound traffic observes the configured NATGateway ExternalIP.
 - Deletion removes only the resources' owned mappings.
-- SecurityGroup provisioning and policy enforcement are excluded from this
-  comparison because they remain outside the agentless milestone.
+- Until that implementation exists, supported NetworkClass selection is rejected;
+  a mismatched configuration leaves the Subnet and dependent attachments not
+  Ready. The backend does not apply a permit-all fallback or claim ACL readiness.
 
-### NFR-3: Internal VirtualNetwork isolation
+### NFR-3: Internal VirtualNetwork isolation (raw topology tests only)
 
 #### TC-NFR3-01: Enforce private isolation for overlapping VirtualNetworks
 
@@ -911,19 +1024,22 @@
 
 ##### Preconditions
 
-- Two VirtualNetworks use overlapping private CIDRs.
-- Each has a Ready Subnet and a test endpoint.
+- The raw topology fixture creates separate namespaces with overlapping IPv4
+  address ranges and attaches test interfaces directly; no OSAC API objects are
+  created and no Subnet readiness is asserted.
 
 ##### Steps
 
-1. Inspect the Linux namespaces, route tables, and uplink boundaries.
-2. Attempt direct traffic between the private endpoint addresses.
+1. Inspect the raw Linux namespaces, route tables, and uplink boundaries.
+2. Attempt direct traffic between the test endpoint addresses.
 
 ##### Expected Results
 
-- The namespaces contain no direct private route between the two VNs.
+- The namespaces contain no direct private route between the two raw topology
+  segments.
 - Direct private traffic does not reach the peer.
-- The two VLAN and namespace state entries remain separate.
+- The two VLAN and namespace state entries remain separate. No API Subnet or
+  workload readiness is claimed.
 
 #### TC-NFR3-02: Permit only the explicit external path between VNs
 
@@ -933,20 +1049,21 @@
 
 ##### Preconditions
 
-- Two overlapping VirtualNetworks have an ExternalIPAttachment and a
-  NATGateway configured through allocated ExternalIPs with populated status
-  addresses.
+- The raw topology fixture configures an external test path between separate
+  namespaces using test addresses; no OSAC API objects, ExternalIPs, or API
+  readiness conditions are used.
 
 ##### Steps
 
-1. Attempt direct traffic to the peer's private address.
-2. Send traffic through the peer's ExternalIP over the external path.
+1. Attempt direct traffic to the peer's private test address.
+2. Send a flow through the peer's test external address over the raw path.
 
 ##### Expected Results
 
 - Direct private traffic remains unreachable.
-- The explicit ExternalIP/NATGateway path carries the permitted flow.
-- No internal cross-VN route is created.
+- The explicit raw external path carries the test flow.
+- No internal cross-VN route is created. No API Subnet, attachment, or workload
+  readiness is claimed.
 
 ## Gaps
 
@@ -962,12 +1079,22 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 34 |
-| Critical | 11 |
+| Total test cases | 35 |
+| Critical | 12 |
 | High | 22 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 33 |
+| Automated | 34 |
 | Manual | 1 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 6 / 6 |
+
+---
+
+## Provenance
+
+Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

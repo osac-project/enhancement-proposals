@@ -3,7 +3,7 @@ title: catalog-items-v2-field-governance
 authors:
   - Ilya Skornyakov
 creation-date: 2026-08-20
-last-updated: 2026-08-25
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3538
 prd:
@@ -581,7 +581,7 @@ Governable lists keep their ordinary `repeated` shape. A `repeated` field has no
 | `boot_disk.size_gib` | Int32 | Value only |
 | `run_strategy` | Enum | Value only |
 | `user_data` | String | Value only |
-| `network_attachments` | Whole list (max one entry) | Subnet, SecurityGroup |
+| `network_attachments` | Whole list (max one entry) | Subnet |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The governable Compute fields collect into one `Fields` message, one policy per field:
@@ -625,8 +625,7 @@ A tenant-owned item that exercises every Compute policy shape, from a locked ima
           "items": [
             {
               // Local references are valid because this Catalog Item is tenant-owned.
-              "subnet": { "name": "tenant-subnet-a" },
-              "security_groups": [{ "name": "default" }, { "name": "web" }]
+              "subnet": { "name": "tenant-subnet-a" }
             }
           ]
         }
@@ -667,7 +666,7 @@ Notes on the fields above:
 
   `ComputeInstanceSpec.run_strategy` and `ComputeInstanceTemplateSpecDefaults.run_strategy` remain optional, and a supplied value must be defined and non-zero. The config-as-code client maps the friendly value in `meta/osac.yaml` to the enum, and the Ansible metadata stays unchanged.
 - `storage_tier` and `additional_disks` stay ordinary resource fields until `storage_tier` becomes a typed reference.
-- Network attachment policy references use the Catalog Item's scope, so a tenant-owned item may reference its own Subnets and SecurityGroups.
+- A Catalog Item may reference Subnets in its permitted scope. The selected Subnet's optional NetworkACL association supplies traffic policy; the workload attachment does not reference a NetworkACL directly.
 
 ### Cluster
 
@@ -678,7 +677,7 @@ Notes on the fields above:
 | `pull_secret_secret` | Whole reference | Secret |
 | `network.pod_cidr` | CIDR string | Value only |
 | `network.service_cidr` | CIDR string | Value only |
-| `network_attachment` | One structured attachment | Subnet, SecurityGroup |
+| `network_attachment` | One structured attachment | Subnet |
 | `node_sets[name].size` | Int32 | Value only |
 | `auto_external_ip_attachment` | Bool | Value only |
 
@@ -749,7 +748,7 @@ Notes on the fields above:
 | `user_data` | String | Value only |
 | `run_strategy` | Enum | Value only |
 | `image` | Whole structured value | Value only |
-| `network_attachments` | Whole list (max one entry) | Subnet, SecurityGroup |
+| `network_attachments` | Whole list (max one entry) | Subnet |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The Bare Metal `Fields` message covers the OS image, run strategy, credentials, network attachments, and automatic ExternalIP attachment:
@@ -787,7 +786,6 @@ A tenant-owned item with a locked OS image and a single locked network attachmen
           {
             // Local references are valid because this Catalog Item is tenant-owned.
             "subnet": { "name": "tenant-fabric" },
-            "security_groups": [{ "name": "baremetal-default" }],
             "interface": "eno1",
             "primary": true
           }
@@ -1038,7 +1036,7 @@ Delete protection for strong references uses existing `Z0003` reverse-reference 
 1. Add Template protection for Catalog Items and materialized resources.
 2. Extend InstanceType protection to Catalog Items.
 3. Update DiskImage and ClusterVersion paths for the new policy structure.
-4. Extend Subnet and SecurityGroup protection for stored network-attachment policies.
+4. Extend Subnet protection for stored network-attachment policies.
 5. Add Secret reverse-reference protection for governed `pull_secret_secret` values.
 6. Remove resource-to-Catalog-Item protection.
 
@@ -1120,7 +1118,7 @@ Infrastructure: fulfillment-service Ginkgo suite (`ginkgo run -r internal`), whi
 - Locked policy with a non-empty tenant list returns `InvalidArgument`.
 - Empty `locked` value or empty editable default is rejected at Catalog Item Create and Update operations for `network_attachments`, whose resource semantics treat empty as unset.
 - Catalog Item Create and Update accept one-entry locked and editable-default lists, reject two-entry lists with `InvalidArgument`, and preserve the service-level maximum-one rule even when a field-level schema is absent.
-- Cluster `network_attachment` policy tests cover an omitted/empty policy falling through to CaaS defaulting, a single typed attachment preserving supplied values, and final validation of subnet/security-group references; the singular field cannot express a second attachment or per-node-set placement.
+- Cluster `network_attachment` policy tests cover an omitted/empty policy falling through to CaaS defaulting, a single typed attachment preserving supplied values, and final validation of the Subnet reference; the singular field cannot express a second attachment or per-node-set placement.
 - Default network injection runs after Catalog resolution and triggers whenever the resolved list is still empty after tenant input, Catalog policy, and Template defaults, including an editable policy with no Catalog default that the tenant did not supply.
 
 **Authoring validation and references.**
@@ -1143,6 +1141,7 @@ Infrastructure: fulfillment-service Ginkgo suite (`ginkgo run -r internal`), whi
 - Template deletion blocked by a materialized resource, then allowed after the resource is gone.
 - Catalog Item deletion succeeds after resource creation.
 - Secret deletion blocked while a Catalog Item references a governed `pull_secret_secret`.
+- The resolved `Subnet.spec.network_acl` association points to a NetworkACL in the same VirtualNetwork. The existing resource-owned deletion guard rejects deleting a custom NetworkACL while any Subnet references it; delete the referencing Subnet first; recreate it with a different ACL if a new association is required. Catalog Items do not create or own this association.
 
 **Visibility filtering.**
 
@@ -1191,3 +1190,16 @@ Infrastructure: osac-test-infra pytest against the full stack, fulfillment servi
 ## Graduation criteria
 
 Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview -> Tech Preview -> GA based on production deployment feedback.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+
+> Context changed between revise and respond.
+>
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

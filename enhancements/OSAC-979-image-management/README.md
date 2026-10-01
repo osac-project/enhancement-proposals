@@ -523,8 +523,10 @@ message ComputeInstanceSpec {
   repeated ComputeInstanceDisk additional_disks = 9;
   optional string run_strategy = 10;
   optional string user_data = 11;
-  optional string subnet = 12;
-  repeated string security_groups = 13;
+  reserved 12, 13;
+  // Retained as repeated for compatibility; the service accepts at most one
+  // attachment and rejects requests with additional entries.
+  repeated ComputeNetworkAttachment network_attachments = 14;
 }
 
 // CreateComputeInstanceResponse includes warnings for DEPRECATED images

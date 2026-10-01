@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Vladik Romanovsky |
 | Jira        | [OSAC-1382](https://redhat.atlassian.net/browse/OSAC-1382) |
-| Date        | 2026-07-14 |
+| Date        | 2026-09-24 |
 
 ## Problem Statement
 
@@ -82,7 +82,7 @@ Regardless of how the domain is created:
 
 - As a Tenant Admin, I want confidence that my tenant's east-west network isolation is enforced at the fabric level so that other tenants cannot access my data or traffic.
 
-- As a Tenant Admin, I want to define SecurityGroup rules that control which resources can communicate east-west within my tenant's networks, and have those rules enforced as fabric-level ACLs.
+- As a Tenant Admin, I want to optionally associate a NetworkACL with a Subnet so that cross-Subnet east-west traffic follows stateless ingress and egress rules. Same-Subnet traffic is outside the Subnet ACL boundary. If no ACL is associated or no rule matches, the deployment default ACL action applies. Each direction is evaluated independently using the shared rule-specificity order. With a `DENY` fallback, a matching reverse-direction `ALLOW` must win that order for return traffic to pass; with `PERMIT`, unmatched replies pass unless the winning reverse-direction rule denies them.
 
 ### Tenant User
 
@@ -106,7 +106,7 @@ Regardless of how the domain is created:
 - [ ] Hosts in different isolation domains cannot exchange traffic on the east-west fabric
 - [ ] Hosts in the same isolation domain and same subnet have L2 connectivity on the east-west fabric
 - [ ] Hosts in the same isolation domain but different subnets route at L3 within the domain
-- [ ] SecurityGroup rules translate to fabric-level ACLs, and traffic denied by those rules is dropped on the east-west fabric
+- [ ] When a NetworkACL is associated with a Subnet, it translates to fabric-level ACLs; cross-Subnet traffic is checked against source Subnet egress and destination Subnet ingress rules. Same-Subnet traffic is outside the Subnet ACL boundary. If no ACL is associated or no rule matches, the deployment default ACL action applies. With a `DENY` fallback, a matching reverse-direction `ALLOW` must win the shared specificity order for reply traffic to pass; with `PERMIT`, unmatched replies pass unless the winning reverse-direction rule denies them. A Subnet does not require an ACL association for provisioning or readiness; when one is associated, its policy must be active before the Subnet is Ready.
 
 **East-West Connectivity**
 - [ ] Bare metal instances and VMs in the same isolation domain can communicate over the east-west fabric without additional network configuration
@@ -142,3 +142,13 @@ The solution depends on a fabric manager for east-west isolation. API changes, a
 East-west validation requires multi-switch fabric topology. Mitigated by using a simulated environment that responds to the fabric manager API identically to physical switches. The simulation validates control-plane behavior: provisioning workflows, isolation domain creation, and tenant isolation at the switch level. Data-plane validation (RDMA over RoCE performance, lossless transport, latency) requires real hardware and is deferred to production qualification.
 
 **Owner:** Vladik Romanovsky
+
+---
+
+## Provenance
+
+Authored: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

@@ -3,7 +3,7 @@ title: storage-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-09-27
-last-updated: 2026-09-27
+last-updated: 2026-09-30
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-5690
 see-also:
@@ -39,9 +39,10 @@ independent: the storage design (OSAC-1332, OSAC-1111) assumes "CaaS cluster
 nodes have network reachability to the storage backend" without specifying how
 that reachability is achieved.
 
-The first phase needs a clear, minimal connectivity solution that allows
-supported consumers to reach the VAST backend without waiting for a full
-tenant-isolated storage network design. The following problems must be solved:
+The first phase needs a clear, minimal routing and NAT solution for supported
+consumers, subject to the network policy on the path, without waiting for a
+full tenant-isolated storage network design. The following problems must be
+solved:
 
 1. **No defined network path from workloads to VAST.** Tenant workloads run
    inside isolated VirtualNetworks on the OSAC fabric. The VAST cluster runs
@@ -66,16 +67,26 @@ the first phase.
 ## In Scope
 
 - Network connectivity from VMaaS and CaaS environments to VAST block storage
-  for use by the VAST CSI Driver.
+  for use by the VAST CSI Driver, subject to the effective policy on tenant
+  Subnets used by the storage data path. VMaaS CSI traffic originating on the
+  management network is outside the tenant Subnet policy boundary.
 - Network connectivity from BMaaS hosts to VAST block storage (network path
-  only; tenant-side storage configuration remains manual).
+  only; tenant-side storage configuration remains manual), subject to the
+  effective policy on the host's tenant Subnet.
+- Document the NetworkACL prerequisite for tenant-Subnet storage traffic. The
+  deployment `PERMIT` fallback permits unmatched traffic; under `DENY`, the
+  selected Subnet must have a NetworkACL that permits storage traffic and its
+  replies. A Subnet's ACL association is fixed at creation, so a workload using
+  the default Subnet under `DENY` must use another Subnet created with the
+  required ACL association.
 - A dedicated Storage CIDR configured at OSAC installation time, reserved
   for VAST VIP addresses.
 - Validation preventing tenants from creating VirtualNetworks whose CIDRs
   overlap with the Storage CIDR, ensuring storage-bound packets always
   route externally.
-- Ensuring VirtualNetworks that host storage-consuming workloads have a
-  NATGateway with adequate NAT capacity for storage traffic.
+- Ensuring tenant VirtualNetworks used by CaaS workers or BMaaS hosts for
+  block storage have a NATGateway with adequate NAT capacity for storage
+  traffic.
 - VAST block storage only.
 
 ## Out of Scope
@@ -92,6 +103,9 @@ the first phase.
   RDMA paths are not covered.
 - **Per-subnet or per-workload NAT.** NATGateway operates at the
   VirtualNetwork level. Per-subnet NAT granularity is future work.
+- **Creating or associating NetworkACLs for storage.** Storage consumes the
+  networking policy selected for the existing data path; it does not manage
+  ACL resources, Subnet associations, or deployment fallback policy.
 - **Storage traffic QoS or bandwidth reservation.**
 - **East-west storage paths.** GPU-to-storage over east-west fabric
   (Spectrum-X, InfiniBand) is deferred per OSAC-1382.
@@ -102,13 +116,14 @@ the first phase.
 
 - As a VMaaS or CaaS user, I want my workloads to reach VAST block storage
   through the VAST CSI Driver so that I can provision and mount
-  PersistentVolumes without needing to understand the underlying network
-  topology.
+  PersistentVolumes when the applicable management-network or tenant-Subnet
+  policy permits the storage traffic.
 
 ### BMaaS Tenants
 
 - As a BMaaS tenant, I want the network path to VAST storage to be available
-  so that I can configure storage manually if I choose to use it.
+  when the effective policy on my Subnet permits the traffic so that I can
+  configure storage manually if I choose to use it.
 
 ### Cloud Infrastructure Admin
 
@@ -142,10 +157,13 @@ the first phase.
   the network level is not required for the first phase — all tenants share
   the same SNAT path to VAST.
 
-- SNAT via NATGateway is sufficient for block storage data-plane traffic
-  (NVMe-TCP sessions, CSI operations). No inbound (DNAT) connectivity from
-  VAST to tenant workloads is required — all storage connections are
-  initiated by the client side.
+- SNAT via NATGateway is sufficient for tenant-Subnet block storage data-plane
+  traffic, including CaaS and BMaaS NVMe-TCP sessions.
+  The VMaaS CSI path uses the management network. No inbound (DNAT)
+  connectivity from VAST to tenant workloads is required — all storage
+  connections are initiated by the client side. Tenant Subnet ACLs are
+  stateless, so replies are evaluated independently and must also be permitted
+  when the deployment fallback is `DENY`.
 
 - A single NATGateway ExternalIP per VirtualNetwork provides enough NAT
   capacity for the expected storage connection count in the first phase scope.
@@ -153,19 +171,26 @@ the first phase.
 - The Storage CIDR is a single contiguous range configured once at
   installation and does not change during the deployment's lifetime.
 
-- All tenant VirtualNetworks that host workloads requiring storage must have a
-  NATGateway configured. The default VirtualNetwork created during tenant
-  onboarding already includes a NATGateway.
+- Tenant VirtualNetworks used by CaaS workers or BMaaS hosts for block storage
+  must have a NATGateway configured. The VMaaS CSI path uses the
+  management network. The default VirtualNetwork created during tenant
+  onboarding already includes a NATGateway, but that does not guarantee
+  connectivity when the deployment ACL fallback is `DENY`. Its default Subnet
+  has no ACL association; workloads requiring storage in that deployment need
+  a different Subnet created with an ACL that permits the traffic.
 
-- BMaaS hosts have network connectivity to VAST through their management or
-  fabric network interface. BMaaS tenants are responsible for configuring
-  storage on their hosts.
+- BMaaS hosts use their tenant Subnet for network connectivity to VAST;
+  storage traffic is available only when the effective Subnet policy permits
+  it. BMaaS tenants are responsible for configuring storage on their hosts.
 
 ## Dependencies
 
 - **Unified Networking (OSAC-1433):** VirtualNetwork, NATGateway, ExternalIP,
-  and NetworkClass must be implemented and operational. Storage networking
-  builds on these primitives — it does not introduce new networking resources.
+  NetworkACL, and NetworkClass must be implemented and operational. Storage
+  networking builds on these primitives — it does not introduce new networking
+  resources. Tenant-Subnet data paths require the deployment fallback or the
+  Subnet's associated NetworkACL to permit both the client traffic and, under a
+  `DENY` fallback, its replies.
 
 - **Storage Backend & Tier (OSAC-1111, OSAC-1110):** StorageBackend
   registration and StorageTier assignment must be functional so that the VAST
@@ -182,3 +207,14 @@ the first phase.
 - **OSAC-5073 (Shared VAST Global VIP Pool):** This feature implements the
   reduced first phase scope of OSAC-5073. The broader effort covers
   tenant-isolated storage networking beyond the first phase.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Phases: revise, revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

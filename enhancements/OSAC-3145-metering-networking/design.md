@@ -3,7 +3,7 @@ title: metering-for-networking-resources
 authors:
   - masayag@redhat.com
 creation-date: 2026-09-08
-last-updated: 2026-09-09
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3145
 prd: "prd.md"
@@ -41,7 +41,7 @@ The event proto carries ExternalIP, ExternalIPAttachment, and NATGateway, but `B
 - Define exact usage, correction, pagination, feature-gate, tenancy, failure, and adapter contracts.
 
 ### Non-Goals
-VirtualNetwork/Subnet/SecurityGroup, bandwidth, pricing, quota, inventory, and UI. NATGateway is not an ExternalIPAttachment target. Its meter uses its own NATGateway ID, ExternalIP reference, VirtualNetwork reference, tenant, project, and deployment identity. CAP-6 remains a Part 1 dependency.
+VirtualNetwork/Subnet/NetworkACL, bandwidth, pricing, quota, inventory, and UI. NATGateway is not an ExternalIPAttachment target. Its meter uses its own NATGateway ID, ExternalIP reference, VirtualNetwork reference, tenant, project, and deployment identity. CAP-6 remains a Part 1 dependency.
 
 ## Prerequisites and Gates
 | Gate | Owner | Required artifact | Test evidence | Graduation gate |
@@ -207,7 +207,7 @@ Assert API oneof rejects NATGateway, common proto imports pass `buf lint`, updat
 ### Integration Tests
 Assert attachment READY and Delete transitions update both rows atomically; force each DAO failure and assert rollback; exercise VMaaS `auto_external_ip_attachment` create/rollback/pre-READY/cleanup plus cluster, bare-metal, default, attachment, and NAT auto paths; attach and detach an ExternalIP while it remains ALLOCATED and assert old/new dimension slices close and open at `attachment_transition_time`, heartbeat replacement stays within the active slice, delayed/replayed transitions do not double-count, and allocation seconds equal the disjoint slice total; replay normal lifecycle and heartbeat events through two fresh adapter instances and assert one provider record per stable `event_id`; call ExternalIP/NAT Delete successfully, delay feedback, and assert usage closes at `metadata.deletion_timestamp` rather than feedback time; assert no operator parent writes, non-empty event IDs, correction topic/chart/adapter routing, one provider submission per adjustment, shared correction/group IDs, unique adjustment/provider keys, per-adjustment durable replay no-ops, offset commit only after all adjustments, retry after partial failure without double application, NAT dimensions, cache failures, correction apply/reverse, concurrent-delete/shift Get confirmation, and M360 flat payload routing.
 ### E2E Tests
-Exercise unattached ExternalIP, ComputeInstance/Cluster API/Ingress/BareMetal attachments, detach, NATGateway with VirtualNetwork dimensions, excluded VirtualNetwork/Subnet/SecurityGroup negative cases, failures/retries, duplicate replay, Kafka/DLQ, gate reload/disable/re-enable, and resource-seconds totals.
+Exercise unattached ExternalIP, ComputeInstance/Cluster API/Ingress/BareMetal attachments, detach, NATGateway with VirtualNetwork dimensions, excluded VirtualNetwork/Subnet/NetworkACL negative cases, failures/retries, duplicate replay, Kafka/DLQ, gate reload/disable/re-enable, and resource-seconds totals.
 
 ## Graduation Criteria
 Target release 0.3. Graduation requires Part 1, OSAC-983, the initial correction/read-model/M360 consumers, deployment identity, CAP-6, and heartbeat sizing gates close. Then require exact allocation totals, transactionally consistent attribution, no NAT attachment target, all event IDs, pagination confirmation, correction replay, ExternalIP FAILED-age alerting, the negative test for excluded network objects, retention/dedup parity, and no existing meter regression.
@@ -228,8 +228,9 @@ Existing Postgres, Kafka/AMQ Streams, fulfillment Watch, metering, and M360 are 
 
 ## Provenance
 
-Committed: commit @ design 0.9.0 - 562b610, workspace main @ 1095dc5d3
+Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.9.0","ai_workflows":"562b610","source_repo":"1095dc5d3","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->

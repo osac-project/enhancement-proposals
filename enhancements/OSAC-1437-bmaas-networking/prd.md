@@ -4,11 +4,12 @@
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1437 |
-| Date        | 2026-07-08 |
+| Date        | 2026-09-24 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
-Networking resources support only Create, List/Get, and Delete, and the
-bare-metal network attachment fields are create-time-only; changes require
+Networking resources support read (List/Get), create, and delete. NetworkACL
+rules and Subnet-to-ACL associations are immutable after creation. Bare-metal
+network attachment fields are also create-time-only; changing one requires
 delete and recreate.
 
 BMaaS networking also inherits the [Unified Networking hub support
@@ -22,15 +23,15 @@ explicitly specifies them.
 
 ## 1. Problem Statement
 
-Provisioning bare-metal servers requires manual switch configuration outside the OSAC API. Tenants cannot attach bare-metal servers to subnets, apply security groups, or configure external access through the API. The system does not expose which physical network interfaces are available on a bare-metal server, forcing tenants to discover interface names through out-of-band documentation. Creating a reachable bare-metal server with both inbound and outbound connectivity requires sequential API calls to create networking resources and manual coordination with infrastructure administrators for switch port configuration.
+Provisioning bare-metal servers requires manual switch configuration outside the OSAC API. Tenants cannot attach bare-metal servers to subnets or configure external access through the API, and cannot manage subnet traffic policy through the networking API. The system does not expose which physical network interfaces are available on a bare-metal server, forcing tenants to discover interface names through out-of-band documentation. Creating a reachable bare-metal server with both inbound and outbound connectivity requires sequential API calls to create networking resources and manual coordination with infrastructure administrators for switch port configuration.
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
 
 - A tenant can provision a bare-metal server with one explicit network attachment, optionally specifying which physical interface connects to its subnet
-- A tenant can create a bare-metal server with `--external-ip-attachment` and have the system allocate an external IP for inbound access automatically
-- Network attachments are optional — when omitted, the system attaches the server to the tenant's default subnet and security group
+- A tenant can create a bare-metal server with `--external-ip-attachment` and have the system allocate an external IP automatically; inbound reachability follows the effective Subnet policy
+- Network attachments are optional — when omitted, the system attaches the server to the tenant's default Subnet, which has no ACL association and uses the deployment default ACL policy
 - BareMetalInstanceTypes expose available physical network ports through the API (name, role, type, speed) for bare-metal servers
 - Bare-metal provisioning uses the provisioning network for inventory and OS provisioning, then moves the selected fabric port to the tenant network and reboots the host so it receives its tenant-network IP
 - External IP attachments support bare-metal servers as a target type
@@ -56,14 +57,14 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 - As a Tenant User, I want to create a bare-metal server with one explicit network attachment so that I can connect a selected physical interface to a subnet
 - As a Tenant User, I want to see which physical network ports are available on a BareMetalInstanceType so that I can select the appropriate interface when creating the attachment
-- As a Tenant User, I want to create a bare-metal server with `--external-ip-attachment` and have it externally reachable in a single API call, without manually creating external IP and attachment resources
+- As a Tenant User, I want to create a bare-metal server with `--external-ip-attachment` and have the system provision its external IP and attachment in one API call; inbound reachability follows the effective Subnet policy
 - As a Tenant User, I want the sole network attachment to provide the default gateway without needing a second attachment
 - As a Tenant User, I want auto-provisioned external IPs to be automatically cleaned up when I delete the server, so that I do not accumulate orphaned resources
 - As a Tenant User, I want network interface validation when creating the attachment so that I get a clear error if I specify a port that does not exist or is not tenant-attachable
 
 ### Tenant Admin Stories
 
-- As a Tenant Admin, I want visibility into which physical interfaces are connected to which subnets for a bare-metal server so that I can troubleshoot network connectivity issues
+- As a Tenant Admin, I want visibility into which physical interfaces are connected to which subnets and which NetworkACL governs each subnet so that I can troubleshoot connectivity and understand its traffic policy
 
 ### Cloud Infrastructure Admin Stories
 
@@ -79,7 +80,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Specification
 
-- **FR-1:** Tenants can specify zero or one entry in the repeated `network_attachments` field when creating a bare-metal server. The attachment may omit its subnet, security-group list, or physical interface; missing fields are defaulted without replacing supplied values. The complete resolved list and every entry field are immutable after creation. The repeated field is retained for API compatibility; more than one entry is rejected. [User]
+- **FR-1:** Tenants can specify zero or one entry in the repeated `network_attachments` field when creating a bare-metal server. The attachment may omit its subnet or physical interface; missing fields are defaulted without replacing supplied values. The complete resolved list and every entry field are immutable after creation. The repeated field is retained for API compatibility; more than one entry is rejected. Traffic policy comes from the optional NetworkACL associated with the resolved Subnet plus the deployment default ACL action, not from the attachment. [User]
 
 #### BareMetalInstanceType Network Port Discovery
 
@@ -95,11 +96,11 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Optional Network Attachments with Defaults
 
-- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted or empty, the system attaches the server to the tenant's default subnet and default security group, using the first `fabric` port from the BareMetalInstanceType (see Default Networking PRD). When a single attachment is supplied, only missing subnet, security-group, or interface fields are defaulted; a missing or explicitly empty security-group list is treated as missing. A default security group is used only when the resolved subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved subnet's VirtualNetwork. Supplied values are preserved. If the BareMetalInstanceType has no valid fabric port, creating a server without an explicit interface fails with a clear error. The resolved attachment is stored with the server so the server is self-describing after creation. [User]
+- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted or empty, the system attaches the server to the tenant's default Subnet, which has no ACL association, and uses the first `fabric` port from the BareMetalInstanceType (see Default Networking PRD). When a single attachment is supplied, only missing Subnet or interface fields are defaulted; supplied values are preserved. For an explicitly selected Subnet, any associated NetworkACL refines the deployment default policy; unmatched traffic uses the deployment default action. If the BareMetalInstanceType has no valid fabric port, creating a server without an explicit interface fails with a clear error. The resolved attachment is stored with the server so the server is self-describing after creation. [User]
 
 #### Auto External IP
 
-- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system auto-selects the external IP pool with the most available capacity, allocates an external IP, and creates an external IP attachment binding it to the server's primary attachment subnet IP. The external IP and attachment are labeled as auto-provisioned. [User]
+- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system selects an available external IP pool with the most capacity and reserves capacity for an IP with the server create request. The IP is allocated asynchronously. Its attachment routes inbound traffic to the server's primary attachment IP only after the IP is Allocated and the server is Ready with its tenant-network IP available. ExternalIP routing does not bypass the effective Subnet policy: on the unassociated default Subnet, unmatched inbound traffic is denied when the deployment action is `DENY`. To allow inbound traffic with that fallback, the tenant must use a Subnet created with a NetworkACL that permits the inbound flow and corresponding return traffic under the shared stateless policy, or the deployment must use `PERMIT`. The external IP and attachment are labeled as auto-provisioned. [User; PR review: CodeRabbit]
 
 #### Network Connectivity Configuration
 
@@ -119,48 +120,55 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto-Cleanup on Deletion
 
-- **FR-11:** When a bare-metal server is deleted, if external IP and external IP attachment were auto-provisioned (labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. Manually created resources are NOT cleaned up. Default networking resources (virtual network, subnet, security group, NATGateway) are NOT cleaned up. [User]
+- **FR-11:** When a bare-metal server is deleted, if external IP and external IP attachment were auto-provisioned (labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. A manually created ExternalIPAttachment in `Ready` status targeting the server blocks its deletion until the tenant removes it; Pending or Failed attachments do not block deletion and remain tenant-managed. Other manually created ExternalIPs remain tenant-managed. Default networking resources (VirtualNetwork, Subnet, NATGateway) are NOT cleaned up. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
 
 #### Network Attachment Deletion
 
 - **FR-12:** During bare-metal server deletion, the system deconfigures network connectivity for the selected interface and releases the allocated IP address. [User]
 
+#### NetworkACL Policy
+
+- **FR-13:** Bare-metal server traffic uses the deployment default ACL policy, refined by any NetworkACL associated with its Subnet. Each Subnet has zero or one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Ingress and egress rules are evaluated independently using the shared match-specificity order; action and request order do not determine precedence. The first matching rule allows or denies traffic, and traffic with no matching rule uses the required deployment default ACL action, which also applies when no ACL is associated. The policy is stateless, so return traffic is evaluated independently in the reverse direction. With a `DENY` fallback, permitting a reply requires a matching reverse-direction `ALLOW` rule to win precedence; with `PERMIT`, an unmatched reply passes unless a matching reverse-direction `DENY` rule applies. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. The same policy applies to every workload on the Subnet. [User]
+
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Auto external IP allocation completes synchronously within the create API call (no async allocation delay). If no pool has available capacity, the create API call returns an error. [User]
+- **NFR-1:** ExternalIPPool selection and capacity reservation complete synchronously with the create API call. ExternalIP allocation proceeds asynchronously. If no pool has available capacity, the create API call returns an error. [User]
 
 - **NFR-2:** Network attachment provisioning (connectivity configuration) completes within 2 minutes for the selected interface. [User]
 
 ## 5. Acceptance Criteria
 
-- [ ] A Tenant User can create a bare-metal server with one explicit network attachment and an optional physical interface from the BareMetalInstanceType
-- [ ] A Tenant User can create a bare-metal server with `--external-ip-attachment` and no explicit network attachments — the server is created on the default subnet with an auto-provisioned external IP for inbound access
+- [ ] A Tenant User can create a bare-metal server with one explicit network attachment and an optional physical interface from the BareMetalInstanceType; the server follows that Subnet's optional ACL rules and the deployment default policy
+- [ ] A Tenant User can create a bare-metal server with `--external-ip-attachment` and no explicit network attachments — the server is created on the default Subnet with an auto-provisioned external IP; inbound reachability follows the effective Subnet policy. With a `DENY` fallback, unmatched inbound is blocked and the tenant must use a Subnet created with an ACL that permits the required inbound and return flows, or the deployment must use `PERMIT`.
 - [ ] A bare-metal server with one attachment is provisioned with that attachment providing the default gateway
 - [ ] Auto-created external IP and external IP attachment are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a bare-metal server with auto-provisioned external IP causes the auto-created external IP and external IP attachment to be cleaned up automatically
+- [ ] Deleting a bare-metal server with a Ready, manually created ExternalIPAttachment targeting it is rejected until the tenant removes that attachment; Pending or Failed attachments do not block deletion
+- [ ] An auto-created ExternalIPAttachment is created only after the ExternalIP is Allocated and the server is Ready with its tenant-network IP available
 - [ ] BareMetalInstanceType API returns structured physical network ports (name, role, type, speed)
 - [ ] Creating a bare-metal server with an invalid interface (not in the BareMetalInstanceType's `network_ports` list) returns an error
 - [ ] Creating a bare-metal server with `primary: false` returns an error
 - [ ] Creating a bare-metal server with more than one network attachment returns a maximum-one error
 - [ ] Bare-metal server primary attachment IP is visible in status after network connectivity is configured
 - [ ] External IP attachment with bare-metal server target routes inbound traffic to the server's primary attachment IP
+- [ ] Bare-metal traffic uses the first matching NetworkACL rule under the shared match-specificity order and unmatched traffic uses the deployment default ACL action; under `DENY`, permitting return traffic requires a matching reverse-direction `ALLOW` rule to win precedence, while under `PERMIT`, unmatched replies pass unless a reverse-direction `DENY` rule applies
 
 ## 6. Assumptions
 
-- The tenant has default networking resources (virtual network, subnet, security group) pre-created at onboarding (see Default Networking PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
+- The tenant has a default VirtualNetwork and Subnet pre-created at onboarding, with no ACL association on the default Subnet; unmatched traffic uses the required deployment-wide default ACL action (see Default Networking PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
 - The NetworkClass has a fabric manager configured (the system can resolve which network automation to use).
 - The BareMetalInstanceType for the bare-metal template has a populated `network_ports` list with at least one `fabric` port. If no valid fabric port exists, creating a server without an explicit interface fails with a clear error.
 - Out-of-band provisioning interfaces (PXE boot, BMC) are reserved for system use and are NOT tenant-attachable (should not appear in network attachments).
 
 ## 7. Dependencies
 
-- **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default Subnet and SecurityGroup selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, NetworkACL, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
+- **Default Networking PRD** — default Subnet selection, optional ACL association, and deployment fallback action defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 - **Networking manager dispatch** — the system must be able to route networking operations to the correct fabric manager (in progress)
 - **NAT gateway support** — outbound NAT must be available as a networking resource
 - **External access for BM targets** — the external IP attachment system must support bare-metal servers as targets
 - **CLI support** — the CLI must support specifying network attachments when creating bare-metal servers
-- **Fabric manager BM networking role** — at least one fabric manager (e.g., Netris) must implement the switch port configuration role for bare-metal servers
+- **Fabric manager BM networking role** — at least one fabric manager must implement the switch port configuration role for bare-metal servers
 
 ## 8. Risks
 
@@ -197,3 +205,16 @@ Resolved: Return error, no resource persisted.
 ### ~~9.3 What is the interface selection logic when network attachments are omitted and the BareMetalInstanceType has multiple fabric ports?~~ — Resolved
 
 Resolved: First in the list. Ports are ordered in the BareMetalInstanceType; when multiple ports share the same role, the first one is the default. This is already defined in FR-2.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+
+> Context changed between revise and respond.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

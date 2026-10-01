@@ -71,13 +71,9 @@ don't have the ability to add or modify ansible roles.
     Example: `image_type` — the UI fetches available ImageType resources for default value selection.
 
   **List and map constraints:**
-  - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
-    Example: `network_attachments` with `{"minItems": 1, "maxItems": 1}` locks a VM to exactly one network attachment — the user can choose which subnet and security groups but cannot add a second NIC.
-    `network_attachments` uses `maxItems: 1` for current VMaaS and BMaaS
-    resources. A catalog schema must not advertise more than one attachment;
-    the backend rejects additional entries even when a catalog item omits a
-    field-level schema.
-    Example: `additional_disks` with `{"maxItems": 0}` prevents users from adding any additional disks beyond the boot disk.
+  - **Item count** (`minItems`, `maxItems`): for fields governed by a generic JSON Schema, these control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length while allowing edits to each item's fields.
+    Catalog Item v2 uses typed policies for supported resource fields. In particular, `network_attachments` is governed by `ComputeNetworkAttachmentListFieldPolicy` (see [Catalog Items v2](/enhancements/OSAC-3538-catalog-items-v2/design.md)), not a generic `validation_schema` item-count constraint. The typed policy governs the whole list; the Compute and Bare Metal APIs continue to enforce their one-attachment limit.
+    Example: `additional_disks` with `{"maxItems": 0}` prevents users from adding any additional disks beyond the boot disk when the field uses a generic schema.
   - **Map entry count** (`minProperties`, `maxProperties`): same pattern for map fields.
     Example: `node_sets` with `{"minProperties": 2, "maxProperties": 2}` locks a cluster to exactly two node sets (e.g., control-plane + workers) — the user can edit each node set's `size` but cannot add or remove node sets.
 
@@ -642,3 +638,13 @@ Not applicable at this stage.
 ## Infrastructure Needed [optional]
 
 None.
+
+---
+
+## Provenance
+
+Authored: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

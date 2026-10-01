@@ -332,7 +332,7 @@ OSAC uses a two-tier permission model: Organization-level roles (managed as Keyc
   - `MANAGE_PROJECT` - Update project metadata, delete project, manage permissions
   - `CREATE_COMPUTE_INSTANCE` - Create ComputeInstances in the project
   - `DELETE_COMPUTE_INSTANCE` - Delete ComputeInstances in the project
-  - Additional scopes for other OSAC resource types (VirtualNetwork, Subnet, SecurityGroup, etc.)
+  - Additional scopes for other OSAC resource types (VirtualNetwork, Subnet, NetworkACL, etc.)
 - **Note**: The specific set of scopes and their granularity (e.g., per-resource-type vs. generic CRUD scopes) will be defined during implementation based on OSAC's resource model and operational requirements. The examples above illustrate the concept.
 - Project permissions are assigned to users or groups independently of organization-level roles
 - Users with `tenant-admin` role automatically have all permissions on all Projects in their Organization
