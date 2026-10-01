@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-5731 — OSAC MCP Server for infrastructure provisioning
-- **Total test cases:** 58
+- **Total test cases:** 67
 - **Requirements covered:** 25 of 25
 - **Interface changes covered:** 14 of 14
 
@@ -24,6 +24,12 @@ files copy that file's pattern:
 - Bearer forwarding of `tool.UserTokenSource()` on each MCP HTTP request
 - Shared helper `callMCPTool` for typed tool invocation
 
+Story 1.01 ports the full MCP-specific PoC baseline, including opt-in
+deployment/chart wiring and both existing create/delete handlers, in one PR.
+When the endpoint is enabled, all four tools are available without an
+additional write flag. Its first-PR tests exercise authorized and denied
+caller-scoped writes. Story 2.01 hardens the existing pair for supported use.
+
 Proposed `tests/e2e/mcp/` files use the same tool names and envelopes. Catalog
 CIDRs, offering IDs, and other fixture values come from objects the Kind suite
 creates at runtime, not from this testplan.
@@ -32,6 +38,8 @@ Tool errors use the JSON envelope in design.md §4.3. Assert both `category`
 and `grpc_code` from that table (`authorization`/`PermissionDenied`,
 `invalid_request`/`InvalidArgument`, `authentication`/`Unauthenticated`,
 `conflict`/`Aborted`, `rate_limited`/`ResourceExhausted`, and the rest).
+For every delivered write result, assert its MCP-edge `request_id` matches one
+sanitized MCP diagnostic; it is not a Fulfillment-generated resource ID.
 Successful writes and later outcomes match the mutation-acceptance and
 normalized-outcome JSON examples in the same section.
 
@@ -108,12 +116,18 @@ normalized-outcome JSON examples in the same section.
    ExternalIPAttachment, and NATGateway through `expose_network_resource`.
 2. Poll each public resource through `get_resource_outcome`.
 3. Delete in dependency-safe order using `delete_network_resource`.
+4. Reject IPv6 and dual-stack network inputs, and extra attachments on the
+   workload create tools, before a public resource RPC, including values still
+   expressible in legacy public fields. Keep NetworkClass and ExternalIPPool
+   out of tenant write tools.
 
 ##### Expected Results
 
 - Only documented networking tools appear; no arbitrary service or method.
 - Each created resource reaches the public state exposed by its Fulfillment API.
 - Deletes remove only the named targets.
+- The successful deployment uses the accepted connected IPv4 contract;
+  invalid network inputs cause no resource mutation.
 
 #### TC-FR2-02: Reject an unsupported in-place network edit
 
@@ -130,8 +144,10 @@ normalized-outcome JSON examples in the same section.
 ##### Steps
 
 1. Create a VirtualNetwork with a dependent Subnet through `create_network_resource`. Request an in-place CIDR edit.
-2. Inspect the error details.
-3. Retrieve the original VirtualNetwork and Subnet.
+2. Submit IPv6 and dual-stack inputs expressible in legacy public fields;
+   inspect the MCP error and public RPC count.
+3. Inspect the error details.
+4. Retrieve the original VirtualNetwork and Subnet.
 
 ##### Expected Results
 
@@ -139,6 +155,7 @@ normalized-outcome JSON examples in the same section.
   `unsupported_in_place`; no update RPC is dispatched.
 - Error details may name create/delete replacements; no resource is silently replaced.
 - Original IDs, versions, and the dependent relationship are unchanged.
+- Unsupported network inputs are rejected before a public Create or Update RPC.
 
 ### FR-3: ComputeInstance lifecycle
 
@@ -186,7 +203,7 @@ normalized-outcome JSON examples in the same section.
 ##### Steps
 
 1. For a running ComputeInstance, invoke `set_compute_instance_power` stop then start, then `restart_compute_instance`.
-2. Invoke `delete_compute_instance` for the current version.
+2. Invoke `delete_compute_instance` for the named UUID after retrieving its current state. The public Delete request has no version precondition.
 3. Retrieve public Get after deletion.
 
 ##### Expected Results
@@ -367,7 +384,7 @@ normalized-outcome JSON examples in the same section.
 
 ### FR-8: Project and catalog administration
 
-#### TC-FR8-01: Create and update a Project with optimistic locking
+#### TC-FR8-01: Create and update Project display fields through the public API
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -377,23 +394,32 @@ normalized-outcome JSON examples in the same section.
 
 - **Tier / owner:** Component integration / [DEV].
 - **Execution:** Kind fulfillment suite; proposed `fulfillment-service/it/it_mcp_project_test.go`.
-- **Boundary:** Project Update remains unregistered until `lock=true` is proven.
+- **Boundary:** Public Projects/Create and Update, tenant and Project
+  authorization, and PostgreSQL are real. The public Update wrapper does not
+  provide an optimistic version precondition; no core fix is in this Feature.
 
 ##### Steps
 
 1. As a tenant administrator, create a Project through `create_project`.
-2. Assert the public Project Update wrapper passes `lock=true`. Register
-   `update_project` only if that assertion holds.
-3. Update against the current version.
-4. Retry with a stale version and as an ordinary member.
+2. Call `update_project` with a new title only, then a new description only;
+   capture the public requests and read the Project after each call.
+3. Try to supply tenant, hierarchy, name, status, or membership changes to
+   `update_project`. Repeat an allowed title update after another allowed
+   title update to observe the current last-write behavior.
+4. Attempt an allowed update as a Project manager, an ordinary member without
+   manager rights, and a caller from another tenant.
 
 ##### Expected Results
 
-- Create succeeds.
-- Update remains unregistered if `lock=true` is not proven.
-- When registered, current-version update succeeds.
-- Stale version fails with `conflict` / `Aborted`; unauthorized caller gets
-  `authorization` / `PermissionDenied`.
+- Create returns the new Project identity. Each update changes only the named
+  display field and forwards an exact `spec.title` or `spec.description` mask;
+  other Project fields are preserved.
+- The tool rejects unsupported fields before a public Update call. A later
+  same-field update can replace an earlier value; the tool neither sends
+  `lock=true` nor promises a stale-version `Aborted` result.
+- Existing Project manager and tenant-admin permissions work; an ordinary
+  member without manager rights and another tenant receive
+  `authorization` / `PermissionDenied` without a mutation.
 
 #### TC-FR8-02: Manage supported catalog offerings and confirm publication in the host
 
@@ -650,7 +676,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
+- **Tier / owner:** Unit / [UI].
 - **Execution:** `pnpm test` from `osac-ui`.
 
 ##### Steps
@@ -665,6 +691,35 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - Official Cursor, Codex, and Claude remote MCP documentation is linked.
 - The page is not a complete host-product tutorial.
 - No write-approval or Secret-handoff MCP page is advertised.
+
+#### TC-FR11-02: Serve MCP setup metadata only through the authenticated UI proxy
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-10 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Component integration / [UI].
+- **Execution:** proposed `osac-ui/proxy/auth/mcp_config_test.go`; run `go test ./...`
+  from `osac-ui/proxy` after Story 8.03 adds the handler and fixture.
+- **Boundary:** The real proxy router, auth middleware, and runtime-config
+  handler run in process. Signed-in and anonymous sessions and installer
+  metadata are fixtures; Keycloak and host applications are omitted.
+
+##### Steps
+
+1. Request the MCP setup metadata route with an authenticated tenant session,
+   an anonymous session, and a session without an eligible tenant role.
+2. Repeat with MCP disabled and with runtime metadata containing only the
+   configured public URL, per-host client IDs, callbacks, and trust data.
+
+##### Expected Results
+
+- Only the authorized session receives non-secret MCP setup metadata;
+  anonymous and ineligible sessions cannot read it.
+- Disabled MCP produces the documented empty-state response. No bearer token,
+  client secret, or other Secret value appears in the response.
 
 ### FR-12: Read-only connection check
 
@@ -766,7 +821,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - Other-subject call returns `authorization` / `PermissionDenied`.
 - Authorized call creates exactly one resource.
 
-#### TC-FR13-03: Changed settings require a new confirmed tool call
+#### TC-FR13-03: Changed action, target, or settings require a new confirmed tool call
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -780,13 +835,37 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 ##### Steps
 
 1. Create a resource with payload A.
-2. Invoke the matching `update_*` tool with different settings and current `metadata.version`.
+2. Invoke `update_compute_instance` with different settings and the current
+   `metadata.version`.
+3. Change the target UUID and then the action/tool name in separate calls.
 
 ##### Expected Results
 
-- The second call is a distinct RPC with the new payload.
-- The first call cannot apply the new settings.
-- Host confirmation applies per call.
+- Each changed setting, target, or action is a distinct typed RPC and cannot be applied through the previous call.
+- Host confirmation applies per call; released-host prompts are verified by TC-FR13-04.
+
+#### TC-FR13-04: A released host renews confirmation after changed action, target, or settings
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-6 | critical | manual |
+
+##### Preconditions
+
+- **Tier / owner:** E2E / [QE].
+- **Execution:** Released Cursor editor/CLI, Codex CLI/app or IDE, and Claude Code CLI/Desktop Code records under proposed `tests/e2e/mcp/host-certification/`.
+- **Boundary:** Real local host prompt, Keycloak sign-in, and public Fulfillment write. Generic SDK-client invocation does not prove the prompt.
+
+##### Steps
+
+1. Present a typed VM write with target and settings A, then deny it in the host.
+2. In separate attempts, change one material setting, change the target UUID, and change the action/tool; inspect each next host prompt.
+3. Confirm only the intended final call and inspect the public resource and tool invocation count.
+
+##### Expected Results
+
+- The denied call makes no mutation; every changed setting, target, or action receives a fresh prompt showing the exact new effect.
+- Conversational assent or a prior prompt authorizes none of those changes; only the final confirmed call mutates once.
 
 ### FR-14: Higher-impact confirmation
 
@@ -803,9 +882,10 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Inspect `delete_compute_instance`, `delete_cluster`,
+1. Inspect each currently registered delete tool. The final support gate must
+   include `delete_compute_instance`, `delete_cluster`,
    `delete_bare_metal_instance`, `delete_volume`, `delete_network_resource`,
-   and `delete_catalog_offering`.
+   and `delete_catalog_offering` once their family Tasks land.
 2. Invoke delete in integration after host-confirm stand-in.
 
 ##### Expected Results
@@ -880,6 +960,29 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - `set_*_power` tools set `idempotentHint` true.
 - `openWorldHint` is true on every registered tool.
 
+#### TC-FR14-05: Released hosts separately confirm deletion, exposure, and publication
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-6 | critical | manual |
+
+##### Preconditions
+
+- **Tier / owner:** E2E / [QE].
+- **Execution:** Six released local-host records under proposed `tests/e2e/mcp/host-certification/`.
+- **Boundary:** Real host prompts, public VM/network/catalog APIs, and role-appropriate users. Generic clients and annotation inspection are insufficient.
+
+##### Steps
+
+1. On each surface, invoke `delete_compute_instance`, `expose_network_resource`, and `publish_catalog_offering` using an authorized test fixture and inspect each prompt's target and effect.
+2. Deny each action once and verify its public resource state is unchanged.
+3. Confirm each action separately, verify one matching public mutation, and clean up fixtures.
+
+##### Expected Results
+
+- Deletion, external exposure, and publication each require their own explicit host confirmation of the named target and effect.
+- Denial causes no mutation; no general write approval carries over to a higher-impact action.
+
 ### FR-15: Permission-blocked prerequisite
 
 #### TC-FR15-01: Stop when the caller cannot create a required prerequisite
@@ -927,6 +1030,30 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 - Resource one remains; write two failed once; write three mutation count is zero.
 - No automatic rollback or retry.
+
+#### TC-FR16-02: A released host stops dependent writes after a failed middle step
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-4 | critical | manual |
+
+##### Preconditions
+
+- **Tier / owner:** E2E / [QE].
+- **Execution:** Six released local-host records under proposed `tests/e2e/mcp/host-certification/`.
+- **Boundary:** Real host sequence, public Fulfillment API and caller policy; controlled definite failure on step two.
+
+##### Steps
+
+1. Confirm a first prerequisite write and capture its resource ID.
+2. Cause the second dependent write to fail definitively.
+3. Observe the host after the failure and inspect public resources and call counts.
+
+##### Expected Results
+
+- The host stops before invoking the third dependent write; step one remains visible and step two is reported failed.
+- Neither host nor MCP retries step two automatically or rolls back step one.
+- This host observation complements component case TC-FR16-01, which only proves that an uninvoked third tool is inert.
 
 ### FR-17: Uncertain create outcome
 
@@ -1022,9 +1149,9 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - Immediate result is not mapped as ready.
 - Later outcome shows actual public state.
 
-### FR-19: Write audit and provisioning correlation
+### FR-19: MCP write diagnostics and existing-stack correlation
 
-#### TC-FR19-01: Inspect tenant-scoped creator and MCP origin on existing resources
+#### TC-FR19-01: Record sanitized MCP write diagnostics and immediate results
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -1033,26 +1160,48 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 ##### Preconditions
 
 - **Tier / owner:** Component integration / [DEV].
-- **Execution:** proposed `fulfillment-service/it/it_mcp_origin_audit_test.go`.
+- **Execution:** proposed `fulfillment-service/it/it_mcp_write_diagnostics_test.go`.
+- Two MCP replicas serve callers from two tenants; no diagnostic key is
+  provisioned.
 
 ##### Steps
 
-1. Create a resource through MCP as tenant A, then update it as the same
-   caller.
-2. List as tenant-A admin, as a regular user, and as tenant B.
-3. Inspect unrestricted MCP logs for tool name and hashed `sub`.
-4. Correlate resource ID and time to the Fulfillment RPC diagnostic for that
-   public method.
+1. Create, update, and delete resources through both MCP replicas as tenant A
+   using the same caller and a distinct authenticated caller where each public
+   method permits them; attempt a cross-tenant mutation as tenant B and
+   capture the public API rejection.
+2. Capture MCP structured diagnostics and public Fulfillment responses for
+   each attempted write, including a failed call with no resource ID.
+3. Match each tool result's request ID to exactly one MCP diagnostic. Match
+   the resource ID from a successful result to a public Fulfillment read while
+   the resource exists. Inspect `metadata.creator` on create.
+4. Replace one MCP replica, repeat a write attempt for the same caller, and
+   verify that the new request ID is distinct and can be matched to its own
+   diagnostic. Repeat with a second caller.
+5. Verify MCP logs, traces, and metrics exclude bearer tokens, raw and derived
+   caller identities, tenant and resource IDs, Secret values, prompts, and
+   unrestricted request/response bodies.
+6. Drop a write response after MCP has accepted the call. Check that the
+   diagnostic may exist without a caller-visible result and that recovery
+   does not invent a request ID or retry an uncertain create.
 
 ##### Expected Results
 
-- On create, resource creator and tenant match the caller.
-- On update, the actor is the Fulfillment RPC authenticated subject, not a
-  change to `metadata.creator`.
-- Hashing the caller's JWT `sub` matches the MCP log field.
-- Tenant B does not see tenant A's resource.
-- Logs include MCP tool origin without Secret bytes or tokens.
-- No `MCPWriteRecords` API is required.
+- Every write reaches public Fulfillment as the signed-in caller, and a
+  cross-tenant mutation is rejected by existing authorization.
+- Each tool result and its MCP diagnostic share one fresh random request ID.
+  Diagnostics identify tool/action, timestamp, duration, and immediate gRPC
+  result for successful and failed calls. Request IDs are distinct across
+  calls, replicas, and callers, and do not reveal caller or resource identity.
+  The resource ID appears in the caller-facing result when the public API
+  supplies one, but not in MCP logs, traces, or metrics.
+- On create, `metadata.creator` and tenant match the caller. Later update and
+  delete do not treat the create-only creator field as actor history.
+- A failed create with no ID has no invented resource or provider outcome.
+- A transport loss before the host receives a result provides no reliable
+  caller-side request ID; the host follows uncertain-outcome recovery.
+- No diagnostic pseudonym key or shared key Secret is deployed. No sensitive
+  payload is logged and no new core audit API/schema is required.
 
 #### TC-FR19-02: Correlate a write through Fulfillment to deployed provisioning work
 
@@ -1067,12 +1216,22 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Create a resource through MCP.
-2. Follow Fulfillment ID to the downstream CR and provider/AAP work.
+1. Create a resource through MCP and record the tool result's request ID,
+   immediate public API result, resource UUID, and time. Match the request ID
+   to the sanitized MCP diagnostic without logging the resource UUID.
+2. Give the result's request ID and resource UUID to an authorized operator.
+   Read its later Fulfillment status, then follow the UUID through existing
+   reconciler/CR and provider or AAP diagnostics in a deployed provider-backed
+   journey.
 
 ##### Expected Results
 
-- Correlation uses existing diagnostics.
+- The MCP result and diagnostic share the request ID; the diagnostic contains
+  no resource UUID. The result's UUID identifies the Fulfillment resource and
+  the same work in the existing CR/provider path. Later public status
+  distinguishes request acceptance from actual provisioning outcome.
+- The operator uses existing diagnostic permissions and surfaces; no
+  tenant-admin audit lookup or core Fulfillment audit change is assumed.
 - No general Observability MCP tool is exposed.
 
 ### NFR-1: Authorization and tenant isolation
@@ -1233,7 +1392,7 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Preconditions
 
-- **Tier / owner:** Unit / [DEV].
+- **Tier / owner:** Unit / [UI].
 - **Execution:** `pnpm test` from `osac-ui`.
 
 ##### Steps
@@ -1244,6 +1403,69 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 ##### Expected Results
 
 - Only the six named local surfaces are listed.
+
+#### TC-NFR3-03: Cursor OAuth and private-trust contract matches the released surfaces
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-13 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Contract / [DEV], Story 8.05.
+- **Execution:** Proposed `fulfillment-service/test/contract/mcp_auth/` and `osac-installer/tests/contract/mcp_keycloak/`; create harness, then record exact command and cwd.
+- **Boundary:** Real Keycloak, MCP resource metadata, TLS/CA bundle, and callback fixtures observed from released Cursor editor/CLI. Actual host prompts remain TC-FR10-01/02.
+
+##### Steps
+
+1. Check Cursor editor and CLI callback URIs against the installed public client allowlist.
+2. Request a PKCE token for the configured resource and verify issuer, audience, discovery metadata, and CA chain.
+
+##### Expected Results
+
+- Both Cursor surfaces have exact supported callbacks and a valid private-trust path; wrong callback, audience, or issuer is rejected.
+
+#### TC-NFR3-04: Codex OAuth and private-trust contract matches the released surfaces
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-13 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Contract / [DEV], Story 8.07.
+- **Execution:** Proposed MCP auth and installer Keycloak contract paths as in TC-NFR3-03; exact command and cwd recorded when harness is created.
+- **Boundary:** Real Keycloak, metadata, TLS/CA bundle, and callbacks observed from released Codex CLI/app or IDE. Real host prompts remain TC-FR10-03/04.
+
+##### Steps
+
+1. Check both Codex callback URIs against the installed public client allowlist.
+2. Verify PKCE, issuer, audience, resource metadata, and private CA; reject mismatches.
+
+##### Expected Results
+
+- Both local Codex surfaces have exact supported callbacks and a valid private-trust path without a client secret or bypass.
+
+#### TC-NFR3-05: Claude Code OAuth and private-trust contract matches the released surfaces
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-13 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Contract / [DEV], Story 8.09.
+- **Execution:** Proposed MCP auth and installer Keycloak contract paths as in TC-NFR3-03; exact command and cwd recorded when harness is created.
+- **Boundary:** Real Keycloak, metadata, TLS/CA bundle, and callbacks observed from released Claude Code CLI/Desktop Code. Real host prompts remain TC-FR10-05/06.
+
+##### Steps
+
+1. Check both Claude Code callbacks against the installed public client allowlist.
+2. Verify PKCE, issuer, audience, resource metadata, and private CA; reject mismatches.
+
+##### Expected Results
+
+- Both selected local Claude Code surfaces have exact callbacks and trusted transport; Claude Desktop Chat is not treated as equivalent.
 
 ### NFR-4: Operability
 
@@ -1262,11 +1484,16 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 1. Install with `global.mcp` enabled.
 2. Query `/livez`, `/readyz`, PRM, and the public MCP endpoint.
+3. Verify the disabled default; migrate a PoC `service.mcp` configuration to
+   `global.mcp`, then roll back and confirm the endpoint is disabled while
+   Fulfillment resources remain intact.
 
 ##### Expected Results
 
 - One public URL, clients, Service, and probes exist only when enabled.
 - `/readyz` fails when a required dependency is down.
+- Migration validates URL, OAuth, and trust settings; rollback does not delete
+  existing Fulfillment resources.
 
 #### TC-NFR4-02: Serve the same Fulfillment state from two MCP replicas
 
@@ -1309,6 +1536,9 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 4. From two subjects in the same tenant, send traffic that stays under each
    per-subject limit while the combined rate exceeds the tenant limit, routed
    across replicas.
+5. Record the selected shared enforcement mechanism, configured defaults,
+   measured load, and alert thresholds before marking the supported service
+   check complete. An ingress mechanism must use authenticated claims.
 
 ##### Expected Results
 
@@ -1316,6 +1546,8 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 - The per-subject quota is the aggregate across replicas.
 - The per-tenant quota is enforced even when no single subject exceeds their
   own limit.
+- Independent pod-local counters do not pass; the selected shared boundary
+  rejects above-limit traffic before the public Fulfillment RPC.
 
 #### TC-NFR4-04: Keep supported actions, onboarding, failures, and correlation documentation executable
 
@@ -1331,11 +1563,60 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 ##### Steps
 
 1. Compare docs to the runtime registry.
-2. Check host setup, Secret create in existing UI, host confirmation, and error categories.
+2. Compare documented write-result fields with representative tool results,
+   including the per-call request ID and resource ID when available.
+3. Check host setup, Secret create in existing UI, host confirmation, error
+   categories, and examples of sanitized MCP diagnostics.
 
 ##### Expected Results
 
-- Documented tools exist in the registry and conversely.
+- Documented tools exist in the registry and conversely. Write-result examples
+  show the request ID and available resource ID; MCP diagnostic examples use
+  the same request ID without caller, tenant, or resource identifiers.
+
+#### TC-NFR4-05: Enclave plugin picks up MCP installer schema
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-11 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Contract and component integration / [DEV], Story 8.01.
+- **Execution:** Proposed Enclave plugin schema test in its external checkout; exact command and working directory must be recorded by the Enclave owner before execution.
+- **Boundary:** Real versioned `osac-installer` values schema and plugin pickup; Kubernetes provider omitted.
+
+##### Steps
+
+1. Load the installer schema version containing `global.mcp`.
+2. Inspect plugin-exposed parameter names, types, defaults, descriptions, and conditional enablement.
+3. Reject an invalid value and confirm a valid value survives plugin output.
+
+##### Expected Results
+
+- The plugin exposes every operator-configurable MCP field from the installer schema without losing validation or adding a credential to public metadata.
+
+#### TC-NFR4-06: Enclave Wizard renders and emits MCP controls
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-11 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** UI integration / [UI], Story 8.02.
+- **Execution:** Proposed Enclave Wizard render test in its external checkout; exact command and working directory must be recorded by the Enclave owner before execution.
+- **Boundary:** Real Wizard controls fed by the plugin schema; provider omitted.
+
+##### Steps
+
+1. Render each MCP value as its schema-derived control and inspect default and description.
+2. Submit invalid endpoint, issuer, trust, replica, and limit values, then valid values.
+3. Inspect values emitted to the installer.
+
+##### Expected Results
+
+- Invalid values are rejected; valid values are emitted unchanged for the installer. Deployed installation is verified separately by TC-NFR4-01.
 
 ### NFR-5: Verification
 
@@ -1355,12 +1636,18 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 ##### Steps
 
-1. Run authorization denial, sequential writes, partial failure, lost-response, unknown outcome, and later get.
+1. In Story 1.01, run the four-tool caller-scoped PoC journey and denial cases
+   from TC-NFR5-03.
+2. As the owning Epic 1 and Epic 2 Tasks land, run the added authorization,
+   sequential-write, partial-failure, lost-response, unknown-outcome, and
+   later-status cases in the same deployed harness.
 
 ##### Expected Results
 
-- Named cases exist and pass in the deployed harness.
-- New cases follow the existing `it_mcp_server_test.go` client setup.
+- Story 1.01's four-tool baseline passes before its PR merges. The expanded
+  suite passes before the supported VM journey is declared complete.
+- New cases follow the existing `it_mcp_server_test.go` client setup and keep
+  the baseline create/delete tests running.
 
 #### TC-NFR5-02: Gate support on deployed resource-family, host, and later-session evidence
 
@@ -1382,28 +1669,43 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 - Missing evidence is not converted to pass.
 
-#### TC-NFR5-03: Keep write tools unregistered until the development-only flag is set
+#### TC-NFR5-03: First implementation PR preserves the callable four-tool PoC
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-5 | critical | automated |
+| IC-5, IC-7 | critical | automated |
 
 ##### Preconditions
 
 - **Tier / owner:** Component integration / [DEV].
 - **Execution:** Kind fulfillment suite; extend `it_mcp_server_test.go`.
+- **Boundary:** Continuous acceptance for Story 1.01's opt-in MCP endpoint.
+  Real SDK client, public Fulfillment API, caller tokens, and PostgreSQL;
+  providers and released-host confirmation are outside this test.
+- **Fixture:** An existing ComputeInstance belongs to a second tenant and is
+  invisible to the authorized test caller.
 
 ##### Steps
 
-1. Start MCP with the default configuration and list tools, then invoke a
-   typed write.
-2. Restart with the development-only write flag and retry the same write.
+1. Enable the endpoint through its documented opt-in setting, then list tools
+   as an authorized caller.
+2. Invoke `create_compute_instance`, `list_resources`, `get_resource`, and
+   `delete_compute_instance` through the SDK client as the authorized caller.
+3. Attempt invalid and unauthorized create/delete calls with caller tokens.
 
 ##### Expected Results
 
-- Default configuration omits mutating tools and performs no Fulfillment
-  write RPC.
-- The flag registers write tools; a host-confirmed call may mutate.
+- The enabled endpoint lists `list_resources`, `get_resource`,
+  `create_compute_instance`, and `delete_compute_instance` without a second
+  write flag. Story 1.01's Helm/schema checks verify that installation is
+  disabled by default.
+- After create, `list_resources` includes the created ComputeInstance for the
+  authorized caller and excludes a fixture owned by another tenant.
+- Authorized create persists the caller's tenant and creator, and delete uses
+  the caller's token. Both return accepted results without claiming provider
+  readiness; invalid and denied calls cause no Fulfillment mutation. Story
+  2.01 extends this continuous test with supported write contracts, rather
+  than changing which tools are available.
 
 ### NFR-6: Existing-capability boundary
 
@@ -1457,17 +1759,21 @@ Working-directory convention: repository-root commands use `$REPO_ROOT`;
 | Component / behavior and boundary | Requirements / ICs | Test case IDs | Tier / owner | Existing or proposed path and command | Prerequisites | Real dependencies | Simulated or omitted dependencies | Unresolved gap |
 |---|---|---|---|---|---|---|---|---|
 | MCP registry, schemas, outcomes, redaction | FR-18; NFR-2; NFR-6; IC-3, IC-5 | TC-FR18-01, TC-NFR2-01, TC-NFR2-02, TC-NFR6-01, TC-NFR6-02 | Unit / [DEV] | `ginkgo run -r internal` from `fulfillment-service/` | Go toolchain | MCP package | Public clients mocked | MCP package not on `main` |
-| First-PR MCP HTTP client journey | FR-3; NFR-1, NFR-5; IC-3, IC-5 | TC-NFR5-01, TC-NFR5-03 | Component integration / [DEV] | Rebuild `fulfillment-service/it/it_mcp_server_test.go`; Kind fulfillment suite | Kind `osac-dev` | SDK client, Fulfillment, token | Providers omitted; writes gated off by default | Rebuild onto `main`; do not merge OSAC-4388 |
+| First-PR MCP HTTP client journey | FR-3; NFR-1, NFR-5; IC-3, IC-5, IC-7 | TC-NFR5-01, TC-NFR5-03 | Component integration / [DEV] | Rebuild `fulfillment-service/it/it_mcp_server_test.go`; Kind fulfillment suite | Kind `osac-dev` | SDK client, Fulfillment, token, PostgreSQL | Providers omitted; enabled endpoint exposes all four tools | Rebuild onto `main`; do not merge OSAC-4388 |
 | Sequential writes, authz, partial/unknown failure | FR-13, FR-15, FR-16, FR-17; IC-4, IC-6, IC-7 | TC-FR13-01, TC-FR13-02, TC-FR13-03, TC-FR15-01, TC-FR16-01, TC-FR17-01, TC-FR17-02 | Component integration / [DEV] | proposed `it_mcp_sequential_writes_test.go` and related `it_mcp_*.go` | Kind | Fulfillment, PostgreSQL | Providers omitted | Proposed files |
 | Typed write tools | FR-2, FR-6, FR-7, FR-8, FR-14; IC-5 | TC-FR2-02, TC-FR6-01, TC-FR7-01, TC-FR7-02, TC-FR8-01, TC-FR8-02, TC-FR14-04 | Component integration / [DEV] | proposed family `it_mcp_*.go` | Kind | Public APIs | Providers omitted | Proposed files |
 | Tool annotations | FR-14; IC-5, IC-6 | TC-FR14-01, TC-FR14-02, TC-FR14-03, TC-FR14-04 | Unit / [DEV] | MCP package tests | Go toolchain | Registry | None | Proposed files |
 | Tenant isolation and caller token | NFR-1; IC-1, IC-3, IC-7 | TC-NFR1-01, TC-NFR1-02, TC-NFR1-03 | Contract + component / [DEV] | proposed `mcp_auth/` and `it_mcp_tenant_isolation_test.go` | Two tenants | Auth, Fulfillment | Providers omitted | No contract harness Jira |
 | Secret bytes excluded; existing UI create | FR-9; NFR-2; IC-8 | TC-FR9-01, TC-FR9-02 | E2E (manual) + unit | proposed secret-resume record; schema tests | Live UI for TC-FR9-01 | Existing Secret wizard | Handoff API omitted on purpose | No UI E2E harness; TC-FR9-01 is manual |
-| Setup page | FR-11; NFR-3; IC-10 | TC-FR11-01, TC-NFR3-02 | Unit / [DEV] | `pnpm test` from `osac-ui/` | pnpm | React | Runtime metadata simulated | Proposed page |
+| Setup page | FR-11; NFR-3; IC-10 | TC-FR11-01, TC-NFR3-02 | Unit / [UI] | `pnpm test` from `osac-ui/` | pnpm | React | Runtime metadata simulated | Proposed page |
+| Authenticated setup metadata proxy | FR-11; IC-10 | TC-FR11-02 | Component integration / [UI] | proposed `go test ./...` from `osac-ui/proxy` | Go proxy, auth middleware, runtime-config handler; session and installer metadata fixtures | UI proxy and HTTP boundary | Keycloak and host apps omitted | Story 8.03 owns the proposed handler test and records its final path |
 | Installer, health, replicas, limits | NFR-4; IC-11, IC-12 | TC-NFR4-01, TC-NFR4-02, TC-NFR4-03 | E2E + component | proposed `tests/e2e/mcp/` and `it_mcp_limits_test.go` | MCP chart | Cluster, Keycloak | Handler controlled for counts | No MCP install profile |
+| Enclave schema pickup and Wizard controls | FR-10; NFR-4; IC-11 | TC-NFR4-05, TC-NFR4-06 | Contract/component / [DEV] and UI integration / [UI] | proposed Enclave plugin/Wizard tests; command and cwd must be recorded in external checkout | Installer values/schema Task 1.05 and plugin Task 8.01 | Versioned installer schema, plugin, rendered Wizard | Provider omitted | No known test command or owning Jira until /sync; Stories 8.01/8.02 own discovery and implementation |
+| Host-family OAuth/metadata/trust contracts | FR-10; NFR-3; IC-13 | TC-NFR3-03, TC-NFR3-04, TC-NFR3-05 | Contract / [DEV] | proposed `ginkgo run -r test/contract/mcp_auth` from `fulfillment-service/` and `pytest -q osac-installer/tests/contract/mcp_keycloak/` from repository root | SDK, Keycloak, per-family callback fixtures | Real Keycloak, MCP metadata, TLS/CA | Released host prompts omitted; QE host cases own them | Paths/harness proposed; Stories 8.05/8.07/8.09 own creation and execution |
 | Host certification | FR-10; NFR-3; IC-13 | TC-FR10-01–06, TC-NFR3-01 | E2E / [QE] | proposed `tests/e2e/mcp/host-certification/` | Released hosts | Real OAuth + write | Generic client forbidden | Open Question 9.3 |
+| Released-host write review and failure stop | FR-13, FR-14, FR-16; IC-4, IC-6 | TC-FR13-04, TC-FR14-05, TC-FR16-02 | E2E / [QE] | proposed `tests/e2e/mcp/host-certification/` per-surface manual records | Released hosts, VM, network, catalog fixtures | Real host prompts and public APIs | Generic client and annotation-only assertions forbidden | Stories 8.06/8.08/8.10 own records; no runnable host harness yet |
 | Deployed family journeys | FR-1–FR-6; NFR-5 | TC-FR1-01, TC-FR2-01, TC-FR3-01, TC-FR3-02, TC-FR4-01, TC-FR5-01, TC-FR5-02, TC-FR6-02, TC-NFR5-02 | E2E / [QE] | proposed `tests/e2e/mcp/` | Providers | Full stack | None | Volume: OSAC-4845 / OQ 9.2 |
-| Correlation | FR-19; IC-9 | TC-FR19-01, TC-FR19-02 | Component + E2E | proposed origin audit + `test_write_correlation.py` | Operator access | Fulfillment + provider | No write-record API | Provider gaps OSAC-4843/4850 |
+| MCP write diagnostics and provisioning correlation | FR-19; IC-9 | TC-FR19-01, TC-FR19-02 | Component / [DEV] + E2E / [QE] | proposed `it_mcp_write_diagnostics_test.go` + `test_write_correlation.py` | Signed-in callers from two tenants, authorized operator, and two MCP replicas | MCP logs and tool results, public Fulfillment resource/state, CR and provider diagnostics | No new core audit API/schema or tenant-admin history view | Story 9.03 owns per-call request IDs and diagnostic fields; provider gaps OSAC-4843/4850 |
 
 ## Gaps
 
@@ -1478,24 +1784,28 @@ All 25 PRD requirements have behavioral test cases.
 - **FR-6 / NFR-5 — Volume real-backend:** TC-FR6-02 blocked by [OSAC-4845](https://redhat.atlassian.net/browse/OSAC-4845) and Open Question 9.2.
 - **FR-9 — UI E2E:** TC-FR9-01 is manual until a browser harness exists. No owning Jira.
 - **FR-10 / NFR-3 — six hosts:** Open Question 9.3. No owning Jira.
+- **NFR-3 — family contracts:** TC-NFR3-03/04/05 are newly planned; Stories 8.05/8.07/8.09 own the proposed fixtures and harness before they can report a pass.
 - **NFR-1 — Keycloak/token contracts:** proposed contract harnesses have no owning Jira.
+- **FR-11 — authenticated setup metadata:** TC-FR11-02 is proposed; Story 8.03
+  owns the proxy handler fixture, final test path, and execution record.
 - **NFR-4 — production sizing:** Open Question 9.1.
+- **NFR-4 — Enclave schema/Wizard checks:** TC-NFR4-05/06 are newly planned; external runner command/cwd must be recorded by Stories 8.01/8.02 before either is executable.
 - **Provider-backed E2E:** [OSAC-4843](https://redhat.atlassian.net/browse/OSAC-4843), [OSAC-4850](https://redhat.atlassian.net/browse/OSAC-4850).
 
 ### Interface Change Coverage Gaps
 
-All 14 ICs have planned cases. Execution gaps remain for IC-1/11/13/14 (hosts/OQ 9.3), IC-8 (browser Secret create), IC-11/12 (MCP install profile), IC-3/5 Volume real backend.
+All 14 ICs have planned cases. Execution gaps remain for IC-1/11/13/14 (hosts/OQ 9.3), IC-8 (browser Secret create), IC-11/12 (MCP install profile and Enclave runner), IC-3/5 Volume real backend, and real-host confirmation/stop records for IC-4/6.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 58 |
-| Critical | 43 |
-| High | 13 |
+| Total test cases | 67 |
+| Critical | 46 |
+| High | 19 |
 | Medium | 2 |
 | Low | 0 |
-| Automated | 50 |
-| Manual | 8 |
+| Automated | 56 |
+| Manual | 11 |
 | Requirements with test cases | 25 / 25 |
 | Interface changes with test cases | 14 / 14 |
