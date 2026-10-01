@@ -1121,31 +1121,43 @@ Shared pass/fail checklist for TC-FR10-01–06 (and TC-NFR3-01 per surface):
 
 - **Tier / owner:** Component integration / [DEV].
 - **Execution:** proposed `fulfillment-service/it/it_mcp_write_diagnostics_test.go`.
+- Two MCP replicas use the same known test-only 256-bit pseudonym key from an
+  MCP-owned Kubernetes Secret.
 
 ##### Steps
 
-1. Create, update, and delete resources through MCP as tenant A using distinct
-   authenticated callers where each public method permits them; attempt a
-   cross-tenant mutation as tenant B and capture the public API rejection.
+1. Create, update, and delete resources through both MCP replicas as tenant A
+   using the same caller and a distinct authenticated caller where each public
+   method permits them; attempt a cross-tenant mutation as tenant B and
+   capture the public API rejection.
 2. Capture MCP structured diagnostics and public Fulfillment responses for
    each attempted write, including a failed call with no resource ID.
 3. Match the resource ID from a successful MCP call to a public Fulfillment
    read while the resource exists. Inspect `metadata.creator` on create.
-4. Verify that diagnostic output excludes bearer tokens, raw subjects,
-   Secret values, prompts, and unrestricted request/response bodies.
+4. Replace one MCP replica, repeat a write attempt for the same caller, and
+   compare its pseudonym with diagnostics from both original replicas.
+5. Verify that diagnostic output excludes bearer tokens, raw subjects, the
+   pseudonym key, Secret values, prompts, and unrestricted request/response
+   bodies.
+6. Inspect installer configuration and the rendered UI runtime ConfigMap for
+   accidental exposure of the pseudonym key.
 
 ##### Expected Results
 
 - Every write reaches public Fulfillment as the signed-in caller, and a
   cross-tenant mutation is rejected by existing authorization.
-- MCP diagnostics identify the hashed subject, tenant when known, tool/action,
-  resource ID when known, timestamp, and immediate gRPC result for successful
-  and failed calls. The subject hash matches the known caller without logging
-  a raw identity or token.
+- MCP diagnostics identify a keyed subject pseudonym, tenant when known,
+  tool/action, resource ID when known, timestamp, and immediate gRPC result
+  for successful and failed calls. With the known test key, the pseudonym
+  equals HMAC-SHA256 of the design's unambiguous validated issuer/subject
+  encoding. It is identical for the same caller across replicas and
+  replacement, and differs for distinct callers. Raw subjects, tokens, and
+  the key are absent from diagnostics.
 - On create, `metadata.creator` and tenant match the caller. Later update and
   delete do not treat the create-only creator field as actor history.
 - A failed create with no ID has no invented resource or provider outcome.
-- No sensitive payload is logged and no new core audit API/schema is required.
+- The pseudonym key is absent from installer values and UI runtime metadata.
+  No sensitive payload is logged and no new core audit API/schema is required.
 
 #### TC-FR19-02: Correlate a write through Fulfillment to deployed provisioning work
 
@@ -1695,7 +1707,7 @@ Working-directory convention: repository-root commands use `$REPO_ROOT`;
 | Host certification | FR-10; NFR-3; IC-13 | TC-FR10-01–06, TC-NFR3-01 | E2E / [QE] | proposed `tests/e2e/mcp/host-certification/` | Released hosts | Real OAuth + write | Generic client forbidden | Open Question 9.3 |
 | Released-host write review and failure stop | FR-13, FR-14, FR-16; IC-4, IC-6 | TC-FR13-04, TC-FR14-05, TC-FR16-02 | E2E / [QE] | proposed `tests/e2e/mcp/host-certification/` per-surface manual records | Released hosts, VM, network, catalog fixtures | Real host prompts and public APIs | Generic client and annotation-only assertions forbidden | Stories 8.06/8.08/8.10 own records; no runnable host harness yet |
 | Deployed family journeys | FR-1–FR-6; NFR-5 | TC-FR1-01, TC-FR2-01, TC-FR3-01, TC-FR3-02, TC-FR4-01, TC-FR5-01, TC-FR5-02, TC-FR6-02, TC-NFR5-02 | E2E / [QE] | proposed `tests/e2e/mcp/` | Providers | Full stack | None | Volume: OSAC-4845 / OQ 9.2 |
-| MCP write diagnostics and provisioning correlation | FR-19; IC-9 | TC-FR19-01, TC-FR19-02 | Component / [DEV] + E2E / [QE] | proposed `it_mcp_write_diagnostics_test.go` + `test_write_correlation.py` | Signed-in callers from two tenants and authorized operator | MCP logs, public Fulfillment resource/state, CR and provider diagnostics | No new core audit API/schema or tenant-admin history view | Story 9.03 owns diagnostic fields; provider gaps OSAC-4843/4850 |
+| MCP write diagnostics and provisioning correlation | FR-19; IC-9 | TC-FR19-01, TC-FR19-02 | Component / [DEV] + E2E / [QE] | proposed `it_mcp_write_diagnostics_test.go` + `test_write_correlation.py` | Signed-in callers from two tenants, authorized operator, two MCP replicas, and shared test key | MCP logs, public Fulfillment resource/state, CR and provider diagnostics | No new core audit API/schema or tenant-admin history view | Story 9.03 owns diagnostic fields and key; provider gaps OSAC-4843/4850 |
 
 ## Gaps
 

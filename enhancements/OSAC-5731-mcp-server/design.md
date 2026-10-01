@@ -326,8 +326,12 @@ required.
 MCP forwards the signed-in caller token to each public Fulfillment write.
 `metadata.creator` identifies the create caller only; it does not identify
 later update or delete actors. MCP emits sanitized operational diagnostics for
-each attempted write: a stable hash of the authenticated subject, tenant when
-known, tool/action, resource ID when known, immediate gRPC result, and time.
+each attempted write: a keyed pseudonym of the authenticated subject, tenant
+when known, tool/action, resource ID when known, immediate gRPC result, and
+time. The pseudonym is HMAC-SHA256 over an unambiguous encoding of the
+validated issuer and subject, using a 256-bit key in an MCP-owned Kubernetes
+Secret. Every replica uses the same key, which persists through pod restarts
+and rolling updates. Explicit key rotation starts a new pseudonym series.
 The tool name is the MCP-origin indication. An authorized operator can use the
 resource ID and time to follow existing Fulfillment resource state, reconciler
 and Kubernetes CR diagnostics, and provider work. If a create fails before an
@@ -340,7 +344,8 @@ schema is added. [D19 subsequent override 2026-10-01, D20, D37] [User]
 
 No new PostgreSQL schema is required. MCP does not persist plans, confirmations,
 attempts, grants, handoffs, or write records. Resource state remains in existing
-Fulfillment tables.
+Fulfillment tables. An MCP-owned Kubernetes Secret holds the diagnostic
+pseudonym key; it contains no caller identity or write history.
 
 ## 4.3 API Changes
 
@@ -469,7 +474,8 @@ No MCP-specific Secret-handoff or plan-approval routes are added.
 The MCP edge is stateless and runs at least two replicas behind a ClusterIP
 Service, with configurable resources, a PodDisruptionBudget, topology spread,
 graceful drain, probes, and `maxUnavailable: 0`. No workflow state is stored
-in a pod.
+in a pod. All replicas mount the same retained diagnostic key Secret; no pod
+generates its own pseudonym key.
 
 Each tool call is one public Fulfillment RPC plus mapping. Database load is
 the existing resource write/read path. Request bodies are capped at 1 MiB at
@@ -490,6 +496,10 @@ Question 9.1.
   client secret, and only required scopes. DCR/CIMD is not enabled.
 - Tool inputs, schemas, traces, and logs exclude bearer tokens, Secret bytes,
   private keys, unrestricted prompts, and raw upstream responses. [PRD: NFR-2]
+- The MCP pseudonym key is readable only by MCP pods and installation
+  operators. Logs, traces, and metrics exclude the key and raw subjects as
+  well as bearer tokens. Rotation changes pseudonym continuity, not caller
+  authorization. [PRD: NFR-2]
 - `Secrets/Get` is absent. Secret discovery is reference-only.
 - Host auto-approval of write tools is an accepted residual risk.
   MCP annotations are untrusted host hints, not authorization; write tools
@@ -630,12 +640,13 @@ reference. [Locked: D25] [User]
 **Requirements:** FR-19, NFR-1, NFR-2
 
 The MCP edge forwards the signed-in caller token to public Fulfillment APIs
-and emits sanitized write diagnostics with hashed subject, tenant when known,
-tool/action, resource ID when known, immediate result, and time. Authorized
-operators follow the resource ID through existing Fulfillment state, CR, and
-provider diagnostics. `metadata.creator` is create-only; these surfaces do
-not promise a tenant-admin update/delete actor history. No core Fulfillment
-audit API, `MCPWriteRecords` service, or audit schema is added.
+and emits sanitized write diagnostics with a keyed subject pseudonym, tenant
+when known, tool/action, resource ID when known, immediate result, and time.
+The shared MCP Secret keeps that pseudonym stable across replicas and rollouts.
+Authorized operators follow the resource ID through existing Fulfillment
+state, CR, and provider diagnostics. `metadata.creator` is create-only; these
+surfaces do not promise a tenant-admin update/delete actor history. No core
+Fulfillment audit API, `MCPWriteRecords` service, or audit schema is added.
 [D19 subsequent override 2026-10-01, D20, D37] [User]
 
 ## IC-10: MCP setup page and runtime metadata
@@ -659,7 +670,9 @@ it is not a Fulfillment method. [Locked: D31, D32]
 configuration, trust mode, CA source, replica count, resources, request limits,
 and rate/concurrency settings. `osac-infra` owns idempotent Keycloak client
 reconciliation; the platform chart owns endpoint resources. Both are
-conditional on MCP enablement.
+conditional on MCP enablement. The platform chart also owns the retained,
+MCP-only diagnostic key Secret. The key is not an installer value or UI
+runtime metadata field.
 
 ## IC-12: MCP health, readiness, and overload behavior
 
@@ -777,16 +790,18 @@ The implementation adds:
   result category, and protocol version;
 - gauges for active requests and readiness dependencies;
 - trace spans for MCP invocation and the downstream resource RPC;
-- sanitized structured logs for attempted writes with caller subject hash,
+- sanitized structured logs for attempted writes with a keyed caller pseudonym,
   tenant and resource ID when known, tool/action, immediate gRPC code,
   timestamp, and duration;
 - alerts for sustained readiness failure, elevated authentication/5xx errors,
   and rate-limit spikes.
 
-Tokens, Secret values, raw prompts, and unbounded bodies are excluded.
+Tokens, raw subjects, the pseudonym key, Secret values, raw prompts, and
+unbounded bodies are excluded.
 Tenant and resource IDs are OSAC control-plane identifiers, not Secret values.
-The subject hash supports operator investigation when a caller is already
-known. MCP logs do not expose raw subjects or provide an administrator audit
+The pseudonym groups one caller's writes across replicas within a key
+generation; resource ID and time remain the operator correlation path. Key
+rotation starts a new grouping. MCP logs do not provide an administrator audit
 lookup. A public resource's `metadata.creator` can corroborate its create
 caller; it cannot establish the actor of a later update or delete. Existing
 Fulfillment and provider diagnostics supply the downstream correlation where
@@ -856,8 +871,8 @@ journey. [Related: OSAC-4845]
 ## Provenance
 
 Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 8e3e2c790
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 0d3997211
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 0d3997211
 
-> Context changed between draft and revise.
+> Context changed between draft and respond.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0d3997211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1331,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0d3997211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":1331,"main_ref":"main","phases":["draft","revise","revise","revise","respond","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
