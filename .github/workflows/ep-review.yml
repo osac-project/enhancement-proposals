@@ -100,20 +100,9 @@ jobs:
         run: pip install -r .github/scripts/requirements.txt
 
       - name: Clone skills
-        env:
-          OSAC_AI_SKILLS_READ_TOKEN: ${{ secrets.OSAC_AI_SKILLS_READ_TOKEN }}
         run: |
           set -euo pipefail
-          if [[ -z "${OSAC_AI_SKILLS_READ_TOKEN:-}" ]]; then
-            echo "::error::Configure OSAC_AI_SKILLS_READ_TOKEN with read access to osac-project/osac-ai-skills"
-            exit 1
-          fi
-          skills_auth="$(printf 'x-access-token:%s' "$OSAC_AI_SKILLS_READ_TOKEN" | base64 --wrap=0)"
-          GIT_CONFIG_COUNT=1 \
-          GIT_CONFIG_KEY_0="http.https://github.com/osac-project/osac-ai-skills/.extraheader" \
-          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${skills_auth}" \
-            git clone --depth 1 https://github.com/osac-project/osac-ai-skills /opt/skills
-          unset skills_auth OSAC_AI_SKILLS_READ_TOKEN
+          git clone --depth 1 https://github.com/osac-project/osac-ai-skills /opt/skills
           skills_sha="$(git -C /opt/skills rev-parse --verify "HEAD^{commit}")"
           if ! [[ "$skills_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::osac-ai-skills resolved to an invalid commit SHA: $skills_sha"
