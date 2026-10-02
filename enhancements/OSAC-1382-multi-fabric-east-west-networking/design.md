@@ -3,7 +3,7 @@ title: multi-fabric-east-west-networking
 authors:
   - vromanso@redhat.com
 creation-date: 2026-07-14
-last-updated: 2026-09-28
+last-updated: 2026-10-02
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1382
 prd:
@@ -16,888 +16,796 @@ see-also:
 
 ## Summary
 
-This design introduces **FabricDomain** as a first-class OSAC resource for
-**east-west fabric isolation**: a group of servers that share an isolation
-boundary on a high-performance fabric type (Ethernet/Spectrum-X, later
-InfiniBand, NVLink).
-
-**VirtualNetwork remains the north-south / IP isolation boundary** (unchanged).
-East-west is a different isolation plane. Hard multi-tenant AI networking
-requires both:
-
-| Plane | Role | OSAC object |
-|-------|------|-------------|
-| North-south / IP | Reachability, tenant IP isolation, ingress/egress | **VirtualNetwork** (+ Subnet) — existing |
-| East-west / fabric | Who may talk server-to-server on the high-perf fabric (RoCE, IB, NVLink) | **FabricDomain** — new |
-
-**Phase 1** delivers Ethernet east-west via **Netris Server Clusters**. Each
-FabricDomain **requires exactly one VirtualNetwork** so the Server Cluster is
-created in that VN's Netris VPC and nodes remain reachable on N-S. Backend
-config (`template_id`, …) lives on **NetworkClass**. No new VPC resource is
-introduced.
-
-The AAP path for Server Cluster create/delete is already implemented
-(osac-aap PR #447). VPC → Server Cluster in existing VPC → OSAC Subnet
-coexistence and tenant isolation were validated on zeus12.
-
-East-west networking inherits the [Unified Networking deployment support
-boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
-it supports connected deployments only and does not create an air-gapped or
-disconnected networking exception.
-
-East-west networking also inherits the [Unified Networking hub support
-boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
-OSAC networking supports exactly one provider-owned hub per deployment.
-Multi-hub networking placement, cross-hub resource coordination, and
-cross-hub network connectivity are unsupported. This boundary applies only to
-the networking area and does not define hub behavior for other OSAC areas.
-Multiple hosting/workload clusters remain supported where a networking feature
-explicitly specifies them.
+This design keeps FabricDomain as the lifecycle and isolation boundary for a set
+of devices on an east-west fabric. Phase 1 is an administrator-operated Netris
+implementation; its Server Cluster template moves from NetworkClass to a private
+BareMetalInstanceType binding, while Phases 2 and 3 add workload-driven
+bare-metal membership, additional fabric managers, and VM device attachment.
+See [PRD](prd.md) for the product requirements; this revision records the
+implementation boundary and the proposed follow-on architecture.
 
 ## Motivation
 
-High-performance workloads need high-bandwidth, low-latency east-west
-connectivity with hard multi-tenant isolation. OSAC already provides north-south
-and general networking (unified networking / EP #50) via VirtualNetwork.
-IP isolation alone does **not** isolate the GPU fabric: two tenants can have
-separate VirtualNetworks and still share an open Spectrum-X, InfiniBand, or
-NVLink domain if fabric membership is not programmed.
+North-south IP networking and east-west accelerator fabrics are separate
+provisioning planes. VirtualNetwork and Subnet provide IP connectivity. A
+FabricDomain asks a fabric manager to establish a membership/isolation boundary
+for a particular group of machines. A Server Cluster template also describes
+the Netris networks and physical NICs to program; that layout depends on the
+machine hardware.
 
-| Fabric | Isolation primitive | Typical manager |
-|--------|---------------------|-----------------|
-| Ethernet / Spectrum-X (RoCE) | VRF + L3VPN / V-Nets | Netris |
-| InfiniBand | PKey + HCA GUID membership | UFM (often via Netris) |
-| NVLink Multi-Node | NVLink logical partition | NMX-C or NICo |
+The original Phase 1 proposal stored one Netris template ID on NetworkClass.
+That class is selected by a VirtualNetwork and is reused by different hardware
+types. It therefore cannot reliably choose a template for a group of hosts with
+different NIC layouts. The in-flight implementation also exposed FabricDomain
+to tenants before it could safely derive host identity or allocation. Phase 1
+now makes the admin boundary explicit and resolves each exact Netris hostname
+through administrator-maintained hardware inventory.
 
-Manual alignment of VRFs, PKeys, and NVLink partitions does not scale. The API
-must stay **backend-agnostic** so Spectrum-X, IB, NVLink, and NICo plug in
-without redesign.
+This is a staged implementation plan, not a claim that the original tenant
+self-service scope in the PRD has shipped. Before tenant-facing workload
+membership is implemented, the PRD and Jira tasks must be reconciled with this
+design.
 
-### Why not only VirtualNetwork?
+### Goals
 
-- VirtualNetwork isolates the **IP plane**.
-- Fabric membership (EW L3VPN, PKey, NVLink partition) is a **separate plane**.
-- NVIDIA NICo treats NVLink logical partitions as independent of exclusive VPC
-  ownership: a default partition on a VPC is optional, and the same partition
-  may be associated with multiple VPCs ("no exclusivity between VPCs").
-  ([NICo NVLink Partitioning](https://docs.nvidia.com/infra-controller/infra-controller/documentation/operations-day-2/nv-link-partitioning))
-- NVIDIA DGX SuperPOD separates Multi-Node NVLink, compute InfiniBand, storage,
-  and management fabrics with **different node memberships** (e.g. storage nodes
-  are not on NVLink).
-  ([SuperPOD Network Fabrics](https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/network-fabrics.html))
+- Keep VirtualNetwork responsible for north-south/IP connectivity and keep
+  FabricDomain responsible for an east-west isolation boundary.
+- Deliver a bounded Phase 1 without adding `instance_type` to FabricDomain or
+  asking tenants to provide Netris identifiers.
+- Select Netris templates from the hardware type of every requested host and
+  reject a FabricDomain whose servers require incompatible templates.
+- Pin the resolved backend inputs before creating a Netris resource so retries,
+  resize, and delete use stable identity.
+- Keep the future model capable of multiple fabric managers and overlapping
+  membership across different fabric planes.
+- Put future tenant membership intent on a workload/allocation request and
+  materialize the resulting device membership in FabricDomain reconciliation.
 
-## Goals
+### Non-Goals
 
-- First-class **FabricDomain** for east-west isolation with its own lifecycle.
-- Keep **VirtualNetwork** as the N-S / IP boundary; do not redefine it in this EP.
-- Backend-specific configuration on **NetworkClass**, not on every domain object.
-- Phase 1: Ethernet east-west via Netris Server Clusters; reuse existing AAP roles.
-- Clear extension path to InfiniBand (UFM) and NVLink (NMX-C / NICo).
-- Phase 1: required 1:1 association with VirtualNetwork (Netris VPC binding + N-S).
-
-## Non-Goals
-
-- Phase 1 InfiniBand or NVLink implementation (API shape reserved only).
-- Introducing a new top-level **VPC** resource or demoting VirtualNetwork to a
-  segment under VPC (separate hierarchy discussion if desired).
-- Pool-based automatic server assignment (explicit server lists in Phase 1).
-- Tenant-facing PKey or NVLink partition resources (backend/template concerns).
-- Virtual-cluster / SR-IOV east-west (bare-metal Phase 1).
-- Changing whether networking CRs are cluster-scoped vs namespaced (follow
-  existing OSAC networking conventions; examples below are illustrative).
-
----
+- Phase 1 tenant self-service, automatic bare-metal allocation, or
+  selector-based membership.
+- Phase 1 InfiniBand, NVLink, NICo, NMX-C, or VM fabric attachment.
+- Inferring a BareMetalInstanceType from a hostname, HostType selector, or an
+  unallocated BareMetalInstance.
+- Generating a Netris Server Cluster template from NIC roles.
+- Treating a successful AAP job as proof of data-plane reachability or
+  per-server link health.
+- Committing a final Phase 2 workload API schema in this document. The field
+  names below are illustrative design shapes that require API review.
 
 ## Proposal
 
-### Core model
+FabricDomain remains a distinct resource because a fabric isolation boundary
+has its own identity, backend object, reconciliation status, retry behavior,
+and cleanup lifecycle. NetworkClass describes supported network policy and
+capability. BareMetalInstanceType describes hardware and its backend-specific
+fabric binding. A workload request describes which allocated devices should
+join which domain.
+
+### Workflow Description
+
+#### The Phase 1 flow before the correction
+
+The original proposed flow was:
 
 ```text
-FabricDomain
-  type: ethernet_ew | infiniband_ew | nvlink | …
-  servers: [hostname, …]
-  virtual_networks: [vn]         # Phase 1: exactly one (required)
-  status: conditions, backend_id, vpc_id
-  # NetworkClass inherited from the associated VirtualNetwork
-
-NetworkClass
-  capabilities:
-    supports_east_west_ethernet: true/false
-    supports_east_west_infiniband: true/false   # Phase 2
-    supports_nvlink: true/false                 # Phase 3
-  east_west_config:
-    ethernet_ew: { template_id, … }
-    infiniband_ew: { … }                        # Phase 2
-    nvlink: { … }                               # Phase 3
-
-VirtualNetwork   # existing — N-S / IP isolation boundary
-  └── Subnet     # existing — IP segments
+NetworkClass (capability + Netris Server Cluster template ID)
+        ↓
+VirtualNetwork (north-south network and Netris VPC)
+        ↓
+FabricDomain (Ethernet EW + exact server hostnames)
+        ↓
+fulfillment-service → osac-operator → AAP
+        ↓
+Netris Server Cluster (template maps NICs and creates V-Nets)
 ```
 
-**Principles**
+An operator created the NetworkClass and pre-created a Netris Server Cluster
+template. A tenant or onboarding workflow created a VirtualNetwork, which
+provisioned the Netris VPC. An administrator created a FabricDomain with
+Netris-known hostnames and that one VirtualNetwork. The operator submitted the
+server list, template ID, and VPC ID to AAP. Netris created a Server Cluster
+inside the VPC using the template.
+
+The Server Cluster template, rather than FabricDomain, selected the NICs and
+the Netris V-Nets. A template could define East-West, North-South/storage, and
+OOB networks together. Therefore a FabricDomain request did not mean that only
+an EW NIC would be changed. Administrators had to inspect the template and its
+effect on existing Subnet/attachment configuration.
+
+NetworkClass does not need the Server Cluster template to create a normal
+VirtualNetwork. Its manager/profile and network policy drive VPC provisioning;
+the template is a separate input to the Server Cluster membership operation.
+The per-instance network-attachment path also selects an interface using the
+workload template's HostType and fabric-role interface. That path configures an
+individual attachment and does not itself create the multi-host Netris Server
+Cluster used by Phase 1 FabricDomain.
+
+#### Why the template belongs with hardware binding
+
+A NetworkClass can be used by machine types with different NIC counts, names,
+or cabling. A single template on the class can silently describe the wrong
+layout for one of those types. A Netris template is backend-specific, so the
+Phase 1 correction is a private binding on BareMetalInstanceType, scoped to the
+NetworkClass. The NetworkClass retains capability and V-Net policy; it does not
+own a Netris object ID.
+
+Phase 1 deliberately does not add `instance_type` to FabricDomain. Exact Netris
+hostnames are mapped to shared BareMetalInstanceType IDs in an administrator
+owned inventory ConfigMap. This works before a host is allocated as a
+BareMetalInstance and avoids guessing from labels. Different hardware types may
+share a template; one FabricDomain may proceed only when every member resolves
+to the same NetworkClass-scoped template.
+
+#### Phase 1 create and reconcile
+
+1. An infrastructure administrator configures a Netris NetworkClass. The class
+   advertises Ethernet east-west support through its fabric-manager capability.
+   Its public configuration contains no Server Cluster template ID.
+2. The administrator creates or updates shared BareMetalInstanceType catalog
+   entries through the private API. For each applicable type, the private
+   `fabric_bindings.ethernet_ew.netris` value contains the NetworkClass ID and
+   canonical positive decimal template ID.
+3. The administrator maintains `operator.fabricDomainInventory` in Helm
+   values. The map associates each exact Netris inventory hostname with a
+   shared BareMetalInstanceType ID. Helm renders
+   `ConfigMap/osac-fabric-domain-inventory` in the operator's networking
+   namespace.
+4. A tenant or administrator creates a VirtualNetwork. FabricDomain creation
+   can be requested while the VN is still provisioning; the reconciler waits
+   for a Ready VN with its Netris VPC ID before launching AAP.
+5. An infrastructure administrator creates a FabricDomain for the same tenant,
+   selecting `ethernet_ew`, one VirtualNetwork, and exact Netris hostnames.
+   Public reads remain tenant-scoped; Phase 1 writes are administrator-only.
+6. Fulfillment persists the domain, its VN-derived owner metadata, hub
+   assignment, and finalizer before creating the hub CR. This ordering allows
+   retries and cleanup to find the same hub object.
+7. The operator resolves VN → NetworkClass and VPC. For each server it resolves
+   hostname → BareMetalInstanceType → Ethernet/Netris binding. Missing or
+   ambiguous identity, a cross-class binding, a deleting type, or differing
+   template IDs fails closed. It queries distinct type IDs in filters of up to
+   100 IDs. Since the List API does not guarantee result ordering, an incomplete
+   page is retried by splitting the ID filter rather than advancing an offset;
+   inconsistent responses fail closed.
+8. Before the first AAP launch, the operator records the NetworkClass, template
+   ID, VPC ID, and region in private status. These backend identifiers are not
+   exposed through the tenant-facing API. AAP creates or updates the Netris
+   Server Cluster with those pinned values and the requested servers. AAP
+   verifies each hostname against Netris inventory and refuses unsafe
+   name-only selection. While an AAP job is active, the operator reuses this
+   persisted binding instead of repeating catalog lookups; it revalidates the
+   binding after the job completes.
+9. The public status reports job-level conditions and member status; private
+   status retains the backend and VPC IDs for reconciliation and cleanup.
+   Failure messages omit raw backend identifiers; detailed errors remain in
+   operator logs. Member states follow the overall job; the controller does not
+   read back physical link or independent server attachment health. A reported
+   backend ID is fetched through the exact-ID Netris endpoint and checked
+   against the pinned site and known VPC before AAP mutates it. An exact-ID
+   miss never falls back to a name lookup.
+10. Delete uses the persisted backend ID and pinned site/VPC context. If create
+    intent was persisted but the backend ID was never observed, cleanup retains
+    its finalizer until it can safely resolve or report the unresolved intent.
+    VN deletion is blocked while a FabricDomain still depends on it.
+11. If a successful AAP job returns a ServerCluster ID for another VPC, omits
+    the VPC ID, or succeeds without a valid ServerCluster ID, the operator
+    records a durable unverified artifact marker. It does not trust the
+    returned ID, retry provisioning, or remove the deletion finalizer until an
+    administrator resolves the possible Netris artifact and clears the marker.
+    The returned ID is retained in private status only when it is valid and
+    available.
+
+The AAP template may program EW, NS/storage, and OOB networks together. Before
+using a template, administrators must confirm that its port assignments do not
+conflict with existing Subnet or per-instance attachments. Separate
+FabricDomain objects in one VPC do not automatically create separate routed
+isolation. The fabric manager's routing and isolation policy must provide the
+required boundary.
 
-1. **N-S isolation** = VirtualNetwork (existing). Nodes are reachable because
-   tenants already have (or get) a VirtualNetwork.
-2. **E-W isolation** = FabricDomain (new). Who may communicate on the
-   high-performance fabric.
-3. FabricDomain does **not** replace VirtualNetwork. Phase 1 **requires** one
-   VirtualNetwork association so:
-   - the Netris Server Cluster is created in that VN's VPC;
-   - N-S remains in place for reachability.
-4. NetworkClass selects the implementation and holds backend-specific config.
-5. Subnets remain the IP/address-plane API. They do not represent PKeys or
-   NVLink partitions.
-6. **No new VPC resource** in this design. Today's VirtualNetwork is the
-   VPC-like object for Netris binding.
+#### Phase 1 command shape
 
-### API Extensions (fulfillment-service)
-
-```protobuf
-// Standard OSAC object shape
-message FabricDomain {
-  string id = 1;
-  Metadata metadata = 2;
-  FabricDomainSpec spec = 3;
-  FabricDomainStatus status = 4;
-}
-
-enum FabricDomainType {
-  FABRIC_DOMAIN_TYPE_UNSPECIFIED = 0;
-  ETHERNET_EW = 1;
-  INFINIBAND_EW = 2;               // Phase 2
-  NVLINK = 3;                      // Phase 3
-}
-
-message FabricDomainSpec {
-  FabricDomainType type = 1;             // immutable after creation
-  repeated string servers = 2;           // hostnames (mutable — resize)
-  repeated string virtual_networks = 3;  // Phase 1: exactly one; immutable after creation
-  // NetworkClass is inherited from the associated VirtualNetwork
-}
-
-message FabricDomainStatus {
-  repeated Condition conditions = 1;     // Ready, Provisioning (standard OSAC conditions)
-  string backend_id = 2;                 // e.g. Netris Server Cluster ID
-  string vpc_id = 3;                     // resolved Netris VPC ID from associated VN
-  repeated FabricDomainMemberStatus members = 4;
-}
-
-message FabricDomainMemberStatus {
-  string server = 1;                     // hostname
-  FabricDomainMemberState state = 2;     // PENDING, ACTIVE, FAILED
-  string message = 3;                    // failure reason if applicable
-}
-
-// gRPC service
-service FabricDomains {
-  rpc CreateFabricDomain(CreateFabricDomainRequest) returns (FabricDomain);
-  rpc GetFabricDomain(GetFabricDomainRequest) returns (FabricDomain);
-  rpc ListFabricDomains(ListFabricDomainsRequest) returns (ListFabricDomainsResponse);
-  rpc UpdateFabricDomain(UpdateFabricDomainRequest) returns (FabricDomain);
-  rpc DeleteFabricDomain(DeleteFabricDomainRequest) returns (FabricDomain);
-  rpc SignalFabricDomain(SignalFabricDomainRequest) returns (FabricDomain);
-}
-
-// NetworkClass extensions (existing resource, new fields)
-message NetworkClassCapabilities {
-  // Existing networking capability: IPv4 only.
-  bool supports_east_west_ethernet = 5;
-  bool supports_east_west_infiniband = 6;
-  bool supports_nvlink = 7;
-}
-
-message EastWestConfig {
-  EthernetEastWestConfig ethernet_ew = 1;
-  InfiniBandEastWestConfig infiniband_ew = 2;  // Phase 2
-  NVLinkEastWestConfig nvlink = 3;             // Phase 3
-}
-
-message EthernetEastWestConfig {
-  string template_id = 1;  // Netris Server Cluster Template ID (Phase 1)
-}
-
-message InfiniBandEastWestConfig {
-  string mode = 1;         // "netris" | "direct_ufm"
-  string pkey_policy = 2;  // "auto" | …
-}
-
-message NVLinkEastWestConfig {
-  string backend = 1;      // "netris" | "nmx-c" | "nico"
-  string endpoint = 2;     // optional for direct backends
-}
-```
-
-**Immutability:** `type` and `virtual_networks` are immutable after creation.
-Changing them requires delete + re-create. `servers` is mutable (resize).
-
-**Validation (Phase 1)**
-
-| Rule | Check | gRPC error |
-|------|-------|------------|
-| FD-VAL-01 | `type` must be a valid `FabricDomainType` enum value and match a capability on the VN's NetworkClass | `INVALID_ARGUMENT`: "type does not match NetworkClass capability" |
-| FD-VAL-02 | `servers` non-empty | `INVALID_ARGUMENT`: "servers list must not be empty" |
-| FD-VAL-03 | `virtual_networks` length == 1 | `INVALID_ARGUMENT`: "exactly one VirtualNetwork required in Phase 1" |
-| FD-VAL-04 | Referenced VN must exist and be same-tenant | `NOT_FOUND` / `PERMISSION_DENIED` |
-| FD-VAL-05 | VN's NetworkClass must have `east_west_config.ethernet_ew.template_id` for `ETHERNET_EW` | `FAILED_PRECONDITION`: "NetworkClass missing template_id for ethernet_ew" |
-| FD-VAL-06 | Type `INFINIBAND_EW` / `NVLINK` rejected until Phase 2/3 | `UNIMPLEMENTED`: "type not yet supported" |
-
-### Why Phase 1 requires VirtualNetwork (1:1)
-
-This is a **product constraint**, not a Netris hard limit.
-
-Netris can create a Server Cluster in an existing VPC **or** create a VPC as
-part of Server Cluster create. We require an existing OSAC VirtualNetwork so:
-
-1. **Validated path:** zeus12 used VPC first → Server Cluster in that VPC →
-   OSAC Subnet.
-2. **Single source of truth:** OSAC VN owns the VPC identity; we do not let
-   Netris create an unmanaged VPC that OSAC must later adopt.
-3. **N-S stay explicit:** EW is additive; reachability remains on VN/Subnet.
-
-One Netris Server Cluster still lives in **one** Netris VPC. Multi-VN
-association on FabricDomain (sharing) is deferred past Phase 1.
-
-### Which NICs / HCAs / GPUs are used?
-
-| Fabric | What FabricDomain lists | What selects interfaces |
-|--------|-------------------------|-------------------------|
-| Ethernet | Server **hostnames** | **Server Cluster Template** (from NetworkClass): `serverNics` per V-Net (EW, storage, NS, OOB) |
-| InfiniBand | Server hostnames | Backend policy (typically HCAs on host / GUID policy) |
-| NVLink | Server hostnames | GPUs on those servers; partition membership via NMX-C/NICo |
-
-Phase 1 does **not** put NIC names on FabricDomain. The template owns Ethernet
-NIC mapping. Creating a FabricDomain drives a Server Cluster whose template
-typically programs **both** EW and NS (and OOB) V-Nets — FabricDomain expresses
-the EW isolation **intent**; it does not mean "EW-only interfaces."
-
-**Template V-Net vs OSAC Subnet coexistence:** The Server Cluster Template
-creates auto-managed V-Nets (EW L3VPN, NS L2VPN, OOB). OSAC Subnets create
-additional OSAC-managed V-Nets in the same VPC. Both coexist — each gets a
-distinct VXLAN ID, no conflicts. Servers use the template-created NS V-Net for
-fabric-level N-S reachability and OSAC Subnet V-Nets for tenant-managed IP
-segments. This was validated on zeus12: four V-Nets (2 template + 1 OSAC Subnet
-+ 1 default) coexisted with unique VXLAN IDs.
-
-### GPU vs storage traffic separation
-
-| Goal | How |
-|------|-----|
-| Separate GPU vs storage on **Ethernet** | **One** FabricDomain (`ethernet_ew`) + template with multiple V-Nets (EW-GPU L3VPN, storage V-Net). OSAC Subnets attach to IP-addressable segments. |
-| Separate GPU vs storage on **InfiniBand** | Same domain + multi-PKey layout in NetworkClass/backend, **or** two `infiniband_ew` FabricDomains if independent lifecycle is required. PKeys are not OSAC Subnets. |
-| GPU collectives vs storage with **NVLink** | **Different** FabricDomains: `nvlink` for GPU–GPU; `ethernet_ew` or `infiniband_ew` for storage. Storage does not run on NVLink. |
-
-### Spectrum-X / RoCE example (N-S and E-W both Ethernet)
-
-When north-south and east-west are both Ethernet (Spectrum-X / RoCE), they are
-different **roles**, not different object models:
-
-```yaml
-# Infra-owned: how Ethernet EW is implemented
-apiVersion: networking.osac.io/v1
-kind: NetworkClass
-metadata:
-  name: spectrum-x-ai
-spec:
-  capabilities:
-    supports_ipv4: true
-    supports_east_west_ethernet: true
-  east_west_config:
-    ethernet_ew:
-      template_id: "spectrum-x-gpu-template"
-      # Template defines V-Nets + NIC map, e.g.:
-      #   - East-West (L3VPN / RoCE) → eth1..eth8
-      #   - North-South + storage    → eth9, eth10
-      #   - OOB                      → eth11
----
-# Tenant IP / north-south plane (VirtualNetwork ≈ VPC for Netris)
-apiVersion: networking.osac.io/v1
-kind: VirtualNetwork
-metadata:
-  name: tenant-a-vn
-spec:
-  network_class: spectrum-x-ai
----
-# Optional explicit IP segments
-apiVersion: networking.osac.io/v1
-kind: Subnet
-metadata:
-  name: tenant-a-ns
-spec:
-  virtual_network: tenant-a-vn
-  cidr: 10.10.0.0/24
----
-# East-west isolation domain (RoCE / Spectrum-X GPU fabric)
-apiVersion: networking.osac.io/v1
-kind: FabricDomain
-metadata:
-  name: tenant-a-gpu-ew
-spec:
-  type: ethernet_ew
-  servers:
-    - hgx-01
-    - hgx-02
-    - hgx-03
-    - hgx-04
-    - hgx-05
-    - hgx-06
-    - hgx-07
-    - hgx-08
-  virtual_networks:
-    - tenant-a-vn   # Phase 1: bind Server Cluster into this VN's Netris VPC
-```
-
-**Mapping**
-
-| OSAC | Netris / data plane |
-|------|---------------------|
-| VirtualNetwork | VPC |
-| FabricDomain | Server Cluster in that VPC (template → EW L3VPN + NS/storage V-Nets) |
-| Subnet | OSAC-managed IP segment alongside Server Cluster auto-VNets |
-
-Servers get **N-S** via VirtualNetwork/Subnet + template NS V-Net, and **E-W**
-via the same Server Cluster's EW V-Net. FabricDomain does not remove N-S.
-
-### High-level walk-through: tenant isolation (N-S + E-W)
-
-**Setup (Phase 1 / Netris Ethernet)**
-
-1. Infra provides NetworkClass `spectrum-x-ai` with an EW-capable Server Cluster
-   Template (EW L3VPN + NS/storage V-Nets + NIC map).
-2. **Tenant A**
-   - VirtualNetwork `tenant-a-vn` → Netris VPC-A (N-S / IP)
-   - Subnet(s) under `tenant-a-vn` for node addressing
-   - FabricDomain `tenant-a-gpu-ew` (servers hgx-00, hgx-01) → Server Cluster in VPC-A
-3. **Tenant B**
-   - VirtualNetwork `tenant-b-vn` → Netris VPC-B
-   - FabricDomain `tenant-b-gpu-ew` (servers hgx-02, hgx-03) → Server Cluster in VPC-B
-
-**Data plane (from template + VPC isolation)**
-
-| Path | Same tenant (A↔A) | Cross tenant (A↔B) |
-|------|-------------------|---------------------|
-| North-south (IP / NS V-Net) | Allowed within VPC-A | Blocked (separate VPC/VRF) |
-| East-west (RoCE / EW L3VPN) | Allowed within A's Server Cluster | Blocked (separate VPC + EW V-Net) |
-
-**Validated on zeus12 (netris-lab, `ew_fabric_enable`)**
-
-- Two Server Clusters in separate VPCs (hgx-00+01 vs hgx-02+03).
-- Same-tenant: EW and NS ping succeeded.
-- Cross-tenant: EW and NS 100% loss.
-- OSAC Subnet coexisted with Server Cluster auto-VNets (distinct VXLAN IDs).
-
-**What each object did**
-
-- VirtualNetwork → tenant VPC (N-S isolation boundary).
-- FabricDomain → Server Cluster in that VPC (EW isolation + template NS/EW NIC plumbing).
-- Nodes remain reachable on N-S via VN/Subnet; GPU traffic is isolated on E-W per tenant.
-
-### Multiple FabricDomains, few NetworkClasses
-
-NetworkClass is a catalog entry ("how we implement EW on this backend").
-FabricDomain is an instance ("these servers, this fabric type"). Many domains
-may reference one NetworkClass. Multiple NetworkClasses only when backends or
-templates differ (e.g. GPU vs storage template, Netris vs NICo).
-
-### Who manages InfiniBand / NVLink?
-
-| Deployment style | Ethernet | InfiniBand | NVLink |
-|------------------|----------|------------|--------|
-| **Netris-centric (typical Phase 1+)** | Netris | Netris → UFM | Netris → NMX or NICo |
-| **Direct UFM** | (other) | OSAC → UFM | — |
-| **NICo-centric** | (other / Netris) | — | OSAC → NICo → NMX-C |
-
-Phase 1 OSAC talks to **Netris**. Direct UFM and NICo are additional NetworkClass
-backends later.
-
-### Phase 1 behavior (Ethernet / Netris)
-
-1. **Cloud Infrastructure Admin** configures NetworkClass with
-   `supports_east_west_ethernet` and `east_west_config.ethernet_ew.template_id`.
-2. **Tenant Admin** (or Cloud Infrastructure Admin) has VirtualNetwork (N-S).
-3. **Cloud Infrastructure Admin** creates FabricDomain (`type=ETHERNET_EW`,
-   `servers`, `virtual_networks: [that VN]`). The fulfillment-service
-   validates that the referenced VirtualNetwork is in Ready state; the
-   create request is rejected with a `FailedPrecondition` error if the VN
-   is not Ready (see [Unified Networking — Creation Readiness Gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates)).
-4. Operator resolves NetworkClass from VN; resolves template from NC;
-   resolves VN → Netris VPC id.
-5. Create Netris Server Cluster **in that VPC**.
-6. Netris applies template (EW L3VPN, NS, OOB V-Nets, port mapping).
-7. Condition `Ready=True` + `backend_id` = Server Cluster ID.
-
-**Validated (zeus12, netris-lab, `ew_fabric_enable`):** VPC first → Server Cluster
-in existing VPC → OSAC Subnet. Four VNets coexisted with distinct VXLAN IDs; no
-conflicts. Same-tenant EW/NS traffic worked; cross-tenant blocked.
-
-Resize = update `servers` → idempotent Server Cluster update.
-Delete FabricDomain → delete Server Cluster (VN/VPC unchanged unless empty and
-OSAC-owned).
-
-### NIC mapping (Phase 1 detail)
-
-Server Cluster Template example (Netris, infra-owned):
-
-```json
-[
-  {
-    "postfix": "East-West",
-    "type": "l3vpn",
-    "serverNics": ["eth1", "eth2", "eth3", "eth4", "eth5", "eth6", "eth7", "eth8"]
-  },
-  {
-    "postfix": "North-South-in-band-and-storage",
-    "type": "l2vpn",
-    "serverNics": ["eth9", "eth10"]
-  },
-  {
-    "postfix": "OOB-Management",
-    "type": "l2vpn",
-    "serverNics": ["eth11"]
-  }
-]
-```
-
-FabricDomain does not repeat this. Changing NIC layout = change template on
-NetworkClass, not the domain object.
-
----
-
-## Workflow (Phase 1)
-
-```mermaid
-sequenceDiagram
-  participant Admin
-  participant FS as fulfillment-service
-  participant Op as osac-operator
-  participant AAP
-  participant Netris
-
-  Admin->>FS: Create FabricDomain (ethernet_ew, servers, VN)
-  FS->>FS: Validate capability + template_id + exactly one VN
-  FS->>Op: FabricDomain CR
-  Op->>AAP: osac-create-server-cluster (template, VPC from VN)
-  AAP->>Netris: POST server-cluster in VPC
-  Netris-->>AAP: Active (EW/NS/OOB VNets)
-  AAP-->>Op: success
-  Op->>Op: condition Ready=True + backend_id
-```
-
----
-
-## Implementation Details
-
-### Database schema (fulfillment-service)
-
-New `fabric_domains` table:
-
-```sql
-CREATE TABLE fabric_domains (
-    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    name        TEXT NOT NULL,
-    tenant_id   UUID NOT NULL REFERENCES tenants(id),
-    type        TEXT NOT NULL,              -- 'ethernet_ew', 'infiniband_ew', 'nvlink'
-    servers     TEXT[] NOT NULL,            -- hostnames
-    backend_id  TEXT,                       -- Netris Server Cluster ID (set after provisioning)
-    vpc_id      TEXT,                       -- resolved Netris VPC ID
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    deleted_at  TIMESTAMPTZ                -- soft delete
-);
-
-CREATE TABLE fabric_domain_virtual_networks (
-    fabric_domain_id    UUID NOT NULL REFERENCES fabric_domains(id) ON DELETE CASCADE,
-    virtual_network_id  UUID NOT NULL REFERENCES virtual_networks(id),
-    PRIMARY KEY (fabric_domain_id, virtual_network_id)
-);
-
-CREATE INDEX idx_fabric_domains_tenant ON fabric_domains(tenant_id);
-```
-
-The join table `fabric_domain_virtual_networks` supports the Phase 1 exactly-one
-constraint via application-level validation (FD-VAL-05) while keeping the schema
-ready for Phase 2+ multi-VN association.
-
-NetworkClass gains `east_west_config` (JSONB) alongside existing columns — no
-migration of existing rows required (nullable column, additive).
-
-### Affected components
-
-- **fulfillment-service:** FabricDomain CRUD + validation; NetworkClass
-  `east_west_config` + capabilities.
-- **osac-operator:** FabricDomain reconciler; map type → AAP job; resolve
-  template from NC; VN → VPC id.
-- **osac-aap:** Existing create/delete server_cluster tasks (PR #447);
-  capability `supports_east_west_ethernet`.
-- **osac-installer:** New FabricDomain CRD registration; NetworkClass Helm
-  values extended with `east_west_config`; RBAC rules for the new resource.
-- **Scoping:** Follow existing OSAC networking resource conventions
-  (cluster/tenant scoped as established for VirtualNetwork); examples in this
-  doc are illustrative.
-- **Documentation:** API reference auto-generated from proto. Admin guide for
-  NetworkClass EW configuration deferred to Tech Preview.
-- **UI:** FabricDomain is managed via CLI/API only in Phase 1. Admin views
-  deferred to a future UI enhancement.
-
-### CLI commands (Phase 1)
+The public API remains singular and does not expose instance type or template
+ID:
 
 ```bash
-osac create fabricdomain --type ethernet_ew \
-  --servers hgx-01,hgx-02,hgx-03,hgx-04 \
-  --virtual-network tenant-a-vn \
-  --name tenant-a-gpu-ew
-
-osac get fabricdomains
-osac describe fabricdomain tenant-a-gpu-ew
-osac edit fabricdomain tenant-a-gpu-ew         # resize: update servers list
-osac delete fabricdomain tenant-a-gpu-ew
+osac --tenant tenant-a create fabricdomain \
+  --name training-ew \
+  --type ethernet_ew \
+  --virtual-network <virtual-network-id> \
+  --servers gpu-01.example.com,gpu-02.example.com
 ```
 
-Per CLI UX guidelines: non-interactive, scriptable, no k8s knowledge required.
+Conceptual private hardware binding:
 
-### Security Considerations
+```yaml
+spec:
+  fabric_bindings:
+    ethernet_ew:
+      netris:
+        network_class: "<network-class-id>"
+        template_id: "42"
+```
 
-FabricDomain inherits the existing OSAC multi-tenant security model:
+Administrator onboarding inventory:
 
-- **Tenant isolation:** Enforced via `osac.openshift.io/tenant` annotation on
-  every FabricDomain. OPA policies prevent cross-tenant access — a tenant
-  cannot read, modify, or delete another tenant's FabricDomain.
-- **Input validation:** All spec fields are validated at the fulfillment-service
-  layer (see Validation table). Server hostnames are accepted as strings; Phase 1
-  trusts the Cloud Infrastructure Admin for server eligibility. Server inventory
-  validation is deferred to Phase 2.
-- **Backend credentials:** Netris API credentials are configured on the AAP
-  execution environment, not on the FabricDomain or NetworkClass. No secrets
-  are stored on the FabricDomain resource.
-- **No new authentication/authorization surface:** FabricDomain uses the same
-  gRPC interceptor chain and OPA policy engine as existing networking resources.
+```yaml
+operator:
+  fabricDomainInventory:
+    gpu-01.example.com: "<shared-baremetal-instance-type-id>"
+    gpu-02.example.com: "<shared-baremetal-instance-type-id>"
+```
 
-### Failure Handling and Recovery
+Neither the private hardware binding nor the onboarding map is returned in
+tenant-facing catalog responses. A BareMetalInstanceType is a hardware
+description and backend binding, not a membership declaration.
 
-| Failure mode | What happens | Recovery | User observes |
-|--------------|--------------|----------|---------------|
-| **Netris API unreachable** | AAP job fails to POST server-cluster | AAP retries per job template retry policy; operator re-queues reconciliation | Condition `Ready=False`, Reason=`ProvisioningFailed`, message includes AAP error |
-| **Netris Server Cluster activation timeout** | Server Cluster stays in "Provisioning" > 5 min | Operator polls status; after configurable timeout sets condition with timeout reason | Condition `Ready=False`, Reason=`ActivationTimeout` |
-| **Invalid template_id on NetworkClass** | Netris rejects the create request (400) | AAP job fails fast; operator surfaces the error | Condition `Ready=False`, Reason=`InvalidTemplate` |
-| **VN deleted while FabricDomain references it** | fulfillment-service API rejects VN deletion if active FabricDomains reference it (operator-side finalizer remains as defense in depth) | Admin must delete FabricDomain first, then VN | VN deletion rejected with `FailedPrecondition` error listing the blocking FabricDomain |
-| **Operator restart mid-reconciliation** | Controller re-reads FabricDomain CR on startup | Idempotent: if Server Cluster already exists in Netris (matched by `backend_id`), operator syncs status; if not, re-creates | Temporary condition staleness until re-reconciliation completes |
-| **Duplicate server across FabricDomains** | Phase 1 does not validate server overlap | Netris may reject or accept depending on template; admin is trusted | If Netris rejects: Condition `Ready=False`; if accepted: both domains provision |
+#### Proposed Phase 2: tenant workload intent and multiple fabric managers
 
-**Idempotency:** Create and delete operations use `backend_id` (Netris Server
-Cluster ID) persisted in status. Retries target the same backend resource.
-The AAP `create_server_cluster` role is idempotent — it checks for an existing
-cluster by name before creating.
+A workload/allocation request should express the set of devices to allocate and
+the fabric boundaries those devices require. FabricDomain membership should be
+materialized from allocated BareMetalInstance identities, not copied from an
+administrator-maintained hostname list. The request is the source of intent;
+FabricDomain is the observed/reconciled backend isolation object.
 
-### RBAC / Tenancy
+For example, a tenant requests four bare-metal workers. All four need an NVLink
+domain managed by NICo, while two workers also need a separate Spectrum-X
+Ethernet domain managed by Netris:
 
-| Persona | FabricDomain | NetworkClass EW config |
-|---------|-------------|------------------------|
-| **Cloud Infrastructure Admin** | Create, read, update, delete | Configure `east_west_config` and capabilities |
-| **Cloud Provider Admin** | Read (audit/troubleshoot) | Read |
-| **Tenant Admin** | Read own tenant's FabricDomains | Read (discover available capabilities) |
-| **Tenant User** | No direct access | No direct access |
+```yaml
+# Illustrative only; not a current OSAC schema.
+workload:
+  allocations:
+    - name: gpu-workers
+      instanceType: hgx-8gpu
+      count: 4
+    - name: spectrumx-workers
+      subsetOf: gpu-workers
+      count: 2
+  fabricRequests:
+    - name: gpu-mesh
+      type: nvlink
+      members:
+        workerGroup: gpu-workers
+      backendProfileRef: nico-hgx
+    - name: rdma-uplink
+      type: ethernet_ew
+      members:
+        allocation: spectrumx-workers
+      networkClassRef: spectrum-x
+```
 
-**Tenant isolation metadata:**
+The scheduler allocates four BareMetalInstances. The NVLink controller request
+contains all four allocated identities; the Ethernet request contains exactly
+the two identities selected for the `spectrumx-workers` subset. The tenant can
+choose the subset explicitly where supported, or ask placement to select any
+two compatible workers. These become separate FabricDomain resources or separate
+backend attachments managed under one workload, according to backend lifecycle
+and API review. No hostname list is hand-maintained. Each hardware type must
+advertise the required fabric capability and binding. Placement must reject a
+request if no valid set of compatible devices can be allocated.
 
-- `osac.openshift.io/tenant`: Set on every FabricDomain. OPA policies filter
-  by this annotation — tenants see only their own FabricDomains.
-- `osac.openshift.io/owner-reference`: Not applicable. FabricDomain is a
-  top-level resource associated with (not owned by) VirtualNetwork. The
-  association is a spec reference, not an ownership hierarchy. Deleting a
-  FabricDomain does not cascade to the VN; deleting a VN is rejected by
-  the fulfillment-service API if active FabricDomains reference it (see
-  [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)).
+The ownership boundary is:
 
-### Observability and Monitoring
+- **BareMetalInstanceType:** physical ports/roles, supported fabric types, and
+  backend binding/profile references required to connect that SKU. It never
+  decides tenant membership.
+- **NetworkClass:** tenant-visible network capability and policy, such as
+  Ethernet EW support and V-Net policy. It does not contain a Netris template
+  identifier.
+- **Workload/order request:** requested number and groups of devices, plus the
+  desired fabric membership for each group.
+- **FabricDomain:** durable identity and lifecycle of a specific fabric
+  isolation boundary, with membership resolved to allocated device identities
+  and observed backend status.
+- **Infrastructure administrator:** configures hardware catalog, backend
+  connectivity/credentials, policy, and available fabric profiles.
+- **Tenant:** chooses from allowed fabric capabilities/profiles and asks for
+  workload membership. The tenant does not provide Netris IDs, switch ports,
+  HCA GUIDs, GPU UUIDs, or credentials.
 
-| Type | Name | Description |
-|------|------|-------------|
-| **Gauge** | `osac_fabric_domains_total{type, tenant}` | Total FabricDomains by type and tenant |
-| **Histogram** | `osac_fabric_domain_provisioning_duration_seconds{type}` | Time from creation to `Ready=True` |
-| **Counter** | `osac_fabric_domain_provisioning_failures_total{type, reason}` | Provisioning failures by type and reason |
-| **Event** | `FabricDomainProvisioned` (Normal) | Emitted when condition transitions to `Ready=True` |
-| **Event** | `FabricDomainProvisioningFailed` (Warning) | Emitted on provisioning failure with reason |
-| **Event** | `FabricDomainDeleted` (Normal) | Emitted when Server Cluster is successfully deleted |
+For direct BMaaS requests, the workload intent belongs on the BareMetalInstance
+allocation/request path, which already resolves the selected type and allocated
+host. For CaaS worker pools, it belongs on the worker-group or order object and
+must be propagated to the resulting BareMetalInstances. The implementation
+must choose one canonical intent source and avoid requiring users to repeat the
+same membership on both the order and every resulting instance.
 
-**Alert threshold:** `osac_fabric_domain_provisioning_duration_seconds` p99 > 5
-minutes indicates Netris API or data-plane convergence issues.
+A workload may ask for multiple domains with different member sets. For
+example, all four machines can share a NICo NVLink partition while only two
+join the Netris Ethernet domain, if the machine ports and both backends permit
+that combination. Membership overlap is allowed across distinct fabric planes
+when each backend supports it. It is not assumed to work for two Netris
+dedicated Server Clusters: that backend's host exclusivity and shared endpoint
+semantics must be checked and represented as capabilities. The API must reject
+a topology that the selected manager cannot realize rather than silently
+dropping or broadening membership.
 
-### Risks and Mitigations
+Non-Netris domains need backend-specific, private configuration with explicit
+ownership:
 
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| **Fabric manager API changes** | Netris API breaking changes could block provisioning | Pin `netris.controller` collection version in AAP; abstract via NetworkClass so backend swap does not change the OSAC API |
-| **Server Cluster activation latency** | Data plane convergence takes ~3 min after API reports "Active" | Document expected latency; operator treats `Ready=True` as control-plane ready; data-plane readiness is a future health-check enhancement |
-| **Server overlap across domains** | Two FabricDomains with overlapping servers could cause switch port conflicts | Phase 1: admin-trusted (documented limitation). Phase 2: add server overlap validation at the fulfillment-service layer |
-| **Template misconfiguration** | Wrong `template_id` on NetworkClass applies incorrect NIC mapping | Validation ensures template_id is non-empty; Netris rejects invalid IDs. Template correctness is infra admin responsibility |
-| **`supports_east_west_ethernet` capability rename** | AAP metadata and operator may disagree during rolling upgrade | Additive change: new capability field; old `supports_east_west` retained as deprecated alias during transition. See Version Skew Strategy |
+| Fabric | Hardware facts from BareMetalInstanceType | Admin/backend profile | Domain reconciliation |
+|---|---|---|---|
+| Ethernet EW | Ethernet ports and roles; Netris-compatible layout | Netris controller/site plus template binding scoped to the hardware type and NetworkClass | Server Cluster, VPC, members, and status |
+| InfiniBand EW | HCA ports/GUID capabilities and supported link mode | UFM or supported Netris-IB profile, PKey allocation policy, credential reference | HCA membership, PKey assignment, observed state |
+| NVLink | GPU/topology capabilities and supported peer layout | NICo or NMX-C endpoint/profile, partition policy, credential reference | GPU/device membership, partition lifecycle, observed state |
 
-### Drawbacks
+The controller API should normalize lifecycle operations—resolve members, attach,
+detach, observe, retry, and delete—while adapters implement Netris, UFM, NICo,
+or NMX-C semantics. Do not model all fabrics as a Netris template ID. Profiles
+and secrets stay infrastructure-owned. Tenant APIs reference an allowed profile
+or policy, not a management endpoint or credential.
 
-Adding FabricDomain introduces a new top-level resource with its own CRD,
-database table, gRPC service, controller, CLI commands, and AAP playbooks.
-This increases the OSAC API surface and maintenance burden.
+#### Proposed Phase 3: VM integration
 
-The alternative — extending VirtualNetwork with east-west bindings — would
-avoid this new resource entirely for Phase 1 Ethernet. However, as documented
-in the Alternatives section, that approach couples EW lifecycle to IP-plane
-objects and creates architectural debt when non-VPC fabrics (InfiniBand PKeys,
-NVLink partitions) are added in Phase 2/3. The new resource cost is justified
-by the multi-backend roadmap.
+VMs are not physical Server Cluster members. The current ComputeInstance
+`network_attachments` select Subnets and SecurityGroups; they do not refer to
+FabricDomain and do not allocate a fabric device. Phase 1 therefore makes no
+claim that a VM can use the FabricDomain's EW path.
 
-FabricDomain may initially feel redundant in a pure Netris deployment where
-"VPC is the boundary." The Phase 1 requirement of exactly one VN per
-FabricDomain mitigates user confusion — the operational experience is
-equivalent to "create a Server Cluster in a VPC" with an additional resource.
+A future VM workload request can ask for a fabric attachment, but the request
+must be realized through a host device path. For Ethernet, that may require an
+SR-IOV Virtual Function (VF) or another supported virtual NIC carved from a
+physical port that is already connected to the correct fabric. The VM placement
+and device allocator must ensure that the host's BareMetalInstanceType has the
+right port role and backend binding. The attachment controller must reserve and
+release the device, connect it to the VM, and enforce tenant isolation. Netris
+continues to see and manage the physical server/port; it does not see the VM as
+a Server Cluster server.
 
-## Phase 1 limitations
+A VM asking for NVLink additionally requires a supported GPU passthrough or
+virtualization mode, peer-memory support, and a NICo/NMX-C allocation model.
+It cannot be promised as an ordinary Subnet attachment. The platform must
+validate those capabilities before scheduling the VM. If the VM cannot receive
+the requested device semantics, admission must reject the request.
 
-- VirtualNetwork association required (exactly one); zero or many deferred.
-- **Membership is static.** Admin provides explicit hostnames at create time.
-  Phase 2 should support inventory-driven membership (label selectors on
-  BareMetalInstance CRs or similar) so domains can be created before concrete
-  hosts are assigned.
-- No server eligibility validation (admin trusted on hostnames).
-- NIC mapping only via Netris template.
-- `template_id` is Netris-specific (scoped to NetworkClass).
-- Templates pre-created by infra; OSAC does not manage template lifecycle.
-- **Bare-metal only; no SR-IOV/VM EW.** FabricDomain membership is
-  host/device-scoped. Virtual machines do not appear as FabricDomain members;
-  they attach to SR-IOV VFs or GPUs on hosts that are already in the domain.
-  VM east-west is a separate follow-on design.
-- IB/NVLink types reserved in API, not implemented.
+Phase 3 adds VM request fields and a reconciliation path that binds a logical
+FabricDomain membership to concrete host devices and guest interfaces. The
+domain records the fabric boundary; the VM instance records the allocated
+interface/device attachment. VM detach/delete must release the VF/GPU resource
+and update backend membership safely. The detailed ComputeInstance/BareMetal
+device API and live SR-IOV/NVLink integration tests remain design work.
+
+### API Extensions
+
+Phase 1 adds or changes these API surfaces:
+
+- Fulfillment public FabricDomain CRUD uses a singular `virtual_network`, an
+  Ethernet EW type, and requested Netris hostnames. Type and VN are immutable;
+  servers may be updated for resize. Public writes are administrator-only in
+  this rollout; tenant-scoped reads retain tenant filtering.
+- The private BareMetalInstanceType API adds
+  `spec.fabric_bindings.ethernet_ew.netris.network_class` and
+  `template_id`. CleanAPI marks this field private, and public catalog
+  projection omits it.
+- The NetworkClass public schema no longer accepts/reserves a template ID. EW
+  capability is derived from the configured fabric-manager capability and
+  remains disabled unless enabled for the deployment.
+- The hub FabricDomain CRD contains the desired servers/VN, pinned provisioning
+  identity, and private recovery status (`unverifiedBackendArtifact` plus an
+  optional `unverifiedBackendId`). The operator watches FabricDomain, relevant
+  VirtualNetwork changes, and its exact-host inventory ConfigMap. These
+  recovery fields are private hub status, not tenant-facing API fields.
+- Fulfillment-to-hub reconciliation persists hub placement and finalizer before
+  CR creation, and feeds status back. VN deletion and FabricDomain create share
+  dependency serialization.
+- AAP Server Cluster create/delete validates server identities and scopes
+  lookup by backend ID or site/VPC. It never deletes the first global name
+  match.
+
+Phase 2 requires a workload-facing membership request contract and a stable
+allocated-device reference. Phase 3 requires VM device allocation and guest
+attachment APIs. Those future fields are not implemented in Phase 1 and should
+not be treated as finalized protobuf or CRD schemas.
+
+## UX Alignment
+
+No matching FabricDomain UI `@temp-api` contract is present in the design
+inputs. Phase 1 uses the CLI/API for administrator operations. Before tenant
+self-service UI work, define the supported workload and fabric-profile fields
+in the API first, then align the UI type and generated types with that contract.
+
+## Implementation Details/Notes/Constraints
+
+### Ownership and data flow
+
+```text
+Admin config:
+  NetworkClass capability/policy
+  BareMetalInstanceType private Netris binding
+  Helm exact-host → BareMetalInstanceType inventory
+  pre-created Netris Server Cluster template
+
+Tenant/IP setup:
+  VirtualNetwork → NetworkClass → Netris VPC
+  optional Subnet → IP segment/attachment
+
+Phase 1 admin request:
+  FabricDomain { ethernet_ew, one VN, exact Netris hostnames }
+        ↓
+  fulfillment API → assigned hub CR → operator
+        ↓ resolve host types and pin config
+  AAP create/update/delete Server Cluster → Netris
+        ↓
+  operator conditions/status → fulfillment API
+```
+
+The VirtualNetwork's NetworkClass selects the network backend and capability;
+the VirtualNetwork reconciliation creates/records its VPC. A Server Cluster
+create is a separate operation requiring the template ID, member servers, and
+VPC context. A normal Subnet or north-south attachment does not need the
+Server Cluster template. This is why moving the ID changes its owner, not the
+provisioning operation.
+
+### Hardware and Netris template
+
+The Phase 1 private binding is a per-type Netris reference scoped to one
+NetworkClass. The Netris template itself remains provisioned out of band. It
+contains server NIC names and the V-Net configuration used by Server Cluster
+creation. This phase does not claim that OSAC can inspect the Netris template
+to prove its ports, routing, or V-Net contents match the hardware.
+
+A FabricDomain containing multiple BareMetalInstanceTypes is valid only if each
+type resolves to the same template ID for the VN's NetworkClass. Different
+types may share that template. A future inventory model should source host
+identity from allocated BareMetalInstances and remove the Phase 1
+hostname-to-type ConfigMap.
+
+### Tenant metadata and lifecycle
+
+Every hub FabricDomain carries `osac.openshift.io/tenant` and
+`osac.openshift.io/owner-reference`. Tenant derives from the API resource;
+owner-reference is forced to the associated VirtualNetwork API ID. It is an
+OSAC hierarchy annotation, not a Kubernetes OwnerReference; finalizers and the
+database dependency guard control lifecycle.
+
+The API-to-hub reconciler stores the hub assignment and finalizer before
+creating the CR. Create locks/validates the VN against deletion; deleting a VN
+checks for active dependent domains. Cleanup uses the pinned region/VPC/backend
+ID where available and retains the finalizer for unresolved create intent.
+This prevents duplicate hub objects and accidental name-only backend deletion.
+
+### Status meaning
+
+`Ready=True` means the configured AAP Server Cluster operation completed and
+returned a valid backend ID and the expected VPC ID. The backend and VPC
+identifiers remain in private status; public readers receive the job conditions
+and member summary, not raw Netris resource IDs. Per-server Active/Failed values are derived from
+the job result and requested list. They do not mean that OSAC queried Netris
+for independent port/link state, ran RoCE health checks, or validated
+data-plane isolation. The status API must retain that distinction until
+per-member observation exists.
+
+### Component changes
+
+| Component | Phase 1 responsibility |
+|---|---|
+| fulfillment-service | Private hardware bindings, NetworkClass capability semantics, FabricDomain validation/auth/CRUD, hub reconciler, status feedback, VN deletion dependency guard, CLI |
+| osac-operator | Hardware lookup, pinned provisioning config, VN and ConfigMap watches, finalizer/reconcile, AAP launch, status, metrics/events |
+| osac-aap | Fail-closed Netris host resolution and scoped Server Cluster create/delete |
+| osac-installer | BMIT/inventory onboarding documentation, Helm inventory value and ConfigMap |
+| tests/e2e | Deployed API authorization/tenant-visibility contract tests; no live Netris lifecycle suite is claimed |
+
+## Security Considerations
+
+Phase 1 FabricDomain writes are restricted to infrastructure administrators.
+Tenants can inspect only domains visible to their tenant. Fulfillment validates
+the referenced VN tenant and capability. The hub CR tenant annotation is
+derived from the API object and owner-reference from its VN; caller values
+cannot override them. The inventory ConfigMap and private BMIT bindings are
+administrator-owned. Netris credentials remain in AAP's existing secret path.
+
+Hostnames are security-sensitive infrastructure identifiers. The AAP role
+resolves every requested host exactly and rejects absent, ambiguous, wrong-site,
+or malformed identities before mutation. With an explicit backend ID, the role
+uses the exact resource endpoint and verifies the returned site and known VPC
+before mutation. A missing exact resource or scope mismatch fails closed. If
+there is no backend ID, lookup requires a unique name match scoped to site and
+VPC. There is no global first-by-name fallback.
+
+If AAP reports success without a valid ServerCluster ID or without confirming
+the expected VPC, the operator records a private recovery marker. It blocks
+further provisioning and retains the FabricDomain finalizer. An administrator
+must verify whether Netris contains an artifact, resolve it, and clear both
+`status.unverifiedBackendArtifact` and `status.unverifiedBackendId` before
+reconciliation resumes.
+
+Phase 2 tenant membership must be authorized against allocation ownership.
+Tenant requests may select only their own allocated devices and permitted
+backend profiles. A tenant must never supply raw backend IDs, hostnames,
+hardware inventory, HCA/GPU identifiers, or credentials as a way to bypass
+placement policy.
+
+## Failure Handling and Recovery
+
+| Failure | Behavior and recovery | User-visible result |
+|---|---|---|
+| VN is not Ready or has no Netris VPC ID | Reconcile requeues and watches VN changes; no AAP job is launched | FabricDomain remains Progressing |
+| Inventory hostname is missing or maps to no shared BMIT | Fail closed; administrator corrects ConfigMap/catalog and reconcile retries | Failed condition identifies unresolved host/type |
+| Type lacks an Ethernet/Netris binding for this NetworkClass | No AAP mutation; fix private catalog binding | Failed condition names type/class mismatch |
+| Domain members resolve to different template IDs | Refuse provisioning; split the membership or align hardware bindings | Failed condition reports incompatible layouts |
+| Netris hostname is absent or ambiguous | AAP role stops before create/update/delete | AAP failure condition; no unsafe host mutation |
+| Exact backend ID is missing or resolves outside the pinned site/VPC | AAP uses the exact-ID endpoint, validates scope, and stops without name fallback or mutation | AAP job fails; operator retains the existing trusted ID and finalizer |
+| Netris create succeeds but status/job record is lost | Retry uses idempotent scoped lookup; persisted intent and finalizer prevent false cleanup success | Progressing or explicit unresolved-intent failure |
+| AAP succeeds without a valid ServerCluster ID | Set `status.unverifiedBackendArtifact`; block retries and finalizer removal because an unidentifiable artifact may exist. Administrator verifies/removes any Netris artifact, then clears the marker | Failed condition instructs an administrator to resolve the artifact; deletion remains pending |
+| AAP returns a valid ServerCluster ID but omits the VPC ID or reports another VPC | Keep the ID out of trusted `backendId`; persist the unverified marker and ID, then block retries and deletion until administrator resolution | Failed condition; finalizer remains until the marker is cleared after Netris verification |
+| Delete has intent but no observed backend ID and no unverified-artifact marker | Do not remove finalizer on a no-op; retry safe resolution and surface unresolved identity | Deletion remains pending/failed for admin action |
+| NetworkClass/type binding changes after pinning | Operator refuses silent live rebinding; restore binding or delete/recreate for migration | Failed condition explains pinned-config mismatch |
+| AAP, Netris, or operator is unavailable | Reconcile/job retry is idempotent with pinned identity | Progressing/Failed with retryable reason |
+| VM lacks a supported VF/GPU path in Phase 3 | Admission/placement rejects before backend mutation | Request reports unsupported device capability |
+
+## RBAC / Tenancy
+
+| Actor | Phase 1 access |
+|---|---|
+| Infrastructure administrator | Configure NetworkClass, private BMIT binding, inventory; create/update/delete FabricDomain |
+| Tenant administrator/user | Read only tenant-visible FabricDomains; create VirtualNetworks and Subnets under existing policy |
+| Workload controller | No new Phase 1 privilege; receives the domain status through existing service contracts |
+
+The tenant annotation scopes visibility. The owner-reference annotation records
+the VN relationship for every hub object. Phase 1 does not grant a tenant the
+ability to enroll arbitrary servers. Phase 2 must let a tenant request membership
+only for devices allocated to that tenant through a workload/order.
+
+## Observability and Monitoring
+
+The operator exports:
+
+| Metric/event | Meaning |
+|---|---|
+| `osac_fabric_domains_total{type,tenant}` | Non-deleting domains in the configured networking namespace |
+| `osac_fabric_domain_provisioning_duration_seconds{type}` | Time to first persisted Ready state |
+| `osac_fabric_domain_provisioning_failures_total{type,reason}` | Persisted transitions into failure or a new failure reason |
+| `FabricDomainProvisioned` (Normal) | First successful Ready transition |
+| `FabricDomainProvisioningFailed` (Warning) | Persisted failure reason changes |
+| `FabricDomainDeleted` (Normal) | Backend cleanup succeeds |
+
+These report control-plane/job state. They do not measure per-server attachment,
+physical link health, collective performance, or tenant data-plane reachability.
+Repeated reconciles do not emit duplicate failure counts/events for an unchanged
+persisted reason.
+
+## Risks and Mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Phase 1 inventory map can become stale | Exact host identity, explicit BMIT ID, ConfigMap watch, admin-owned changes, and fail-closed resolution |
+| Netris template may not match physical wiring | Binding is per hardware type; template remains admin-managed; require deployment validation and do not claim automatic template inspection |
+| Tenant-facing PRD scope is not delivered in Phase 1 | State the boundary explicitly; revise PRD/Jira before implementing workload self-service |
+| AAP job success may overstate member readiness | Document job-level status semantics and plan independent member observation |
+| Same host may be requested by competing domains | Phase 1 is admin-operated; add conflict/lease enforcement before tenant automatic membership |
+| Backends have different membership constraints | Define capabilities and validation per adapter; do not flatten all backends into Netris Server Cluster semantics |
+| VM networking cannot attach physical fabric semantics by Subnet alone | Require explicit VF/GPU allocation and guest attachment support before advertising VM capability |
+
+Security review must cover administrator-only binding/inventory writes, tenant
+filtering, stale/conflicting allocations, and backend cleanup identity.
+
+## Drawbacks
+
+Moving the template to a private BareMetalInstanceType binding adds catalog
+configuration and an administrator-maintained Phase 1 hostname map. The map is a
+temporary bridge; it duplicates identity already available after allocation.
+The private field is Netris-specific for Phase 1 and must evolve into
+backend-scoped bindings before additional fabrics are implemented.
+
+An explicit FabricDomain resource adds API and controller surface even when a
+workload request could theoretically carry a backend payload directly. It is
+retained because the isolation boundary has independent identity, status,
+backend correlation, and cleanup. The future design must keep request intent
+and materialized domain membership from becoming competing sources of truth.
+
+## Alternatives (Not Implemented)
+
+### Keep the template on NetworkClass
+
+This is the smallest change and works only when every machine type using the
+class has an identical Netris NIC layout. It cannot safely model per-SKU layouts
+or reject mixed templates. Rejected because backend hardware configuration
+belongs with the hardware selection used for each member.
+
+### Add `instance_type` to FabricDomain
+
+This removes hostname lookup only if every server in the domain is already
+known to use that type. It misstates membership as hardware configuration and
+still does not identify individual allocated machines. Rejected for Phase 1;
+allocated device identities should supply type in Phase 2.
+
+### Infer type from HostType selectors or hostname patterns
+
+A selector can match multiple catalog entries and hostname conventions are not
+a stable identity contract. Rejected in favor of an explicit exact-host
+onboarding map during Phase 1 and allocated BareMetalInstance identity later.
+
+### Create FabricDomains only from per-instance network attachments
+
+The current attachment model selects an interface and attaches one instance to
+an IP network. It does not express one multi-host EW isolation boundary or
+drive Netris Server Cluster creation. A common attach/detach reconciler may
+become a reusable Phase 2 backend path, but the resource lifecycle and domain
+identity remain explicit.
+
+### Put all fabric configuration on NetworkClass
+
+This conflates tenant network policy, hardware wiring, backend endpoint
+configuration, and membership. It also cannot describe two independent
+FabricDomains with different device subsets. Keep policy, hardware binding,
+backend profile, and membership intent at their respective ownership layers.
+
+### Make FabricDomain contain a tenant-supplied hostname list permanently
+
+This cannot safely serve tenant BMaaS or allocation-driven CaaS. Rejected as
+the long-term source of membership; Phase 1 keeps it only as an admin bridge.
+
+### Do not introduce a FabricDomain resource
+
+Putting backend status directly on an order or instance duplicates lifecycle
+state across workloads and gives cleanup no stable fabric-boundary identity.
+Rejected for workloads that require an independently reconciled isolation
+boundary. A short-lived implementation detail may be nested in a workload CR,
+but the domain identity and backend lifecycle must remain addressable.
+
+## Open Questions
+
+1. Should Phase 2 intent live on a shared workload/order fabric-request field,
+   on BareMetalInstance allocation requests, or in a common request object that
+   both CaaS and BMaaS materialize? The API must have one source of truth and
+   preserve per-domain member subsets. **Owner:** OSAC API and workload
+   architecture. **Impact:** Phase 2 request schema and allocation lifecycle.
+2. Should a FabricDomain be tenant-created as a reusable named boundary, or
+   created by the workload controller from each workload's fabric request?
+   Decide reuse, ownership, and deletion semantics before defining the public
+   API. **Owner:** OSAC product and API architecture. **Impact:** Phase 2
+   FabricDomain ownership and deletion semantics.
+3. Which backend adapters are required first: Netris Ethernet, UFM/Netris
+   InfiniBand, NICo NVLink, or NMX-C? For each, define member identity,
+   isolation primitive, allowed overlap, and observed Ready criteria. **Owner:**
+   Fabric backend integration team. **Impact:** Phase 2/3 adapter scope and
+   backend profile schema.
+4. Which VM device model and supported hardware provide a safe Ethernet VF and
+   NVLink path? Define allocation, guest attach/detach, and cleanup contracts
+   before adding VM API fields. **Owner:** VMaaS and BMaaS architecture.
+   **Impact:** Phase 3 VM request and device lifecycle APIs.
+5. Does the Phase 1 NetworkClass capability source and Phase 2 fabric-profile
+   selection remain adequate when deployments support more than one manager or
+   NetworkClass? **Owner:** OSAC API architecture. **Impact:** NetworkClass
+   capabilities and tenant-visible fabric profile selection.
 
 ## Test Plan
 
 ### Unit Tests
 
-- FD-VAL-01: reject FabricDomain when `type` does not match VN's NetworkClass
-  capability → `INVALID_ARGUMENT`.
-- FD-VAL-02: reject FabricDomain with empty `servers` list → `INVALID_ARGUMENT`.
-- FD-VAL-03: reject FabricDomain with zero or >1 `virtual_networks` in Phase 1
-  → `INVALID_ARGUMENT`.
-- FD-VAL-04: reject FabricDomain when referenced VN belongs to a different
-  tenant → `PERMISSION_DENIED`.
-- FD-VAL-05: reject `ETHERNET_EW` when VN's NetworkClass is missing
-  `template_id` → `FAILED_PRECONDITION`.
-- FD-VAL-06: reject `INFINIBAND_EW` and `NVLINK` types → `UNIMPLEMENTED`.
-- Template resolution: operator resolves NetworkClass from VN, then
-  `template_id` from `east_west_config.ethernet_ew`.
-- Condition transitions: `Ready=False` (Reason=Provisioning) → `Ready=True`
-  on success; `Ready=False` (Reason=ProvisioningFailed) on failure.
-- Per-member status: all members report `ACTIVE` on success; failed members
-  report `FAILED` with message.
-- Resize: updating `servers` list triggers re-reconciliation; `type` and
-  `virtual_networks` are immutable after creation.
+- Validate the private template ID is a positive canonical decimal value and is
+  not exposed in the public BareMetalInstanceType projection.
+- Reject stale/missing host inventory, missing/deleting BMITs, wrong
+  NetworkClass bindings, and mixed template IDs.
+- Verify template/VPC/region configuration is pinned before launch and catalog
+  changes do not silently mutate an existing domain.
+- Verify owner/tenant annotations are overwritten from authoritative API
+  relationships; create and VN delete serialize correctly.
+- Verify AAP refuses missing, duplicate, ambiguous, wrong-site, and unsafe
+  name-only host/Server Cluster lookups before mutation.
+- Verify missing/invalid AAP backend IDs and wrong-VPC artifacts persist the
+  unverified-artifact marker, block retries and deletion, and retain the
+  finalizer until administrator resolution; successful delete uses the
+  recorded backend identity, and public responses omit private Netris/VPC IDs.
+- Verify exact-ID AAP lookups use the resource endpoint, validate site/VPC
+  scope, and never fall back to global name matching after a miss.
+- Verify a successful AAP job that omits the ServerCluster VPC ID leaves the
+  returned backend ID untrusted and retains the recovery marker.
+- Verify a VirtualNetwork becoming Ready or its inventory map changing wakes
+  only the relevant FabricDomain reconciliations.
+- Verify metric/event transitions are emitted once and represent job-level
+  readiness.
 
 ### Integration Tests
 
-- Create NetworkClass with `east_west_config` → create FabricDomain CR →
-  verify condition transitions to `Ready=True` and `backend_id` is populated.
-- Delete FabricDomain → verify Server Cluster cleanup and condition removal.
-- Re-provision after failure: simulate AAP job failure → verify operator
-  re-queues and re-attempts provisioning.
-- VN deletion blocked: attempt to delete VN while FabricDomain references it →
-  verify finalizer prevents deletion.
+- Run fulfillment database/API/authorization tests for create, read, update,
+  delete, tenant isolation, admin write policy, owner metadata, and VN deletion
+  dependencies.
+- Run operator envtest reconciliation with fake Fulfillment/AAP clients,
+  including Ready delay, resize, delete, restart/retry, pinned config, and
+  watches.
+- Run AAP role tests against the local Netris HTTP stub for create, resize,
+  deletion, and identity ambiguity.
+- Render installer/operator Helm charts with empty and populated
+  `fabricDomainInventory`; validate the ConfigMap namespace, exact data, schema,
+  and CRD copies.
+- Exercise API-to-hub status feedback and finalizer ordering with both hub
+  clients and the private API reconciler.
 
 ### E2E Tests
 
-- Full lifecycle on netris-lab: create NetworkClass → create VN → create
-  FabricDomain → verify Netris Server Cluster exists in VPC → verify EW
-  isolation (same-tenant ping succeeds, cross-tenant blocked) → resize
-  servers → delete FabricDomain → verify cleanup.
-- VNet coexistence: create VPC → Server Cluster → OSAC Subnet → verify
-  distinct VXLAN IDs, no conflicts (already validated on zeus12).
-- Error path: create FabricDomain with invalid `template_id` on NetworkClass →
-  verify `Ready=False` condition with `InvalidTemplate` reason.
+- Deploy OSAC with an Ethernet EW-capable Netris NetworkClass and verify
+  tenant-scoped reads and administrator-only FabricDomain writes through the
+  API. This API contract test does not provision a live Netris Server Cluster.
+- A live Netris/AAP scenario should create a VN, wait for its VPC, create an
+  admin FabricDomain, observe the AAP job and Server Cluster, resize, then
+  delete and verify backend cleanup and VN deletion unblocking.
+- Test true same-tenant and cross-tenant packet isolation only on a deployment
+  with representative Netris hardware and network templates; API status alone
+  is insufficient evidence.
+- Phase 2 tests must request four devices with an NVLink domain covering all
+  four and an Ethernet EW domain covering two, then verify allocated identity,
+  membership and failure recovery against each backend.
+- Phase 3 tests must allocate and release an Ethernet VF to a VM, test tenant
+  isolation, and verify that unsupported NVLink virtualization requests fail
+  before placement or backend mutation.
 
----
-
-## Alternatives (considered and rejected for this design)
-
-### 1. ServerCluster as child of VirtualNetwork
-
-```text
-VirtualNetwork
-  └── ServerCluster (type, servers, …)
-```
-
-**Rejected as the primary model.**
-
-- Treats non-IP fabric isolation (IB PKey, NVLink partition) as owned by an IP
-  object.
-- Sharing one server group across two VirtualNetworks requires two child objects
-  on the same hosts → dual-writer / split-brain reconciliation risk.
-- Non-uniform membership (e.g. 32 nodes on Ethernet EW, 16 on NVLink, storage
-  Ethernet-only) is awkward under a single parent VN server list.
-- NVIDIA NICo explicitly allows the same NVLink logical partition on multiple
-  VPCs (no exclusivity).
-
-Independent create/delete of a *child* relative to the parent VN is possible
-(like Subnet), but that does not fix ownership, sharing, or non-IP semantics.
-
-### 2. ServerCluster as top-level peer of VirtualNetwork (uniform isolation)
-
-```text
-VirtualNetwork   (N-S / IP isolation — existing)
-ServerCluster    (EW fabric isolation — new, top-level peer)
-  type: multi | ethernet_ew | …
-  servers: [hostname, …]
-  network_class: <ref>
-  virtual_networks: [vn]
-```
-
-**Considered but not adopted as the primary model.**
-
-This variant treats ServerCluster as a top-level resource (not a child of VN)
-that drives **all** fabrics for a given server group in one object. For the
-common uniform case (same 20 servers on Ethernet EW, IB, and NVLink), a single
-ServerCluster avoids server-list drift and provides atomic resize.
-
-**Pros:**
-
-- One object per server group — simpler for uniform deployments.
-- Atomic resize: add/remove a server once, all fabrics follow.
-- Matches Netris's Server Cluster model directly (one API call provisions
-  Ethernet + IB + NVLink via template).
-
-**Cons:**
-
-- Couples fabric lifecycles. NVLink partitions for training jobs are often
-  ephemeral (created per-job, released after hours), while Ethernet EW is
-  persistent tenant infrastructure. One object forces both lifecycles together.
-- Non-uniform membership requires multiple ServerClusters with different
-  server lists — the same pattern as multiple FabricDomains, but with a name
-  that implies Netris-specific semantics.
-- The name "ServerCluster" carries Netris connotations; FabricDomain is
-  backend-neutral.
-
-**Why FabricDomain was chosen:** FabricDomain handles both uniform and
-non-uniform cases. For uniform deployments, a Phase 2/3 `type: multi` (or
-equivalent) achieves single-object atomic resize with the same schema. For
-non-uniform deployments (SuperPOD-style: storage off NVLink, different NVLink
-partition sizes per job), separate FabricDomains per fabric type are the
-natural model. The NetworkClass already has per-fabric config
-(`ethernet_ew`, `infiniband_ew`, `nvlink`), so the operator knows which
-backends to call for each domain type — or for all of them under a `multi`
-type.
-
-### 3. New top-level VPC parent of VirtualNetwork + FabricDomain
-
-```text
-VPC
-  ├── VirtualNetwork
-  ├── FabricDomain (or ServerCluster)
-  └── …
-```
-
-**Out of scope for this enhancement.**
-
-- Introduces a new VPC resource and demotes today's VirtualNetwork (already the
-  VPC-like object for Netris).
-- Valid as a **separate** networking hierarchy redesign if the project wants
-  AWS-style naming; it is not required to ship east-west isolation.
-- Phase 1 FabricDomain already binds to VirtualNetwork for Netris VPC context.
-  If a VPC parent is added later, FabricDomain can associate with it the same
-  way it associates with VirtualNetwork.
-
-### 4. fabric_bindings on VirtualNetwork or Subnet
-
-**Rejected earlier.** Couples EW lifecycle to address-plane objects; weak
-multi-fabric clarity; risks leaking `template_id` into every binding.
-
-### 5. Do nothing
-
-**Rejected by PRD.** Manual multi-fabric isolation does not scale.
-
----
+Phase 1 unit, envtest, role, and chart checks are implementation validation.
+The live fabric lifecycle and packet-level E2E scenarios remain deployment
+coverage and are not claimed as run by this design update.
 
 ## Graduation Criteria
 
-| Stage | Criteria |
-|-------|----------|
-| **Dev Preview** | FabricDomain CRUD operations pass unit and integration tests. Condition-based lifecycle verified. NetworkClass `east_west_config` validated. |
-| **Tech Preview** | Full lifecycle E2E on netris-lab: create → isolation verified → resize → delete. VNet coexistence with OSAC Subnets confirmed. Error paths tested (invalid template, missing VN, AAP timeout). No regressions in existing networking tests. |
-| **GA** | Production deployment with ≥2 tenants using FabricDomain for ≥30 days. Support procedures validated. Admin documentation published. No manual fabric-manager intervention required for standard operations. |
+Graduation criteria will be defined when targeting a release. Expected stages:
+Dev Preview → Tech Preview → GA based on production deployment feedback. Phase 1
+must at minimum pass API/operator/AAP unit and integration validation, publish
+the administrator onboarding guide, and clearly document the absence of live
+Netris/data-plane E2E validation.
 
 ## Upgrade / Downgrade Strategy
 
-FabricDomain is a new resource type with no existing instances to migrate.
+The Phase 1 fields are additive except NetworkClass's prior template field is
+removed/reserved. Before upgrade, remove the template ID from NetworkClass and
+write equivalent per-type private BMIT bindings plus exact-host inventory.
+Existing FabricDomains must have their selected NetworkClass/template/VPC/region
+pinned before controller rollout can safely continue reconciliation. Do not
+silently switch backend configuration for an already-created Server Cluster.
 
-- **Upgrade:** Installing the new CRD and controller is additive. Existing
-  VirtualNetwork and Subnet resources are unaffected. NetworkClass gains new
-  optional fields (`east_west_config`, `supports_east_west_ethernet`); existing
-  NetworkClasses without these fields continue to work for N-S networking.
-- **Downgrade:** Requires deleting all FabricDomain instances before removing
-  the CRD. The operator must be scaled down before CRD removal to avoid
-  reconciliation errors. VirtualNetwork and Subnet resources are unaffected
-  by downgrade.
+Downgrade requires removing FabricDomains and their backend Server Clusters
+before reverting the controller and private BMIT schema. Keep the catalog and
+NetworkClass migration steps documented with the release.
 
 ## Version Skew Strategy
 
-| Component pair | Skew scenario | Behavior |
-|---------------|---------------|----------|
-| **fulfillment-service ahead of osac-operator** | FS accepts FabricDomain creates; operator CRD not yet installed | FS persists the resource in the database; CR creation fails. Condition `Ready=False`, Reason=`CRDNotInstalled`. Resolves when operator is upgraded. |
-| **osac-operator ahead of fulfillment-service** | Operator has CRD but FS does not have the FabricDomain service | No FabricDomains can be created via API. No impact on existing resources. |
-| **osac-aap capability rename** | Old AAP has `supports_east_west`; new FS/operator expects `supports_east_west_ethernet` | Additive: new capability field is added alongside the old one. The `find_template_roles.py` pydantic model accepts both during the transition window. Old field deprecated after one release cycle. |
+Deploy fulfillment API, operator CRD/controller, and AAP role changes as one
+compatible OSAC release. The operator requires the private BareMetalInstanceType
+fields, new CRD status shape, inventory ConfigMap, and AAP variables. If the
+private API or CRD is ahead/behind, reconciliation must report an explicit
+configuration or compatibility failure and retain finalizers where cleanup is
+incomplete. NetworkClass capability remains disabled by default until the
+operator and AAP dependencies are ready.
 
 ## Support Procedures
 
-**Detecting failures:**
+Use API conditions and the hub FabricDomain CR to identify the failed stage.
+Check VN readiness/VPC ID, exact-host ConfigMap entries, shared BMIT state and
+NetworkClass-scoped binding, then the AAP job and Netris Server Cluster by
+pinned backend ID/site/VPC. Correct the catalog or inventory and allow the
+controller to retry. If `unverifiedBackendArtifact` is true, search Netris by
+the recorded unverified ID when present and by the domain name plus pinned site
+and VPC. Verify and remove or correct any artifact before clearing both
+`status.unverifiedBackendArtifact` and `status.unverifiedBackendId`; do not clear
+the marker just to force reconciliation. Do not delete the VN while a domain is
+deleting. If create intent has no observed job or backend ID and no artifact
+marker, keep the finalizer and investigate the AAP job rather than clearing it
+manually.
 
-- Check FabricDomain conditions: `osac get fabricdomains` — look for
-  `Ready=False` with Reason and Message fields.
-- Check operator logs for `FabricDomain` reconciliation errors.
-- Check AAP job logs for `osac-create-server-cluster` /
-  `osac-delete-server-cluster` failures.
-- Monitor `osac_fabric_domain_provisioning_failures_total` metric.
-
-**Disabling the feature:**
-
-- Scale down the FabricDomain controller in osac-operator. Existing
-  FabricDomains remain in their last-known state; no new provisioning or
-  deletion occurs. VirtualNetwork and Subnet operations are unaffected.
-- Re-enabling: scale the controller back up. It re-reconciles all
-  FabricDomain CRs from their current state. Idempotent operations ensure
-  consistency.
-
-**Recovery:**
-
-- If a FabricDomain is stuck in `Ready=False`: check the condition message,
-  fix the underlying issue (Netris connectivity, template_id, VN existence),
-  and the operator will re-reconcile automatically.
-- If the Netris Server Cluster was manually deleted: delete and re-create the
-  FabricDomain to re-provision.
-
-## Open questions
-
-1. Phase 2: when to allow zero or multiple VirtualNetwork associations.
-2. Status fields to echo for debug (resolved template_id, VPC id, VNet names).
-3. Phase 2: reserve `fabric_domain` field on BareMetalInstance/ClusterOrder
-   specs for scheduling awareness and membership validation.
-
-**Resolved:**
-
-- **Resource name:** FabricDomain. "Domain" implies isolation boundary
-  (broadcast domain, routing domain); "fabric" scopes it to the physical
-  interconnect layer. Decided before merge per reviewer recommendation.
-- **Typed `EastWestConfig` messages** (not generic `map<string,string>`). OSAC
-  conventions prefer typed structures over maps in CRDs for validation,
-  documentation, and schema evolution.
-- **`network_class` removed from FabricDomainSpec.** OSAC deployments have one
-  NetworkClass; FabricDomain inherits it from the associated VirtualNetwork.
-  Avoids redundancy and NC mismatch between VN and FD.
+Disabling network provisioning prevents new backend work and must not mark a
+domain Ready. Existing domains still require cleanup through the normal
+finalizer path before uninstalling the controller or removing API fields.
 
 ## Infrastructure Needed
 
-None. E2E testing uses the existing netris-lab on zeus12 (already provisioned).
-
----
+No new infrastructure is required for Phase 1. Validation uses existing
+fulfillment/operator test harnesses, an AAP local HTTP stub, and installer
+chart rendering. Live Netris/AAP and packet-level coverage requires a
+representative deployment and remains an environment prerequisite.
 
 ## References
 
-- PRD: OSAC-1382 (merged)
-- osac-aap PR #447 (Server Cluster AAP roles)
-- zeus12 validation: VPC → Server Cluster in VPC → OSAC Subnet; isolation tests
-- [NICo NVLink Partitioning](https://docs.nvidia.com/infra-controller/infra-controller/documentation/operations-day-2/nv-link-partitioning)
-- [DGX SuperPOD Network Fabrics (GB200)](https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/network-fabrics.html)
-- Netris Server Cluster + UFM/NMX integrations
+- [OSAC-1382](https://redhat.atlassian.net/browse/OSAC-1382)
+- [FabricDomain Phase 1 API and controller PR #1270](https://github.com/osac-project/osac/pull/1270)
+- [Netris Server Cluster API](https://www.netris.ai/docs/en/latest/server-cluster.html)
+- [Netris V-Net documentation](https://www.netris.ai/docs/en/latest/vnet.html)
+- [Enhancement proposal #179](https://github.com/osac-project/enhancement-proposals/pull/179)
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.8.0 - 7efcedb, workspace main @ d165396
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.8.0","ai_workflows":"7efcedb","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
