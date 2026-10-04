@@ -9,7 +9,7 @@ tracking-link:
 see-also:
   - Unified Networking PRD: /enhancements/OSAC-1433-unified-networking/prd.md
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking/design.md
-  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract/design.md
+  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md
 replaces:
   - N/A
 superseded-by:

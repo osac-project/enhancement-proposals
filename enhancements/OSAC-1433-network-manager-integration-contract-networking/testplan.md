@@ -1,4 +1,4 @@
-# Testplan — OSAC-1433-network-manager-integration-contract
+# Testplan — OSAC-1433-network-manager-integration-contract-networking
 
 ## Overview
 

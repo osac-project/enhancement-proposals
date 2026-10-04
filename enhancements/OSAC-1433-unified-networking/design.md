@@ -13,8 +13,8 @@ see-also:
   - VMaaS Networking: /enhancements/OSAC-1435-vmaas-networking
   - CaaS Networking: /enhancements/OSAC-1436-caas-networking
   - BMaaS Networking: /enhancements/OSAC-1437-bmaas-networking
-  - Network Manager Integration Contract PRD: /enhancements/OSAC-1433-network-manager-integration-contract/prd.md
-  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract/design.md
+  - Network Manager Integration Contract PRD: /enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md
+  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md
   - Default Networking: /enhancements/OSAC-1433-default-networking
 replaces:
   - OSAC-356 Networking API (legacy)
@@ -246,7 +246,7 @@ Manager registration also declares which operation and workload-target pairs
 the implementation supports. OSAC validates that declaration against its
 fixed dispatch plan before starting AAP. The complete registration schema,
 operation vocabulary, and validation behavior are defined in the
-[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract/design.md);
+[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md);
 this design describes how OSAC consumes the registration.
 
 ### How VMs Join the Fabric
@@ -337,7 +337,7 @@ provisioning provider, and the operator updates resource status and job
 history. The manager owns backend-specific reconciliation; OSAC owns the API
 resource lifecycle and status.
 
-The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract/design.md)
+The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
 is normative for manager registration, operation and target declarations,
 AAP task inputs and outputs, retry behavior, and implementation conformance.
 This design owns the profile composition and OSAC-to-AAP orchestration flow.

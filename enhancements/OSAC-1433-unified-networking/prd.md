@@ -8,8 +8,8 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking
-  - Network Manager Integration Contract PRD: /enhancements/OSAC-1433-network-manager-integration-contract/prd.md
-  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract/design.md
+  - Network Manager Integration Contract PRD: /enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md
+  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
 replaces:
@@ -657,8 +657,8 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 ## 6. Dependencies
 
 - **Unified Networking Design**: [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) — Technical design document fulfilling these requirements
-- **Network Manager Integration Contract PRD**: [/enhancements/OSAC-1433-network-manager-integration-contract/prd.md](/enhancements/OSAC-1433-network-manager-integration-contract/prd.md) — Defines source-neutral manager requirements
-- **Network Manager Integration Contract Design**: [/enhancements/OSAC-1433-network-manager-integration-contract/design.md](/enhancements/OSAC-1433-network-manager-integration-contract/design.md) — Defines the normative manager interface
+- **Network Manager Integration Contract PRD**: [/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md) — Defines source-neutral manager requirements
+- **Network Manager Integration Contract Design**: [/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) — Defines the normative manager interface
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
 - **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference

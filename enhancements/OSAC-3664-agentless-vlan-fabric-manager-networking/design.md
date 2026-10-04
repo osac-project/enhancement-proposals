@@ -11,8 +11,8 @@ prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-1433-unified-networking/design.md"
-  - "/enhancements/OSAC-1433-network-manager-integration-contract/prd.md"
-  - "/enhancements/OSAC-1433-network-manager-integration-contract/design.md"
+  - "/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md"
+  - "/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md"
   - "/enhancements/OSAC-1435-vmaas-networking/design.md"
   - "/enhancements/OSAC-1436-caas-networking/design.md"
   - "/enhancements/OSAC-1437-bmaas-networking/design.md"
@@ -34,7 +34,7 @@ VirtualNetwork to an isolated Linux routing namespace, maps each Subnet to a
 unique VLAN, and provisions DHCP, permit-all forwarding, BGP-backed external
 reachability, whole-address DNAT, and explicit-source SNAT through Ansible
 roles. Its manager registration and operation-target declarations follow the shared
-[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract/design.md).
+[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
 See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
