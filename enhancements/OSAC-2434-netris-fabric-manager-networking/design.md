@@ -3,7 +3,7 @@ title: netris-fabric-manager
 authors:
   - Dan Manor
 creation-date: 2026-09-28
-last-updated: 2026-09-29
+last-updated: 2026-10-04
 tracking-link:
   - "https://redhat.atlassian.net/browse/OSAC-2434"
 prd:
@@ -12,7 +12,6 @@ see-also:
   - Unified Networking: /enhancements/OSAC-1433-unified-networking
   - CaaS Networking: /enhancements/OSAC-1436-caas-networking
   - Agentless VLAN Fabric Manager: /enhancements/OSAC-3664-agentless-vlan-fabric-manager-networking
-  - K8s-Only K8s Manager: /enhancements/OSAC-2069-k8s-only-k8s-manager-networking
 ---
 
 # Fabric Manager — Netris
@@ -56,8 +55,8 @@ behavior, and failure recovery.
 - Operating or changing the Netris controller, SoftGate, switches, or fabric
   infrastructure. This design specifies OSAC's target use of the existing
   Netris roles and identifies the OSAC-side changes needed to meet it.
-- K8s-only implementation details — see the
-  [K8s-only manager design](../OSAC-2069-k8s-only-k8s-manager-networking/design.md).
+- Kubernetes-native implementation details; this document covers only the
+  Netris fabric manager role.
 - SecurityGroup policy semantics (allow/deny evaluation, rule ordering,
   stateful tracking) — that is a cross-backend concern.
 - Multiple Netris controllers, split-controller topologies, or Netris

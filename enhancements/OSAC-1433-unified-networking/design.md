@@ -417,12 +417,12 @@ designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 ### Manager Contract
 
 This section defines the contract that every fabric manager and K8s manager
-must fulfill. Individual manager design documents
-([Netris](/enhancements/OSAC-2434-netris-fabric-manager-networking/design.md),
-[K8s-Only](/enhancements/OSAC-2069-k8s-only-k8s-manager-networking/design.md),
-[Agentless VLAN](/enhancements/OSAC-3664-agentless-vlan-fabric-manager-networking/design.md))
-describe how each backend satisfies these requirements. A new manager is
-conformant when it passes acceptance tests derived from this contract.
+must fulfill. The [Netris](/enhancements/OSAC-2434-netris-fabric-manager-networking/design.md)
+and [Agentless VLAN](/enhancements/OSAC-3664-agentless-vlan-fabric-manager-networking/design.md)
+designs describe how those fabric backends satisfy these requirements.
+Kubernetes-native manager behavior and the K8s-only profile are described in
+this unified design. A new manager is conformant when it passes acceptance
+tests derived from this contract.
 
 #### Registration Contract
 
@@ -741,10 +741,9 @@ through MetalLB.
 #### Networking Setup (Fabric-Backed Profiles)
 
 The following VirtualNetwork, Subnet, and SecurityGroup realization describes
-fabric-backed profiles. The tenant-facing resource API is shared, but the
-K8s-only realization uses a logical VirtualNetwork, a primary CUDN per Subnet,
-and NetworkPolicy; see the
-[K8s-only manager design](../OSAC-2069-k8s-only-k8s-manager-networking/design.md).
+fabric-backed profiles. The tenant-facing resource API is shared. The K8s-only
+realization uses a logical VirtualNetwork, a primary CUDN per Subnet, and
+NetworkPolicy; its Kubernetes-native mappings are summarized below.
 
 **Create VirtualNetwork:**
 
@@ -857,7 +856,7 @@ correct physical interfaces based on each node set's BareMetalInstanceType.
 In the fabric-backed profiles shown here, supported workloads are connected
 to the fabric subnet and the fabric manager applies its network behavior to
 them. K8s-only VMs remain on their primary CUDN on the hub and use the
-Kubernetes-native services described in the K8s-only manager design.
+Kubernetes-native services described in this design.
 
 #### External Access (Fabric-Backed Profiles)
 
@@ -1963,8 +1962,9 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
   auto-created ExternalIPAttachment creation until both dependencies are
   ready. Verify auto-created attachment cleanup precedes ExternalIP release.
   Manager-specific validation and service tests are listed in
-  the [K8s-only design](../OSAC-2069-k8s-only-k8s-manager-networking/design.md)
-  and [Netris design](../OSAC-2434-netris-fabric-manager-networking/design.md).
+  the [Netris design](../OSAC-2434-netris-fabric-manager-networking/design.md).
+  K8s-native behavior is covered by the shared contract and integration checks
+  in this design.
 
 ### Component Integration
 
