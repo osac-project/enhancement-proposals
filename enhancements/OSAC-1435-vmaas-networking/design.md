@@ -126,8 +126,8 @@ ComputeInstance already participates in the networking API. Today's flow:
      --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
-     - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet and default SecurityGroup (see Default Networking PRD)
-     - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, and a missing or empty SecurityGroup list receives the tenant default SecurityGroup only when the resolved Subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork; supplied values are preserved
+     - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's ready default Subnet (see Default Networking PRD); it does not create or inject SecurityGroups
+     - If one attachment is supplied without a Subnet, fills only the Subnet from the tenant default and preserves supplied SecurityGroups. An empty SecurityGroup list is allowed on the tenant's default VirtualNetwork; a non-default VirtualNetwork requires caller-supplied SecurityGroups from that VirtualNetwork.
      - Validates: at most one attachment; the subnet is Ready and the security groups belong to the same VN
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP in the same DB transaction as the ComputeInstance — ExternalIP starts in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. ExternalIPAttachment is **not** created at this point — it is deferred to the fulfillment-service internal reconciler, which creates it only after the ExternalIP is Allocated and the ComputeInstance is Ready. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow.
    - Creates ComputeInstance CR with `network_attachments`
@@ -180,7 +180,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 9. **Delete ComputeInstance:**
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-created: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
    - **Manually created ExternalIPAttachments block deletion** — if the tenant created ExternalIPAttachments explicitly (not labeled `osac.openshift.io/auto-created`), the delete request is rejected. The tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
-   - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
+   - **Default networking resources (VN, Subnet, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
    - Template deletes KubeVirt VM + DataVolume
    - No `move_network_attachment` call — the VM lives on the CUDN overlay, not a fabric switch port, so it is never parked or port-moved (the port-move primitive and parking apply only to fabric-attached BM servers and CaaS agents)
@@ -300,7 +300,7 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control VM inbound traffic (tenant-configurable via explicit SG or default SG)
+- Explicit SecurityGroup rules control VM inbound traffic
 - The sole VM attachment uses the same SecurityGroup enforcement as the rest of the fabric
 
 ### Failure Handling and Recovery
@@ -404,7 +404,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 - fulfillment-service: max-one validation (accept no attachment or one attachment)
 - fulfillment-service: max-one `network_attachments` validation
-- fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
+- fulfillment-service: omitted and partial attachment resolution (complete a missing Subnet only; preserve SecurityGroups without creating or injecting defaults; require caller-supplied groups on a non-default VirtualNetwork)
 - fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (implicit single attachment)
@@ -535,3 +535,13 @@ Consequences:
 - AAP execution environment with `osac.templates.ocp_virt_vm` role updated for single-NIC support
 - k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
 - Integration test environment with CUDN or EVPN fabric
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-5563-docs-only @ e97b06357
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"docs/OSAC-5563-docs-only","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

@@ -37,7 +37,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 - A tenant can create a cluster with explicit network configuration, specifying which subnet and security groups to use for cluster nodes
 - A cluster uses a single network attachment — one subnet for all node sets. The system automatically determines which physical interface to use for each node set based on its BareMetalInstanceType
 - Tenants can request automatic external IP attachment for cluster API server and ingress endpoints with `--external-ip-attachment`, without pre-creating external IP resources
-- When network configuration is omitted, the system applies the tenant's default subnet and security group
+- When network configuration is omitted, the system applies the tenant's default Subnet without injecting SecurityGroups
 - Cluster status exposes API server and ingress endpoint addresses after provisioning completes
 - The system automatically selects suitable bare-metal hosts and configures network connectivity before cluster provisioning begins
 - Auto-provisioned external IPs and external IP attachments are cleaned up when the cluster is deleted
@@ -57,7 +57,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 - As a Tenant User, I want to create a cluster with explicit network configuration so that I can place it on a specific subnet with specific security group rules
 - As a Tenant User, I want my cluster's node sets to automatically use the correct physical interface based on their BareMetalInstanceType so that network connectivity is configured without manual interface specification
 - As a Tenant User, I want to create a cluster with `--external-ip-attachment` so that the system provisions external IPs for both the API server and ingress and the cluster is externally reachable in a single API call
-- As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default subnet with my default security groups
+- As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default Subnet without a default SecurityGroup being created or injected
 - As a Tenant User, I want to see my cluster's API server and ingress endpoint addresses in the cluster status so that I can access the cluster
 - As a Tenant User, I want auto-provisioned networking resources to be automatically cleaned up when I delete my cluster so that I do not accumulate orphaned resources
 
@@ -80,11 +80,11 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Network Configuration
 
-- **FR-1:** Cluster creation supports the singular `network_attachment` field. The attachment may omit its subnet or omit or explicitly supply an empty security-group list; the complete resolved attachment is immutable after creation. The default SecurityGroup is used only when the resolved Subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork. The attachment applies to the entire cluster — all node sets share the same subnet. The system determines which physical network interface to use for each node set from its BareMetalInstanceType. [User]
+- **FR-1:** Cluster creation supports the singular `network_attachment` field. The attachment may omit its Subnet or omit or explicitly supply an empty SecurityGroup list; SecurityGroups are never created or injected as defaults, and supplied values are preserved. An empty SecurityGroup list is allowed on the tenant's default VirtualNetwork; a non-default VirtualNetwork requires caller-supplied SecurityGroups from that VirtualNetwork. The complete resolved attachment is immutable after creation. The attachment applies to the entire cluster — all node sets share the same Subnet. The system determines which physical network interface to use for each node set from its BareMetalInstanceType. [User]
 
 #### Optional Network Configuration with Defaults
 
-- **FR-2:** The network configuration on cluster creation is optional. When the attachment is omitted or empty, the system applies the tenant's default subnet and default security group. When a partial attachment is supplied, only missing subnet or security-group fields are defaulted; an explicitly empty security-group list is treated as missing; supplied values are preserved. The default SecurityGroup is used only when the resolved subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved subnet's VirtualNetwork. The resolved configuration is stored so the cluster is self-describing after creation. [User]
+- **FR-2:** The network configuration on cluster creation is optional. When the attachment is omitted or empty, the system applies the tenant's ready default Subnet. When a partial attachment is supplied without a Subnet, only the missing Subnet is completed; SecurityGroups are never defaulted or injected, and supplied values are preserved. An empty SecurityGroup list is allowed on the tenant's default VirtualNetwork; a non-default VirtualNetwork requires caller-supplied SecurityGroups from that VirtualNetwork. The resolved configuration is stored so the cluster is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -120,7 +120,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Auto-Provisioned Resource Cleanup
 
-- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, security groups, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up. Default networking resources (VirtualNetworks, Subnets, and NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -140,14 +140,14 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 ## 6. Assumptions
 
-- The tenant has default networking resources (virtual network, subnet, security group) pre-created. If defaults are not configured, creating a cluster without explicit network configuration fails with a clear error.
+- The tenant has a default VirtualNetwork and Subnet pre-created. If the default Subnet is not configured or ready, creating a cluster without a supplied Subnet fails with a clear error. A default SecurityGroup is not created or required.
 - The deployment's network infrastructure is configured to support virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways, and network connectivity management.
 - BareMetalInstanceTypes have structured `network_ports` configuration. The system uses the first `fabric` port for each node set when no interface is supplied by the CaaS flow.
 
 ## 7. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Default Networking PRD** — default Subnet selection and attachment completion behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 
 ## 8. Risks
 
@@ -184,3 +184,13 @@ Resolved: DHCP handles all host-side networking. The host receives IP, gateway, 
 ### ~~9.3 How are IP address pools for cluster endpoints configured?~~ — Resolved
 
 Resolved: The system creates IP address pools for cluster endpoint allocation at subnet creation time, reserving a sub-range of the subnet CIDR. The DHCP assignment range excludes this sub-range to prevent overlap.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace docs/OSAC-5563-docs-only @ e97b06357
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"docs/OSAC-5563-docs-only","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

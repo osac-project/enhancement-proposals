@@ -244,13 +244,13 @@ With exactly one attachment, it is the default route/primary attachment. The
 BMaaS attachment retains its existing optional `primary` field; with one
 attachment, omitting it has the same meaning as `primary: true`, while
 `primary: false` is rejected. VMaaS has no primary field, and CaaS has no
-primary concept. Omitted or empty attachment lists receive tenant defaults;
-partial supplied attachments receive defaults only for missing fields. A
-missing or explicitly empty `security_groups` list is treated as missing; the
-default SecurityGroup applies only when the resolved Subnet belongs to the
-tenant's default VirtualNetwork, otherwise the caller must provide
-SecurityGroups from the resolved Subnet's VirtualNetwork. The resolved
-attachment list and fields are immutable after creation.
+primary concept. Omitted or empty attachment lists receive the tenant's ready
+default Subnet. A partial supplied attachment receives that Subnet only when
+its Subnet field is missing. SecurityGroups are never defaulted or injected,
+and supplied values are preserved. An empty SecurityGroup list is allowed on
+the tenant's default VirtualNetwork; a non-default VirtualNetwork requires
+caller-supplied SecurityGroups from the resolved Subnet's VirtualNetwork. The
+resolved attachment list and fields are immutable after creation.
 Multi-NIC workload networking is future scope and is not enabled by the
 plural field shape.
 
@@ -530,3 +530,13 @@ _No non-functional requirements were specified in the original document._
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
 - **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace docs/OSAC-5563-docs-only @ e97b06357
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"docs/OSAC-5563-docs-only","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

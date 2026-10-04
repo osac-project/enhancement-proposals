@@ -50,8 +50,8 @@ but cannot be adopted wholesale for clusters due to four structural differences:
 | # | Difference | VM | Cluster |
 |---|-----------|-----|---------|
 | 1 | Payload shape | `network_attachments` (array) | `network_attachment` (singular) |
-| 2 | Optionality | All pickers required | All pickers optional (server defaults) |
-| 3 | SG validation | Always required | Required only for non-default VN |
+| 2 | Optionality | All pickers required | VN and Subnet pickers optional (server completes a missing Subnet) |
+| 3 | SG validation | Always required | Optional on the default VN; required on a non-default VN |
 | 4 | Extra fields | None | `auto_external_ip_attachment`, `pod_cidr`, `service_cidr` |
 
 The cascading picker logic is extracted into a shared `NetworkAttachmentPickers`
@@ -61,7 +61,7 @@ component in `libs/ui-components/` that both adapters consume:
 |--------|-------------------------------------|------------|-----------------|
 | VN picker | `SelectField`, loads `useVirtualNetworks()` | Required | Optional |
 | Subnet picker | `SelectField`, filtered by VN, loads `useSubnets()` | Required | Optional when VN empty; required when VN selected |
-| SG multi-select | `MultiSelectField`, filtered by VN, loads `useSecurityGroups()` | Required | Required only for non-default VN |
+| SG multi-select | `MultiSelectField`, filtered by VN, loads `useSecurityGroups()` | Required | Optional on default VN; required on non-default VN |
 | Cascade reset | Clearing VN resets Subnet + SGs | Same | Same |
 | Auto-select | Single-option list auto-selects | Same | Same |
 | Auto External IP | — | — | `SwitchField` below pickers |
@@ -77,7 +77,8 @@ component in `libs/ui-components/` that both adapters consume:
 Extends `ClusterNetworkingStep` (`wizard/adapters/cluster/`) with
 `network_attachment` pickers above the existing `pod_cidr`/`service_cidr`
 fields. All new fields are optional — when omitted, the fulfillment-service
-applies the tenant's default Subnet and SecurityGroup
+completes the attachment with the tenant's default Subnet and does not create
+or inject SecurityGroups
 ([Default Networking PRD](/enhancements/OSAC-1433-default-networking/prd.md)).
 
 The step is split into two visually distinct sections using
@@ -87,8 +88,8 @@ The step is split into two visually distinct sections using
 
 - **Use tenant default network** (`SwitchField`): toggle at the top of the
   section. Default: on. When enabled, VN/Subnet/SG pickers are hidden — the
-  fulfillment-service uses the tenant's default VirtualNetwork, Subnet, and
-  SecurityGroup. When disabled, the full VN → Subnet → SG picker cascade is
+  fulfillment-service uses the tenant's default VirtualNetwork and Subnet
+  without injecting SecurityGroups. When disabled, the full VN → Subnet → SG picker cascade is
   shown for custom network selection. This matches the bare metal wizard
   pattern and will also be added to the VM wizard.
 
@@ -110,9 +111,9 @@ adapter's Formik paths:
 - **Security Groups** (`MultiSelectField`): loads from `useSecurityGroups()`
   filtered by `this.spec.virtual_network.name == "<selected-vn-name>"`. Disabled
   until a VirtualNetwork is selected. Optional when the selected Subnet belongs
-  to the tenant's default VirtualNetwork (server applies default SG). Required
-  when the Subnet belongs to a non-default VirtualNetwork — validated
-  client-side. The default VN is identified by loading the default Subnet
+  to the tenant's default VirtualNetwork; required when the Subnet belongs to a
+  non-default VirtualNetwork — validated client-side. SecurityGroups are never
+  selected or populated by default. The default VN is identified by loading the default Subnet
   (`is_default == true` from `Subnets.List`) on mount via `useDefaultSubnet()`
   and caching its VN reference. The shared component receives this as
   `defaultVnName` and uses it when `sgRequired` is `"when-non-default-vn"`.
@@ -458,3 +459,13 @@ Add to `createMockConnectTransport.ts`:
 | `AttachExternalIpModal` | Unattached ExternalIPs listed; confirm creates ExternalIPAttachment with correct `target_endpoint`; server error displayed in modal; empty state message |
 | `ClustersPage` | No new columns added; networking details on detail page only |
 | `AutoProvisionedBadge` | Tooltip; delete disabled when parent exists; delete enabled when orphaned |
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-5563-docs-only @ e97b06357
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"docs/OSAC-5563-docs-only","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
