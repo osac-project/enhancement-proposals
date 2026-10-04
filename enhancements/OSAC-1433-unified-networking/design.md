@@ -966,19 +966,19 @@ single supplied attachment:
 
 | Input | Resolution |
 |---|---|
-| VMaaS attachment omitted or empty | Add the tenant's default Subnet. |
-| BMaaS attachment list omitted or empty | Add the tenant's default Subnet and the first `fabric` port from `BareMetalInstanceType.network_ports`. |
-| CaaS attachment omitted or empty | Add the tenant's default Subnet; resolve the first `fabric` port from each node set's `BareMetalInstanceType` for the BM worker handoff. |
+| VMaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup. |
+| BMaaS attachment list omitted or empty | Add the tenant's default Subnet, default SecurityGroup, and the first `fabric` port from `BareMetalInstanceType.network_ports`. |
+| CaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup; resolve the first `fabric` port from each node set's `BareMetalInstanceType` for the BM worker handoff. |
 | One attachment with no Subnet | Default only the Subnet; preserve supplied SecurityGroups and, for BMaaS, the supplied interface. |
-| One attachment with no SecurityGroups | Do not add SecurityGroups. An empty list is allowed on the tenant's default VirtualNetwork; a non-default VirtualNetwork requires caller-supplied SecurityGroups from that VirtualNetwork. |
+| One attachment with no SecurityGroups | Default only the SecurityGroup list, but only when the resolved Subnet belongs to the tenant's default VirtualNetwork. Otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork. |
 | One BMaaS attachment with no interface | Default only the interface to the first `fabric` port from `BareMetalInstanceType.network_ports`. |
 | One complete attachment | Preserve all supplied values and validate readiness, tenant scope, and VirtualNetwork relationships. |
 
-An explicitly empty `security_groups` list remains empty. SecurityGroups are
-never created or injected by attachment resolution. If a required default
-Subnet or BMaaS fabric interface is absent or not Ready, creation fails with a
-validation or precondition error. The fully resolved attachment is stored
-with the workload and is immutable after creation.
+An explicitly empty `security_groups` list is treated as a missing
+SecurityGroup value for this defaulting rule. If a required default is absent
+or not Ready, creation fails with a validation or precondition error. The
+fully resolved attachment is stored with the workload and is immutable after
+creation.
 
 #### Resource Specs
 
@@ -1500,13 +1500,3 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 ## Infrastructure Needed
 
 No additional infrastructure beyond existing OSAC components and managers.
-
----
-
-## Provenance
-
-Authored: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-5563-docs-only @ e97b06357
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"docs/OSAC-5563-docs-only","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

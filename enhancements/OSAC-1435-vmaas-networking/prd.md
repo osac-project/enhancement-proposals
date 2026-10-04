@@ -30,7 +30,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 - A tenant can create a VM with zero or one network attachment; the sole attachment is the primary/default route
 - A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically for inbound access
-- A tenant can create a VM without specifying networking details — the system uses the tenant's default Subnet without injecting SecurityGroups
+- A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and security group
 - The platform prevents VM creation in deployments that do not support virtualization
 
 ### 2.2 Non-Goals
@@ -45,12 +45,12 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - As a Tenant User, I want to create a VM with one network attachment, so that it receives connectivity on the selected subnet
 - As a Tenant User, I want the sole network attachment to provide the VM's default gateway and DNS configuration without requiring a second API field
 - As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
-- As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default Subnet without creating or injecting a default SecurityGroup
+- As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a deployment that only supports bare-metal servers, so that I understand the limitation and can choose a different deployment
 
 ### Tenant Admin Stories
 
-- As a Tenant Admin, I want to inspect the default networking resources used when VMs are created without explicit network configuration and create replacements when different settings are needed
+- As a Tenant Admin, I want to inspect the default networking resources (subnet, security group) used when VMs are created without explicit network configuration and create replacements when different settings are needed
 - As a Tenant Admin, I want to see which subnet and security groups each VM is attached to, and the IP address allocated to each interface, so I can audit my organization's network topology
 
 ### Cloud Infrastructure Admin Stories
@@ -72,11 +72,11 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Optional Network Configuration with Defaults
 
-- **FR-3:** Network configuration is optional when creating a VM. When the attachment list is omitted or empty, the system uses the tenant's ready default Subnet. When a single attachment is supplied without a Subnet, only the missing Subnet is completed from the tenant default. SecurityGroups are never created or injected; supplied groups are preserved, an empty group list is allowed on the tenant's default VirtualNetwork, and a non-default VirtualNetwork requires caller-supplied SecurityGroups from that VirtualNetwork. The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
+- **FR-3:** Network configuration is optional when creating a VM. When the attachment list is omitted or empty, the system uses the tenant's default subnet and default security group (see Default Networking PRD). When a single attachment is supplied with a missing subnet, or with a missing or explicitly empty security-group list, only the missing field is defaulted; the default security group is used only when the resolved subnet belongs to the tenant's default VirtualNetwork, otherwise the caller must provide security groups from the resolved subnet's VirtualNetwork. Supplied values are preserved. The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
 
 #### Auto External IP
 
-- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (VirtualNetworks, Subnets, and NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, security groups, NATGateway) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
 #### IP Address Discovery
 
@@ -104,18 +104,18 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's primary attachment IP
 - [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
-- [ ] Creating a VM with an omitted or empty attachment list receives the tenant's ready default Subnet and no injected SecurityGroups
-- [ ] Creating a VM with a partial single attachment completes only a missing Subnet and preserves supplied SecurityGroups
+- [ ] Creating a VM with an omitted or empty attachment list receives the tenant defaults
+- [ ] Creating a VM with a partial single attachment defaults only its missing subnet or security-group fields
 
 ## 6. Assumptions
 
-- The tenant has a default VirtualNetwork and Subnet pre-created by the platform (see Default Networking PRD). If the default Subnet is not configured or ready, creating a VM without a supplied Subnet fails with a clear error. A default SecurityGroup is not created or required.
+- The tenant has default networking resources (virtual network, subnet, security group) pre-created by the platform (see Default Networking PRD). If defaults are not configured, creating a VM without explicit network configuration fails with a clear error.
 - The target deployment supports virtualization. Bare-metal-only deployments do not support VMs.
 
 ## 7. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default Subnet selection and attachment completion behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 - **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the pool with the most available capacity matching the IP family
 - **OSAC-1511 or OSAC-1717** — a virtualization platform integration must exist for the platform to provision overlay networks on hosting clusters
 - **OSAC-1457, OSAC-1458, OSAC-1460** — core provisioning infrastructure (in progress)
@@ -143,13 +143,3 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 ### ~~9.1 Should capacity exhaustion return an API error or create a failed resource?~~ — Resolved
 
 Resolved: Return error, no resource persisted.
-
----
-
-## Provenance
-
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace docs/OSAC-5563-docs-only @ e97b06357
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"docs/OSAC-5563-docs-only","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

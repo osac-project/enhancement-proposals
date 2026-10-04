@@ -121,8 +121,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     ```
 
 5. **fulfillment-service:**
-    - If `network_attachment` is omitted or empty: populates it with the tenant's ready default Subnet (see Default Networking PRD); it does not create or inject SecurityGroups.
-    - If one attachment is supplied without a Subnet, fills only the Subnet from the tenant default and preserves supplied SecurityGroups. An empty SecurityGroup list is allowed on the tenant's default VirtualNetwork; a non-default VirtualNetwork requires caller-supplied SecurityGroups from that VirtualNetwork. CaaS does not accept a tenant interface field; fulfillment resolves the first `fabric` port from each node set's BareMetalInstanceType and stores it as immutable `fabric_interface` on the node set for the worker handoff.
+    - If `network_attachment` is omitted or empty: populates it with the tenant's default Subnet and default SecurityGroup (see Default Networking PRD).
+    - If one attachment is supplied, defaults only missing fields: a missing Subnet receives the tenant default Subnet, and a missing or empty SecurityGroup list receives the tenant default SecurityGroup only when the resolved Subnet belongs to the tenant's default VirtualNetwork; supplied values are preserved. CaaS does not accept a tenant interface field; fulfillment resolves the first `fabric` port from each node set's BareMetalInstanceType and stores it as immutable `fabric_interface` on the node set for the worker handoff.
     - Validates network_attachment (the singular Cluster field):
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
@@ -192,7 +192,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 12. **Delete Cluster:**
     - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-created-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
     - **Manually created ExternalIPAttachments block deletion** — if active manually-created ExternalIPAttachments target this Cluster, the delete request is rejected by the fulfillment-service. The tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
-    - **Default networking resources (VN, Subnet, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
+    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
     - CaaS delete template:
       - Deletes MetalLB LoadBalancer Services
@@ -406,7 +406,7 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent Cluster
 - No new authentication or authorization changes
-- Explicit SecurityGroup rules control cluster node inbound traffic
+- SecurityGroup rules control cluster node inbound traffic (tenant-configurable via explicit SG or default SG)
 
 ### Failure Handling and Recovery
 
@@ -540,7 +540,7 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 ### Unit Tests
 
 - fulfillment-service: network_attachment validation (subnet exists, Ready, same VN)
-- fulfillment-service: omitted and partial attachment resolution (complete a missing Subnet only; preserve SecurityGroups without creating or injecting defaults; require caller-supplied groups on a non-default VirtualNetwork)
+- fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
 - fulfillment-service: fabric_interface resolution per node set (BareMetalInstanceType must have fabric-role port)
 - fulfillment-service: interface resolution from BareMetalInstanceType (pick first fabric-role port from network_ports[] and store it on the node set)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
@@ -554,7 +554,7 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 - E2E: create Cluster with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created for API and ingress, DNAT rules functional
 - E2E: create Cluster with `--external-ip-attachment`, verify full connectivity (ExternalIP + ExternalIPAttachment for API and ingress)
 - E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
-- E2E: create Cluster with omitted network_attachment, verify the default Subnet is populated and no SecurityGroups are injected
+- E2E: create Cluster with omitted network_attachment, verify default Subnet + SecurityGroup populated
 - E2E: VIP feedback loop — verify template writes VIPs to ClusterOrder status, fulfillment-service syncs to Cluster, ExternalIPAttachment controller creates DNAT
 
 ### Tricky Test Cases
@@ -626,7 +626,7 @@ fulfillment-service, osac-operator, and osac-aap are deployed together in the sa
 ### Client Skew
 
 osac-cli (n-1) with fulfillment-service (n):
-- Old CLI does not send `--network-attachment` flag → server populates the default Subnet without injecting SecurityGroups
+- Old CLI does not send `--network-attachment` flag → server populates default Subnet + SecurityGroup
 - New CLI uses new `--network-attachment` flag → server accepts
 
 osac-cli (n) with fulfillment-service (n-1):
@@ -721,13 +721,3 @@ Consequences:
 | Remove cluster_infra / external_access step collection dispatch | Not tracked | **GAP** |
 | Remove NETWORK_STEPS_COLLECTION dependency | Not tracked | **GAP** |
 | fulfillment-service: resolve interface from BareMetalInstanceType (fabric_interface) | Not tracked | **GAP** |
-
----
-
-## Provenance
-
-Authored: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-5563-docs-only @ e97b06357
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"docs/OSAC-5563-docs-only","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

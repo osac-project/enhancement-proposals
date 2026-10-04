@@ -22,13 +22,13 @@ explicitly specifies them.
 
 ## 1. Problem Statement
 
-Creating a resource on a tenant network or exposing it externally can require
-multiple API calls to create networking resources, the workload, and external
-IP attachments. Default networking provisions the tenant's default
-VirtualNetwork and Subnet at onboarding, so tenants can create workloads on
-that Subnet without first creating networking resources. Tenants select and
-manage SecurityGroups explicitly when they use a VirtualNetwork that requires
-them.
+Creating a reachable resource in OSAC requires 6+ sequential API calls:
+VirtualNetwork, Subnet, SecurityGroup, the resource itself, ExternalIP,
+and ExternalIPAttachment. Every tenant must understand the full networking
+resource model before provisioning their first VM, cluster, or bare-metal
+server. This friction slows onboarding, increases the chance of
+misconfiguration, and makes OSAC harder to adopt compared to platforms
+where a single create command produces a reachable instance.
 
 ## 2. Goals and Non-Goals
 
@@ -47,8 +47,8 @@ dual-stack networking are not supported.
 
 ### 2.2 Non-Goals
 
-- Custom default CIDR configurations per tenant (all tenants in a deployment
-  receive the same NetworkClass CIDR configuration)
+- Custom default configurations per tenant (all tenants in a deployment
+  receive the same default CIDR and SecurityGroup rules)
 - Auto-provisioning of VirtualNetworks or Subnets beyond the initial
   default (tenants create additional VNs manually)
 - UI support for simplified creation (deferred — API and CLI only for now)
@@ -81,9 +81,10 @@ dual-stack networking are not supported.
 
 ### Cloud Infrastructure Admin Stories
 
-- As a Cloud Infrastructure Admin, I want to configure default IPv4 CIDRs
-  and optional NAT on the NetworkClass, so that the system can create the
-  tenant's default VirtualNetwork and Subnet at onboarding
+- As a Cloud Infrastructure Admin, I want to configure a default CIDR
+  range and default SecurityGroup rules on the NetworkClass, so that the
+  system can auto-create default networking resources for tenants at
+  onboarding
 
 ### Cloud Provider Admin Stories
 
@@ -98,24 +99,23 @@ dual-stack networking are not supported.
 #### Default Networking
 
 - **FR-1:** At tenant onboarding, the system provisions a default
-  VirtualNetwork and IPv4 Subnet, and creates a NATGateway when enabled by
-  the NetworkClass. It does not create a default SecurityGroup. The tenant
-  transitions to READY after the configured default resources are READY.
-  If provisioning fails, the tenant remains in a non-READY state with a
+  VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway for the tenant. The tenant
+  transitions to READY only after all
+  default networking resources are also READY. If default networking
+  provisioning fails, the tenant remains in a non-READY state with a
   status condition describing the failure. The Cloud Provider Admin can
   inspect the failure and retry by deleting and re-creating the tenant.
   [User]
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
-  parameters (IPv4 CIDRs and optional NATGateway creation) on the
-  NetworkClass. SecurityGroup rules are configured on explicit
-  SecurityGroups, not as NetworkClass defaults. [User]
+  parameters (IPv4 CIDRs and SecurityGroup rules) on the
+  NetworkClass. Defaults are required — a NetworkClass without defaults
+  is rejected at creation time. [User]
 - **FR-3:** All tenants receive the same default IPv4 CIDR ranges as
   configured on the NetworkClass. Tenants are isolated at the
   network level — the unified networking API provides VirtualNetworks
   with any IP subnet, and the system enforces isolation regardless of
   overlapping CIDRs between tenants. [User]
-- **FR-4:** The default VirtualNetwork, Subnet, and optional NATGateway are
-  labeled as defaults and visible in list
+- **FR-4:** Default resources are labeled as defaults and visible in list
   and detail views. They follow the unified networking create/read/delete
   contract; changes require delete and recreate, and deletion is blocked while
   any resource depends on them. [User]
@@ -127,18 +127,17 @@ dual-stack networking are not supported.
 - **FR-6:** The network attachment configuration on ComputeInstance,
   Cluster, and BaremetalInstance is optional and supports at most one tenant
   attachment. When omitted or empty, the system populates it with the tenant's
-  ready default Subnet. When a single attachment is supplied without a Subnet,
-  the system fills only that field and preserves every supplied value.
-  SecurityGroups are never created or injected as defaults. An empty
-  SecurityGroup list is allowed on the tenant's default VirtualNetwork; a
-  non-default VirtualNetwork requires caller-supplied SecurityGroups from the
-  Subnet's VirtualNetwork. The resolved attachment is stored with the resource
-  and is immutable after creation. VMaaS and BMaaS retain plural field names
-  for API compatibility; CaaS retains its singular field. [User]
-- **FR-7:** A supplied Subnet or SecurityGroup is preserved. If the default
-  Subnet is required to complete an omitted or partial attachment and is not
-  READY, creation fails with a clear error. SecurityGroup values are never
-  defaulted. [User]
+  default Subnet and default SecurityGroup. When a partial attachment is
+  supplied, only missing fields are defaulted and supplied values are
+  preserved. A missing or explicitly empty `security_groups` list is treated
+  as missing; the default SecurityGroup applies only when the resolved Subnet
+  belongs to the tenant's default VirtualNetwork, otherwise the caller must
+  provide SecurityGroups from the resolved Subnet's VirtualNetwork. The resolved attachment is stored with the resource so the
+  resource is self-describing after creation. VMaaS and BMaaS retain plural
+  field names for API compatibility; CaaS retains its singular field. [User]
+- **FR-7:** When a resource is created with an explicit complete attachment,
+  no values are replaced by defaults. Missing fields in a single explicit
+  attachment receive only their corresponding defaults. [User]
 
 #### Auto ExternalIP
 
@@ -187,9 +186,8 @@ dual-stack networking are not supported.
   `--external-ip-attachment` and no explicit network attachments — the
   server is placed on the default subnet with an auto-provisioned
   ExternalIP
-- [ ] The default VirtualNetwork and IPv4 Subnet, and the optional NATGateway,
-  are READY before the tenant's first resource creation; no default
-  SecurityGroup is created or required for tenant readiness
+- [ ] Default VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway
+  exist and are READY before the tenant's first resource creation
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
 - [ ] Default networking resources expose only create/read/delete operations;
@@ -198,14 +196,12 @@ dual-stack networking are not supported.
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the
   auto-created ExternalIP and ExternalIPAttachment to be cleaned up
   automatically
-- [ ] Creating a resource with a supplied Subnet preserves it, while a
-  missing Subnet is completed from the tenant's ready default Subnet; no
-  default SecurityGroup is created or injected
+- [ ] Creating a resource with explicit network attachments bypasses
+  defaults entirely — no default resources are referenced
 - [ ] When no ExternalIPPool has available capacity, the create API call
   returns an error and the resource is not persisted
-- [ ] A resource created without explicit network attachments shows its
-  resolved default Subnet and an empty SecurityGroup list when retrieved via
-  the API
+- [ ] A resource created without explicit network attachments shows the
+  resolved default attachments when retrieved via the API
 - [ ] An IPv6 or dual-stack default CIDR is rejected when NetworkClass defaults
   are validated, and no default resource is persisted from the invalid input
 
@@ -231,7 +227,13 @@ dual-stack networking are not supported.
 - **Mitigation:** Pool capacity visible in status; clear error directs
   tenant to explicit allocation from another pool
 
-### 7.2 Auto ExternalIP orphans on partial failure
+### 7.2 Default SecurityGroup too permissive
+
+- **Owner:** Cloud Infrastructure Admin
+- **Mitigation:** Cloud Infrastructure Admin configures default rules on
+  NetworkClass; Tenant Admin can tighten rules after creation
+
+### 7.3 Auto ExternalIP orphans on partial failure
 
 - **Owner:** Platform
 - **Mitigation:** Parent resource finalizer handles cleanup; controller
@@ -239,13 +241,14 @@ dual-stack networking are not supported.
   finalizer is removed and the parent is deleted — orphaned ExternalIPs
   must be cleaned up manually
 
-### 7.3 Deployment misconfiguration
+### 7.4 Deployment misconfiguration
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** osac-installer setup.sh includes the required NetworkClass
-  default CIDR configuration in installation overlays. If a tenant's default
-  Subnet is unavailable when a workload needs it, creation fails with a clear
-  error.
+- **Mitigation:** Defaults are required — a NetworkClass without defaults
+  is rejected at creation time. This eliminates the scenario where tenant
+  onboarding succeeds but resource creation fails due to missing defaults.
+  osac-installer setup.sh includes NetworkClass default configuration in
+  installation overlays
 
 ## 8. Open Questions
 
@@ -256,13 +259,3 @@ Resolved: Return error, no resource persisted.
 ### ~~8.2 E2E test coverage for simplified creation~~ — Resolved
 
 Resolved: E2E tests for simplified creation are defined in each per-service design's test plan (VMaaS, CaaS, BMaaS). No separate test plan needed in the default networking EP.
-
----
-
-## Provenance
-
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace docs/OSAC-5563-docs-only @ e97b06357
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"docs/OSAC-5563-docs-only","commits_behind_main":null,"commits_ahead_main":null,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
