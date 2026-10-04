@@ -5,7 +5,7 @@ authors:
 creation-date: 2026-10-04
 last-updated: 2026-10-04
 tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-1433
+  - https://redhat.atlassian.net/browse/OSAC-5928
 prd: prd.md
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking/design.md
@@ -22,7 +22,7 @@ superseded-by:
 | Field       | Value |
 |-------------|-------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
-| Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
+| Jira        | https://redhat.atlassian.net/browse/OSAC-5928 |
 | PRD         | [Network Manager Integration Contract PRD](prd.md) |
 | Date        | 2026-10-04 |
 

@@ -13,8 +13,8 @@ see-also:
   - VMaaS Networking: /enhancements/OSAC-1435-vmaas-networking
   - CaaS Networking: /enhancements/OSAC-1436-caas-networking
   - BMaaS Networking: /enhancements/OSAC-1437-bmaas-networking
-  - Network Manager Integration Contract PRD: /enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md
-  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md
+  - Network Manager Integration Contract PRD: /enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/prd.md
+  - Network Manager Integration Contract Design: /enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md
   - Default Networking: /enhancements/OSAC-1433-default-networking
 replaces:
   - OSAC-356 Networking API (legacy)
@@ -242,11 +242,13 @@ roles are configured, OSAC intersects their address-family capabilities; a
 single-role profile uses that role's declarations. The supported deployment
 boundary remains IPv4-only. [Codebase: osac-operator/pkg/networkmanager]
 
-Manager registration also declares which operation and workload-target pairs
-the implementation supports. OSAC validates that declaration against its
-fixed dispatch plan before starting AAP. The complete registration schema,
-operation vocabulary, and validation behavior are defined in the
-[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md);
+Manager registration identifies the implementation and its role; it does not
+declare an operation or workload-target subset. OSAC validates each request
+against the selected profile's fixed dispatch plan before starting AAP, and
+every implementation must provide the complete operation and target set
+assigned to its role. The complete registration schema, operation vocabulary,
+and validation behavior are defined in the
+[Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md);
 this design describes how OSAC consumes the registration.
 
 ### How VMs Join the Fabric
@@ -341,7 +343,7 @@ provisioning provider, and the operator updates resource status and job
 history. The manager owns backend-specific reconciliation; OSAC owns the API
 resource lifecycle and status.
 
-The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
+The [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md)
 is normative for manager registration, mandatory role operations and targets,
 AAP task inputs and outputs, retry behavior, and implementation conformance.
 This design owns the profile composition and OSAC-to-AAP orchestration flow.

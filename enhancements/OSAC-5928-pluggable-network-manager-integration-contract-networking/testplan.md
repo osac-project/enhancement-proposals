@@ -1,8 +1,8 @@
-# Testplan — OSAC-1433-network-manager-integration-contract-networking
+# Testplan — OSAC-5928-pluggable-network-manager-integration-contract-networking
 
 ## Overview
 
-- **Feature:** Network Manager Integration Contract
+- **Feature:** Pluggable Network Manager Integration Contract
 - **Total test cases:** 6
 - **Requirements covered:** 4 of 4 functional requirements
 - **Interface changes covered:** 4 of 4

@@ -5,11 +5,11 @@ authors:
 creation-date: 2026-10-04
 last-updated: 2026-10-04
 tracking-link:
-  - https://redhat.atlassian.net/browse/OSAC-1433
+  - https://redhat.atlassian.net/browse/OSAC-5928
 see-also:
   - Unified Networking PRD: /enhancements/OSAC-1433-unified-networking/prd.md
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking/design.md
-  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md
+  - Network Manager Integration Contract Design: /enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md
 replaces:
   - N/A
 superseded-by:
@@ -21,7 +21,7 @@ superseded-by:
 | Field       | Value |
 |-------------|-------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
-| Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
+| Jira        | https://redhat.atlassian.net/browse/OSAC-5928 |
 | Date        | 2026-10-04 |
 
 ## 1. Problem Statement
