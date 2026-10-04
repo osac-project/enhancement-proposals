@@ -318,17 +318,21 @@ In a K8s-only profile, the fixed dispatcher routes only its supported fallback
 operations to the K8s Manager; NATGateway and physical port movement require a
 Fabric Manager.
 
-Before creating an AAP job, the operator checks that the selected registration
-advertises the operation and, for workload operations, the requested target.
-Unsupported work fails with a diagnostic on the affected resource; it is not
-sent to another manager. The only K8s fallback is the one explicitly defined
-for a K8s-only profile by the dispatch rules.
+Before creating an AAP job, the operator checks the requested operation and
+workload target against the selected profile's fixed dispatch matrix and
+resolves the required manager registration. Every conforming implementation
+must support the complete operation and target set assigned to its role; a
+registration does not declare a backend-specific subset. Work unavailable in
+the selected profile fails with a diagnostic and is not sent to another
+manager. The only K8s fallback is the one explicitly defined for a K8s-only
+profile by the dispatch rules. A registered implementation missing a required
+task is nonconforming and its AAP job fails.
 
 The NATGateway reconciler must resolve and validate its dispatch plan before
 provisioning. Its current path inherits the strategy from the parent
 VirtualNetwork without checking the Fabric-only requirement, so K8s-only
 NATGateway requests can reach AAP; contract enforcement closes this wiring gap
-and reports the unsupported operation before a job starts.
+and rejects the profile-operation mismatch before a job starts.
 
 For supported work, the controller sends the full resource to the shared AAP
 provider. The fixed operation playbook invokes the selected collection task.
@@ -338,7 +342,7 @@ history. The manager owns backend-specific reconciliation; OSAC owns the API
 resource lifecycle and status.
 
 The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
-is normative for manager registration, operation and target declarations,
+is normative for manager registration, mandatory role operations and targets,
 AAP task inputs and outputs, retry behavior, and implementation conformance.
 This design owns the profile composition and OSAC-to-AAP orchestration flow.
 ComputeInstance, BaremetalInstance, and Cluster attachment provisioning also

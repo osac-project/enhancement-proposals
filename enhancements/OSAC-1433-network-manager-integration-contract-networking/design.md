@@ -30,7 +30,7 @@ superseded-by:
 
 This design defines the integration contract for Fabric Manager and K8s Manager implementations used by OSAC networking. The contract is independent of implementation source: OSAC-distributed implementations such as Netris and Agentless VLAN, and implementations built or maintained by other parties, use the same registration, operation, Ansible Automation Platform (AAP), and status boundaries. See the [Network Manager Integration Contract PRD](prd.md) for product requirements and the [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md) for how OSAC selects and orchestrates the roles.
 
-A conforming implementation registers one manager role, advertises the operation and workload-target combinations it supports, and provides the corresponding AAP collection role entry points. Once OSAC implements and enforces this versioned contract, another implementation can be added through configuration and AAP content without supplier-specific changes to OSAC APIs or dispatch code. The contract's operation vocabulary is fixed; adding a new OSAC resource operation requires an OSAC change.
+A conforming implementation registers one manager role, implements every operation and workload-target combination assigned to that role by the fixed OSAC dispatch rules, and provides the corresponding AAP collection role entry points. Once OSAC implements and enforces this versioned contract, another implementation can be added through configuration and AAP content without supplier-specific changes to OSAC APIs or dispatch code. The contract's operation vocabulary is fixed; adding a new OSAC resource operation requires an OSAC change.
 
 # 2. Goals and Non-Goals
 
@@ -38,7 +38,7 @@ A conforming implementation registers one manager role, advertises the operation
 
 - Define the Fabric Manager and K8s Manager boundaries and the shared registration format.
 - Define the operation identifiers, AAP role entry points, inputs, outputs, and lifecycle behavior an implementation must provide.
-- Let implementations advertise the exact operations and workload targets they support, with unsupported work rejected before an AAP job starts.
+- Require each implementation to provide the complete operation and workload-target set assigned to its role; reject work unavailable in the selected profile before an AAP job starts.
 - Permit implementations from any source to integrate through the same stable interface.
 
 ## 2.2 Non-Goals
@@ -49,15 +49,15 @@ A conforming implementation registers one manager role, advertises the operation
 
 # 3. Motivation / Background
 
-OSAC discovers Fabric and K8s managers from ConfigMaps and dispatches provisioning to AAP. AAP selects a collection role using the implementation strategy associated with the resource. The current registration parser reads the manager name, description, and broad capabilities, but does not declare a contract version or the operation and target combinations an implementation supports. The move-network-attachment and DHCP-lease playbooks also default a missing implementation strategy to Netris; contract v1 removes that product-specific default and requires the selected implementation to be explicit. The detailed manager obligations currently sit inside the unified networking design alongside OSAC's own profile-selection and dispatch flow. [Codebase: osac-operator/pkg/networkmanager/types.go; osac-operator/pkg/dispatcher/dispatch.go; osac-aap/playbook_osac_create_virtual_network.yml]
+OSAC discovers Fabric and K8s managers from ConfigMaps and dispatches provisioning to AAP. AAP selects a collection role using the implementation strategy associated with the resource. The current registration parser reads the manager name, description, and broad capabilities, but does not declare a contract version or implementation reference. Contract v1 obtains the required operations and targets from the fixed role-dispatch matrix, not per-manager registration data. The move-network-attachment and DHCP-lease playbooks also default a missing implementation strategy to Netris; contract v1 removes that product-specific default and requires the selected implementation to be explicit. The detailed manager obligations currently sit inside the unified networking design alongside OSAC's own profile-selection and dispatch flow. [Codebase: osac-operator/pkg/networkmanager/types.go; osac-operator/pkg/dispatcher/dispatch.go; osac-aap/playbook_osac_create_virtual_network.yml]
 
-That arrangement makes it hard to tell which requirements belong to OSAC and which belong to each manager implementation. It also lets a manager's advertised capabilities differ from the operations OSAC may dispatch to. This document is the normative implementation contract. The unified networking design will describe OSAC's integration flow and link here for the exact manager obligations. [User]
+That arrangement makes it hard to tell which requirements belong to OSAC and which belong to each manager implementation. A per-manager operation list would let implementations opt out of work already assigned to their role and duplicate the contract in each registration. This document is the normative implementation contract. The unified networking design describes OSAC's integration flow and links here for the complete manager obligations. [User]
 
 # 4. Design
 
 ## 4.1 Architecture
 
-The provider configures a Fabric Manager and, optionally, a K8s Manager in a NetworkClass. The operator resolves each configured manager by its registered name and role. OSAC's fixed dispatch table selects the role for each resource operation; the manager registration is checked against that operation and, where applicable, the workload target. OSAC passes the validated manager registration to AAP, including its implementationRef; a playbook must not default to a particular implementation when that reference is missing. AAP invokes the corresponding task in the referenced collection. The manager reconciles its backend, and OSAC records job and resource status.
+The provider configures a Fabric Manager and, optionally, a K8s Manager in a NetworkClass. The operator resolves each configured manager by its registered name and role. OSAC's fixed dispatch table selects the role for each resource operation and validates that the operation and workload target are available in the selected profile. OSAC passes the validated manager registration to AAP, including its implementationRef; a playbook must not default to a particular implementation when that reference is missing. AAP invokes the corresponding task in the referenced collection. The manager reconciles its backend, and OSAC records job and resource status.
 
 ```mermaid
 sequenceDiagram
@@ -87,15 +87,15 @@ The two roles have distinct responsibilities:
 - A Fabric Manager realizes physical-fabric operations such as routed network isolation, L2 segments, IPAM, ACLs, inbound translation, outbound NAT, and fabric workload-port movement.
 - A K8s Manager realizes Kubernetes-native VM networking and, in a fabric-backed profile, the K8s side of a Subnet or overlay-to-fabric bridge. In a K8s-only profile it may serve the operations that the fixed dispatcher permits without a Fabric Manager.
 
-OSAC assigns an operation to a role using the profile and fixed dispatch table. An implementation's advertisement validates that assignment; it does not cause OSAC to choose a different role. If the assigned implementation does not advertise an operation or its target, OSAC fails the request before starting AAP. It does not silently fall back to another manager.
+OSAC assigns each operation to a manager role using the selected profile and the fixed dispatch table. That role assignment defines the complete v1 implementation contract: every Fabric Manager implements every operation and workload target assigned to Fabric, and every K8s Manager implements every operation and target the dispatcher can assign to K8s across supported profiles. Registration does not declare a backend-specific subset. OSAC rejects an operation or target that the selected profile does not route, and it never sends that work to another manager. If a registered collection lacks a required task, the AAP job fails; that is implementation nonconformance, not an unsupported-operation response.
 
 ## 4.2 Data Model / Schema Changes
 
 Each implementation installs a ConfigMap in the OSAC operator namespace. Its role label determines whether it is a Fabric Manager or K8s Manager. The ConfigMap name follows the existing chart convention: osac-network-fabric-manager-<name> or osac-network-k8s-manager-<name>, with underscores in the name normalized to hyphens. The data.name value is the logical identifier selected by NetworkClass. implementationRef independently identifies the fully qualified collection role invoked by AAP.
 
-Version 1 requires name, implementationRef, contractVersion, capabilities, and supportedOperations. Description is optional. Name must be unique within its manager role and is the logical identifier selected by NetworkClass. implementationRef is a fully qualified Ansible collection role name with the form namespace.collection.role; it is independent of data.name and may refer to any collection installed in the AAP execution environment. contractVersion must be v1. Contract v1 recognizes the fixed OSAC capability values ipv4, ipv6, dualStack, and dpuSupport. The supported networking profile requires ipv4 and does not support IPv6 or dual-stack. capabilities does not declare resource operations.
+Version 1 requires name, implementationRef, contractVersion, and capabilities. Description is optional. Name must be unique within its manager role and is the logical identifier selected by NetworkClass. implementationRef is a fully qualified Ansible collection role name with the form namespace.collection.role; it is independent of data.name and may refer to any collection installed in the AAP execution environment. contractVersion must be v1. Contract v1 recognizes the fixed OSAC capability values ipv4, ipv6, dualStack, and dpuSupport. The supported networking profile requires ipv4 and does not support IPv6 or dual-stack. capabilities does not declare resource operations.
 
-supportedOperations is a YAML sequence serialized as a ConfigMap string. Each entry names one operation identifier. Target-scoped operations must declare the exact workload targets the implementation supports. An implementation must implement every operation and target pair it advertises. It may omit unsupported pairs; OSAC rejects a request that requires an omitted pair.
+The manager registration does not contain an operation or target list. Contract v1 defines the complete operation and target set for each role; a conforming implementation must provide every required AAP task and target combination. The operation table and fixed profile dispatch rules are the source of truth and apply uniformly to every implementation.
 
 ```yaml
 apiVersion: v1
@@ -111,22 +111,11 @@ data:
   description: "Example fabric integration"
   contractVersion: "v1"
   capabilities: "ipv4"
-  supportedOperations: |
-    - id: virtual_network.create
-    - id: virtual_network.delete
-    - id: subnet.create
-    - id: subnet.delete
-    - id: external_ip_attachment.create
-      targets:
-        - cluster
-    - id: external_ip_attachment.delete
-      targets:
-        - cluster
 ```
 
-The recognized labels are osac.openshift.io/network-fabric-manager and osac.openshift.io/network-k8s-manager. The target vocabulary is compute_instance, cluster, and baremetal_instance. Targets appear on the operation declaration only for target-scoped operations. Unknown labels, versions, capabilities, operation identifiers, target names, malformed implementationRef values, duplicate operation entries, empty required fields, and duplicate names within one role make a registration invalid. supportedOperations must contain at least one entry. The operator must report the ConfigMap and invalid field in its diagnostic.
+The recognized labels are osac.openshift.io/network-fabric-manager and osac.openshift.io/network-k8s-manager. The target vocabulary is compute_instance, cluster, and baremetal_instance; targets are part of operation inputs and fixed dispatch rules, not registration fields. Unknown labels, versions, or capabilities, malformed implementationRef values, empty required fields, and duplicate names within one role make a registration invalid. The operator reports the ConfigMap and invalid field in its diagnostic. It rejects requested operation-target combinations that the selected profile does not route before starting AAP.
 
-The existing operator parser and Helm template do not yet read or render implementationRef, contractVersion, or supportedOperations. Implementing those fields and validation is part of the OSAC contract-enforcement work; the ConfigMap above describes the target interface, not a claim about current runtime support. [Codebase: osac-operator/pkg/networkmanager/types.go; osac-operator/charts/operator/templates/network-managers.yaml]
+The existing operator parser and Helm template do not yet read or render implementationRef or contractVersion. Implementing those fields and registration validation is part of the OSAC contract-enforcement work; the ConfigMap above describes the target interface, not a claim about current runtime support. [Codebase: osac-operator/pkg/networkmanager/types.go; osac-operator/charts/operator/templates/network-managers.yaml]
 
 ## 4.3 API Changes
 
@@ -161,14 +150,14 @@ Ansible supports dynamically included roles by variable and the `tasks_from` sel
 | security_group.apply / security_group.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_security_group / create_security_group; playbook_osac_delete_security_group / delete_security_group | SecurityGroup metadata.uid; spec.virtualNetwork; spec.ingressRules and spec.egressRules | Apply the complete requested rule set, including removing obsolete rules on update; remove all rules owned by the SecurityGroup on delete. |
 | external_ip_pool.create / external_ip_pool.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip_pool / create_external_ip_pool; playbook_osac_delete_external_ip_pool / delete_external_ip_pool | ExternalIPPool metadata.uid; spec.cidrs contains exactly one canonical IPv4 CIDR; spec.ipFamily is IPv4 | Register or remove the backend allocation pool. OSAC owns API capacity counters. |
 | external_ip.allocate / external_ip.release | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip / create_external_ip; playbook_osac_delete_external_ip / delete_external_ip | ExternalIP metadata.uid; spec.pool | Allocate or release one address from the selected pool. On allocation, write the durable address to osac.openshift.io/allocated-address. |
-| external_ip_attachment.create / external_ip_attachment.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_attach_external_ip / attach_external_ip; playbook_osac_detach_external_ip / detach_external_ip | ExternalIPAttachment metadata.uid; spec.externalIP; target resource reference; spec.targetEndpoint for Cluster API or Ingress endpoints | Create or remove inbound translation for an advertised target. Remove the attachment before its ExternalIP is released. |
+| external_ip_attachment.create / external_ip_attachment.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_attach_external_ip / attach_external_ip; playbook_osac_detach_external_ip / detach_external_ip | ExternalIPAttachment metadata.uid; spec.externalIP; target resource reference; spec.targetEndpoint for Cluster API or Ingress endpoints | Create or remove inbound translation for a target allowed by the selected profile and fixed dispatch rules. Remove the attachment before its ExternalIP is released. |
 | nat_gateway.create / nat_gateway.delete | Fabric only; no K8s fallback | playbook_osac_create_nat_gateway / create_nat_gateway; playbook_osac_delete_nat_gateway / delete_nat_gateway | NATGateway metadata.uid; spec.virtualNetwork; spec.externalIP | Create or remove outbound SNAT for the VirtualNetwork using its ExternalIP. |
 | workload_attachment.move | Fabric only | playbook_osac_move_network_attachment / move_network_attachment | Workload resource kind and metadata.uid; spec.networkAttachments entries with subnetRef and interface; metadata.deletionTimestamp | Move a physical workload port from its provisioning network to the selected tenant Subnet when deletionTimestamp is absent; restore the provisioning network when it is present. Both directions are retry-safe. |
-| dhcp_lease.query | The selected Fabric or K8s role when OSAC requests lease discovery | playbook_osac_query_dhcp_lease / query_dhcp_lease | Workload resource kind and metadata.uid; spec.networkAttachments entries with subnetRef and interface | Resolve the lease for each requested attachment. Return the leases AAP artifact defined below. The supported workload kinds are declared per operation. |
+| dhcp_lease.query | Fabric Manager for cluster and baremetal_instance lease discovery | playbook_osac_query_dhcp_lease / query_dhcp_lease | Workload resource kind and metadata.uid; spec.networkAttachments entries with subnetRef and interface | Resolve the lease for each requested attachment and return the leases AAP artifact defined below. |
 
-The table is the complete operation vocabulary for contract v1. Fulfillment-service enforces the shared creation-readiness and deletion-dependency gates before an operation is persisted or dispatched; operator controllers retain their existing dependency checks before backend deletion. Managers receive only operations whose API references satisfy those gates. The manager owns cleanup of its backend objects, not deletion of OSAC API resources. For a Fabric-backed profile, the Fabric Manager receives the physical-fabric operations and a configured K8s Manager also receives the K8s Subnet operation. In a K8s-only profile, the fixed dispatcher may route VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, and ExternalIPAttachment operations to the K8s Manager. It never routes NATGateway or physical port movement to a K8s Manager. A K8s Manager's presence does not cause automatic fallback when a configured Fabric Manager lacks an operation.
+The table is the complete operation vocabulary and fixed role-dispatch matrix for contract v1. Fulfillment-service enforces the shared creation-readiness and deletion-dependency gates before an operation is persisted or dispatched; operator controllers retain their existing dependency checks before backend deletion. Managers receive only operations whose API references satisfy those gates. The manager owns cleanup of its backend objects, not deletion of OSAC API resources. A Fabric Manager implements every operation assigned to Fabric. A K8s Manager implements every operation the dispatcher may assign to K8s across supported profiles, including the K8s-only fallback operations. In a fabric-backed profile, the Fabric Manager receives physical-fabric operations and a configured K8s Manager also receives the K8s Subnet operation. In a K8s-only profile, the fixed dispatcher may route VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, and ExternalIPAttachment operations to the K8s Manager. NATGateway and physical port movement remain Fabric-only. Registrations do not opt out of any operation assigned to their role.
 
-For workload operations, the operation declaration includes the target set. external_ip_attachment.create, external_ip_attachment.delete, workload_attachment.move, and dhcp_lease.query are target-scoped. The target must match the target resource passed by OSAC. An implementation must not claim a target merely because it can handle another operation for the same target type.
+Target-scoped operations use a fixed target matrix rather than per-manager declarations. In fabric-backed profiles, external_ip_attachment.create and external_ip_attachment.delete support compute_instance, cluster, and baremetal_instance; the K8s-only fallback supports compute_instance. workload_attachment.move supports cluster and baremetal_instance and is Fabric-only. dhcp_lease.query supports cluster and baremetal_instance through the Fabric Manager; VM addresses in K8s-only profiles come from OVN-Kubernetes status and are not queried through this operation. Every implementation must support all target combinations assigned to its role by the selected profile.
 
 AAP task behavior and results are part of the interface:
 
@@ -178,11 +167,11 @@ AAP task behavior and results are part of the interface:
 - dhcp_lease.query returns an AAP job artifact named leases. Each entry contains subnet_ref, interface, ip_address, and mac_address. The result must identify the lease for the requested attachment; a missing or ambiguous match fails the job with a diagnostic.
 - For operations without a defined artifact, successful AAP task completion means the backend has converged to the requested state. The operator owns resource phase, conditions, and provisioning job history.
 
-An implementation conforms to v1 when its registration passes validation, every advertised operation-target pair has the required task entry point, each task meets the behavior in the table, and retries and failures follow §4.6. A deployment can combine implementations from different sources; each selected role is validated independently. The implementation author's release checklist is: install the collection in the AAP execution environment; deploy the role-labeled ConfigMap with the exact operation-target pairs; ensure data.name matches the NetworkClass selection and implementationRef resolves to the intended collection role; implement every advertised task and required result; verify retries, deletion, tenant scoping, and diagnostics; and configure a profile that routes only supported pairs.
+An implementation conforms to v1 when its registration passes validation, its collection provides every operation and target entry point assigned to its role, each task meets the behavior in the table, and retries and failures follow §4.6. A deployment can combine implementations from different sources; each selected role is validated independently. The implementation author's release checklist is: install the collection in the AAP execution environment; deploy the role-labeled ConfigMap with its logical name, implementationRef, contractVersion, and capabilities; implement every required task and result for the manager role; verify retries, deletion, tenant scoping, and diagnostics; and configure a profile whose fixed dispatch assignments are implemented by the selected managers.
 
 ## 4.4 Scalability and Performance
 
-Registration data is small and read during manager discovery or configuration reconciliation. Operation validation is an in-memory lookup before AAP job creation. The contract adds no per-resource database tables or persistent operation state; backend state remains owned by each manager. Existing AAP job volume and retention limits are unchanged.
+Registration data is small and read during manager discovery or configuration reconciliation. Operation and target validation use the fixed profile dispatch matrix before AAP job creation. The contract adds no per-resource database tables or persistent operation state; backend state remains owned by each manager. Existing AAP job volume and retention limits are unchanged.
 
 ## 4.5 Security Considerations
 
@@ -191,7 +180,7 @@ The operator namespace and existing Kubernetes RBAC protect manager registration
 ## 4.6 Failure Handling and Recovery
 
 - Missing or invalid registration: OSAC reports the affected manager/profile as not ready with a diagnostic naming the manager role, ConfigMap, and invalid field. It does not start AAP.
-- Unsupported operation or target: OSAC records a failed condition naming the selected manager, operation identifier, and target, and does not start AAP or choose another manager.
+- Operation or target unavailable in the selected profile: OSAC records a failed condition naming the profile, operation identifier, and target, and does not start AAP or choose another manager. A missing required task in a registered implementation fails its AAP job and identifies implementation nonconformance.
 - Missing AAP collection or task entry point: the AAP job fails with the role/task name; OSAC retains the resource failure and retries according to its existing reconciliation backoff after the deployment is corrected.
 - Backend API error or timeout: the manager task fails with the backend diagnostic. The manager leaves retryable state safe to reconcile; OSAC records the AAP job and retries.
 - Invalid operation output: a missing ExternalIP allocation annotation or malformed leases artifact is treated as a failed job. OSAC does not report allocation or lease discovery as successful.
@@ -211,19 +200,19 @@ A new implementation is added by installing its AAP collection, deploying a vali
 
 **Requirements:** FR-1, FR-2, FR-3
 
-Manager ConfigMaps gain implementationRef, contractVersion, and supportedOperations, including the operation-specific target set. The operator validates the role label, manager identity, version, capability, operation, and target vocabulary before dispatch.
+Manager ConfigMaps gain implementationRef and contractVersion. The operator validates the role label, manager identity, version, and capabilities; the fixed profile dispatch matrix defines the complete operation and target set.
 
 ## IC-2: AAP collection operation entry points
 
 **Requirements:** FR-1, FR-2, FR-3
 
-A Fabric or K8s implementation provides a collection role resolved by implementationRef and the operation behavior listed in §4.3. Each advertised operation-target pair has one defined tasks_from entry point and receives the shared osac_job_vars envelope.
+A Fabric or K8s implementation provides a collection role resolved by implementationRef and every operation behavior assigned to its role in §4.3. Each required operation-target pair has one defined tasks_from entry point and receives the shared osac_job_vars envelope.
 
-## IC-3: Fail-closed operation and target validation
+## IC-3: Fixed profile dispatch and manager availability
 
 **Requirements:** FR-3, FR-4
 
-OSAC validates each selected operation-target pair against the registered manager before starting AAP. Unsupported pairs produce a resource condition naming the manager, operation, and target; dispatch does not switch to another manager.
+OSAC validates each requested operation-target pair against the selected profile's fixed dispatch matrix and verifies that the required manager registration exists before starting AAP. Work unavailable in the profile produces a resource condition naming the profile, operation, and target; dispatch does not switch to another manager. Implementations are responsible for conforming to the complete operation set assigned to their role.
 
 ## IC-4: ExternalIP allocation and DHCP lease results
 
@@ -247,11 +236,11 @@ An in-process interface can express typed inputs and outputs. It would require b
 
 ### Allow each implementation to define new operation identifiers
 
-Dynamic identifiers could make implementations independent of OSAC releases. The dispatcher, API resource model, operation status, and AAP playbooks must understand each operation, so an unknown operation cannot be safely executed by OSAC. Contract v1 therefore fixes the operation and target vocabulary while allowing implementations to support different subsets.
+Dynamic identifiers could make implementations independent of OSAC releases. The dispatcher, API resource model, operation status, and AAP playbooks must understand each operation, so an unknown operation cannot be safely executed by OSAC. Contract v1 fixes the operation and target vocabulary and requires every implementation to support the complete set assigned to its manager role.
 
-### Fall back to another manager when the selected manager omits an operation
+### Allow implementations to omit operations from their manager role
 
-Fallback could make profiles appear more capable, but would dispatch tenant resources to an implementation the provider did not select for that role. OSAC instead fails clearly before AAP; K8s fallback is used only by the fixed dispatcher for K8s-only profiles.
+A per-registration subset could accommodate incomplete backends, but it would make a nominally conforming manager provide a different API and duplicate the contract in every ConfigMap. Contract v1 requires the complete role-specific operation set. Profile-specific K8s fallback is handled only by the fixed dispatcher; OSAC never substitutes another manager when a required role is missing.
 
 # 7. Observability and Monitoring
 
@@ -259,14 +248,15 @@ No new metrics are required. Existing resource conditions, events, AAP job histo
 
 # 8. Impact and Compatibility
 
-This document defines the target manager contract. Current OSAC code parses only name, description, and capabilities; AAP playbooks derive the role from the manager name and some default to Netris. OSAC implementation work must add generic implementationRef parsing and chart rendering, pass the common manager/operation envelope, resolve arbitrary installed collection roles, validate operation/target support, report clear failures, and remove hardcoded Netris defaults before other implementations can rely on this contract.
+This document defines the target manager contract. Current OSAC code parses only name, description, and capabilities; AAP playbooks derive the role from the manager name and some default to Netris. OSAC implementation work must add generic implementationRef and contractVersion parsing and chart rendering, pass the common manager/operation envelope, resolve arbitrary installed collection roles, validate requests against the fixed profile dispatch matrix, report clear failures, and remove hardcoded Netris defaults before other implementations can rely on this contract.
 
-Existing manager registrations and AAP collections must be updated to advertise their implementationRef, version, and supported operation-target pairs. Version 1 adds no tenant API or CRD fields. Once enforcement is implemented, an old registration without contractVersion and supportedOperations is invalid and must be updated with the manager rollout. Incompatible changes to operation inputs, outputs, or identifiers require a new contract version.
+Existing manager registrations and AAP collections must be updated with implementationRef and contractVersion, and each collection must provide the complete operation and target set assigned to its manager role. Version 1 adds no tenant API or CRD fields. Once enforcement is implemented, an old registration without contractVersion is invalid and must be updated with the manager rollout. Incompatible changes to operation inputs, outputs, or identifiers require a new contract version.
 
 ---
 
 ## Provenance
 
-Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+Phases: draft, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

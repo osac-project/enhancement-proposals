@@ -76,9 +76,9 @@ in the `osac.templates.netris` collection, invoked by AAP.
 
 The Netris ConfigMap uses the Fabric Manager role label, data.name netris,
 implementationRef osac.templates.netris, contractVersion v1, and the IPv4
-capability. Its supportedOperations entries
-advertise the operation-target pairs implemented by the Netris collection.
-The registration format and operation identifiers are defined by the
+capability. The Netris collection implements the complete Fabric Manager
+operation and target set required by contract v1; its registration does not
+list operations. The registration format and operation identifiers are defined by the
 [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
 The resource mapping below documents Netris-specific backend behavior.
 

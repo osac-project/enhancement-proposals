@@ -33,7 +33,7 @@ The implementation reuses the NetworkClass/dispatcher lifecycle, maps each
 VirtualNetwork to an isolated Linux routing namespace, maps each Subnet to a
 unique VLAN, and provisions DHCP, permit-all forwarding, BGP-backed external
 reachability, whole-address DNAT, and explicit-source SNAT through Ansible
-roles. Its manager registration and operation-target declarations follow the shared
+roles. Its manager registration follows the shared
 [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
 See [PRD](prd.md) for detailed requirements.
 
@@ -918,17 +918,19 @@ tracked separately in OSAC-4308 and OSAC-4309. [PRD: §2.2] [Codebase: osac-ux/l
 
 The AgentlessNet ConfigMap uses the Fabric Manager role label, data.name
 agentless_net, implementationRef osac.templates.agentless_net, contractVersion
-v1, and the IPv4 capability. Its
-supportedOperations entries list only the operation-target pairs implemented
-by the AgentlessNet collection. SecurityGroup apply and delete are omitted
-because this design excludes SecurityGroup resources and policy enforcement.
-Unknown or disabled manager names and unsupported operation-target pairs fail
-before AAP; OSAC does not substitute another manager.
+v1, and the IPv4 capability. Manager registration does not list operations:
+contract v1 requires every Fabric Manager to implement the complete operation
+and target set assigned by OSAC's fixed dispatch rules. This design excludes
+SecurityGroup resources and policy enforcement, so AgentlessNet as currently
+specified is not contract v1 conformant and cannot be selected as a conforming
+Fabric Manager until it implements SecurityGroup apply and delete. OSAC rejects
+operations unavailable in the selected profile before AAP and does not
+substitute another manager. [User]
 
-The shared contract defines the ConfigMap schema, fixed operation vocabulary,
-target declarations, task inputs and outputs, and registration validation.
-This design defines AgentlessNet's concrete backend behavior and the subset
-it advertises. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
+The shared contract defines the ConfigMap schema, complete role operation and
+target matrix, task inputs and outputs, and registration validation. This
+design defines AgentlessNet's concrete backend behavior; its SecurityGroup
+exclusion is a contract conformance gap. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
 
 #### NetworkClass capability boundary
 
