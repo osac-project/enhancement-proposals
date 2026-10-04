@@ -467,8 +467,8 @@ While simple, the initial design of VMaaS networking has significant
 limitations:
 
 - Tenants cannot create complex VM architectures that use both public and
-  private networks. Features such as security groups and network ACLs are also
-  missing
+  private networks. The initial design also lacks tenant-controlled,
+  subnet-level traffic policy, which OSAC-1433 defines with NetworkACLs
 - Each gets a floating IP assigned to it, this pool of IPs is limited
 - OpenShift team doesn't recommend more than 100 UDNs per cluster, this solution
   will then be limited to 100 tenants using VMs

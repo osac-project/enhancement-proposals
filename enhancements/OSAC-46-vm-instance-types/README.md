@@ -517,8 +517,8 @@ message ComputeInstanceSpec {
   repeated ComputeInstanceDisk additional_disks = 9;
   optional string run_strategy = 10;
   optional string user_data = 11;
-  optional string subnet = 12;
-  repeated string security_groups = 13;
+  reserved 12, 13;
+  repeated ComputeNetworkAttachment network_attachments = 14;
 }
 
 // CreateComputeInstanceResponse includes warnings for DEPRECATED instance types
@@ -527,6 +527,10 @@ message CreateComputeInstanceResponse {
   repeated string warnings = 2;  // Warning messages (e.g., "Instance type 'standard-2-4' is deprecated and will become obsolete on 2026-12-31. Consider migrating to 'standard-2-8'.")
 }
 ```
+
+The repeated field is retained for wire compatibility, but the service accepts
+at most one network attachment per ComputeInstance and rejects requests with
+more than one. This preserves the OSAC-1433 workload attachment limit.
 
 **Kubernetes CR Schema (osac-operator CRD):**
 ```yaml

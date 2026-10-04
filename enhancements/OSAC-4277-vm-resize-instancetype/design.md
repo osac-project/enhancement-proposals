@@ -3,7 +3,7 @@ title: vm-resize-instancetype-selection
 authors:
   - tmorgens@redhat.com
 creation-date: 2026-09-08
-last-updated: 2026-09-08
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-4277
 prd:
@@ -647,9 +647,10 @@ ComputeInstances service.
 - **Pros:** Cleaner separation of concerns; can add resize-specific fields
   (e.g., force flag, scheduling hints) without affecting the general Update
   RPC.
-- **Cons:** Duplicates the existing Update pattern; all other mutable field
-  changes (`run_strategy`, `restart_requested_at`, `security_groups`) use
-  the Update RPC. Adds API surface and OPA policy entries. Inconsistent
+- **Cons:** Duplicates the existing Update pattern; other mutable ComputeInstance fields
+  (`run_strategy` and `restart_requested_at`) use the Update RPC. Network policy
+  is configured through the Subnet’s NetworkACL association, not through a
+  ComputeInstance attachment update. Adds API surface and OPA policy entries. Inconsistent
   with the declarative "desired state via Update" model.
 - **Rejection:** An InstanceType change is a spec update, not a distinct
   operation. The existing Update RPC, validation framework, and
@@ -857,3 +858,14 @@ The following documentation deliverables are required: [PRD: NFR-2]
 ## Infrastructure Needed
 
 None.
+
+---
+
+## Provenance
+
+Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->

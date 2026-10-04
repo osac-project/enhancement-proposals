@@ -4,16 +4,16 @@
 |-------------|---------|
 | Author(s)   | Haim Tayrie |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1330 |
-| Date        | 2026-07-12 |
+| Date        | 2026-09-24 |
 
 ## Problem Statement
 
-When users create or update OSAC resources that reference other resources — a compute instance referencing a subnet, a cluster order referencing a template, an external IP attachment referencing a target — they provide raw identifier strings. The system cannot distinguish a subnet reference from a security group reference at the schema level; both are opaque strings. Users discover invalid or mismatched references only at runtime through downstream failures that may not clearly indicate which reference was wrong or why. References also carry no context about tenant or project, so users cannot reference shared resources (such as global cluster templates) without out-of-band knowledge of the target's identifier. For networking resources and workload network attachment fields governed by [OSAC-1433](../OSAC-1433-unified-networking/prd.md), references are supplied at creation and changes use delete and recreate; Update wording in this proposal applies only to resource APIs and fields that support Update.
+When users create or update OSAC resources that reference other resources — a compute instance referencing a subnet, a cluster order referencing a template, an external IP attachment referencing a target — they provide raw identifier strings. The system cannot distinguish a subnet reference from a NetworkACL reference at the schema level; both are opaque strings. Users discover invalid or mismatched references only at runtime through downstream failures that may not clearly indicate which reference was wrong or why. References also carry no context about tenant or project, so users cannot reference shared resources (such as global cluster templates) without out-of-band knowledge of the target's identifier. For networking resources and workload network attachment fields governed by [OSAC-1433](../OSAC-1433-unified-networking/prd.md), VirtualNetwork/Subnet address configuration, NetworkACL rule lists, Subnet-to-ACL associations, and workload attachments are fixed at creation. Update wording in this proposal applies only to resource APIs and fields that support Update. [User]
 
 ## In Scope
 
 - Name-based, type-safe resource references replacing opaque identifier strings, across all services (BMaaS, CaaS, VMaaS, MaaS, Enclave) and all resource types. [Clarify: R1.Q2]
-- Both local references (same tenant and project, by name only) and full references (cross-tenant/project, by tenant, project, and name).
+- Both local references (same tenant and project, by name only) and full references (cross-tenant/project, resolved by name or identifier within the specified scope).
 - Immediate validation of references at request time with clear error messages. [Clarify: R1.Q3]
 - UI, CLI, and API all updated to support the new reference format. [Clarify: R1.Q4]
 - No backward-compatible transition period — clean replacement of the current format. [Clarify: R1.Q1]
@@ -41,11 +41,11 @@ When users create or update OSAC resources that reference other resources — a 
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create subnets and security groups that reference their parent virtual network by name so that I can set up networking using readable, meaningful names.
+- As a Tenant Admin, I want to create subnets and NetworkACLs that reference their parent virtual network by name, and optionally associate each Subnet with one NetworkACL by name, so that I can set up networking using readable, meaningful names. [User]
 
 ### Tenant User
 
-- As a Tenant User, I want to create a compute instance that references subnets and security groups by name in its network attachments so that I can provision VMs without looking up resource identifiers.
+- As a Tenant User, I want to create a compute instance that references a subnet by name in its network attachment so that an optional Subnet NetworkACL refines the deployment default ACL policy without adding a policy reference to the workload attachment. [User]
 - As a Tenant User, I want to create a compute instance that references a catalog item or template by name so that I can order resources from the catalog using human-readable names.
 - As a Tenant User, I want to create an external IP attachment that references the external IP and target resource (compute instance, cluster, or bare metal instance) by name so that I can manage IP bindings without identifier lookup.
 - As a Tenant User, I want to receive a clear, immediate error when I reference a resource that doesn't exist or that I don't have access to so that I can fix my request without debugging downstream failures.
@@ -54,8 +54,18 @@ When users create or update OSAC resources that reference other resources — a 
 
 - As any user, I want references displayed in the UI to show the referenced resource's name rather than an opaque identifier so that I can understand resource relationships at a glance. [Clarify: R1.Q4]
 - As any user, I want the CLI to accept resource names in reference fields and display resolved references with names so that CLI workflows are human-readable. [Clarify: R1.Q4]
-- As any user, I want the system to resolve references consistently — if I provide an identifier, the system resolves and returns the name, and vice versa — so that I always see a complete, unambiguous reference regardless of what I originally provided.
+- As any user, I want a full reference to resolve by either identifier or name and be returned fully populated; local references require a name — so that I always see a complete, unambiguous reference regardless of what I originally provided.
 
 ## Dependencies
 
 - **(Tenant, project, name) migration:** This feature prepares the foundation for the future migration from identifier-based to (tenant, project, name)-based resource identification. Reference types must land before that migration begins. [Clarify: R1.Q5]
+
+---
+
+## Provenance
+
+Authored: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

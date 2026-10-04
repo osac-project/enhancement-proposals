@@ -4,12 +4,13 @@
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1436 |
-| Date        | 2026-07-08 |
+| Date        | 2026-09-24 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
-Networking resources support only Create, List/Get, and Delete, and the
-Cluster network attachment field is create-time-only; changes require delete
-and recreate.
+Networking resources support read (List/Get), create, and delete. NetworkACL
+rules and Subnet-to-ACL associations are immutable after creation. The Cluster
+network attachment remains create-time-only; changing it requires delete and
+recreate.
 
 CaaS networking also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
@@ -34,10 +35,10 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 ### 2.1 Goals
 
-- A tenant can create a cluster with explicit network configuration, specifying which subnet and security groups to use for cluster nodes
+- A tenant can create a cluster with explicit network configuration, specifying which subnet to use for cluster nodes and using that subnet's optional NetworkACL to refine the deployment default ACL policy
 - A cluster uses a single network attachment — one subnet for all node sets. The system automatically determines which physical interface to use for each node set based on its BareMetalInstanceType
 - Tenants can request automatic external IP attachment for cluster API server and ingress endpoints with `--external-ip-attachment`, without pre-creating external IP resources
-- When network configuration is omitted, the system applies the tenant's default subnet and security group
+- When network configuration is omitted, the system applies the tenant's default Subnet, which has no ACL association, under the deployment default ACL policy
 - Cluster status exposes API server and ingress endpoint addresses after provisioning completes
 - The system automatically selects suitable bare-metal hosts and configures network connectivity before cluster provisioning begins
 - Auto-provisioned external IPs and external IP attachments are cleaned up when the cluster is deleted
@@ -54,10 +55,10 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 ### Tenant User Stories
 
-- As a Tenant User, I want to create a cluster with explicit network configuration so that I can place it on a specific subnet with specific security group rules
+- As a Tenant User, I want to create a cluster with explicit network configuration so that I can place it on a specific subnet and use an optional NetworkACL associated with that subnet to refine the deployment default traffic policy
 - As a Tenant User, I want my cluster's node sets to automatically use the correct physical interface based on their BareMetalInstanceType so that network connectivity is configured without manual interface specification
-- As a Tenant User, I want to create a cluster with `--external-ip-attachment` so that the system provisions external IPs for both the API server and ingress and the cluster is externally reachable in a single API call
-- As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default subnet with my default security groups
+- As a Tenant User, I want to create a cluster with `--external-ip-attachment` so that the system provisions external IPs for both the API server and ingress; inbound reachability follows the effective Subnet policy
+- As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default Subnet under the deployment default ACL policy; with a `DENY` fallback, cluster installation requires a selected Subnet with a READY NetworkACL that permits required egress and reply flows, or a deployment configured with `PERMIT`
 - As a Tenant User, I want to see my cluster's API server and ingress endpoint addresses in the cluster status so that I can access the cluster
 - As a Tenant User, I want auto-provisioned networking resources to be automatically cleaned up when I delete my cluster so that I do not accumulate orphaned resources
 
@@ -65,6 +66,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 - As a Tenant Admin, I want to place multiple clusters in the same virtual network so that they can communicate privately with each other and with my VMs
 - As a Tenant Admin, I want to isolate clusters in separate virtual networks so that I can enforce network boundaries between different projects or teams
+- As a Tenant Admin, I want to manage the optional NetworkACL associated with a cluster subnet so that its matching rules refine traffic policy consistently to every node set on that subnet
 
 ### Cloud Infrastructure Admin Stories
 
@@ -80,15 +82,15 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Network Configuration
 
-- **FR-1:** Cluster creation supports the singular `network_attachment` field. The attachment may omit its subnet or omit or explicitly supply an empty security-group list; the complete resolved attachment is immutable after creation. The default SecurityGroup is used only when the resolved Subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork. The attachment applies to the entire cluster — all node sets share the same subnet. The system determines which physical network interface to use for each node set from its BareMetalInstanceType. [User]
+- **FR-1:** Cluster creation supports one network attachment that identifies the subnet for the entire cluster; all node sets share that subnet. The subnet may be omitted, and the resolved attachment is immutable after creation. Any NetworkACL associated with the selected subnet refines the deployment default ACL policy for all cluster nodes; when absent, the deployment default action applies. The system determines which physical network interface to use for each node set from its BareMetalInstanceType. [User]
 
 #### Optional Network Configuration with Defaults
 
-- **FR-2:** The network configuration on cluster creation is optional. When the attachment is omitted or empty, the system applies the tenant's default subnet and default security group. When a partial attachment is supplied, only missing subnet or security-group fields are defaulted; an explicitly empty security-group list is treated as missing; supplied values are preserved. The default SecurityGroup is used only when the resolved subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved subnet's VirtualNetwork. The resolved configuration is stored so the cluster is self-describing after creation. [User]
+- **FR-2:** Network configuration is optional when creating a cluster. When the attachment is omitted or empty, the system applies the tenant's default Subnet, which has no ACL association. When an attachment is supplied without a Subnet, only the Subnet is defaulted; supplied values are preserved. The resolved Subnet is stored with the cluster so the cluster is self-describing after creation. For an explicitly selected Subnet, any associated NetworkACL refines the deployment default policy. The default Subnet's unmatched traffic follows the deployment action: `DENY` blocks unmatched ingress and egress. Because connected cluster installation requires outbound access to assisted-service and image sources, a deployment using `DENY` must use an explicitly selected Subnet created with a READY NetworkACL that allows those flows and required replies, with the egress path configured; otherwise the deployment must use `PERMIT` for the default Subnet. [User; PR review: CodeRabbit]
 
 #### Auto External IP
 
-- **FR-3:** Cluster creation supports `--external-ip-attachment`. When enabled, the system allocates external IPs for both the API server and ingress from available IP pools before provisioning begins. External IPs and their attachments are labeled as auto-provisioned. The attachments are activated once the cluster's API server and ingress endpoints are available. [User]
+- **FR-3:** Cluster creation supports `--external-ip-attachment`. When enabled, the system reserves capacity for two external IPs, one for the API server and one for ingress, before provisioning begins. The IPs are allocated asynchronously. Each endpoint's attachment is created independently after its corresponding ExternalIP is Allocated, the Cluster is Ready, and that endpoint address is available; inbound routing for that endpoint begins after its attachment is provisioned. One endpoint's readiness does not wait for the other endpoint's IP allocation or address. External IPs and attachments are labeled as auto-provisioned. [User]
 
 #### Endpoint Discovery
 
@@ -96,7 +98,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### External IP Activation
 
-- **FR-5:** When automatic external IP allocation is enabled, the system creates external IP attachments before provisioning begins. After the cluster's API server and/or ingress endpoints are available, the system configures inbound routing from the external IPs to the endpoints and activates the attachments. [User]
+- **FR-5:** When automatic external IP allocation is enabled, inbound routing to the API server and ingress becomes available after the Cluster is Ready, the endpoint addresses are available, and the corresponding ExternalIPs are Allocated, subject to the effective Subnet policy. ExternalIP routing does not bypass that policy; unmatched inbound traffic to the unassociated default Subnet is denied when the deployment action is `DENY`. To permit it, use the `PERMIT` default or an explicitly selected Subnet created with a NetworkACL that allows the required inbound and return flows. [User; PR review: CodeRabbit]
 
 #### Host Selection and Network Configuration
 
@@ -120,34 +122,41 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Auto-Provisioned Resource Cleanup
 
-- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, security groups, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in dependency order: external IP attachments first, then external IPs. A manually created ExternalIPAttachment in `Ready` status targeting the cluster blocks its deletion until the tenant removes it; Pending or Failed attachments do not block deletion and remain tenant-managed. Other manually created ExternalIPs remain tenant-managed. Default networking resources (virtual networks, subnets, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
+
+#### NetworkACL Policy
+
+- **FR-12:** Cluster traffic uses the deployment default ACL policy, refined by any NetworkACL associated with its Subnet, uniformly across all node sets. Each Subnet has zero or one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Ingress and egress rules are evaluated independently using the shared match-specificity order; action and request order do not determine precedence. The first matching rule allows or denies traffic, and traffic with no matching rule uses the required deployment default ACL action, which also applies when no ACL is associated. The policy is stateless, so return traffic is evaluated independently in the reverse direction. With a `DENY` fallback, permitting a reply requires a matching reverse-direction `ALLOW` rule to win precedence; with `PERMIT`, an unmatched reply passes unless a matching reverse-direction `DENY` rule applies. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. [User]
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Automatic external IP allocation and endpoint discovery complete synchronously within the cluster creation flow. Endpoint addresses are available in cluster status during provisioning, not minutes later.
+- **NFR-1:** ExternalIPPool selection and capacity reservation complete synchronously with the cluster create request. ExternalIP allocation and attachment provisioning follow their readiness prerequisites; API and ingress endpoint addresses are available in Cluster status when the Cluster becomes Ready, without an additional delayed discovery step.
 
 ## 5. Acceptance Criteria
 
-- [ ] A Tenant User can create a cluster with network configuration specifying a subnet and security groups, and the cluster nodes are provisioned on the specified subnet
+- [ ] A Tenant User can create a cluster with network configuration specifying a subnet, and the cluster nodes are provisioned on that subnet under its optional NetworkACL association and the deployment default ACL policy
 - [ ] A Tenant User can create a cluster with a single network attachment and multiple node sets, and all node sets are provisioned on the same subnet with the appropriate physical interface automatically selected from each node set's BareMetalInstanceType
-- [ ] A Tenant User can create a cluster with `--external-ip-attachment` and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs for both API and ingress
+- [ ] A Tenant User can create a cluster with `--external-ip-attachment` and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs for both API and ingress; inbound reachability follows the effective Subnet policy, and unmatched inbound traffic is denied when the deployment action is `DENY`
+- [ ] Cluster installation can reach assisted-service and image sources only when its effective Subnet policy permits the required outbound and reply flows; under a `DENY` fallback, the tenant uses an explicitly selected Subnet created with a permitting NetworkACL and a configured egress path, or the deployment uses `PERMIT` for the default Subnet
 - [ ] Cluster status exposes API server and ingress endpoint addresses after provisioning completes
-- [ ] Auto-created external IP attachments activate after endpoint addresses are available and inbound routing is configured
+- [ ] Each auto-created ExternalIPAttachment is created after its corresponding ExternalIP is Allocated, the Cluster is Ready, and its endpoint address is available; DNAT is configured afterward. A delayed allocation or endpoint for one service does not block routing for the other.
 - [ ] The system selects hosts and configures network connectivity before cluster provisioning begins
 - [ ] Auto-created external IPs and external IP attachments are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
+- [ ] Deleting a cluster with a Ready, manually created ExternalIPAttachment targeting it is rejected until the tenant removes that attachment; Pending or Failed attachments do not block deletion
 - [ ] The system determines which physical network interface to use based on each node set's BareMetalInstanceType `network_ports` configuration
+- [ ] Cluster traffic uses the first matching NetworkACL rule under the shared match-specificity order and unmatched traffic uses the deployment default ACL action; under `DENY`, permitting return traffic requires a matching reverse-direction `ALLOW` rule to win precedence, while under `PERMIT`, unmatched replies pass unless a reverse-direction `DENY` rule applies
 
 ## 6. Assumptions
 
-- The tenant has default networking resources (virtual network, subnet, security group) pre-created. If defaults are not configured, creating a cluster without explicit network configuration fails with a clear error.
-- The deployment's network infrastructure is configured to support virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways, and network connectivity management.
+- The tenant has a default VirtualNetwork and Subnet pre-created, with no ACL association on the default Subnet; unmatched traffic uses the required deployment-wide default ACL action. If defaults are not configured, creating a cluster without explicit network configuration fails with a clear error.
+- The deployment's network infrastructure is configured to support virtual networks, subnets, NetworkACLs, external IPs, external IP attachments, NAT gateways, and network connectivity management.
 - BareMetalInstanceTypes have structured `network_ports` configuration. The system uses the first `fabric` port for each node set when no interface is supplied by the CaaS flow.
 
 ## 7. Dependencies
 
-- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, NetworkACLs, external IPs, external IP attachments, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
+- **Default Networking PRD** — default Subnet selection, optional ACL association, and deployment fallback action defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 
 ## 8. Risks
 
@@ -184,3 +193,16 @@ Resolved: DHCP handles all host-side networking. The host receives IP, gateway, 
 ### ~~9.3 How are IP address pools for cluster endpoints configured?~~ — Resolved
 
 Resolved: The system creates IP address pools for cluster endpoint allocation at subnet creation time, reserving a sub-range of the subnet CIDR. The DHCP assignment range excludes this sub-range to prevent overlap.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+
+> Context changed between revise and respond.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

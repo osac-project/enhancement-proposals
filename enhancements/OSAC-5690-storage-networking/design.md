@@ -3,7 +3,7 @@ title: storage-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-09-27
-last-updated: 2026-09-27
+last-updated: 2026-09-30
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-5690
 prd:
@@ -23,13 +23,14 @@ superseded-by:
 
 ## Summary
 
-Provide network connectivity from OSAC tenant workloads (VMaaS, CaaS, BMaaS)
-to the VAST storage cluster — located outside the managed network fabric
-gateway — using SNAT via the existing NATGateway primitive. Introduce a
-platform-level Storage CIDR reservation that prevents tenant
-VirtualNetwork CIDRs from overlapping with VAST VIP addresses, ensuring
-storage-bound traffic always routes externally rather than being trapped in
-the fabric.
+Provide the routing and SNAT path for tenant-Subnet block-storage traffic from
+CaaS workers and BMaaS hosts to the VAST storage cluster — located outside the
+managed network fabric gateway — using the existing NATGateway primitive.
+VMaaS CSI traffic continues to use the management network. A platform-level
+Storage CIDR reservation prevents tenant VirtualNetwork CIDRs from
+overlapping with VAST VIP addresses. Tenant Subnet policy still governs
+tenant-Subnet traffic: the path is available only when the effective
+NetworkACL policy permits it.
 
 This design covers the **VAST backend only**. Other storage backends (Pure
 Storage FlashBlade, Ceph, etc.) are not in scope. See [PRD](prd.md) for
@@ -66,10 +67,14 @@ tenant isolation is not required for the first phase.
   No new CRDs or controllers for storage networking.
 - Enforce Storage CIDR reservation via validation in the fulfillment-service,
   preventing VirtualNetwork CIDR overlap at creation time.
-- Ensure the default tenant onboarding flow produces a storage-ready network
-  configuration (NATGateway with external connectivity to VAST).
-- Support all three consumer types: VMaaS (automatic via CSI), CaaS (automatic
-  via CSI), and BMaaS (network path only, manual storage configuration).
+- Ensure the default tenant onboarding flow produces a network configuration
+  with the required route and NATGateway. Storage traffic also requires the
+  deployment ACL fallback to permit it, or a selected Subnet with an
+  associated NetworkACL that permits it.
+- Support all three consumer types: VMaaS and CaaS use the VAST CSI driver
+  when their applicable network policy permits the data path; BMaaS receives
+  the network path when its Subnet policy permits it and configures storage
+  manually.
 
 ### Non-Goals
 
@@ -88,6 +93,11 @@ This section describes how storage works today for each OSAC service type
 and storage protocol, and what each path requires from the network.
 Understanding the baseline motivates why the changes proposed in this design
 are necessary — and why they are sufficient for the first phase.
+
+The following describes current behavior for both block and file protocols
+for context. This proposal's first-phase scope is block storage only. The NFS
+and file-storage paths below, including VM guest mounts, are existing-system
+context and are not included in its requirements or deliverables.
 
 This design covers the **VAST backend only**. The OSAC CSI meta-driver
 supports multiple vendors (VAST, Pure Storage, Trident), but VAST is the
@@ -130,9 +140,10 @@ correct vendor plugin based on `volume_context["osac.backend"]`:
   mapping. The VAST node plugin initiates the NVMe-TCP connection (block)
   or NFS mount (file) on the node where kubelet runs.
 
-**Storage data-plane traffic always originates from the node running the CSI
-node plugin** — not from inside a VM guest. This distinction is critical for
-understanding VMaaS networking requirements.
+For CSI volumes, storage data-plane traffic originates from the node running
+the CSI node plugin — not from inside a VM guest. Tenant-Subnet policy applies
+to CaaS worker and BMaaS host paths; VMaaS CSI traffic uses the management
+network.
 
 ### Storage Onboarding: Two-Stage Model
 
@@ -211,6 +222,7 @@ NFS via VM guest mount:
 | **SNAT provider** | Management cluster's own NAT or direct routing | Tenant VN's NATGateway + ExternalIP |
 | **Outbound TCP** | NVMe-TCP port 4420 or NFS port 2049 | NFS port 2049 |
 | **No inbound from VAST** | Yes — all connections client-initiated | Yes |
+| **Tenant Subnet policy** | Management-network policy applies; tenant Subnet ACL does not | Deployment fallback or the VM Subnet's associated ACL must permit the flow and, under `DENY`, its replies |
 | **CIDR overlap risk** | Management network CIDR vs. VAST VIPs (admin responsibility) | Tenant VN CIDR vs. VAST VIPs (this design prevents it) |
 
 The CSI path (used for all PVC-based storage) depends on the management
@@ -218,8 +230,9 @@ cluster's network having a route to VAST. This is an infrastructure
 prerequisite configured at deployment time — the management cluster's
 network is admin-controlled, not tenant-controlled.
 
-The VM guest mount path depends on the tenant VN's NATGateway, which is the
-path that the Storage CIDR reservation in this design protects.
+The VM guest mount path depends on the tenant VN's NATGateway and the effective
+policy on the VM's Subnet. The Storage CIDR reservation prevents route overlap;
+it does not permit traffic through a Subnet ACL.
 
 ### CaaS Storage
 
@@ -271,6 +284,7 @@ CaaS worker node (CSI node plugin, on tenant VN)
 |-------------|--------|
 | **Outbound TCP to VAST VIP** | NVMe-TCP (port 4420) for block, NFS (port 2049) for file |
 | **NATGateway on VirtualNetwork** | Worker nodes use the VN's NATGateway for egress. VAST VIPs are outside the fabric gateway. |
+| **Subnet policy** | The deployment fallback or the Subnet's associated NetworkACL must permit the flow; with `DENY`, allow both egress and reply ingress. |
 | **No inbound from VAST** | All storage connections are client-initiated. |
 | **No VN CIDR overlap with VAST VIPs** | If the VN CIDR overlaps, the fabric routes storage traffic internally — storage silently fails. |
 
@@ -295,8 +309,8 @@ NFS client tools, pointing to the VAST VIP.
 BMaaS hosts are provisioned on a tenant Subnet. During provisioning, the
 bare-metal-fulfillment-operator moves the host's fabric port from the
 provisioning network to the tenant network (OSAC-1437). After provisioning,
-the host has a fabric IP on the tenant Subnet and uses the VN's NATGateway
-for external connectivity.
+the host has a fabric IP on the tenant Subnet and uses the VN's NATGateway for
+external connectivity when the Subnet policy permits it.
 
 ```
 BM host (tenant VN)
@@ -309,9 +323,10 @@ BM host (tenant VN)
 |-------------|--------|
 | **Outbound TCP to VAST VIP** | NVMe-TCP (port 4420) for block, NFS (port 2049) for file |
 | **NATGateway on VirtualNetwork** | Same SNAT path as CaaS |
+| **Subnet policy** | The deployment fallback or the Subnet's associated NetworkACL must permit the flow; with `DENY`, allow both egress and reply ingress. |
 | **No inbound from VAST** | All storage connections are client-initiated |
 | **No VN CIDR overlap with VAST VIPs** | Same risk as CaaS |
-| **Tenant-managed configuration** | Unlike VMaaS/CaaS, the tenant installs and configures storage software. The platform provides the network path only. |
+| **Tenant-managed configuration** | Unlike VMaaS/CaaS, the tenant installs and configures storage software. The platform provides the route and NAT path; the effective Subnet policy must also permit the traffic. |
 
 ### Summary: Data-Plane Paths to VAST
 
@@ -326,10 +341,9 @@ BM host (tenant VN)
 | **BMaaS** | File (NFS) | BM host | Tenant VirtualNetwork | Tenant NATGateway |
 
 CaaS, BMaaS, and VMaaS guest-mount paths all share the same data-plane
-pattern: tenant VirtualNetwork → NATGateway (SNAT) → upstream routing →
-VAST. The Storage CIDR reservation in this design prevents tenant VN
-CIDRs from overlapping with VAST VIPs, ensuring this path works by
-construction.
+pattern: tenant Subnet policy → NATGateway (SNAT) → upstream routing → VAST.
+The Storage CIDR reservation prevents tenant VN CIDRs from overlapping with
+VAST VIPs, but the effective Subnet policy must also permit the traffic.
 
 VMaaS CSI-based storage (block and NFS via CSI) takes a different path
 through the management cluster's network. The management cluster's route to
@@ -356,11 +370,14 @@ The design introduces three changes to the existing platform:
 
 3. **Default networking validation** — the NetworkClass default VN CIDR is
    validated against the Storage CIDR at configuration time, ensuring
-   auto-provisioned tenant networks are storage-ready.
+   auto-provisioned tenant networks do not have a route conflict. Subnet ACL
+   policy remains a separate prerequisite for storage traffic.
 
 No new controllers, CRDs, or networking resources are introduced. The existing
 NATGateway (one per VirtualNetwork, auto-provisioned during tenant onboarding)
-provides the SNAT path from tenant workloads to the VAST cluster.
+provides the SNAT path for permitted tenant traffic to the VAST cluster. This
+storage design neither creates NetworkACLs nor changes Subnet associations or
+the deployment ACL fallback.
 
 ### Changes Per Component
 
@@ -370,18 +387,19 @@ All components live in the `osac` monorepo.
 |---|---|
 | **fulfillment-service** | Add `storage_cidrs` field to NetworkClass. Add CIDR overlap validation to VirtualNetwork creation. Validate NetworkClass default VN CIDR against storage CIDRs. |
 | **proto** | Add `storage_cidrs` to the NetworkClass proto definition. |
-| **osac-operator** | No changes. NATGateway already provides SNAT for all egress from a VirtualNetwork. |
+| **osac-operator** | No changes. NATGateway provides SNAT for egress traffic permitted by the Subnet policy. |
 | **osac-aap** | No changes. Storage provisioning playbooks already configure VAST CSI with VIP pool information from the tenant hub Secret. |
 | **osac-installer** | Update NetworkClass manifests to include the Storage CIDR for the deployment. |
 
 ### Workflow Description
 
-#### Network Path: Tenant Workload → VAST
+#### Network Path: CaaS or BMaaS Workload → VAST
 
 ```mermaid
 flowchart LR
     subgraph Tenant VirtualNetwork
-        W[Workload<br/>VM / CaaS Pod / BM Host]
+        W[CaaS Worker / BM Host]
+        P[Subnet policy<br/>optional NetworkACL + deployment fallback]
     end
     subgraph Fabric
         NG[NATGateway<br/>SNAT: VN CIDR → ExternalIP]
@@ -389,18 +407,54 @@ flowchart LR
     subgraph Outside Fabric Gateway
         VAST[VAST Cluster<br/>Per-Tenant VIP Pools]
     end
-    W -->|NVMe-TCP to VAST VIP| NG
+    W -->|NVMe-TCP to VAST VIP| P
+    P --> NG
     NG -->|SNATed traffic| VAST
+    VAST -->|reply| NG
+    NG -->|reverse NAT| P
+    P --> W
 ```
 
-This diagram shows the data-plane path for block storage access. A workload
-inside a tenant VirtualNetwork initiates an NVMe-TCP connection to a VAST VIP
-address. Because the VAST VIP falls outside the VN CIDR (enforced by the
-overlap validation), the fabric routes the packet externally through the
-NATGateway. The NATGateway performs SNAT, replacing the workload's private
-source IP with the NATGateway's ExternalIP. The VAST cluster sees the
-ExternalIP as the source and responds to it. Return traffic follows the
-reverse NAT path back to the workload.
+This diagram shows the tenant-Subnet data-plane path for CaaS workers and
+BMaaS hosts. A workload inside a tenant VirtualNetwork initiates an NVMe-TCP
+connection to a VAST VIP address. Because the VAST VIP falls outside the VN
+CIDR (as enforced by the overlap validation), the fabric routes permitted
+packets externally through the NATGateway. The NATGateway performs SNAT,
+replacing the workload's private source IP with the NATGateway's ExternalIP.
+The VAST cluster sees the ExternalIP as the source and responds to it. Return
+traffic follows the reverse NAT path back through the Subnet's ingress policy,
+which is evaluated independently from egress.
+VMaaS CSI traffic follows the management-network path described in VMaaS
+Storage, not this tenant-Subnet path.
+
+#### Effective Subnet Policy
+
+Storage CIDR validation prevents route overlap; it does not bypass the
+NetworkACL policy enforced at the tenant Subnet boundary. CaaS worker nodes
+and BMaaS hosts using tenant Subnets for block storage must pass the source
+Subnet's egress policy before reaching the NATGateway, and return packets must
+pass that Subnet's ingress policy after reverse NAT.
+
+With a deployment `PERMIT` fallback, unmatched packets pass unless a matching
+NetworkACL `DENY` rule applies. With a `DENY` fallback, the Subnet's associated
+NetworkACL must allow egress to the VAST addresses on the required TCP service
+ports (4420 for NVMe-TCP and the configured VMS API port when that endpoint is
+routable from tenant VirtualNetworks). It must also allow ingress TCP traffic
+from the configured VAST VIP source CIDRs to the deployment-approved client
+ephemeral destination-port range. If a separately routable VMS API endpoint is
+outside those VIP CIDRs, add an ingress rule for its CIDR to the same client
+ephemeral destination-port range so API replies are permitted. The range must
+match the client hosts' actual ephemeral source ports; do not assume a
+universal numeric range. Since the ACL is stateless, each direction is
+decided independently. File storage and NFS port 2049 are outside this phase's
+scope.
+
+The default Subnet has no NetworkACL association, and that association cannot
+be added after creation. Under a `DENY` fallback, a storage workload must use
+a separate Subnet created with the required ACL association: create the
+NetworkACL first, associate it when creating the Subnet, then attach the
+workload. The VMaaS CSI path originating on the management network does not
+cross a tenant Subnet and is governed by the management network's policy.
 
 #### Personas
 
@@ -412,10 +466,12 @@ reverse NAT path back to the workload.
   administrator to ensure VIP pool addresses fall within the Storage CIDR.
 - **Tenant Admin / Tenant User:** Creates VirtualNetworks (or uses defaults).
   Receives a clear error if the chosen CIDR overlaps with the storage range.
-  CaaS and VMaaS storage works automatically via VAST CSI once the network is
-  provisioned.
-- **BMaaS Tenant:** Has network connectivity to VAST through the fabric's
-  external path. Configures storage on bare-metal hosts manually.
+  CaaS and VMaaS storage works via VAST CSI when the effective Subnet policy
+  permits the path; VMaaS CSI traffic on the management network follows that
+  network's policy.
+- **BMaaS Tenant:** Has network connectivity to VAST when the effective
+  Subnet policy permits the external path. Configures storage on bare-metal
+  hosts manually.
 
 #### Prerequisites
 
@@ -438,22 +494,27 @@ reverse NAT path back to the workload.
    Subnet, and NATGateway with an ExternalIP.
 3. The ExternalIP used by the NATGateway is routable to the VAST addresses
    covered by the Storage CIDR (via the datacenter's upstream routing).
+4. The effective policy permits block-storage traffic on every tenant Subnet
+   used by CaaS workers or BMaaS hosts. Under a `DENY` fallback, the
+   NetworkACL must be associated when the Subnet is created and permit egress
+   to the required storage endpoints and ports plus return ingress.
 
 #### VMaaS and CaaS Storage Access
 
-No additional steps beyond standard tenant onboarding and storage onboarding
-(OSAC-1332). When the storage controller provisions the VAST CSI driver and
-StorageClasses on the tenant's cluster, the CSI driver connects to the
-tenant's VAST VIP pool. The storage traffic exits the VirtualNetwork through the
-NATGateway and reaches VAST. PersistentVolumeClaims work without tenant
-intervention.
+VMaaS block CSI traffic originating from the management network follows that
+network's routing and policy. For CaaS block-storage traffic, the selected
+Subnet's effective policy must permit the VAST flow. With a `PERMIT` fallback,
+no ACL rule is needed unless an associated ACL has a matching deny. With a
+`DENY` fallback, use a Subnet created with an associated ACL that allows the
+required egress and return ingress before attaching the workload.
 
 #### BMaaS Storage Access
 
 BMaaS hosts are provisioned on a tenant Subnet within a VirtualNetwork.
-The NATGateway provides outbound connectivity. The network path to VAST
-is available, but the tenant must install and configure the VAST CSI driver
-(or configure NVMe-TCP / NFS directly) on the bare-metal host manually.
+The NATGateway provides SNAT for traffic permitted by the Subnet policy. Under
+a `DENY` fallback, create and associate an ACL that allows the VAST egress and
+return ingress before attaching the host. The tenant must configure an
+NVMe-TCP initiator on the bare-metal host manually.
 
 ### API Extensions
 
@@ -560,13 +621,13 @@ ExternalIPs (out of scope for the first phase).
 
 #### BMaaS Connectivity
 
-BMaaS hosts are provisioned on a tenant Subnet and have access to the
-NATGateway for external connectivity. The same SNAT path that provides
-internet access also provides access to VAST. No BMaaS-specific networking
-changes are needed.
+BMaaS hosts are provisioned on a tenant Subnet and use the NATGateway for
+permitted external connectivity. With a `DENY` fallback, use a Subnet created
+with an associated ACL that permits VAST traffic and replies. No BMaaS-specific
+NAT changes are needed.
 
 The BMaaS tenant is responsible for:
-- Installing the VAST CSI driver or configuring NVMe-TCP / NFS on their hosts.
+- Installing the VAST CSI driver or configuring NVMe-TCP on their hosts.
 - Configuring the VAST endpoint (VIP pool FQDN or IP).
 - Managing VAST credentials for their workloads.
 
@@ -579,15 +640,18 @@ or `vip_pool_fqdn` — these point to the tenant's VIP pool whose addresses
 are within the Storage CIDR.
 
 No changes to the storage onboarding flow are required. The CSI driver
-connects to the VAST VIP, and the network path (NATGateway → external
-routing → VAST) is transparently available.
+connects to the VAST VIP when its management-network policy or the selected
+tenant Subnet's effective policy permits the flow. NATGateway and external
+routing provide the path but do not override NetworkACL decisions.
 
 ### Security Considerations
 
 This design inherits the existing security model without changes:
 
-- **Network isolation.** VirtualNetworks remain fabric-isolated. The
-  NATGateway provides controlled egress. No new ingress paths are created.
+- **Network policy.** Existing NetworkACLs and the deployment fallback remain
+  in force for tenant Subnets. NAT does not override them. No new initiated
+  ingress paths are created; return packets are separately evaluated by the
+  stateless ingress policy.
 - **VAST credentials.** VAST CSI credentials are stored in hub Secrets
   and projected to tenant clusters via AAP. This flow is unchanged.
 - **No DNAT.** VAST does not initiate connections to tenant workloads. All
@@ -602,8 +666,9 @@ This design inherits the existing security model without changes:
 |---|---|---|---|
 | NATGateway not provisioned on VN | No external connectivity from VN. Storage unreachable. | Default tenant onboarding creates NATGateway. If missing, admin provisions one manually. | Connection timeouts on PVC mount. |
 | NATGateway ExternalIP not routable to VAST | SNAT succeeds but packets don't reach VAST. | Admin fixes upstream routing to ensure ExternalIP pool can reach the Storage CIDR. | Connection timeouts on PVC mount. |
+| Subnet policy denies storage traffic | Packets are dropped at the Subnet boundary before reaching VAST, or return packets are dropped on ingress. | Use the deployment `PERMIT` fallback where appropriate, or create a NetworkACL and a separate Subnet with rules allowing storage egress and return ingress before attaching the workload. ACL associations cannot be added to an existing Subnet. | PVC provisioning or mount times out. |
 | Storage CIDR not configured on NetworkClass | No overlap validation. Tenants can create VNs that conflict with VAST VIPs. | Admin configures the field before tenant onboarding. VNs created before configuration are not retroactively validated. | Storage may or may not work depending on whether the tenant VN CIDR happens to overlap. |
-| NAT port exhaustion | New NVMe-TCP / NFS sessions fail. Existing sessions continue. | Reduce concurrent PV count, or (future) expand NAT pool. | PVC mount hangs for new volumes. Existing volumes continue working. |
+| NAT port exhaustion | New NVMe-TCP sessions fail. Existing sessions continue. | Reduce concurrent PV count, or (future) expand NAT pool. | PVC mount hangs for new volumes. Existing volumes continue working. |
 | VAST cluster unreachable | Storage connections time out. CSI operations fail. | Restore VAST cluster or upstream network path. | PVC provisioning fails. Existing mounted volumes may hang. |
 
 ### RBAC / Tenancy
@@ -624,8 +689,10 @@ provide visibility into the NAT path health.
 Operators debugging storage connectivity issues should check:
 1. VirtualNetwork has a NATGateway in Ready state.
 2. NATGateway's ExternalIP is Allocated and routable.
-3. Upstream routing allows ExternalIP → Storage CIDR.
-4. VAST cluster is healthy and VIP pool is serving.
+3. The deployment ACL fallback and the workload Subnet's NetworkACL permit
+   egress to VAST and the independently evaluated return traffic.
+4. Upstream routing allows ExternalIP → Storage CIDR.
+5. VAST cluster is healthy and VIP pool is serving.
 
 ### Risks and Mitigations
 
@@ -635,10 +702,12 @@ Operators debugging storage connectivity issues should check:
 | Existing VNs (created before Storage CIDR is configured) have overlapping CIDRs | The validation applies only to new VN creation. Existing VNs are not retroactively checked. Document that the Storage CIDR must be configured before the first tenant is onboarded. |
 | VAST VIP addresses change after deployment | The Storage CIDR is a superset range, not the exact VIP list. As long as new VIPs are allocated within the same CIDR, no platform changes are needed. If the range changes entirely, a new NetworkClass with updated storage_cidrs is required. |
 | Single ExternalIP per NATGateway limits NAT capacity | Sufficient for the first phase scale. Monitor connection counts. Future: extend NATGateway to support multiple ExternalIPs. |
+| Deployment uses a `DENY` fallback while storage workloads use the default Subnet | The default Subnet has no ACL association and cannot be changed after creation. Document the policy prerequisite and create a custom ACL and Subnet before attaching storage workloads. |
 
 ### Drawbacks
 
-The approach assumes VAST is always external and reachable via SNAT. This adds
+The approach assumes VAST is external and that upstream routing supports the
+SNAT path. Tenant Subnet policy must also permit the storage flows. This adds
 latency compared to direct-attach or VLAN-based storage paths, and NAT adds a
 throughput constraint. For the first phase this is acceptable — performance-critical
 storage networking (GPU-to-storage, RDMA) is explicitly deferred.
@@ -688,15 +757,15 @@ implementation cost.
 
 ### 4. Fabric-Level Static Routes
 
-Configure static routes in Netris to force traffic destined for VAST VIPs to
-exit the fabric, regardless of VN CIDR overlap.
+Configure fabric-level static routes to force traffic destined for VAST VIPs
+to exit the fabric, regardless of VN CIDR overlap.
 
 **Pros:** No CIDR reservation needed. Works even with overlapping ranges.
-**Cons:** Requires fabric-manager-specific configuration. Breaks the
-abstraction that the fabric manager handles all routing. Different fabric
-managers would need different implementations.
-**Rejected:** Adds fabric-specific complexity. CIDR reservation is simpler
-and fabric-agnostic.
+**Cons:** Requires backend-specific configuration. Breaks the abstraction
+that the fabric handles routing consistently. Different fabric backends
+would need separate implementations.
+**Rejected:** Adds backend-specific complexity. CIDR reservation is simpler
+and independent of the selected fabric backend.
 
 ## Open Questions
 
@@ -721,19 +790,30 @@ None. All questions resolved during drafting.
 
 - End-to-end tenant onboarding with Storage CIDR configured: verify
   default VN is created with non-overlapping CIDR, NATGateway is provisioned,
-  and the network path to an external endpoint is functional.
+  and the network path to an external endpoint is functional when the
+  deployment fallback permits unmatched traffic.
+- With a `DENY` fallback, verify CaaS or BMaaS storage traffic fails on the
+  default Subnet, then succeeds on a separately created Subnet whose ACL
+  allows egress to the required VAST service port and ingress from VAST VIP
+  CIDRs to the approved client ephemeral destination-port range. When the VMS
+  API endpoint has a separate tenant-routable CIDR, verify the ACL also allows
+  egress to its API port and ingress replies from that endpoint CIDR. Verify
+  replies to ports within the range pass, replies to ports outside it are
+  blocked, and a matching deny rule still blocks the flow.
 - VirtualNetwork creation rejection: configure Storage CIDR, attempt
   to create a VN with overlapping CIDR, verify rejection with descriptive
   error message.
 
 ### E2E Tests
 
-- Provision a CaaS cluster on a tenant VN with NATGateway, install VAST CSI
-  via storage onboarding, create a PVC, verify the PV mounts and storage
-  traffic reaches VAST through the NATGateway.
-- Same for VMaaS: provision a VM, verify VAST CSI PVC mounts.
-- BMaaS: provision a bare-metal host, verify network path to VAST VIP is
-  reachable (ping or TCP connect test).
+- Provision a CaaS cluster on a tenant Subnet whose effective policy permits
+  VAST traffic, install VAST CSI via storage onboarding, create a PVC, and
+  verify the PV mounts and storage traffic reaches VAST through the NATGateway.
+- For VMaaS, provision a VM and verify the VAST CSI PVC mounts through the
+  management-network path; this does not exercise tenant-Subnet ACL policy.
+- BMaaS: provision a bare-metal host on a Subnet whose effective policy
+  permits the VAST TCP service port and return traffic, then verify a TCP
+  connection to the VAST VIP succeeds.
 
 ## Graduation Criteria
 
@@ -768,17 +848,32 @@ To diagnose storage connectivity issues:
 3. Verify NATGateway is Ready:
    `kubectl get natgateway -n <tenant-ns>` — check Phase=Ready.
 
-4. Verify ExternalIP is Allocated:
+4. Verify the deployment ACL fallback and the Subnet's associated NetworkACL
+   permit the flow and its return traffic. Under `DENY`, confirm the workload
+   uses a Subnet created with the required ACL association.
+
+5. Verify ExternalIP is Allocated:
    `kubectl get externalip -n <tenant-ns>` — check State=Allocated.
 
-5. Verify upstream routing:
+6. Verify upstream routing:
    from a host with the ExternalIP, verify TCP connectivity to a VAST VIP on
    the NVMe-TCP port (4420).
 
-6. Check CSI driver logs on the tenant cluster:
-   `kubectl logs -n vast-csi daemonset/vast-csi-node` for NVMe-TCP or NFS
+7. Check CSI driver logs on the tenant cluster:
+   `kubectl logs -n vast-csi daemonset/vast-csi-node` for NVMe-TCP
    connection errors.
 
 ## Infrastructure Needed
 
 None.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Phases: revise, revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

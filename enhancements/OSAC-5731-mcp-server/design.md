@@ -271,16 +271,16 @@ Read tools:
 
 Write tools (mutate on the confirmed call). A resource-type discriminator is
 allowed only inside a class that shares the same hint tuple (for example
-`create_network_resource` for VirtualNetwork, Subnet, and SecurityGroup).
+`create_network_resource` for VirtualNetwork, Subnet, and NetworkACL).
 Create is never combined with delete, publish, public exposure, or restart.
 
 <!-- markdownlint-disable MD013 -->
 
 | Tool | Allowlisted mutations |
 | --- | --- |
-| `create_network_resource` | Create VirtualNetwork, Subnet, or SecurityGroup. |
+| `create_network_resource` | Create VirtualNetwork, Subnet, or NetworkACL. |
 | `expose_network_resource` | Create ExternalIP, ExternalIPAttachment, or NATGateway. |
-| `delete_network_resource` | Delete those networking resources. |
+| `delete_network_resource` | Delete VirtualNetwork, Subnet, NetworkACL, ExternalIP, ExternalIPAttachment, or NATGateway. |
 | `create_compute_instance` | Create. |
 | `update_compute_instance` | Update. |
 | `set_compute_instance_power` | Start or stop via existing `run_strategy`. |
@@ -317,8 +317,10 @@ error details; it never silently replaces a resource. [Locked: D34-D35]
 [Codebase: fulfillment-service/internal/servers/projects_server.go]
 
 MCP networking tools expose only the accepted connected IPv4 contract:
-VirtualNetwork, Subnet, and SecurityGroup create/read/delete; ExternalIP and
+VirtualNetwork, Subnet, and NetworkACL create/read/delete; ExternalIP and
 ExternalIPAttachment for inbound exposure; and NATGateway for outbound egress.
+The NetworkACL is associated with a Subnet at Subnet creation; workload
+requests reference the Subnet and do not carry a direct ACL attachment.
 NetworkClass and ExternalIPPool remain provider-managed prerequisites, not
 tenant mutation tools. Network and workload-create inputs reject IPv6,
 dual-stack, extra workload attachments, and in-place networking updates even

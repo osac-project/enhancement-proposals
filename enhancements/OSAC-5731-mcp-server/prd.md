@@ -26,11 +26,12 @@ stories below without changing their meaning.
   actions, and retrieve the actual outcome in a later session.
   [Clarify: R2.Q1, R4.Q1, R11.Q3]
 - **FR-2 — Networking lifecycle:** Authorized callers must be able to
-  discover, create, and delete VirtualNetworks, Subnets, and SecurityGroups;
+  discover, create, and delete VirtualNetworks, Subnets, and NetworkACLs;
   allocate and attach external addresses; and set NAT egress where OSAC
   supports those actions. Unsupported in-place changes must be explained and
   may use only a separately reviewed replacement path; existing resources
-  must not be silently replaced or deleted.
+  must not be silently replaced or deleted. A Subnet may omit its ACL or
+  reference at most one READY NetworkACL in its own VirtualNetwork at creation.
   [Clarify: R9.Q1, R14.Q1]
 - **FR-3 — ComputeInstance lifecycle:** Authorized callers must be able to
   discover eligible choices, request, update, delete, start, stop, and restart
@@ -155,14 +156,14 @@ stories below without changing their meaning.
 
 | Journey | In-scope actions |
 |---|---|
-| Networking | Discover, create, and delete VirtualNetworks, Subnets, and SecurityGroups. Allocate and attach external addresses, and set NAT egress where OSAC supports it. A change to an existing network resource is a separately reviewed replacement. |
+| Networking | Discover, create, and delete VirtualNetworks, Subnets, and NetworkACLs. A Subnet's ACL association is optional; a selected ACL must be READY and belong to that same VirtualNetwork. Create the ACL first and wait for it to become READY before creating the Subnet. An unassociated Subnet uses the deployment default ACL action for unmatched traffic. Allocate and attach external addresses, and set NAT egress where OSAC supports it. A change to an existing network resource is a separately reviewed replacement. |
 | ComputeInstances | Discover eligible choices, request, update, and delete an instance, and start, stop, or restart it. Start, stop, and restart count only after their existing behavior is validated end to end. |
 | CaaS clusters | Discover eligible choices, request, update, and delete a cluster, and check its later outcome. |
 | BMaaS instances | Discover eligible choices, request, update, and delete a bare-metal instance, start, stop, or restart it, and check its later outcome. Start, stop, and restart count only after their existing behavior is validated end to end. |
 | Volumes | Discover, request, update, and delete an OSAC Volume, and check its later outcome. Its workflow still needs validation against existing storage use. |
 | Prerequisites | Discover and select Projects, catalog offerings, and Secret references the caller may use. An authorized admin can create and update Projects and manage offerings already permitted for that role. A missing Secret value is entered outside the model host. |
 
-- The networking journey covers VirtualNetworks, Subnets, SecurityGroups, external IP allocation and attachment, and NAT egress where OSAC supports them. When an existing network resource cannot be edited in place, the user is told so and may review a supported replacement path; nothing is silently replaced or deleted. [Clarify: R9.Q1, R14.Q1]
+- The networking journey covers VirtualNetworks, Subnets, NetworkACLs, external IP allocation and attachment, and NAT egress where OSAC supports them. When an existing network resource cannot be edited in place, the user is told so and may review a supported replacement path; nothing is silently replaced or deleted. [Clarify: R9.Q1, R14.Q1]
 - Catalog offerings and templates, host and instance types, cluster versions, disk images, storage tiers, Projects, and selected prerequisites are discoverable or manageable only to the extent that OSAC already supports the action and authorizes the caller. Authorized admins can manage provider-owned or tenant-scoped offerings and Projects within their existing permissions. [Clarify: R2.Q2, R3.Q1, R3.Q2, R10.Q1]
 - An authorized user can provide a missing deployment Secret through an OSAC-controlled interaction outside the model host, then continue using its reference. Model-facing actions do not accept or reveal plaintext Secret values. [Clarify: R10.Q2]
 - Supported connections are the locally running Cursor editor and CLI, Codex CLI and app/IDE, and Claude Code CLI and Desktop Code experience, against an OSAC endpoint reachable from the user's environment. The OSAC UI provides a discoverable entry point and copyable endpoint, trust, sign-in, and read-only verification guidance. Each supported host surface is verified with a deployment journey. [Clarify: R4.Q2, R13.Q1, R13.Q2, R13.Q3]
@@ -204,7 +205,11 @@ stories below without changing their meaning.
 - As a Tenant Admin or Tenant User, I want to find OSAC's host-specific MCP setup instructions in the UI and complete sign-in and certificate trust for a supported local host, so that I can connect without a demo-only runbook. [Clarify: R13.Q1, R13.Q2]
 - As a Tenant Admin or Tenant User, I want to verify my connection with a read-only request before provisioning, so that I know whether discovery works without changing infrastructure. [Clarify: R13.Q3]
 - As a Tenant Admin or Tenant User, I want to discover eligible catalog offerings and their selectable images, sizes, storage, networking, and other prerequisites, so that I can choose only resources my role may use. [Clarify: R1.Q2, R11.Q3]
-- As a Tenant Admin or Tenant User, I want to create missing VirtualNetworks, Subnets, SecurityGroups, and supported public-address or egress resources when authorized, so that I can satisfy a deployment's networking prerequisites. [Clarify: R1.Q3, R9.Q1]
+- As a Tenant Admin or Tenant User, I want to create missing VirtualNetworks, Subnets, NetworkACLs, and supported public-address or egress resources when authorized, so that I can satisfy a deployment's networking prerequisites. [Clarify: R1.Q3, R9.Q1]
+- When selecting a NetworkACL for a Subnet, it must belong to that Subnet's
+  VirtualNetwork. The user creates it first, waits for it to become READY, and
+  associates it during Subnet creation. An unassociated Subnet uses the
+  deployment default ACL action for unmatched traffic.
 - As a Tenant Admin or Tenant User, I want to request a ComputeInstance from a published catalog offering with permitted VM size, image, boot storage, and network choices, so that the requested VM matches my needs and catalog limits. [Clarify: R2.Q1, R11.Q3]
 - As a Tenant Admin or Tenant User, I want to request an eligible cluster through MCP, so that I can complete the CaaS provisioning journey using my existing permissions. [Clarify: R2.Q1, R3.Q1]
 - As a Tenant Admin or Tenant User, I want to request an eligible bare-metal instance through MCP, so that I can complete the BMaaS provisioning journey using my existing permissions. [Clarify: R2.Q1, R3.Q1]

@@ -108,15 +108,27 @@ normalized-outcome JSON examples in the same section.
 - **Tier / owner:** E2E / [QE].
 - **Execution:** proposed `tests/e2e/mcp/test_networking_journey.py`.
 - **Boundary:** MCP, OAuth, Fulfillment, networking controllers, and the configured network manager run for real.
+- **Fixture:** A provider-managed `ExternalIPPool` is READY with capacity for at
+  least two IPv4 addresses.
+- **Fixture:** A tenant-owned `ComputeInstance` is READY with a primary IPv4
+  address and is available as the `ExternalIPAttachment` target.
 
 ##### Steps
 
-1. Discover eligible network choices. Create VirtualNetwork, Subnet, and
-   SecurityGroup through `create_network_resource`. Create ExternalIP,
-   ExternalIPAttachment, and NATGateway through `expose_network_resource`.
-2. Poll each public resource through `get_resource_outcome`.
-3. Delete in dependency-safe order using `delete_network_resource`.
-4. Reject IPv6 and dual-stack network inputs, and extra attachments on the
+1. Discover eligible network choices. Create two VirtualNetworks and wait
+   until both are READY. In the first, create a NetworkACL through
+   `create_network_resource`, wait for it to become READY, and create a Subnet
+   that references it. In the second, create a Subnet without an ACL to
+   exercise the optional association and deployment-default path.
+2. Create two ExternalIPs from the provider-managed pool. Create an
+   ExternalIPAttachment targeting the READY ComputeInstance fixture with one
+   ExternalIP, and create a NATGateway in the second VirtualNetwork using the
+   other ExternalIP.
+3. Poll each public resource through `get_resource_outcome`.
+4. Delete the ExternalIPAttachment and NATGateway, then their ExternalIPs;
+   delete the Subnets, NetworkACL, and VirtualNetworks in dependency order
+   using `delete_network_resource`.
+5. Reject IPv6 and dual-stack network inputs, and extra attachments on the
    workload create tools, before a public resource RPC, including values still
    expressible in legacy public fields. Keep NetworkClass and ExternalIPPool
    out of tenant write tools.
@@ -173,7 +185,10 @@ normalized-outcome JSON examples in the same section.
 
 ##### Steps
 
-1. Discover eligible offering, image, instance type, storage, Project, Subnet, SecurityGroup, and Secret reference.
+1. Discover eligible offering, image, instance type, storage, Project, Subnet,
+   the Subnet's optional NetworkACL association, and Secret reference. The
+   ComputeInstance request references the Subnet only; it does not carry a
+   direct NetworkACL attachment.
 2. Create, then update with returned `metadata.version` and `lock=true`.
 3. Start a new session and retrieve `get_resource_outcome`.
 

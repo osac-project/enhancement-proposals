@@ -120,7 +120,7 @@ The Feature exposes applicable existing OSAC capabilities; it does not add new u
 
 ### R2.Q3: Ownership of missing prerequisites
 
-Should authorized tenant users be able to create any missing prerequisite, including catalog offerings, images, and storage tiers, or should some remain admin-published while users create tenant resources such as networks and security groups?
+Should authorized tenant users be able to create any missing prerequisite, including catalog offerings, images, and storage tiers, or should some remain admin-published while users create tenant resources such as VirtualNetworks, Subnets, and NetworkACLs?
 
 #### Answer
 
@@ -526,7 +526,7 @@ Yes.
 
 #### Impact
 
-The networking stage must cover the available public-address and egress actions, not only virtual networks, subnets, and security groups. Access remains role-bound, and actions that make a resource publicly reachable require the separate confirmation already agreed in D14.
+The networking stage must cover the available public-address and egress actions as well as VirtualNetworks, Subnets, and NetworkACLs. Unmatched traffic follows the required deployment default ACL action whether or not a Subnet has an associated NetworkACL; associations and rules are selected at creation. Access remains role-bound, and actions that make a resource publicly reachable require the separate confirmation already agreed in D14.
 
 #### Decision (D22)
 
@@ -568,7 +568,7 @@ The PRD needs an explicit boundary for deployment-adjacent resources, rather tha
 
 The inventory comes from `proto/public/osac/public/v1/*_service.proto` and the current method policy in `fulfillment-service/internal/auth/policies/authz.rego`. `Project` organizes and isolates resources; `Secret` may hold user data, kubeconfigs, pull credentials, or other sensitive values, and its public `Get` response includes raw data. `FabricDomain` represents east-west fabric isolation and its public service defines lifecycle methods; the current policy does not grant those methods to ordinary tenant users. A public proto method alone does not establish that every role can call it or that its end-to-end journey is production-ready.
 
-The user also asked whether updates are planned. D2 already includes updates wherever applicable, and D6 limits this Feature to existing OSAC actions. The current public contract defines `Update` for ComputeInstances, Clusters, BareMetalInstances, and Volumes, as well as many catalog and administrative resources. VirtualNetworks, Subnets, SecurityGroups, ExternalIPs, ExternalIPAttachments, and NATGateways currently define create/delete but not update. The PRD should not imply in-place edits for those networking resources or that every field of an updatable resource is mutable.
+The user also asked whether updates are planned. D2 already includes updates wherever applicable, and D6 limits this Feature to existing OSAC actions. The current public contract defines `Update` for ComputeInstances, Clusters, BareMetalInstances, and Volumes, as well as many catalog and administrative resources. VirtualNetworks, Subnets, NetworkACLs, ExternalIPs, ExternalIPAttachments, and NATGateways currently define create/delete but not update. NetworkACL rules and a Subnet's optional ACL association are fixed at creation; the PRD should not imply in-place edits for these networking resources or that every field of an updatable resource is mutable.
 
 The later answers include Projects in the deployment journey (D24), keep Secret values outside model-facing tools (D25), and do not require an unverified FabricDomain journey (D26).
 
@@ -886,7 +886,7 @@ None blocking PRD drafting. The design and implementation must verify the end-to
 
 ### Public API inventory — research, not a scope decision
 
-The current `proto/public/osac/public/v1/*_service.proto` contracts define List/Get/Create/Update/Delete for ComputeInstances, Clusters, BareMetalInstances, Volumes, and Projects. VirtualNetworks, Subnets, SecurityGroups, ExternalIPs, ExternalIPAttachments, and NATGateways define List/Get/Create/Delete, but no Update. ComputeInstance catalog items and templates, Cluster catalog items/templates/versions, BareMetalInstance catalog items/templates, HostTypes, InstanceTypes, and DiskImages define List/Get/Create/Update/Delete. StorageTiers, ExternalIPPools, and BareMetalInstanceTypes define List/Get only. This inventory describes public API methods, not verified end-to-end provisioning or permission for every role.
+The current `proto/public/osac/public/v1/*_service.proto` contracts define List/Get/Create/Update/Delete for ComputeInstances, Clusters, BareMetalInstances, Volumes, and Projects. VirtualNetworks, Subnets, NetworkACLs, ExternalIPs, ExternalIPAttachments, and NATGateways define List/Get/Create/Delete, but no Update. ComputeInstance catalog items and templates, Cluster catalog items/templates/versions, BareMetalInstance catalog items/templates, HostTypes, InstanceTypes, and DiskImages define List/Get/Create/Update/Delete. StorageTiers, ExternalIPPools, and BareMetalInstanceTypes define List/Get only. This inventory describes public API methods, not verified end-to-end provisioning or permission for every role.
 
 `ComputeInstanceSpec.run_strategy` supports `ALWAYS` and `HALTED` through the public Update method; `restart_requested_at` is a separate declarative restart signal. The API's status provides state, conditions with reasons/messages and transition times, and the VM state-transition time. These contracts can support clear start/stop/restart and progress reporting, subject to end-to-end validation and the caller's existing authorization. No separate Start/Stop RPC is required by the contract.
 

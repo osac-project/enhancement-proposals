@@ -3,7 +3,7 @@ title: baremetal-instance-api
 authors:
   - agentil@redhat.com
 creation-date: 2026-05-29
-last-updated: 2026-07-02
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1118
 see-also:
@@ -19,7 +19,7 @@ superseded-by:
 
 ## Summary
 
-This enhancement introduces `BareMetalInstance` and `BareMetalInstanceCatalogItem` resources to the OSAC fulfillment-service public API, enabling tenants to provision and manage physical bare metal servers through a self-service interface. Catalog items are provider-managed entries that expose available hardware profiles, OS base images, and network configurations to tenants; each is backed by a `BareMetalInstanceTemplate`. The design adopts a pluggable provider architecture — implemented in a dedicated baremetal fulfillment component — so that future bare metal backends can be integrated without breaking the API. This EP is scoped to the fulfillment-service API layer; operator, provisioning, UX, and E2E concerns are tracked as companion work items under OSAC-1118.
+This enhancement introduces `BareMetalInstance` and `BareMetalInstanceCatalogItem` resources to the OSAC fulfillment-service public API, enabling tenants to provision and manage physical bare metal servers through a self-service interface. Catalog items are provider-managed entries that expose available hardware profiles and OS base images to tenants; each is backed by a `BareMetalInstanceTemplate`. Bare-metal networking is defined by the unified networking API: a `BareMetalInstance` attachment identifies a Subnet and may retain physical-interface selection, while the NetworkACL associated with that Subnet controls traffic policy ([OSAC-1433](/enhancements/OSAC-1433-unified-networking), [OSAC-1437](/enhancements/OSAC-1437-bmaas-networking)). The design adopts a pluggable provider architecture — implemented in a dedicated baremetal fulfillment component — so that future bare metal backends can be integrated without breaking the API. This EP is scoped to the fulfillment-service API layer; operator, provisioning, UX, and E2E concerns are tracked as companion work items under OSAC-1118.
 
 ## Motivation
 
@@ -43,11 +43,11 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 * Define `BareMetalInstanceTemplate` as a resource managed by Cloud Provider Admins through the private API and readable by tenants through the public API (List/Get); `BareMetalInstanceCatalogItem` as a catalog resource where Cloud Provider Admins publish global entries via the private API and Tenant Admins create tenant-scoped ones via the public API; publishing control and tenant scoping are enforced by the server.
 * Maintain API consistency with `ComputeInstance` where possible — same resource shape, service structure, template and catalog item patterns, run strategy and restart signal mechanism, and authorization model.
 * Expose the API through both gRPC and the existing REST gateway.
-* Allow tenants to specify an OS base image when creating a `BareMetalInstance` via the `image` spec field, with template defaults and catalog item `FieldDefinition` control.
+* Allow tenants to specify an OS base image when creating a `BareMetalInstance` via the `image` spec field, with template defaults and the typed Catalog Item image policy defined by [OSAC-3538](/enhancements/OSAC-3538-catalog-items-v2/design.md).
 
 ### Non-Goals
 
-* Integration with OSAC networking resources (`VirtualNetwork`, `Subnet`, `SecurityGroup`) — deferred to a future enhancement; in this initial phase, network configuration is fixed by the Cloud Provider Admin as part of the `BareMetalInstanceCatalogItem` and tenants have no mechanism to configure networking at provision time. A dedicated networking enhancement will enable tenants to create their own `Subnet` and attach it to a `BareMetalInstance`.
+* Networking API and traffic-policy design — defined by [OSAC-1433](/enhancements/OSAC-1433-unified-networking) and its BMaaS attachment flow in [OSAC-1437](/enhancements/OSAC-1437-bmaas-networking). A `BareMetalInstance` attachment identifies a Subnet and may identify a physical interface. A Subnet's optional NetworkACL adds traffic decisions; otherwise the deployment default ACL action applies. Catalog Items may govern `network_attachments` through the typed policy defined by [OSAC-3538](/enhancements/OSAC-3538-catalog-items-v2/design.md). This EP assumes the Catalog Item supplies no attachment value or default and adds no custom validation schema; it does not exclude the field from Catalog governance, and normal resource/API validation applies.
 * Custom hardware profile selection by tenants at provision time — fixed by the catalog item. Tenants requiring a different profile must request the Cloud Provider Admin to publish a new catalog item.
 * AAP playbook, baremetal fulfillment component, UI/UX, and E2E test implementation — covered in companion work.
 * Support for multiple bare metal backends in this initial release — the architecture is designed for future extensibility.
@@ -57,13 +57,13 @@ OSAC currently provides no fulfillment path for workloads requiring direct hardw
 
 The proposal introduces three new resource types to the fulfillment-service public API:
 
-**`BareMetalInstanceTemplate`** defines a bare metal hardware profile (host type, OS image, network configuration). Cloud Provider Admins create and manage templates via the private API; tenants can discover available templates via the public API (List/Get only). osac-aap is used for the actual host-level provisioning at runtime, not for template management.
+**`BareMetalInstanceTemplate`** defines a bare metal hardware profile and OS image. Cloud Provider Admins create and manage templates via the private API; tenants can discover available templates via the public API (List/Get only). Networking is configured on the `BareMetalInstance` through its Subnet-based attachment. An instance without an explicit attachment uses the tenant's default Subnet, which has no NetworkACL. A Subnet's optional NetworkACL adds traffic decisions; without an association, the deployment default ACL action applies. Under a `DENY` default, unmatched egress and reply traffic on the default Subnet can be denied even when a NATGateway is provisioned. With this fallback, tenants that need outbound access must select another Subnet with a NetworkACL that permits the required egress and reverse-direction reply traffic. A Catalog Item may govern the attachment through its typed field policy, while the Subnet association determines the applicable traffic rules. osac-aap is used for the actual host-level provisioning at runtime, not for template management.
 
-**`BareMetalInstanceCatalogItem`** is a catalog entry that presents an available bare metal configuration to tenants. Cloud Provider Admins publish global catalog items; Tenant Admins can additionally create tenant-scoped catalog items through the public API, referencing available templates. The `published` flag controls visibility and an optional `tenant` field enables scoping to a specific tenant; unpublished or out-of-scope catalog items are invisible to tenant List/Get calls. `FieldDefinition` entries on the catalog item govern which spec fields tenants may override and apply defaults for the rest.
+**`BareMetalInstanceCatalogItem`** is a catalog entry that presents an available bare metal configuration to tenants. Cloud Provider Admins publish shared catalog items; Tenant Admins can create Catalog Items scoped through the Catalog Item v2 metadata contract. The `published` flag controls visibility. Typed policies in `fields` govern supported resource fields, and `template_parameters` govern Template-defined inputs. The `network_attachments` policy uses the whole-list typed policy from OSAC-3538 and cannot exceed the API's one-attachment limit. This EP does not assume an attachment value/default or add custom validation for the field.
 
 **`BareMetalInstance`** is a tenant-created resource representing a provisioned bare metal server. Its `spec` references a catalog item via `catalog_item` and carries provisioning parameters (SSH public key, user data, run strategy, restart signal). Its `status` exposes the lifecycle state and conditions.
 
-Provisioning is driven by a chain of components: the fulfillment service creates a `HostLease` CR in the management cluster when a `BareMetalInstance` is created. The baremetal fulfillment operator picks up the `HostLease`, finds and assigns a free host from the inventory backend, and triggers `osac-aap` for host-level setup (OS image, SSH key, user data). The osac-operator watches `HostLease` CRs for status changes and pushes updates back to the fulfillment service via the `Signal` RPC. `HostLease` is an internal implementation detail; tenants never interact with it directly.
+Provisioning is driven by a chain of components. The fulfillment service materializes the public `BareMetalInstance` resource and reconciles its effective `network_attachments` onto the corresponding Kubernetes `BareMetalInstance` CR. The networking reconciler reads the attachments from that CR; they are not carried by the `HostLease`. Separately, host allocation and host-level provisioning use a `HostLease` CR: the baremetal fulfillment operator assigns a free host from the inventory backend and triggers `osac-aap` for setup (OS image, SSH key, user data). The `HostLease` is an internal implementation detail; tenants never interact with it directly.
 
 ### Workflow Description
 
@@ -71,7 +71,7 @@ Provisioning is driven by a chain of components: the fulfillment service creates
 - **Cloud Provider Admin** — creates and manages `BareMetalInstanceTemplate` objects via the private API and publishes them as global `BareMetalInstanceCatalogItem` entries via the private API.
 - **Tenant Admin** — creates tenant-scoped `BareMetalInstanceCatalogItem` entries via the public API, referencing available templates.
 - **Tenant User** — creates and manages `BareMetalInstance` resources via the public API.
-- **Fulfillment Service** — handles `BareMetalInstance` CRUD and creates `HostLease` CRs directly in the management cluster.
+- **Fulfillment Service** — handles `BareMetalInstance` CRUD, materializes the effective spec including `network_attachments` onto the Kubernetes `BareMetalInstance` CR, and creates `HostLease` CRs for host allocation and provisioning.
 - **osac-operator** — watches `HostLease` CRs for status changes and pushes them to the fulfillment service via the `Signal` RPC; does not create any CRs in this flow.
 - **baremetal-fulfillment-operator** — reconciles `HostLease` CRs: finds and assigns a free host from the inventory backend, then triggers `osac-aap` for host-level provisioning.
 - **osac-aap** — executes the provisioning and deprovisioning Ansible roles (OS image, SSH key, user data); triggered by the baremetal-fulfillment-operator.
@@ -88,10 +88,10 @@ Provisioning is driven by a chain of components: the fulfillment service creates
    ```
    POST /api/fulfillment/v1/baremetal_instances
    ```
-4. The fulfillment service resolves the catalog item to a `templateID` and derives `templateParameters` from the `field_definitions`, then creates a `HostLease` CR in the management cluster with those values plus `ssh_public_key`, `user_data`, and `image`; `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
+4. The fulfillment service applies the Catalog Item's typed `fields` and `template_parameters` policies, resolves the Template, and stores the effective `BareMetalInstance.spec`. It copies `network_attachments` onto the Kubernetes `BareMetalInstance` CR; `reconcileNetworking` reads the attachments there and follows the BMaaS networking contract. Separately, it creates a `HostLease` CR with host-allocation and host-provisioning inputs; `HostLease` does not carry `network_attachments`. `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
 5. The baremetal-fulfillment-operator picks up the `HostLease` and queries the inventory backend to find and assign a free host matching the requested host type and selector.
 6. The baremetal-fulfillment-operator triggers `osac-aap` to run the host-level provisioning template (OS image, SSH key, user data) and updates the `HostLease` status on completion. The OS image is resolved from the tenant's spec or the template default.
-7. The osac-operator watches the `HostLease` CR and pushes status updates to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BareMetalInstance.status`.
+7. The `HostLease` status reports host allocation and provisioning progress, but `HostLease` Ready alone does not transition the public instance to `RUNNING`. The osac-operator also watches the Kubernetes `BareMetalInstance` networking lifecycle. It sends public `RUNNING` through `Signal` only after host provisioning is complete and the Kubernetes `BareMetalInstance` reaches `status.phase == "Ready"`; the fulfillment service then updates the public status. The networking phase requires `NetworkAttachmentsReady`, `NetworkHandoffComplete`, and `IPDiscoveryComplete` for the resolved attachment.
 8. The Tenant User polls until `status.state` is `BARE_METAL_INSTANCE_STATE_RUNNING`:
    ```
    GET /api/fulfillment/v1/baremetal_instances/{id}
@@ -99,7 +99,7 @@ Provisioning is driven by a chain of components: the fulfillment service creates
 
 #### Failure Handling
 
-If any step in the provisioning chain fails (playbook error, BCM API failure, `HostLease` stuck), the osac-operator sets `BareMetalInstance.status.state` to `BARE_METAL_INSTANCE_STATE_FAILED` via the `Signal` RPC. The tenant can inspect the `conditions` field for details. To retry, the tenant deletes and recreates the `BareMetalInstance`; note that recreating may result in a different physical host being assigned from the inventory.
+If host allocation, host provisioning, network attachment, network handoff, or tenant-network IP discovery fails, the failure is sent to the fulfillment service through `Signal`, and the public `BareMetalInstance.status.state` becomes `BARE_METAL_INSTANCE_STATE_FAILED`. A HostLease provisioning failure or a Kubernetes `BareMetalInstance` networking phase of `Failed` must not leave the public resource in `PROVISIONING` or report it as `RUNNING`. The tenant can inspect the `conditions` field for details. To retry, the tenant deletes and recreates the `BareMetalInstance`; note that recreating may result in a different physical host being assigned from the inventory.
 
 #### Deprovisioning
 
@@ -107,10 +107,11 @@ If any step in the provisioning chain fails (playbook error, BCM API failure, `H
    ```
    DELETE /api/fulfillment/v1/baremetal_instances/{id}
    ```
-2. The fulfillment service deletes the `HostLease` CR; `BareMetalInstance.status.state` transitions to `BARE_METAL_INSTANCE_STATE_DELETING`.
-3. The baremetal-fulfillment-operator reconciles the `HostLease` deletion: triggers `osac-aap` for the host-level deprovisioning template, then unassigns the host from the inventory backend.
-4. The osac-operator watches the `HostLease` CR deletion and pushes final status via the `Signal` RPC.
-5. The `BareMetalInstance` resource is removed once deprovisioning completes.
+2. The fulfillment service changes `BareMetalInstance.status.state` to `BARE_METAL_INSTANCE_STATE_DELETING` and deletes the corresponding Kubernetes `BareMetalInstance` CR and `HostLease` CR.
+3. Deletion of the Kubernetes `BareMetalInstance` CR starts the networking cleanup: the host is powered off before `reconcileNetworking` returns its port from the tenant network to the provisioning network. Its finalizers remain until this cleanup completes; see [BMaaS networking deletion](/enhancements/OSAC-1437-bmaas-networking/design.md#deletion-reverse-order).
+4. The baremetal-fulfillment-operator reconciles `HostLease` deletion: triggers `osac-aap` for the host-level deprovisioning template, then unassigns the host from the inventory backend.
+5. The osac-operator waits for the Kubernetes `BareMetalInstance` cleanup and `HostLease` deletion to complete, then pushes final status via the `Signal` RPC.
+6. The fulfillment service removes the public `BareMetalInstance` resource after cleanup completes.
 
 #### Provisioning Sequence
 
@@ -127,9 +128,11 @@ sequenceDiagram
     TU->>FS: GET /baremetal_instance_catalog_items
     FS-->>TU: list of available catalog items
 
-    TU->>FS: POST /baremetal_instances {catalog_item, ssh_public_key, image, ...}
-    Note over FS: resolve catalog_item → templateID, apply field_definitions → templateParameters, resolve image
-    FS->>MC: create HostLease CR (templateID, templateParameters, ssh_public_key, user_data, image)
+    TU->>FS: POST /baremetal_instances {catalog_item, network_attachments?, ssh_public_key, image, ...}
+    Note over FS: apply typed fields and template_parameters policies; resolve Template and image
+    FS->>MC: create/update BareMetalInstance CR (effective spec incl. network_attachments)
+    Note over MC: reconcileNetworking reads attachments from the BareMetalInstance CR
+    FS->>MC: create HostLease CR (host allocation/provisioning inputs; no network_attachments)
     FS-->>TU: 201 Created {id, state: PROVISIONING}
 
     MC-->>BMF: watch: HostLease CR created (no ExternalHostID yet)
@@ -145,7 +148,9 @@ sequenceDiagram
     BMF->>MC: update HostLease status (phase: Ready)
 
     MC-->>OP: watch: HostLease CR Ready
-    OP->>FS: Signal RPC (state: RUNNING)
+    Note over MC,OP: Public state remains PROVISIONING until the Kubernetes BareMetalInstance networking phase is Ready
+    MC-->>OP: watch: BareMetalInstance phase Ready after NetworkAttachmentsReady, NetworkHandoffComplete, IPDiscoveryComplete
+    OP->>FS: Signal RPC (state: RUNNING after host and networking readiness)
 
     TU->>FS: GET /baremetal_instances/{id}
     FS-->>TU: {state: RUNNING}
@@ -237,32 +242,27 @@ message BareMetalInstanceCatalogItem {
   // Human-friendly long description in Markdown format.
   string description = 4;
 
-  // Reference to the underlying BareMetalInstanceTemplate (private resource).
-  string template = 5;
+  // Reference to the underlying BareMetalInstanceTemplate.
+  BareMetalInstanceTemplateReference template = 5;
 
   // Whether this catalog item is visible to tenants. Only published items are
   // returned by tenant-facing List/Get calls.
   bool published = 6;
 
-  // Field 7 is omitted: `tenant` is an internal field managed by the server,
-  // not exposed through the public API. When a Tenant Admin creates a catalog
-  // item via the public API, the server automatically scopes it to the caller's
-  // tenant.
+  // Ownership and scope are carried by metadata. There is no top-level tenant
+  // field in the Catalog Item v2 API.
 
-  // FieldDefinition controls which BareMetalInstanceSpec fields tenants may
-  // set at provision time. Non-editable fields are always overridden by the
-  // catalog default; editable fields are validated against the provided JSON
-  // Schema and fall back to the default when not supplied by the tenant.
-  // The `image` field is controllable via FieldDefinition. When editable is
-  // false, the catalog item's default image is forced; when editable is true,
-  // the tenant's choice is validated against the provided JSON Schema.
-  // Additional fields will be added in future enhancements (e.g. networking
-  // integration).
-  repeated FieldDefinition field_definitions = 8;
+  reserved 7, 8;
+  reserved "tenant", "field_definitions";
+
+  map<string, TemplateParameterPolicy> template_parameters = 9;
+  BareMetalInstanceCatalogItemFields fields = 10;
 }
 ```
 
-**Private** (`osac/private/v1/baremetal_instance_catalog_item_type.proto`):
+The private Catalog Item uses the same typed `fields` and
+`template_parameters` shape, along with any service-only representation
+defined by the Catalog Item v2 API.
 
 ```protobuf
 message BareMetalInstanceCatalogItem {
@@ -270,18 +270,24 @@ message BareMetalInstanceCatalogItem {
   Metadata metadata = 2;
   string title = 3;
   string description = 4;
-  string template = 5;
+  BareMetalInstanceTemplateReference template = 5;
   bool published = 6;
 
-  // Tenant scope for this catalog item. Empty string means the item is global
-  // and visible to all tenants.
-  string tenant = 7;
+  reserved 7, 8;
+  reserved "tenant", "field_definitions";
 
-  repeated FieldDefinition field_definitions = 8;
+  map<string, TemplateParameterPolicy> template_parameters = 9;
+  BareMetalInstanceCatalogItemFields fields = 10;
 }
 ```
 
-#### Proto: BareMetalInstance
+#### Proto: BareMetalInstance (partial API schema)
+
+This schema sketch predates the networking fields. The authoritative
+`BareMetalNetworkAttachment` and `BareMetalInstanceSpec.network_attachments`
+contract is defined in
+[OSAC-1437](/enhancements/OSAC-1437-bmaas-networking/design.md#api-extensions);
+the Subnet's NetworkACL supplies traffic policy.
 
 ```protobuf
 // Contains the image configuration for a bare metal instance.
@@ -387,11 +393,11 @@ Where possible, the BareMetalInstance API is consistent with ComputeInstance:
 - CRUD service shape and REST route pattern (`/api/fulfillment/v1/<resource>`).
 - Private `Signal` RPC for `osac-operator` feedback loop.
 - `run_strategy` and restart signal mechanism (`restart_requested_at`, `last_restarted_at`).
-- `spec.catalog_item` referencing a `BareMetalInstanceCatalogItem` with `FieldDefinition`-based field control.
+- `spec.catalog_item` referencing a `BareMetalInstanceCatalogItem` governed by the typed resource-field and Template-parameter policies in [OSAC-3538](/enhancements/OSAC-3538-catalog-items-v2/design.md).
 - `BareMetalInstanceTemplate` with `spec_defaults`; managed via private API, readable via public List/Get.
 - `image` field for OS base image selection via `BareMetalInstanceImage` (`source_type` + `source_ref`).
 
-Fields specific to VMs (network attachments, cores, memory) are absent from `BareMetalInstance` in this initial version.
+VM sizing fields (`cores`, `memory`) are not part of `BareMetalInstance`. Bare-metal network placement uses a Subnet attachment, with traffic policy from the NetworkACL associated with that Subnet ([OSAC-1433](/enhancements/OSAC-1433-unified-networking)).
 
 ### Risks and Mitigations
 
@@ -429,7 +435,7 @@ None identified.
 Test plan will be finalized during the implementation phase. Expected coverage:
 
 - **Unit tests:** Proto field validation, state machine transitions, provider interface mocking.
-- **Integration tests:** `BareMetalInstance` CRUD via gRPC, catalog item CRUD (public and private), `published` visibility enforcement, tenant-scoping enforcement (Tenant Admin creates scoped items; Cloud Provider Admin creates global items via private API), `FieldDefinition` application, Signal RPC feedback loop, OPA authorization enforcement, PATCH immutability enforcement.
+- **Integration tests:** `BareMetalInstance` CRUD via gRPC, catalog item CRUD (public and private), publication and metadata-based scope enforcement, typed resource-field and Template-parameter policy application, `network_attachments` propagation to the Kubernetes `BareMetalInstance` CR and consumption by `reconcileNetworking`, Signal RPC feedback loop, public `RUNNING` gated on both HostLease provisioning and Kubernetes networking Ready, network failure propagated as public `FAILED`, OPA authorization enforcement, PATCH immutability enforcement.
 - **E2E tests:** Full provisioning and deprovisioning workflow against BCM; CI pipeline configured to run E2E tests on merge.
 
 Tricky areas: asynchronous provisioning lifecycle (tests must handle delays or mock the provider), `catalog_item` immutability enforcement after create, `published`/`tenant` visibility boundary checks, tenant isolation boundary checks, and failure-path recovery (FAILED state → delete → recreate).
@@ -475,3 +481,13 @@ The fulfillment-service, baremetal-fulfillment-operator, and osac-operator must 
 ## Infrastructure Needed
 
 BCM (NVIDIA Base Command Manager) access (credentials, API endpoint) is required for integration and E2E testing. This infrastructure is managed by the cloud provider and must be provisioned as part of the OSAC CI environment setup.
+
+---
+
+## Provenance
+
+Authored: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
