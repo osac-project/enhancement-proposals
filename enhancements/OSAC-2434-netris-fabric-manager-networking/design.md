@@ -10,7 +10,8 @@ prd:
   - "prd.md"
 see-also:
   - Unified Networking: /enhancements/OSAC-1433-unified-networking
-  - Network Manager Integration Contract: /enhancements/OSAC-1433-unified-networking/manager-contract/design.md
+  - Network Manager Integration Contract PRD: /enhancements/OSAC-1433-network-manager-integration-contract/prd.md
+  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract/design.md
   - CaaS Networking: /enhancements/OSAC-1436-caas-networking
   - Agentless VLAN Fabric Manager: /enhancements/OSAC-3664-agentless-vlan-fabric-manager-networking
 ---
@@ -23,7 +24,7 @@ This document describes the technical design for the Netris fabric manager,
 OSAC's production networking backend that translates tenant networking
 resources into Netris controller configuration. The Netris backend fulfills
 the fabric manager contract defined by the
-[Network Manager Integration Contract](/enhancements/OSAC-1433-unified-networking/manager-contract/design.md):
+[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract/design.md):
 it manages VPCs, VNets, IPAM allocations, NAT rules, and ACLs through the
 Netris controller REST API.
 
@@ -78,7 +79,7 @@ implementationRef osac.templates.netris, contractVersion v1, and the IPv4
 capability. Its supportedOperations entries
 advertise the operation-target pairs implemented by the Netris collection.
 The registration format and operation identifiers are defined by the
-[Network Manager Integration Contract](/enhancements/OSAC-1433-unified-networking/manager-contract/design.md).
+[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract/design.md).
 The resource mapping below documents Netris-specific backend behavior.
 
 #### Netris Role Operations
@@ -450,8 +451,8 @@ from the OSAC repository root with
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Phases: revise, revise
+Phases: revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

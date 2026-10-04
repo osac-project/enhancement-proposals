@@ -11,7 +11,8 @@ prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-1433-unified-networking/design.md"
-  - "/enhancements/OSAC-1433-unified-networking/manager-contract/design.md"
+  - "/enhancements/OSAC-1433-network-manager-integration-contract/prd.md"
+  - "/enhancements/OSAC-1433-network-manager-integration-contract/design.md"
   - "/enhancements/OSAC-1435-vmaas-networking/design.md"
   - "/enhancements/OSAC-1436-caas-networking/design.md"
   - "/enhancements/OSAC-1437-bmaas-networking/design.md"
@@ -33,7 +34,7 @@ VirtualNetwork to an isolated Linux routing namespace, maps each Subnet to a
 unique VLAN, and provisions DHCP, permit-all forwarding, BGP-backed external
 reachability, whole-address DNAT, and explicit-source SNAT through Ansible
 roles. Its manager registration and operation-target declarations follow the shared
-[Network Manager Integration Contract](/enhancements/OSAC-1433-unified-networking/manager-contract/design.md).
+[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract/design.md).
 See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
@@ -2024,8 +2025,8 @@ existing mono-repo and tests/e2e patterns.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Phases: revise, revise
+Phases: revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

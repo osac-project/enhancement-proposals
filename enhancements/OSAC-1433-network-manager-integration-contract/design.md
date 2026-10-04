@@ -6,7 +6,7 @@ creation-date: 2026-10-04
 last-updated: 2026-10-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
-prd: ../prd.md
+prd: prd.md
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking/design.md
   - Netris Fabric Manager: /enhancements/OSAC-2434-netris-fabric-manager-networking/design.md
@@ -23,12 +23,12 @@ superseded-by:
 |-------------|-------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
-| PRD         | [Unified Networking PRD](../prd.md) |
+| PRD         | [Network Manager Integration Contract PRD](prd.md) |
 | Date        | 2026-10-04 |
 
 # 1. Overview
 
-This design defines the integration contract for Fabric Manager and K8s Manager implementations used by OSAC networking. The contract is independent of implementation source: OSAC-distributed implementations such as Netris and Agentless VLAN, and implementations built or maintained by other parties, use the same registration, operation, Ansible Automation Platform (AAP), and status boundaries. See the [Unified Networking PRD](../prd.md) for product requirements and the [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md) for how OSAC selects and orchestrates the roles.
+This design defines the integration contract for Fabric Manager and K8s Manager implementations used by OSAC networking. The contract is independent of implementation source: OSAC-distributed implementations such as Netris and Agentless VLAN, and implementations built or maintained by other parties, use the same registration, operation, Ansible Automation Platform (AAP), and status boundaries. See the [Network Manager Integration Contract PRD](prd.md) for product requirements and the [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md) for how OSAC selects and orchestrates the roles.
 
 A conforming implementation registers one manager role, advertises the operation and workload-target combinations it supports, and provides the corresponding AAP collection role entry points. Once OSAC implements and enforces this versioned contract, another implementation can be added through configuration and AAP content without supplier-specific changes to OSAC APIs or dispatch code. The contract's operation vocabulary is fixed; adding a new OSAC resource operation requires an OSAC change.
 
@@ -152,6 +152,7 @@ osac_job_vars:
 ```
 
 operation is the canonical operation identifier from the table. manager is resolved from the selected role's validated registration. resource is the full Kubernetes resource object, including metadata and spec. The generic AAP playbook invokes manager.implementationRef and uses the fixed tasks_from name in the table. The referenced collection must be installed in the AAP execution environment. Manager credentials are supplied through provider-managed AAP credentials or Secrets; credentials must not be placed in the registration ConfigMap or resource payload. AAP playbooks must not substitute a default implementation.
+Ansible supports dynamically included roles by variable and the `tasks_from` selector; implementationRef uses a fully qualified collection role name. See [Ansible Core include_role documentation](https://docs.ansible.com/projects/ansible-core/2.17/collections/ansible/builtin/include_role_module.html) and [using collection roles by FQCN](https://docs.ansible.com/projects/ansible/latest/collections_guide/collections_using_playbooks.html). [Research: §1]
 
 | Operation identifier | Assigned role | AAP playbook and collection task | Required input | Required behavior and result |
 |----------------------|---------------|----------------------------------|---------------|------------------------------|
@@ -185,7 +186,7 @@ Registration data is small and read during manager discovery or configuration re
 
 ## 4.5 Security Considerations
 
-The operator namespace and existing Kubernetes RBAC protect manager registration ConfigMaps. Registration data contains no credentials. AAP credentials or provider-managed Secrets supply backend access, and AAP must not expose secret values in job artifacts or logs. Networking API authorization remains in the fulfillment service. Where an implementation creates Kubernetes child resources, it preserves the applicable tenant and owner-reference metadata and acts only on resources it is authorized to manage. [PRD: FR-6]
+The operator namespace and existing Kubernetes RBAC protect manager registration ConfigMaps. Registration data contains no credentials. AAP credentials or provider-managed Secrets supply backend access, and AAP must not expose secret values in job artifacts or logs. Networking API authorization remains in the fulfillment service. Where an implementation creates Kubernetes child resources, it preserves the applicable tenant and owner-reference metadata and acts only on resources it is authorized to manage. [Codebase: AGENTS.md]
 
 ## 4.6 Failure Handling and Recovery
 
@@ -208,25 +209,25 @@ A new implementation is added by installing its AAP collection, deploying a vali
 
 ## IC-1: Versioned manager registration
 
-**Requirements:** FR-6
+**Requirements:** FR-1, FR-2, FR-3
 
 Manager ConfigMaps gain implementationRef, contractVersion, and supportedOperations, including the operation-specific target set. The operator validates the role label, manager identity, version, capability, operation, and target vocabulary before dispatch.
 
 ## IC-2: AAP collection operation entry points
 
-**Requirements:** FR-6
+**Requirements:** FR-1, FR-2, FR-3
 
 A Fabric or K8s implementation provides a collection role resolved by implementationRef and the operation behavior listed in §4.3. Each advertised operation-target pair has one defined tasks_from entry point and receives the shared osac_job_vars envelope.
 
 ## IC-3: Fail-closed operation and target validation
 
-**Requirements:** FR-6
+**Requirements:** FR-3, FR-4
 
 OSAC validates each selected operation-target pair against the registered manager before starting AAP. Unsupported pairs produce a resource condition naming the manager, operation, and target; dispatch does not switch to another manager.
 
 ## IC-4: ExternalIP allocation and DHCP lease results
 
-**Requirements:** FR-6
+**Requirements:** FR-2
 
 ExternalIP allocation uses the allocated-address annotation and lease lookup returns the leases AAP artifact with the schema defined in §4.3. OSAC treats missing or malformed results as job failures.
 
@@ -266,7 +267,6 @@ Existing manager registrations and AAP collections must be updated to advertise 
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Phases: draft, revise
+Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["draft"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
