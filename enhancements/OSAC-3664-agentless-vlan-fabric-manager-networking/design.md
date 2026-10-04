@@ -3,7 +3,7 @@ title: agentless-vlan-fabric-manager
 authors:
   - yonibettan@gmail.com
 creation-date: 2026-09-08
-last-updated: 2026-09-22
+last-updated: 2026-10-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3664
   - https://redhat.atlassian.net/browse/OSAC-4307
@@ -11,6 +11,7 @@ prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-1433-unified-networking/design.md"
+  - "/enhancements/OSAC-1433-unified-networking/manager-contract/design.md"
   - "/enhancements/OSAC-1435-vmaas-networking/design.md"
   - "/enhancements/OSAC-1436-caas-networking/design.md"
   - "/enhancements/OSAC-1437-bmaas-networking/design.md"
@@ -31,7 +32,8 @@ The implementation reuses the NetworkClass/dispatcher lifecycle, maps each
 VirtualNetwork to an isolated Linux routing namespace, maps each Subnet to a
 unique VLAN, and provisions DHCP, permit-all forwarding, BGP-backed external
 reachability, whole-address DNAT, and explicit-source SNAT through Ansible
-roles.
+roles. Its manager registration and operation-target declarations follow the shared
+[Network Manager Integration Contract](/enhancements/OSAC-1433-unified-networking/manager-contract/design.md).
 See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
@@ -913,19 +915,19 @@ tracked separately in OSAC-4308 and OSAC-4309. [PRD: §2.2] [Codebase: osac-ux/l
 
 #### Manager registration and dispatch
 
-The osac-operator discovers ConfigMaps labeled
-'osac.openshift.io/network-fabric-manager'. The ConfigMap data includes the
-manager name, description, and comma-separated capabilities. The Helm chart
-entry must render:
+The AgentlessNet ConfigMap uses the Fabric Manager role label, data.name
+agentless_net, implementationRef osac.templates.agentless_net, contractVersion
+v1, and the IPv4 capability. Its
+supportedOperations entries list only the operation-target pairs implemented
+by the AgentlessNet collection. SecurityGroup apply and delete are omitted
+because this design excludes SecurityGroup resources and policy enforcement.
+Unknown or disabled manager names and unsupported operation-target pairs fail
+before AAP; OSAC does not substitute another manager.
 
-- name: 'agentless_net'
-- role: 'fabric'
-- capabilities: 'ipv4'
-- description identifying the Cumulus-supported agentless VLAN backend
-
-The manager name must match the NetworkClass 'fabric_manager' value and the
-AAP implementation-strategy annotation. Unknown or disabled manager names must
-produce a status failure rather than selecting another manager. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
+The shared contract defines the ConfigMap schema, fixed operation vocabulary,
+target declarations, task inputs and outputs, and registration validation.
+This design defines AgentlessNet's concrete backend behavior and the subset
+it advertises. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
 
 #### NetworkClass capability boundary
 
@@ -2021,11 +2023,9 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Authored: revise @ design 0.9.0 - 562b610, workspace main @ 0ae795e37
-Final: respond @ design 0.11.1 - f1d6a4b, workspace main @ b9575896d (dirty)
-
-> Context changed between revise and respond.
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

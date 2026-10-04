@@ -13,6 +13,7 @@ see-also:
   - VMaaS Networking: /enhancements/OSAC-1435-vmaas-networking
   - CaaS Networking: /enhancements/OSAC-1436-caas-networking
   - BMaaS Networking: /enhancements/OSAC-1437-bmaas-networking
+  - Network Manager Integration Contract: /enhancements/OSAC-1433-unified-networking/manager-contract/design.md
   - Default Networking: /enhancements/OSAC-1433-default-networking
 replaces:
   - OSAC-356 Networking API (legacy)
@@ -231,93 +232,21 @@ capabilities:
   supportsDualStack: false
 ```
 
-#### Capabilities
+#### Manager Capabilities and Registration
 
-Capabilities are **inferred from the assigned managers** and published in
-the NetworkClass `capabilities` field — the provider does not set them
-manually. The operator computes the intersection of capabilities declared by both
-manager ConfigMaps when a fabric and K8s manager are configured. A fabric-only
-NetworkClass uses the fabric manager's capabilities; a K8s-only NetworkClass
-uses the K8s manager's capabilities. In the current code, the reconciler
-skips capability synchronization whenever `fabricManager` is empty, so the
-K8s-only registration's declared IPv4 capability is not copied to the
-NetworkClass yet.
+The operator resolves provider-selected Fabric and K8s manager names from
+role-labeled ConfigMaps in the operator namespace. The selected manager
+declarations determine the effective NetworkClass capabilities: when both
+roles are configured, OSAC intersects their address-family capabilities; a
+single-role profile uses that role's declarations. The supported deployment
+boundary remains IPv4-only. [Codebase: osac-operator/pkg/networkmanager]
 
-The supported deployment boundary is IPv4-only. Managers in this design
-advertise `ipv4`, and NetworkClass capability output must be
-`supportsIpv4: true` with `supportsIpv6: false` and
-`supportsDualStack: false`. Discovery currently accepts recognized
-`ipv6` and `dualStack` declarations; that does not mean those address
-families are supported by the networking resource paths.
-
-| Capability | Type | Meaning |
-|-----------|------|---------|
-| `supportsIpv4` | bool | IPv4 addressing is available; `true` for OSAC networking |
-| `supportsIpv6` | bool | IPv6 addressing; always `false` |
-| `supportsDualStack` | bool | IPv4 + IPv6 addressing; always `false` |
-| `dpuSupport` | bool | DPU-accelerated networking available |
-
-The set of capabilities is defined by the operator and is fixed — adding a
-new capability requires an operator update. Managers declare which
-capabilities they support; they cannot define custom capabilities.
-
-#### Manager Registration (ConfigMap)
-
-Each manager ships a ConfigMap declaring its type and capabilities. These
-ConfigMaps are deployed as part of the OSAC installation alongside the
-manager's Ansible roles.
-
-**Fabric managers:**
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: fabric-manager-netris
-  namespace: osac
-  labels:
-    osac.openshift.io/network-fabric-manager: "true"
-data:
-  name: netris
-  description: "Netris SDN — tenant isolation, ACL, IPAM, DNAT, SNAT"
-  capabilities: "ipv4"
-```
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: fabric-manager-neutron
-  namespace: osac
-  labels:
-    osac.openshift.io/network-fabric-manager: "true"
-data:
-  name: neutron
-  description: "OpenStack Neutron — tenant isolation, IPAM, floating IPs"
-  capabilities: "ipv4"
-```
-
-**K8s managers:**
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: k8s-manager-cudn-localnet
-  namespace: osac
-  labels:
-    osac.openshift.io/network-k8s-manager: "true"
-data:
-  name: cudn_localnet
-  description: "CUDN with LocalNet — bridges OVN overlay to physical fabric"
-  capabilities: "ipv4"
-```
-
-The operator discovers managers by listing ConfigMaps with the appropriate
-labels. When a NetworkClass is created, the operator validates each manager
-assignment against the corresponding ConfigMap. Adding a new manager means
-deploying a new ConfigMap and Ansible role — no API or operator changes
-needed.
+Manager registration also declares which operation and workload-target pairs
+the implementation supports. OSAC validates that declaration against its
+fixed dispatch plan before starting AAP. The complete registration schema,
+operation vocabulary, and validation behavior are defined in the
+[Network Manager Integration Contract](/enhancements/OSAC-1433-unified-networking/manager-contract/design.md);
+this design describes how OSAC consumes the registration.
 
 ### How VMs Join the Fabric
 
@@ -379,234 +308,43 @@ manager profile determines how they are realized.
 
 ### Dispatcher (Operator Composition Logic)
 
-The osac-operator acts as a **dispatcher**: when reconciling any networking
-resource, it resolves the NetworkClass and calls the
-appropriate managers. Each manager corresponds to an Ansible role — the
-dispatcher triggers the appropriate AAP playbook, passing the resource and
-context as the event payload.
+NetworkClass selects the provider-configured Fabric Manager and optional K8s
+Manager. For each networking operation, the operator resolves the exact
+registration and uses the fixed OSAC dispatch rules to select its manager role.
+In a fabric-backed profile, the Fabric Manager handles physical-fabric
+operations and a configured K8s Manager also handles the K8s Subnet operation.
+In a K8s-only profile, the fixed dispatcher routes only its supported fallback
+operations to the K8s Manager; NATGateway and physical port movement require a
+Fabric Manager.
 
-| Operation | Fabric manager configured | No fabric manager (K8s-only) |
-|-----------|-----------------------------|-----------------------------|
-| VirtualNetwork create/delete | `fabricManager` | K8s fallback; logical grouping |
-| Subnet create/delete | `fabricManager`, plus `k8sManager` when configured | K8s manager creates the primary CUDN; no fabric segment |
-| SecurityGroup create/update/delete | `fabricManager` | K8s fallback; NetworkPolicy |
-| ExternalIPPool create/delete | `fabricManager` | K8s fallback; MetalLB IPAddressPool |
-| ExternalIP allocate/release | `fabricManager` | K8s fallback; MetalLB Service |
-| ExternalIPAttachment create/delete | `fabricManager` | K8s fallback; current K8s-only role supports ComputeInstance targets |
-| NATGateway create/delete | `fabricManager` | Rejected as unsupported before an AAP job is created |
+Before creating an AAP job, the operator checks that the selected registration
+advertises the operation and, for workload operations, the requested target.
+Unsupported work fails with a diagnostic on the affected resource; it is not
+sent to another manager. The only K8s fallback is the one explicitly defined
+for a K8s-only profile by the dispatch rules.
 
-When a fabric manager is configured, it handles every networking resource
-except that a selected K8s manager also handles Subnet operations. K8s fallback
-applies only when no fabric manager is configured; it does not imply a physical
-fabric role or bridge in the K8s-only profile.
+The NATGateway reconciler must resolve and validate its dispatch plan before
+provisioning. Its current path inherits the strategy from the parent
+VirtualNetwork without checking the Fabric-only requirement, so K8s-only
+NATGateway requests can reach AAP; contract enforcement closes this wiring gap
+and reports the unsupported operation before a job starts.
 
-The NATGateway row is enforced by the shared dispatch table (`K8sFallback: false`).
-There is a controller wiring gap: `NATGatewayReconciler` currently inherits the
-implementation strategy from its parent VirtualNetwork and does not resolve the
-NATGateway dispatch plan before provisioning. Wire it through this dispatch
-validation and report the unsupported operation on the resource before an AAP
-job is launched; the table entry alone does not enforce the target behavior.
+For supported work, the controller sends the full resource to the shared AAP
+provider. The fixed operation playbook invokes the selected collection task.
+AAP job state and defined result artifacts return through the existing
+provisioning provider, and the operator updates resource status and job
+history. The manager owns backend-specific reconciliation; OSAC owns the API
+resource lifecycle and status.
 
-The dispatch table above covers **networking resources only**. Compute
-resources (ComputeInstance, BaremetalInstance, Cluster) handle per-instance
-network attachment through their provisioning operators — see per-service
-designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
-[CaaS](/enhancements/OSAC-1436-caas-networking),
+The [Network Manager Integration Contract](/enhancements/OSAC-1433-unified-networking/manager-contract/design.md)
+is normative for manager registration, operation and target declarations,
+AAP task inputs and outputs, retry behavior, and implementation conformance.
+This design owns the profile composition and OSAC-to-AAP orchestration flow.
+ComputeInstance, BaremetalInstance, and Cluster attachment provisioning also
+uses the shared manager contract through their service-specific operators; see
+[VMaaS](/enhancements/OSAC-1435-vmaas-networking),
+[CaaS](/enhancements/OSAC-1436-caas-networking), and
 [BMaaS](/enhancements/OSAC-1437-bmaas-networking).
-
-### Manager Contract
-
-This section defines the contract that every fabric manager and K8s manager
-must fulfill. The [Netris](/enhancements/OSAC-2434-netris-fabric-manager-networking/design.md)
-and [Agentless VLAN](/enhancements/OSAC-3664-agentless-vlan-fabric-manager-networking/design.md)
-designs describe how those fabric backends satisfy these requirements.
-Kubernetes-native manager behavior and the K8s-only profile are described in
-this unified design. A new manager is conformant when it passes acceptance
-tests derived from this contract.
-
-#### Registration Contract
-
-Each manager registers by deploying a ConfigMap in the operator namespace
-with the appropriate label. See [Manager Registration](#manager-registration-configmap)
-for the ConfigMap schema and examples.
-
-| Requirement | Detail |
-|-------------|--------|
-| Unique name | `data.name` must be unique within the manager type (fabric or K8s). Duplicate names are rejected at discovery. |
-| Non-empty capabilities | `data.capabilities` must contain at least one valid capability from the fixed set (`ipv4`, `ipv6`, `dualStack`, `dpuSupport`). Empty capabilities are rejected. |
-| Address-family boundary | Managers in the current deployment profile must declare `ipv4`. Discovery also accepts recognized `ipv6` and `dualStack` declarations; that parser behavior does not mean the current networking resource paths support those families. |
-
-#### Provisioning Provider Contract
-
-Managers do not implement a Go interface directly. The operator dispatches
-provisioning work to AAP, which routes to the backend's Ansible roles based
-on the `osac.openshift.io/implementation-strategy` annotation stamped on
-each resource. The AAP provider implements `ProvisioningProvider` on behalf
-of all backends:
-
-```go
-type ProvisioningProvider interface {
-    TriggerProvision(ctx context.Context, resource client.Object) (*ProvisionResult, error)
-    GetProvisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
-    TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []JobStatus) (*DeprovisionResult, error)
-    GetDeprovisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
-    Name() string
-}
-```
-
-Each backend provides an Ansible role (e.g., `osac.templates.netris`,
-`osac.templates.k8s_only`) with task files named by operation:
-`create_virtual_network.yaml`, `delete_virtual_network.yaml`,
-`create_subnet.yaml`, etc. The AAP provider selects the correct task file
-based on the resource kind and operation.
-
-##### Workload Network Operations
-
-These mandatory operations are dispatched independently of per-resource
-create/delete jobs:
-
-| Operation | Manager scope | Contract |
-|-----------|---------------|----------|
-| `move_network_attachment` | Fabric manager only | Move a physical workload port from the configured provisioning segment to the tenant Subnet on attach, and back on detach. Both operations must be safe to retry. |
-| `query_dhcp_lease` | The selected manager when OSAC requests lease discovery, whether Fabric or K8s | Resolve the workload's lease by port MAC and return the address for OSAC status. Netris reads IPAM host entries; server-name lookup is allowed only where the service contract permits it. |
-
-The K8s manager does not implement `move_network_attachment`, because its
-CUDN-based attachments do not move physical fabric ports. `query_dhcp_lease`
-is manager-neutral; each manager must implement it when OSAC routes lease
-discovery to that manager. The current k8s-only path does not invoke lease
-discovery and has no corresponding task.
-
-#### Lifecycle Guarantees
-
-All manager operations must satisfy:
-
-| Guarantee | Detail |
-|-----------|--------|
-| Idempotency | Reconciliation must converge backend state to the requested configuration version, not only avoid duplicates. This includes mutable SecurityGroup rule updates and removal of obsolete rules. Repeating a successful request must not create duplicates; re-deprovisioning an absent resource must succeed. |
-| Phase tracking | Resources transition: `Progressing → Ready → Failed → Deleting`. The `DesiredConfigVersion` hash detects spec changes and controls retry/backoff. |
-| Job tracking | Each operation is recorded in `status.provisioningJobs[]`, bounded by `MaxJobHistory`. |
-| Condition reporting | Detailed status via standard Kubernetes conditions (`Ready`, `Progressing`, `Degraded`). |
-| Error surfacing | Backend failures must surface on the resource's status condition with a diagnostic message traceable to the backend's error response. Silent failures are not acceptable. |
-
-#### Per-Resource Contract
-
-The dispatch table in [Dispatcher](#dispatcher-operator-composition-logic)
-defines which manager roles handle each resource kind. The following
-specifies what each manager must accomplish for each resource kind.
-
-##### VirtualNetwork — Fabric Manager
-
-Create an isolated L3 routing domain.
-
-| Aspect | Requirement |
-|--------|-------------|
-| Input | `spec.region` (immutable), `spec.ipv4Cidr` (immutable, canonical IPv4), `spec.networkClass` (immutable) |
-| Create | A routing domain (VRF/VPC) with the specified CIDR, isolated from other VirtualNetworks |
-| Isolation | Different VirtualNetworks must have no direct internal connectivity, even with overlapping CIDRs. Cross-VN traffic is only possible via ExternalIPs over the external path. |
-| Delete | Remove the routing domain and release any associated IPAM allocations |
-| K8sFallback | Yes — K8s manager may implement as a logical grouping if no fabric manager is present |
-
-##### Subnet — Fabric Manager + K8s Manager
-
-Create an L2 segment within a VirtualNetwork.
-
-| Aspect | Requirement |
-|--------|-------------|
-| Input | `spec.virtualNetwork` (parent VN UUID, immutable), `spec.ipv4Cidr` (immutable) |
-| Fabric create | An L2 segment within the parent VN's routing domain, with a gateway address (first usable IP) and DHCP range (second usable to last usable) |
-| K8s create | In a fabric-backed profile, a K8s overlay (e.g., CUDN) bridged to the fabric segment. In K8s-only, a primary CUDN and namespace without a fabric bridge. |
-| Constraint | Subnet CIDR must be within parent VN's CIDR. Sibling subnet CIDRs must not overlap. |
-| Dispatch | Only resource dispatched to both Fabric and K8s roles simultaneously |
-| Delete | Remove the L2 segment, IPAM reservations, and K8s overlay resources |
-| K8sFallback | Yes |
-
-##### SecurityGroup — Fabric Manager
-
-Create ACL/firewall rules on a VirtualNetwork.
-
-| Aspect | Requirement |
-|--------|-------------|
-| Input | `spec.virtualNetwork` (parent VN UUID, immutable), `spec.ingressRules[]`, `spec.egressRules[]` |
-| Create | Permit rules for each ingress/egress entry, scoped to the subnets in the VN |
-| Mutability | Ingress and egress rules can be updated; changes trigger reconciliation to the requested rule set, including removal of obsolete ACLs. The VirtualNetwork reference remains immutable. |
-| Delete | Remove all ACL rules associated with this SecurityGroup |
-| K8sFallback | Yes — K8s manager may implement via NetworkPolicy |
-
-##### ExternalIPPool — Fabric Manager
-
-Register an IP pool for allocation.
-
-| Aspect | Requirement |
-|--------|-------------|
-| Input | `spec.cidrs[]` (immutable, exactly one canonical IPv4 CIDR), `spec.ipFamily` (immutable, `IPv4` only) |
-| Create | Pool-level reservations in the backend's IPAM so ExternalIPs can be allocated |
-| Status | Fulfillment Service owns the `total`, `allocated`, and `available` API counters: it calculates capacity from the CIDR and atomically adjusts allocation counts. The manager provisions the backend pool and reports provisioning state. |
-| Deletion guard | Cannot be deleted while child ExternalIPs exist |
-| Delete | Remove pool reservations from the backend IPAM |
-| K8sFallback | Yes — K8s manager may implement via MetalLB IPAddressPool |
-
-##### ExternalIP — Fabric Manager
-
-Allocate a single IP from a pool.
-
-| Aspect | Requirement |
-|--------|-------------|
-| Input | `spec.pool` (immutable, ExternalIPPool name) |
-| Allocate | A single IP address from the pool. Write the allocated address to `osac.openshift.io/allocated-address` annotation on the CR. |
-| Status | Report `address`, `state` (Pending/Allocated/Failed), `attached` |
-| Idempotency | Re-reconciliation must return the same previously allocated address |
-| Delete | Release the IP back to the pool |
-| K8sFallback | Yes — K8s manager may implement via MetalLB LoadBalancer Service |
-
-##### ExternalIPAttachment — Fabric Manager
-
-Create an inbound DNAT rule.
-
-| Aspect | Requirement |
-|--------|-------------|
-| Input | `spec.externalIP`, target (one of `computeInstance`, `cluster`, `baremetalInstance`), `spec.targetEndpoint` (API or Ingress, required for clusters). Entire spec is immutable. |
-| Create | A DNAT rule routing the ExternalIP's allocated address to the target's internal IP |
-| Delete | Remove the DNAT rule. It must be removed before the ExternalIP can be released. |
-| K8sFallback | Yes — K8s manager may implement via MetalLB LoadBalancer Service |
-
-##### NATGateway — Fabric Manager Only
-
-Create an outbound SNAT rule.
-
-| Aspect | Requirement |
-|--------|-------------|
-| Input | `spec.virtualNetwork` (parent VN name, immutable), `spec.externalIP` (ExternalIP name, immutable). Entire spec is immutable. |
-| Create | An SNAT rule so that all egress from the VirtualNetwork's CIDR uses the ExternalIP's allocated address as the source |
-| Delete | Remove the SNAT rule |
-| K8sFallback | **No** — NATGateway requires a fabric manager. K8s-only deployments must reject NATGateway creation with a clear error naming the unsupported resource and backend. |
-
-#### Resource Lifecycle Contract
-
-The fulfillment-service enforces the shared creation and deletion gates at
-the API layer before resources are persisted or delete requests are accepted.
-Managers receive only operations whose API dependencies satisfy the shared
-readiness rules. The full gate tables are in
-[Creation Readiness Gates](#creation-readiness-gates) and
-[Deletion Dependency Guards](#deletion-dependency-guards).
-
-Operator controllers retain child-resource checks before dispatching backend
-deprovisioning as defense in depth. These checks do not replace the
-fulfillment-service API guards. Manager-specific designs describe how each
-backend removes its own resources in dependency order.
-
-#### Capability Calculation
-
-When a NetworkClass has both managers, effective address-family capabilities
-are the intersection of the fabric and K8s manager declarations. With only a
-fabric manager, its declarations are used; with only a K8s manager, the K8s
-manager declarations are used.
-
-The current reconciler skips capability synchronization when no fabric manager
-is configured, so a K8s-only manager's `ipv4` registration is not currently
-copied into NetworkClass capabilities. The K8s-only target requires the
-reconciler to source capabilities from the K8s manager and a unit test for that
-path; the ConfigMap declaration alone does not mean the NetworkClass advertises
-IPv4.
 
 ### Resource Hierarchy
 
@@ -2073,9 +1811,11 @@ No additional infrastructure beyond existing OSAC components and managers.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ d165396
-Phases: revise, revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

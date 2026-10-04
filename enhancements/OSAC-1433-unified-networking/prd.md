@@ -8,6 +8,7 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking
+  - Network Manager Integration Contract: /enhancements/OSAC-1433-unified-networking/manager-contract/design.md
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
 replaces:
@@ -414,9 +415,13 @@ The API must clearly separate inbound and outbound external access.
 
 Providers configure the networking manager profile for a deployment. Tenants
 never choose networking backends; the system selects them based on provider
-configuration. The configured profile determines supported workload targets
-and operations. Requests for an unsupported target or operation fail with a
-clear diagnostic instead of being silently sent to another manager. [User]
+configuration. Each Fabric Manager and K8s Manager role may use any
+implementation that conforms to the published OSAC Network Manager Integration
+Contract, regardless of who builds, publishes, or distributes it; implementations
+distributed with OSAC follow the same contract. The configured profile
+determines supported workload targets and operations. Requests for an
+unsupported target or operation fail with a clear diagnostic instead of being
+silently sent to another manager. [User]
 
 #### FR-7: Single network attachment per workload (R7)
 
@@ -637,7 +642,8 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 - [ ] VM and bare-metal networking share the fabric when the configured profile supports both
 - [ ] Networking managers are registered through configuration deployed with the OSAC installation
 - [ ] The system validates that the configured profile supports its assigned workload targets and operations
-- [ ] A new networking manager can be added through configuration without changing the tenant-facing API
+- [ ] A Cloud Infrastructure Admin can select a manager implementation from any source for each configured role when it conforms to the published Network Manager Integration Contract; implementations distributed with OSAC use the same contract
+- [ ] A Cloud Infrastructure Admin can make a new conforming manager available while tenants continue to use the same OSAC networking API
 
 ### Resource-Specific (Bare Metal)
 
@@ -650,6 +656,7 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 ## 6. Dependencies
 
 - **Unified Networking Design**: [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) — Technical design document fulfilling these requirements
+- **Network Manager Integration Contract**: [/enhancements/OSAC-1433-unified-networking/manager-contract/design.md](/enhancements/OSAC-1433-unified-networking/manager-contract/design.md) — Defines the implementation contract shared by Fabric and K8s managers
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
 - **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference
@@ -658,9 +665,11 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
-Phases: revise, revise, revise, revise
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
