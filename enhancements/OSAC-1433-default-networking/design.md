@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-28
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -177,7 +177,7 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
      - ExternalIP labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <resource-id>`.
      - ExternalIPAttachment is **not** created at this point — its dependencies (ExternalIP Allocated + target Ready) are not yet met.
    - fulfillment-service (asynchronous, internal reconciler):
-     - osac-operator reconciles ExternalIP → fabric manager allocates address → ExternalIP transitions to Allocated
+     - osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager writes its durable UID-owned address reservation to the ExternalIP annotation; OSAC validates the job result and annotation, writes status, and transitions the ExternalIP to Allocated. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
      - osac-operator reconciles ComputeInstance → VM provisioning → ComputeInstance transitions to Ready
      - Once ExternalIP is Allocated AND ComputeInstance is Ready: fulfillment-service internal reconciler creates ExternalIPAttachment (readiness gate satisfied). ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`.
      - osac-operator ExternalIPAttachment controller creates DNAT rule → ExternalIPAttachment transitions to Ready
@@ -204,7 +204,7 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
      - Both labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`.
      - ExternalIPAttachments are **not** created at this point.
    - fulfillment-service (asynchronous, internal reconciler):
-     - osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated
+     - osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager writes each durable UID-owned address reservation to its ExternalIP annotation; OSAC validates the job results and annotations, writes status, and transitions the ExternalIPs to Allocated. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
      - Cluster provisioning proceeds — MetalLB allocates internal VIPs. Template discovers VIPs → ClusterOrder status → feedback controller → Cluster status. Cluster transitions to Ready.
      - Once ExternalIPs are Allocated AND Cluster is Ready: fulfillment-service internal reconciler creates two ExternalIPAttachments (one for API, one for ingress). Readiness gate satisfied.
      - ExternalIPAttachment controllers create DNAT: external IP → internal VIP → Ready
@@ -410,10 +410,10 @@ type ClusterSpec struct {
 - If a required default is not configured or is not Ready, resource creation fails.
 
 **Auto ExternalIP allocation (when auto_external_ip_attachment: true):**
-- Pool selection: pick a READY IPv4 ExternalIPPool with the most available capacity
+- Pool selection: fulfillment-service picks a READY IPv4 ExternalIPPool with the most available capacity. This selects the pool only; the assigned manager selects the concrete address.
 - If multiple pools have equal capacity: selection is deterministic but implementation-defined (e.g., alphabetical by pool name)
 - If no pool has capacity: return error `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
-- Pool capacity is checked and decremented synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically — actual IP address allocation from the fabric manager and DNAT rule creation happen asynchronously through the operator reconciliation loop. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow.
+- Pool capacity is checked and reserved synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically; address selection and reservation by the assigned manager, OSAC validation of the job result and annotation, status writeback, and DNAT rule creation happen asynchronously through reconciliation. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership) and [Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
 
 ### Implementation Details/Notes/Constraints
 
@@ -466,13 +466,13 @@ type ClusterSpec struct {
 
 For clusters, two separate IP allocations happen from different sources:
 
-- **External IPs** (from ExternalIPPool): allocated by ExternalIP controller via fabric manager (for DNAT front-end)
+- **External IPs** (from ExternalIPPool): reserved by the manager selected by the NetworkClass profile; OSAC validates and publishes the address (for DNAT front-end)
 - **Internal VIPs** (from subnet CIDR): allocated by MetalLB from its IPAddressPool (for API/ingress endpoints)
 
 The DNAT model maps external IPs to internal VIPs:
 
 1. fulfillment-service creates ExternalIP resources at cluster creation time (pool is Ready, readiness gate satisfied). ExternalIPs start Pending.
-2. osac-operator ExternalIP controller dispatches to fabric manager → ExternalIPs transition to Allocated (external addresses assigned, e.g., 203.0.113.10)
+2. osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager returns each reserved address; OSAC validates and publishes it, then transitions the ExternalIP to Allocated (e.g., 203.0.113.10).
 3. Cluster provisioning proceeds — MetalLB allocates internal VIPs from its IPAddressPool on the hosting cluster (e.g., 10.0.1.200 for API, 10.0.1.201 for ingress)
 4. Template discovers VIPs after MetalLB allocation, writes to ClusterOrder status (`apiEndpoint`, `ingressEndpoint`)
 5. VIP feedback loop: ClusterOrder status → feedback controller → fulfillment-service syncs to Cluster status
