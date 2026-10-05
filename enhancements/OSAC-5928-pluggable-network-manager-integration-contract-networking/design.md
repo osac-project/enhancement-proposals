@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-04
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-5928
 prd: prd.md
@@ -187,11 +187,43 @@ by `/`. Managers compare that exact reference with the requested attachment.
 | subnet.create / subnet.delete | Fabric and configured K8s role; K8s-only profile uses K8s fallback | playbook_osac_create_subnet / create_subnet; playbook_osac_delete_subnet / delete_subnet | Subnet metadata.uid; spec.virtualNetwork parent reference; spec.ipv4Cidr | Create or remove the L2 segment and the K8s network resources assigned to that role. The Subnet CIDR belongs to its VirtualNetwork and does not overlap a sibling Subnet. |
 | security_group.apply / security_group.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_security_group / create_security_group; playbook_osac_delete_security_group / delete_security_group | SecurityGroup metadata.uid; spec.virtualNetwork; spec.ingressRules and spec.egressRules; context.securityGroup.subnetCidrs and context.securityGroup.attachments | Enforce the OSAC SecurityGroup semantics: default deny; each matching IPv4 rule permits traffic, with ingress matching source CIDRs and egress matching destination CIDRs; TCP/UDP port ranges are matched only for those protocols, and ICMP/ALL ignore ports. Preserve the supplied rule order. Automatically allow return traffic for established connections. Apply policy to every attached endpoint, including same-Subnet and routed traffic; updates remove obsolete rules, and delete removes only rules owned by this SecurityGroup. |
 | external_ip_pool.create / external_ip_pool.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip_pool / create_external_ip_pool; playbook_osac_delete_external_ip_pool / delete_external_ip_pool | ExternalIPPool metadata.uid; spec.cidrs contains exactly one canonical IPv4 CIDR; spec.ipFamily is IPv4 | Register or remove the backend allocation pool. OSAC owns API capacity counters. |
-| external_ip.allocate / external_ip.release | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip / create_external_ip; playbook_osac_delete_external_ip / delete_external_ip | ExternalIP metadata.uid; spec.pool; resolved pool UID and canonical IPv4 CIDR in `context.externalIPPool` | Allocate or release one address from the selected pool and return it through `osac_result`; OSAC owns API status and annotations. |
+| external_ip.allocate / external_ip.release | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip / create_external_ip; playbook_osac_delete_external_ip / delete_external_ip | ExternalIP metadata.uid; spec.pool; resolved pool UID and canonical IPv4 CIDR in `context.externalIPPool` | The manager selects and durably reserves one unique address from the selected pool, or releases that reservation, and returns the defined result. OSAC owns API capacity, status, and annotations. |
 | external_ip_attachment.create / external_ip_attachment.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_attach_external_ip / attach_external_ip; playbook_osac_detach_external_ip / detach_external_ip | ExternalIPAttachment metadata.uid; spec.externalIP; target resource reference; spec.targetEndpoint for Cluster API or Ingress endpoints; resolved target kind, UID, and primary address in `context.target` | Create or remove inbound translation for a target allowed by the selected profile and fixed dispatch rules. Remove the attachment before its ExternalIP is released. |
 | nat_gateway.create / nat_gateway.delete | Fabric only; no K8s fallback | playbook_osac_create_nat_gateway / create_nat_gateway; playbook_osac_delete_nat_gateway / delete_nat_gateway | NATGateway metadata.uid; spec.virtualNetwork; spec.externalIP; canonical Subnet CIDRs in `context.virtualNetwork.subnetCidrs`; allocated address in `context.externalIP.address` | Create or remove outbound SNAT for the VirtualNetwork using its ExternalIP. |
 | workload_attachment.move | Fabric only; BaremetalInstance target only | playbook_osac_move_network_attachment / move_network_attachment | Workload resource kind and metadata.uid; normalized attachment binding in `context.attachment` | Move a physical workload port to the selected tenant Subnet on attach; restore the provider provisioning network on detach. Both directions are retry-safe. |
 | dhcp_lease.query | Fabric Manager for BaremetalInstance lease discovery only; CaaS physical workers use BMaaS | playbook_osac_query_dhcp_lease / query_dhcp_lease | Workload resource kind and metadata.uid; requested bindings in `context.attachments` | Resolve the lease for each requested attachment and return the result defined below. |
+
+#### ExternalIP address allocation and ownership
+
+The ExternalIPPool defines the range; it does not select a concrete address.
+For `external_ip.allocate`, OSAC resolves the selected pool to its UID and
+canonical IPv4 CIDR and passes those values with the ExternalIP UID. The
+assigned manager chooses an address that is free in that provider pool and
+durably reserves it under the ExternalIP UID. The contract does not require a
+particular selection order, such as first-fit; it requires that concurrent
+allocations from one pool receive distinct addresses and that retrying the same
+UID returns the same reservation.
+
+After confirming its reservation, the manager returns the address in
+`osac_result.data.externalIP.address`. OSAC validates the result envelope,
+canonical IPv4 form, and membership in the selected pool before it writes the
+`osac.openshift.io/allocated-address` annotation and `ExternalIP.status.address`
+and reports the ExternalIP Allocated. OSAC owns the API-side pool capacity
+counters. The manager must not patch the ExternalIP CR or write that
+annotation. If result validation or OSAC persistence fails, the resource is not
+reported Allocated; a retry uses the same UID-owned manager reservation.
+If the pool has no free address or the backend cannot reserve one, the manager
+fails the task with a diagnostic and no success result. OSAC leaves the
+ExternalIP non-ready and retains its API-side capacity reservation while it
+retries. On deletion, OSAC frees that capacity only after a validated
+`external_ip.release` result; it does not publish an address for the failed
+allocation.
+
+On deletion, OSAC first enforces cleanup of any ExternalIPAttachment or
+NATGateway consumer. It then invokes `external_ip.release`; the manager removes
+the UID-owned provider reservation and returns `RELEASED` only after the
+address is absent. OSAC validates that result before releasing API-side pool
+capacity. A failed release keeps capacity unavailable while OSAC retries.
 
 For `subnet.create` in the Fabric-backed EVPN profile, OSAC runs the Fabric
 Manager first. Its `osac_result.data.fabricHandoff` is persisted against the
@@ -356,7 +388,7 @@ AAP task behavior and results are part of the interface:
 
 - The manager task treats the supplied resource spec as desired state. The create/apply task for a SecurityGroup runs for both initial creation and rule updates. OSAC also invokes `security_group.apply` when a referenced workload binding is added or removed, passing the complete current binding snapshot. On attach, policy application must succeed before OSAC reports the network attachment Ready; on detach, the workload is removed from the network before the updated snapshot removes its policy. A failed policy job leaves the affected workload non-ready and is retried.
 - For `workload_attachment.move`, `context.attachment.action` is authoritative and is exactly `ATTACH` or `DETACH`. OSAC derives it from the workload lifecycle; the manager does not infer the action from deletionTimestamp. `DETACH` restores the configured provisioning network and must succeed if the tenant Subnet has already been deleted.
-- On ExternalIP allocation, the manager durably reserves an address by ExternalIP UID before returning `osac_result.data.externalIP.address`. Reconciliation of the same UID returns the same address. OSAC validates the result and owns writing API status and the `osac.openshift.io/allocated-address` annotation. Release removes the reservation before returning `RELEASED`.
+- On ExternalIP allocation, the manager durably reserves a unique address from the selected pool by ExternalIP UID before returning `osac_result.data.externalIP.address`. Reconciliation of the same UID returns the same address. OSAC validates the result envelope, canonical address, and pool membership, then writes API status and the `osac.openshift.io/allocated-address` annotation. The manager never patches the ExternalIP CR. Release removes the reservation before returning `RELEASED`; OSAC releases API-side pool capacity only after validating that result.
 - `dhcp_lease.query` returns exactly one matching lease entry for every requested attachment in `osac_result.data.leases`; a missing, stale, or ambiguous match fails the job with a diagnostic.
 - `workload_attachment.move` receives normalized attachment context: binding UID, workload kind and UID, host UID, interface, authoritative MAC address, Subnet UID and reference, VirtualNetwork UID and reference, tenant identity, attach/detach action, and provider provisioning-network ID. The Fabric Manager validates these values and returns the observed binding state in the result.
 - For operations without a defined artifact, successful AAP task completion means the backend has converged to the requested state. The operator owns resource phase, conditions, and provisioning job history.
@@ -455,4 +487,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ e97b06357
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

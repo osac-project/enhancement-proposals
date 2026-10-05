@@ -3,7 +3,7 @@ title: Network Manager Integration Contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-04
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-5928
 see-also:
@@ -58,6 +58,7 @@ OSAC networking designs describe manager roles and provisioning, but the manager
 - [ ] The contract includes working ConfigMap examples for both roles and identifies the exact AAP collection entry point for every required operation.
 - [ ] Every successful manager task returns the common, versioned `osac_result`; OSAC validates the operation, resource UID, and generation before accepting it or starting a dependent manager stage.
 - [ ] The contract defines the Subnet result handoff used by an EVPN K8s Manager, the ExternalIP allocation and release result, DHCP lease results, and workload attachment move results.
+- [ ] For ExternalIP allocation, the manager selects and durably reserves a unique address in the selected pool and returns it in `osac_result`; OSAC validates the address and alone writes the allocated-address annotation, status, and API capacity counters. The contract does not require a particular address-selection order.
 - [ ] Manager results flow through the shared OSAC provisioning lifecycle. Implementations do not require manager-specific callbacks, annotations, ConfigMaps, or OSAC code paths.
 - [ ] An implementation from any source, including an implementation distributed with OSAC, is eligible for selection when it conforms to the published contract.
 - [ ] A provider can select conforming manager implementations without changing the tenant-facing OSAC networking API.
@@ -74,7 +75,9 @@ OSAC networking designs describe manager roles and provisioning, but the manager
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Phases: draft, manual-edit, revise
+Authored: draft @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ e97b06357
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
