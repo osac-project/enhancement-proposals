@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Dan Manor |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
-| Date        | 2026-07-02 |
+| Date        | 2026-10-05 |
 
 This PRD inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
@@ -105,6 +105,12 @@ dual-stack networking are not supported.
   provisioning fails, the tenant remains in a non-READY state with a
   status condition describing the failure. The Cloud Provider Admin can
   inspect the failure and retry by deleting and re-creating the tenant.
+  When provider networking is disabled, tenant onboarding still provides the
+  logical default VirtualNetwork, Subnet, and SecurityGroup, but omits the
+  default ExternalIP and NATGateway. The tenant can become READY for workload
+  provisioning on these defaults; that status does not promise provider
+  connectivity or outbound NAT. The default NATGateway becomes available
+  through the normal provisioning flow after networking is enabled again.
   [User]
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
   parameters (IPv4 CIDRs and SecurityGroup rules) on the
@@ -164,14 +170,20 @@ dual-stack networking are not supported.
   ExternalIPs, before the parent resource is removed. If cleanup of
   auto-created resources fails permanently, the parent resource is still
   deleted — orphaned ExternalIPs remain and must be cleaned up manually
-  by the Tenant Admin or Cloud Provider Admin. [User]
+  by the Tenant Admin or Cloud Provider Admin. With provider networking
+  disabled, logical deletion still completes without provider cleanup, so
+  previously provisioned routes or address reservations may require manual or
+  provider-side cleanup. [User]
 
 #### Default NATGateway
 
-- **FR-12:** At tenant onboarding, the system also provisions a
-  NATGateway on the default VirtualNetwork with an automatically
-  allocated ExternalIP. The NATGateway provides outbound connectivity
-  for all resources on the default VirtualNetwork. [User]
+- **FR-12:** With provider networking enabled, tenant onboarding also
+  provisions a NATGateway on the default VirtualNetwork with an automatically
+  allocated ExternalIP. The NATGateway provides outbound connectivity for all
+  resources on the default VirtualNetwork. When provider networking is
+  disabled, onboarding omits this ExternalIP and NATGateway and does not
+  promise provider-managed outbound connectivity. Enabling networking again
+  resumes the default NATGateway provisioning flow. [User]
 
 ## 5. Acceptance Criteria
 
@@ -186,8 +198,15 @@ dual-stack networking are not supported.
   `--external-ip-attachment` and no explicit network attachments — the
   server is placed on the default subnet with an auto-provisioned
   ExternalIP
-- [ ] Default VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway
-  exist and are READY before the tenant's first resource creation
+- [ ] With provider networking enabled, default VirtualNetwork, IPv4 Subnet,
+  SecurityGroup, and NATGateway exist and are READY before the tenant's first
+  resource creation
+- [ ] With provider networking disabled, default VirtualNetwork, IPv4 Subnet,
+  and SecurityGroup remain available for tenant defaulting and workload
+  creation, while the default ExternalIP and NATGateway are absent and no
+  provider egress is promised
+- [ ] Enabling provider networking again provisions the missing default
+  ExternalIP and NATGateway through the existing readiness requirements
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
 - [ ] Default networking resources expose only create/read/delete operations;
@@ -259,3 +278,14 @@ Resolved: Return error, no resource persisted.
 ### ~~8.2 E2E test coverage for simplified creation~~ — Resolved
 
 Resolved: E2E tests for simplified creation are defined in each per-service design's test plan (VMaaS, CaaS, BMaaS). No separate test plan needed in the default networking EP.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+Phases: revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
