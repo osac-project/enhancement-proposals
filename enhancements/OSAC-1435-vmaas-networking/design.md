@@ -40,6 +40,14 @@ explicitly specifies them.
 
 ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhancement keeps the existing repeated attachment field optional (populating it with tenant defaults when omitted), enforces a maximum of one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. See [PRD](prd.md) for detailed requirements.
 
+The manager-backed resource flows and provider IP-discovery/readiness behavior
+in this document describe the enabled mode. The feature-gated disabled behavior
+is specified at the end of the Proposal section. API-level SecurityGroup rule
+validation and reference checks remain active in disabled mode. OSAC submits no
+provider operation to apply or remove SecurityGroup rules; rules already
+programmed in the backend may continue to affect traffic until provider-side
+cleanup. [User]
+
 ## Motivation
 
 ComputeInstance already participates in the networking API. Today's flow:
@@ -378,6 +386,72 @@ The repeated `network_attachments` field remains in place to avoid an API
 shape change. New requests containing more than one entry are rejected by
 validation.
 
+### Provider Networking Disabled
+
+This service follows the shared provider-networking setting and disabled-mode
+contract in [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+The setting is changed during installation or upgrade and takes effect after
+the coordinated rollout. Networking APIs, authorization, validation and
+defaulting, and ordinary service provisioning remain available while provider
+networking is disabled.
+[PRD: FR-8] [User]
+
+1. Tenant attachment defaulting, authorization, reference validation, and
+   readiness checks remain unchanged. An API-valid VM continues provisioning
+   on the platform default network while provider networking is disabled. No
+   tenant subnet placement, tenant SecurityGroup enforcement, or public routing
+   is claimed in this mode. Omitted or empty API attachments continue to receive
+   the existing tenant defaults, and invalid or non-ready references continue
+   to be rejected. Supplied attachment values remain stored and validated, but
+   do not cause provider networking to run while disabled. [User]
+
+2. Real VMI addresses may still be discovered through platform feedback, but
+   they do not attest to tenant Subnet provisioning or ExternalIP allocation.
+   No tenant policy, provider routing, or public ExternalIP routing is created.
+3. VM provisioning and deletion remain available. Network resource lifecycle
+   follows the shared status and deletion contract, including auto-created
+   children. Ordinary VM provisioning does not wait for an unallocated
+   ExternalIP.
+
+Each non-allocating Networking API resource follows the unified status
+contract: after its logical preconditions pass, it reports `Ready=True` with
+reason `ProvisioningDisabled` and a skipped-work message. Dependency checks
+continue to use their existing API gates. An ExternalIPAttachment requires the
+referenced ExternalIP to have `state=Allocated` and its target to be `Ready`. A
+backend-confirmed ExternalIP may remain `Allocated` while it reports
+`Ready=False`/`ProvisioningDisabled`; it still satisfies that allocated-state
+gate, but its last-known address does not imply provider reachability. Resources
+with unmet prerequisites remain in their normal waiting state, and create
+requests retain their existing API precondition errors. An ExternalIP without a
+confirmed allocation is `Pending`/`Progressing`, has an empty
+address, and reports `Ready=False`/`ProvisioningDisabled`. A confirmed real
+allocation retains its real address, confirmed through the manager-written
+annotation, and `Allocated` state, but
+reports `Progressing` and `Ready=False`/`ProvisioningDisabled` while disabled;
+the address is last-known only. The full allocation and migration contract is
+defined in [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#resource-operation-behavior).
+ComputeInstance Ready and platform-reported VMI addresses describe workload
+provisioning and platform feedback only; they do not imply tenant-network
+placement or routing.
+
+Default SecurityGroup selection, rule validation, API readiness,
+interface/cardinality/immutability, and deletion guards remain in force.
+Disabled mode submits no provider operation to create, change, or remove
+SecurityGroup rules; rules already programmed in the backend may continue to
+affect traffic until provider-side cleanup. Automatic ExternalIP requests
+retain existing pool/capacity checks;
+an IP that stays unallocated exposes no fabricated address and does not satisfy
+the Allocated prerequisite. An automatic ExternalIPAttachment is created only after the ExternalIP is
+Allocated and the workload is Ready. Creating the Pending ExternalIP reserves one
+pool-capacity slot until the logical ExternalIP is deleted; this is not a
+provider allocation. With networking disabled the VM still provisions, the
+ExternalIP stays Pending, and no ExternalIPAttachment object is created.
+Deleting an ExternalIP while disabled releases its OSAC capacity slot without a
+provider release operation; any earlier provider reservation may require
+manual cleanup. See the shared
+[ExternalIP disabled-mode contract](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+[User]
+
 ## Alternatives (Not Implemented)
 
 ### Alternative 1: Single shared NetworkAttachment message with optional primary field
@@ -399,6 +473,25 @@ Instead of returning an error when ExternalIPPool has no capacity, create a Fail
 Resolved: Return error, no resource persisted. Pool capacity checked synchronously. No Failed resource.
 
 ## Test Plan
+
+### Provider Networking Control (FR-8)
+
+- Verify normal VM provision/delete jobs still run with the shared setting
+  disabled and sufficient baseline connectivity; no network provider job runs.
+- Verify active network jobs are cancelled and awaited before skipped status
+  or network-finalizer release, including deletion and retryable AAP failures.
+- Verify non-allocating Networking API resources report `Ready=True`, reason
+  `ProvisioningDisabled`, with a skipped-work message after logical
+  preconditions pass; ExternalIP status distinguishes unconfirmed from
+  confirmed real allocation and never exposes a placeholder. Enabled mode
+  retains normal provider behavior.
+- Verify invalid API/defaulting/dependency requests remain rejected,
+  SecurityGroup defaulting/immutability remains unchanged, and automatic
+  attachments still wait for Allocated + workload Ready.
+- Verify omitted or empty API attachments retain existing defaulting and
+  missing-default errors. A valid VM that has no tenant attachment provisions
+  on the platform default network when disabled; supplied API references retain
+  their existing validation, and enabled mode continues tenant placement.
 
 ### Unit Tests
 
@@ -519,7 +612,7 @@ kubectl describe computeinstance <name> -n <namespace>
 2. Manually delete orphaned ExternalIPAttachment: `kubectl delete externalipattachment <name> -n <namespace>`
 3. Manually delete orphaned ExternalIP: `kubectl delete externalip <name> -n <namespace>`
 
-### Disabling the feature
+### Disabling automatic ExternalIP requests
 
 To disable auto ExternalIP attachment:
 - Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
@@ -530,8 +623,29 @@ Consequences:
 - Manual ExternalIP workflows remain functional
 - No impact on existing running VMs
 
+### Provider networking intentionally skipped
+
+Set `global.networking.provisioningEnabled=false` through the Helm setting or Enclave Wizard checkbox
+installation/upgrade value map and complete both operator rollouts. Inspect
+`Ready=True`/`ProvisioningDisabled` conditions on non-allocating Networking API
+resources and tracked network job states. Ordinary workload provisioning
+remains active with the baseline connectivity described
+above. Networking APIs remain available; no provider allocation, routing,
+port movement, DHCP discovery, or cleanup is supplied by the skipped path.
+Existing provider resources may require manual/provider-side cleanup. [User]
+
 ## Infrastructure Needed
 
 - AAP execution environment with `osac.templates.ocp_virt_vm` role updated for single-NIC support
 - k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
 - Integration test environment with CUDN or EVPN fabric
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

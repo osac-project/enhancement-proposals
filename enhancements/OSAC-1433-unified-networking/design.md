@@ -128,6 +128,8 @@ networking operations.
 
 ## Proposal
 
+The core proposal describes provider-backed networking with the setting enabled. The feature-gated disabled mode is specified in the final subsection of this Proposal. [PRD: FR-10] [User]
+
 ### NetworkClass
 
 NetworkClass is the provider-level CRD that defines which managers handle
@@ -473,23 +475,37 @@ write. If the pool has no free address, the manager returns a failure with a
 diagnostic and no success result.
 
 The fulfillment-service reserves API-side pool capacity in the transaction
-that creates the ExternalIP. On deletion, OSAC first requires dependent
-ExternalIPAttachments and NATGateways to be removed, then invokes
-`external_ip.release`. The manager removes the UID-owned provider reservation
-and reports success only after the address is absent. OSAC returns API-side
-pool capacity only after successful AAP completion and validation of an
-`osac_result` with `schemaVersion: "v1"`, `operation: external_ip.release`, the
-current ExternalIP UID in `resourceUID`, the dispatched generation in
-`observedGeneration`, and empty `data`. The successful result asserts that the
-UID-owned provider reservation is absent; no separate `RELEASED` data field is
-required. A failed job or missing, malformed, stale, or mismatched envelope
-keeps capacity held for reconciliation.
+that creates the ExternalIP. On deletion while provider networking is enabled,
+OSAC first requires dependent ExternalIPAttachments and NATGateways to be
+removed, then invokes `external_ip.release`. The manager removes the UID-owned
+provider reservation and reports success only after the address is absent.
+OSAC returns API-side pool capacity only after successful AAP completion and
+validation of an `osac_result` with `schemaVersion: "v1"`,
+`operation: external_ip.release`, the current ExternalIP UID in `resourceUID`,
+the dispatched generation in `observedGeneration`, and empty `data`. The
+successful result asserts that the UID-owned provider reservation is absent;
+no separate `RELEASED` data field is required. A failed job or missing,
+malformed, stale, or mismatched envelope keeps capacity held for
+reconciliation.
+
+While provider networking is disabled, deleting an ExternalIP completes its
+OSAC object deletion without dispatching `external_ip.release`, and releases
+its API-side pool-capacity reservation when the logical object is deleted. If
+the manager had confirmed an allocation before disablement, its provider
+reservation may remain after OSAC deletion and require manual or provider-side
+cleanup. Releasing the OSAC capacity slot does not release that address in the
+provider or guarantee that the provider can allocate it again. [User]
 
 ### End-to-End Flows
 
 This section shows how the unified networking API works from the tenant's
 perspective. The flows are the same regardless of which fabric manager or
 K8s manager the provider has deployed.
+
+These provider setup, networking setup, attachment, and external access flows
+describe `global.networking.provisioningEnabled=true`. The disabled branch is
+defined in [Provider Networking Control](#provider-networking-control); API
+readiness, validation, and deletion constraints apply in both modes. [User]
 
 #### Provider Setup
 
@@ -729,9 +745,11 @@ status update via Signal RPC.
 *Step 3 — asynchronous (deferred ExternalIPAttachment creation):*
 
 Once both prerequisites are met — the ExternalIP is **Allocated** and
-the target workload is **Ready** — the fulfillment-service internal
-reconciler creates the ExternalIPAttachment. This follows the standard
-creation readiness gate: the ExternalIPAttachment is only persisted when
+the target workload is **Ready** — a fulfillment-service parent-resource
+reconciler creates the ExternalIPAttachment. This new reconciler is separate
+from the existing ExternalIP and ExternalIPAttachment synchronization
+controllers. It follows the standard creation readiness gate: the attachment
+is only persisted when
 its ExternalIP is Allocated and its target is Ready. The
 ExternalIPAttachment starts in **Pending** state and is pushed to the
 hub cluster by the reconciler.
@@ -1456,6 +1474,168 @@ The trade-off is justified by infrastructure-agnostic subnets: any resource
 type on any subnet, uniform security enforcement via the fabric, and no
 per-resource-type dispatcher logic for ExternalIP or NATGateway.
 
+### Provider Networking Control
+
+`global.networking.provisioningEnabled` is the shared Helm boolean and
+defaults to `true`. Enclave Wizard presents the same setting during
+installation and upgrade. Both operator areas use that value; a change takes
+effect after the coordinated rollout completes. This is an installation or
+upgrade setting, not a live OSAC console toggle.
+[PRD: FR-10] [User]
+
+The setting controls provider-network operations only. Networking APIs and
+OSAC object lifecycle remain available in both modes, with the same
+authorization, tenant isolation, validation, defaulting, supported operations,
+and dependency rules. Logical resource status continues to reflect the OSAC
+object lifecycle; it does not claim a provider change occurred. The setting
+does not change the enabled-services list. [PRD: FR-10] [User]
+
+When disabled, OSAC submits no provider-network operations for any supported
+network resource, regardless of the selected manager profile. No network
+configuration, address allocation, routing, cleanup, DHCP discovery, or port
+movement is performed, and OSAC submits no substitute or no-op work. Ordinary
+VM and cluster provisioning, host provisioning, inventory, hardware, and power
+management remain available. [User]
+
+#### Resource operation behavior
+
+API create/read/delete semantics, immutable fields, readiness preconditions,
+and deletion dependency guards apply in both modes. All networking specification
+and metadata updates remain rejected, including SecurityGroup rule changes; the
+switch does not add an Update/Patch operation. OSAC object status continues to
+reflect logical lifecycle and unmet prerequisites. [PRD: FR-8, FR-9, FR-10]
+
+| Resource | Enabled provider create / rejected update / delete | Disabled provider create / rejected update / delete |
+|----------|---------------------------------------------------|----------------------------------------------------|
+| VirtualNetwork | Create and remove the manager's tenant network; specification updates rejected | OSAC object create/delete remains available; no provider network is created or removed; specification updates rejected |
+| Subnet | Create/remove the selected managers' subnet/network resources; specification updates rejected | No provider segment, overlay, namespace, or pool is provisioned or removed; specification updates rejected |
+| SecurityGroup | Create/delete the manager policy; specification and metadata updates rejected | OSAC create/delete remains available; no provider policy operation; existing backend rules may remain effective until provider-side cleanup; updates rejected |
+| ExternalIPPool | Create/remove provider pool integration; specification updates rejected | Logical create/delete remains available without creating or removing a provider pool; specification updates rejected |
+| ExternalIP | The selected manager durably reserves an address and writes the allocated-address annotation; OSAC validates the result and annotation before recording the address. On deletion, OSAC returns pool capacity only after confirmed provider release; specification updates rejected | No provider allocation or release occurs. Without a confirmed allocation it remains Pending with an empty address; a previously confirmed allocation retains its real validated address and Allocated state, marked last-known while disabled. Logical deletion releases OSAC capacity but may leave a provider reservation for manual cleanup. Specification updates rejected |
+| ExternalIPAttachment | Create/remove inbound routing for an Allocated IP and Ready target; specification updates rejected | No inbound routing is configured; creation still requires the existing API prerequisites, so a newly unallocated ExternalIP cannot satisfy them; specification updates rejected |
+| NATGateway | Create/remove outbound routing for the supported profile; specification updates rejected | No outbound routing is configured; creation retains the VirtualNetwork Ready and ExternalIP Allocated gates; specification updates rejected |
+
+Read (List/Get) continues to expose persisted desired state and conditions.
+While provider networking is disabled, VirtualNetwork, Subnet, SecurityGroup,
+ExternalIPPool, ExternalIPAttachment, and NATGateway report `Ready=True`, reason
+`ProvisioningDisabled`, and a message identifying the unavailable provider
+operation, but only after the existing logical
+preconditions are satisfied. Dependency checks remain specific to the
+existing API gates: an ExternalIPAttachment or NATGateway requires ExternalIP
+`state=Allocated`; references such as VirtualNetwork, ExternalIPPool, and
+workload targets require `Ready`. A backend-confirmed ExternalIP that remains
+`Allocated` during disablement satisfies an `Allocated` reference gate even
+though its own condition is `Ready=False`/`ProvisioningDisabled`; its last-known
+address does not imply provider reachability. If an existing resource's logical
+prerequisite is unmet, it remains in its ordinary waiting state, and new create
+requests retain their existing API precondition errors. This is logical OSAC
+readiness only; it does not claim provider connectivity, policy enforcement, or
+routing. `Skipped` describes the message/result and is not a Kubernetes
+condition status.
+
+If a legacy ExternalIPAttachment points to an ExternalIP whose fake
+`0.0.0.0` address is cleared during migration, it remains
+`phase=Progressing` with `Ready=False`, reason `ExternalIPNotAllocated`, and a
+message that routing is waiting for a real allocation. It launches no routing
+job while disabled. This waiting case does not weaken API validation: new
+ExternalIPAttachments still require an Allocated ExternalIP and a Ready target.
+
+ExternalIP is the allocation exception. If no real manager-confirmed
+allocation has completed, it remains `state=Pending`, `phase=Progressing`, with an empty
+`address` and `Ready=False`, reason `ProvisioningDisabled`; the message says
+allocation is waiting for provider networking to be enabled. The backend remains
+the address allocator when enabled; OSAC does not select an address from the
+pool CIDR. If a real allocation completed before the setting was disabled,
+retain its last manager-confirmed `state=Allocated` and address from the
+validated allocated-address annotation, set
+`phase=Progressing` while provider networking is disabled, and set
+`Ready=False`, reason `ProvisioningDisabled`. The message identifies the
+address as last-known information that is not being reconciled or guaranteed
+reachable. If an allocation already in progress finishes while networking is
+being disabled, OSAC waits for terminal job state and records the allocation
+only after validating the successful result envelope and the real IPv4 address
+in the manager-written annotation. It does not dispatch a new allocation or
+compensating operation. Never write `0.0.0.0` or another placeholder. On rollout
+to this behavior, convert
+existing disabled-mode `0.0.0.0` records to Pending with an empty address;
+attachments that depended on the placeholder remain waiting until a real
+allocation is confirmed. [User]
+
+#### In-Flight Provider Work and Deletion
+
+Any provider-network operation already in progress must reach a terminal
+state before OSAC reports work skipped or completes deletion. If an operation
+cannot be confirmed terminal, the resource remains pending and deletion stays
+incomplete so the operation can be checked again. If the operation completes
+before disablement takes effect, OSAC records that confirmed result and does not
+start a compensating cleanup operation. This applies to work spanning multiple
+manager targets, network configuration, address allocation, host port moves,
+and DHCP discovery. [User]
+
+Once in-progress provider work is terminal, live resources report provider
+work skipped. Live resources with unmet logical prerequisites remain waiting as
+specified above. Deletes still respect dependency guards and auto-created child
+deletion order, then complete OSAC object deletion without provider cleanup.
+Logical cascade deletion does not imply provider cleanup. Turning the setting
+off also does not withdraw existing provider state or public exposure. Existing
+ExternalIPAttachment DNAT and NATGateway SNAT routes, allocated addresses,
+segments, security rules, overlays, and port placements may remain effective
+until manual/provider-side cleanup. Disabled reconciliation does not remove
+them. Existing hosts are not moved back to provisioning connectivity. [User]
+
+When the setting is enabled again after rollout, Pending ExternalIPs may proceed
+to provider allocation. An automatic attachment is created only after a real
+allocation and workload readiness are confirmed. Deleted OSAC objects are not recreated to
+clean up provider leftovers; those leftovers require provider/manual cleanup.
+
+#### Workload flow boundary
+
+The manager-backed flows below apply when the setting is enabled. When it is
+disabled, ordinary workload provisioning remains available for API-valid
+requests:
+
+- VMaaS provisions VMs on platform default networking; disabled mode does not
+  require or apply tenant subnet placement.
+- BMaaS provisions new hosts on baseline provisioning connectivity, skips
+  tenant port movement and networking handoff reboots, and performs no tenant
+  DHCP queries or tenant-IP feedback. Each incomplete network phase skipped
+  after disablement uses `Status=Unknown`, reason `ProvisioningDisabled`, and a
+  message identifying the skipped operation. Confirmed phases from before
+  disablement retain `True`; legacy `True`/`Skipped` conditions from the current
+  disabled path are normalized to `Unknown`/`ProvisioningDisabled`. A skipped
+  network phase counts as complete only when its condition is `True` or
+  `Unknown` with that exact reason;
+  normal power control remains active, so `--auto-up` still powers
+  the host on and it remains on provisioning connectivity. Workload Ready means
+  host provisioning completed, not tenant connectivity.
+- CaaS continues cluster and worker provisioning on baseline platform/
+  provisioning connectivity. That connectivity must already support
+  assisted-service/control-plane access, required DNS and address services,
+  and installation/image dependencies. Tenant-network routing, OSAC-managed
+  tenant VIP pools, and public ExternalIP routing are not supplied by OSAC in
+  disabled mode; an environment that relies on those resources must provide
+  adequate baseline connectivity before cluster installation can succeed.
+
+Tenant defaulting and all API validation remain in force. Disabled mode is
+not an exemption for missing defaults, invalid interfaces, unsupported
+workload types, or allocation prerequisites. Automatic ExternalIP requests
+retain pool/capacity validation; a persisted request whose IP stays unallocated
+does not create an ExternalIPAttachment; one is created only after its ExternalIP
+is Allocated and the workload is Ready. Ordinary workload provisioning does
+not wait for skipped provider work to produce an address. [User]
+
+For default tenant networking, onboarding creates the logical default
+VirtualNetwork, Subnet, and SecurityGroup through their normal API paths. It
+does not create the default ExternalIP or NATGateway while provider networking
+is disabled: no ExternalIP can be allocated, and NATGateway creation retains
+the existing `Allocated` prerequisite. Once those logical defaults are ready,
+`DefaultNetworkingReady` is true with reason `ProvisioningDisabled`, allowing
+VM, BM, and cluster resources to use the same default attachment resolution
+and API validation. This readiness does not assert provider connectivity or
+outbound NAT. When provider networking is enabled again, default networking
+creates the missing ExternalIP and NATGateway through the normal allocation
+and readiness gates. [User]
+
 ## Alternatives (Not Implemented)
 
 **Original NetworkClass model.** Tenants select a NetworkClass per VN.
@@ -1532,6 +1712,33 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 *Section to be completed when targeted at a release.*
 
+### Provider Networking Control Coverage (FR-10)
+
+- Verify enabled and disabled create/delete for each of the seven resource
+  kinds, including resources carrying legacy
+  implementation-strategy annotations. Disabled paths launch zero provider
+  jobs; Create/List/Get/Delete retain API semantics and every networking
+  specification/metadata update remains rejected, including SecurityGroup rules.
+- Verify in-progress provider-network operations reach terminal state before
+  skipped status or deletion completion. Include multi-target Subnet work,
+  completion races, and retryable status errors.
+- Verify non-allocating Networking API resources report `Ready=True`, reason
+  `ProvisioningDisabled`, and a skipped-work message while preserving dependency
+  ordering. Verify an unallocated ExternalIP has an empty address, never reports
+  Allocated, and cannot satisfy attachment/NATGateway creation gates. Verify a
+  previously allocated ExternalIP retains only its confirmed backend address
+  while Ready is False, and that a legacy attachment referencing a cleared
+  sentinel waits without submitting routing work.
+- Verify VM jobs use platform default networking; BM provision/deprovision jobs
+  stay active while port moves, handoff reboots, and DHCP queries are skipped;
+  and core CaaS ClusterOrder jobs run with baseline connectivity while
+  tenant VIP allocation, IPAM, routing, public DNS, and provider cleanup do not
+  run while disabled.
+- Verify that the same selected setting governs both operator areas after
+  rollout, while networking API and reconciliation remain available.
+- Verify logical deletion/cascade ordering does not claim provider cleanup;
+  existing provider resources may remain after the rollout or deletion.
+
 ## Graduation Criteria
 
 *Section to be completed when targeted at a release.*
@@ -1540,14 +1747,60 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 *Section to be completed when targeted at a release.*
 
+The provider gate defaults to enabled, preserving the current osac-operator
+umbrella default. BMF deployments that previously inherited the standalone
+chart's disabled default change behavior unless their existing profile or
+upgrade values select and set the desired combined state. When the previous
+operator settings differ, the shared setting necessarily changes one of them.
+Changing the gate requires a
+Helm/Enclave upgrade and rollout of both operators; it is read at startup.
+Disabled behavior is established after both operators use the new
+value and tracked network jobs are terminal. Older pods may still submit work
+during a rolling upgrade, so the disabled contract must not be claimed before
+rollout completes. API availability is independent of this rollout. Previously active provider
+network operations must reach terminal state before disabled status or deletion
+completion is reported. [User]
+
+A downgrade to an operator/chart that does not support the gate restores its
+older provider behavior. Provider resources left by disabled cleanup require
+manual/provider-side reconciliation before re-enabling or downgrading; the
+setting does not reverse previous provider changes. No schema migration is
+introduced by this setting. [User]
+
 ## Version Skew Strategy
 
 *Section to be completed when targeted at a release.*
+
+Both operator versions and their charts must support the same global startup
+setting. Mixed operator versions/settings do not provide the disabled-mode
+guarantee; complete the coordinated rollout before treating provider work as
+disabled. The fulfillment API has no new field or registration dependency.
+[User]
 
 ## Support Procedures
 
 *Section to be completed when targeted at a release.*
 
+Inspect the global Helm value, both operators' startup environments, resource
+conditions, and tracked AAP job states. `Ready=True` with reason
+`ProvisioningDisabled` means only that a non-allocating OSAC object completed
+its logical lifecycle. BM networking-phase conditions with `Status=Unknown` and
+reason `ProvisioningDisabled` identify work that was skipped; neither form proves
+provider connectivity, allocation, or cleanup. Cancellation errors require restoring AAP access and
+waiting for terminal state. Delete provider leftovers or restore host port
+placement using provider/manual procedures before assuming cleanup or baseline
+connectivity. Change the setting through Helm/Enclave rollout. [User]
+
 ## Infrastructure Needed
 
 No additional infrastructure beyond existing OSAC components and managers.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

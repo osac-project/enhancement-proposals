@@ -20,6 +20,12 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
+Provider-dependent connectivity, allocation, and cleanup in this document
+describe the enabled mode. FR-13 defines the shared installation/upgrade
+setting and disabled experience. Networking APIs retain the published default
+SecurityGroup selection, immutability, validation, and dependency rules in
+both modes. [User]
+
 ## 1. Problem Statement
 
 Provisioning bare-metal servers requires manual switch configuration outside the OSAC API. Tenants cannot attach bare-metal servers to subnets, apply security groups, or configure external access through the API. The system does not expose which physical network interfaces are available on a bare-metal server, forcing tenants to discover interface names through out-of-band documentation. Creating a reachable bare-metal server with both inbound and outbound connectivity requires sequential API calls to create networking resources and manual coordination with infrastructure administrators for switch port configuration.
@@ -99,7 +105,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto External IP
 
-- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system auto-selects the external IP pool with the most available capacity, allocates an external IP, and creates an external IP attachment binding it to the server's primary attachment subnet IP. The external IP and attachment are labeled as auto-provisioned. [User]
+- **FR-6:** Bare-metal servers support `--external-ip-attachment`. The system synchronously selects an ExternalIPPool, validates and reserves one pool-capacity slot, and persists a Pending ExternalIP request; provider address allocation is asynchronous. Only after a real backend allocation and a Ready bare-metal target with a known primary attachment address are confirmed does the system create an ExternalIPAttachment. The ExternalIP and resulting attachment are labeled as auto-provisioned. If networking is disabled, the Pending ExternalIP retains its logical capacity reservation until deletion, no provider address or attachment is created, and bare-metal provisioning continues. [User]
 
 #### Network Connectivity Configuration
 
@@ -123,13 +129,22 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Deletion
 
-- **FR-12:** During bare-metal server deletion, the system deconfigures network connectivity for the selected interface and releases the allocated IP address. [User]
+- **FR-12:** When provider networking is enabled, bare-metal server deletion deconfigures network connectivity for the selected interface and releases the allocated IP address. When disabled, no network deconfiguration or IP-release operation is submitted. [User]
+
+#### Provider Networking Disabled
+
+- **FR-13:** A Cloud Provider Admin can disable OSAC network-provider operations through the shared Helm setting or Enclave Wizard checkbox available during installation or upgrade while keeping networking APIs, their authorization/validation/defaulting, and ordinary bare-metal server provisioning available. The setting takes effect through rollout and is not an OSAC console live toggle. Normal host inventory, OS provisioning, hardware/power management, and deprovisioning remain available. New hosts remain on provisioning connectivity; OSAC skips tenant port moves, tenant handoff reboots, and tenant DHCP/IP discovery. Each incomplete `NetworkAttachmentsReady`, `NetworkHandoffComplete`, and `IPDiscoveryComplete` phase skipped after disablement reports `Unknown`/`ProvisioningDisabled`; a phase confirmed complete before disablement keeps its `True` condition. The phase orchestrator and progress derivation treat a phase as complete only when it is `True` or `Unknown` with that exact reason. Overall server Ready means OS provisioning completed, not tenant connectivity. Non-allocating Networking API resources report `Ready=True`/`ProvisioningDisabled` after logical prerequisites pass. An unallocated ExternalIP remains Pending with an empty address and reports `Ready=False`/`ProvisioningDisabled`; its one logical pool-capacity reservation remains held until deletion, and no ExternalIPAttachment is created. A confirmed allocation retains its real address and `Allocated` state but reports `Progressing` and `Ready=False`/`ProvisioningDisabled` while networking is disabled. Existing network jobs are cancelled and awaited before skipped/deleted completion; no cleanup job or substitute is launched. Normal deletion of a host created in disabled mode can use its unchanged provisioning connectivity. If a host was moved to a tenant network before disablement, OSAC does not move it back; provider/manual restoration may be required before Ironic cleaning can use provisioning connectivity. The disabled deletion path does not synthesize `NetworkOffboardComplete`. Preserve an existing condition as a record of the prior enabled-mode power-off attempt: `True` confirms power-off; `False` means completion was not observed before disablement. Neither value proves port movement. [User]
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Auto external IP allocation completes synchronously within the create API call (no async allocation delay). If no pool has available capacity, the create API call returns an error. [User]
+- **NFR-1:** ExternalIP pool selection and capacity validation complete synchronously within the create API call; provider address allocation is asynchronous. If no pool has available capacity, the create API call returns an error. [User]
 
 - **NFR-2:** Network attachment provisioning (connectivity configuration) completes within 2 minutes for the selected interface. [User]
+
+Connectivity, allocation, provider policy enforcement/cleanup, and related
+provider-work timing requirements described here apply when provider networking is
+enabled. Disabled mode retains API prerequisites and explicitly identifies
+skipped provider work; it does not claim those provider outcomes. [User]
 
 ## 5. Acceptance Criteria
 
@@ -144,6 +159,15 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - [ ] Creating a bare-metal server with more than one network attachment returns a maximum-one error
 - [ ] Bare-metal server primary attachment IP is visible in status after network connectivity is configured
 - [ ] External IP attachment with bare-metal server target routes inbound traffic to the server's primary attachment IP
+
+- [ ] With the shared setting disabled after rollout, an API-valid ordinary workload request still provisions using the stated platform/provisioning connectivity
+- [ ] With `--auto-up` (`RunStrategy=Always`) and networking disabled, ordinary power reconciliation still turns the host on; it remains on provisioning connectivity and no tenant handoff or tenant IP discovery runs
+- [ ] Non-allocating Networking API resources report `Ready=True`; incomplete BMI network phases skipped after disablement report `Unknown`/`ProvisioningDisabled`, while confirmed earlier phases retain `True`; both phase orchestration and progress accept only the exact Unknown/ProvisioningDisabled skip; server Ready does not claim tenant/public routing, ExternalIP allocation, or provider cleanup
+- [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
+- [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
+- [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary host deprovisioning stays active, and a previously tenant-moved host may require provider/manual restoration before Ironic cleaning
+- [ ] An unallocated ExternalIP reports Pending/Progressing with an empty address; an automatic attachment is created only after real allocation and a Ready target with a known primary attachment address [User]
+- [ ] Disabled deletion does not synthesize `NetworkOffboardComplete`; any existing value remains a host-power observation and does not assert that the fabric port moved [User]
 
 ## 6. Assumptions
 
@@ -197,3 +221,13 @@ Resolved: Return error, no resource persisted.
 ### ~~9.3 What is the interface selection logic when network attachments are omitted and the BareMetalInstanceType has multiple fabric ports?~~ — Resolved
 
 Resolved: First in the list. Ports are ordered in the BareMetalInstanceType; when multiple ports share the same role, the first one is the default. This is already defined in FR-2.
+
+---
+
+## Provenance
+
+Committed: commit @ prd 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
