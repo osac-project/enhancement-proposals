@@ -3,7 +3,7 @@ title: agentless-vlan-fabric-manager
 authors:
   - yonibettan@gmail.com
 creation-date: 2026-09-08
-last-updated: 2026-10-04
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3664
   - https://redhat.atlassian.net/browse/OSAC-4307
@@ -31,9 +31,11 @@ This design registers 'agentless_net' as a pluggable physical fabric manager and
 implements the existing OSAC Networking API on managed-switch infrastructure.
 The implementation reuses the NetworkClass/dispatcher lifecycle, maps each
 VirtualNetwork to an isolated Linux routing namespace, maps each Subnet to a
-unique VLAN, and provisions DHCP, permit-all forwarding, BGP-backed external
-reachability, whole-address DNAT, and explicit-source SNAT through Ansible
-roles. Its manager registration follows the shared
+unique VLAN, provisions DHCP, BGP-backed external reachability, whole-address
+DNAT, explicit-source SNAT, and required per-binding SecurityGroup policy
+through Ansible roles. The current AgentlessNet packet path does not yet prove
+that policy and remains a conformance blocker. Its manager registration follows
+the shared
 [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
 See [PRD](prd.md) for detailed requirements.
 
@@ -48,11 +50,12 @@ ExternalIPAttachment, and NATGateway. [Codebase: osac-aap/collections/ansible_co
 
 The current agentless path allocates VLANs and creates a router namespace per
 cluster workflow. The unified networking model requires a namespace per
-VirtualNetwork, multiple VLAN-backed Subnets inside that namespace, permitted
-routing between those Subnets by default, permitted external ingress and egress
-through supported paths, and no private routing between different
-VirtualNetworks. SecurityGroup resources and policy enforcement are deferred;
-the design must not introduce policy-dependent readiness gates.
+VirtualNetwork and multiple VLAN-backed Subnets inside that namespace. The
+selected Fabric Manager must enforce the shared SecurityGroup contract for
+every assigned workload binding on same-Subnet, routed, and external paths.
+The current permit-all forwarding and Layer 2 paths do not meet that contract;
+per-binding enforcement is a release blocker until the AgentlessNet data path
+and conformance tests prove it.
 [Locked: D12] [User] [Research: VLANs and Linux network isolation]
 
 Bare-metal nodes must obtain IPv4 addresses through fabric-side DHCP, and the
@@ -69,8 +72,9 @@ creating DNAT. [PRD: FR-4] [Codebase: osac-aap/playbook_osac_query_dhcp_lease.ym
 - Reuse NetworkClass discovery, dispatcher selection, controller finalizers, and
   provisioning job tracking instead of adding an agentless-specific controller
   architecture. [Codebase: osac-operator/pkg/networkmanager]
-- Implement all fabric-manager operations required by the existing Networking API
-  without adding public gRPC fields, REST resources, or CRDs. [Locked: D3, D5]
+- Implement every Fabric Manager operation and target assigned to the
+  Fabric-only IPv4 profile without adding public gRPC fields, REST resources,
+  or CRDs. This includes contract-defined SecurityGroup operations.
 - Use an explicit, idempotent mapping between VirtualNetworks, Subnets, VLANs,
   Linux routing namespaces, DHCP leases, forwarding state, and external
   translation rules.
@@ -95,10 +99,9 @@ creating DNAT. [PRD: FR-4] [Codebase: osac-aap/playbook_osac_query_dhcp_lease.ym
 - Creating tenant default networking resources; those are created by generic
   tenant onboarding and are consumed by the fabric manager like any other
   Networking API resource. [PRD: §2.2]
-- Implementing SecurityGroup resources, policy semantics, policy enforcement, or
-  provider-managed default-deny readiness checks. Until the future
-  SecurityGroup-like policy effort, supported routed traffic is permitted by
-  default; topology still prevents private routes between VirtualNetworks.
+- VM-to-fabric bridging and VM address assignment, which require a compatible
+  K8s Manager in the Fabric-backed EVPN profile. AgentlessNet declares no
+  `evpn-vxlan` capability.
 
 ## Proposal
 
@@ -111,8 +114,9 @@ pool capacity accounting; the operator owns CRDs, finalizers, dependency
 checks, and observed status. AgentlessNet owns provider-side pool and
 ExternalIP address allocation in its locked state file, as well as
 VirtualNetwork/Subnet realization, per-VirtualNetwork transit links, BGP `/32`
-reachability, the permit-all forwarding baseline, BMF port binding, DNAT, and
-SNAT. It writes provider-result annotations after state-file commits; the
+reachability, per-binding SecurityGroup policy, BMF port binding, DNAT, and
+SNAT. It returns contract-defined `osac_result` artifacts after state-file
+commits; OSAC owns API annotations and status. The
 operator exposes a validated address as `ExternalIP.status.address`. [PRD:
 FR-1, FR-2]
 
@@ -148,55 +152,42 @@ feedback rather than exposing AAP or switch details to tenants.
 
 #### Backend registration and installation
 
-Starting state: the provider has a Cumulus switch fabric, an agentless network
-node, the required AAP inventories, and provider-scoped ExternalIPPool
-resources. Pool CIDRs remain API/controller input and are not AgentlessNet
-state.
+The provider installs a Cumulus-backed network node, AAP inventories, and
+provider-scoped ExternalIPPool resources. Pool CIDRs remain API/controller
+input and are not AgentlessNet state.
 
-1. The unified Networking API selects the backend through
-   NetworkClass.fabric_manager and the osac-operator dispatcher. It does not
-   use NETWORK_STEPS_COLLECTION. That variable selects the AAP collection used
-   by embedded CaaS workflows such as cluster_infra and external_access; the
-   CaaS follow-up may set it to agentless_net.steps, but this BMaaS-focused
-   design does not require changing it. [PRD: FR-1] [Codebase: osac-aap/group_vars/all/configuration.yaml]
-2. The admin enables the operator's
-   'networkManagers.fabricManagers.agentless_net' Helm entry with
-   capabilities 'ipv4', description, and fabric role.
-3. The installer creates a ConfigMap labeled
-   'osac.openshift.io/network-fabric-manager' with 'data.name=agentless_net'.
-   The operator discovers it and includes the manager in NetworkClass
-   capability reconciliation. All networking CR projections use the configured
-   `OSAC_NETWORKING_NAMESPACE` hub namespace; tenant IDs remain annotations,
-   not namespaces. [Codebase: osac-operator/charts/operator/templates/network-managers.yaml]
-4. The post-install NetworkClass hook selects 'fabric_manager=agentless_net'.
-   The Cloud Infrastructure Admin chooses the physical backend through
-   deployment configuration, not through a new UI selector. Existing UI/API
-   flows can list and select the resulting NetworkClass by name when creating
-   a VirtualNetwork; they do not need to edit the deployment-only
-   fabric_manager routing key. No new UI is delivered in this milestone.
-   [Locked: D6, D7] [Codebase: osac-ux/libs/ui-components/src/api/v1/networking.ts]
-5. The provider supplies the existing agentless inventory and credentials
-   configuration. The inventory describes the Cumulus switches, network nodes,
-   interfaces, provider-facing external interface, BGP peer/session, and
-   connection data required by AAP. It also supplies a transit CIDR pool that
-   does not overlap tenant Subnets. VLAN allocation is internal state from the
-   configured VLAN-ID pool; DHCP is created per Linux namespace; and the state
-   file is managed on the network node. These are not tenant or Enclave Wizard
-   controls in this milestone. [Codebase: osac-aap/group_vars/all/agentless_net.yaml]
+The target operator registration uses role Fabric, name agentless_net,
+implementationRef osac.templates.agentless_net, contractVersion v1, and
+capability ipv4. It does not advertise evpn-vxlan or list operations/targets,
+so it is eligible only for the Fabric-only IPv4 profile. The collection must
+be installed in the AAP execution environment. Do not publish this registration
+as contract v1 or make it selectable until every assigned operation and target
+passes contract conformance. The current SecurityGroup packet path is a known
+blocker, so the current AgentlessNet implementation is not yet
+contract-conformant.
 
-A missing manager registration or a NetworkClass that names an undiscovered
-manager prevents dispatch and leaves the affected resource in a diagnostic
-failure condition; it does not silently fall back to Netris.
+The provider supplies Cumulus switches, network nodes, interfaces, external
+interface, BGP peer, transit CIDR pool, VLAN-ID pool, and state-file location.
+The deployment selects fabric_manager=agentless_net through its NetworkClass.
+The generic Enclave installation flow discovers registered managers from OSAC
+and displays them dynamically; it must not keep a product-specific list. This
+feature adds no AgentlessNet-specific UI. Tenant users select the resulting
+NetworkClass through the existing API.
+
+A missing or invalid registration, unsupported profile, or NetworkClass naming
+an undiscovered manager prevents dispatch and leaves a diagnostic condition.
+OSAC never substitutes Netris or another default implementation.
 
 #### Networking resource lifecycle
 
 The Tenant Admin creates and deletes the tenant's Networking API resources:
 VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and NATGateway. A
 usable tenant network requires one VirtualNetwork with at least one Ready
-Subnet before a machine can attach. The agentless backend creates no
-SecurityGroup resources and applies no policy rules; supported routed traffic
-uses the permit-all forwarding baseline until the future policy effort. Tenant
-Users consume these resources through their workload workflows. [User]
+Subnet before a machine can attach. SecurityGroup enforcement is a required
+Fabric Manager operation, not deferred work. The selected manager applies the
+contract policy to current bindings; the AgentlessNet packet path remains a
+release blocker until it proves that behavior. Tenant Users consume these
+resources through their workload workflows. [User]
 
 1. The Tenant Admin creates a VirtualNetwork and one or more Subnets through
    the existing gRPC/REST API or CLI.
@@ -209,7 +200,7 @@ Users consume these resources through their workload workflows. [User]
    playbook. The implementation strategy selects
    `osac.templates.agentless_net`.
 4. AgentlessNet reconciles the desired fabric state idempotently: one namespace
-   and permit-all forwarding baseline per VirtualNetwork, and one
+   and contract-compliant SecurityGroup enforcement per VirtualNetwork, and one
    VLAN/interface/gateway/DHCP binding per Subnet. Subnet reconciliation never
    binds a host access port.
 5. ExternalIPPool and ExternalIP remain controller-managed allocation
@@ -230,93 +221,50 @@ already performs this validation. [Codebase: fulfillment-service/proto/private/o
 
 #### BMaaS attachment and DHCP feedback
 
-This design specifies the BMaaS reference path. CaaS and VMaaS service-specific
-attachment workflows follow in OSAC-1611 and OSAC-3665; their workflows and
-service-specific input contracts are not expanded here. [Locked: D1, D2]
+BMaaS is the reference service path for physical workload attachment. CaaS
+physical workers use the same operations through the BMaaS BaremetalInstance
+path; a Cluster is not a target for physical port movement or DHCP lease
+queries. ComputeInstance networking requires a Fabric-backed EVPN profile
+with a compatible K8s Manager and is outside AgentlessNet's IPv4-only profile.
 
-1. The bare-metal-fulfillment-operator resolves each attachment into a stable
-   backend-neutral binding contract. The binding key is
-   `<baremetal-instance-uid>/<interface>/<subnet-uid>`, not a display name. It
-   contains the BareMetalInstance UID, BareMetalHost UID, logical interface,
-   authoritative MAC from the `osac.openshift.io/interface-macs` annotation,
-   Subnet UID, parent VirtualNetwork UID, server-side tenant attribution,
-   operation direction, and the provider provisioning-network ID. The logical
-   interface remains the status identity; the MAC is the DHCP lease identity.
-   This default-permit milestone carries no policy-resource or
-   SecurityGroup-association input. [User] [Codebase:
-   bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_types.go]
-   The BMaaS attachment contract permits each `subnetRef` at most once within
-   one BareMetalInstance; a Subnet may still be used by many BareMetalInstances.
-   Multi-NIC BareMetalInstances therefore use distinct Subnets, and duplicate
-   `subnetRef` values are rejected before network handoff or DHCP discovery.
-2. After host provisioning, the BMF flow starts the generic
-   `playbook_osac_move_network_attachment.yml` AAP job with this contract:
-   `operation` (`attach` or `detach`), `binding_uid`, host/interface/MAC
-   identity, `subnet_uid`, `virtual_network_uid`, tenant attribution, and
-   `provisioning_network_id`. The playbook must not
-   look up `netris_bm_provisioning_vnet` or reduce the binding to a V-Net name.
-   Agentless resolves `subnet_uid` to the persisted tenant VLAN and resolves
-   `provisioning_network_id` from provider configuration to its exact access
-   VLAN. The role returns `binding_uid`, operation ID, resolved switch/port,
-   tenant VLAN, provisioning VLAN, direction, and observed state.
-3. For `attach`, Agentless records the desired binding before changing the
-   switch. It verifies the host port identity, then performs reset-plus-set as
-   one switch transaction or locked idempotent convergence: reset the access
-   configuration and set the port to the resolved tenant VLAN. It reports
-   success only after the switch port and `port_bindings` state agree. The BMF
-   operator then reboots the host (or renews the link when the service supports
-   it) and waits for the host's reboot/power condition and post-move DHCP lease.
-   `NetworkHandoffComplete` is set only after port move, reboot completion, and
-   OS DHCP on the tenant network; IP discovery and Ready are gated on it. A
-   retry with the same binding UID and operation ID is a no-op after each phase
-   is verified.
-4. For `detach`, the BMF operator first powers the host off while it is still
-   on the tenant network. Only after `PowerOff` is observed does the same
-   contract restore the exact provider provisioning network recorded in
-   `port_bindings`, not the deleted Subnet's display name. Agentless resets the
-   tenant access configuration and sets the port to the saved provisioning VLAN,
-   verifies the port, then marks the binding `restored` and removes it.
-   `NetworkOffboardComplete` is set only after power-off and provisioning-VLAN
-   restoration. If state is missing, the role may use only the stable provider
-   provisioning-network ID; it must fail closed when that ID or its VLAN mapping
-   is unavailable. The BMF deprovisioning finalizer waits for this
-   acknowledgement before the host can leave the provisioning workflow.
-5. The target obtains an IPv4 address through DHCP in the VN namespace. One
-   DHCP service is bound to every Subnet VLAN interface in that namespace, so
-   each Subnet's broadcast domain has a local DHCP presence. Central DHCP with
-   relay is not supported in this milestone. [PRD: FR-4] [Locked: D13] [User]
-   [Research: Local DHCP presence per broadcast domain]
-6. The generic 'playbook_osac_query_dhcp_lease.yml' invokes the selected
-   template's 'query_dhcp_lease' task for each network attachment. Because each
-   `subnetRef` is unique within the BareMetalInstance, the agentless task uses
-   the authoritative BMaaS port MAC resolved from the
-   `osac.openshift.io/interface-macs` annotation together with `subnetRef` to
-   match the lease store and publishes one lease entry per requested Subnet
-   through 'set_stats'. Named fabric-server workflows may use their host
-   identity, but BMaaS does not use an interface name as the lease key.
-7. The operator validates the artifact's job status, attachment identity,
-   authoritative MAC, Subnet reference, address family, and freshness before
-   writing the observed address to the resource status. For BMaaS, each entry
-   must contain a `mac_address` matching the interface-macs annotation, the
-   expected `subnet_ref`, and the assigned IP. The artifact must contain exactly
-   one entry for each requested SubnetRef; duplicate, unexpected, missing, or
-   MAC-mismatched entries fail IP discovery.
-8. The bare-metal operator retrieves the completed AAP job, parses
-   DHCPLeaseResult.Leases, maps each lease by authoritative MAC plus the unique
-   SubnetRef, validates the IP address, and writes
-   Status.NetworkAttachmentStatuses. If a lease is missing, duplicated,
-   unexpected, MAC-mismatched, or invalid, IP discovery remains failed and
-   reconciliation retries.
-9. The osac-operator BareMetalInstance feedback controller watches the CR status
-   change and calls the fulfillment-service BareMetalInstances.Signal RPC.
-   fulfillment-service persists the status, after which ExternalIPAttachment
-   reconciliation can read the target's primary IP and create DNAT.
-10. CaaS and VMaaS attachment and IP-address workflows can reuse the same
-   direction, stable-subnet, host/interface, and provisioning-network contract;
-   their service-specific identity resolution and IP-address workflows remain
-   follow-up work.
-   VM IP assignment and OVN bridging are not performed by this backend. [Locked: D8]
+OSAC supplies the common `osac_job_vars` envelope and the normalized
+BaremetalInstance resource. The AgentlessNet collection implements the
+contract's fixed task entry points and consumes only the operation inputs in
+`context`:
 
+- `workload_attachment.move` uses `context.attachment`. OSAC provides the
+  stable binding UID, `workloadKind: BaremetalInstance`, workload UID, host
+  UID, interface, authoritative MAC, Subnet and VirtualNetwork UIDs and
+  references, tenant ID, provider provisioning-network ID, and an exact
+  `action` of `ATTACH` or `DETACH`. The role must not infer the action from
+  `deletionTimestamp` or require an Agentless-specific field.
+- On `ATTACH`, AgentlessNet moves the selected switch port from the configured
+  provisioning VLAN to the VLAN for the referenced Subnet. It reports success
+  only after the port and its stable binding record agree. BMaaS then reboots
+  the host and waits for DHCP on the tenant network before marking handoff
+  complete.
+- On `DETACH`, AgentlessNet restores the provider provisioning network using
+  the stable provider network ID even if the Subnet has already been removed.
+  The operation is retry-safe and reports success only after restoration.
+- A successful move returns `osac_result.data.attachment` with the input
+  binding UID, state `ATTACHED` or `RESTORED`, and observed backend port
+  identity. OSAC owns BaremetalInstance status and readiness.
+
+Lease discovery is a separate `dhcp_lease.query` operation targeting
+BaremetalInstance. The role receives `context.attachments` with one request
+per binding: binding UID, Subnet UID and canonical SubnetRef, interface, and
+authoritative MAC. It matches by the exact SubnetRef/interface/MAC tuple,
+normalizing MAC case, and returns exactly one matching entry per requested
+binding in `osac_result.data.leases` with `subnetRef`, `interface`,
+`ipAddress`, and `macAddress`. Missing, stale, or ambiguous leases fail with a
+diagnostic. A server or workload name is never a fallback lease key.
+
+After the manager returns the lease result, BMaaS validates the matching
+contract entry and writes the address to BaremetalInstance attachment status.
+The feedback controller publishes that status through the existing
+fulfillment-service path; ExternalIPAttachment waits for the primary address
+before creating DNAT. AgentlessNet does not write OSAC status, add provider
+result annotations, or use a private callback as a second result channel.
 #### ExternalIP and inbound access
 
 1. A Cloud Infrastructure Admin creates an ExternalIPPool containing IPv4
@@ -331,12 +279,11 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    fails. The agentless `create_external_ip` AAP job reads the pool entry from
    the locked state file, reuses an existing allocation for the ExternalIP UID
    when retrying, or selects and persists the first available IPv4 address.
-   After the provider entry commits, the role patches the allocated-address and
-   provider-result annotations together on the ExternalIP CR and fails the AAP
-   job if that patch is rejected. The operator validates those annotations,
-   records the `COMMITTED` provider event in fulfillment-service, and only then
-   writes the address to `ExternalIP.status.address` and marks the ExternalIP
-   ALLOCATED. Allocation alone still has no data-plane route or NAT rule.
+   The role returns `osac_result.data.externalIP.address`. OSAC validates the
+   UID, generation, canonical address, and pool membership, then updates its
+   own annotation and `ExternalIP.status.address`. The task does not patch the
+   API resource or send a provider event. Allocation alone still has no
+   data-plane route or NAT rule.
    `ExternalIP` readiness means that a concrete address is allocated; it does
    not mean that inbound traffic is usable. Inbound readiness is represented by
    the separate ExternalIPAttachment resource.
@@ -360,10 +307,10 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    whole-address DNAT rule from `ExternalIP.status.address` to the target
    address, and then announces the exact ExternalIP `/32` through BGP with the
    namespace-side transit address as the next hop. The route is announced only
-   after the namespace, forwarding path, and DNAT rule are present. The
-   VirtualNetwork permit-all baseline is reconciled by the VirtualNetwork
-   lifecycle; the attachment operation does not create or update policy
-   resources.
+   after the namespace and DNAT rule are present. The selected Fabric Manager
+   enforces the contract SecurityGroup policy on this path; unmatched traffic
+   remains denied when a SecurityGroup applies. AgentlessNet cannot be declared
+   conformant until its packet path proves this behavior.
 6. The attachment remains Pending or Progressing until both the parent
    ExternalIP address and the target address are current, the whole-address
    DNAT rule is present, and the BGP `/32` is observed as installed. It reaches
@@ -374,9 +321,8 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    remains reserved for retry or ordered cleanup. For a Cluster target,
    `targetEndpoint` selects the current API-server or
    ingress VIP, and the same all-protocol address translation is used rather
-   than a port-specific rule. Once the supported external path exists, routed
-   inbound traffic is permitted by the default forwarding baseline; no
-   provider-managed default-deny capability is required. [PRD: FR-5] [User]
+   than a port-specific rule. The target becomes reachable only for traffic
+   allowed by its effective SecurityGroup rules. [PRD: FR-5] [Contract]
 
 ExternalIP is an allocated address resource independent of any VirtualNetwork.
 ExternalIPAttachment is the separate binding that gives that address an
@@ -414,11 +360,11 @@ not alter the NATGateway configuration. [Locked: D14]
    Subnet controller to delete its VLAN, gateway, and DHCP state. If the
    VirtualNetwork has no Subnets, the NATGateway keeps its consumer reservation
    and route but has an empty source rule set and reports no egress sources.
-5. The independently reconciled `filter/FORWARD` permit-all baseline allows
-   supported routed packets to reach the SNAT path. The NATGateway role does
-   not evaluate or modify policy resources. The external endpoint observes the
-   allocated ExternalIP as the source address, and established return traffic
-   follows conntrack back through the namespace to the original source.
+5. The selected Fabric Manager enforces the contract SecurityGroup policy on
+   the SNAT path. Only permitted flows reach translation; established return
+   traffic follows conntrack back through the namespace to the original source.
+   AgentlessNet cannot be declared conformant until this behavior is proven on
+   both routed and same-Subnet paths.
    NATGateway is Ready only after the explicit SNAT rules and BGP route are
    observed as installed. [PRD: FR-6] [Locked: D14]
 
@@ -490,73 +436,53 @@ failure message in the existing provisioning history and status condition.
 #### Deletion and cleanup
 
 1. The resource controller observes deletion and retains its finalizer.
-2. For an ExternalIPAttachment, withdraw its ExternalIP `/32` BGP route and
-   wait until the route is absent from the net-node routing/BGP state. Remove
-   the whole-address DNAT rule, delete every namespace conntrack entry whose
-   original or reply tuple contains that ExternalIP, and verify that the owned
-   rule and conntrack state are absent before cleanup succeeds.
-3. For a NATGateway, withdraw its ExternalIP `/32` BGP route and wait for
-   confirmed withdrawal before removing its explicit SNAT rules. Delete every
-   namespace conntrack entry whose original or reply tuple contains that
-   ExternalIP and verify the route, rule, and conntrack state are absent. The
-   referenced ExternalIP remains a separate resource and is not released
-   implicitly.
-4. For an ExternalIP, the fulfillment-service records `release_requested` but
-   does not decrement pool capacity. The ExternalIP controller retains its
-   finalizer while an Attachment/NATGateway consumer reservation, provider
-   allocation task, or UID-keyed `external_ips` entry exists. If no provider
-   job was ever started, the operator still records a verified `NOT_COMMITTED`
-   event for the UUID reservation before removing its finalizer. If the
-   provider reports `NOT_COMMITTED`, the service can release a terminal failed
-   or deleted allocation without an address. If the provider reports
-   `CLEANUP_COMPLETE`, it must include the committed address/digest and prove
-   that both external consumers, the `/32` route, DNAT/SNAT, and conntrack state
-   are absent. The service then performs the single `RELEASED` capacity
-   transaction; only its acknowledgement allows the operator to remove the
-   finalizer. [User]
-5. For a Subnet, remove only DHCP, its VLAN subinterface, gateway IP, and
-   Subnet-owned switch/VLAN state, then release the VLAN ID after confirmed
-   cleanup.
-6. For a VirtualNetwork, remove remaining child fabric state, external boundary,
-   and namespace after children are gone. Do not release its transit `/30` or
-   remove the veth pair until no ExternalIP consumer retains a route or NAT
-   state for that VirtualNetwork.
-7. Remove the finalizer only after the fabric manager reports the desired
-   cleanup state. [PRD: FR-10] [Codebase: osac-operator/pkg/provisioning]
+2. For an ExternalIPAttachment, withdraw its ExternalIP /32 route and wait
+   until it is absent from net-node routing/BGP state. Remove the owned
+   whole-address DNAT rule and owner-specific conntrack state. The task returns
+   success only after route, translation, and conntrack state are absent.
+3. For a NATGateway, withdraw and verify its ExternalIP /32 route, remove the
+   explicit-source SNAT rules, and remove owner-specific conntrack state. The
+   task returns success only after all owned state is absent.
+4. OSAC enforces the ExternalIP consumer dependency: the parent cannot be
+   released while either consumer exists. After consumer deletion succeeds,
+   OSAC dispatches external_ip.release. AgentlessNet removes the UID-owned
+   address and returns releaseState RELEASED only after confirming absence.
+   OSAC validates the common result, updates capacity once, and removes the
+   ExternalIP finalizer. If allocation never committed, release succeeds
+   idempotently when no UID-owned address exists.
+5. For a Subnet, remove its DHCP state, VLAN subinterface, gateway address,
+   and Subnet-owned switch/VLAN state. Release its VLAN after dependent
+   bindings and NATGateway source rules are gone.
+6. For a VirtualNetwork, remove remaining child fabric state and its namespace
+   after children are gone. Keep its transit /30 and veth pair until no
+   ExternalIP consumer retains route or NAT state for that VirtualNetwork.
+7. Remove a finalizer only after the manager task has reported cleanup through
+   osac_result and OSAC has validated it.
 
-The Cloud Infrastructure Admin owns the provider-scoped manager and
-ExternalIPPool resources. The Tenant Admin owns creation and deletion of the
-tenant's VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and
-NATGateway resources. Agentless_net never creates or deletes those API objects;
-it applies and removes the fabric state during their existing reconciliation
-lifecycles. The fulfillment-service owns allocation/consumer reservation
-state and pool counters; the operator owns CR finalizers and observed status;
-AgentlessNet owns provider state and cleanup evidence. This feature creates no
-default networking or policy resources.
+The Cloud Infrastructure Admin owns provider-scoped manager and ExternalIPPool
+resources. The Tenant Admin owns tenant VirtualNetwork, Subnet, ExternalIP,
+ExternalIPAttachment, and NATGateway resources. AgentlessNet never creates or
+deletes those API objects; it applies/removes provider state during
+reconciliation. OSAC owns API reservations, capacity, finalizers, and observed
+status. AgentlessNet owns its provider state. This feature creates no default
+networking or policy resources.
 
 ### API Extensions
 
 No new public gRPC service, REST resource, protobuf field, CRD kind, or webhook
-is introduced. Existing fabric-facing resources receive the agentless backend.
-The fulfillment-service adds an internal, non-tenant reservation record and a
-private provider-result operation; neither is exposed through the public API or
-REST surface. Agentless AAP roles allocate provider-side pool addresses and
-write the established `osac.openshift.io/allocated-address` annotation plus a
-validated provider-result annotation. ExternalIPAttachment and NATGateway use
-the resulting `ExternalIP.status.address` for DNAT/SNAT. Existing status and
-condition fields carry observed readiness and diagnostic failures. [Locked: D3,
-D5, D9]
-
-The implementation changes the following existing surfaces:
+is introduced. Existing fabric-facing resources use contract-v1 registration,
+fixed AAP entry points, normalized job inputs, and osac_result. OSAC owns
+resource status, annotations, and pool-capacity counters. The manager does not
+patch API resources or add a provider-specific result channel.
 
 | ID | Existing surface | Change | Requirements |
 |---|---|---|---|
-| IC-1 | Installer values, manager ConfigMap, NetworkClass selection | Register and select 'agentless_net' as a fabric manager with IPv4 capability | FR-1, NFR-1 |
-| IC-2 | VirtualNetwork and Subnet API/CR lifecycle | Route existing fabric resources through the agentless dispatcher and realize VLAN, namespace, forwarding baseline, and cleanup state | FR-2, FR-3, FR-10, NFR-2, NFR-3 |
-| IC-3 | Fabric network-attachment and DHCP feedback path | Attach and detach BM/CaaS/VM targets through a backend-neutral stable binding contract, restore the provider provisioning network on offboarding, and surface fabric-assigned IPs for BM/CaaS | FR-4, FR-8 |
-| IC-4 | ExternalIPPool, ExternalIP, and ExternalIPAttachment lifecycle | Persist an ExternalIP-UID reservation in fulfillment-service, allocate provider-side addresses through the locked AAP state file, transport and validate the provider result, install whole-address DNAT, and announce/withdraw the consumer-owned ExternalIP `/32` route | FR-5, FR-7, FR-10, NFR-2, NFR-3 |
-| IC-5 | NATGateway lifecycle | Apply explicit outbound SNAT using the address in `ExternalIP.status.address`, announce/withdraw its `/32` route, and never replace it with host/interface MASQUERADE | FR-6, FR-10, NFR-2, NFR-3 |
-| IC-6 | Resource status, conditions, events, and job history | Surface manager registration, provisioning, DHCP, switch, forwarding, BGP route, NAT, provider-result handshake, reservation, and cleanup failures with diagnostic reasons | FR-9, NFR-2 |
+| IC-1 | Installer values, manager ConfigMap, NetworkClass selection | Register agentless_net with its implementation reference, contract v1, and IPv4 capability | FR-1, NFR-1 |
+| IC-2 | VirtualNetwork and Subnet API/CR lifecycle | Route resources through the agentless dispatcher and realize VLAN, namespace, SecurityGroup policy, and cleanup state | FR-2, FR-3, FR-10, NFR-2, NFR-3 |
+| IC-3 | Fabric network attachment and DHCP feedback | Implement workload_attachment.move and dhcp_lease.query for BaremetalInstance; CaaS physical workers use the same BMaaS path | FR-4, FR-8 |
+| IC-4 | External access resource lifecycle | Preserve existing ExternalIP and consumer APIs; resolve tenant/cluster targets explicitly and configure DNAT/SNAT through the assigned contract tasks | FR-5, FR-6, FR-7, FR-10 |
+| IC-5 | NATGateway lifecycle | Apply explicit outbound SNAT using ExternalIP.status.address and announce/withdraw its /32 route | FR-6, FR-10, NFR-2, NFR-3 |
+| IC-6 | Resource status, conditions, events, and job history | Surface registration, provisioning, DHCP, switch, SecurityGroup, forwarding, BGP route, NAT, and cleanup failures | FR-9, NFR-2 |
 
 #### Existing resource and metadata constraints
 
@@ -569,53 +495,40 @@ The implementation changes the following existing surfaces:
   platform, or AAP job ID. Those are implementation state and status metadata,
   not tenant API inputs.
 
-#### ExternalIP reservation and provider-result contract
+#### ExternalIP reservation and manager results
 
-The fulfillment-service stores one durable `external_ip_reservations` record
-per ExternalIP UUID. The record is not a Kubernetes object and is not returned
-by the tenant API. Its key fields are:
+The fulfillment-service remains authoritative for ExternalIPPool capacity,
+tenant allocation status, and the exclusive consumer reservation shared by
+ExternalIPAttachment and NATGateway. A durable reservation keyed by ExternalIP
+UID may serialize allocation retries and update capacity counters exactly
+once. It is OSAC-owned state; a manager does not write it or call a private
+OSAC callback.
 
-| Field | Meaning |
-|---|---|
-| `external_ip_id`, `pool_id` | Stable allocation identity and parent pool |
-| `allocation_state` | `HELD`, `COMMITTED`, `RELEASE_REQUESTED`, or `RELEASED` |
-| `provider_state` | `UNKNOWN`, `NOT_COMMITTED`, `COMMITTED`, or `CLEANUP_COMPLETE` |
-| `address`, `provider_operation_id`, `provider_state_digest` | Provider evidence; address is required only for `COMMITTED` and cleanup evidence |
-| `consumer_kind`, `consumer_id`, `consumer_state` | Exclusive Attachment/NATGateway reservation and `RESERVED` or `CLEANUP_PENDING` state |
-| `release_requested_at`, `released_at`, `version` | Crash recovery, audit, and optimistic-locking fields |
+For `external_ip.allocate`, AgentlessNet reserves an address in its locked
+provider state keyed by the ExternalIP UID and returns the common `osac_result`
+with `data.externalIP.address`. OSAC validates the operation, resource UID,
+observed generation, canonical IPv4 address, and membership in the selected
+ExternalIPPool before it updates ExternalIP status and the OSAC-owned
+allocated-address annotation. A retry for the same UID returns the same
+reservation. A missing, malformed, stale, or out-of-pool result leaves the
+resource non-ready and the capacity reservation held for retry or cleanup.
 
-Create locks the pool row and reservation key in one database transaction. A
-new row increments `pool.status.allocated` and decrements
-`pool.status.available`; a retry for the same ExternalIP UUID reuses the row
-and never increments capacity twice. A release transaction locks the
-reservation and pool, checks the provider and consumer gates, and changes the
-row to `RELEASED` while decrementing `allocated` and incrementing `available`
-exactly once. The row remains as an idempotency tombstone after release.
+For `external_ip.release`, AgentlessNet removes the UID-owned address
+reservation and returns `data.externalIP.releaseState: RELEASED` only after
+that address is absent from provider state. OSAC validates the result before
+releasing pool capacity once. Repeating release for an absent provider entry
+succeeds idempotently.
 
-The private `RecordExternalIPProviderEvent` operation accepts
-`external_ip_id`, `provider_operation_id`, `event`, `address`,
-`provider_state_digest`, `consumer_kind`, `consumer_id`, and
-`route_and_translation_absent`. Event values are `COMMITTED`,
-`NOT_COMMITTED`, `CONSUMER_CLEANUP_COMPLETE`, and `CLEANUP_COMPLETE`.
-`COMMITTED` is accepted only for a valid pool address and a provider entry
-known to exist; `NOT_COMMITTED` is accepted only when the provider has verified
-that no entry exists; `CONSUMER_CLEANUP_COMPLETE` is accepted only for the
-currently reserved child; and `CLEANUP_COMPLETE` is accepted only when the
-provider entry, ExternalIP route, DNAT, SNAT, and conntrack state are absent.
-Replaying the same operation and digest is a no-op; a conflicting event or
-digest is an aborted conflict. Only the operator calls this private operation
-after validating the AAP result. [Codebase:
-fulfillment-service/proto/private/osac/private/v1/external_ips_service.proto]
-
-The provider-result annotations are part of the internal controller contract:
-`osac.openshift.io/allocated-address` carries the committed address,
-`osac.openshift.io/external-ip-provider-event` carries the event,
-`osac.openshift.io/external-ip-provider-operation` carries the AAP operation
-identity, and `osac.openshift.io/external-ip-provider-digest` carries the
-state-file evidence. The ExternalIP reconciler accepts a successful AAP job
-only after these values match the current UUID and desired generation. A
-missing, malformed, stale, or pool-out-of-range result remains retryable and
-does not mark the provisioning version successful.
+ExternalIPAttachment and NATGateway use the existing exclusive consumer
+reservation. Their create operations return success only after the owned DNAT
+or SNAT state and required BGP route are observed. Their delete operations
+return success only after the owned translation and route are absent. OSAC
+releases the consumer reservation after validated task success; the parent
+ExternalIP cannot be released while either consumer remains. Successful tasks
+use the common `osac_result` envelope and do not patch provider-result
+annotations, send provider events, or invoke private callbacks. The exact task
+inputs, results, cleanup gates, and retry requirements are defined by the
+[Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
 
 #### NetworkAPI resource CRs and implementation points
 
@@ -649,7 +562,6 @@ spec:
   networkClass: agentless-vlan
 status:
   phase: Ready
-  backendNetworkId: <agentless-virtual-network-id>
   conditions:
   - type: Ready
     status: "True"
@@ -658,18 +570,17 @@ status:
 `spec.region` identifies the deployment region, `spec.ipv4Cidr` is the
 VirtualNetwork supernet, and `spec.networkClass` selects the existing
 NetworkClass whose fabric manager is `agentless_net`. `status.phase` and
-`status.conditions` expose reconciliation and failure state; the
-provider-specific `status.backendNetworkId` identifies the realized network
-without exposing a Linux namespace name.
+`status.conditions` expose reconciliation and failure state. Provider identifiers remain in manager-owned state; managers do not write OSAC status.
 
 AgentlessNet maps the VirtualNetwork UID to one deterministic Linux routing
-namespace, creates its uplink/external boundary, and initializes an owned
-permit-all forwarding baseline on that namespace's `filter/FORWARD` path. The
-baseline permits supported routed tenant flow and established/related return
-traffic. Local DHCP traffic terminates in the namespace and is not routed
-through this baseline. AgentlessNet records the mapping in the locked state
-file; it does not create tenant child resources or install private routes to
-another VirtualNetwork. [User]
+namespace and creates its uplink/external boundary. The desired state includes
+contract-compliant SecurityGroup enforcement for attached bindings. The current
+`filter/FORWARD` forwarding path and same-Subnet Layer 2 switching do not prove
+per-binding policy and must not be treated as the target. Local DHCP traffic
+terminates in the namespace and is not routed through this baseline.
+AgentlessNet records the mapping in the locked state file; it does not create
+tenant child resources or install private routes to another VirtualNetwork.
+[User]
 
 ##### Subnet
 
@@ -687,7 +598,6 @@ spec:
   ipv4Cidr: 10.20.1.0/24
 status:
   phase: Ready
-  backendNetworkId: <agentless-subnet-id>
   conditions:
   - type: NetworkReady
     status: "True"
@@ -695,8 +605,7 @@ status:
 
 `spec.virtualNetwork` references the parent routing domain and
 `spec.ipv4Cidr` supplies the client-selected, non-overlapping subnet CIDR.
-`status.phase`, `status.conditions`, and `status.backendNetworkId` report
-observed provisioning; the VLAN ID is deliberately not a tenant API field.
+OSAC-owned status.phase and status.conditions report observed provisioning; the VLAN ID is deliberately not a tenant API field. Provider IDs remain in the manager's UID-keyed state.
 
 AgentlessNet allocates one globally unique VLAN ID for the Subnet UID, creates
 the VLAN on the Cumulus switch through the validated NetworkRunner path, moves
@@ -802,19 +711,12 @@ provisioning fields. Each writer uses a field-scoped merge or read-modify-write
 with conflict retries and never replaces a stale full status.
 
 The fulfillment-service validates the pool and owns the durable capacity
-reservation, but the agentless AAP job selects the concrete address from the
-provider state file. The role writes the established allocated-address
-annotation and a provider-result annotation. The operator validates the result,
-records the private provider event, and publishes the address in
-`status.address` only after the service acknowledges `COMMITTED`. Allocation
-alone creates no traffic rule; the address is consumed later by an
-ExternalIPAttachment or a NATGateway, subject to the durable consumer
-reservation.
-
-Provider-side address selection remains in AgentlessNet for this milestone.
-The fulfillment-service does not advertise capacity as available until its
-reservation reaches `RELEASED`, regardless of whether the provider selected the
-address or only reported `NOT_COMMITTED`.
+reservation. AgentlessNet selects and persists the concrete address in its
+provider state file, then returns `osac_result.data.externalIP.address`.
+OSAC validates that result and writes `status.address` and the
+`osac.openshift.io/allocated-address` annotation. Allocation alone creates no
+traffic rule; the address is consumed later by an ExternalIPAttachment or a
+NATGateway, subject to the OSAC-owned consumer reservation.
 
 ##### ExternalIPAttachment
 
@@ -852,8 +754,8 @@ or stale, it keeps the attachment pending and does not dispatch the AAP job.
 Once the target address is current, AgentlessNet creates an owned DNAT rule
 from `ExternalIP.status.address` to that target, without a protocol or port
 match, and announces the consumer-owned ExternalIP `/32` through BGP using the
-VirtualNetwork transit next hop. The VirtualNetwork permit-all baseline is
-maintained by the VirtualNetwork lifecycle, not by the attachment role.
+VirtualNetwork transit next hop. SecurityGroup policy is enforced per workload binding according to the shared
+contract; a permissive forwarding rule is not sufficient.
 
 ##### NATGateway
 
@@ -918,19 +820,25 @@ tracked separately in OSAC-4308 and OSAC-4309. [PRD: §2.2] [Codebase: osac-ux/l
 
 The AgentlessNet ConfigMap uses the Fabric Manager role label, data.name
 agentless_net, implementationRef osac.templates.agentless_net, contractVersion
-v1, and the IPv4 capability. Manager registration does not list operations:
-contract v1 requires every Fabric Manager to implement the complete operation
-and target set assigned by OSAC's fixed dispatch rules. This design excludes
-SecurityGroup resources and policy enforcement, so AgentlessNet as currently
-specified is not contract v1 conformant and cannot be selected as a conforming
-Fabric Manager until it implements SecurityGroup apply and delete. OSAC rejects
-operations unavailable in the selected profile before AAP and does not
-substitute another manager. [User]
+v1, and the `ipv4` capability. Manager registration does not list operations.
+The Fabric-only IPv4 profile assigns AgentlessNet the complete Fabric
+operation and target set, including SecurityGroup policy and workload
+attachment/DHCP operations for BaremetalInstance. CaaS physical workers use
+the same BaremetalInstance path through BMaaS; Cluster is not a port-move or
+lease-query target. AgentlessNet declares no `evpn-vxlan` capability and
+cannot be paired with a K8s Manager for that profile.
+
+The current permit-all and Layer 2 paths do not implement SecurityGroup
+policy. AgentlessNet is not contract-v1 conformant and cannot be selected as a
+conforming Fabric Manager until every assigned task and target passes the
+contract conformance suite. OSAC rejects profile-incompatible work before AAP
+and never substitutes another manager. [Contract]
 
 The shared contract defines the ConfigMap schema, complete role operation and
-target matrix, task inputs and outputs, and registration validation. This
-design defines AgentlessNet's concrete backend behavior; its SecurityGroup
-exclusion is a contract conformance gap. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
+target matrix, task inputs and outputs, SecurityGroup behavior, and
+registration validation. This design defines AgentlessNet's backend mapping
+and records any implementation gap; it does not redefine the manager
+interface. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
 
 #### NetworkClass capability boundary
 
@@ -1021,7 +929,7 @@ virtual_networks:
       config_path: /etc/agentless-net/dhcp/<virtual-network-uid>/dnsmasq.conf
       lease_path: /var/lib/agentless-net/dhcp/<virtual-network-uid>/dnsmasq.leases
       lease_duration_seconds: <integer>
-    default_forward_policy: permit_all
+    default_forward_policy: deny
 subnets:
   - uid: <subnet-uid>
     virtual_network_uid: <uid>
@@ -1096,12 +1004,11 @@ provider-facing net-node interface used for egress. The
 ExternalIP consumer owns one `<address>/32` announcement, and no L2/ARP
 reachability alternative is claimed.
 
-The fulfillment-service `external_ip_reservations` record is separate from
-this provider state file. The service row owns API capacity, allocation and
-consumer reservation state; the `external_ips` provider entry owns only the
-concrete provider allocation. The two records are correlated by ExternalIP
-UUID, address, provider operation ID, and state digest. A provider event is not
-treated as capacity release until the service transaction accepts it.
+The fulfillment-service allocation and consumer state is separate from this
+provider state file. OSAC owns API capacity and the exclusive consumer
+reservation; the external_ips provider entry owns only the concrete address
+reservation. They are correlated by ExternalIP UID and, after allocation, the
+canonical address. The manager does not write OSAC state or send a callback.
 
 The `external_ip_pools` entries register provider-side pool CIDRs and the
 `external_ips` entries record concrete addresses allocated from those pools.
@@ -1165,38 +1072,44 @@ state. The existing low-level IPAM allocation tasks that use `r+`, `seek`,
 they must be converted to this shared transaction helper before participating
 in the unified state file. [Codebase: osac-aap/collections/ansible_collections/agentless_net/ipam]
 
-##### API action state transitions
+##### Contract operations and AgentlessNet state transitions
 
-| API action | State transition | AgentlessNet data-plane operation |
+AgentlessNet targets the Fabric-only IPv4 profile. It implements every Fabric
+operation and target assigned by contract v1; registrations cannot advertise an
+operation subset. Its fixed entry points are virtual_network.create/delete,
+subnet.create/delete, security_group.apply/delete,
+external_ip_pool.create/delete, external_ip.allocate/release,
+external_ip_attachment.create/delete, nat_gateway.create/delete,
+workload_attachment.move, and dhcp_lease.query. SecurityGroup and
+ExternalIPAttachment include the contract's cluster and baremetal_instance
+targets. Workload movement and DHCP lease lookup target baremetal_instance
+only. CaaS physical workers use that same BaremetalInstance path through BMaaS.
+AgentlessNet does not claim the Fabric-backed EVPN profile.
+
+The state file is an implementation detail for idempotency and recovery. Its
+UID-keyed records do not extend the manager contract, and ordinary operations
+do not return provider identifiers. Every successful task returns the common
+osac_result; only contract-defined operations return data:
+
+| Contract operation | AgentlessNet action | Successful result |
 |---|---|---|
-| VirtualNetwork create/update/delete | Add or reconcile one `virtual_networks` entry, including its transit `/30`, veth identities, and external-reachability mode; remove it only when the VirtualNetwork object is deleted and its child entries are gone | Allocate or reuse the transit link; create or repair the namespace, uplink, default route, and permit-all baseline; remove the link during ordered cleanup |
-| Subnet create/update/delete | Add or reuse one `subnets` entry with VLAN interface, gateway, DHCP range, exclusions, and state generation; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, dnsmasq range, and lease mapping; reload the per-VN daemon; reconcile any active NATGateway `source_cidrs`; no host access-port binding during Subnet provisioning |
-| ExternalIPPool create/delete | Add or reconcile one `external_ip_pools` entry; remove it only when the ExternalIPPool object is deleted | Register or remove provider-side pool CIDRs under the state-file lock; fulfillment-service remains authoritative for capacity counters |
-| ExternalIP create/delete | Create or reuse one fulfillment-service reservation keyed by ExternalIP UUID; add or reuse one complete `external_ips` provider entry keyed by the same UUID; accept provider and consumer cleanup events; release capacity only in the service's idempotent `RELEASED` transaction | Select and persist a complete IPv4 allocation atomically under the state-file lock, patch the provider-result annotations, and remove provider state before the service acknowledges capacity release |
-| ExternalIPAttachment create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add, replace, or remove one `attachments` entry containing the target, whole-address DNAT, `/32` route, saved next hop, and route-announced state; retain the reservation through cleanup | Read the address from `ExternalIP.status.address` and target status, create the all-protocol DNAT rule, announce or withdraw the owned BGP `/32`, then report consumer cleanup to the service |
-| NATGateway create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add or remove one `nat_gateways` entry containing all current source CIDRs, explicit SNAT address, `/32` route, saved next hop, and route-announced state; retain the reservation through cleanup | Read the address from `ExternalIP.status.address`, create explicit `SNAT --to-source` rules, announce or withdraw the owned BGP `/32`, then report consumer cleanup to the service |
-| BMF attachment bind/unbind | Add or reconcile one `port_bindings` entry keyed by binding UID, host/interface/MAC, Subnet, tenant VLAN, and provisioning-network identity | For attach, reset-plus-set the access port to the resolved Subnet VLAN; for detach, reset-plus-set it back to the saved provisioning VLAN and remove state only after verification |
+| virtual_network.create/delete | Create/remove one namespace and transit link after child resources are ready/gone | Empty data object |
+| subnet.create/delete | Create/remove VLAN interface, gateway, DHCP range, and lease mapping | Empty data object |
+| security_group.apply/delete | Reconcile a complete binding snapshot; remove only policy owned by the deleted group | Empty data object |
+| external_ip_pool.create/delete | Register/remove pool CIDRs; OSAC owns API capacity | Empty data object |
+| external_ip.allocate | Persist/reuse one canonical IPv4 address keyed by ExternalIP UID | data.externalIP.address |
+| external_ip.release | Remove the UID entry; absent entries succeed idempotently | data.externalIP.releaseState RELEASED after absence |
+| external_ip_attachment.create/delete | Install/remove owner-keyed DNAT and /32 route after target resolution | Empty data object |
+| nat_gateway.create/delete | Install/remove explicit-source SNAT rules and owner-keyed /32 route | Empty data object |
+| workload_attachment.move | Move to Subnet on attach or restore saved provisioning VLAN on detach | data.attachment with binding UID, ATTACHED/RESTORED, and observed port identity |
+| dhcp_lease.query | Resolve one lease for every requested attachment | data.leases, exactly one entry per request |
 
-Every provider transition is applied under the state-file lock and is persisted
-before the corresponding operation is reported successful. The
-fulfillment-service reservation and provider `external_ips` entry use the
-ExternalIP UUID as their idempotency key. The provider writes the complete
-entry atomically—an allocation either commits the full entry or commits
-nothing. A retry reuses a committed entry by UID instead of allocating a second
-address. A failed allocation with no committed entry keeps the same service
-reservation while retryable; terminal failure or deletion requires a validated
-`NOT_COMMITTED` event before the service can release it. [User]
-
-For an ExternalIP consumer, the desired route and translation state is recorded
-with the consumer UID before the AAP action starts. The role applies the
-namespace translation first, announces the saved `/32` with the saved next hop,
-and sets `route_announced: true` only after both the data-plane rule and route
-are observed. A retry uses those same values. Cleanup reverses that order from
-the outside in: withdraw and verify the route, remove and verify the owned NAT
-rule, delete and verify owner-specific conntrack state, and report
-`CONSUMER_CLEANUP_COMPLETE` to fulfillment-service. The service then clears the
-consumer reservation and `status.attached`; only after that and the provider
-`CLEANUP_COMPLETE` event can the allocation reservation be released.
+Create/apply tasks persist enough UID-keyed backend state to make retries
+idempotent. Delete tasks confirm owned state is absent before returning success.
+OSAC validates operation, resource UID, generation, and result shape; it owns API
+status, annotations, job history, and capacity accounting. The complete
+envelope, field schemas, target matrix, and readiness/deletion ordering are
+normative in the [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
 
 #### DHCP and lease feedback
 
@@ -1220,192 +1133,132 @@ DHCP; `/31` and `/32` remain rejected because this gateway/DHCP model cannot
 provide the required separate host address.
 
 The lease database is the dnsmasq lease-file format at the path above. The
-`query_dhcp_lease` role reads it after validating the current state generation,
-filters for an unexpired authoritative MAC, and confirms that the leased IP is
-inside the requested Subnet CIDR and not reserved. It rejects zero, duplicate,
-expired, MAC-mismatched, or cross-Subnet matches. A daemon restart reloads the
-same lease file; a missing or malformed lease file causes a diagnostic and
-requeue rather than assigning a replacement address. The operator publishes a
-lease artifact containing the attachment identity, MAC, SubnetRef, IP, and
-state generation. [Codebase: osac-aap/playbook_osac_query_dhcp_lease.yml]
+AgentlessNet dhcp_lease.query task reads it after validating the current state
+generation, then returns a lease only when exactly one unexpired entry matches
+the requested Subnet reference, logical interface, and authoritative MAC.
+MAC comparison is case-insensitive after normalization. It confirms the IP is
+inside the requested Subnet CIDR and is not reserved. Zero, duplicate, expired,
+stale, MAC-mismatched, and cross-Subnet matches fail with a diagnostic; the
+manager does not guess from a host or server name.
 
-The agentless 'query_dhcp_lease' role accepts the generic attachment inputs:
+For each request in context.attachments, return one osac_result.data.leases
+entry with exactly subnetRef, interface, ipAddress, and macAddress. The Subnet
+reference is canonical namespace/name. No partial or extra results are
+returned. OSAC correlates the tuple to the binding and writes accepted
+addresses to workload status. A missing lease causes retry and a diagnostic;
+it does not create DNAT with an empty target. The normalized inputs and exact
+result schema are defined in the [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
 
-- host identity for named fabric-server workflows;
-- authoritative port MAC for BMaaS, resolved from the
-  `osac.openshift.io/interface-macs` annotation; the logical interface name is
-  only the annotation lookup key;
-- Subnet reference;
-- requested address family, fixed to IPv4 for this milestone.
+#### SecurityGroup policy
 
-It looks up a BMaaS lease by port MAC and Subnet, rejects an ambiguous, stale,
-or mismatched match, and publishes a list under the AAP 'leases' artifact.
-Named fabric-server workflows may use their host identity. The
-operator consumes only a successful job artifact whose identity matches the
-current resource generation. A missing lease causes a requeue and diagnostic
-condition; it does not create a DNAT rule with an empty target. [PRD: FR-4,
-FR-9] [Codebase: osac-aap/playbook_osac_query_dhcp_lease.yml]
+AgentlessNet implements `security_group.apply` and `security_group.delete`
+as assigned by contract v1. On each apply, it consumes the complete current
+`context.securityGroup.attachments` snapshot, applies policy only to those
+bindings, removes policy for bindings omitted by a later snapshot, and
+converges updates without leaving stale rules. It must implement the shared
+default-deny and stateful-return behavior, preserve rule input order, union
+allow rules across groups attached to the same binding, and keep different
+bindings' groups isolated.
 
-#### Forwarding baseline
-
-VirtualNetwork creation establishes a permit-all forwarding baseline in the
-namespace's `filter/FORWARD` path. The baseline permits supported routed
-traffic, including inter-Subnet traffic within the VirtualNetwork and traffic
-through supported external DNAT/SNAT paths. Established and related return
-traffic follows the existing connection-tracking behavior; local DHCP traffic
-terminates in the namespace rather than traversing this path.
-
-Traffic between hosts in the same Subnet is switched at Layer 2 on the access
-VLAN and does not traverse the namespace's `filter/FORWARD` chain. That traffic
-is intentionally permitted by FR-3; the chain cannot be described as an
-attachment-scoped enforcement point for same-Subnet packets. The baseline
-therefore governs routed packets only, while VLAN uniqueness and separate Linux
-VirtualNetwork routing namespaces provide the internal isolation boundary.
-
-SecurityGroup resources, policy rules, and default-deny authorization are not
-implemented by this milestone. There is no attachment-to-SecurityGroup state,
-SecurityGroup AAP action, or SecurityGroup deletion/reconciliation contract in
-this design, and no policy-dependent readiness gate is added to
-VirtualNetwork, ExternalIPAttachment, or NATGateway reconciliation. A future
-policy design must choose an enforcement point that observes per-attachment
-traffic (for example, Cumulus access-port ACLs or an explicitly forced
-bridge/routing path), define multi-group combination semantics and
-create/update/detach/rule-update ordering, and make deletion fail closed while
-references remain. Those semantics are intentionally outside the current state
-model and AAP action contract. [PRD: FR-3, FR-5, FR-6] [User]
+The policy must cover same-Subnet Layer 2 traffic, routed traffic, and flows
+through DNAT and SNAT. The current Linux `filter/FORWARD` forwarding path
+does not observe same-Subnet packets, and the current design has no proven
+per-binding Cumulus mechanism. Selecting an access-port ACL or forcing traffic
+through a routing path are candidate mechanisms only; neither is a conformance
+claim until tests prove all assigned targets and packet paths. This remains a
+release blocker. On attach, policy must succeed before the attachment becomes
+Ready; on detach, the workload leaves the network before the next binding
+snapshot removes its policy. The exact semantics and ordering are normative in
+the [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
 
 #### ExternalIP, DNAT, and SNAT
 
-ExternalIPPool API objects, aggregate capacity counters, and the durable
-ExternalIP-UID reservation remain fulfillment-service state. AgentlessNet
-maintains provider-side pool and concrete ExternalIP allocation entries in its
-locked state file. The AAP allocation role first commits the complete
-`external_ips` entry, then patches the provider-result annotations. The
-operator validates the current UUID, generation, pool membership, address, and
-state digest before recording `COMMITTED` in fulfillment-service and copying
-the address to `ExternalIP.status.address`.
+AgentlessNet maps the contract operations to its provider state file and
+network namespace:
 
-The reservation state machine is:
+- `external_ip_pool.create/delete` registers or removes the provider pool
+  CIDRs under the state-file lock. Fulfillment-service owns pool capacity and
+  allocation counters.
+- `external_ip.allocate` reserves one IPv4 address by ExternalIP UID and
+  returns it in `osac_result.data.externalIP.address`. A retry for the same UID
+  returns the existing address.
+- `external_ip.release` removes the UID-owned provider reservation and returns
+  `osac_result.data.externalIP.releaseState: RELEASED` only after it is absent.
+- `external_ip_attachment.create/delete` installs or removes the owned
+  whole-address DNAT rule and the consumer-owned BGP `/32` route for the
+  resolved target in `context.target`. It reports success only after the
+  requested provider state is observed.
+- `nat_gateway.create/delete` installs or removes explicit-source SNAT rules
+  for the current Subnet CIDRs and the ExternalIP route. It reports success
+  only after the requested provider state is observed. The host must not apply
+  a second MASQUERADE on this path.
 
-| State | Entry condition | Capacity rule |
-|---|---|---|
-| `HELD` | API create transaction reserved one pool slot | Counted as allocated; retryable provider work may reuse it |
-| `COMMITTED` | Provider entry and address were acknowledged by the service | Remains allocated; consumer may be reserved separately |
-| `RELEASE_REQUESTED` | Delete or terminal failure requested release | Remains allocated until provider and consumer gates pass |
-| `RELEASED` | Service transaction accepted `NOT_COMMITTED` or `CLEANUP_COMPLETE` | Capacity returned exactly once; later duplicate events are no-ops |
-
-`NOT_COMMITTED` is authoritative only when the provider inspected its UID-keyed
-state and found no entry. A failed AAP job without that result cannot release
-capacity; the operator retries an inspect/compensation action. For a committed
-entry, ExternalIPAttachment and NATGateway must first report consumer cleanup,
-then the provider delete action must withdraw the route, remove DNAT/SNAT and
-conntrack state, remove the `external_ips` entry, and report
-`CLEANUP_COMPLETE`. The fulfillment-service then locks the reservation and pool
-and performs the one-time capacity release. No controller, AAP role, or stale
-status update may decrement pool capacity directly.
-
-ExternalIPAttachment creates one destination translation from the address in
-`ExternalIP.status.address` to the target's primary private address, without a
-protocol or port match. In iptables terms, the desired rule is equivalent to
-`-t nat -A PREROUTING -d <external-ip> -j DNAT --to-destination <target-ip>`;
-the role must not silently reduce this to the current single-port TCP/UDP
-contract. For a Cluster, the controller resolves the selected API or ingress
-VIP and persists that endpoint choice with the rule state. The attachment never
-changes the NATGateway SNAT rule.
-
-NATGateway creates source translations for every current Subnet CIDR in its
-VirtualNetwork, using explicit `SNAT --to-source <ExternalIP.status.address>`
-on the namespace transit egress. The host-side external path must not apply a
-second MASQUERADE. Both consumers use the shared BGP `/32` announce/withdraw
-action with their own saved next hop, but retain separate state sections, role
-entrypoints, and deletion paths. [Locked: D14]
-
-Cross-VirtualNetwork private routing is not installed. If two VNs use
-overlapping CIDRs, their separate namespaces prevent direct private routing.
-Access between them requires the explicit external path through ExternalIP and
-NATGateway. [Locked: D15] [Research: Address-realm boundaries]
+OSAC validates the common `osac_result` envelope, owns resource status and
+annotations, and releases ExternalIP consumer/capacity reservations only after
+the corresponding contract task succeeds. No provider event, private callback,
+or provider-result annotation is part of the manager interface. The selected
+Fabric Manager also enforces SecurityGroup policy on these ingress and egress
+paths; translation does not bypass the shared policy. Conformance remains
+blocked until AgentlessNet proves per-binding policy behavior for DNAT, SNAT,
+routed traffic, and same-Subnet traffic.
 
 #### AAP role layout
 
-The agentless implementation must provide:
+The manager registration is a ConfigMap labeled
+osac.openshift.io/network-fabric-manager: "true". It declares logical name
+agentless_net, implementationRef osac.templates.agentless_net, contractVersion
+v1, and technical capability ipv4. It does not declare operations or targets.
+The reference resolves to a collection role installed in the AAP execution
+environment.
 
-- 'osac.templates.agentless_net' registration metadata with
-  'template_type: network', 'fabric_manager: agentless_net', and IPv4-only
-  capabilities.
-- Generic network resource entrypoints for VirtualNetwork, Subnet,
-  ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway.
-  fulfillment-service owns ExternalIPPool/API validation and
-  capacity and consumer reservations; the ExternalIPPool and ExternalIP roles
-  register CIDRs, allocate concrete addresses in the locked state file, and
-  patch the allocated-address and provider-result annotations. Attachment and
-  NAT roles consume the resulting `ExternalIP.status.address` when programming
-  whole-address DNAT or explicit-source SNAT. The VirtualNetwork entrypoint
-  allocates and repairs the per-VirtualNetwork transit `/30` and veth pair.
-- Generic network attachment entrypoints for create/delete or equivalent
-  attach/detach operations. The generic playbook passes a stable binding UID,
-  host UID, interface, authoritative MAC, Subnet/VN UID, tenant attribution,
-  direction, and provider provisioning-network ID. The AgentlessNet implementation must add
-  `osac-aap/collections/ansible_collections/osac/templates/roles/agentless_net/tasks/move_network_attachment.yaml`
-  for the BMF attachment flow. The role returns the resolved tenant and
-  provisioning VLANs, switch port, operation ID, and observed binding state.
-- 'query_dhcp_lease' compatible with the generic query playbook.
-- Shared step roles for VLAN/IPAM, router namespace, dnsmasq DHCP service and
-  lease-store management, forwarding baseline,
-  BGP `/32` announce/withdraw, whole-address DNAT, explicit-source SNAT, and
-  Cumulus port configuration. The BGP action receives the saved `route_prefix`
-  and `route_next_hop`; it must verify withdrawal before cleanup proceeds. All
-  state-changing roles use the shared sidecar-lock/temp-file/rename transaction
-  and do not call the old in-place IPAM writer.
-- Role argument validation and idempotent create/delete behavior.
+The collection supplies the fixed contract-v1 Fabric task entry points listed
+above. Each task consumes the common osac_job_vars envelope and normalized
+operation inputs. The move role uses context.attachment.action exactly as
+ATTACH or DETACH; it restores the provider provisioning VLAN on detach even if
+the tenant Subnet was deleted. The DHCP role matches every requested binding by
+SubnetRef, interface, and authoritative MAC. Successful output uses
+osac_result. Allocation, release, attachment movement, and DHCP lease lookup
+return only operation-specific data defined by the contract. Other operations
+return an empty data object.
 
-The generic attachment playbook must not derive a detach target from the
-current Subnet name or a Netris variable. It passes the stable provisioning
-network ID on both directions, and AgentlessNet resolves that ID to a VLAN from
-provider configuration before performing reset-plus-set and verification.
+The collection includes shared step roles for VLAN/IPAM, routing namespaces,
+dnsmasq, per-binding SecurityGroup policy, BGP /32 announce/withdraw,
+whole-address DNAT, explicit-source SNAT, and Cumulus port configuration. All
+state-changing roles use the sidecar-lock/temp-file/rename transaction above.
+Existing low-level IPAM tasks that write shared state in place cannot be reused.
 
-The ExternalIP operator must validate provider-result annotations before treating
-an AAP success as a successful reconciliation. The shared provisioning
-lifecycle therefore needs a pre-success validation callback (or equivalent
-ExternalIP-specific gate) that runs before recording the successful config
-version. A malformed or missing result remains retryable; it must not be
-converted into `ALLOCATED` with an empty address.
+Do not advertise the registration as conformant until every assigned operation
+and target works, including SecurityGroup enforcement for same-Subnet, routed,
+DNAT, and SNAT paths. Current permissive forwarding and Layer 2 behavior do
+not meet that requirement. No manager-specific status annotation, callback,
+or result channel is added.
 
-The existing 'agentless_net.steps' collection remains reusable where its
-inputs and lifecycle match the unified resource contract. Cluster-specific
-static NMStateConfig and BGP endpoint code is not treated as the generic
-Networking API implementation. [Codebase: osac-aap/collections/ansible_collections/agentless_net]
+The existing agentless_net.steps collection remains reusable where its inputs
+and lifecycle match the unified resource contract. Cluster-specific static
+NMStateConfig and BGP endpoint code is not the generic Networking API
+implementation. [Codebase: osac-aap/collections/ansible_collections/agentless_net]
 
 #### Fulfillment-service coordination
 
-In addition to the multi-Subnet validation and tenant metadata work, the
-fulfillment-service adds a migration and DAO for
-`external_ip_reservations`. ExternalIP create locks the pool and reservation
-key, inserts or reuses the `HELD` row, and updates pool counters in one
-transaction. ExternalIP delete accepts `PENDING`, `FAILED`, `ALLOCATED`, and
-`DELETING` reservations, records `release_requested`, and does not change
-capacity until the provider-result handshake succeeds.
+The fulfillment-service remains the OSAC API and capacity authority. It
+validates tenant resources, records the ExternalIP consumer reservation, and
+owns pool counters. The selected manager only implements assigned AAP tasks
+and owns provider state.
 
-ExternalIPAttachment and NATGateway create operations use the same reservation
-row lock to claim the single consumer slot. Their delete operations mark the
-consumer `CLEANUP_PENDING`; the operator sends a private
-`CONSUMER_CLEANUP_COMPLETE` event only after route, DNAT/SNAT, and conntrack
-cleanup is observed. The service then clears `status.attached` and the consumer
-slot with a field-scoped update. A second consumer receives
-`FailedPrecondition` while the slot is reserved, including during cleanup.
+For ExternalIP creation, OSAC holds capacity while it dispatches
+external_ip.allocate. After validating osac_result.data.externalIP.address,
+OSAC writes its allocated-address annotation and status. For deletion, OSAC
+enforces consumer cleanup dependencies, dispatches external_ip.release,
+validates releaseState RELEASED, then updates capacity once. ExternalIPAttachment
+and NATGateway use the existing exclusive consumer reservation; OSAC clears it
+only after their validated delete task succeeds. The manager does not call
+fulfillment-service directly and does not exchange private events, operation
+digests, or annotations.
 
-The private provider-event operation is idempotent by ExternalIP UUID,
-provider-operation ID, and state digest. It performs compare-and-set
-transitions under the reservation and pool locks and returns an explicit
-acknowledgement or conflict. The service, not the operator or AAP role, is the
-only component that changes pool `allocated`/`available` counters. These are
-fulfillment-service implementation changes even though no tenant-facing proto
-or REST field is added. The current Subnet server still checks CIDR subset and
-sibling overlap and retains its multiple-Subnet tests. [Codebase:
-fulfillment-service/internal/servers/private_subnets_server.go]
-
-If a downstream one-Subnet guard is found, it must be changed in the same
-implementation plan because a backend that can configure multiple VLANs is not
-user-complete while the service rejects the second Subnet. [PRD: C1]
+Subnet validation remains authoritative in fulfillment-service. It must accept
+multiple non-overlapping Subnets inside one VirtualNetwork so the backend's
+multi-VLAN behavior is usable. Remove any one-Subnet guard as part of that API
+implementation; it is not delegated to the manager. [PRD: C1]
 
 #### Installer and Enclave Wizard
 
@@ -1449,55 +1302,34 @@ fabric and separate routing namespaces per VirtualNetwork. Reusing a VLAN ID
 across VNs or installing a shared route between overlapping VNs violates NFR-3.
 [PRD: NFR-3] [Locked: D12, D15]
 
-This milestone intentionally permits supported routed traffic after the
-topology establishes a route, including external ingress through DNAT and
-external egress through SNAT. That default-permit behavior is not a substitute
-for SecurityGroup policy; same-Subnet traffic is likewise intentionally
-permitted at Layer 2. SecurityGroup resources, attachment bindings, and policy
-enforcement are deferred to a future effort. The design therefore preserves
-topology isolation and existing API authorization but does not add a
-default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
+The target permits routed and same-Subnet traffic only as allowed by the
+effective SecurityGroup policy for each binding, including flows through DNAT
+and SNAT. The current AgentlessNet forwarding and switching paths permit
+traffic without that policy and therefore fail the contract. This is a
+release-blocking implementation gap; topology isolation and API authorization
+do not replace workload-level SecurityGroup enforcement.
 
 ### Failure Handling and Recovery
 
 | Failure | Recovery | Observable result |
 |---|---|---|
-| Manager ConfigMap missing or capability mismatch | Stop before AAP side effects; requeue after manager discovery changes | Resource condition identifies missing manager/capability |
-| Networking CR lookup uses a tenant namespace, name-only selector, or mismatched tenant/owner attribution | Stop before mutation; reselect `$OSAC_NETWORKING_NAMESPACE` and retry by stable UUID with server-set attribution | Resource condition identifies namespace/attribution mismatch |
-| Invalid NetworkClass, unsupported IPv6 request, or Subnet prefix `/31`/`/32` | API/controller validation rejects before provisioning | Invalid argument or failed condition names the unsupported address family or prefix; no AAP job or fabric state is created |
-| VLAN state sidecar lock unavailable | Retry with backoff; preserve existing allocation and do not use the data-file inode as a lock | Provisioning remains pending with lock diagnostic |
-| State JSON is malformed, truncated, or an unknown schema version | Fail closed; do not allocate, release, or mutate provider state. Validate the `.bak` generation and require the explicit recovery action | Resource condition identifies `StateCorrupt`; existing state remains untouched |
-| Crash leaves a stale state temporary file or backup | Ignore temporary files; validate current state and `.bak` under the sidecar lock, then resume only after one complete generation is selected | Recovery event identifies the selected last-known-good generation |
-| Net node is unreachable or its BGP/dnsmasq preflight fails | Block all fabric mutations, provider commits, cleanup releases, and finalizer removal; requeue after health recovers | `NetNodeUnavailable` condition is visible; existing resources remain degraded |
-| Net-node restore cannot rehydrate namespaces, DHCP, routes, or translations | Keep mutations and releases blocked; restore from the validated backup or surface the exact failed phase | `NetNodeRestoreFailed` condition identifies the phase; no new `/32` is advertised |
-| VLAN allocation exhausted or already owned | Do not reuse an allocated ID; fail the requested generation | Failed condition identifies VLAN allocation exhaustion/conflict |
-| ExternalIP state sidecar lock unavailable or pool has no free address | Retry without changing an existing `HELD` reservation; do not publish an address or bypass the shared lock | ExternalIP remains non-ready with an allocation diagnostic and capacity remains held once |
-| ExternalIP provider-result annotation is missing, stale, malformed, or out of pool | Reject the result before `ALLOCATED`; retain the same reservation and retry the current generation; do not record a successful config version | ExternalIP remains Pending/Progressing with a provider-result condition |
-| ExternalIP allocation fails before atomic provider-state commit | Require a provider `NOT_COMMITTED` result or an inspect job before compensation; retain capacity while retryable and release it exactly once only after terminal failure/deletion | ExternalIP remains non-ready during retry; capacity is restored only after authoritative compensation |
-| ExternalIP deletion races allocation or provider cleanup | Serialize by ExternalIP UUID; keep `release_requested` and the finalizer until `NOT_COMMITTED` or `CLEANUP_COMPLETE` is acknowledged by fulfillment-service | No address becomes reusable until provider state, consumer state, and API reservation agree |
-| Switch VLAN or access-port operation fails | Retry the same binding UID with the saved host/MAC, switch port, tenant VLAN, and provisioning VLAN; do not release or forget the binding on partial failure | AAP failure and resource status contain switch error; the port remains in the last verified state |
-| BMaaS reboot, power-off, or post-move DHCP gate fails | Keep the binding phase and BMF finalizer, retry the host lifecycle operation, and do not start or complete IP discovery until the matching handoff condition is true | `NetworkHandoffComplete` or `NetworkOffboardComplete` remains false with a diagnostic condition |
-| BMaaS detach cannot resolve the provisioning network | Fail closed and retain the binding/finalizer; do not leave the host on a tenant VLAN or guess from a display name | Resource remains terminating with provisioning-network diagnostic |
-| Transit-pool allocation or veth/router setup partially fails | Reuse the UID-keyed transit `/30` and saved interface/IP values on retry; do not announce any ExternalIP route until the namespace and default route are verified | VirtualNetwork or dependent consumer remains non-ready with a transit-link diagnostic |
-| Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
-| NATGateway source CIDR set is stale during Subnet add/delete | Requeue NATGateway from the Subnet event; add/remove the individual SNAT rule, persist the new `source_cidrs_revision`, and block Subnet deletion until removal is verified | NATGateway condition identifies stale source rules; Subnet remains pending deletion or readiness |
-| dnsmasq configuration, service, or lease file is missing/malformed | Re-render the complete per-VN configuration, preserve a valid lease file, restart the supervised daemon, and requeue; never invent a lease | DHCP condition identifies daemon/config/lease failure and IP discovery remains pending |
-| DHCP lease absent or ambiguous | Requery; do not update status or create DNAT until identity/freshness checks pass | Condition identifies lease-unavailable/ambiguous |
-| AAP lease artifact is stale or job failed | Ignore artifact, retain current status, retry current generation | Job failure and resource condition remain visible |
-| Forwarding baseline or owned NAT rule application fails | Retry the desired generation without reporting Ready; preserve the saved route/NAT inputs | The affected resource condition and job history identify the forwarding or NAT operation failure |
-| DNAT/SNAT or BGP announcement partially fails | Compare desired state with the saved owner state and repair; do not report Ready until both the exact rule and `/32` route are observed | Attachment/NAT condition identifies the translation or route failure |
-| ExternalIP allocation succeeds but DNAT or route advertisement does not | Keep ExternalIP allocated, keep ExternalIPAttachment non-ready, retain its consumer reservation and `status.attached=true`, and retry using the same address/next hop | Attachment condition identifies the DNAT or external-route failure |
-| External endpoint observes a node address instead of the NATGateway ExternalIP | Remove any MASQUERADE rule from this path, install explicit `SNAT --to-source`, and verify the observed source before Ready | NATGateway remains non-ready with a source-address diagnostic |
-| BGP withdrawal or owned NAT cleanup fails | Retain the consumer and ExternalIP finalizers, keep capacity reserved, and retry from the persisted route/rule state; never release an address while its `/32` or translation remains | Resource remains terminating with external-cleanup condition |
-| Consumer cleanup completes but service acknowledgement is lost | Replay `CONSUMER_CLEANUP_COMPLETE` by UUID and digest; service clears the consumer reservation exactly once | `status.attached` remains true until the acknowledgement is durable |
-| Provider cleanup completes but capacity-release acknowledgement is lost | Replay `CLEANUP_COMPLETE`; the service's `RELEASED` transition is idempotent and the operator retries finalizer removal | Pool capacity changes once and the ExternalIP finalizer eventually clears |
-| Status writers race or return stale snapshots | Patch only owned fields after a fresh read and retry conflicts; never replace full ExternalIP status | Address, attached flag, conditions, and provisioning history are not lost |
-| Delete is interrupted | Finalizer re-enters the ordered cleanup phases after restart | Resource remains terminating with cleanup reason |
-| Net node restarts | Rehydrate transit links, `/32` route ownership, DNAT/SNAT rules, and conntrack prerequisites from the versioned state file; reconcile actual interfaces/rules before reporting Ready | Existing resource statuses remain non-ready until observed state converges |
+| Manager registration is missing, invalid, or incompatible with the selected profile | Stop before AAP side effects and retry after correction | OSAC condition identifies the manager, profile, or invalid field |
+| Resource lookup has the wrong namespace or tenant attribution | Stop before mutation; retry by stable UID with server-set attribution | Diagnostic condition names the mismatch |
+| NetworkClass, address family, or Subnet prefix is invalid | Reject before AAP dispatch | API error or failed condition; no fabric state is created |
+| State lock is unavailable or state JSON is malformed | Retry lock contention; fail closed on corrupt state and require explicit recovery | Resource remains non-ready with lock or StateCorrupt diagnostic |
+| VLAN or transit allocation fails | Keep UID-owned state and retry without reusing another resource's allocation | Allocation condition and AAP job identify conflict or exhaustion |
+| ExternalIP allocation result is missing, stale, malformed, or outside its pool | Reject osac_result and retain capacity while retrying | ExternalIP remains non-ready with a result diagnostic |
+| ExternalIP allocation or release is interrupted | Retry the same UID task; release succeeds only when its UID entry is absent | Capacity stays held until OSAC validates the result |
+| Consumer cleanup task fails or its result is not recorded | Retry UID-keyed deletion and retain the consumer reservation | Consumer remains deleting/non-ready until OSAC validates success |
+| Cumulus port move or restoration fails | Retry with the same binding UID and saved provisioning VLAN; retain the finalizer | Attachment condition identifies switch failure; port state is not forgotten |
+| DHCP lease is missing, stale, or ambiguous | Requery exact SubnetRef/interface/MAC; do not invent an address | Lease condition identifies the failed match |
+| SecurityGroup or NAT rule application fails | Retry without reporting Ready; preserve binding, route, and translation inputs | Policy or NAT condition and job history identify the failure |
+| Route/translation cleanup is incomplete | Retain consumer and parent finalizers; retry until owned state is absent | Cleanup condition remains visible; capacity is not released |
+| Delete is interrupted or the net node restarts | Re-enter ordered cleanup or restore validated state before reporting Ready | Resource remains non-ready/deleting with the failed phase |
 
-All create/delete/attach/detach operations are keyed by stable resource or
-binding UID and desired generation. AAP retries must be safe after a controller
-restart or lost job response. [Codebase: osac-operator/pkg/provisioning/provision_lifecycle.go]
+All create/delete/attach/detach operations use stable resource or binding UIDs
+and desired generations. Retries are safe after controller restart or a lost
+job response. [Codebase: osac-operator/pkg/provisioning/provision_lifecycle.go]
 
 #### Net-node availability and restore contract
 
@@ -1557,37 +1389,27 @@ switch port or detach target.
 
 ### Observability and Monitoring
 
-No new Prometheus metric family is required for the initial implementation.
-Existing controller reconciliation, AAP job, and resource condition metrics
-remain the primary health signals.
+Existing controller reconciliation, AAP job history, and resource conditions
+remain the primary health signals. Diagnostics identify the operation, manager,
+resource UID, generation, and failed contract field without exposing
+credentials or tenant secrets.
 
-The implementation adds structured Kubernetes events and log reasons at the
-existing controller/AAP boundaries:
+Relevant conditions include NetworkManagerUnavailable,
+FabricOperationFailed, NetNodeUnavailable, NetNodeRestoreFailed,
+ExternalIPReservationBlocked, ExternalIPResultRejected,
+ExternalIPCapacityReleaseBlocked, DHCPLeaseUnavailable,
+SecurityGroupPolicyFailed, ExternalRouteApplyFailed,
+ExternalRouteWithdrawBlocked, NATSourceAddressMismatch, and
+FabricCleanupBlocked. ExternalIPResultRejected means OSAC rejected a missing,
+malformed, stale, or out-of-pool osac_result; it does not refer to a
+provider-specific annotation or callback.
 
-| Reason | Type | Emitted when |
-|---|---|---|
-| NetworkManagerUnavailable | Warning | Manager registration or capability lookup fails |
-| FabricOperationFailed | Warning | AAP create/update/delete job fails |
-| NetNodeUnavailable | Warning | Net-node reachability, state, dnsmasq, or BGP preflight fails |
-| NetNodeRestoreFailed | Warning | Namespace, DHCP, route, or translation rehydration fails |
-| VLANAllocationFailed | Warning | VLAN allocation cannot complete |
-| TransitLinkFailed | Warning | A per-VirtualNetwork transit `/30`, veth, or namespace route cannot be created or repaired |
-| ExternalIPReservationBlocked | Warning | A durable allocation or consumer reservation cannot advance |
-| ExternalIPProviderResultRejected | Warning | Provider result annotations fail UUID, generation, address, or digest validation |
-| ExternalIPCapacityReleaseBlocked | Warning | Provider or consumer cleanup has not been acknowledged by fulfillment-service |
-| DHCPLeaseUnavailable | Warning | No current lease matches the attachment |
-| ExternalRouteApplyFailed | Warning | The consumer-owned ExternalIP `/32` cannot be announced or verified with its saved next hop |
-| ExternalRouteWithdrawBlocked | Warning | A route cannot be withdrawn during consumer or ExternalIP cleanup |
-| NATSourceAddressMismatch | Warning | Egress validation does not observe the associated ExternalIP as the source address |
-| FabricCleanupBlocked | Warning | Ordered deletion cannot proceed |
-| FabricResourceReady | Normal | Desired fabric state and required feedback are ready |
-
-Logs include resource UID, tenant attribution hash or ID permitted by the
-existing logging policy, manager name, desired generation, job ID, route prefix
-and next hop, interface identity, reservation state, provider operation ID, and
-operation result. NAT validation may log the selected address and observed
-source address, but not credentials or full secret contents. Provider digests
-are logged as identifiers, not as state-file contents.
+The current AgentlessNet packet path remains non-conformant until SecurityGroup
+policy is proven for every assigned target and packet path. Logs may include
+resource UID, tenant attribution permitted by existing logging policy, manager,
+desired generation, AAP job ID, route prefix/next hop, interface identity,
+reservation state, and operation result. Logs must not contain credentials or
+full secret contents.
 
 ### Risks and Mitigations
 
@@ -1644,24 +1466,23 @@ identity, applies DNAT or explicit SNAT before announcing the route, verifies
 the installed route and observed source address, and withdraws the route before
 removing translation state or releasing the ExternalIP.
 
-#### ExternalIP reservation and handshake correctness
+#### ExternalIP reservation and release correctness
 
-The service database, operator CR, AAP job, and provider state file can observe
-the same ExternalIP at different times. Releasing pool capacity from any one
-of those observations could oversubscribe an address or release it while a
-route is still usable. The UUID-keyed reservation, provider operation ID,
-state digest, consumer reservation, compare-and-set events, and one-time
-`RELEASED` transaction make the fulfillment-service the sole capacity owner.
-Unknown provider outcomes fail closed and require an inspect/cleanup retry.
+OSAC and the manager state file can observe the same ExternalIP at different
+times. Releasing capacity before the manager confirms removal could allow an
+address to be reused while a route is active. OSAC holds capacity until all
+consumer delete tasks succeed and external_ip.release confirms that the
+UID-owned address is absent. UID-keyed state and idempotent tasks make retries
+safe; OSAC alone updates API status and pool counters.
 
 #### Backend parity
 
 Differences from Netris can change tenant-observable behavior even when API
 responses match. A capability-by-capability parity matrix and BMaaS reference
-validation compare the in-scope L2, routing, DHCP, DNAT, SNAT, status, and
-cleanup behavior. SecurityGroup provisioning and policy enforcement are outside
-this milestone and are excluded from the parity claim for both backend paths.
-[Locked: C2] [PRD: FR-2, NFR-2]
+validation compare L2, routing, DHCP, SecurityGroup, DNAT, SNAT, status, and
+cleanup behavior. AgentlessNet is not contract-conformant until SecurityGroup
+behavior passes the per-binding conformance checks. [Locked: C2]
+[PRD: FR-2, FR-11, NFR-2]
 
 #### Privileged integration surface
 
@@ -1736,155 +1557,41 @@ The existing dispatcher is the intended pluggability boundary. [Codebase: osac-o
 
 ### Open Questions
 
-#### 1. Lease artifact schema and freshness
-
-**Owner:** osac-operator and fulfillment-service maintainers
-
-**Question:** The BMaaS implementation consumes a 'leases' artifact whose
-entries require 'subnet_ref', 'interface', authoritative 'mac_address', and
-'ip_address', then writes the accepted values into
-'Status.NetworkAttachmentStatuses'. Should this artifact shape and its
-generation/freshness validation become the shared contract for future CaaS and
-VMaaS consumers, or remain BMaaS-specific until those integrations are
-designed?
-
-**Impact:** Changes the AAP role contract, operator feedback controller, stale
-artifact handling, and the service-specific FR-4/FR-9 tests.
-
-#### 2. Cumulus NetworkRunner contract
+#### 1. Cumulus per-binding SecurityGroup enforcement
 
 **Owner:** Connectivity & Fabric team
 
-**Question:** Which exact switch transaction and lock scope implement the
-supported Cumulus reset-plus-set operation for attach and detach, including
-access-port rollback after a partial failure?
+**Question:** Which Cumulus and Linux enforcement points can apply SecurityGroup
+policy per workload binding across same-Subnet, routed, DNAT, and SNAT paths
+while preserving stateful return traffic?
 
-This milestone claims BMaaS attach and detach through the stable binding
-contract defined above, but does not claim broader NetworkRunner-provider
-behavior. Each operation must be idempotent, preserve the saved provisioning
-VLAN, and leave the switch in a known state after a failed retry.
+This implementation choice blocks conformance and manager registration until a
+candidate passes the [Agentless VLAN testplan](testplan.md).
 
-**Impact:** Limits the role argument schema, concurrency tests, support procedures,
-and documented switch compatibility.
+#### 2. Cumulus NetworkRunner transaction
 
-#### 3. Service-specific attachment inputs
+**Owner:** Connectivity & Fabric team
 
-**Owner:** Connectivity & Fabric team with BMaaS and CaaS owners
+**Question:** Which switch transaction and lock scope implement the supported
+Cumulus reset-plus-set operation for attach and detach, including rollback
+after partial failure?
 
-**Question:** What canonical host, interface, MAC, and primary-attachment data
-does each BMaaS, CaaS, and VMaaS integration provide to the generic attachment
-and DHCP roles?
-
-**Impact:** The BMaaS binding, provisioning-network identity, and MAC-to-lease
-mapping are defined here; CaaS and VMaaS may extend the generic contract with
-their own stable host identity without changing the BMaaS identity rule.
+Each operation must be idempotent, preserve the saved provisioning VLAN, and
+leave the switch in a known state after a failed retry. Contract v1 already
+defines the operation, inputs, and result schema.
 
 ## Test Plan
 
-The detailed requirement-anchored testplan will be drafted after the design is
-approved. The following scenarios summarize the expected coverage; they are
-not a substitute for that testplan.
+The requirement-anchored procedures live in the [Agentless VLAN testplan](testplan.md).
+They validate the Fabric-only operation/target matrix, normalized attach and
+DHCP inputs, exact osac_result outputs, ordered cleanup, and retry behavior.
 
-### Unit Tests
-
-- Parse and validate agentless manager ConfigMap capabilities.
-- Allocate and release VLAN IDs with idempotence, collision rejection, pool
-  exhaustion, lock contention, and state-file recovery cases.
-- Exercise state writes interrupted before, during, and after rename; verify
-  sidecar-lock serialization, parent-directory durability, old-or-new complete
-  JSON, `.bak` recovery, and fail-closed malformed-state handling.
-- Verify net-node preflight blocks mutations and capacity release while the
-  node is unavailable, then rehydrates namespaces, dnsmasq, routes, and NAT
-  from the validated state; confirm old conntrack flows are not promised.
-- Allocate one transit `/30` per VirtualNetwork and preserve its namespace/host
-  addresses, next hop, and route identity across retries.
-- Map resource UID, tenant, VirtualNetwork, Subnet, and attachment identity to
-  deterministic namespace/state keys.
-- Compile and validate the permit-all forwarding baseline without introducing
-  policy-resource inputs or default-deny gates.
-- Validate DHCP lease artifact identity, address family, Subnet reference, and
-  desired-generation freshness.
-- Validate dnsmasq range generation, gateway/reserved-address exclusions,
-  lease-file parsing, daemon restart, and lease preservation across reload.
-- Verify whole-address/all-protocol DNAT, explicit `SNAT --to-source`, BGP
-  announce-after-rule ordering, and route-withdraw-before-release cleanup.
-- Verify NATGateway source-CIDR reconciliation when a Subnet is added, updated,
-  or deleted, including rule-set revision and ordering before VLAN release.
-- Inject an ExternalIP state-file write failure and verify that no partial
-  `external_ips` entry is visible, retries reuse the same UUID reservation, and
-  terminal failure compensates capacity only after `NOT_COMMITTED`.
-- Verify provider-result annotation validation, idempotent private provider
-  events, consumer exclusivity for Attachment versus NATGateway, field-scoped
-  status updates, and exactly-once `RELEASED` capacity accounting.
-- Validate attachment binding keys, host/MAC identity, direction transitions,
-  provisioning-network resolution, and idempotent attach/detach state changes,
-  including reboot, power-off, and
-  DHCP-gated handoff phases.
-- Verify status condition reason/message mapping for AAP and controller-owned
-  allocation errors.
-
-### Integration Tests
-
-- Render manager ConfigMap and NetworkClass selection with Helm values.
-- Reconcile VirtualNetwork and multiple Subnets through envtest/fake AAP
-  providers; verify provider-side ExternalIP allocation
-  annotations populate status only after a committed reservation event,
-  consumers persist the transit/route state, and DNAT/SNAT actions use that
-  address.
-- Exercise BGP `/32` announce/withdraw with a saved namespace-side next hop,
-  verify the provider-owned FRR/BGP peer sees the route, exercise whole-address
-  DNAT for API/ingress cluster endpoints, and verify explicit-source SNAT
-  without host-side MASQUERADE.
-- Exercise Subnet churn while NATGateway is Ready: verify a new SNAT rule is
-  installed before Subnet readiness and an old rule is removed before Subnet
-  VLAN/DHCP cleanup.
-- Exercise ExternalIP deletion during allocation and verify UUID serialization,
-  Pending/Failed compensation, provider cleanup, consumer cleanup, and delayed
-  exactly-once API capacity release.
-- Verify tenant and owner annotations survive the service-to-CR path.
-- Verify per-VN dnsmasq configuration and service lifecycle for multiple VLAN
-  interfaces, including malformed configuration and lease-file recovery.
-- Exercise generic DHCP job artifact consumption for multi-NIC instances using
-  distinct Subnets, and reject duplicate SubnetRefs before lease discovery.
-- Exercise Cumulus attach and detach with a fake switch: verify tenant VLAN
-  placement, provisioning-VLAN restoration, partial-failure retry, and
-  controller/AAP restart recovery from `port_bindings`. Verify the BMF power
-  and reboot gates before DHCP discovery and before tenant-to-provisioning
-  restoration.
-- Stop and restart the net node during Ready traffic and cleanup; verify
-  existing resources become degraded, new operations are blocked, BGP routes
-  are restored after the data path, and capacity is not released early.
-- Exercise AAP role argument validation and idempotent create/delete for the
-  Cumulus support contract.
-- Verify all VLAN/IPAM writers use the shared sidecar-lock transaction and that
-  the legacy in-place IPAM writer cannot mutate the unified state file.
-- Verify controller restart/requeue behavior and ordered finalizer cleanup.
-
-### E2E Tests
-
-- Configure the Cumulus-backed agentless manager and create a VirtualNetwork
-  and multiple Subnets through the existing API.
-- Verify same-Subnet L2, permitted same-VN cross-Subnet traffic, and
-  private-address isolation between overlapping VirtualNetworks.
-- Provision a BMaaS reference attachment, obtain a DHCP address, and observe it in
-  status.
-- Verify the BMaaS lifecycle moves a host from provisioning to its tenant VLAN
-  then reboots and observes tenant DHCP before Ready, and powers it off before
-  returning to the exact provisioning VLAN on offboarding, without relying on a
-  Netris variable or display name.
-- Verify the upstream BGP peer learns the ExternalIP `/32`, inbound traffic
-  follows it to the VN namespace, reaches the target through whole-address
-  DNAT, and returns through conntrack.
-- Verify outbound traffic is explicitly SNATed and the external endpoint
-  observes the NATGateway ExternalIP as the source address.
-- Verify ExternalIPAttachment and Subnet/VirtualNetwork deletion order and
-  non-interference with other tenants, including route withdrawal and NAT-rule
-  removal before ExternalIP reuse.
-- Verify an ExternalIP cannot be acquired by both an ExternalIPAttachment and a
-  NATGateway, and that `status.attached` remains true until consumer cleanup is
-  acknowledged even when child data-plane readiness fails.
-- Keep full CaaS/VMaaS service validation in the downstream follow-up features
-  named by the PRD.
+The release-blocking conformance cases prove SecurityGroup behavior per binding
+for same-Subnet, routed, DNAT, and SNAT traffic. They include different groups
+on endpoints sharing a Subnet, multiple groups on one binding, complete binding
+snapshots, binding add/remove, rule updates, default deny, permitted flows, and
+stateful return. Current permissive forwarding and Layer 2 paths are expected
+to fail until a conforming packet path is implemented.
 
 ## Graduation Criteria
 
@@ -1892,6 +1599,8 @@ The target milestone is the IPv4-only agentless VLAN milestone described by the
 PRD. Graduation to a broader support stage requires:
 
 - all PRD acceptance criteria pass for the Cumulus reference environment;
+- every assigned contract-v1 operation and target passes, including per-binding
+  SecurityGroup enforcement on same-Subnet, routed, DNAT, and SNAT traffic;
 - no critical tenant-isolation, DNAT/SNAT-direction, or deletion-order defects;
 - BMaaS reference provisioning and DHCP status feedback pass repeatedly;
 - inbound ExternalIP traffic follows the consumer-owned BGP `/32` to the
@@ -1907,103 +1616,82 @@ validation and support criteria.
 
 ## Upgrade / Downgrade Strategy
 
-This enhancement adds a backend implementation but no public API fields or CRD
-versions. Existing Netris deployments remain selected by their existing
-NetworkClass and are not migrated automatically.
+This enhancement adds a backend implementation and contract-v1 registration;
+it does not change tenant-facing APIs or CRD versions. Existing Netris
+deployments remain selected by their NetworkClass and are not migrated
+automatically.
 
-The agentless state file uses a schema version. The design's schema 2 adds the
-per-VirtualNetwork transit link and consumer-owned external-route fields. An
-upgrade must migrate state additively before new reconciliation begins,
-preserve existing VLAN, namespace, transit, firewall, provider-side ExternalIP,
-BGP route, DNAT, and SNAT mappings, and refuse to start a destructive migration
-when the state cannot be parsed or a required route next hop is missing. There
-is no in-place OSAC upgrade guarantee; deployment operators must retain a
-backup of the state file, network inventory, and BGP configuration.
+The AgentlessNet state file is versioned. The new schema adds the
+per-VirtualNetwork transit link and consumer-owned external-route fields.
+Upgrade migrates state additively before reconciliation, preserving VLAN,
+namespace, transit, DHCP, UID-keyed ExternalIP, BGP route, DNAT, and SNAT
+mappings. It refuses destructive migration if the file cannot be parsed or a
+required route next hop is missing. Operators retain backups of state,
+inventory, and BGP configuration.
 
-The fulfillment-service migration creates one reservation row for every
-existing ExternalIP before enabling the new create/delete path. Existing
-allocated objects start in `COMMITTED` only when their provider address can be
-verified; otherwise they start in `HELD` with `provider_state=UNKNOWN` and
-remain unavailable for release until an inspect action establishes
-`COMMITTED` or `NOT_COMMITTED`. Existing Attachment/NATGateway references are
-backfilled as consumer reservations under the ExternalIP UUID lock.
+Before contract-v1 ExternalIP dispatch is enabled, OSAC allocations and consumer
+ownership must be matched to UID-owned manager state. Unresolved allocations
+remain non-ready and unavailable for reuse until an operator resolves the
+mismatch. Existing consumer dependencies must be represented in OSAC before
+address release is enabled.
 
-To disable the backend, the provider selects another NetworkClass only after
-agentless-managed resources are drained or intentionally retained. Disabling a
-manager does not delete tenant resources or silently release its allocations.
-Downgrade requires the deployed role and state schema to understand the previous
-state version; otherwise manual state export/restore is required.
+To disable the backend, select another NetworkClass only after AgentlessNet
+resources are drained or intentionally retained. Disabling a manager does not
+delete tenant resources or silently release allocations. Downgrade requires
+the deployed role and state schema to understand the previous version;
+otherwise manual state export and restore is required.
 
 ## Version Skew Strategy
 
 The operator, fulfillment-service, installer, and AAP collections must agree on:
 
-- manager name 'agentless_net';
-- configured `OSAC_NETWORKING_NAMESPACE` hub namespace for every networking CR;
-- capability string 'ipv4';
-- implementation-strategy value;
-- generic job names and input shapes;
-- status/lease artifact schema;
-- state-file schema version;
-- state transaction protocol: stable sidecar lock, same-filesystem temporary
-  file, file and parent-directory `fsync`, atomic rename, and `.bak` recovery;
-- per-VirtualNetwork transit-link fields and the BGP `/32` route prefix/next-hop
-  contract;
-- network-attachment binding fields, `attach`/`detach` direction semantics,
-  stable provisioning-network identity, and the `port_bindings` state shape;
-- DHCP daemon (`dnsmasq`) lifecycle, per-VN config/lease paths, range and
-  exclusion rules, and lease-artifact identity validation;
-- whole-address DNAT inputs and explicit-source SNAT inputs. A component that
-  still sends the old single-port DNAT or MASQUERADE-only SNAT arguments must
-  not report the consumer Ready.
-- ExternalIP reservation states, provider-result annotation names, private
-  provider-event values, consumer cleanup events, and the rule that only
-  fulfillment-service releases pool capacity;
-- ExternalIP status field ownership: fulfillment-service owns `attached`, while
-  the operator owns `address`, `state`, `phase`, `conditions`, and provisioning
-  fields through field-scoped conflict-safe updates.
+- manager role, logical name agentless_net, implementationRef, contractVersion
+  v1, and technical capability ipv4;
+- configured OSAC_NETWORKING_NAMESPACE hub namespace;
+- the fixed Fabric-only IPv4 operation and target matrix, with no per-manager
+  operation subset;
+- common osac_job_vars envelope, fixed task entry points, and normalized inputs;
+- osac_result envelope and exact operation-specific result schemas;
+- state-file schema and locked atomic-write/recovery protocol;
+- per-VirtualNetwork transit-link fields and BGP /32 prefix/next-hop behavior;
+- BaremetalInstance binding fields, ATTACH/DETACH semantics, and saved
+  provisioning-network identity;
+- dnsmasq lifecycle and exact SubnetRef/interface/MAC lease matching;
+- whole-address DNAT, explicit-source SNAT, and per-binding SecurityGroup
+  enforcement on all packet paths;
+- ExternalIP release ordering: consumers are deleted first, manager confirms
+  address removal, and OSAC alone updates API status and capacity.
 
-If the operator cannot discover the configured manager or the AAP role cannot
-accept the job's inputs, the resource remains non-ready with a diagnostic
-condition. It must not silently dispatch to Netris. During a rolling deployment,
-old components that do not know 'agentless_net' cannot provision new resources;
-existing resources remain represented by their CR/status but may require the
-provider to complete the rollout before creating or modifying them.
+If the operator cannot discover or validate registration, or the AAP role
+cannot accept contract inputs, resources remain non-ready with diagnostics.
+Dispatch never silently falls back to Netris. Components that do not understand
+contract v1 cannot provision new resources during a rolling deployment.
 
 ## Support Procedures
 
-Support personnel diagnose failures in this order:
+1. Inspect OSAC resource conditions and provisioning job history.
+2. Confirm the NetworkClass selects the discovered agentless_net Fabric Manager
+   and its contract-v1 registration declares ipv4.
+3. Check net-node reachability, state validation, namespace inventory, dnsmasq,
+   SecurityGroup policy, and BGP session health before inspecting AAP jobs.
+4. Inspect AAP job status and validated osac_result artifacts, lease results,
+   OSAC ExternalIP status, dnsmasq configuration/lease paths, and role logs.
+5. Check the lock-protected state file for resource UID, VLAN, gateway/DHCP,
+   namespace, transit /30, veth addresses, UID-owned ExternalIP allocation,
+   saved BGP /32 prefix/next hop, SecurityGroup binding policy, and owned
+   NAT/DNAT rules. Compare ExternalIP.status.address with the OSAC-owned
+   allocated-address annotation. Confirm OSAC consumer reservation and pool
+   state before diagnosing capacity.
+6. Verify Cumulus VLAN/trunk/access-port state and net-node namespace,
+   interfaces, route installation/withdrawal, DNAT/SNAT rules, and conntrack.
+   Confirm no host-side MASQUERADE rule overwrites the NATGateway source.
+   For BMaaS, compare binding UID, host/MAC, switch port, tenant VLAN,
+   provisioning-network ID/VLAN, direction, and observed state. Never infer
+   detach behavior from a display name.
 
-1. Inspect the resource's status conditions and provisioning job history.
-2. Confirm the NetworkClass points to a discovered IPv4-capable
-   'agentless_net' ConfigMap.
-3. Check net-node reachability, state validation, namespace inventory, dnsmasq
-   services, and BGP session health before inspecting AAP jobs.
-4. Inspect AAP job status, 'leases' artifacts, provider-result annotations,
-   reservation events, dnsmasq unit/configuration and lease paths, and the
-   agentless role logs.
-5. Check the lock-protected state file for the resource UID, VLAN,
-   gateway/DHCP, namespace, transit `/30`, veth peer addresses, provider-side
-   ExternalIP allocation, saved BGP `/32` prefix/next hop, and owned NAT/DNAT
-   rule mapping. Compare any ExternalIP address with
-   `ExternalIP.status.address`, the allocated-address annotation, provider
-   operation ID, and state digest. Confirm the fulfillment-service reservation
-   state and pool counters before diagnosing capacity. Also inspect the stable
-   sidecar lock, schema validation result, last-known-good `.bak`, and any
-   `StateCorrupt` or recovery event before attempting a repair.
-6. Verify Cumulus VLAN/trunk/access-port state and the net-node namespace,
-   interfaces, route/BGP installation or withdrawal, exact whole-address DNAT,
-   explicit `SNAT --to-source` rules, and conntrack state. Confirm that no
-   host-side MASQUERADE rule can overwrite the NATGateway source address. For
-   BMaaS, compare the binding UID, host/MAC, switch port, tenant VLAN,
-   provisioning-network ID/VLAN, direction, and observed state with
-   `port_bindings`; never infer detach behavior from a display name.
-
-To disable new use, remove or change the NetworkClass selection after draining
-resources; do not delete the manager ConfigMap while resources still need
-reconciliation. Existing workloads retain their applied fabric state until
-explicit cleanup. Re-enabling the manager resumes reconciliation if the
-state-file schema and network inventory are available.
+To disable new use, change NetworkClass selection after draining resources;
+do not delete the manager ConfigMap while resources need reconciliation.
+Existing workloads retain applied state until explicit cleanup.
 
 ## Infrastructure Needed
 
@@ -2026,9 +1714,8 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Phases: revise, revise, revise
+Authored: revise @ design 0.11.3 - 2bd6607, workspace worktree-netris-k8sonly-prd-design @ 0f51a81 (1 behind origin/main, dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0f51a81 (dirty)","source_repo_branch":"worktree-netris-k8sonly-prd-design","commits_behind_main":1,"commits_ahead_main":17,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

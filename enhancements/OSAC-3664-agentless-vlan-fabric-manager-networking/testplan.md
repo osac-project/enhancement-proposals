@@ -7,8 +7,8 @@
 - **Design:** [design.md](design.md)
 - **Authority:** This requirement-anchored test plan is part of the design PR;
   the design document's Test Plan section is only a short strategy summary.
-- **Total test cases:** 34
-- **Requirements covered:** 13 of 13
+- **Total test cases:** 37
+- **Requirements covered:** 16 of 16
 - **Interface changes covered:** 6 of 6
 
 ## Test Cases
@@ -34,9 +34,9 @@
 
 ##### Expected Results
 
-- The ConfigMap has name agentless_net, role fabric, and capability ipv4.
-- The NetworkClass exposes agentless_net as the selected fabric manager.
-- IPv6 and dual-stack capabilities are absent.
+- The ConfigMap has the Fabric Manager role label, name agentless_net, implementationRef osac.templates.agentless_net, contractVersion v1, and ipv4 capability only.
+- The NetworkClass selects agentless_net without a K8s Manager, which is the Fabric-only IPv4 profile.
+- The registration does not claim evpn-vxlan, ipv6, or dualStack.
 
 #### TC-FR1-02: Select the backend through the existing provider configuration
 
@@ -126,7 +126,7 @@
 ##### Preconditions
 
 - One Ready VirtualNetwork contains one Ready Subnet.
-- Two test interfaces are bound to the same Subnet VLAN.
+- Two test interfaces are bound to the same Subnet VLAN and have a SecurityGroup rule that permits the test traffic.
 
 ##### Steps
 
@@ -139,7 +139,7 @@
 - ARP resolves without a routed hop.
 - IPv4 traffic reaches the peer while the Subnet remains a single L2 domain.
 
-#### TC-FR3-02: Route cross-Subnet traffic by default
+#### TC-FR3-02: Route cross-Subnet traffic when SecurityGroup permits
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -148,7 +148,7 @@
 ##### Preconditions
 
 - One Ready VirtualNetwork contains two Ready Subnets.
-- Test interfaces are bound to different Subnets.
+- Test interfaces are bound to different Subnets and their SecurityGroup explicitly permits the test flow.
 
 ##### Steps
 
@@ -157,9 +157,8 @@
 
 ##### Expected Results
 
-- The permit-all baseline routes the flow between Subnets.
-- Reconciliation and restart do not introduce a policy-dependent readiness gate
-  or change the routed result.
+- The explicit SecurityGroup rule permits the flow and the routed packet reaches the peer.
+- Reconciliation and restart preserve the selected route and effective policy.
 
 #### TC-FR3-03: Isolate overlapping VirtualNetworks on the internal fabric
 
@@ -208,7 +207,7 @@
 ##### Expected Results
 
 - The host receives an IPv4 address inside the Subnet CIDR.
-- The lease artifact contains the authoritative port MAC from the
+- osac_result.data.leases contains the authoritative port MAC from the
   `osac.openshift.io/interface-macs` annotation, the matching SubnetRef, and IP;
   the MAC matches the attachment's annotation mapping.
 - BareMetalInstance status contains the same IP in its network attachment status.
@@ -248,7 +247,7 @@
 - The MAC-mismatched artifact is rejected; status remains unchanged and IP
   discovery retries instead of accepting the stale or reused interface name.
 
-#### TC-FR4-03: Keep VM address assignment outside AgentlessNet
+#### TC-FR4-03: Reject ComputeInstance networking in the Fabric-only profile
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -256,19 +255,22 @@
 
 ##### Preconditions
 
-- A ComputeInstance uses a NetworkClass with agentless fabric and the required
-  k8sManager/OVN path.
+- agentless_net is registered with ipv4 only and selected without a K8s Manager.
+- The NetworkClass therefore selects the Fabric-only IPv4 profile.
+- A ComputeInstance requests a Subnet from that NetworkClass.
 
 ##### Steps
 
-1. Create the ComputeInstance with an existing network attachment.
-2. Observe the VM network status and AgentlessNet job inputs.
+1. Submit the ComputeInstance networking request.
+2. Inspect profile validation, AAP job history, and AgentlessNet inputs.
 
 ##### Expected Results
 
-- OVN supplies the VM address.
-- AgentlessNet does not create a fabric-side DHCP address for the VM.
-- The attachment contract remains available for the downstream VMaaS flow.
+- OSAC rejects the ComputeInstance target before AAP dispatch because the
+  Fabric-only profile has no K8s network integration.
+- No AgentlessNet DHCP query or attachment job starts for the ComputeInstance.
+- VM address assignment remains available through a compatible
+  Fabric-backed EVPN profile and its K8s Manager.
 
 #### TC-FR4-04: Reject duplicate SubnetRef and preserve Subnet reuse
 
@@ -338,8 +340,7 @@
 
 - An ExternalIP is Allocated with status.address populated.
 - The target has no primary private address at first, then receives one.
-- The supported external path is available, so the default forwarding baseline
-  permits the inbound test flow.
+- The target attachment has a SecurityGroup rule that permits the inbound test flow, and the supported external path is available.
 - The provider-owned BGP peer is established and can report learned `/32`
   routes.
 
@@ -360,7 +361,7 @@
   the upstream BGP peer learns the route.
 - The attachment remains non-ready if ExternalIP allocation succeeds but the
   DNAT operation fails.
-- Inbound traffic reaches the target under the permit-all baseline, and the
+- Inbound traffic reaches the target only when the attached SecurityGroup permits the flow, and the
   attachment becomes Ready only after DNAT success and status feedback
   confirmation.
 
@@ -376,10 +377,9 @@
 
 - An ExternalIP is Allocated with status.address populated.
 - A NATGateway references that ExternalIP and a Ready VirtualNetwork.
+- The attached SecurityGroup explicitly permits egress to the test endpoint.
 - The VirtualNetwork has two Ready Subnets, and the NATGateway state contains
   both source CIDRs.
-- The supported external path is available, so the permit-all baseline permits
-  the test egress flow.
 
 ##### Steps
 
@@ -437,8 +437,8 @@
 
 1. Wait for the pool to reach Ready.
 2. Create an ExternalIP through the existing API.
-3. Wait for the ExternalIP AAP job to commit provider state and inspect the
-   allocated-address and provider-result annotations.
+3. Wait for the ExternalIP AAP job to complete and inspect its validated
+   osac_result.data.externalIP.address.
 4. Read pool and ExternalIP status, reservation state, and agentless state file.
 
 ##### Expected Results
@@ -446,11 +446,9 @@
 - Pool status.total and status.available reflect the configured CIDR capacity.
 - ExternalIP status.state is Allocated and status.address contains an address
   from the pool.
-- The committed provider-result annotation, `ExternalIP.status.address`, and
-  the state-file `external_ips` entry contain the same address keyed by the
-  ExternalIP UUID and state digest.
-- The fulfillment-service reservation is `COMMITTED` and pool capacity is held
-  exactly once.
+- The address in osac_result, ExternalIP.status.address, and the state-file
+  external_ips entry is the same and is keyed by the ExternalIP UID.
+- OSAC accepts the result and updates its reservation and pool capacity exactly once.
 - The state-file `external_ip_pools` entry records the provider-side pool CIDR.
 
 #### TC-FR7-02: Reject exhausted capacity and restore it on release
@@ -466,14 +464,14 @@
 ##### Steps
 
 1. Attempt to create another ExternalIP from the exhausted pool.
-2. Delete an existing ExternalIP and wait for provider `CLEANUP_COMPLETE` or
-   `NOT_COMMITTED` to be acknowledged by fulfillment-service.
+2. Delete an existing ExternalIP and wait for the release task to return
+   osac_result.data.externalIP.releaseState = RELEASED.
 3. Create another ExternalIP from the pool.
 
 ##### Expected Results
 
 - The first create request fails with a capacity/precondition error.
-- Pool status.available increases only after the reservation reaches `RELEASED`.
+- Pool status.available increases only after OSAC validates the common RELEASED result.
 - The subsequent create request receives a newly allocated address, and the
   state file contains exactly one allocation for the new ExternalIP UUID.
 
@@ -532,7 +530,7 @@
 - Concurrent writers serialize on the stable sidecar lock and do not duplicate
   an ExternalIP or release capacity twice.
 
-### FR-8: Networking across all services
+### FR-8: Fabric workload attachment targets
 
 #### TC-FR8-01: Perform BMF port bind and unbind through the generic contract
 
@@ -548,24 +546,32 @@
 
 ##### Steps
 
-1. Run `playbook_osac_move_network_attachment` with `attach` and the stable
+1. Run `playbook_osac_move_network_attachment` with
+   `osac_job_vars.context.attachment.action: ATTACH` and the stable
    binding/host/MAC/Subnet/provisioning-network inputs.
 2. Verify the port is on the tenant VLAN, reboot the host, and wait for
    `NetworkHandoffComplete` and DHCP discovery.
-3. Power off the host and run the same playbook with `detach`.
+3. Power off the host and run the same playbook with
+   `osac_job_vars.context.attachment.action: DETACH`.
 4. Inspect the Cumulus port, VLAN, and `port_bindings` state.
 
 ##### Expected Results
 
-- The AgentlessNet attachment role receives stable host, interface, MAC, Subnet,
-  direction, and provisioning-network inputs.
+- The AgentlessNet role receives the contract-defined binding under
+  `osac_job_vars.context.attachment`, including stable binding UID, workload
+  kind/UID, host UID, interface, authoritative MAC, Subnet and VirtualNetwork
+  UIDs/references, tenant ID, action, and provisioning-network ID.
+- The successful task returns the matching binding UID, observed state, and
+  backend port identity in osac_result.data.attachment.
+- Attach returns state ATTACHED; detach returns state RESTORED. Both results
+  identify the same stable binding UID and the observed backend port.
 - The switch port is assigned to the Subnet VLAN and the binding is recorded;
   DHCP and handoff readiness follow reboot.
 - Detach restores the exact provisioning VLAN, reports
   `NetworkOffboardComplete`, and removes the binding without changing another
   Subnet's VLAN.
 
-#### TC-FR8-02: Accept downstream CaaS and VMaaS attachment inputs
+#### TC-FR8-02: Enforce the Fabric-only target boundary
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -573,26 +579,37 @@
 
 ##### Preconditions
 
-- Fixtures represent a CaaS cluster node and a VMaaS ComputeInstance whose
-  attachment omits the Subnet field so the existing tenant default must be
-  resolved.
-- A fake AAP provider captures the selected role arguments.
+- agentless_net is registered with ipv4 only and selected without a K8s Manager.
+- The NetworkClass therefore selects the Fabric-only IPv4 profile.
+- A fake AAP provider captures dispatch attempts.
+- Valid Cluster target, SecurityGroup, and ExternalIPAttachment fixtures are available.
 
 ##### Steps
 
-1. Submit each fixture to the generic attachment and DHCP role contract.
-2. Inspect the resolved attachment fields, role argument validation, and
-   generated lease-query inputs.
+1. Submit a BaremetalInstance attachment using normalized context and verify it
+   is routed to the Fabric Manager workload_attachment.move entry point; query
+   its lease through `osac_job_vars.context.attachments` using binding UID,
+   Subnet UID/reference, interface, and authoritative MAC.
+2. Request a Cluster-targeted SecurityGroup update and ExternalIPAttachment.
+3. Request a Cluster workload_attachment.move and dhcp_lease.query operation,
+   then request a ComputeInstance attachment through this profile.
+4. Configure a K8s Manager without evpn-vxlan and attempt to combine it with
+   agentless_net.
 
 ##### Expected Results
 
-- Both fixtures expand the omitted Subnet field to the tenant's default.
-- The single CaaS `BareMetalNetworkAttachment` has `primary: true`.
-- The single VMaaS attachment is implicitly primary; generic
-  `query_dhcp_lease` arguments do not require a `primary` field.
-- The AgentlessNet role accepts the contract without a service-specific API
-  change.
-- Full service provisioning remains assigned to OSAC-1611 and OSAC-3665.
+- BaremetalInstance receives workload_attachment.move and dhcp_lease.query;
+  both operations require the exact contract inputs and result.
+- The query returns exactly one matching entry in `osac_result.data.leases`
+  with `subnetRef`, `interface`, `ipAddress`, and `macAddress`; missing, stale,
+  or ambiguous matches fail with a diagnostic.
+- Cluster-level SecurityGroup and ExternalIPAttachment requests are routed to
+  the Fabric Manager, while Cluster move and lease-query requests are rejected
+  before AAP dispatch.
+- ComputeInstance targets fail profile validation before AAP dispatch.
+- A K8s Manager cannot be paired with agentless_net for the Fabric-backed EVPN
+  profile because the AgentlessNet registration lacks evpn-vxlan.
+- No service-specific fields are added to the manager context.
 
 ### FR-9: Failure visibility
 
@@ -870,8 +887,7 @@
 - Same-Subnet, permitted cross-Subnet, and topology-isolation outcomes match
   for the in-scope backend behavior.
 - Backend selection does not add tenant-visible API fields.
-- SecurityGroup provisioning and policy enforcement are excluded from this
-  parity comparison.
+- SecurityGroup behavior is included in parity and must match the shared default-deny, input-order-preserving allow-rule, and stateful-return semantics.
 
 #### TC-NFR2-02: Compare external access behavior with the Netris backend
 
@@ -898,8 +914,7 @@
   attachment is Ready.
 - Outbound traffic observes the configured NATGateway ExternalIP.
 - Deletion removes only the resources' owned mappings.
-- SecurityGroup provisioning and policy enforcement are excluded from this
-  comparison because they remain outside the agentless milestone.
+- SecurityGroup behavior is included in parity and must match the shared contract; the current packet path is a known blocker to passing these cases.
 
 ### NFR-3: Internal VirtualNetwork isolation
 
@@ -935,7 +950,8 @@
 
 - Two overlapping VirtualNetworks have an ExternalIPAttachment and a
   NATGateway configured through allocated ExternalIPs with populated status
-  addresses.
+  addresses. The attached SecurityGroups explicitly allow the tested inbound
+  and outbound flows.
 
 ##### Steps
 
@@ -948,26 +964,74 @@
 - The explicit ExternalIP/NATGateway path carries the permitted flow.
 - No internal cross-VN route is created.
 
+### FR-11: SecurityGroup conformance
+
+#### TC-FR11-01: Enforce default-deny, order-preserving, stateful policy on every path
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | critical | automated |
+
+Create a SecurityGroup with explicit ingress and egress rules and attach it to
+endpoints on the same Subnet and on different Subnets. Verify unmatched traffic
+is denied, matching traffic is allowed, established return traffic is allowed,
+and the same behavior applies to L2-switched, routed, inbound DNAT, and outbound
+SNAT traffic. Put different SecurityGroups on two endpoints sharing one Subnet,
+and attach multiple groups to one endpoint; verify each binding receives only
+the union of its own groups' allow rules. Verify apply receives the complete
+binding snapshot on group create, rule update, and binding add/remove. On attach,
+policy succeeds before Ready; on detach, the workload leaves the network before
+its binding disappears from the next policy snapshot. Repeat after a rule update
+and verify obsolete rules stop matching.
+
+**Current result:** blocked by the documented Cumulus packet-path limitation
+and the lack of proven per-binding policy isolation. This test is a release
+blocker; AgentlessNet must not be called contract conformant until it passes.
+
+#### TC-FR11-02: Remove only the SecurityGroup-owned policy on deletion
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | high | automated |
+
+Delete a SecurityGroup after its workload bindings are detached. Verify its
+policy is removed, unrelated SecurityGroup rules remain, and the delete task
+returns a valid osac_result only after cleanup is observed.
+
+### FR-12: Common manager result contract
+
+#### TC-FR12-01: Validate common results and OSAC-owned status
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-6 | critical | automated |
+
+For every manager task, verify success returns osac_result with schemaVersion,
+operation, resourceUID, and observedGeneration. For ExternalIP allocation verify
+the required allocated address is durably stored before result return; for
+release verify the UID-owned allocation is absent before RELEASED is returned.
+Verify OSAC validates the result and owns API status, annotations, and pool
+capacity. Missing or stale results fail reconciliation; no private callback,
+provider-specific result annotation, or manager-specific ConfigMap is used as a second
+result channel.
+
 ## Gaps
 
-### Requirement Coverage Gaps
-
-All PRD requirements have test cases.
-
-### Interface Change Coverage Gaps
-
-All interface changes are exercised by test cases.
+The existing test cases for SecurityGroup conformance cannot pass with the
+current architecture. AgentlessNet is not a contract-conformant Fabric Manager
+until TC-FR11-01 passes on every assigned packet path. The common result tests
+are acceptance criteria for the planned implementation.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 34 |
-| Critical | 11 |
-| High | 22 |
+| Total test cases | 37 |
+| Critical | 13 |
+| High | 23 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 33 |
+| Automated | 36 |
 | Manual | 1 |
-| Requirements with test cases | 13 / 13 |
+| Requirements with test cases | 16 / 16 |
 | Interface changes with test cases | 6 / 6 |

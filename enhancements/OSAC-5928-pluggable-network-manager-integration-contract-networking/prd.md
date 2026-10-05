@@ -48,16 +48,20 @@ OSAC networking designs describe manager roles and provisioning, but the manager
 ### 3.1 Functional Requirements
 
 - **FR-1:** An implementation author must be able to use one published OSAC contract to integrate a Fabric Manager or K8s Manager, regardless of who supplies the implementation. Implementations distributed with OSAC use the same contract. [User]
-- **FR-2:** An implementation author must be able to determine from the contract the manager role responsibilities, every required operation and workload target, registration requirements, task inputs and results, lifecycle behavior, and failure handling. A conforming implementation must provide the complete operation set assigned to its role. [User]
+- **FR-2:** An implementation author must be able to determine from the contract the manager role responsibilities, every required operation and workload target in a selected profile, registration requirements, task inputs and results, lifecycle behavior, and failure handling. A conforming implementation must provide the complete operation set assigned to its role in that profile. [User]
 - **FR-3:** A Cloud Infrastructure Admin must be able to configure conforming implementations for the manager roles while tenants continue using the shared OSAC networking API. [Unified Networking PRD: FR-6]
 - **FR-4:** When the selected profile does not route a requested operation and workload target, or lacks the manager role required by the fixed dispatch rules, OSAC must give the provider a clear diagnostic and must not route that work to a different manager. [User]
 
 ## 4. Acceptance Criteria
 
 - [ ] The published contract defines the exact v1 registration, role, complete operation and target sets, input, output, lifecycle, error, and security requirements for Fabric and K8s Manager implementations.
+- [ ] The contract includes working ConfigMap examples for both roles and identifies the exact AAP collection entry point for every required operation.
+- [ ] Every successful manager task returns the common, versioned `osac_result`; OSAC validates the operation, resource UID, and generation before accepting it or starting a dependent manager stage.
+- [ ] The contract defines the Subnet result handoff used by an EVPN K8s Manager, the ExternalIP allocation and release result, DHCP lease results, and workload attachment move results.
+- [ ] Manager results flow through the shared OSAC provisioning lifecycle. Implementations do not require manager-specific callbacks, annotations, ConfigMaps, or OSAC code paths.
 - [ ] An implementation from any source, including an implementation distributed with OSAC, is eligible for selection when it conforms to the published contract.
 - [ ] A provider can select conforming manager implementations without changing the tenant-facing OSAC networking API.
-- [ ] Invalid registrations and operation-target pairs unavailable in the selected profile produce a clear diagnostic before OSAC dispatches work; a registration cannot opt out of required operations.
+- [ ] The contract defines the selectable Fabric-only IPv4, Fabric-backed EVPN, and K8s-only IPv4 profiles, their required registration capabilities, complete operation sets, and workload-target sets. Workload attachment moves and DHCP lease queries target BaremetalInstance; CaaS physical workers use BMaaS for those operations. Invalid combinations fail before AAP; a registration cannot opt out of assigned work.
 - [ ] The Unified Networking design explains OSAC profile selection and orchestration and links to the standalone contract for exact implementation requirements.
 - [ ] Netris and Agentless VLAN designs reference the same contract as their implementation interface.
 

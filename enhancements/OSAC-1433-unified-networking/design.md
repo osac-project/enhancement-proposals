@@ -71,8 +71,10 @@ The design introduces:
 - **ExternalIP** (renamed from PublicIP) to clarify that addresses are
   external to the VirtualNetwork, not necessarily internet-routable
 - **Uniform API** where the shared networking resource model serves VMaaS,
-  CaaS, and BMaaS; each manager profile implements only its supported resource
-  kinds and target types
+  CaaS, and BMaaS; every registered manager implements the complete operations
+  and workload targets assigned to its role by the selected fixed profile.
+  The normative operation and target matrix is in the
+  [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
 
 The BMaaS integration is based on the `BaremetalInstance` resource defined in
 the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api),
@@ -119,11 +121,12 @@ attachments on `ComputeInstance`, `Cluster`, and `BaremetalInstance` are also
 create-time-only. Controller status, conditions, readiness, and IP-discovery
 updates remain internal reconciliation.
 
-A SecurityGroup rule update is a desired-state operation: every manager must
-reconcile its backend rules to the requested specification, including removing
-obsolete rules. Retrying the same request must not create duplicates. This
-update exception follows the shared [Unified Networking
-PRD](prd.md#fr-8-networking-resource-operations-r8).
+OSAC dispatches SecurityGroup rule updates to the role selected by the fixed
+profile and supplies the desired resource state and current binding snapshot.
+The manager's required policy semantics and convergence behavior are defined
+by the [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
+This design covers the API's update allowance and OSAC dispatch lifecycle; it
+does not restate manager packet-policy requirements.
 
 ## Proposal
 
@@ -170,8 +173,7 @@ Fabric](#how-vms-join-the-fabric). A single `k8sManager` field selects the
 Kubernetes implementation.
 
 Only fabric-backed deployments place VMs on the physical fabric and apply the
-fabric manager's behavior uniformly to fabric-connected workloads. K8s-only
-deployments use the capabilities and target limits of their K8s manager.
+fabric manager's behavior uniformly to fabric-connected workloads. K8s-only deployments use the fixed operation and target set defined for that profile; managers do not declare per-registration operation or target subsets.
 
 #### NetworkClass Examples
 
@@ -183,7 +185,7 @@ kind: NetworkClass
 metadata:
   name: moc-region-1
 fabricManager: netris
-k8sManager: cudn_localnet
+k8sManager: cudn_evpn
 capabilities:
   supportsIpv4: true
   supportsIpv6: false
@@ -198,7 +200,7 @@ kind: NetworkClass
 metadata:
   name: bos-region-1
 fabricManager: neutron
-k8sManager: cudn_localnet
+k8sManager: cudn_evpn
 capabilities:
   supportsIpv4: true
   supportsIpv6: false
@@ -251,6 +253,22 @@ and validation behavior are defined in the
 [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md);
 this design describes how OSAC consumes the registration.
 
+#### Manager discovery during Enclave installation
+
+The Enclave installation flow obtains manager choices from the same validated
+registration inventory the OSAC dispatcher uses. OSAC exposes each valid
+registration's logical name, role, description, contract version, and
+capabilities to the installer. The UI does not maintain a product-specific
+list. It filters choices by the role and technical capabilities required by
+the selected profile. A newly installed conforming manager becomes selectable
+when its registration is available, without an Enclave UI code change. If no
+valid registration meets a required role and profile, installation cannot
+select that profile and must show the registration or compatibility
+diagnostic. The selected logical manager names are written to the provider's
+NetworkClass configuration. Registration validation and profile requirements
+remain defined by the
+[Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
+
 ### How VMs Join the Fabric
 
 OSAC runs VMs on OpenShift using KubeVirt. Each VM is encapsulated in a pod
@@ -260,9 +278,13 @@ fabric. The k8sManager bridges this overlay to the fabric so that VMs
 become first-class fabric participants — reachable at their subnet IP from
 any other resource on the same fabric segment.
 
-Several mechanisms can achieve this bridging. The k8sManager is pluggable —
-different deployments use different mechanisms depending on their
-infrastructure and requirements:
+Several mechanisms can achieve this bridging. The K8s Manager is pluggable,
+but implementations are selectable only through a standardized contract v1
+profile. Contract v1 defines Fabric-only IPv4, Fabric-backed EVPN, and K8s-only
+IPv4 profiles. Other
+mechanisms listed below are technical alternatives, not selectable contract v1
+profiles until their registration capability and cross-manager handoff are
+standardized.
 
 **CUDN with LocalNet.** The k8sManager creates a ClusterUserDefinedNetwork
 (CUDN) with LocalNet topology, mapping the OVN network directly to a
@@ -453,8 +475,7 @@ provider or guarantee that the provider can allocate it again. [User]
 ### End-to-End Flows
 
 This section shows how the unified networking API works from the tenant's
-perspective. The API flow is shared, while the resource provisioning path and
-supported operations depend on the configured manager profile. K8s-only
+perspective. The API flow is shared, while the resource provisioning path and operation/target assignments depend on the fixed manager profile. K8s-only
 behavior is called out where it differs from fabric-backed behavior.
 
 These provider setup, networking setup, attachment, and external access flows
@@ -521,9 +542,14 @@ osac create security-group --virtual-network my-net --name my-sg \
   --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
 ```
 
-The selected manager enforces SecurityGroup rules for its supported workloads:
-fabric managers create ACL rules, while the K8s-only manager creates
-NetworkPolicy resources.
+OSAC sends SecurityGroup creation, rule updates, binding additions/removals, and
+deletion to the manager role assigned by the selected profile. It supplies the
+complete current binding snapshot, gates attachment readiness on successful
+policy application, and removes a workload from the network before dispatching
+the snapshot that omits it. The selected manager applies policy and returns the
+contract result; the Network Manager Integration Contract defines the exact
+policy semantics, inputs, targets, task entry points, results, and retry
+behavior.
 
 #### Resource Creation (Fabric-Backed Profiles)
 
@@ -735,7 +761,7 @@ ExternalIPAttachment transitions to **Ready**.
 |-------------|----------------------|---------------------|
 | ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC (from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to assigned IP; operator writes to CR status |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | BMaaS calls the contract's `dhcp_lease.query` with the authoritative interface MAC and SubnetRef, requires exactly one lease, and writes the address to CR status |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
@@ -761,8 +787,8 @@ IP discovery mechanism per service type:
 | Service | Discovery source | Who writes status | Status field |
 |---------|-----------------|-------------------|-------------|
 | VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
-| CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC — from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to the DHCP-assigned IP, falling back to server name for named fabric servers (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| CaaS | BMaaS discovers each worker's lease for its BaremetalInstance attachment through the Fabric Manager's `dhcp_lease.query` operation. The CaaS BareMetalWorkerReconciler correlates the Agent to that BaremetalInstance by MAC. | BMaaS writes the BaremetalInstance attachment status; the CaaS worker flow owns Agent/ClusterOrder correlation and status. | BaremetalInstance attachment status is the authoritative worker address; Agent identity is correlated by MAC. |
+| BMaaS | Operator queries the Fabric Manager's DHCP lease API through the contract's `dhcp_lease.query` operation after provisioning completes; matches the authoritative interface MAC and SubnetRef to exactly one lease. A missing or ambiguous match fails with a diagnostic. | bare-metal-fulfillment-operator dispatches `dhcp_lease.query` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
 The fabric manager's `move_network_attachment` role is switch-side
 only — it moves a host's fabric port from one network segment to another
@@ -789,20 +815,20 @@ move differs per service:
   host reboots before it joins the cluster installation flow).
 
 Once on the tenant network, the host receives an IP from the fabric's DHCP server
-automatically. A single AAP job template serves both directions, deriving onboard
-(provisioning network → tenant) vs. offboard (tenant → provisioning network) from
-the resource's `deletionTimestamp`. See [BMaaS — Provisioning Network and Port
+automatically. One AAP task entry point serves both directions. OSAC supplies
+the contract-defined `context.attachment.action` value (`ATTACH` or `DETACH`);
+the manager does not infer the action from `deletionTimestamp`. See
+[BMaaS — Provisioning Network and Port
 Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#provisioning-network-and-port-moves).
 
-IP discovery for BMaaS is a separate dispatcher call. After
+IP discovery for BMaaS is a separate contract operation. After
 `reconcileProvisioning` completes and the host has received a DHCP
-lease, the operator dispatches `query_dhcp_lease` — this role queries
-the fabric manager's DHCP lease API for the subnet and matches the
-server's port MAC address to find the corresponding DHCP-assigned IP.
-Bare-metal hosts are not named fabric servers, so the lease is matched
-by NIC MAC, which the operator supplies from the host's
-`osac.openshift.io/interface-macs` BareMetalHost annotation; named
-fabric servers such as CaaS agents fall back to matching by server name.
+lease, the operator dispatches `dhcp_lease.query` with the attachment's
+authoritative interface MAC and SubnetRef. The Fabric Manager queries its
+lease source and returns exactly one lease for that binding. The operator
+supplies the MAC from the host's `osac.openshift.io/interface-macs`
+BareMetalHost annotation. Display names and provider server names are not
+lease identity and must not be used as a fallback.
 
 *NATGateway controller preconditions:*
 
@@ -1003,19 +1029,19 @@ single supplied attachment:
 
 | Input | Resolution |
 |---|---|
-| VMaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup. |
-| BMaaS attachment list omitted or empty | Add the tenant's default Subnet, default SecurityGroup, and the first `fabric` port from `BareMetalInstanceType.network_ports`. |
-| CaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup; resolve the first `fabric` port from each node set's `BareMetalInstanceType` for the BM worker handoff. |
+| VMaaS attachment omitted or empty | Add the tenant's default Subnet. |
+| BMaaS attachment list omitted or empty | Add the tenant's default Subnet and the first `fabric` port from `BareMetalInstanceType.network_ports`. |
+| CaaS attachment omitted or empty | Add the tenant's default Subnet; resolve the first `fabric` port from each node set's `BareMetalInstanceType` for the BM worker handoff. |
 | One attachment with no Subnet | Default only the Subnet; preserve supplied SecurityGroups and, for BMaaS, the supplied interface. |
-| One attachment with no SecurityGroups | Default only the SecurityGroup list, but only when the resolved Subnet belongs to the tenant's default VirtualNetwork. Otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork. |
+| One attachment with no SecurityGroups | Do not add SecurityGroups. An empty list is allowed on the tenant's default VirtualNetwork; a non-default VirtualNetwork requires caller-supplied SecurityGroups from that VirtualNetwork. |
 | One BMaaS attachment with no interface | Default only the interface to the first `fabric` port from `BareMetalInstanceType.network_ports`. |
 | One complete attachment | Preserve all supplied values and validate readiness, tenant scope, and VirtualNetwork relationships. |
 
-An explicitly empty `security_groups` list is treated as a missing
-SecurityGroup value for this defaulting rule. If a required default is absent
-or not Ready, creation fails with a validation or precondition error. The
-fully resolved attachment is stored with the workload and is immutable after
-creation.
+An explicitly empty `security_groups` list remains empty. SecurityGroups are
+never created or injected by attachment resolution. If a required default
+Subnet or BMaaS fabric interface is absent or not Ready, creation fails with a
+validation or precondition error. The fully resolved attachment is stored
+with the workload and is immutable after creation.
 
 #### Resource Specs
 
@@ -1687,6 +1713,17 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 ## Test Plan
 
+### Enclave manager discovery
+
+- Register an additional valid Fabric Manager and K8s Manager using new names
+  and contract-compatible capabilities. Verify the Enclave installation UI
+  discovers each from OSAC registration data, shows it for the matching role
+  and profile, and writes the selected logical name into NetworkClass
+  configuration without a product-specific UI change.
+- Register an invalid or profile-incompatible manager. Verify it cannot be
+  selected, the installer shows the registration or compatibility reason, and
+  no invalid manager name is written to NetworkClass configuration.
+
 ### Unit and API Validation
 
 - `osac-operator/pkg/dispatcher` unit tests cover every resource kind in
@@ -1818,11 +1855,9 @@ No additional infrastructure beyond existing OSAC components and managers.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-
-> Context changed between revise and revise.
+Authored: revise @ design 0.11.3 - 2bd6607, workspace worktree-netris-k8sonly-prd-design @ 0f51a81 (1 behind origin/main, dirty)
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0f51a81 (dirty)","source_repo_branch":"worktree-netris-k8sonly-prd-design","commits_behind_main":1,"commits_ahead_main":17,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

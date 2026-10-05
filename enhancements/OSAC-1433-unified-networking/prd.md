@@ -77,8 +77,8 @@ This section defines key terms used throughout this document.
 
 - **NetworkClass**: A provider-configured resource that defines how networking
   is implemented. Specifies which fabric manager and K8s manager handle
-  networking. In the current design, tenants select it when creating a
-  VirtualNetwork (this is one of the gaps — see #2).
+  networking. The provider configures it for the deployment; tenants do not select or
+  modify it.
 
 - **Fabric Manager**: A single product (e.g., Netris, Neutron) that manages
   all physical networking: tenant isolation, ACLs, IP allocation, DNAT,
@@ -181,10 +181,11 @@ not the tenant's preference.
 Manager profiles offer different workload targets and network
 operations. A K8s-only profile supports VMs on the hub and inbound access for
 those VMs, but does not support CaaS or bare-metal targets, inter-Subnet
-routing, or outbound NAT. A fabric-backed profile can support shared VM, CaaS,
-and bare-metal networks when its configured managers provide those operations.
-The system needs machine-readable manager capabilities and validation that the
-configured profile supports its assigned operations.
+routing, or outbound NAT. Fabric-backed profiles provide the fixed workload
+targets and operations assigned by the Network Manager Integration Contract.
+Every conforming manager must implement the complete set assigned to its role;
+registrations do not advertise optional operation or target subsets. OSAC needs
+machine-readable capabilities to validate manager/profile compatibility.
 
 #### Gap #4: ExternalIPAttachment only supports VMs
 
@@ -256,12 +257,11 @@ With exactly one attachment, it is the default route/primary attachment. The
 BMaaS attachment retains its existing optional `primary` field; with one
 attachment, omitting it has the same meaning as `primary: true`, while
 `primary: false` is rejected. VMaaS has no primary field, and CaaS has no
-primary concept. Omitted or empty attachment lists receive tenant defaults;
-partial supplied attachments receive defaults only for missing fields. A
-missing or explicitly empty `security_groups` list is treated as missing; the
-default SecurityGroup applies only when the resolved Subnet belongs to the
-tenant's default VirtualNetwork, otherwise the caller must provide
-SecurityGroups from the resolved Subnet's VirtualNetwork. The resolved
+primary concept. Omitted or empty attachment lists receive tenant defaults; partial supplied
+attachments receive defaults only for missing fields. Attachment resolution
+does not add SecurityGroups. An empty SecurityGroup list is allowed on the
+tenant's default VirtualNetwork; a non-default VirtualNetwork requires
+caller-supplied SecurityGroups from that VirtualNetwork. The resolved
 attachment list and fields are immutable after creation.
 Multi-NIC workload networking is future scope and is not enabled by the
 plural field shape.
@@ -397,10 +397,11 @@ cluster and does not claim cross-hosting-cluster or cross-service placement.
 #### FR-3: Uniform networking across all service types (R3)
 
 VMaaS, CaaS, and BMaaS consume the same tenant-facing networking resource
-model. The selected manager profile determines which workload targets and
-network operations are available; a K8s-only profile supports VMs on the hub,
-while fabric-backed profiles can support the workload types implemented by
-their configured managers. [User]
+model. The selected profile determines the fixed workload targets and
+operations available, as defined by the Network Manager Integration Contract.
+Each configured manager must implement the complete set assigned to its role;
+managers cannot declare a smaller optional subset. A K8s-only profile supports
+VMs on the hub. [User]
 
 #### FR-4: ExternalIP is external to the VirtualNetwork (R4)
 
@@ -419,8 +420,9 @@ never choose networking backends; the system selects them based on provider
 configuration. Each Fabric Manager and K8s Manager role may use any
 implementation that conforms to the published OSAC Network Manager Integration
 Contract, regardless of who builds, publishes, or distributes it; implementations
-distributed with OSAC follow the same contract. The configured profile
-determines supported workload targets and operations. Requests for an
+distributed with OSAC follow the same contract. The contract assigns a fixed set
+of operations and workload targets to each manager role in each profile, and a
+manager must implement its complete assigned set. Requests for an
 unsupported target or operation fail with a clear diagnostic instead of being
 silently sent to another manager. [User]
 
@@ -579,7 +581,7 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 - [ ] Fabric-backed profiles can place supported VM, bare-metal, and cluster workloads on shared Subnets regardless of physical location
 - [ ] K8s-only networking supports hub-hosted VMs on primary Subnets and does not claim fabric connectivity
 - [ ] The system provisions the networking resources required by the selected manager profile
-- [ ] Fabric-backed profiles support the workload targets implemented by their configured managers; a K8s-only profile supports VM workloads on the hub, and a fabric-only profile without a K8s manager does not support VMs
+- [ ] Each manager implements the complete operation and workload-target set assigned to its role by the selected profile; a K8s-only profile supports VM workloads on the hub, and a fabric-only profile without a K8s manager does not support VMs
 - [ ] SecurityGroup and ExternalIP behavior applies to every workload target supported by the selected profile
 - [ ] Each workload supports at most one tenant network attachment
 - [ ] Fabric-backed profiles support ExternalIPAttachment targets for VMs, clusters, and bare-metal servers; K8s-only networking supports VM targets only
@@ -645,6 +647,7 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 - [ ] The system validates that the configured profile supports its assigned workload targets and operations
 - [ ] A Cloud Infrastructure Admin can select a manager implementation from any source for each configured role when it conforms to the published Network Manager Integration Contract; implementations distributed with OSAC use the same contract
 - [ ] A Cloud Infrastructure Admin can make a new conforming manager available while tenants continue to use the same OSAC networking API
+- [ ] During Enclave installation, the manager-selection UI discovers registered implementations for each role from OSAC registration data, displays eligible managers for the selected profile, and does not use a hard-coded product list
 
 ### Resource-Specific (Bare Metal)
 
@@ -667,11 +670,8 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-
-> Context changed between revise and revise.
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace worktree-netris-k8sonly-prd-design @ 0f51a81 (1 behind origin/main, dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0f51a81 (dirty)","source_repo_branch":"worktree-netris-k8sonly-prd-design","commits_behind_main":1,"commits_ahead_main":17,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

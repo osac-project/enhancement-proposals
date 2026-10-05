@@ -12,7 +12,9 @@
 > deployment support boundary. Air-gapped and disconnected networking
 > deployments are not supported. This document defines the requirements for
 > delivering that model on environments that use traditional managed switches
-> (without Netris). It adds a backend, not new API.
+> (without Netris). It conforms to the source-neutral [Network Manager
+> Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/prd.md)
+> and adds a backend, not a separate API.
 
 This PRD also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
@@ -42,14 +44,17 @@ managed-switch infrastructure, limiting where the platform can run.
 - A Cloud Infrastructure Admin can deploy OSAC with API-driven tenant networking
   in an environment that uses traditional managed switches (no Netris), by
   selecting the agentless VLAN backend. [Clarify: D6]
-- Tenants get the same networking API and supported virtual-network, subnet,
-  inbound external access, and outbound NAT behavior regardless of whether the
-  deployment's backend is Netris or agentless VLAN. [Clarify: D6, D8]
-- Bare-metal servers, clusters, and compute instances all use the agentless VLAN
-  backend for their fabric networking through the existing networking API, with no
-  changes to the service provisioning flows (VM IP addressing and VM-to-fabric
-  bridging are provided outside the backend — see Assumptions/Dependencies).
-  [Clarify: D1, D5, D8; PR review: CodeRabbit]
+- Tenants get the same networking API and contract-defined behavior for
+  VirtualNetwork, Subnet, SecurityGroup, ExternalIP, inbound external access,
+  and outbound NAT regardless of whether the deployment's Fabric Manager is
+  Netris or Agentless VLAN. [Clarify: D6, D8]
+- Bare-metal servers and CaaS physical workers use AgentlessNet for the
+  BaremetalInstance Fabric Manager targets assigned by the Fabric-only IPv4
+  profile. Cluster-level SecurityGroup and ExternalIPAttachment operations also
+  route to the Fabric Manager. ComputeInstance targets
+  require a Fabric-backed EVPN profile with a compatible K8s Manager; AgentlessNet
+  does not declare evpn-vxlan and is not selected for that profile.
+  [Contract; Clarify: D1, D5, D8]
 - A tenant can create a virtual network with multiple subnets: machines in the
   same subnet share a broadcast domain, machines in different subnets of the same
   network can reach each other through the VirtualNetwork routing path, and
@@ -79,17 +84,10 @@ managed-switch infrastructure, limiting where the platform can run.
   part of this backend. [Clarify: D8]
 - No UI is delivered in this milestone; backend selection and networking
   operations are available through configuration and the CLI. [Clarify: D7]
-- SecurityGroup policy enforcement is out of scope for this feature and
-  deferred to a later networking policy design. This feature does not define
-  policy resources, policy semantics, or per-resource traffic restrictions.
-  Until the later policy feature exists, all routed traffic is permitted,
-  including internal traffic within a Subnet, traffic between Subnets in the
-  same VirtualNetwork, and external ingress and egress through the supported
-  external access paths. Same-subnet L2 traffic is also permitted. This
-  default-permit behavior does not create routes between otherwise isolated
-  VirtualNetworks; where the networking topology provides a supported route,
-  the traffic is permitted without provider-managed default-deny controls.
-  [User direction]
+- The shared SecurityGroup API and semantics are not redefined here. Agentless
+  VLAN must implement them as required by the Network Manager Integration
+  Contract; SecurityGroup enforcement is not optional for a conforming Fabric
+  Manager. [Contract]
 - Broad multi-vendor switch support and switch-configuration concurrency beyond the
   initially supported platform(s) are follow-up work; the supported-switch set for
   this milestone is specified in the design EP. [PR review: CodeRabbit]
@@ -124,9 +122,9 @@ managed-switch infrastructure, limiting where the platform can run.
   that my experience is identical across environments. [Clarify: D6, D8]
 - As a Tenant Admin, I want to create a virtual network with multiple subnets
   where machines in the same subnet share a broadcast domain and machines in
-  different subnets of the same network can communicate, while machines in other
-  networks are isolated, so that I can segment my network without losing
-  connectivity or isolation. [Clarify: D12]
+  different subnets communicate when their SecurityGroup rules permit the flow,
+  while machines in other networks are isolated, so that I can segment my network
+  without losing connectivity or isolation. [Clarify: D12]
 - As a Tenant User, I want a machine I attach to a subnet to receive an IP address
   automatically and be reachable on that subnet, so that I don't configure
   addressing by hand.
@@ -149,23 +147,23 @@ managed-switch infrastructure, limiting where the platform can run.
 #### Fabric-Manager-Agnostic Networking
 
 - **FR-2:** With the agentless VLAN backend configured, tenants can create and
-  manage the VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and
-  NATGateway resources through the existing networking API, with behavior
-  equivalent to the Netris backend. SecurityGroup resources and policy
-  enforcement are not delivered by this feature. [Clarify: D1, D5, D8;
-  User direction]
+  manage every resource and operation assigned to the Fabric Manager role by
+  the fixed dispatch rules, including VirtualNetwork, Subnet, SecurityGroup,
+  ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway, through
+  the existing networking API. The manager uses the canonical registration,
+  AAP entry points, input context, and result schema in the Network Manager
+  Integration Contract. [Clarify: D1, D5, D8; Contract]
 
 #### Multiple Subnets per Virtual Network
 
 - **FR-3:** A tenant can create a VirtualNetwork containing multiple Subnets.
-  Machines attached to the same Subnet share an L2 broadcast domain; machines on
-  different Subnets of the same VirtualNetwork can reach each other through the
-  VirtualNetwork routing path by default, without policy-based blocking in this
-  feature;
-  machines on different VirtualNetworks have no direct connectivity on the
-  internal fabric, even when their address ranges overlap (see NFR-3). Separate
-  Subnets provide broadcast segmentation. This follows the unified networking
-  model (OSAC-1433). [Clarify: D12; User direction]
+  Machines attached to the same Subnet share an L2 broadcast domain. Machines
+  on different Subnets of the same VirtualNetwork have a routed path, but traffic
+  succeeds only when the effective SecurityGroup rules permit it. Machines on
+  different VirtualNetworks have no direct connectivity on the internal fabric,
+  even when their address ranges overlap (see NFR-3). Separate Subnets provide
+  broadcast segmentation. This follows the unified networking model (OSAC-1433)
+  and its manager contract.
 
 #### Automatic IP Assignment
 
@@ -179,10 +177,9 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - **FR-5:** A tenant can make a machine reachable from outside its VirtualNetwork
   by attaching an ExternalIP; inbound traffic addressed to the external IP reaches
-  the machine through the external access path. Routed inbound traffic through
-  that path is permitted by default until a future SecurityGroup-like policy
-  mechanism is delivered; no provider-managed default-deny authorization
-  capability is required for the ExternalIPAttachment to become Ready.
+  the machine through the external access path subject to the attached
+  SecurityGroup policy. The attachment becomes Ready only after the manager
+  has applied the requested translation and policy state.
   [Jira: OSAC-3664; User direction]
 
 #### Outbound External Connectivity
@@ -190,10 +187,9 @@ managed-switch infrastructure, limiting where the platform can run.
 - **FR-6:** A tenant can provide outbound external connectivity for a subnet's
   machines through a NATGateway. Outbound traffic is source-address translated
   so it egresses with the NATGateway's external IP as its source address; many
-  machines share that one external IP for egress. Routed outbound traffic through
-  that path is permitted by default until a future SecurityGroup-like policy
-  mechanism is delivered; no provider-managed default-deny authorization
-  capability is required for the NATGateway to become Ready.
+  machines share that one external IP for egress, subject to the attached
+  SecurityGroup policy. The NATGateway becomes Ready only after the manager has
+  applied the requested translation and policy state.
   [Jira: OSAC-3664; Clarify: D14; User direction]
 
 #### External IP Pools
@@ -202,13 +198,17 @@ managed-switch infrastructure, limiting where the platform can run.
   (ExternalIPPool) from which the agentless VLAN backend allocates ExternalIPs for
   tenant external access. [Jira: OSAC-3664]
 
-#### Networking Across All Services
+#### Workload Attachment Operations
 
-- **FR-8:** The backend implements the network-attachment operations that
-  bare-metal, cluster, and compute-instance attachments require, so that all three
-  service types can use agentless-VLAN subnets through their existing
-  network-attachment API. End-to-end per-service provisioning and validation are
-  delivered by the follow-up features (see Non-Goals). [Clarify: D1, D8; PR review: CodeRabbit]
+- **FR-8:** AgentlessNet implements workload_attachment.move and dhcp_lease.query
+  for the BaremetalInstance target assigned by the Fabric-only IPv4 profile.
+  CaaS physical workers use these operations through their BMaaS
+  BaremetalInstance provisioning path. Cluster-level SecurityGroup and
+  ExternalIPAttachment operations remain Fabric Manager targets, but Cluster
+  is not a workload_attachment.move or dhcp_lease.query target. ComputeInstance
+  network attachment and lease discovery are not assigned to this profile; they
+  require a Fabric-backed EVPN profile with a compatible K8s Manager.
+  [Contract; Clarify: D1, D8]
 
 #### Failure Visibility
 
@@ -224,15 +224,28 @@ managed-switch infrastructure, limiting where the platform can run.
   affecting other resources. Teardown respects dependency order — an
   ExternalIPAttachment's inbound DNAT is removed before its ExternalIP is released
   back to its pool. [Jira: OSAC-3664; PR review: CodeRabbit]
+- **FR-11:** SecurityGroup create, rule update, delete, and binding add/remove
+  reconcile the effective policy from the complete current attachment snapshot.
+  Policy is scoped to each listed binding; updates remove obsolete rules;
+  delete removes only policy state owned by that SecurityGroup. The backend must
+  not report success while any affected attachment has stale or missing policy.
+  [Contract]
+- **FR-12:** Every successful AAP task returns a contract v1 `osac_result`
+  identifying the operation, resource UID, and observed generation. ExternalIP
+  allocation returns its durably reserved address through the defined result;
+  OSAC, not the manager, updates API status and annotations. The manager must
+  not use provider-specific callbacks or result annotations. [Contract]
 
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** The agentless VLAN backend provides networking for the IPv4 address
   family. IPv6 and dual-stack are not supported. [Clarify: D11]
-- **NFR-2:** Tenant-observable networking behavior — reachability, isolation,
-  external access — is equivalent between the agentless VLAN and Netris backends;
-  changing the deployment's backend does not change the tenant-facing API
-  contract. [Clarify: D8]
+- **NFR-2:** For target types supported by the Fabric-only IPv4 profile,
+  tenant-observable networking behavior — reachability, isolation, external
+  access, and status — is equivalent between AgentlessNet and Netris. Changing
+  the selected conforming Fabric Manager does not change the tenant-facing API
+  contract. ComputeInstance targets require the separate Fabric-backed EVPN
+  profile. [Clarify: D8; Contract]
 - **NFR-3:** Different VirtualNetworks have no direct connectivity on the internal
   fabric — a machine in one VirtualNetwork cannot reach another VirtualNetwork's
   private subnet addresses, even when their address ranges overlap. Machines
@@ -240,6 +253,10 @@ managed-switch infrastructure, limiting where the platform can run.
   external network path (inbound ExternalIP + outbound NATGateway), the same as
   reaching any external endpoint — this is not internal cross-VN routing.
   [Clarify: D12, D15]
+- **NFR-4:** The Agentless VLAN realization must preserve the shared
+  SecurityGroup stateful behavior for same-Subnet, inter-Subnet, inbound, and
+  outbound flows. A permit-all baseline or a filter that sees only routed
+  traffic does not meet this requirement. [Contract]
 
 ## 5. Acceptance Criteria
 
@@ -247,38 +264,47 @@ managed-switch infrastructure, limiting where the platform can run.
   VirtualNetwork and Subnet through the API and they reach a ready state.
 - [ ] A bare-metal server or cluster node attached to an agentless-VLAN subnet
   automatically receives an IP on that subnet, visible in its status.
-- [ ] A tenant attaches an ExternalIP to a machine and inbound traffic reaches
-  the machine through the external access path.
-- [ ] A tenant creates a NATGateway; a subnet machine's outbound traffic reaches
-  an external endpoint, which observes the NATGateway's external IP as the source
-  address.
-- [ ] An ExternalIPAttachment and NATGateway become Ready without
-  provider-managed default-deny authorization verification, and routed traffic
-  through their supported external paths is permitted by default until a future
-  SecurityGroup-like policy mechanism is delivered.
-- [ ] A tenant creates a VirtualNetwork with two subnets: machines in the same
-  subnet share a broadcast domain, machines in different subnets of that network
-  can reach each other by default through the VirtualNetwork routing path, and machines in a
-  different VirtualNetwork with the same address range cannot reach those private
+- [ ] A tenant attaches an ExternalIP to a machine and, when its SecurityGroup
+  explicitly permits the inbound flow, traffic reaches it through the external
+  access path.
+- [ ] A tenant creates a NATGateway; a Subnet machine with a SecurityGroup rule
+  permitting egress reaches an external endpoint, which observes the NATGateway's
+  external IP as the source address.
+- [ ] SecurityGroup ingress and egress rules apply to each attached workload;
+  replies to permitted flows are allowed according to the shared stateful
+  semantics, and flows outside the effective rule set are denied.
+- [ ] Updating a SecurityGroup removes obsolete backend rules and converges
+  every affected attachment before reporting success.
+- [ ] A tenant creates a VirtualNetwork with two Subnets: machines in the same
+  Subnet share a broadcast domain, and an explicit SecurityGroup rule permits a
+  selected flow between Subnets over the VirtualNetwork routing path. A flow
+  outside the effective SecurityGroup rules is denied. A machine in a different
+  VirtualNetwork with the same address range cannot reach those private
   addresses directly on the fabric.
-- [ ] Resources placed in the same Subnet can communicate at L2; internal
-  traffic is permitted by default until the later policy feature is delivered.
+- [ ] Same-Subnet traffic is subject to its SecurityGroup policy even when the
+  packet path would otherwise be switched at Layer 2.
 - [ ] A machine in one VirtualNetwork can reach a machine in another VirtualNetwork
   via the target's ExternalIP over the external path, even though the target's
   private subnet address remains directly unreachable.
 - [ ] A bare-metal server provisions networking end-to-end through the agentless
   VLAN backend using the same networking API as with Netris (the reference
   validation path this milestone).
-- [ ] The backend performs the network-attachment operations required by cluster
-  and compute-instance attachments on agentless-VLAN subnets; full end-to-end
-  validation for CaaS and VMaaS is covered by their follow-up features
-  (OSAC-1611, OSAC-3665).
+- [ ] AgentlessNet performs the contract-defined network attachment and DHCP
+  lease operations for BaremetalInstance targets only. Cluster-level
+  SecurityGroup and ExternalIPAttachment operations remain assigned to the
+  Fabric Manager. ComputeInstance targets are rejected in the Fabric-only
+  profile and require a compatible
+  Fabric-backed EVPN manager pair; downstream end-to-end CaaS and VMaaS validation
+  remains in OSAC-1611 and OSAC-3665.
 - [ ] A switch-port/VLAN configuration failure is reflected on the affected
   networking resource's status with a diagnostic message.
-- [ ] The same networking API requests produce equivalent tenant-observable
-  virtual-network, subnet, inbound external-access, and outbound-NAT results on
-  an agentless-VLAN deployment as on a Netris deployment; all supported routed
-  traffic is permitted by default until the future policy feature is delivered.
+- [ ] The same networking API requests produce equivalent contract-defined
+  resource, attachment, SecurityGroup, inbound-access, and outbound-NAT results
+  on an agentless-VLAN deployment as on a conforming Netris deployment.
+- [ ] Every Fabric Manager operation and target assigned by the selected
+  profile has a contract v1 AAP task entry point and returns a valid
+  `osac_result`; registration includes `implementationRef` and
+  `contractVersion` and does not advertise an operation subset.
 - [ ] Selecting between the Netris and agentless VLAN backends is a provider
   configuration — not visible to tenants and requiring no API change.
 - [ ] Deleting an ExternalIPAttachment removes the inbound DNAT; deleting its
@@ -300,11 +326,10 @@ managed-switch infrastructure, limiting where the platform can run.
   support.
 - The current one-subnet-per-VirtualNetwork limitation is lifted so that multiple
   subnets per network are allowed end-to-end. [Clarify: D12, C1]
-- Machines never manage their own addressing. The agentless VLAN backend assigns
-  addresses for bare-metal and cluster nodes on the fabric side; VM addressing is
-  provided by the OVN overlay via the separate bridging mechanism (k8sManager) and
-  is outside this backend's scope. The specific mechanism is a design decision.
-  [Clarify: D8, D13]
+- Machines never manage their own addressing. AgentlessNet assigns addresses for
+  bare-metal and cluster nodes on the fabric side. ComputeInstance addressing and
+  fabric bridging use a separate K8s Manager in the Fabric-backed EVPN profile;
+  AgentlessNet is not selected for that profile. [Clarify: D8, D13; Contract]
 - VMaaS additionally requires a separate VM-to-fabric bridging mechanism, provided
   outside this feature. [Clarify: D8]
 - BMaaS is the first service validated with this backend; CaaS and VMaaS are
@@ -374,7 +399,8 @@ managed-switch infrastructure, limiting where the platform can run.
 
 ## Provenance
 
-Authored: respond @ prd 0.9.0 - a17a43d, workspace main @ 63b090a
-Phases: draft, revise, revise, respond
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ e97b06357
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.9.0","ai_workflows":"a17a43d","source_repo":"63b090a","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["draft","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

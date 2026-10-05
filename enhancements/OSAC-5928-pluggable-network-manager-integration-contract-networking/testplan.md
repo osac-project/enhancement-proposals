@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** Pluggable Network Manager Integration Contract
-- **Total test cases:** 6
+- **Total test cases:** 7
 - **Requirements covered:** 4 of 4 functional requirements
 - **Interface changes covered:** 4 of 4
 
@@ -76,7 +76,7 @@
 ##### Expected Results
 
 - Both ExternalIP reconciliations retain the same `osac.openshift.io/allocated-address` value.
-- The query job exposes a `leases` artifact with `subnet_ref`, `interface`, `ip_address`, and `mac_address`.
+- The query job returns `osac_result.data.leases` with `subnetRef`, `interface`, `ipAddress`, and `macAddress` for the requested BaremetalInstance attachment.
 - OSAC reports the matching address for the requested attachment.
 
 #### TC-FR2-03: Verify complete role operation and target coverage
@@ -100,6 +100,30 @@
 
 - The collection provides a task entry point for every operation and target combination assigned to its role; registration has no mechanism to declare an operation subset.
 - Every task meets the v1 input, desired-state, result, and failure requirements.
+
+#### TC-FR2-04: Verify SecurityGroup binding lifecycle and semantics
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | critical | automated |
+
+##### Preconditions
+
+- The candidate manager implements `security_group.apply` for every target assigned to its profile.
+- At least two workload bindings can be placed on the same Subnet and attached to different SecurityGroups.
+
+##### Steps
+
+1. Create SecurityGroups with overlapping and distinct allow rules; attach two groups to one binding and a different group to another binding.
+2. Verify each apply invocation receives the complete current `context.securityGroup.attachments` snapshot with stable binding UIDs.
+3. Add and remove a binding, update rules, and delete a group while recording operation order, retry the same desired state, and inspect packet behavior.
+
+##### Expected Results
+
+- The effective allow set for a binding is the union of its attached groups; rules from another binding's groups do not leak across the shared Subnet.
+- Attach applies policy before the workload attachment becomes Ready. Detach removes the workload from the network before the later snapshot removes its policy.
+- Updates remove obsolete policy, established return traffic is allowed, unmatched traffic is denied when a group is attached, and retries converge without duplicate or stale policy.
+- A binding absent from a later snapshot has no policy owned by that SecurityGroup.
 
 ### FR-3: Provider selection with one tenant networking API
 
@@ -163,7 +187,7 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 6 |
+| Total test cases | 7 |
 | Critical | 4 |
 | High | 2 |
 | Medium | 0 |

@@ -3,7 +3,7 @@ title: netris-fabric-manager
 authors:
   - Dan Manor
 creation-date: 2026-09-28
-last-updated: 2026-10-04
+last-updated: 2026-10-05
 tracking-link:
   - "https://redhat.atlassian.net/browse/OSAC-2434"
 prd:
@@ -20,13 +20,13 @@ see-also:
 
 ## Summary
 
-This document describes the technical design for the Netris fabric manager,
-OSAC's production networking backend that translates tenant networking
-resources into Netris controller configuration. The Netris backend fulfills
-the fabric manager contract defined by the
-[Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md):
-it manages VPCs, VNets, IPAM allocations, NAT rules, and ACLs through the
-Netris controller REST API.
+This document specifies the technical target for the Netris Fabric Manager,
+OSAC's production networking backend, against the
+[Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
+It maps the contract operations to Netris controller resources and REST calls.
+The current Netris tasks still have contract gaps documented below; the
+implementation is not contract-v1 conformant until those gaps are closed and
+the assigned operation and target set passes conformance validation.
 
 See [PRD](prd.md) for the problem statement, user stories, and requirements.
 
@@ -59,8 +59,7 @@ behavior, and failure recovery.
   Netris roles and identifies the OSAC-side changes needed to meet it.
 - Kubernetes-native implementation details; this document covers only the
   Netris fabric manager role.
-- SecurityGroup policy semantics (allow/deny evaluation, rule ordering,
-  stateful tracking) — that is a cross-backend concern.
+- SecurityGroup API semantics and required manager behavior — a cross-backend concern defined by the Network Manager Integration Contract.
 - Multiple Netris controllers, split-controller topologies, or Netris
   controller HA. One controller may manage multiple sites mapped to OSAC
   regions.
@@ -74,11 +73,16 @@ in the `osac.templates.netris` collection, invoked by AAP.
 
 #### Manager Registration
 
-The Netris ConfigMap uses the Fabric Manager role label, data.name netris,
-implementationRef osac.templates.netris, contractVersion v1, and the IPv4
-capability. The Netris collection implements the complete Fabric Manager
-operation and target set required by contract v1; its registration does not
-list operations. The registration format and operation identifiers are defined by the
+The target Netris ConfigMap uses the Fabric Manager role label, data.name
+netris, implementationRef osac.templates.netris, contractVersion v1, and the
+ipv4 and evpn-vxlan capabilities. The latter allows selection in the EVPN
+profile when paired with an evpn-vxlan K8s Manager. The Netris collection must
+implement the complete Fabric Manager operation and target set assigned by
+contract v1; its registration does not list operations. Do not advertise this
+registration as contract v1 or make it selectable until every assigned
+operation and target passes contract conformance. The current SecurityGroup
+implementation is a known blocker, so the current Netris manager is not yet
+contract-conformant. The registration format and operation identifiers are defined by the
 [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
 The resource mapping below documents Netris-specific backend behavior.
 
@@ -90,13 +94,47 @@ mappings are listed below.
 
 The Netris role implements fabric workload operations as follows:
 
-- `move_network_attachment` moves the workload port between the provisioning
-  V-Net and tenant Subnet V-Net on attach, and restores it on detach. The role
-  checks current port membership, making repeat attach/detach requests safe.
-- `query_dhcp_lease` resolves a requested fabric workload lease from Netris
-  IPAM host entries. Bare-metal hosts are matched by port MAC; named fabric
-  servers can be matched by server name when the service flow supplies no MAC.
-  K8s-only VM leases come from OVN-Kubernetes DHCP and do not use this role.
+- `move_network_attachment` moves a BaremetalInstance port between the
+  provisioning V-Net and tenant Subnet V-Net according to the exact
+  `context.attachment.action` (`ATTACH` or `DETACH`). The role checks current
+  port membership, making repeat operations safe. CaaS physical workers use
+  this through their BMaaS BaremetalInstance path; Cluster is not this
+  operation's target.
+  Attach returns `osac_result.data.attachment.state: ATTACHED`; detach returns
+  `RESTORED`. Both include the stable binding UID and observed backend port
+  identity.
+- `query_dhcp_lease` resolves exactly one Netris IPAM lease for each
+  attachment using the authoritative MAC address and Subnet reference supplied
+  in the contract input. Missing, stale, or ambiguous matches fail the task;
+  it does not fall back to a workload display name. The result uses
+  osac_result.data.leases. VM addresses come from OVN-Kubernetes status and do
+  not use this Fabric Manager operation.
+
+The collection role is invoked with the canonical v1 task entry points. This
+crosswalk is the binding between the shared OSAC interface and the Netris
+implementation; the tasks do not define a Netris-specific operation API.
+
+| Contract operation | Contract `tasks_from` | Netris implementation task |
+|---|---|---|
+| `virtual_network.create` / `virtual_network.delete` | `create_virtual_network` / `delete_virtual_network` | `create_virtual_network.yaml` / `delete_virtual_network.yaml` |
+| `subnet.create` / `subnet.delete` | `create_subnet` / `delete_subnet` | `create_subnet.yaml` / `delete_subnet.yaml` |
+| `security_group.apply` / `security_group.delete` | `create_security_group` / `delete_security_group` | `create_security_group.yaml` / `delete_security_group.yaml` |
+| `external_ip_pool.create` / `external_ip_pool.delete` | `create_external_ip_pool` / `delete_external_ip_pool` | `create_external_ip_pool.yaml` / `delete_external_ip_pool.yaml` |
+| `external_ip.allocate` / `external_ip.release` | `create_external_ip` / `delete_external_ip` | `create_external_ip.yaml` / `delete_external_ip.yaml` |
+| `external_ip_attachment.create` / `external_ip_attachment.delete` | `attach_external_ip` / `detach_external_ip` | `attach_external_ip.yaml` / `detach_external_ip.yaml` |
+| `nat_gateway.create` / `nat_gateway.delete` | `create_nat_gateway` / `delete_nat_gateway` | `create_nat_gateway.yaml` / `delete_nat_gateway.yaml` |
+| `workload_attachment.move` | `move_network_attachment` | `move_network_attachment.yaml` |
+| `dhcp_lease.query` | `query_dhcp_lease` | `query_dhcp_lease.yaml` |
+
+Every successful task returns the contract's `osac_result` artifact with the
+operation, OSAC resource UID, and observed generation. For a Subnet in an
+`evpn-vxlan` profile, `create_subnet` also returns the required
+`data.fabricHandoff` containing the assigned L2 VNI, parent routing-domain
+VNI, and all IPv4 ranges reserved by the fabric. OSAC persists and passes this
+result to the K8s Manager; the Netris role does not publish manager output in a
+ConfigMap or invoke a private callback. ExternalIP allocation and DHCP query
+results use the schemas defined by the contract. Current task behavior is
+called out separately in the resource mapping and implementation-gap text.
 
 #### Resource Mapping
 
@@ -106,7 +144,7 @@ The following table describes the Netris-specific mapping.
 |---------------|-----------------|---------------------|---------|
 | VirtualNetwork | VPC (ipVRF) + IPAM allocation | `netris.controller.vpc` → `create`, `netris.controller.ipam` → `create_allocation` | VPC provides isolated routing domain. IPAM allocation with `purpose=common` reserves the VN CIDR. Region is mapped to Netris site ID via `netris_region_site_map`. |
 | Subnet | IPAM subnet + VNet (macVRF) | `netris.controller.ipam` → `create_subnet`, `netris.controller.vnet` → `create` | IPAM subnet under parent VPC. VNet with gateway (first usable IP), DHCP enabled, range = second usable to last usable. VXLAN VNI auto-assigned by Netris. Target: use the parent VirtualNetwork's resolved site. Current task passes `netris_site_id` directly instead. |
-| SecurityGroup | ACL permit rules | `netris.controller.acl` → `create` | Target: resolve the parent VPC and subnet CIDRs, apply ingress/egress rules × subnet CIDRs, update changed rules, and remove obsolete ACLs. Current tasks skip an existing ACL with the same name and do not remove obsolete ACLs; missing lookup data defaults to VPC ID 1 and `0.0.0.0/0`. |
+| SecurityGroup | ACL/endpoint policy | `netris.controller.acl` → `create` | Contract target: apply policy only to each binding in the complete `context.securityGroup.attachments` snapshot, trigger apply on group/rule/binding changes, and implement per-binding multi-group union semantics. Current tasks expand rules across Subnet CIDRs and do not establish binding-level isolation; they also skip same-name ACLs and do not remove obsolete ACLs. Missing lookup data defaults to VPC ID 1 and `0.0.0.0/0`. |
 | ExternalIPPool | Provider-owned NAT IPAM allocation + common subnet | `netris.controller.ipam` → `create_allocation`, `create_subnet` | The current API permits one CIDR. The allocation has no Netris `purpose` field; its common subnet uses `purpose=common`. Target ownership uses an exact Netris name derived from the pool UID; current tasks identify allocations by pool name (or a numeric suffix if multiple CIDRs are supplied). |
 | ExternalIP | IPAM /32 subnet (`purpose=nat`) | `netris.controller.ipam` → `create_subnet` | Target ownership uses an exact Netris name derived from the ExternalIP UID and reuses that reservation. Current tasks find an existing /32 by ExternalIP metadata name, scan pool allocations by name, and write the chosen address annotation; those name matches do not prove ownership. The /32 subnet uses `purpose=nat`. |
 | ExternalIPAttachment | DNAT rule | `netris.controller.nat` → `create` | `nat_action: dnat`, destination = ExternalIP allocated address, DNAT-to = target internal IP. Target: workload targets use the resolved tenant VPC and its site; use the management VPC only for an explicitly supported cluster endpoint. Current tasks default to the management VPC when the tenant VPC annotation is missing or lookup does not resolve, and pass `netris_site_id`. |
@@ -126,6 +164,12 @@ Each create operation has a corresponding delete task that reverses it:
 | ExternalIPAttachment | `detach_external_ip.yaml` | DNAT rule |
 | NATGateway | `delete_nat_gateway.yaml` | SNAT rule |
 
+The current Netris ACL task mapping does not establish how order-preserving
+allow-rule and stateful-return SecurityGroup behavior is realized on same-Subnet and routed
+paths. Treat Netris contract conformance as unproven until implementation and
+end-to-end tests demonstrate the complete contract behavior, including DNAT
+and SNAT paths.
+
 The operator deletion guard must retain an ExternalIP while either an
 ExternalIPAttachment or NATGateway still references it. The SNAT rule must be
 removed before the ExternalIP is released; the shared dependency is defined by
@@ -138,8 +182,10 @@ networking API defined by the unified networking design (OSAC-1433). The
 backend is selected through provider-level configuration (NetworkClass
 `fabricManager` field), not through API changes visible to tenants.
 
-The only annotation the backend writes is `osac.openshift.io/allocated-address`
-on ExternalIP CRs to record the allocated address. The target ownership model
+Under the contract, the manager returns an ExternalIP address in
+`osac_result`; OSAC writes the
+`osac.openshift.io/allocated-address` annotation and resource status only after
+validating that result. The target ownership model
 uses deterministic Netris object names derived from immutable OSAC object UIDs;
 it does not require extra CRD fields or assume Netris supports custom metadata.
 Current resource tasks instead find and delete objects by human-readable
@@ -220,24 +266,26 @@ Pool CIDRs must be /30 or wider — /31 (RFC 3021) produces an empty
 candidate range and is not supported. The current role assumes this minimum
 but does not validate it before scanning.
 
-#### SecurityGroup ACL Rule Expansion
+#### SecurityGroup Binding Policy
 
-ACL rules are created as the Cartesian product of user-defined rules and
-resolved subnet CIDRs. For a SecurityGroup with 3 ingress rules on a
-VirtualNetwork with 2 subnets, the backend creates 6 ACL rules (3 × 2). Each
-ACL must carry a stable SecurityGroup owner identity so updates and deletion
-can find all currently owned rules, including rules for removed subnets or
-removed entries. A missing VPC or subnet CIDR is an error; it must never
-default to VPC ID 1 or `0.0.0.0/0`.
+Contract v1 supplies a complete current attachment snapshot to every
+`security_group.apply` invocation. The backend must enforce policy only for
+those bindings, remove policy from bindings absent in a later snapshot, and
+compute each binding's effective allow set as the union of its attached
+SecurityGroups. Two endpoints on the same Subnet can have different groups;
+Subnet-CIDR-wide permits alone cannot satisfy that requirement because they
+may expose one endpoint's rules to another. The Netris implementation must
+identify a backend mechanism that enforces per-binding membership, default
+deny, updates/removals, and established return traffic across same-Subnet,
+routed, DNAT, and SNAT paths.
 
-This expansion is necessary because Netris ACL rules operate on specific
-CIDR prefixes, not on VPC-level abstractions. Current tasks generate ACL names
-from the SecurityGroup name and rule/subnet indexes, then skip creation when a
-same-name ACL exists. They do not reconcile the existing ACL body when a rule
-changes or remove ACLs for deleted rules or Subnets. If the VirtualNetwork
-lookup or subnet list is empty, task defaults supply VPC ID 1 and
-`0.0.0.0/0`; these current behaviors do not meet the fail-closed,
-update-convergence target.
+Current tasks expand rules across Subnet CIDRs, generate ACL names from the
+SecurityGroup name and rule/Subnet indexes, skip same-name ACLs, and do not
+remove obsolete ACLs. This does not implement the contract's binding snapshot,
+multi-group union, or lifecycle dispatch requirements. Missing VPC or Subnet
+lookup data also defaults to VPC ID 1 and `0.0.0.0/0` rather than failing closed.
+SecurityGroup conformance is therefore unproven and blocks claiming that the
+current Netris manager implements contract v1.
 
 ### Security Considerations
 
@@ -412,10 +460,11 @@ and deletion guards; they do not assert the resulting Netris controller state.
 | Case | Requirements | Owner | Scenario |
 |---|---|---|---|
 | N-UT-1 — Manager discovery and dispatch | FR-2, FR-3 | `osac-operator` | Verify duplicate manager names are rejected, a NetworkClass selecting `netris` resolves its registration, and resource operations select the expected role. |
-| N-UT-2 — Desired configuration and retry | FR-11, NFR-4 | `osac-operator` | Verify unchanged successful configuration does not launch duplicate work; a mutable SecurityGroup update produces a new desired configuration version and job input with the requested rules; failed or incomplete work retries with the same spec hash. This checks operator scheduling and job input, not Netris ACL convergence. |
+| N-UT-2 — Desired configuration and retry | FR-11, NFR-4 | `osac-operator` | Verify unchanged successful configuration does not launch duplicate work; SecurityGroup create, rule update, and binding changes produce a new desired configuration version with the complete current binding snapshot; failed or incomplete work retries with the same spec hash. This checks operator scheduling and job input, not Netris ACL convergence. |
 | N-UT-3 — Status and deletion guards | FR-12–14, FR-17–18 | `osac-operator` | Use controlled AAP job results to verify failure status, sanitized diagnostics, bounded retry behavior, and dependency guards before deletion. Netris API response parsing and backend cleanup are not covered here. |
-| N-UT-4 — Lease discovery request and result | FR-10, FR-23 | `bare-metal-fulfillment-operator`, `osac-operator/pkg/provisioning` | Verify attachment subnet-to-MAC mapping, `network_attachment_macs` in AAP extra vars, and returned DHCP lease artifacts populating BareMetalInstance network-attachment status. These test the manager-neutral request/result contract, not Netris IPAM. |
-| N-CHART-1 — Registration and credentials | FR-1, FR-19, NFR-2 | `osac-installer` | Run `make helm-networking-test`; verify the labeled Netris registration ConfigMap declares IPv4 and Netris credentials are rendered into the Secret and wired to network jobs. |
+| N-UT-4 — Lease discovery request and result | FR-10, FR-23 | `bare-metal-fulfillment-operator`, `osac-operator/pkg/provisioning` | Verify `osac_job_vars.context.attachments` carries each binding UID, Subnet UID/reference, interface, and authoritative MAC; verify exactly one matching entry is returned in `osac_result.data.leases` with `subnetRef`, `interface`, `ipAddress`, and `macAddress`, and OSAC publishes it to the corresponding BaremetalInstance attachment status. Missing, stale, or ambiguous matches fail. |
+| N-UT-5 — SecurityGroup binding lifecycle dispatch | FR-11, Contract | `osac-operator` | Verify group creation, rule changes, and binding add/remove dispatch `security_group.apply` with the full current `context.securityGroup.attachments` snapshot; verify attach policy gates readiness and detach removes the workload before the next snapshot omits it. This verifies dispatch order and inputs, not Netris enforcement. |
+| N-CHART-1 — Registration and credentials | FR-1, FR-19, NFR-2 | `osac-installer` | Run `make helm-networking-test`; verify the labeled Netris registration ConfigMap declares ipv4 and evpn-vxlan capabilities and Netris credentials are rendered into the Secret and wired to network jobs. |
 
 The CI tree has no Netris mock REST server or Netris-backed role integration
 target, so there is no Netris API integration-test tier. Do not describe the
@@ -440,8 +489,11 @@ provisioning, NAT egress, DHCP-based BareMetalInstance status, ExternalIP
 attachment and ingress, connectivity/isolation, and deletion. Extend that flow
 to verify concurrent ExternalIP allocations from one pool get distinct
 addresses and retries reuse the same ExternalIP reservation. Also verify
-mutable SecurityGroup updates converge to exactly the requested rules,
-including removal of obsolete ACLs. These checks exercise real Netris-backed
+SecurityGroup rules are isolated per binding when endpoints with different
+groups share a Subnet, multiple groups union only on their own binding, and
+attach/detach/update/remove operations converge with stateful return traffic
+on same-Subnet, routed, DNAT, and SNAT paths. Include removal of obsolete
+backend policy. These checks exercise real Netris-backed
 service flows and do not create a separate integration suite. The current flow can be run
 from the OSAC repository root with
 `uv run pytest tests/e2e/bmaas/regression/networking/test_bmaas_networking.py`.
@@ -450,9 +502,8 @@ from the OSAC repository root with
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Phases: revise, revise, revise
+Authored: revise @ design 0.11.3 - 2bd6607, workspace worktree-netris-k8sonly-prd-design @ 0f51a81 (1 behind origin/main, dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0f51a81 (dirty)","source_repo_branch":"worktree-netris-k8sonly-prd-design","commits_behind_main":1,"commits_ahead_main":17,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

@@ -8,7 +8,9 @@
 
 > This PRD covers the **Netris fabric manager** — the production networking
 > backend for OSAC that manages physical network infrastructure through the
-> Netris network controller. It builds on the
+> Netris network controller. It conforms to the source-neutral [Network
+> Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/prd.md)
+> and builds on the
 > [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md),
 > which defines the shared networking model, resources, API, and connected-only
 > deployment support boundary. This document defines the requirements for
@@ -61,8 +63,7 @@ parity baseline.
 - Does not define the networking model itself — VirtualNetwork, Subnet,
   SecurityGroup, ExternalIP semantics are defined in the unified networking PRD.
 - IPv6 and dual-stack networking are not supported; the backend supports IPv4.
-- SecurityGroup policy enforcement semantics (allow/deny rule evaluation, rule
-  ordering, stateful tracking) are defined separately and not part of this PRD.
+- SecurityGroup API semantics and the required manager behavior are defined by the Network Manager Integration Contract; this Netris document covers only their Netris realization.
 - UI for backend selection or Netris-specific configuration is out of scope;
   backend selection is a provider configuration concern.
 - DNS record creation is not part of this backend — DNS is handled by the
@@ -137,8 +138,12 @@ parity baseline.
 #### Backend Registration and Selection
 
 - **FR-1:** The Netris fabric manager must be registered as a ConfigMap with
-  the label `osac.openshift.io/network-fabric-manager: "true"`, containing
-  its name, description, and its supported IPv4 capability.
+  the label `osac.openshift.io/network-fabric-manager: "true"`, and must
+  include logical name `netris`, implementation reference
+  `osac.templates.netris`, contract version `v1`, and capabilities `ipv4` and `evpn-vxlan`. Its
+  registration must not declare an operation subset. The normative fields and
+  validation rules are in the [Network Manager Integration
+  Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md#data-model--schema-changes).
 - **FR-2:** The system must reject registration of a fabric manager with a
   name that duplicates an existing registered manager.
 - **FR-3:** A Cloud Infrastructure Admin can select the Netris fabric manager
@@ -152,7 +157,9 @@ parity baseline.
   VPC (VRF) with isolated routing.
 - **FR-5:** When a tenant creates a Subnet within a VirtualNetwork, the
   backend must create a corresponding Netris VNet with a VXLAN VNI and the
-  specified CIDR range.
+  specified CIDR range. When the selected profile uses the `evpn-vxlan`
+  Fabric-to-K8s handoff, the result must include the contract-defined VNI and
+  reserved-IPv4 values for the K8s Manager.
 - **FR-6:** When a tenant creates a NATGateway, the backend must configure
   Netris SNAT rules in the associated tenant VPC so outbound traffic from its
   VirtualNetwork egresses with the NATGateway's external IP as its source
@@ -173,20 +180,26 @@ parity baseline.
   with `purpose=nat`. Tenants may allocate ExternalIPs from the pool but may not
   create or change it. The current role assumes /30 or wider but does not
   validate this minimum.
-- **FR-9:** When a tenant creates a SecurityGroup, the backend must translate
-  the rules into Netris ACL configurations on the corresponding VPC. The
-  parent VPC and applicable Subnet CIDRs must resolve before ACL creation;
-  missing values must fail closed and must not become a default VPC or a
-  wildcard CIDR.
+- **FR-9:** For each SecurityGroup, the backend must apply the shared contract
+  semantics only to the bindings in the complete current attachment snapshot.
+  It must trigger reconciliation on group creation, rule changes, and binding
+  add/remove; isolate different groups attached to endpoints on the same Subnet;
+  union rules only across groups attached to the same binding; preserve
+  default-deny and established return behavior; and remove obsolete policy.
+  Parent VPC and required backend data must resolve before changes; missing
+  values fail closed and never become a default VPC or wildcard CIDR. Netris
+  ACL realization must meet these per-binding semantics; Subnet-wide ACL rules
+  alone are not sufficient. [Contract]
 
 #### Automatic IP Assignment
 
 - **FR-10:** When Netris DHCP assigns an address to a fabric-managed workload
   on a Netris-backed Subnet, OSAC must be able to query the lease from Netris
-  IPAM and publish it in network attachment status. Bare-metal hosts are
-  matched by port MAC; named fabric servers may be matched by server name when
-  the service flow permits it. VM addresses on a K8s primary CUDN are assigned
-  by OVN-Kubernetes DHCP and are not discovered from Netris IPAM.
+  IPAM and publish it in network attachment status. Each lease is matched using
+  the authoritative MAC address and Subnet reference supplied for that
+  attachment; a missing, stale, or ambiguous match fails rather than falling
+  back to a workload name. VM addresses are supplied by OVN-Kubernetes status
+  and are not discovered from Netris IPAM.
 
 #### Immutability and Boundary Enforcement
 
@@ -229,9 +242,7 @@ parity baseline.
 #### Capability Declaration
 
 - **FR-19:** The Netris registration ConfigMap must declare its supported
-  capabilities, including IPv4. Effective NetworkClass capability calculation
-  and publication follow the shared requirements in the Unified Networking
-  design.
+  technical capabilities, including ipv4 and evpn-vxlan. The contract defines how these capabilities select compatible manager profiles; registrations do not list operation subsets.
 - **FR-20:** A VirtualNetwork with an explicitly configured region that has no
   Netris site mapping must fail visibly before any Netris resources are
   created. The default site may be used only when the region is omitted. A
@@ -242,16 +253,20 @@ parity baseline.
 
 #### Workload Networking Operations
 
-- **FR-22:** For a Netris-backed fabric attachment, the Netris role moves the
+- **FR-22:** For each BaremetalInstance attachment, the Netris role moves the
   workload port between its provisioning V-Net and tenant Subnet V-Net on
-  attach, and restores it on detach. Both operations must be safe to retry.
-  Shared operation names and dispatch rules are defined in the Unified
-  Networking design.
-- **FR-23:** When a Netris-backed fabric workload requests lease discovery, the
-  Netris role queries the Subnet's IPAM host entries and returns the matching
-  address. Bare-metal hosts are matched by port MAC; named fabric servers may
-  be matched by server name where the service flow supports it. K8s-only VM
-  leases come from OVN-Kubernetes and do not use this Netris operation.
+  `ATTACH`, and restores it on `DETACH`, as supplied in the contract's
+  `context.attachment.action`. Both operations must be safe to retry. CaaS
+  physical workers use this same operation through BMaaS; Cluster is not a
+  workload_attachment.move target. Shared operation names and dispatch rules
+  are defined in the Network Manager Integration Contract.
+- **FR-23:** For each BaremetalInstance attachment requesting lease discovery,
+  the Netris role queries the selected Subnet's IPAM host entries and returns
+  exactly one lease matching both the authoritative interface MAC and SubnetRef.
+  Missing, stale, or ambiguous matches fail with a diagnostic. Display names
+  and provider server names are not lease identity and must not be used as a
+  fallback. K8s-only VM leases come from OVN-Kubernetes and do not use this
+  Netris operation. [Contract]
 
 ### 4.2 Non-Functional Requirements
 
@@ -314,8 +329,17 @@ parity baseline.
 - [ ] A tenant-targeted DNAT attachment whose VPC cannot be resolved fails
   without creating the rule in the management VPC; an explicitly supported
   cluster-endpoint attachment may use the management VPC.
-- [ ] A tenant creates a SecurityGroup and the backend translates its rules
-  into Netris ACLs.
+- [ ] SecurityGroup traffic follows the shared contract: default-deny,
+  IPv4 allow rules with input order preserved, correct ingress-source and egress-destination
+  matching, protocol/port semantics, and stateful return traffic on same-Subnet,
+  routed, inbound DNAT, and outbound SNAT paths. Rule updates remove obsolete
+  ACLs; unresolved VPC or Subnet data fails closed.
+- [ ] Two endpoints on one Subnet with different SecurityGroups receive
+  isolated policy; multiple attached groups combine only on their own binding.
+  Attach, detach, group/rule update, and delete converge to the contract's
+  complete binding snapshot and do not leave stale policy. Until this and all
+  contract packet paths pass, the current Netris manager is not contract-v1
+  conformant.
 - [ ] Mutating immutable fields (NetworkClass, region, CIDRs) is rejected at
   admission time with a clear error message.
 - [ ] Deleting a VirtualNetwork with active children is blocked; the status
@@ -333,13 +357,18 @@ parity baseline.
   Netris objects.
 - [ ] Updating mutable SecurityGroup rules reconciles the Netris ACL set to the
   new desired rules, removes obsolete rules, and creates no duplicates on retry.
+- [ ] Netris collection tasks implement every Fabric Manager operation and
+  target assigned by fixed dispatch, using the canonical `tasks_from` names
+  and `osac_result` schema in the Network Manager Integration Contract.
+- [ ] A `subnet.create` task in the `evpn-vxlan` profile returns the exact
+  contract-defined `fabricHandoff`, which OSAC passes to the K8s Manager
+  without a Netris-specific ConfigMap or callback.
 - [ ] A SecurityGroup with an unresolved parent VPC or Subnet CIDR fails
   without creating a default-VPC or wildcard-CIDR permit ACL.
 - [ ] Deleting a Netris backend resource that is already absent succeeds as a
   no-op.
-- [ ] The Netris manager registration declares IPv4 capability. Effective
-  NetworkClass capability calculation and publication follow the Unified
-  Networking requirements.
+- [ ] The Netris manager registration declares ipv4 and evpn-vxlan capabilities.
+  Effective profile selection follows the Network Manager Integration Contract.
 
 ## 6. Assumptions
 
@@ -411,9 +440,9 @@ parity baseline.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
-Phases: revise, revise
+Authored: draft @ prd 0.11.1 - 3f9c3b9, workspace main @ 0ae795e37 (96 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ e97b06357
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
