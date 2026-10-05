@@ -65,41 +65,17 @@
 
 ##### Preconditions
 
-- The selected profile assigns `external_ip.allocate` to a Fabric Manager or,
-  in the K8s-only profile, a K8s Manager.
-- Run the allocation steps separately for a Fabric profile and the K8s-only
-  profile. Run the DHCP query step only with a profile that has a Fabric
-  Manager and a BaremetalInstance target; DHCP lease queries are not assigned
-  in K8s-only.
+- A conforming Fabric Manager provides the contract-required ExternalIP allocation and DHCP lease query tasks for the tested target.
 - The test backend returns a stable allocated address and a matching lease.
-- The test AAP role can return an invalid ExternalIP address result and records whether the role or OSAC writes the ExternalIP annotation.
 
 ##### Steps
 
-1. Reconcile an ExternalIP and inspect the manager's durable UID-owned
-   reservation, `osac_result.data.externalIP.address`, the CR annotation, and
-   `ExternalIP.status.address`.
-2. Reconcile the same ExternalIP again. With a Fabric profile, also run
-   `dhcp_lease.query` for a BaremetalInstance network attachment.
-3. Configure the test role to return a non-canonical or out-of-pool address
-   for a second ExternalIP and inspect its result, annotation, status, and pool
-   capacity.
-4. Configure the manager to fail allocation because its selected provider pool
-   has no available address; inspect the job result, ExternalIP status,
-   annotation, and API-side pool capacity.
+1. Reconcile an ExternalIP twice, then run `dhcp_lease.query` for a network attachment.
+2. Observe the resource annotation, AAP artifacts, and workload status.
 
 ##### Expected Results
 
-- The manager selects and durably reserves the address, and a retry for the
-  same UID returns that address without creating another reservation.
-- OSAC validates the result and writes the `osac.openshift.io/allocated-address`
-  annotation and `ExternalIP.status.address`; the manager does not patch the CR.
-- OSAC rejects the invalid result. The second ExternalIP is not reported
-  Allocated, has no accepted address annotation, and retains its capacity for
-  retry or cleanup.
-- Pool exhaustion fails the manager task with a diagnostic and no success
-  result. The ExternalIP remains non-ready without an accepted address, and
-  OSAC retains its capacity while retrying or cleaning up.
+- Both ExternalIP reconciliations retain the same `osac.openshift.io/allocated-address` value.
 - The query job returns `osac_result.data.leases` with `subnetRef`, `interface`, `ipAddress`, and `macAddress` for the requested BaremetalInstance attachment.
 - OSAC reports the matching address for the requested attachment.
 

@@ -149,7 +149,7 @@ The following table describes the Netris-specific mapping.
 | Subnet | IPAM subnet + VNet (macVRF) | `netris.controller.ipam` → `create_subnet`, `netris.controller.vnet` → `create` | IPAM subnet under parent VPC. VNet with gateway (first usable IP), DHCP enabled, range = second usable to last usable. VXLAN VNI auto-assigned by Netris. Target: use the parent VirtualNetwork's resolved site. Current task passes `netris_site_id` directly instead. |
 | SecurityGroup | ACL/endpoint policy | `netris.controller.acl` → `create` | Contract target: apply policy only to each binding in the complete `context.securityGroup.attachments` snapshot, trigger apply on group/rule/binding changes, and implement per-binding multi-group union semantics. Current tasks expand rules across Subnet CIDRs and do not establish binding-level isolation; they also skip same-name ACLs and do not remove obsolete ACLs. Missing lookup data defaults to VPC ID 1 and `0.0.0.0/0`. |
 | ExternalIPPool | Provider-owned NAT IPAM allocation + common subnet | `netris.controller.ipam` → `create_allocation`, `create_subnet` | The current API permits one CIDR. The allocation has no Netris `purpose` field; its common subnet uses `purpose=common`. Target ownership uses an exact Netris name derived from the pool UID; current tasks identify allocations by pool name (or a numeric suffix if multiple CIDRs are supplied). |
-| ExternalIP | IPAM /32 subnet (`purpose=nat`) | `netris.controller.ipam` → `create_subnet` | Target ownership uses an exact Netris name derived from the ExternalIP UID and reuses that reservation. The manager returns the address in `osac_result`; OSAC validates it and writes the annotation and status. Current tasks find an existing /32 by ExternalIP metadata name, scan pool allocations by name, and patch the annotation directly. That current behavior violates the contract, and those name matches do not prove ownership. The /32 subnet uses `purpose=nat`. |
+| ExternalIP | IPAM /32 subnet (`purpose=nat`) | `netris.controller.ipam` → `create_subnet` | Target ownership uses an exact Netris name derived from the ExternalIP UID and reuses that reservation. Current tasks find an existing /32 by ExternalIP metadata name, scan pool allocations by name, and write the chosen address annotation; those name matches do not prove ownership. The /32 subnet uses `purpose=nat`. |
 | ExternalIPAttachment | DNAT rule | `netris.controller.nat` → `create` | `nat_action: dnat`, destination = ExternalIP allocated address, DNAT-to = target internal IP. Target: workload targets use the resolved tenant VPC and its site; use the management VPC only for an explicitly supported cluster endpoint. Current tasks default to the management VPC when the tenant VPC annotation is missing or lookup does not resolve, and pass `netris_site_id`. |
 | NATGateway | SNAT rule (NAT) | `netris.controller.nat` → `create` | `nat_action: snat`, source = VN CIDR, SNAT-to = ExternalIP allocated address. Target: use the resolved tenant VPC and its site; fail closed if either cannot be resolved. Current tasks default to the management VPC when the tenant VPC annotation is missing or lookup does not resolve, and pass `netris_site_id`. |
 
@@ -248,10 +248,8 @@ name; neither lookup proves UID ownership.
    human-readable pool name or suffix pattern.
 2. Before selecting an address, look up the exact /32 reservation name derived
    from the ExternalIP UID within that pool allocation. If found, reuse it and
-   return its address in `osac_result.data.externalIP.address`. OSAC validates
-   that result and repairs its annotation/status if necessary. The manager does
-   not patch the ExternalIP CR. The current role instead uses human-readable
-   names for both lookups and cannot prove ownership.
+   restore the address annotation if necessary. The current role instead uses
+   human-readable names for both lookups and cannot prove ownership.
 3. If no reservation exists, read current reservations while holding the
    pool allocator lock and select a free host address, skipping network and
    broadcast addresses.
@@ -261,12 +259,9 @@ name; neither lookup proves UID ownership.
    conflicts, refresh the full pool state and retry a bounded number of times.
    Current tasks name the subnet after the ExternalIP and have no explicit
    bounded conflict retry.
-5. Return the allocated address in `osac_result.data.externalIP.address` only
-   after the Netris reservation is confirmed. OSAC validates the operation,
-   ExternalIP UID, generation, canonical address, and pool membership before
-   writing `osac.openshift.io/allocated-address` and `ExternalIP.status.address`.
-   If OSAC cannot persist that result, retry returns the same UID-owned Netris
-   reservation. The manager never writes OSAC annotations or status.
+5. Publish the allocated-address annotation only after the reservation is
+   confirmed. Reconciliation must recover the same reservation if annotation
+   writing fails.
 6. Release the exact owned reservation on deletion; an already-absent
    reservation is successful.
 
@@ -506,10 +501,7 @@ from the OSAC repository root with
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ e97b06357
-
-> Context changed between revise and revise.
+Authored: revise @ design 0.11.3 - 2bd6607, workspace worktree-netris-k8sonly-prd-design @ 0f51a81 (1 behind origin/main, dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 

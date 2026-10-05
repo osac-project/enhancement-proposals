@@ -3,7 +3,7 @@ title: Network Manager Integration Contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-05
+last-updated: 2026-10-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-5928
 see-also:
@@ -60,7 +60,6 @@ OSAC networking designs describe manager roles and provisioning, but the manager
 - [ ] The contract includes working ConfigMap examples for both roles and identifies the exact AAP collection entry point for every required operation.
 - [ ] Every successful manager task returns the common, versioned `osac_result`; OSAC validates the operation, resource UID, and generation before accepting it or starting a dependent manager stage.
 - [ ] The contract defines the EVPN Subnet handoff as a standard ConfigMap written by Fabric and consumed by K8s, including VNIs, route targets, reserved CIDRs, UID/generation identity, validation, retries, and cleanup. `osac_result` remains the common operation result envelope. ExternalIP allocation/release, DHCP lease, and workload attachment move results are also fully defined.
-- [ ] For ExternalIP allocation, the manager selects and durably reserves a unique address in the selected pool and returns it in `osac_result`; OSAC validates the address and alone writes the allocated-address annotation, status, and API capacity counters. The contract does not require a particular address-selection order.
 - [ ] Manager results flow through the shared OSAC provisioning lifecycle. The only cross-manager ConfigMap is the contract-defined EVPN Subnet handoff. Implementations do not require supplier-specific callbacks, annotations, ConfigMaps, or OSAC code paths.
 - [ ] An implementation from any source, including an implementation distributed with OSAC, is eligible for selection when it conforms to the published contract. Backend-specific code and dependencies run through AAP; no supplier-specific dispatch or API code is required outside AAP.
 - [ ] Combined Fabric/K8s profiles require mutual compatibility declarations in manager registrations and release-specific pair integration evidence. Shared capabilities alone never make two managers compatible.
@@ -80,8 +79,8 @@ OSAC networking designs describe manager roles and provisioning, but the manager
 
 ## Provenance
 
-Authored: draft @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ e97b06357
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+Phases: draft, manual-edit, revise
 
 > Context changed between draft and revise.
 

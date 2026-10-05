@@ -112,11 +112,10 @@ The design adds the missing agentless implementation behind the existing
 NetworkClass and dispatcher contracts. A provider registers an
 'agentless_net' fabric-manager ConfigMap through Helm values and selects it in
 the existing deployment configuration. The fulfillment-service owns API
-validation, tenancy, ExternalIPPool capacity accounting, and exclusive
-consumer reservations; the operator owns CRDs, finalizers, dependency checks,
-and observed status. AgentlessNet owns provider-side pool registration and
-selects and durably reserves each concrete ExternalIP address in its locked
-state file, as well as
+validation, tenancy, durable ExternalIP allocation/consumer reservations, and
+pool capacity accounting; the operator owns CRDs, finalizers, dependency
+checks, and observed status. AgentlessNet owns provider-side pool and
+ExternalIP address allocation in its locked state file, as well as
 VirtualNetwork/Subnet realization, per-VirtualNetwork transit links, BGP `/32`
 reachability, per-binding SecurityGroup policy, BMF port binding, DNAT, and
 SNAT. It returns contract-defined `osac_result` artifacts after state-file
@@ -281,12 +280,10 @@ result annotations, or use a private callback as a second result channel.
    address or create a traffic rule. When an ExternalIP is created, the
    fulfillment-service transaction locks the pool and creates the durable
    `external_ip_reservations` row keyed by the ExternalIP UUID. The row holds
-   capacity in `HELD` state; this OSAC capacity hold does not select or record
-   the concrete address and is not released merely because the provider job
+   capacity in `HELD` state; it is not released merely because the provider job
    fails. The agentless `create_external_ip` AAP job reads the pool entry from
    the locked state file, reuses an existing allocation for the ExternalIP UID
-   when retrying, or selects and persists the first available IPv4 address
-   under the state-file lock.
+   when retrying, or selects and persists the first available IPv4 address.
    The role returns `osac_result.data.externalIP.address`. OSAC validates the
    UID, generation, canonical address, and pool membership, then updates its
    own annotation and `ExternalIP.status.address`. The task does not patch the
@@ -1722,10 +1719,7 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ e97b06357
-
-> Context changed between revise and revise.
+Authored: revise @ design 0.11.3 - 2bd6607, workspace worktree-netris-k8sonly-prd-design @ 0f51a81 (1 behind origin/main, dirty)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
