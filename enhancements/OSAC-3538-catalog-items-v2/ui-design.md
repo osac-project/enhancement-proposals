@@ -4,27 +4,26 @@ See the [PRD](prd.md) for product requirements and the [backend design](design.m
 
 ## Summary
 
-This design covers the first UI iteration for authoring Catalog Items under the v2 field governance model, for `ComputeInstanceCatalogItem`, `ClusterCatalogItem`, and `BareMetalInstanceCatalogItem`. The list/browse layer already exists and already reads the new typed `fields` policy (`libs/ui-components/src/components/catalog/`: `CatalogItemListSection`, `CatalogItemCard`, `CatalogItemTable`, `CatalogItemActionsMenu`, and the per-type `*CatalogItemResources` summaries, which already use `catalogFieldPolicyBehavior`/`CatalogFieldEditabilityLabel` to show Locked/Editable). What's missing is authoring: there is no Create, Edit, Delete, or Publish/Unpublish action anywhere yet — `CatalogItemActionsMenu` today only has "View details" and, for Tenant Admin/Tenant User, "Launch instance". This design adds those, a Create wizard, and a Detail/Edit page, and updates the per-type card/table summaries to show governance-relevant content for the admin personas. It also updates the existing tenant provisioning wizard to resolve field display from the new typed `fields` policy instead of the current `field_definitions`, which it still reads.
+This design covers the first UI iteration for authoring Catalog Items under the v2 field governance model, for `ComputeInstanceCatalogItem`, `ClusterCatalogItem`, and `BareMetalInstanceCatalogItem`: Create, Edit, Delete, Provisioning, and the Details page.
 
 ## Scope
 
-**Personas:** Cloud Provider Admin (`admin` role) authoring shared Catalog Items, and Tenant Admin (`tenant-admin` role) authoring Catalog Items scoped to their own organization. Tenant User gets no new UI surface in this design, but their existing provisioning flow (`CatalogProvisionWizard`) is covered here because it must read the new typed `fields` shape instead of `field_definitions` to keep working (see [Provisioning](#provisioning)).
+**Personas:** Cloud Provider Admin (`admin` role) authoring shared Catalog Items, and Tenant Admin (`tenant-admin` role) authoring Catalog Items scoped to their own organization. Tenant User gets no new UI surface in this design, but provisioning is covered here (see [Provisioning](#provisioning)).
 
-**In scope:** Create (wizard), Detail/Edit, Delete and Publish/Unpublish actions, the admin-facing content of the existing List page's cards and table rows, and the tenant provisioning wizard's field-resolution logic (display only — no new provisioning steps). The List page's structure (`CatalogItemListSection`/`CatalogItemCard`/`CatalogItemTable`) already exists and is not rebuilt.
+**In scope:** Create (wizard), Detail/Edit, Delete, and Publish/Unpublish actions. The List page's structure (`CatalogItemListSection`/`CatalogItemCard`/`CatalogItemTable`) already exists and is not rebuilt.
 
-**Out of scope for this first iteration** (per [Initial UI scope](design.md#initial-ui-scope) in the backend design):
+**Out of scope for this first iteration**
 
-- `ssh_public_key`, and `network_attachments` / `network_attachment`, on any of the ComputeInstance, Cluster, or BareMetalInstance field tables. These fields are supported by the backend policy model, but governing them requires picking a tenant-managed resource at authoring time — an SSH key for `ssh_public_key`, and a VirtualNetwork/Subnet for the network attachment fields — and this iteration does not add those pickers. Rather than offer a degraded lock-only control for these fields, the wizard does not expose them at all: an admin cannot govern them (locked or editable) through the UI in this iteration. They remain governable through the API directly.
+- `ssh_public_key`, pull secrets, and `network_attachments` / `network_attachment`. These fields are supported by the backend policy model, but governing them requires picking a tenant-managed resource at authoring time — an SSH key for `ssh_public_key`, a pull-secret resource for pull secrets, and a VirtualNetwork/Subnet for the network attachment fields — and this iteration does not add those pickers.
 - Template parameter (`map<string, AnyField>`) governance. The Create wizard and edit view do not expose a step or section for template parameters in this iteration.
 - Tenant User provisioning UI changes.
 
-All other governed fields in the [ComputeInstance](design.md#computeinstance), [Cluster](design.md#cluster), and [BareMetalInstance](design.md#baremetalinstance) tables are included, for both `locked` and `editable` behavior — including whole-reference fields such as `disk_image`, `instance_type`, `version`, and `pull_secret_secret`.
 
 ## Proposal
 
 ### Navigation and Routing
 
-The existing `/catalog` route and nav entry (`getCatalogNav` in `apps/app-frontend/src/shell/shellNav.ts`) already lists Catalog Items for every role, including `admin` and `tenant-admin` — that's the List page referenced throughout this design. Create and Detail/Edit are new routes nested under it, following the existing per-resource `Routes` pattern (e.g. `InstanceTypeRoutes.tsx`):
+Create and Detail/Edit are new routes nested under `/catalog`, following the existing per-resource `Routes` pattern (e.g. `InstanceTypeRoutes.tsx`):
 
 ```text
 /catalog/create  -> CatalogItemCreatePage
@@ -35,71 +34,138 @@ A single route pair serves both Cloud Provider Admin and Tenant Admin, scoped se
 
 ### List Page
 
-No structural change: `CatalogItemListSection`, `CatalogItemCard`, and `CatalogItemTable` already exist and already serve `admin`/`tenant-admin`/`tenant-user` with role-appropriate columns (e.g. `CatalogItemTable`'s Visibility/Created columns for `admin`, Source/Added for `tenant-admin`). This design changes two things within that existing structure:
+No structural change: `CatalogItemListSection`, `CatalogItemCard`, and `CatalogItemTable` already exist and already serve `admin`/`tenant-admin`/`tenant-user` with role-appropriate columns (e.g. `CatalogItemTable`'s Visibility/Created columns for `admin`, Source/Added for `tenant-admin`). This design changes the following within that existing structure:
 
 1. **Kebab menu actions** (`CatalogItemActionsMenu`, shared by `CatalogItemCard`'s header and `CatalogItemTable`'s action cell): add **Edit**, **Publish**/**Unpublish** (label depends on `item.published`), and **Delete**, visible for `admin` over any item and for `tenant-admin` over items in their own tenant (`item.metadata?.tenant` matches the caller's tenant). Delete opens a confirmation dialog stating that existing provisioned resources are unaffected (per [Failures](design.md#failures)). These sit alongside the existing "View details" item; "Launch instance" keeps showing only for `tenant-admin`/`tenant-user`, since Cloud Provider Admin doesn't provision from Catalog Items today.
-2. **Card/table detail content**: today's per-type summaries (`ComputeCatalogItemResources`, `ClusterCatalogItemResources`, `BareMetalCatalogItemResources`) show a tenant-browsing-oriented subset — e.g. Compute shows only vCPU, Memory, Storage, and Disk image. For `admin`/`tenant-admin`, replace that subset with the full set of fields this iteration can govern (see Scope), each still paired with the existing `CatalogFieldEditabilityLabel` Locked/Editable badge, so an admin can see everything they configured — including fields with no tenant-facing hardware analog, such as `run_strategy`, `user_data`, and `auto_external_ip_attachment`. `tenant-user` keeps the current curated subset unchanged.
+2. **Resource type filter** (`CatalogServiceTierFilter`): change from a multi-select `ToggleGroup` to PatternFly's single-select `ToggleGroup` variant, so only one resource type (Bare Metal, Cluster, or VM) can be active at a time. This makes the resource type unambiguous when the admin clicks **Create catalog item**, since the wizard launches for the currently selected type.
+3. **Remove resource type labels** from `CatalogItemCard` and `CatalogItemTable` — the resource type does not need to be repeated on each card or in a table column because the single-select resource-type `ToggleGroup` already makes the active type clear.
 
-### Create Page
+### Create/Edit Wizard
 
-The Create wizard reuses the same step breakdown as the existing tenant provisioning wizard (`getWizardOrderedSteps` in `catalogProvision/wizard/stepIds.ts`) for the selected resource type, minus the `catalog` step (authoring defines the item; it does not select one) and minus the fields excluded from this iteration:
+Each resource type has its own simple CatalogItem wizard, used for both Create and Edit. Define the steps directly through JSX composition, following the existing simple wizard pattern used by resources such as Secret, rather than sharing a central step registry or adapter-based step builder. In Edit mode, initialize the wizard from the existing CatalogItem and disable the name field; the CatalogItem name cannot be changed. The steps for each resource type are:
 
 | Step | ComputeInstance | Cluster | BareMetalInstance |
 |---|---|---|---|
-| General | `name`, `description`, `tenant`/`project` | same | same |
-| Configuration | `instance_type`, `user_data`, `run_strategy` | `version`, `pull_secret_secret` | `run_strategy`, `image` |
-| Storage | `boot_disk.size_gib` | — | — |
+| General | `tenant`/`project`, `name`, `description` | same | same |
+| Configuration | `instance_type`, `user_data`, `run_strategy` | `version`, `node_sets` | `instance_type`, `disk_image`, `user_data` |
+| Storage | `boot_disk.size_gib`, `boot_disk.storage_tier`, `additional_disks` | — | — |
 | Networking | *(omitted — only governable field here is `network_attachments`, out of scope)* | `network.pod_cidr`, `network.service_cidr` | — |
 | Review | read-only summary | read-only summary | read-only summary |
 
-Cluster's `node_sets` map is governed as part of Configuration, one row per Template-defined node set. The Networking step is dropped entirely for ComputeInstance and BareMetalInstance in this iteration because their only governable networking field is `network_attachments`, which is out of scope (see Scope); Cluster keeps a Networking step because `network.pod_cidr`/`network.service_cidr` are plain CIDR strings, not resource pickers.
+All supported fields in the Configuration, Storage, and Networking steps reuse the corresponding form controls from the provisioning wizard, including Cluster's existing node-set control. The authoring form does not introduce alternate widgets for these fields. The Networking step is dropped entirely for ComputeInstance and BareMetalInstance in this iteration because their only governable networking field is `network_attachments`, which is out of scope (see Scope); Cluster keeps a Networking step because `network.pod_cidr`/`network.service_cidr` are plain CIDR strings, not resource pickers.
 
-Each governable field is rendered as a row with:
+The configuration forms reuse the provisioning wizard's existing field components and layout. Each governable field is rendered exactly as it is in the provisioning wizard, with one authoring-only addition:
 
-- An **Editable** switch at the top of the row. Off means the field is **Locked**: a value is required, and that value is what every provisioning resolves to. On means the field is **Editable**: a default value is optional, and the tenant may override it at provisioning time.
-- A field-appropriate input below the switch for entering that value or default (reference picker for whole-reference fields such as `instance_type`, typed input for scalars such as `boot_disk.size_gib`).
+- An **Editable** switch appears on the same line as the field label, aligned to the right. Off means the field is **Locked**: a value is required, and that value is what every provisioning resolves to. On means the field is **Editable**: a default value is optional, and the tenant may override it at provisioning time.
+- Complex fields such as `node_sets` and `additional_disks` have one Editable switch for the entire field and its complete form control, not a separate switch for each nested item.
+- The field-value component below the switch for entering the default value. It uses the appropriate shared control for the field type, such as a reference picker for `instance_type` or a typed input for `boot_disk.size_gib`.
 
-A field the admin never touches stays ungoverned (`fields.<name>` absent from the request), identical to today's "field not in `field_definitions`" behavior.
+A field the admin never touches stays ungoverned.
 
-### Detail/Edit Page
+#### Resource selectors
 
-`CatalogItemDetailPage` already exists for viewing; this design adds an Edit mode reusing the Create wizard's per-field rows (Editable switch, value/default input) pre-populated from the item, plus the same **Edit**/**Publish**/**Unpublish**/**Delete** actions as the List page's kebab menu, placed as page-level actions for when an admin navigates in via "View details" instead of the kebab.
+Catalog Item resource selectors reuse the same searchable typeahead dropdowns as the provisioning wizard, with descriptive options following the UX prototype. Each dropdown option shows the resource name plus a short description of that resource; complex resources keep their existing provisioning-wizard controls. The only difference for authoring: Catalog Item resource selectors also include a **Not set** option, with its own description explaining that the tenant will choose the resource at provisioning time.
 
-### Provisioning
+### Details Page
 
-`CatalogProvisionWizard` already resolves a per-field overlay from the Catalog Item and applies it uniformly — `getCatalogFieldOverlay` in `catalogProvision/wizard/catalogOverlay.ts` returns `{ editable, defaultValue }`, and step components consume it as a prefilled value plus `isDisabled={!overlay.editable}` (e.g. `VmStorageStep.tsx`'s boot-disk and storage-tier fields). This design keeps that pattern and updates its source of truth:
+The current `CatalogItemDetailPage` is too sparse: it shows only a generic Details card and a flat list of configuration defaults. Redesign it using the existing `ResourceDetailsPage` pattern and the reference catalog UX in `/home/brotman/repos/osac-bmaas`.
 
-- `catalogOverlay.ts` resolves the overlay from the new typed `fields` (`locked`/`editable` policy, per [Policy model](design.md#policy-model)) instead of the freeform `field_definitions` list. The resolved shape consumers see (`editable`, `defaultValue`) is unchanged, so step components such as `VmStorageStep` and `VmConfigurationStep` need no behavior change beyond reading the new resolver.
-- A **Locked** field renders prefilled with the Catalog Item's locked value and disabled, exactly as today's `isDisabled={!overlay.editable}` fields — the tenant cannot change it, consistent with [Tenant UI](design.md#tenant-ui) in the backend design.
-- An **Editable** field with a default renders prefilled with that default and enabled; an Editable field with no default renders empty and enabled.
-- `ssh_public_key` and `network_attachments`/`network_attachment` are governable through the API even though the authoring UI does not expose them (see Scope). The provisioning wizard still applies the same overlay to these fields — `VmGeneralStep`'s `SshKeyField` and `VmNetworkingStep`'s network fields render locked/prefilled exactly like any other overlaid field — so a Catalog Item authored via the API with these fields governed still provisions correctly through the UI.
-- No new provisioning steps or fields are added; this is a resolver swap behind the existing overlay contract.
+The page has the following structure:
 
-## Field naming
+- **Resource header:** show the resource-type icon, Catalog Item name, description, breadcrumb back to Catalog, and page-level actions. Cloud Provider Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable. Tenant Admin sees **Edit** and **Delete** only for Catalog Items in their tenant. Tenant User sees **Launch instance** for published items.
+- **Overview:** show the status, created date and tenant
+- **Configuration card:** show the complete type-specific configuration. Include the configured value or default for every governed field and a **Locked**/**Editable** indicator beside the field label. Omit fields that are not governed. Use the following type-specific content:
+  - `ComputeInstance`: instance type, user data, run strategy, boot-disk size and storage tier, additional disks, and other in-scope governed fields.
+  - `Cluster`: version and node sets, followed by the applicable network CIDRs.
+  - `BareMetalInstance`: instance type, disk image, and user data.
 
-Field labels in the UI match the proto field names in Title Case with their resource-appropriate unit, consistent with existing resource forms (e.g. `Boot disk size (GiB)` for `boot_disk.size_gib`). The per-field switch is labeled **Editable**; its two states are presented as **Locked** (switch off, value required) and **Editable** (switch on, default value optional), matching the backend design's terminology rather than introducing UI-only synonyms. A field the admin leaves untouched is ungoverned and shows no switch state.
+The Details page is read-only. **Edit** opens the same wizard structure used for Create, pre-populated from the Catalog Item. The edit form reuses the provisioning wizard's exact field components and layout, with the authoring-only Editable switch on the same line as each field label, aligned to the right. Existing provisioned resources are unaffected by edits, publish/unpublish, or deletion of the Catalog Item.
 
 ## Implementation details
 
-- Reuse `OsacForm`/Formik conventions and shared field components (`NameField`, `InputField`) already used by other admin create pages rather than generating a form from the proto schema, consistent with [Authoring UI](design.md#authoring-ui) in the backend design ("the UI owns field labels, sections, order, help text, and widgets").
-- Add new hooks for Catalog Item CRUD (e.g. `useCreateCatalogItem`, `useCatalogItems`) distinct from the existing tenant-facing `catalogProvision` hooks, since those serve a different (read/provision) use case against the current `field_definitions` shape.
-- Reference pickers for `disk_image`, `instance_type`, `version`, and `pull_secret_secret` reuse the existing resource-picker components already used elsewhere in the app for those resource types, rather than new one-off pickers.
+### Wizard structure
 
-## Security and RBAC
+The provisioning flow is refactored to use simple per-resource wizards, following the same structure as other resource wizards such as Instance Type and Secret. Remove the adapter pattern completely. Each resource (`ComputeInstance`, `Cluster`, and `BareMetalInstance`) owns its wizard steps, validation, payload construction, and submission flow directly. The CatalogItem and provisioning wizards keep separate step composition, while sharing the field components and initial-values functions described below.
 
-The UI is not a security boundary; the server enforces scope and locked-field rejection (per [Security](design.md#security) in the backend design). The UI hides actions a role cannot perform (e.g. a Tenant Admin never sees another tenant's items, and never sees a "shared" toggle), but authorization is re-checked server-side.
+`ssh_public_key` and `network_attachments`/`network_attachment` remain governable through the API even though the authoring UI does not expose them (see Scope). The provisioning wizard applies their CatalogItem values through the same shared field components, so API-authored CatalogItems with these fields governed still provision correctly. No new provisioning steps or fields are added.
+
+### Form field architecture
+
+The CatalogItem and provisioning wizards share two implementation pieces:
+
+1. Resource-specific field components.
+2. Resource-specific initial-values functions.
+
+#### Shared field components
+
+Each field has its own reusable component, such as `StorageTierSelectField`, `InstanceTypeField`, or `UserDataField`. Components that do not exist today should be added for fields that need them. A field component owns the field-specific control behavior: options, resource loading, descriptions, selection, validation, and Formik value updates. Its `FormGroup` is extracted out so the field can be rendered by either wizard wrapper without nested form groups.
+
+All wizard form field values use the same structure. Resource selector values retain both the resource ID and name:
+
+```ts
+{ editable: boolean, value: <value> }
+{ editable: boolean, value: { id: string, name: string } }
+```
+
+#### Shared initial-values functions
+
+Each resource has a shared initial-values function that creates the Formik field-value structure before the wizard renders. For CatalogItem Create, it is called without a CatalogItem and returns empty values. For CatalogItem Edit and provisioning, it receives the CatalogItem and reads each field's configured value and `editable` state.
+
+For example:
+
+```ts
+getComputeCatalogItemInitialValues(catalogItem)
+getClusterCatalogItemInitialValues(catalogItem)
+getBareMetalCatalogItemInitialValues(catalogItem)
+```
+
+#### CatalogItem wizard
+
+The CatalogItem wizard composes its resource-specific steps from `CatalogField` wrappers around the shared field components. For CatalogItem Create, the wizard starts with empty Formik initial values. For CatalogItem Edit, the shared initial-values function receives the existing CatalogItem and initializes each field with its configured value and an `editable` boolean, for example:
+
+```ts
+{
+  bootStorageTier: {
+    editable: false,
+    value: { id: 'premium-ssd', name: 'Premium SSD' },
+  },
+}
+```
+
+`CatalogField` receives the Formik field name, renders the surrounding `FormGroup`, and places the authoring-only **Editable** switch on the right side of the field label. It keeps the shared field component enabled for the CatalogItem author regardless of the switch state; the switch defines tenant behavior during later provisioning.
+
+```tsx
+<CatalogField name="bootStorageTier" label="Boot storage tier">
+  <StorageTierSelectField />
+</CatalogField>
+```
+
+#### Provisioning wizard
+
+The provisioning wizard composes its resource-specific steps from `ProvisioningField` wrappers around the same shared field components. Its shared initial-values function receives the CatalogItem and creates the Formik values with each field's configured value and `editable` state. `ProvisioningField` receives the Formik field name and renders the `FormGroup` without the authoring switch. It applies the CatalogItem policy: `editable: false` makes the control disabled, while `editable: true` leaves it enabled and uses the CatalogItem value as an optional default. A disabled locked field does not need to be marked required because its value is already supplied by the CatalogItem.
+
+```tsx
+<ProvisioningField name="bootStorageTier" label="Boot storage tier">
+  <StorageTierSelectField />
+</ProvisioningField>
+```
+
+The field components and initial-values functions are shared; the wrappers provide wizard-specific presentation and policy behavior, while each wizard keeps its own step composition and submission flow.
+
+### Additional details
+
+- **Details page reuse:** Implement `CatalogItemDetailPage` by composing the shared `ResourceDetailsPage` component, rather than creating a catalog-specific page shell. Pass the Catalog Item's parent breadcrumb, resource identity, loading state, fetch error, not-found state, and unauthorized state through the shared page contract. Reuse `ResourceDetailsPageLoading` and `ResourceDetailsPageError` for the corresponding states. The Catalog Item implementation supplies only its resource-specific header actions and the Overview, Publishing, Configuration, and Description/labels content described above; these sections remain Catalog Item-specific children of `ResourceDetailsPage`.
+- Reuse `OsacForm`/Formik and shared field components already used by the application.
+- Reuse `OsacFormFooter` for wizard navigation and submission; it also provides the shared form-level error handling and display behavior.
+- Use the shared generic resource hooks for Catalog Item list, create, update, and delete operations rather than adding Catalog Item-specific CRUD hooks.
 
 ## Failure Handling
 
-Create/Update surface server validation errors inline on the relevant wizard step or field (mapping the `InvalidArgument` conditions in [Failures](design.md#failures) back to the field that caused them) rather than a single generic banner. A referenced object becoming unavailable after authoring (`FailedPrecondition`) is surfaced as a banner on the Detail page prompting the admin to re-select the field's value.
+- **Create and update validation:** Use the existing Formik field validation for client-side errors and `OSACWizardFooter` for server errors. Server errors are shown in the footer's existing generic error message area on the final wizard step.
+- **Unavailable references:** Reuse the existing resource-dropdown behavior. Resource-list failures show an inline error alert, and an empty resource list shows the existing warning with guidance to contact an administrator. Use this same behavior for CatalogItem resource selectors rather than adding a separate unavailable-reference flow.
+- **Details-page loading and errors:** Reuse the shared resource-details pattern: show the standard loading skeleton while fetching, a retryable error state when loading fails, a not-found state when the CatalogItem does not exist, and the shared unauthorized state when access is denied.
 
 ## Test Plan
 
-- Unit tests for the wizard step components per resource type (Compute/Cluster/Bare Metal), covering the Editable switch's two states per field (Locked requires a value, Editable makes the default optional) and that an untouched field stays ungoverned.
-- Unit tests confirming `ssh_public_key` and `network_attachments`/`network_attachment` render nowhere in the wizard (not even as a Locked-only control) for any resource type, and that the wizard omits a template-parameter step.
-- Route tests for `/catalog/create` and `/catalog/:id` (including edit mode), mirroring `InstanceTypeRoutes.test.tsx`.
-- Unit tests for `CatalogItemActionsMenu` confirming Edit/Publish/Unpublish/Delete appear only for `admin` (any item) and `tenant-admin` (own-tenant items only), and that "Launch instance" is unaffected.
-- Unit tests for the per-type card/table summaries confirming `admin`/`tenant-admin` see the full governed-field set while `tenant-user` keeps today's curated subset.
-- Unit tests for the updated `catalogOverlay.ts` resolver against the new `fields` policy shape: a Locked field resolves disabled and prefilled with the locked value; an Editable field with a default resolves enabled and prefilled; an Editable field without a default resolves enabled and empty.
-- Regression tests on `VmGeneralStep`/`VmNetworkingStep` confirming `ssh_public_key` and network-attachment fields still render correctly disabled/prefilled when governed via the API, even though the authoring UI cannot set them.
-- E2E coverage tracked separately per the PRD's Definition of Done.
+- Unit tests for the wizard cover Compute Instance, Cluster, and Bare Metal field controls, including Locked/Editable behavior, complex-field switches, and excluded fields.
+- Unit tests for routes and actions cover Create, Details/Edit, Publish/Unpublish, Delete, and role-appropriate actions.
