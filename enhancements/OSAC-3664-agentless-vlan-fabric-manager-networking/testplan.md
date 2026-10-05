@@ -437,8 +437,8 @@
 
 1. Wait for the pool to reach Ready.
 2. Create an ExternalIP through the existing API.
-3. Wait for the ExternalIP AAP job to complete and inspect its validated
-   osac_result.data.externalIP.address.
+3. Wait for the ExternalIP AAP job to complete and inspect the common
+   `osac_result` envelope and `osac.openshift.io/allocated-address` annotation.
 4. Read pool and ExternalIP status, reservation state, and agentless state file.
 
 ##### Expected Results
@@ -446,9 +446,11 @@
 - Pool status.total and status.available reflect the configured CIDR capacity.
 - ExternalIP status.state is Allocated and status.address contains an address
   from the pool.
-- The address in osac_result, ExternalIP.status.address, and the state-file
-  external_ips entry is the same and is keyed by the ExternalIP UID.
-- OSAC accepts the result and updates its reservation and pool capacity exactly once.
+- The manager-written annotation, ExternalIP.status.address, and the state-file
+  `external_ips` entry contain the same address keyed by the ExternalIP UID.
+- `osac_result` contains the operation, resource UID, and generation but no
+  address data. OSAC accepts the envelope and canonical in-pool annotation and
+  updates API reservation and pool capacity exactly once.
 - The state-file `external_ip_pools` entry records the provider-side pool CIDR.
 
 #### TC-FR7-02: Reject exhausted capacity and restore it on release
@@ -464,14 +466,15 @@
 ##### Steps
 
 1. Attempt to create another ExternalIP from the exhausted pool.
-2. Delete an existing ExternalIP and wait for the release task to return
-   osac_result.data.externalIP.releaseState = RELEASED.
+2. Delete an existing ExternalIP and wait for the release task to complete
+   successfully after its UID-owned provider reservation is absent.
 3. Create another ExternalIP from the pool.
 
 ##### Expected Results
 
 - The first create request fails with a capacity/precondition error.
-- Pool status.available increases only after OSAC validates the common RELEASED result.
+- Pool status.available increases only after OSAC validates the common success
+  envelope and the manager has confirmed the provider reservation is absent.
 - The subsequent create request receives a newly allocated address, and the
   state file contains exactly one allocation for the new ExternalIP UUID.
 
@@ -492,15 +495,15 @@
 
 1. Start an ExternalIP creation and an ExternalIPPool reconciliation that
    updates the phase/conditions at the same time.
-2. Wait for both operations to complete, then read the pool status, provider
-   annotations, reservation row, and ExternalIP state.
+2. Wait for both operations to complete, then read the pool status, standard
+   allocated-address annotation, reservation row, and ExternalIP state.
 
 ##### Expected Results
 
 - The pool retains `allocated=1` and `available=1` from the capacity update.
 - The reconciler's phase and conditions are also present; neither writer
   overwrites fields owned by the other.
-- The ExternalIP address in status matches the provider annotation and its
+- The ExternalIP address in status matches the standard allocated-address annotation and its
   state-file allocation, with no duplicate allocation after conflict retries.
 - The reservation row and pool capacity update are idempotent.
 
@@ -1008,14 +1011,16 @@ returns a valid osac_result only after cleanup is observed.
 |-----------------|----------|------------|
 | IC-6 | critical | automated |
 
-For every manager task, verify success returns osac_result with schemaVersion,
-operation, resourceUID, and observedGeneration. For ExternalIP allocation verify
-the required allocated address is durably stored before result return; for
-release verify the UID-owned allocation is absent before RELEASED is returned.
-Verify OSAC validates the result and owns API status, annotations, and pool
-capacity. Missing or stale results fail reconciliation; no private callback,
-provider-specific result annotation, or manager-specific ConfigMap is used as a second
-result channel.
+For every manager task, verify success returns `osac_result` with schemaVersion,
+operation, resourceUID, and observedGeneration. For ExternalIP allocation,
+verify the manager durably stores the address before writing the standard
+allocated-address annotation with UID/generation preconditions; the result
+artifact carries no address and the manager does not change status, spec, or
+other annotations. For release, verify the UID-owned allocation is absent
+before successful result return. Verify OSAC validates the envelope and
+annotation and owns API status and pool capacity. Missing or stale envelopes or
+missing/invalid annotations fail reconciliation; no private callback, provider-specific result
+annotation, or manager-specific ConfigMap is used as a second result channel.
 
 ## Gaps
 

@@ -57,7 +57,7 @@
 - Each invalid registration reports its ConfigMap and invalid field.
 - OSAC creates no AAP job for an invalid registration.
 
-#### TC-FR2-02: Validate ExternalIP and DHCP lease results
+#### TC-FR2-02: Validate ExternalIP annotation handoff and DHCP lease results
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -66,16 +66,22 @@
 ##### Preconditions
 
 - A conforming Fabric Manager provides the contract-required ExternalIP allocation and DHCP lease query tasks for the tested target.
-- The test backend returns a stable allocated address and a matching lease.
+- The test backend retains reservations by ExternalIP UID and can write canonical, malformed, and out-of-pool annotation values.
+- The manager result artifact contains the common operation/UID/generation envelope and no ExternalIP address payload.
+- The test can exercise an allocation job with a stale UID or generation.
 
 ##### Steps
 
-1. Reconcile an ExternalIP twice, then run `dhcp_lease.query` for a network attachment.
-2. Observe the resource annotation, AAP artifacts, and workload status.
+1. Reconcile an ExternalIP twice; inspect the provider reservation, ExternalIP annotation, common AAP result envelope, and ExternalIP status.
+2. Configure a test manager to write a non-canonical or out-of-pool address annotation for another ExternalIP while returning a valid common result envelope; inspect its status and pool capacity.
+3. Attempt to write an address annotation using a stale UID or generation for an ExternalIP with the same name; then run `dhcp_lease.query` for a network attachment.
 
 ##### Expected Results
 
-- Both ExternalIP reconciliations retain the same `osac.openshift.io/allocated-address` value.
+- The manager writes the reserved address to `osac.openshift.io/allocated-address`; a retry for the same UID reuses the reservation and writes the same annotation value.
+- The AAP artifact identifies the operation, resource UID, and generation but contains no ExternalIP address. OSAC validates that envelope and the annotation's canonical IPv4 form and pool membership before setting `ExternalIP.status.address` and Allocated readiness.
+- OSAC leaves an ExternalIP non-ready and does not publish an accepted status address when the annotation is missing, non-canonical, or outside the selected pool; API-side capacity remains reserved for retry or cleanup.
+- UID/generation preconditions prevent a stale task from writing the annotation to a replacement object or newer generation.
 - The query job returns `osac_result.data.leases` with `subnetRef`, `interface`, `ipAddress`, and `macAddress` for the requested BaremetalInstance attachment.
 - OSAC reports the matching address for the requested attachment.
 

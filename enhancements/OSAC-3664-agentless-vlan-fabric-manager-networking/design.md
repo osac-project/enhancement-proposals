@@ -119,8 +119,10 @@ ExternalIP address allocation in its locked state file, as well as
 VirtualNetwork/Subnet realization, per-VirtualNetwork transit links, BGP `/32`
 reachability, per-binding SecurityGroup policy, BMF port binding, DNAT, and
 SNAT. It returns contract-defined `osac_result` artifacts after state-file
-commits; OSAC owns API annotations and status. The
-operator exposes a validated address as `ExternalIP.status.address`. [PRD:
+commits. For ExternalIP allocation, it also writes the contract-defined
+`osac.openshift.io/allocated-address` annotation after persisting the address;
+OSAC validates that annotation and owns status and capacity. The operator
+exposes a validated address as `ExternalIP.status.address`. [PRD:
 FR-1, FR-2]
 
 The flow below shows the ownership boundary. The operator selects the
@@ -268,8 +270,10 @@ After the manager returns the lease result, BMaaS validates the matching
 contract entry and writes the address to BaremetalInstance attachment status.
 The feedback controller publishes that status through the existing
 fulfillment-service path; ExternalIPAttachment waits for the primary address
-before creating DNAT. AgentlessNet does not write OSAC status, add provider
-result annotations, or use a private callback as a second result channel.
+before creating DNAT. AgentlessNet does not write OSAC status, add
+provider-specific result annotations, or use a private callback as a second
+result channel. The contract-defined allocated-address annotation is the sole
+standard annotation the manager writes, and only for ExternalIP allocation.
 #### ExternalIP and inbound access
 
 1. A Cloud Infrastructure Admin creates an ExternalIPPool containing IPv4
@@ -284,11 +288,14 @@ result annotations, or use a private callback as a second result channel.
    fails. The agentless `create_external_ip` AAP job reads the pool entry from
    the locked state file, reuses an existing allocation for the ExternalIP UID
    when retrying, or selects and persists the first available IPv4 address.
-   The role returns `osac_result.data.externalIP.address`. OSAC validates the
-   UID, generation, canonical address, and pool membership, then updates its
-   own annotation and `ExternalIP.status.address`. The task does not patch the
-   API resource or send a provider event. Allocation alone still has no
-   data-plane route or NAT rule.
+   After persisting the reservation, the role patches only the standard
+   `osac.openshift.io/allocated-address` annotation, using UID and generation
+   preconditions. It returns the common `osac_result` envelope with empty
+   `data`; the envelope carries no address. OSAC validates the operation, UID,
+   generation, canonical annotation value, and pool membership, then updates
+   `ExternalIP.status.address`. The task does not write status, spec, or other
+   annotations and does not send a provider event. Allocation alone still has
+   no data-plane route or NAT rule.
    `ExternalIP` readiness means that a concrete address is allocated; it does
    not mean that inbound traffic is usable. Inbound readiness is represented by
    the separate ExternalIPAttachment resource.
@@ -451,10 +458,10 @@ failure message in the existing provisioning history and status condition.
 4. OSAC enforces the ExternalIP consumer dependency: the parent cannot be
    released while either consumer exists. After consumer deletion succeeds,
    OSAC dispatches external_ip.release. AgentlessNet removes the UID-owned
-   address and returns releaseState RELEASED only after confirming absence.
-   OSAC validates the common result, updates capacity once, and removes the
-   ExternalIP finalizer. If allocation never committed, release succeeds
-   idempotently when no UID-owned address exists.
+   address and returns a successful common `osac_result` with empty `data`
+   only after confirming absence. OSAC validates the result envelope, updates
+   capacity once, and removes the ExternalIP finalizer. If allocation never
+   committed, release succeeds idempotently when no UID-owned address exists.
 5. For a Subnet, remove its DHCP state, VLAN subinterface, gateway address,
    and Subnet-owned switch/VLAN state. Release its VLAN after dependent
    bindings and NATGateway source rules are gone.
@@ -476,9 +483,12 @@ networking or policy resources.
 
 No new public gRPC service, REST resource, protobuf field, CRD kind, or webhook
 is introduced. Existing fabric-facing resources use contract-v1 registration,
-fixed AAP entry points, normalized job inputs, and osac_result. OSAC owns
-resource status, annotations, and pool-capacity counters. The manager does not
-patch API resources or add a provider-specific result channel.
+fixed AAP entry points, normalized job inputs, and `osac_result`. OSAC owns
+resource status and pool-capacity counters. For ExternalIP allocation, the
+manager patches only the contract-defined `osac.openshift.io/allocated-address`
+annotation, using UID/generation preconditions; OSAC validates it before
+publishing status. The manager does not patch any other API field or add a
+provider-specific result channel.
 
 | ID | Existing surface | Change | Requirements |
 |---|---|---|---|
@@ -510,19 +520,23 @@ once. It is OSAC-owned state; a manager does not write it or call a private
 OSAC callback.
 
 For `external_ip.allocate`, AgentlessNet reserves an address in its locked
-provider state keyed by the ExternalIP UID and returns the common `osac_result`
-with `data.externalIP.address`. OSAC validates the operation, resource UID,
-observed generation, canonical IPv4 address, and membership in the selected
-ExternalIPPool before it updates ExternalIP status and the OSAC-owned
-allocated-address annotation. A retry for the same UID returns the same
-reservation. A missing, malformed, stale, or out-of-pool result leaves the
-resource non-ready and the capacity reservation held for retry or cleanup.
+provider state keyed by the ExternalIP UID, then patches the standard
+`osac.openshift.io/allocated-address` annotation on the ExternalIP using UID
+and generation preconditions. It returns the common `osac_result` envelope
+with empty `data`; the address is not included in the artifact. OSAC validates
+the operation, resource UID, observed generation, canonical IPv4 annotation
+value, and membership in the selected ExternalIPPool before it updates
+ExternalIP status. The manager does not write status, spec, or other
+annotations. A retry for the same UID reuses the same reservation and repairs
+the annotation if needed. A missing, malformed, or out-of-pool annotation, or
+an invalid/stale envelope, leaves the resource non-ready and the capacity
+reservation held for retry or cleanup.
 
 For `external_ip.release`, AgentlessNet removes the UID-owned address
-reservation and returns `data.externalIP.releaseState: RELEASED` only after
-that address is absent from provider state. OSAC validates the result before
-releasing pool capacity once. Repeating release for an absent provider entry
-succeeds idempotently.
+reservation and returns a successful common `osac_result` with empty `data`
+only after that address is absent from provider state. OSAC validates the
+result envelope before releasing pool capacity once. Repeating release for an
+absent provider entry succeeds idempotently.
 
 ExternalIPAttachment and NATGateway use the existing exclusive consumer
 reservation. Their create operations return success only after the owned DNAT
@@ -717,11 +731,12 @@ with conflict retries and never replaces a stale full status.
 
 The fulfillment-service validates the pool and owns the durable capacity
 reservation. AgentlessNet selects and persists the concrete address in its
-provider state file, then returns `osac_result.data.externalIP.address`.
-OSAC validates that result and writes `status.address` and the
-`osac.openshift.io/allocated-address` annotation. Allocation alone creates no
-traffic rule; the address is consumed later by an ExternalIPAttachment or a
-NATGateway, subject to the OSAC-owned consumer reservation.
+provider state file, then writes it to the standard
+`osac.openshift.io/allocated-address` annotation using UID/generation
+preconditions. OSAC validates the common result envelope and annotation before
+writing `status.address`. Allocation alone creates no traffic rule; the
+address is consumed later by an ExternalIPAttachment or a NATGateway, subject
+to the OSAC-owned consumer reservation.
 
 ##### ExternalIPAttachment
 
@@ -1102,8 +1117,8 @@ osac_result; only contract-defined operations return data:
 | subnet.create/delete | Create/remove VLAN interface, gateway, DHCP range, and lease mapping | Empty data object |
 | security_group.apply/delete | Reconcile a complete binding snapshot; remove only policy owned by the deleted group | Empty data object |
 | external_ip_pool.create/delete | Register/remove pool CIDRs; OSAC owns API capacity | Empty data object |
-| external_ip.allocate | Persist/reuse one canonical IPv4 address keyed by ExternalIP UID | data.externalIP.address |
-| external_ip.release | Remove the UID entry; absent entries succeed idempotently | data.externalIP.releaseState RELEASED after absence |
+| external_ip.allocate | Persist/reuse one canonical IPv4 address keyed by ExternalIP UID and write the standard allocated-address annotation with UID/generation preconditions | Empty data; annotation carries the address |
+| external_ip.release | Remove the UID entry; absent entries succeed idempotently | Empty data; success only after absence |
 | external_ip_attachment.create/delete | Install/remove owner-keyed DNAT and /32 route after target resolution | Empty data object |
 | nat_gateway.create/delete | Install/remove explicit-source SNAT rules and owner-keyed /32 route | Empty data object |
 | workload_attachment.move | Move to Subnet on attach or restore saved provisioning VLAN on detach | data.attachment with binding UID, ATTACHED/RESTORED, and observed port identity |
@@ -1185,10 +1200,13 @@ network namespace:
   CIDRs under the state-file lock. Fulfillment-service owns pool capacity and
   allocation counters.
 - `external_ip.allocate` reserves one IPv4 address by ExternalIP UID and
-  returns it in `osac_result.data.externalIP.address`. A retry for the same UID
-  returns the existing address.
+  writes it to the standard `osac.openshift.io/allocated-address` annotation
+  with UID/generation preconditions. The common `osac_result` has empty `data`;
+  OSAC validates the envelope and annotation before publishing status. A retry
+  for the same UID reuses the existing address and repairs the annotation if
+  necessary.
 - `external_ip.release` removes the UID-owned provider reservation and returns
-  `osac_result.data.externalIP.releaseState: RELEASED` only after it is absent.
+  a successful common `osac_result` with empty `data` only after it is absent.
 - `external_ip_attachment.create/delete` installs or removes the owned
   whole-address DNAT rule and the consumer-owned BGP `/32` route for the
   resolved target in `context.target`. It reports success only after the
@@ -1199,9 +1217,11 @@ network namespace:
   a second MASQUERADE on this path.
 
 OSAC validates the common `osac_result` envelope, owns resource status and
-annotations, and releases ExternalIP consumer/capacity reservations only after
-the corresponding contract task succeeds. No provider event, private callback,
-or provider-result annotation is part of the manager interface. The selected
+capacity, and releases ExternalIP consumer/capacity reservations only after
+the corresponding contract task succeeds. For ExternalIP allocation, the
+manager writes the contract-defined allocated-address annotation and OSAC
+validates it before updating status. No provider event, private callback, or
+provider-specific result annotation is part of the manager interface. The selected
 Fabric Manager also enforces SecurityGroup policy on these ingress and egress
 paths; translation does not bypass the shared policy. Conformance remains
 blocked until AgentlessNet proves per-binding policy behavior for DNAT, SNAT,
@@ -1235,8 +1255,9 @@ Existing low-level IPAM tasks that write shared state in place cannot be reused.
 Do not advertise the registration as conformant until every assigned operation
 and target works, including SecurityGroup enforcement for same-Subnet, routed,
 DNAT, and SNAT paths. Current permissive forwarding and Layer 2 behavior do
-not meet that requirement. No manager-specific status annotation, callback,
-or result channel is added.
+not meet that requirement. The standard allocated-address annotation is the
+only API annotation the manager writes; no manager-specific status annotation,
+callback, or result channel is added.
 
 The existing agentless_net.steps collection remains reusable where its inputs
 and lifecycle match the unified resource contract. Cluster-specific static
@@ -1251,14 +1272,15 @@ owns pool counters. The selected manager only implements assigned AAP tasks
 and owns provider state.
 
 For ExternalIP creation, OSAC holds capacity while it dispatches
-external_ip.allocate. After validating osac_result.data.externalIP.address,
-OSAC writes its allocated-address annotation and status. For deletion, OSAC
-enforces consumer cleanup dependencies, dispatches external_ip.release,
-validates releaseState RELEASED, then updates capacity once. ExternalIPAttachment
+external_ip.allocate. The manager writes the reserved address to the standard
+allocated-address annotation; after validating the common result envelope and
+the annotation's canonical IPv4 value and pool membership, OSAC writes status.
+For deletion, OSAC enforces consumer cleanup dependencies, dispatches
+external_ip.release, and updates capacity once after the manager's successful
+envelope confirms that the provider reservation is absent. ExternalIPAttachment
 and NATGateway use the existing exclusive consumer reservation; OSAC clears it
 only after their validated delete task succeeds. The manager does not call
-fulfillment-service directly and does not exchange private events, operation
-digests, or annotations.
+fulfillment-service directly or exchange private events or operation digests.
 
 Subnet validation remains authoritative in fulfillment-service. It must accept
 multiple non-overlapping Subnets inside one VirtualNetwork so the backend's
@@ -1406,8 +1428,9 @@ ExternalIPCapacityReleaseBlocked, DHCPLeaseUnavailable,
 SecurityGroupPolicyFailed, ExternalRouteApplyFailed,
 ExternalRouteWithdrawBlocked, NATSourceAddressMismatch, and
 FabricCleanupBlocked. ExternalIPResultRejected means OSAC rejected a missing,
-malformed, stale, or out-of-pool osac_result; it does not refer to a
-provider-specific annotation or callback.
+malformed, stale, or mismatched `osac_result` envelope, or a missing,
+non-canonical, or out-of-pool allocated-address annotation; it does not
+refer to a provider-specific annotation or callback.
 
 The current AgentlessNet packet path remains non-conformant until SecurityGroup
 policy is proven for every assigned target and packet path. Logs may include
@@ -1684,8 +1707,8 @@ contract v1 cannot provision new resources during a rolling deployment.
 5. Check the lock-protected state file for resource UID, VLAN, gateway/DHCP,
    namespace, transit /30, veth addresses, UID-owned ExternalIP allocation,
    saved BGP /32 prefix/next hop, SecurityGroup binding policy, and owned
-   NAT/DNAT rules. Compare ExternalIP.status.address with the OSAC-owned
-   allocated-address annotation. Confirm OSAC consumer reservation and pool
+   NAT/DNAT rules. Compare ExternalIP.status.address with the manager-written
+   standard allocated-address annotation. Confirm OSAC consumer reservation and pool
    state before diagnosing capacity.
 6. Verify Cumulus VLAN/trunk/access-port state and net-node namespace,
    interfaces, route installation/withdrawal, DNAT/SNAT rules, and conntrack.

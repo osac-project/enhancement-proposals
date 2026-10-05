@@ -149,7 +149,7 @@ The following table describes the Netris-specific mapping.
 | Subnet | IPAM subnet + VNet (macVRF) | `netris.controller.ipam` → `create_subnet`, `netris.controller.vnet` → `create` | IPAM subnet under parent VPC. VNet with gateway (first usable IP), DHCP enabled, range = second usable to last usable. VXLAN VNI auto-assigned by Netris. Target: use the parent VirtualNetwork's resolved site. Current task passes `netris_site_id` directly instead. |
 | SecurityGroup | ACL/endpoint policy | `netris.controller.acl` → `create` | Contract target: apply policy only to each binding in the complete `context.securityGroup.attachments` snapshot, trigger apply on group/rule/binding changes, and implement per-binding multi-group union semantics. Current tasks expand rules across Subnet CIDRs and do not establish binding-level isolation; they also skip same-name ACLs and do not remove obsolete ACLs. Missing lookup data defaults to VPC ID 1 and `0.0.0.0/0`. |
 | ExternalIPPool | Provider-owned NAT IPAM allocation + common subnet | `netris.controller.ipam` → `create_allocation`, `create_subnet` | The current API permits one CIDR. The allocation has no Netris `purpose` field; its common subnet uses `purpose=common`. Target ownership uses an exact Netris name derived from the pool UID; current tasks identify allocations by pool name (or a numeric suffix if multiple CIDRs are supplied). |
-| ExternalIP | IPAM /32 subnet (`purpose=nat`) | `netris.controller.ipam` → `create_subnet` | Target ownership uses an exact Netris name derived from the ExternalIP UID and reuses that reservation. Current tasks find an existing /32 by ExternalIP metadata name, scan pool allocations by name, and write the chosen address annotation; those name matches do not prove ownership. The /32 subnet uses `purpose=nat`. |
+| ExternalIP | IPAM /32 subnet (`purpose=nat`) | `netris.controller.ipam` → `create_subnet` | Target ownership uses an exact Netris name derived from the ExternalIP UID and reuses that reservation. After confirming the reservation, the manager writes the address to the contract-defined `osac.openshift.io/allocated-address` annotation with UID/generation preconditions; `osac_result.data` is empty. Current tasks find an existing /32 by ExternalIP metadata name, scan pool allocations by name, and write the chosen address annotation without UID/generation preconditions; those name matches do not prove ownership. The /32 subnet uses `purpose=nat`. |
 | ExternalIPAttachment | DNAT rule | `netris.controller.nat` → `create` | `nat_action: dnat`, destination = ExternalIP allocated address, DNAT-to = target internal IP. Target: workload targets use the resolved tenant VPC and its site; use the management VPC only for an explicitly supported cluster endpoint. Current tasks default to the management VPC when the tenant VPC annotation is missing or lookup does not resolve, and pass `netris_site_id`. |
 | NATGateway | SNAT rule (NAT) | `netris.controller.nat` → `create` | `nat_action: snat`, source = VN CIDR, SNAT-to = ExternalIP allocated address. Target: use the resolved tenant VPC and its site; fail closed if either cannot be resolved. Current tasks default to the management VPC when the tenant VPC annotation is missing or lookup does not resolve, and pass `netris_site_id`. |
 
@@ -185,12 +185,14 @@ networking API defined by the unified networking design (OSAC-1433). The
 backend is selected through provider-level configuration (NetworkClass
 `fabricManager` field), not through API changes visible to tenants.
 
-Under the contract, the manager returns an ExternalIP address in
-`osac_result`; OSAC writes the
-`osac.openshift.io/allocated-address` annotation and resource status only after
-validating that result. The target ownership model
-uses deterministic Netris object names derived from immutable OSAC object UIDs;
-it does not require extra CRD fields or assume Netris supports custom metadata.
+Under the contract, the manager writes the reserved address to the standard
+`osac.openshift.io/allocated-address` annotation after confirming the Netris
+reservation, using UID/generation preconditions. The common `osac_result`
+envelope carries operation, resource UID, and generation but no address data.
+OSAC validates the envelope and annotation before writing ExternalIP status;
+the manager never writes status. The target ownership model uses deterministic
+Netris object names derived from immutable OSAC object UIDs; it does not require
+extra CRD fields or assume Netris supports custom metadata.
 Current resource tasks instead find and delete objects by human-readable
 metadata name, which does not prove which OSAC object owns a Netris object.
 
@@ -248,8 +250,9 @@ name; neither lookup proves UID ownership.
    human-readable pool name or suffix pattern.
 2. Before selecting an address, look up the exact /32 reservation name derived
    from the ExternalIP UID within that pool allocation. If found, reuse it and
-   restore the address annotation if necessary. The current role instead uses
-   human-readable names for both lookups and cannot prove ownership.
+   restore the standard allocated-address annotation with UID/generation
+   preconditions if necessary. The current role instead uses human-readable
+   names for both lookups and cannot prove ownership.
 3. If no reservation exists, read current reservations while holding the
    pool allocator lock and select a free host address, skipping network and
    broadcast addresses.
@@ -259,9 +262,12 @@ name; neither lookup proves UID ownership.
    conflicts, refresh the full pool state and retry a bounded number of times.
    Current tasks name the subnet after the ExternalIP and have no explicit
    bounded conflict retry.
-5. Publish the allocated-address annotation only after the reservation is
-   confirmed. Reconciliation must recover the same reservation if annotation
-   writing fails.
+5. After the reservation is confirmed, patch only the standard
+   `osac.openshift.io/allocated-address` annotation, guarded by the ExternalIP
+   UID and observed generation. Return the common `osac_result` envelope with
+   empty `data`; do not write status, spec, or other annotations. Reconciliation
+   must recover the same reservation and retry the annotation patch if writing
+   fails. OSAC validates the envelope and annotation before publishing status.
 6. Release the exact owned reservation on deletion; an already-absent
    reservation is successful.
 

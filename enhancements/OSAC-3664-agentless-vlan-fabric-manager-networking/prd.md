@@ -231,10 +231,13 @@ managed-switch infrastructure, limiting where the platform can run.
   not report success while any affected attachment has stale or missing policy.
   [Contract]
 - **FR-12:** Every successful AAP task returns a contract v1 `osac_result`
-  identifying the operation, resource UID, and observed generation. ExternalIP
-  allocation returns its durably reserved address through the defined result;
-  OSAC, not the manager, updates API status and annotations. The manager must
-  not use provider-specific callbacks or result annotations. [Contract]
+  identifying the operation, resource UID, and observed generation. For
+  ExternalIP allocation, the manager writes its durably reserved address to the
+  standard `osac.openshift.io/allocated-address` annotation with UID/generation
+  preconditions; the artifact carries no address data. OSAC validates the
+  envelope and annotation and owns API status and capacity. The manager must not
+  write status, spec, or other annotations, or use provider-specific callbacks
+  or result channels. [Contract]
 
 ### 4.2 Non-Functional Requirements
 

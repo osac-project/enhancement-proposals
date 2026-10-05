@@ -193,7 +193,7 @@ by `/`. Managers compare that exact reference with the requested attachment.
 | subnet.create / subnet.delete | Fabric and configured K8s role; K8s-only profile uses K8s fallback | playbook_osac_create_subnet / create_subnet; playbook_osac_delete_subnet / delete_subnet | Subnet metadata.uid; spec.virtualNetwork parent reference; spec.ipv4Cidr; in Fabric-backed EVPN, context.fabricHandoffConfigMap on both create and delete | Create or remove the L2 segment and the K8s network resources assigned to that role. In Fabric-backed EVPN, Fabric writes the standard handoff ConfigMap and the K8s Manager reads it. The Subnet CIDR belongs to its VirtualNetwork and does not overlap a sibling Subnet. |
 | security_group.apply / security_group.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_security_group / create_security_group; playbook_osac_delete_security_group / delete_security_group | SecurityGroup metadata.uid; spec.virtualNetwork; spec.ingressRules and spec.egressRules; context.securityGroup.subnetCidrs and context.securityGroup.attachments | Enforce the OSAC SecurityGroup semantics: default deny; each matching IPv4 rule permits traffic, with ingress matching source CIDRs and egress matching destination CIDRs; TCP/UDP port ranges are matched only for those protocols, and ICMP/ALL ignore ports. Preserve the supplied rule order. Automatically allow return traffic for established connections. Apply policy to every attached endpoint, including same-Subnet and routed traffic; updates remove obsolete rules, and delete removes only rules owned by this SecurityGroup. |
 | external_ip_pool.create / external_ip_pool.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip_pool / create_external_ip_pool; playbook_osac_delete_external_ip_pool / delete_external_ip_pool | ExternalIPPool metadata.uid; spec.cidrs contains exactly one canonical IPv4 CIDR; spec.ipFamily is IPv4 | Register or remove the backend allocation pool. OSAC owns API capacity counters. |
-| external_ip.allocate / external_ip.release | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip / create_external_ip; playbook_osac_delete_external_ip / delete_external_ip | ExternalIP metadata.uid; spec.pool; resolved pool UID and canonical IPv4 CIDR in `context.externalIPPool` | Allocate or release one address from the selected pool and return it through `osac_result`; OSAC owns API status and annotations. |
+| external_ip.allocate / external_ip.release | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip / create_external_ip; playbook_osac_delete_external_ip / delete_external_ip | ExternalIP metadata.uid; spec.pool; resolved pool UID and canonical IPv4 CIDR in `context.externalIPPool` | On allocation, reserve one unique address by ExternalIP UID and write it to the standard `osac.openshift.io/allocated-address` annotation using UID/generation preconditions. `osac_result.data` is empty; OSAC validates the envelope and annotation and owns status and API capacity. On release, remove the UID-owned reservation and report success only after it is absent. |
 | external_ip_attachment.create / external_ip_attachment.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_attach_external_ip / attach_external_ip; playbook_osac_detach_external_ip / detach_external_ip | ExternalIPAttachment metadata.uid; spec.externalIP; target resource reference; spec.targetEndpoint for Cluster API or Ingress endpoints; resolved target kind, UID, and primary address in `context.target` | Create or remove inbound translation for a target allowed by the selected profile and fixed dispatch rules. Remove the attachment before its ExternalIP is released. |
 | nat_gateway.create / nat_gateway.delete | Fabric only; no K8s fallback | playbook_osac_create_nat_gateway / create_nat_gateway; playbook_osac_delete_nat_gateway / delete_nat_gateway | NATGateway metadata.uid; spec.virtualNetwork; spec.externalIP; canonical Subnet CIDRs in `context.virtualNetwork.subnetCidrs`; allocated address in `context.externalIP.address` | Create or remove outbound SNAT for the VirtualNetwork using its ExternalIP. |
 | workload_attachment.move | Fabric only; BaremetalInstance target only | playbook_osac_move_network_attachment / move_network_attachment | Workload resource kind and metadata.uid; normalized attachment binding in `context.attachment` | Move a physical workload port to the selected tenant Subnet on attach; restore the provider provisioning network on detach. Both directions are retry-safe. |
@@ -270,9 +270,17 @@ The Fabric role needs AAP-provided Kubernetes credentials to create and update
 this ConfigMap; the K8s role needs read access; OSAC needs read and delete
 access. These are standard Kubernetes API permissions carried through AAP,
 not supplier-specific OSAC or operator dependencies. OSAC deletes the
-ConfigMap only after both K8s and Fabric `subnet.delete` stages succeed. Other
-K8s Manager operations receive `context: {}` unless this contract defines
-additional context.
+ConfigMap only after both K8s and Fabric `subnet.delete` stages succeed.
+`external_ip.allocate` also requires a standard Kubernetes API credential in
+the AAP job with permission to read and patch ExternalIP resources. The
+deployment configures that credential with the least privilege supported by
+its Kubernetes authorization model. The manager uses only the ExternalIP
+identity supplied in the job, tests the resource UID and observed generation,
+and changes only `metadata.annotations["osac.openshift.io/allocated-address"]`;
+it preserves all other annotations and does not write `spec` or `status`. The
+same credential requirement applies to every conforming manager, regardless of
+implementation source. Other K8s Manager operations receive `context: {}`
+unless this contract defines additional context.
 
 For `subnet.delete` in the Fabric-backed EVPN profile, OSAC runs the K8s
 Manager first and validates its `osac_result`. Only after the K8s Manager
@@ -369,8 +377,8 @@ task reconciled. Operation-specific `data` is:
 | Operation | Required result data |
 |---|---|
 | Fabric `subnet.create` in `evpn-vxlan` profile | `{}`; the VNI, route-target, and reserved-CIDR handoff is written to the contract-defined ConfigMap above |
-| `external_ip.allocate` | `externalIP.address`, a canonical IPv4 address durably reserved to the ExternalIP UID and inside its selected ExternalIPPool |
-| `external_ip.release` | `externalIP.releaseState: RELEASED`, returned only after the UID-owned reservation is absent |
+| `external_ip.allocate` | `{}`; the manager writes the reserved address to the standard allocated-address annotation on the ExternalIP CR, guarded by UID and generation |
+| `external_ip.release` | `{}`; successful job completion means the UID-owned provider reservation is absent |
 | `dhcp_lease.query` | `leases`, an array of `{subnetRef, interface, ipAddress, macAddress}` entries, one unambiguous entry per requested attachment |
 | `workload_attachment.move` | `attachment`, containing the binding UID, resulting state (`ATTACHED` or `RESTORED`), and observed backend port identity |
 | All other successful operations | `{}`; successful job completion asserts convergence to the requested state |
@@ -378,11 +386,17 @@ task reconciled. Operation-specific `data` is:
 OSAC validates the artifact schema and its operation, UID, and generation
 before updating resource status or starting the next manager stage. It stores
 intermediate results in its durable provisioning record. The EVPN ConfigMap
-is the single contract-defined exception: Fabric writes it, K8s reads it, and
-OSAC validates and manages its lifecycle as defined above. No manager-specific
-ConfigMap, annotation, or callback may be used for handoff. A manager must
-make state changes retry-safe by resource UID and return the same allocation
-on retry. Managers do not call private OSAC callbacks or write OSAC resource
+is the only cross-manager handoff: Fabric writes it, K8s reads it, and OSAC
+validates and manages its lifecycle as defined above. ExternalIP allocation
+uses the standard `osac.openshift.io/allocated-address` annotation as a
+manager-to-OSAC result channel, not a cross-manager handoff or a
+supplier-specific annotation. The manager writes it only after reserving the
+address and guards the patch with the ExternalIP UID and generation.
+`osac_result.data` is empty for ExternalIP allocation and release; OSAC
+validates the allocation annotation before updating status and validates the
+release envelope before returning API-side pool capacity. A manager must make
+state changes retry-safe by resource UID and reuse the same allocation on
+retry. Managers do not call private OSAC callbacks or write OSAC resource
 status as a second result channel. A failed task returns a sanitized
 diagnostic and no success artifact; OSAC keeps the resource non-ready and
 retries or reports the failure according to the operation lifecycle.
@@ -412,7 +426,7 @@ AAP task behavior and results are part of the interface:
 
 - The manager task treats the supplied resource spec as desired state. The create/apply task for a SecurityGroup runs for both initial creation and rule updates. OSAC also invokes `security_group.apply` when a referenced workload binding is added or removed, passing the complete current binding snapshot. On attach, policy application must succeed before OSAC reports the network attachment Ready; on detach, the workload is removed from the network before the updated snapshot removes its policy. A failed policy job leaves the affected workload non-ready and is retried.
 - For `workload_attachment.move`, `context.attachment.action` is authoritative and is exactly `ATTACH` or `DETACH`. OSAC derives it from the workload lifecycle; the manager does not infer the action from deletionTimestamp. `DETACH` restores the configured provisioning network and must succeed if the tenant Subnet has already been deleted.
-- On ExternalIP allocation, the manager durably reserves an address by ExternalIP UID before returning `osac_result.data.externalIP.address`. Reconciliation of the same UID returns the same address. OSAC validates the result and owns writing API status and the `osac.openshift.io/allocated-address` annotation. Release removes the reservation before returning `RELEASED`.
+- On ExternalIP allocation, the manager durably reserves an address by ExternalIP UID, then writes it to the standard `osac.openshift.io/allocated-address` annotation using UID/generation preconditions. Reconciliation of the same UID reuses the reservation and writes the same address. The common `osac_result` envelope carries operation, UID, and generation; its `data` is empty for allocation and release. OSAC validates the envelope and annotation, then owns `ExternalIP.status.address` and readiness. The manager does not write status, spec, or other annotations. Release succeeds only after the UID-owned reservation is absent; OSAC returns API-side pool capacity only after validating that success.
 - `dhcp_lease.query` returns exactly one matching lease entry for every requested attachment in `osac_result.data.leases`; a missing, stale, or ambiguous match fails the job with a diagnostic.
 - `workload_attachment.move` receives normalized attachment context: binding UID, workload kind and UID, host UID, interface, authoritative MAC address, Subnet UID and reference, VirtualNetwork UID and reference, tenant identity, attach/detach action, and provider provisioning-network ID. The Fabric Manager validates these values and returns the observed binding state in the result.
 - For operations without a defined artifact, successful AAP task completion means the backend has converged to the requested state. The operator owns resource phase, conditions, and provisioning job history.
@@ -433,12 +447,21 @@ The operator namespace and existing Kubernetes RBAC protect manager registration
 - Operation or target unavailable in the selected profile: OSAC records a failed condition naming the profile, operation identifier, and target, and does not start AAP or choose another manager. A missing required task in a registered implementation fails its AAP job and identifies implementation nonconformance.
 - Missing AAP collection or task entry point: the AAP job fails with the role/task name; OSAC retains the resource failure and retries according to its existing reconciliation backoff after the deployment is corrected.
 - Backend API error or timeout: the manager task fails with the backend diagnostic. The manager leaves retryable state safe to reconcile; OSAC records the AAP job and retries.
-- Invalid operation output: a missing, malformed, stale, or mismatched `osac_result` artifact is treated as a failed job. OSAC does not report allocation, subnet handoff, lease discovery, or attachment movement as successful.
+- Invalid operation output: a missing, malformed, stale, or mismatched `osac_result` artifact is treated as a failed job. For ExternalIP allocation, a missing, non-canonical, or out-of-pool allocated-address annotation also fails the job. OSAC does not report allocation, subnet handoff, lease discovery, or attachment movement as successful.
 - Repeated create/apply: the manager converges to the resource's desired spec without duplicate backend objects or stale SecurityGroup rules. Repeated delete of an absent backend object succeeds.
 
 ## 4.7 RBAC / Tenancy
 
-No tenant-facing RBAC changes are required. Networking API authorization remains in the fulfillment service. Registration ConfigMaps and AAP credentials are provider-scoped. A manager receives the same tenant-scoped resource context OSAC already authorizes; it must not read or mutate other tenants' resources.
+No tenant-facing RBAC changes are required. Networking API request
+authorization remains in the fulfillment service. The deployment supplies the
+standard AAP Kubernetes credential required for the contract-defined
+ExternalIP annotation patch and grants the least privilege supported by its
+authorization model. The manager uses only the tenant-scoped resource context
+OSAC already authorized, must not read or mutate other tenants' resources, and
+uses UID/generation preconditions to prevent stale jobs from changing a
+replacement object or newer specification. Registration ConfigMaps and AAP
+credentials are provider-scoped. The manager may write only the standard
+allocated-address annotation and only for `external_ip.allocate`.
 
 ## 4.8 Extensibility / Future-Proofing
 
@@ -468,7 +491,7 @@ OSAC validates manager/profile compatibility and each requested operation-target
 
 **Requirements:** FR-2
 
-ExternalIP allocation returns its address in `osac_result`; OSAC validates the result and owns the allocated-address annotation and status update. DHCP lookup returns leases in `osac_result.data.leases`. OSAC treats missing, malformed, stale, or mismatched results as job failures.
+ExternalIP allocation uses the standard `osac.openshift.io/allocated-address` annotation as the address handoff: the manager writes it after reservation with UID/generation preconditions, and OSAC validates its canonical IPv4 value and selected-pool membership before writing status. The common `osac_result` envelope correlates the operation, UID, and generation but carries no address data. Release succeeds only after the UID-owned reservation is absent, and OSAC releases capacity only after validating the success envelope. DHCP lookup returns leases in `osac_result.data.leases`. OSAC treats missing, malformed, stale, or mismatched envelopes or annotations as job failures.
 
 ## IC-5: Standard EVPN handoff ConfigMap
 
