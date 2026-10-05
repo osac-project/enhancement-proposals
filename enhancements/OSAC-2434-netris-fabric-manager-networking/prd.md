@@ -140,8 +140,9 @@ parity baseline.
 - **FR-1:** The Netris fabric manager must be registered as a ConfigMap with
   the label `osac.openshift.io/network-fabric-manager: "true"`, and must
   include logical name `netris`, implementation reference
-  `osac.templates.netris`, contract version `v1`, and capabilities `ipv4` and `evpn-vxlan`. Its
-  registration must not declare an operation subset. The normative fields and
+  `osac.templates.netris`, contract version `v1`, capabilities `ipv4` and `evpn-vxlan`,
+  and `compatibleK8sManagers: cudn_evpn` only after the exact pair versions pass
+  the contract integration suite. Its registration must not declare an operation subset. The normative fields and
   validation rules are in the [Network Manager Integration
   Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md#data-model--schema-changes).
 - **FR-2:** The system must reject registration of a fabric manager with a
@@ -158,8 +159,9 @@ parity baseline.
 - **FR-5:** When a tenant creates a Subnet within a VirtualNetwork, the
   backend must create a corresponding Netris VNet with a VXLAN VNI and the
   specified CIDR range. When the selected profile uses the `evpn-vxlan`
-  Fabric-to-K8s handoff, the result must include the contract-defined VNI and
-  reserved-IPv4 values for the K8s Manager.
+  Fabric-to-K8s handoff, the task must write the contract-defined ConfigMap
+  with VNI, route-target, Subnet UID/generation, and reserved-IPv4 values for
+  the K8s Manager; the common `osac_result` contains only the operation envelope.
 - **FR-6:** When a tenant creates a NATGateway, the backend must configure
   Netris SNAT rules in the associated tenant VPC so outbound traffic from its
   VirtualNetwork egresses with the NATGateway's external IP as its source
@@ -360,9 +362,11 @@ parity baseline.
 - [ ] Netris collection tasks implement every Fabric Manager operation and
   target assigned by fixed dispatch, using the canonical `tasks_from` names
   and `osac_result` schema in the Network Manager Integration Contract.
-- [ ] A `subnet.create` task in the `evpn-vxlan` profile returns the exact
-  contract-defined `fabricHandoff`, which OSAC passes to the K8s Manager
-  without a Netris-specific ConfigMap or callback.
+- [ ] A `subnet.create` task in the `evpn-vxlan` profile writes the exact
+  contract-defined ConfigMap, which OSAC validates and the mutually compatible
+  K8s Manager reads; no Netris-specific schema or callback is used.
+- [ ] The Netris plus `cudn_evpn` pair passes the release-specific integration
+  suite before `compatibleK8sManagers: cudn_evpn` is published.
 - [ ] A SecurityGroup with an unresolved parent VPC or Subnet CIDR fails
   without creating a default-VPC or wildcard-CIDR permit ACL.
 - [ ] Deleting a Netris backend resource that is already absent succeeds as a
@@ -445,4 +449,4 @@ Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ e97b06357
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

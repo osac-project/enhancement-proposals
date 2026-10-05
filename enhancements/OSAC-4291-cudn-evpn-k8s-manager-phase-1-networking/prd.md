@@ -6,7 +6,7 @@
 | Jira        | https://redhat.atlassian.net/browse/OSAC-4291 |
 | Date        | 2026-08-30 |
 
-This PRD implements the K8s Manager role for the fabric-backed EVPN profile in the [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/prd.md). Its registration declares the `evpn-vxlan` integration capability; it does not declare an operation subset. In this profile, the fixed dispatcher assigns Subnet create/delete to the K8s Manager. The K8s-only fallback profile requires a different K8s Manager that declares `primarySubnet` and implements that profile's full fallback operation set.
+This PRD implements the K8s Manager role for the fabric-backed EVPN profile in the [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/prd.md). Its registration declares the `evpn-vxlan` integration capability and the exact Fabric Manager names with which it has passed pair integration testing; it does not declare an operation subset. In this profile, the fixed dispatcher assigns Subnet create/delete to the K8s Manager. The K8s-only fallback profile requires a different K8s Manager that declares `primarySubnet` and implements that profile's full fallback operation set.
 
 This PRD inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
@@ -33,7 +33,7 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join an
 ## In Scope
 
 - **K8s manager registration** for EVPN fabric bridging (IPv4 address family only) [Clarify: R2.Q4]
-- **Fabric-to-K8s manager data dependency** — Subnet provisioning waits for the Fabric Manager and passes its versioned `evpn-vxlan` `osac_result.data.fabricHandoff` to the K8s Manager as `context.fabricHandoff`, exactly as defined by the Network Manager Integration Contract [Clarify: R1.Q3, R2.Q5, D7] [User]
+- **Fabric-to-K8s manager data dependency** — Subnet provisioning waits for Fabric to write the versioned, contract-defined ConfigMap for the Subnet UID. OSAC validates and pins the ConfigMap identity and generation; the K8s Manager reads the same ConfigMap for VNIs, route targets, and reserved IPv4 CIDRs [Clarify: R1.Q3, R2.Q5, D7] [User]
 - **Automatic overlay network provisioning** on hosting clusters that bridges VMs to the physical fabric when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
 - **VM-to-fabric connectivity** — VMs are discoverable and directly reachable from bare-metal servers on the physical fabric (both L2 same-subnet and L3 cross-subnet scenarios)
 - **Multiple Subnets per VirtualNetwork** — every Subnet receives its own EVPN CUDN and NAD; VMaaS selects the NAD for the VM's requested Subnet. Subnet creation order does not change behavior [Contract]
@@ -56,7 +56,7 @@ The following are explicitly deferred to Phase 2 (OSAC-3667, release 0.4):
 The following are out of scope for Phase 1:
 
 - **IPv6 and dual-stack support** — not supported by the shared Unified Networking contract. [Clarify: R2.Q4]
-- **Manager-specific EVPN route-target negotiation** — outside this K8s Manager contract; interoperability is a prerequisite of the selected evpn-vxlan Fabric Manager and K8s Manager pair. The shared handoff contains only the fields defined by contract v1.
+- **Route-target allocation or derivation** — owned by the selected Fabric Manager. The standard handoff carries its assigned import/export values; the K8s Manager does not calculate or negotiate manager-specific values. Pair interoperability is verified by the selected pair's integration test.
 - **MetalLB IPAddressPool creation** — handled separately in OSAC-1436 (CaaS Networking) [Clarify: R3.Q3, D9]
 - **Physical infrastructure automation** — manual prerequisites remain manual for Phase 1 [Clarify: R2.Q1, R2.Q3, D5, D6]
 - **Automatic gateway MAC coordination** — Cloud Infrastructure Admin must manually coordinate gateway MAC addresses (moved to prerequisites above) [Clarify: R1.Q5]
@@ -85,7 +85,7 @@ The following are out of scope for Phase 1:
 
 - The Cloud Infrastructure Admin has completed the documented infrastructure prerequisites before creating the first VirtualNetwork. [Clarify: R2.Q3] [User]
 
-- The selected Fabric Manager and `cudn_evpn` both declare `evpn-vxlan`; the Fabric Manager returns the exact handoff schema defined by the contract. [Contract]
+- The selected Fabric Manager and `cudn_evpn` both declare `evpn-vxlan`, mutually list each other's logical names, and have passed the contract pair test for the deployed collection versions. Fabric writes the exact contract ConfigMap schema; `cudn_evpn` reads and validates it. [Contract]
 
 - OCP workers have network connectivity to the fabric. [Clarify: R2.Q3]
 
@@ -100,7 +100,7 @@ The following are out of scope for Phase 1:
 
 ## Acceptance Criteria
 
-- [ ] A NetworkClass selecting any contract-v1 Fabric Manager and cudn_evpn, with both registrations declaring evpn-vxlan, can be created and transitions to READY state
+- [ ] A NetworkClass selecting `cudn_evpn` and a Fabric Manager mutually declared by both registrations, with required capabilities and passing pair-test evidence, can be created and transitions to READY state; capability-only pairs and Agentless VLAN plus CUDN are rejected before AAP
 - [ ] Creating any number of Subnets with this NetworkClass provisions each Fabric segment and its matching secondary EVPN CUDN/NAD, using the shared result handoff
 - [ ] VMs deployed on each Subnet receive IP addresses outside every reservedIPv4CIDRs range returned by the selected Fabric Manager
 - [ ] VMs are discoverable and directly reachable from bare-metal servers on the physical fabric (both L2 same-subnet and L3 different-subnet scenarios)
@@ -118,7 +118,7 @@ The following are out of scope for Phase 1:
 
 - **OSAC-1440 (Dispatcher Core):** Provides dispatcher infrastructure for routing networking operations to fabric and k8s managers based on NetworkClass configuration.
 
-- **Fabric Manager:** The selected contract-v1 Fabric Manager must declare evpn-vxlan and return the contract-defined fabricHandoff for each Subnet. Physical infrastructure configuration is manual.
+- **Fabric Manager:** The selected contract-v1 Fabric Manager must declare `evpn-vxlan`, mutually declare compatibility with `cudn_evpn`, and write the standard VNI/route-target/reserved-CIDR ConfigMap for each Subnet. Netris plus `cudn_evpn` is the first pair targeted for certification, but it is not certified until the current Netris contract gaps are fixed and the release-specific pair test passes. New pairs require their own integration test before being advertised. Physical infrastructure configuration is manual.
 
 - **OVN-Kubernetes:** Must support overlay network provisioning with fabric bridging. Constraint: does not currently route between separate overlay networks on the same cluster (Connectors feature pending). [Clarify: R1.Q4]
 
@@ -138,11 +138,11 @@ The following are out of scope for Phase 1:
 
 ## Provenance
 
-Authored: commit @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ e18362f (20 behind origin/main)
-Final: revise @ prd 0.8.0 - 837cf0d, workspace prd/OSAC-4291 @ e69542d (20 behind origin/main)
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ e97b06357
 
-> Context changed between commit and revise.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.8.0","ai_workflows":"837cf0d","source_repo":"e69542d","source_repo_branch":"prd/OSAC-4291","commits_behind_main":20,"commits_ahead_main":3,"main_ref":"main","phases":["commit","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -93,7 +93,9 @@ OSAC assigns each operation to a manager role using the selected profile and fix
 
 Each implementation installs a ConfigMap in the OSAC operator namespace. Its role label determines whether it is a Fabric Manager or K8s Manager. The ConfigMap name follows the existing chart convention: osac-network-fabric-manager-<name> or osac-network-k8s-manager-<name>, with underscores in the name normalized to hyphens. The data.name value is the logical identifier selected by NetworkClass. implementationRef independently identifies the fully qualified collection role invoked by AAP.
 
-Version 1 requires name, implementationRef, contractVersion, and capabilities. Description is optional. Name must be unique within its manager role and is the logical identifier selected by NetworkClass. implementationRef is a fully qualified Ansible collection role name with the form namespace.collection.role; it is independent of data.name and may refer to any collection installed in the AAP execution environment. contractVersion must be v1. Contract v1 recognizes the address-family values `ipv4`, `ipv6`, and `dualStack`, the integration values `evpn-vxlan` and `primarySubnet`, and the hardware value `dpuSupport`. The currently supported address-family profile requires `ipv4` and does not support IPv6 or dual-stack. Capabilities describe technical compatibility; they never declare resource operations or allow a manager to omit operations assigned by the selected profile.
+Version 1 requires `name`, `implementationRef`, `contractVersion`, and `capabilities`. `description` is optional. `name` must be unique within its manager role and is the logical identifier selected by NetworkClass. `implementationRef` is a fully qualified Ansible collection role name with the form `namespace.collection.role`; it is independent of `data.name` and may refer to any collection installed in the AAP execution environment. `contractVersion` must be `v1`. Contract v1 recognizes the address-family values `ipv4`, `ipv6`, and `dualStack`, the integration values `evpn-vxlan` and `primarySubnet`, and the hardware value `dpuSupport`. The currently supported address-family profile requires `ipv4` and does not support IPv6 or dual-stack. Capabilities describe technical compatibility; they never declare resource operations or allow a manager to omit operations assigned by the selected profile.
+
+A Fabric Manager may additionally declare `compatibleK8sManagers`, a comma-separated list of exact K8s Manager `data.name` values, and a K8s Manager may declare `compatibleFabricManagers`, a comma-separated list of exact Fabric Manager `data.name` values. These fields are optional; an absent or empty list declares no compatible peers. Names are case-sensitive, unique within each list, and contain no whitespace. For a combined profile, the selected registrations must list each other in the corresponding fields as well as declare the profile's required capabilities. Capabilities are necessary but are not sufficient to establish pair compatibility. A publisher adds a peer name only after the pair's supported collection versions pass the contract's pair integration suite; the release record identifies those versions. Each supported AAP execution environment pins the collection versions in that record. Upgrading either collection requires rerunning the pair suite before the peer declaration remains supported. OSAC validates the declarations and mutual match at selection time, while the Enclave UI discovers and filters choices from the registration inventory. OSAC does not execute or independently verify the pair test at runtime; the peer declaration is the publisher's assertion that the recorded test gate passed. No product names or compatible-pair list are compiled into OSAC or the UI.
 
 The manager registration does not contain an operation or target list. Contract v1 defines the complete operation and target set assigned to each role by the selected profile; a conforming implementation provides every required AAP task and target combination in that profile. The operation table and fixed profile dispatch rules are the source of truth and apply uniformly to every implementation.
 
@@ -101,20 +103,23 @@ The manager registration does not contain an operation or target list. Contract 
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: osac-network-fabric-manager-example
+  name: osac-network-fabric-manager-fabric-example
   namespace: osac
   labels:
     osac.openshift.io/network-fabric-manager: "true"
 data:
-  name: example
+  name: fabric_example
   implementationRef: acme.networking.fabric_manager
   description: "Example fabric integration"
   contractVersion: "v1"
   capabilities: "ipv4,evpn-vxlan"
+  compatibleK8sManagers: "k8s_example"
 ```
 
 A K8s-only implementation instead declares `ipv4,primarySubnet`; the
 K8s-only profile requires `primarySubnet` when no Fabric Manager is configured.
+A Fabric Manager that has no combined-profile peer omits
+`compatibleK8sManagers` or supplies an empty value.
 
 A K8s Manager registration uses the corresponding K8s role label and chart
 name; its required data fields are identical:
@@ -123,29 +128,30 @@ name; its required data fields are identical:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: osac-network-k8s-manager-example
+  name: osac-network-k8s-manager-k8s-example
   namespace: osac
   labels:
     osac.openshift.io/network-k8s-manager: "true"
 data:
-  name: example
+  name: k8s_example
   implementationRef: acme.networking.k8s_manager
   description: "Example Kubernetes networking integration"
   contractVersion: "v1"
   capabilities: "ipv4,evpn-vxlan"
+  compatibleFabricManagers: "fabric_example"
 ```
 
-The recognized labels are osac.openshift.io/network-fabric-manager and osac.openshift.io/network-k8s-manager. The target vocabulary is compute_instance, cluster, and baremetal_instance; targets are part of operation inputs and fixed dispatch rules, not registration fields. Unknown labels, versions, or capabilities, malformed implementationRef values, empty required fields, and duplicate names within one role make a registration invalid. The operator reports the ConfigMap and invalid field in its diagnostic.
+The recognized labels are osac.openshift.io/network-fabric-manager and osac.openshift.io/network-k8s-manager. The target vocabulary is compute_instance, cluster, and baremetal_instance; targets are part of operation inputs and fixed dispatch rules, not registration fields. Unknown labels, versions, or capabilities, malformed implementationRef values, empty required fields, duplicate names within one role, and malformed or duplicate peer names make a registration invalid. A syntactically valid peer name may be registered before that peer is installed; the pair is not selectable until both registrations exist and mutually name one another. The operator reports the ConfigMap and invalid field or missing pair in its diagnostic.
 
 Contract v1 recognizes three selectable profiles. The operator derives the profile from the managers selected in NetworkClass and their technical capabilities; a registration never lists operations or targets.
 
 | Profile | Required manager registrations | Complete role assignment |
 |---|---|---|
 | Fabric-only IPv4 | Fabric Manager declares ipv4; no K8s Manager is selected | Fabric Manager implements every Fabric operation in §4.3. SecurityGroup and ExternalIPAttachment targets are cluster and baremetal_instance. Workload attachment moves and DHCP lease queries target baremetal_instance only; CaaS physical workers use the same BaremetalInstance path through BMaaS. ComputeInstance is unavailable because this profile has no K8s network integration. |
-| Fabric-backed EVPN | Fabric and K8s Managers both declare ipv4 and evpn-vxlan | Fabric Manager implements every Fabric operation in §4.3. K8s Manager implements subnet.create and subnet.delete. SecurityGroup and ExternalIPAttachment targets are compute_instance, cluster, and baremetal_instance. Workload attachment moves and DHCP lease queries target baremetal_instance only; CaaS physical workers use the same BaremetalInstance path through BMaaS. |
+| Fabric-backed EVPN | Fabric and K8s Managers both declare `ipv4` and `evpn-vxlan`, and each registration's peer list names the other's exact logical name | Fabric Manager implements every Fabric operation in §4.3. K8s Manager implements `subnet.create` and `subnet.delete`. SecurityGroup and ExternalIPAttachment targets are compute_instance, cluster, and baremetal_instance. Workload attachment moves and DHCP lease queries target baremetal_instance only; CaaS physical workers use the same BaremetalInstance path through BMaaS. |
 | K8s-only IPv4 | K8s Manager declares ipv4 and primarySubnet; no Fabric Manager is selected | K8s Manager implements the complete fallback set in §4.3: VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, and ExternalIPAttachment. SecurityGroup and ExternalIPAttachment target compute_instance only. NATGateway, workload attachment moves, and Fabric DHCP lease queries are unavailable. |
 
-These are the only manager combinations selectable under contract v1. The evpn-vxlan capability is required on both managers in the combined profile because the Subnet handoff joins their implementations. The primarySubnet capability selects the K8s-only fallback. Any combination that does not match one of these profiles is rejected before AAP dispatch.
+These are the only manager combinations selectable under contract v1. The `evpn-vxlan` capability is required on both managers in the combined profile, but it does not prove that their implementations interoperate. A combined profile is selectable only when both registrations mutually name each other and the pair has passed its release-specific integration test. The pair test validates the shared handoff and end-to-end behavior. The `primarySubnet` capability selects the K8s-only fallback. Any combination that does not match one of these profiles is rejected before AAP dispatch. A passing pair test certifies only the tested manager and collection versions; it does not make every K8s Manager compatible with every Fabric Manager.
 
 The existing operator parser and Helm template do not yet read or render implementationRef or contractVersion. Implementing those fields and registration validation is part of the OSAC contract-enforcement work; the ConfigMap above describes the target interface, not a claim about current runtime support. [Codebase: osac-operator/pkg/networkmanager/types.go; osac-operator/charts/operator/templates/network-managers.yaml]
 
@@ -184,7 +190,7 @@ by `/`. Managers compare that exact reference with the requested attachment.
 | Operation identifier | Assigned role | AAP playbook and collection task | Required input | Required behavior and result |
 |----------------------|---------------|----------------------------------|---------------|------------------------------|
 | virtual_network.create / virtual_network.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_virtual_network / create_virtual_network; playbook_osac_delete_virtual_network / delete_virtual_network | VirtualNetwork metadata.uid; spec.region, spec.ipv4Cidr, spec.networkClass | Create or remove the isolated routing domain and associated allocation. A K8s fallback may create a logical grouping. Different VirtualNetworks remain isolated. |
-| subnet.create / subnet.delete | Fabric and configured K8s role; K8s-only profile uses K8s fallback | playbook_osac_create_subnet / create_subnet; playbook_osac_delete_subnet / delete_subnet | Subnet metadata.uid; spec.virtualNetwork parent reference; spec.ipv4Cidr | Create or remove the L2 segment and the K8s network resources assigned to that role. The Subnet CIDR belongs to its VirtualNetwork and does not overlap a sibling Subnet. |
+| subnet.create / subnet.delete | Fabric and configured K8s role; K8s-only profile uses K8s fallback | playbook_osac_create_subnet / create_subnet; playbook_osac_delete_subnet / delete_subnet | Subnet metadata.uid; spec.virtualNetwork parent reference; spec.ipv4Cidr; in Fabric-backed EVPN, context.fabricHandoffConfigMap on both create and delete | Create or remove the L2 segment and the K8s network resources assigned to that role. In Fabric-backed EVPN, Fabric writes the standard handoff ConfigMap and the K8s Manager reads it. The Subnet CIDR belongs to its VirtualNetwork and does not overlap a sibling Subnet. |
 | security_group.apply / security_group.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_security_group / create_security_group; playbook_osac_delete_security_group / delete_security_group | SecurityGroup metadata.uid; spec.virtualNetwork; spec.ingressRules and spec.egressRules; context.securityGroup.subnetCidrs and context.securityGroup.attachments | Enforce the OSAC SecurityGroup semantics: default deny; each matching IPv4 rule permits traffic, with ingress matching source CIDRs and egress matching destination CIDRs; TCP/UDP port ranges are matched only for those protocols, and ICMP/ALL ignore ports. Preserve the supplied rule order. Automatically allow return traffic for established connections. Apply policy to every attached endpoint, including same-Subnet and routed traffic; updates remove obsolete rules, and delete removes only rules owned by this SecurityGroup. |
 | external_ip_pool.create / external_ip_pool.delete | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip_pool / create_external_ip_pool; playbook_osac_delete_external_ip_pool / delete_external_ip_pool | ExternalIPPool metadata.uid; spec.cidrs contains exactly one canonical IPv4 CIDR; spec.ipFamily is IPv4 | Register or remove the backend allocation pool. OSAC owns API capacity counters. |
 | external_ip.allocate / external_ip.release | Fabric; K8s fallback only in a K8s-only profile | playbook_osac_create_external_ip / create_external_ip; playbook_osac_delete_external_ip / delete_external_ip | ExternalIP metadata.uid; spec.pool; resolved pool UID and canonical IPv4 CIDR in `context.externalIPPool` | The manager selects and durably reserves one unique address from the selected pool, or releases that reservation, and returns the defined result. OSAC owns API capacity, status, and annotations. |
@@ -226,26 +232,79 @@ address is absent. OSAC validates that result before releasing API-side pool
 capacity. A failed release keeps capacity unavailable while OSAC retries.
 
 For `subnet.create` in the Fabric-backed EVPN profile, OSAC runs the Fabric
-Manager first. Its `osac_result.data.fabricHandoff` is persisted against the
-Subnet UID and generation, then passed unchanged as
-`osac_job_vars.context.fabricHandoff` to the K8s Manager. The v1
-`evpn-vxlan` handoff schema is:
+Manager first. OSAC supplies both manager jobs with the same deterministic
+reference in `osac_job_vars.context.fabricHandoffConfigMap`; the reference
+contains the operator namespace and the ConfigMap name
+`osac-fabric-handoff-<subnet-uid>`. The Fabric Manager creates or updates
+that contract-defined ConfigMap with data assigned by the physical fabric. It
+then returns the ordinary `osac_result` envelope with `data: {}`. The handoff
+values are not returned in `osac_result`.
+
+The v1 `evpn-vxlan` ConfigMap schema is:
 
 ```yaml
-profile: evpn-vxlan
-l2Vni: 12345
-l3Vni: 23456
-reservedIPv4CIDRs:
-  - 192.0.2.0/27
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: osac-fabric-handoff-<subnet-uid>
+  namespace: <osac-operator-namespace>
+  labels:
+    osac.openshift.io/contract: network-manager-v1
+    osac.openshift.io/profile: evpn-vxlan
+    osac.openshift.io/subnet-uid: "<Subnet UID>"
+  annotations:
+    osac.openshift.io/observed-generation: "1"
+data:
+  contractVersion: "v1"
+  profile: evpn-vxlan
+  subnetUID: "<Subnet UID>"
+  observedGeneration: "1"
+  l2Vni: "12345"
+  l3Vni: "23456"
+  l2RouteTargets: '{"import":["65000:12345"],"export":["65000:12345"]}'
+  l3RouteTargets: '{"import":["65000:23456"],"export":["65000:23456"]}'
+  reservedIPv4CIDRs: '["192.0.2.0/27"]'
 ```
 
-`l2Vni` and `l3Vni` are positive 24-bit VXLAN Network Identifiers assigned to
-the Subnet and its parent VirtualNetwork. `reservedIPv4CIDRs` is the complete
-set of IPv4 addresses in the Subnet CIDR that the fabric manager reserves for
-its gateway, infrastructure interfaces, or DHCP service; it may be empty.
-Values must be canonical and contained by the Subnet CIDR. A profile that
-selects an EVPN K8s Manager requires this handoff. Other K8s Manager operations
-receive `context: {}` unless this contract defines additional context.
+The generated ConfigMap name is deterministic for the Subnet UID and is stable
+across retries. `observedGeneration` is updated only after the Fabric Manager
+has reconciled that generation. `l2Vni` and `l3Vni` are canonical decimal
+integers in the positive 24-bit VXLAN range assigned to the Subnet and its
+parent VirtualNetwork. `l2RouteTargets` and `l3RouteTargets` are JSON objects whose `import` and
+`export` values are non-empty arrays of unique, fully qualified route-target
+strings in `<global-admin>:<local-admin>` form. `global-admin` is an ASN or
+canonical IPv4 address; `local-admin` is a canonical decimal integer. Wildcard
+route targets are not part of contract v1. These are BGP extended-community
+values as defined by [RFC 4360](https://www.rfc-editor.org/rfc/rfc4360); the
+format is also used by [FRR EVPN](https://docs.frrouting.org/en/stable-10.2/evpn.html#evpn-route-targets).
+The Fabric Manager reports the actual import/export values used by its fabric
+and the K8s Manager applies them without deriving or substituting values. The
+selected pair's integration test verifies that these values interoperate.
+`reservedIPv4CIDRs` is a JSON array containing the complete set of IPv4
+addresses in the Subnet CIDR that the fabric manager reserves for its
+gateway, infrastructure interfaces, or DHCP service; the array may be empty.
+Each CIDR must be canonical and contained by the Subnet CIDR. The ConfigMap
+contains no credentials or supplier-specific keys.
+
+After the Fabric task succeeds, OSAC validates the `osac_result` envelope,
+reads the referenced ConfigMap, and verifies its contract version, profile,
+Subnet UID, observed generation, required keys, VNI range, route-target
+syntax, and CIDR containment. OSAC records the ConfigMap UID and resourceVersion
+and passes those values with the same name/namespace reference to the K8s
+Manager. The K8s Manager independently reads the ConfigMap and verifies its
+UID, resourceVersion, Subnet UID, and generation before configuring CUDN and
+EVPN. A missing, changed, malformed, or stale ConfigMap prevents K8s
+dispatch or leaves the Subnet non-ready. The manager identities remain
+independent: Fabric writes only this shared contract object, and K8s reads it
+without calling Fabric or relying on a supplier-specific API.
+
+The Fabric role needs AAP-provided Kubernetes credentials to create and update
+this ConfigMap; the K8s role needs read access; OSAC needs read and delete
+access. These are standard Kubernetes API permissions carried through AAP,
+not supplier-specific OSAC or operator dependencies. OSAC deletes the
+ConfigMap only after both K8s and Fabric `subnet.delete` stages succeed. Other
+K8s Manager operations receive `context: {}` unless this contract defines
+additional context.
 
 For `subnet.delete` in the Fabric-backed EVPN profile, OSAC runs the K8s
 Manager first and validates its `osac_result`. Only after the K8s Manager
@@ -333,12 +392,7 @@ schemaVersion: "v1"
 operation: subnet.create
 resourceUID: "<Kubernetes UID>"
 observedGeneration: 1
-data:
-  fabricHandoff:
-    profile: evpn-vxlan
-    l2Vni: 12345
-    l3Vni: 23456
-    reservedIPv4CIDRs: []
+  data: {}
 ```
 
 The artifact identifies the exact operation, resource UID, and generation the
@@ -346,7 +400,7 @@ task reconciled. Operation-specific `data` is:
 
 | Operation | Required result data |
 |---|---|
-| Fabric `subnet.create` in `evpn-vxlan` profile | `fabricHandoff` matching the schema above |
+| Fabric `subnet.create` in `evpn-vxlan` profile | `{}`; the VNI, route-target, and reserved-CIDR handoff is written to the contract-defined ConfigMap above |
 | `external_ip.allocate` | `externalIP.address`, a canonical IPv4 address durably reserved to the ExternalIP UID and inside its selected ExternalIPPool |
 | `external_ip.release` | `externalIP.releaseState: RELEASED`, returned only after the UID-owned reservation is absent |
 | `dhcp_lease.query` | `leases`, an array of `{subnetRef, interface, ipAddress, macAddress}` entries, one unambiguous entry per requested attachment |
@@ -355,13 +409,15 @@ task reconciled. Operation-specific `data` is:
 
 OSAC validates the artifact schema and its operation, UID, and generation
 before updating resource status or starting the next manager stage. It stores
-intermediate results in its durable provisioning record, not in a
-manager-specific ConfigMap or annotation. A manager must make state changes
-retry-safe by resource UID and return the same allocation or handoff on retry.
-Managers do not call private OSAC callbacks or write OSAC resource status as a
-second result channel. A failed task returns a sanitized diagnostic and no
-success artifact; OSAC keeps the resource non-ready and retries or reports the
-failure according to the operation lifecycle.
+intermediate results in its durable provisioning record. The EVPN ConfigMap
+is the single contract-defined exception: Fabric writes it, K8s reads it, and
+OSAC validates and manages its lifecycle as defined above. No manager-specific
+ConfigMap, annotation, or callback may be used for handoff. A manager must
+make state changes retry-safe by resource UID and return the same allocation
+on retry. Managers do not call private OSAC callbacks or write OSAC resource
+status as a second result channel. A failed task returns a sanitized
+diagnostic and no success artifact; OSAC keeps the resource non-ready and
+retries or reports the failure according to the operation lifecycle.
 
 For `dhcp_lease.query`, the Fabric Manager matches each request by the exact
 `subnetRef`, `interface`, and authoritative `macAddress` tuple. MAC comparison
@@ -393,7 +449,7 @@ AAP task behavior and results are part of the interface:
 - `workload_attachment.move` receives normalized attachment context: binding UID, workload kind and UID, host UID, interface, authoritative MAC address, Subnet UID and reference, VirtualNetwork UID and reference, tenant identity, attach/detach action, and provider provisioning-network ID. The Fabric Manager validates these values and returns the observed binding state in the result.
 - For operations without a defined artifact, successful AAP task completion means the backend has converged to the requested state. The operator owns resource phase, conditions, and provisioning job history.
 
-An implementation conforms to v1 for a selected profile when its registration passes validation, its collection provides every operation and target entry point assigned to its role by that profile, each task returns the required result, and retries and failures follow §4.6. A deployment can combine implementations from different sources; each selected role is validated independently. The implementation author's release checklist is: install the collection in the AAP execution environment; deploy the role-labeled ConfigMap with its logical name, implementationRef, contractVersion, and technical capabilities; implement every required task and result for the selected profile; verify retries, deletion, tenant scoping, and diagnostics; and configure only profiles whose fixed dispatch assignments the selected managers implement.
+An implementation conforms to v1 for a selected profile when its registration passes validation, its collection provides every operation and target entry point assigned to its role by that profile, each task returns the required result, and retries and failures follow §4.6. A deployment can combine implementations from different sources; each selected role is validated independently. The implementation author's release checklist is: install the collection and all backend modules/SDKs in the AAP execution environment; deploy the role-labeled ConfigMap with its logical name, implementationRef, contractVersion, technical capabilities, and any tested peer declarations; implement every required task and result for the selected profile; verify retries, deletion, tenant scoping, and diagnostics; run the pair integration suite for every declared peer and record the exact collection versions; and configure only profiles whose fixed dispatch assignments and peer pairing the selected managers implement. No backend-specific OSAC API, operator, dispatcher, or UI change is required after OSAC supports this contract version. Runtime prerequisites such as a CUDN CRD remain documented profile dependencies rather than manager plugins installed outside the AAP execution environment.
 
 ## 4.4 Scalability and Performance
 
@@ -424,27 +480,33 @@ A new implementation is added by installing its AAP collection, deploying a vali
 
 ## IC-1: Versioned manager registration
 
-**Requirements:** FR-1, FR-2, FR-3
+**Requirements:** FR-1, FR-2, FR-3, FR-5
 
-Manager ConfigMaps gain implementationRef and contractVersion. The operator validates the role label, manager identity, version, and capabilities; the fixed profile dispatch matrix defines the complete operation and target set.
+Manager ConfigMaps contain implementationRef and contractVersion and may declare exact compatible peer names. The operator validates the role label, manager identity, version, capabilities, and peer-list syntax; the fixed profile dispatch matrix defines the complete operation and target set.
 
 ## IC-2: AAP collection operation entry points
 
 **Requirements:** FR-1, FR-2, FR-3
 
-A Fabric or K8s implementation provides a collection role resolved by implementationRef and every operation behavior assigned to its role in §4.3. Each required operation-target pair has one defined tasks_from entry point and receives the shared osac_job_vars envelope.
+A Fabric or K8s implementation provides a collection role resolved by implementationRef and every operation behavior assigned to its role in §4.3. Each required operation-target pair has one defined tasks_from entry point and receives the shared osac_job_vars envelope. In an EVPN profile, both roles receive the contract-defined ConfigMap reference; Fabric writes the handoff and K8s reads it.
 
 ## IC-3: Fixed profile dispatch and manager availability
 
-**Requirements:** FR-3, FR-4
+**Requirements:** FR-3, FR-4, FR-5
 
-OSAC validates manager/profile compatibility and each requested operation-target pair against the selected profile's fixed dispatch matrix before starting AAP. A fabric-backed EVPN profile requires `evpn-vxlan` on both managers; a K8s-only profile requires `primarySubnet` on its K8s Manager. Work unavailable in the profile produces a resource condition naming the profile, operation, and target; dispatch does not switch to another manager. Implementations are responsible for conforming to the complete operation set assigned to their role in the selected profile.
+OSAC validates manager/profile compatibility and each requested operation-target pair against the selected profile's fixed dispatch matrix before starting AAP. A fabric-backed EVPN profile requires `evpn-vxlan` on both managers and mutual declarations naming the exact selected peer. A K8s-only profile requires `primarySubnet` on its K8s Manager. Work unavailable in the profile or an unregistered/unpaired manager combination produces a diagnostic naming the profile and manager pair; OSAC rejects it before AAP and never switches to another manager. Implementations are responsible for the complete operation set assigned to their role and for publishing only peer combinations that passed pair testing.
 
 ## IC-4: ExternalIP allocation and DHCP lease results
 
 **Requirements:** FR-2
 
 ExternalIP allocation returns its address in `osac_result`; OSAC validates the result and owns the allocated-address annotation and status update. DHCP lookup returns leases in `osac_result.data.leases`. OSAC treats missing, malformed, stale, or mismatched results as job failures.
+
+## IC-5: Standard EVPN handoff ConfigMap
+
+**Requirements:** FR-2, FR-5
+
+For the Fabric-backed EVPN profile, Fabric writes the standard Subnet-UID-owned ConfigMap containing VNIs, import/export route targets, reserved IPv4 CIDRs, and generation. OSAC validates it and passes a version-pinned reference; the K8s Manager reads it. OSAC deletes it after both manager cleanup stages succeed.
 
 # 6. Alternatives Considered
 
@@ -474,9 +536,9 @@ No new metrics are required. Existing resource conditions, events, AAP job histo
 
 # 8. Impact and Compatibility
 
-This document defines the target manager contract. Current OSAC code parses only name, description, and capabilities; AAP playbooks derive the role from the manager name and some default to Netris. OSAC implementation work must add generic implementationRef and contractVersion parsing and chart rendering, pass the common manager/operation/context envelope, resolve arbitrary installed collection roles, validate requests against the fixed profile dispatch matrix, persist and validate `osac_result`, report clear failures, and remove hardcoded Netris defaults before other implementations can rely on this contract.
+This document defines the target manager contract. Current OSAC code parses only name, description, and capabilities; AAP playbooks derive the role from the manager name and some default to Netris. OSAC implementation work must add generic implementationRef, contractVersion, and peer-declaration parsing and chart rendering; pass the common manager/operation/context envelope; resolve arbitrary installed collection roles; validate mutual pair compatibility and fixed profile dispatch; read and validate the standard EVPN handoff ConfigMap; persist and validate `osac_result`; report clear failures; and remove hardcoded Netris defaults before other implementations can rely on this contract.
 
-Existing manager registrations and AAP collections must be updated with implementationRef and contractVersion, and each collection must provide the complete operation and target set assigned to its manager role. Version 1 adds no tenant API or CRD fields. Once enforcement is implemented, an old registration without contractVersion is invalid and must be updated with the manager rollout. Incompatible changes to operation inputs, outputs, or identifiers require a new contract version.
+Existing manager registrations and AAP collections must be updated with implementationRef and contractVersion, and each collection must provide the complete operation and target set assigned to its manager role. Combined-profile registrations must add mutually compatible peer names and pass pair testing before selection. The EVPN pair uses a standard Kubernetes ConfigMap written and consumed through AAP. Version 1 adds no tenant API or tenant resource CRD fields. Once enforcement is implemented, an old registration without contractVersion is invalid and must be updated with the manager rollout. Incompatible changes to operation inputs, outputs, or identifiers require a new contract version.
 
 ---
 
@@ -487,4 +549,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ e97b06357
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

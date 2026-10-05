@@ -593,8 +593,9 @@
 2. Request a Cluster-targeted SecurityGroup update and ExternalIPAttachment.
 3. Request a Cluster workload_attachment.move and dhcp_lease.query operation,
    then request a ComputeInstance attachment through this profile.
-4. Configure a K8s Manager without evpn-vxlan and attempt to combine it with
-   agentless_net.
+4. Configure `cudn_evpn` with evpn-vxlan but compatibleFabricManagers=netris,
+   then attempt to combine it with `agentless_net`, which lacks evpn-vxlan and
+   compatibleK8sManagers.
 
 ##### Expected Results
 
@@ -608,7 +609,8 @@
   before AAP dispatch.
 - ComputeInstance targets fail profile validation before AAP dispatch.
 - A K8s Manager cannot be paired with agentless_net for the Fabric-backed EVPN
-  profile because the AgentlessNet registration lacks evpn-vxlan.
+  profile because AgentlessNet lacks evpn-vxlan and mutual peer declarations;
+  the same rejection applies to `cudn_evpn` before AAP dispatch.
 - No service-specific fields are added to the manager context.
 
 ### FR-9: Failure visibility

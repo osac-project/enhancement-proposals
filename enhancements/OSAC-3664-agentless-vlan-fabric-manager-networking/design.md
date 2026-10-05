@@ -101,7 +101,10 @@ creating DNAT. [PRD: FR-4] [Codebase: osac-aap/playbook_osac_query_dhcp_lease.ym
   Networking API resource. [PRD: §2.2]
 - VM-to-fabric bridging and VM address assignment, which require a compatible
   K8s Manager in the Fabric-backed EVPN profile. AgentlessNet declares no
-  `evpn-vxlan` capability.
+  `evpn-vxlan` capability and no compatible K8s Manager in contract v1. Its
+  registration omits `compatibleK8sManagers` until a specific VLAN-backed K8s
+  pair is implemented and passes pair testing. In particular, it is not
+  compatible with `cudn_evpn`.
 
 ## Proposal
 
@@ -159,8 +162,10 @@ input and are not AgentlessNet state.
 
 The target operator registration uses role Fabric, name agentless_net,
 implementationRef osac.templates.agentless_net, contractVersion v1, and
-capability ipv4. It does not advertise evpn-vxlan or list operations/targets,
-so it is eligible only for the Fabric-only IPv4 profile. The collection must
+capability ipv4 and no `compatibleK8sManagers` peers. It does not advertise
+`evpn-vxlan` or list operations/targets, so it is eligible only for the
+Fabric-only IPv4 profile. `agentless_net` plus `cudn_evpn` is rejected because
+the required capability and mutual compatibility declarations are absent. The collection must
 be installed in the AAP execution environment. Do not publish this registration
 as contract v1 or make it selectable until every assigned operation and target
 passes contract conformance. The current SecurityGroup packet path is a known
@@ -1724,4 +1729,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ e97b06357
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

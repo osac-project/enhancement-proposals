@@ -53,7 +53,7 @@ managed-switch infrastructure, limiting where the platform can run.
   profile. Cluster-level SecurityGroup and ExternalIPAttachment operations also
   route to the Fabric Manager. ComputeInstance targets
   require a Fabric-backed EVPN profile with a compatible K8s Manager; AgentlessNet
-  does not declare evpn-vxlan and is not selected for that profile.
+  does not declare evpn-vxlan or a compatible K8s Manager peer and is not selected for that profile. Agentless VLAN plus cudn_evpn is explicitly unsupported.
   [Contract; Clarify: D1, D5, D8]
 - A tenant can create a virtual network with multiple subnets: machines in the
   same subnet share a broadcast domain, machines in different subnets of the same
@@ -400,7 +400,8 @@ managed-switch infrastructure, limiting where the platform can run.
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ e97b06357
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

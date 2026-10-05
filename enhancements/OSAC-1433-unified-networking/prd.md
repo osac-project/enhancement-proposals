@@ -646,8 +646,9 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 - [ ] Networking managers are registered through configuration deployed with the OSAC installation
 - [ ] The system validates that the configured profile supports its assigned workload targets and operations
 - [ ] A Cloud Infrastructure Admin can select a manager implementation from any source for each configured role when it conforms to the published Network Manager Integration Contract; implementations distributed with OSAC use the same contract
-- [ ] A Cloud Infrastructure Admin can make a new conforming manager available while tenants continue to use the same OSAC networking API
-- [ ] During Enclave installation, the manager-selection UI discovers registered implementations for each role from OSAC registration data, displays eligible managers for the selected profile, and does not use a hard-coded product list
+- [ ] A Cloud Infrastructure Admin can make a new conforming manager available through its AAP implementation and registration while tenants continue to use the same OSAC networking API and without supplier-specific OSAC code changes
+- [ ] A combined Fabric/K8s profile is eligible only when both managers declare the required capabilities and mutually name each other as a compatible pair; compatibility declarations are backed by pair integration testing
+- [ ] During Enclave installation, the manager-selection UI discovers registered implementations and peer declarations for each role from OSAC registration data, displays only eligible manager pairs for the selected profile, and does not use a hard-coded product list
 
 ### Resource-Specific (Bare Metal)
 
@@ -670,8 +671,11 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace worktree-netris-k8sonly-prd-design @ 0f51a81 (1 behind origin/main, dirty)
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ e97b06357
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0f51a81 (dirty)","source_repo_branch":"worktree-netris-k8sonly-prd-design","commits_behind_main":1,"commits_ahead_main":17,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

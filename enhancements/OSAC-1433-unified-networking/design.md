@@ -192,20 +192,26 @@ capabilities:
   supportsDualStack: false
 ```
 
-**Neutron + CUDN (VMs and BM):**
+**Agentless VLAN + CUDN (invalid pair):**
 
 ```yaml
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: bos-region-1
-fabricManager: neutron
+  name: vlan-region-1
+fabricManager: agentless_net
 k8sManager: cudn_evpn
 capabilities:
   supportsIpv4: true
   supportsIpv6: false
   supportsDualStack: false
 ```
+
+OSAC rejects this selection before AAP: Agentless VLAN is VLAN-based, does not
+declare `evpn-vxlan`, and does not mutually declare `cudn_evpn` as a tested
+compatible K8s Manager. A different Fabric/K8s pair is eligible only when its
+registrations mutually name one another and its exact release versions have
+passed the pair integration suite.
 
 **K8s-only deployment (VMs on the hub; no physical fabric):**
 
@@ -245,23 +251,31 @@ single-role profile uses that role's declarations. The supported deployment
 boundary remains IPv4-only. [Codebase: osac-operator/pkg/networkmanager]
 
 Manager registration identifies the implementation and its role; it does not
-declare an operation or workload-target subset. OSAC validates each request
-against the selected profile's fixed dispatch plan before starting AAP, and
-every implementation must provide the complete operation and target set
-assigned to its role. The complete registration schema, operation vocabulary,
-and validation behavior are defined in the
+declare an operation or workload-target subset. A combined Fabric/K8s profile
+requires the roles to mutually declare each other's logical manager name as a
+tested compatible peer, in addition to declaring the required technical
+capabilities. Shared capabilities alone do not make a pair compatible. OSAC
+validates the pair and every request against the selected profile's fixed
+dispatch plan before starting AAP, and every implementation must provide the
+complete operation and target set assigned to its role. The complete
+registration schema, compatibility rules, operation vocabulary, and
+validation behavior are defined in the
 [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md);
 this design describes how OSAC consumes the registration.
 
 #### Manager discovery during Enclave installation
 
 The Enclave installation flow obtains manager choices from the same validated
-registration inventory the OSAC dispatcher uses. OSAC exposes each valid
-registration's logical name, role, description, contract version, and
-capabilities to the installer. The UI does not maintain a product-specific
-list. It filters choices by the role and technical capabilities required by
-the selected profile. A newly installed conforming manager becomes selectable
-when its registration is available, without an Enclave UI code change. If no
+registration inventory the OSAC dispatcher uses. For a combined profile, it
+shows only mutually declared Fabric/K8s pairs and gives the registration
+diagnostic when no pair is eligible. OSAC exposes each valid
+registration's logical name, role, description, contract version,
+capabilities, and peer-compatibility declarations to the installer. The UI
+does not maintain a product-specific list. It filters a combined profile to
+mutually declared Fabric/K8s pairs that meet the required capabilities; a
+capability match alone is not enough. A newly installed conforming manager
+becomes selectable with its declared, tested peers when its registration is
+available, without an Enclave UI code change. If no
 valid registration meets a required role and profile, installation cannot
 select that profile and must show the registration or compatibility
 diagnostic. The selected logical manager names are written to the provider's
@@ -278,8 +292,17 @@ fabric. The k8sManager bridges this overlay to the fabric so that VMs
 become first-class fabric participants — reachable at their subnet IP from
 any other resource on the same fabric segment.
 
-Several mechanisms can achieve this bridging. The K8s Manager is pluggable,
-but implementations are selectable only through a standardized contract v1
+Several mechanisms can achieve this bridging. The Fabric Manager and K8s
+Manager are independent implementations selected as a pair only when both
+registrations declare mutual compatibility and the pair has passed its
+release-specific integration suite. In the EVPN profile, Fabric creates the
+physical segment and writes the shared contract ConfigMap containing its
+Subnet VNIs, route targets, and reserved address ranges; the K8s Manager reads
+that object to configure the overlay. OSAC validates the object and controls
+its lifecycle between the two AAP jobs. The exact schema and pair rules are in
+the [Network Manager Integration
+Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
+Implementations are selectable only through a standardized contract v1
 profile. Contract v1 defines Fabric-only IPv4, Fabric-backed EVPN, and K8s-only
 IPv4 profiles. Other
 mechanisms listed below are technical alternatives, not selectable contract v1
@@ -359,11 +382,15 @@ NATGateway requests can reach AAP; contract enforcement closes this wiring gap
 and rejects the profile-operation mismatch before a job starts.
 
 For supported work, the controller sends the full resource to the shared AAP
-provider. The fixed operation playbook invokes the selected collection task.
-AAP job state and defined result artifacts return through the existing
+provider. In the EVPN Subnet create flow it first invokes Fabric, validates
+the standard handoff ConfigMap, then invokes K8s with a version-pinned ConfigMap
+reference; the K8s role reads the same object. Delete runs K8s cleanup before
+Fabric cleanup, and OSAC removes the ConfigMap only after both succeed. Other
+operations use the fixed operation playbook and selected collection task. AAP
+job state and defined result artifacts return through the existing
 provisioning provider, and the operator updates resource status and job
 history. The manager owns backend-specific reconciliation; OSAC owns the API
-resource lifecycle and status.
+resource lifecycle, pair validation, handoff validation, and status.
 
 The [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md)
 is normative for manager registration, mandatory role operations and targets,
@@ -1860,4 +1887,4 @@ Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0f51a81 (dirty)","source_repo_branch":"worktree-netris-k8sonly-prd-design","commits_behind_main":1,"commits_ahead_main":17,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

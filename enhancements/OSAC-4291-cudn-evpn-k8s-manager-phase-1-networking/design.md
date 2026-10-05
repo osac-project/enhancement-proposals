@@ -30,14 +30,22 @@ superseded-by:
 This design implements `cudn_evpn` as a K8s Manager for the contract's
 fabric-backed `evpn-vxlan` profile. It provisions one OVN-Kubernetes secondary
 CUDN and NAD for each OSAC Subnet, so Subnet creation order does not affect VM
-placement. The selected Fabric Manager creates the physical segment first and
-returns the contract-defined `fabricHandoff`; OSAC passes that result to the
-K8s Manager as `context.fabricHandoff`. This design does not define a
-supplier-specific callback or ConfigMap handoff.
+placement. The selected Fabric Manager creates the physical segment first and writes the
+contract-defined, Subnet-UID-owned handoff ConfigMap with its VNIs, route
+targets, and reserved IPv4 ranges. OSAC validates and version-pins that object;
+`cudn_evpn` reads the same ConfigMap through its AAP Kubernetes credential.
+This is a shared contract interaction, not a supplier-specific callback or
+private ConfigMap schema.
 
-The manager registration uses `implementationRef:
+The target manager registration uses `implementationRef:
 osac.templates.cudn_evpn`, `contractVersion: v1`, and capabilities `ipv4` and
-`evpn-vxlan`. It implements every K8s operation assigned by the fixed
+`evpn-vxlan`. Netris plus `cudn_evpn` is the first pair targeted for
+certification, not a claim that the current Netris implementation is already
+contract-conformant. The registration example below omits a peer declaration
+while that certification is incomplete. After the full role conformance suite
+and pair integration test pass for the supported versions, the K8s Manager may
+declare that Fabric Manager in `compatibleFabricManagers`.
+A new Fabric Manager requires its own tested peer declaration. It implements every K8s operation assigned by the fixed
 fabric-backed EVPN dispatch profile: `subnet.create` and `subnet.delete`.
 SecurityGroup and ExternalIPAttachment operations remain assigned to the
 selected Fabric Manager, which enforces their shared contract for VM targets.
@@ -67,9 +75,10 @@ This design builds on and interacts with several networking designs:
 OSAC runs VMs on OpenShift using KubeVirt. OVN EVPN makes VM addresses
 reachable from a physical fabric, but an implementation must create a
 corresponding K8s network for every OSAC Subnet and must consume the Fabric
-Manager's network identifiers through the shared contract. A first-Subnet-only
-rule and a provider-specific ConfigMap handoff violate the shared resource
-model and prevent Subnets from being created in arbitrary order.
+Manager's network identifiers through the shared contract. A first-Subnet-only rule or a provider-specific handoff format violates the
+shared resource model and prevents independent manager implementations from
+interoperating. Contract v1 instead defines one standard ConfigMap name and
+schema per Subnet UID; each Subnet remains independent of creation order.
 
 The CUDN LocalNet approach (OSAC-1511) was frozen in favor of OVN EVPN, which
 was validated by OSAC-1717. The deployment remains single-cluster and requires
@@ -81,7 +90,11 @@ R1.Q4, R2.Q1]
 ### Profile and registration
 
 `cudn_evpn` is selected only with a Fabric Manager that declares the
-`evpn-vxlan` capability. Both managers use contract v1 registrations with a
+`evpn-vxlan` capability and whose registration mutually names `cudn_evpn` as
+a tested peer. `cudn_evpn` declares the Fabric Manager logical name in
+`compatibleFabricManagers` only after the full manager conformance and pair
+integration gates pass. The first targeted pair is Netris plus `cudn_evpn`;
+current Netris conformance gaps mean it is not certified yet. Both managers use contract v1 registrations with a
 logical name, fully qualified `implementationRef`, `contractVersion: v1`, and
 technical capabilities. Registration does not list operations. The fixed
 fabric-backed EVPN profile assigns the Fabric Manager's physical operations
@@ -108,32 +121,32 @@ profile requires a manager that implements its full fixed fallback matrix.
 
 ### Fabric-to-K8s Subnet handoff
 
-For each Subnet, OSAC first invokes the Fabric Manager's `subnet.create` task.
-The Fabric task returns `osac_result` with the Subnet UID/generation and the
-contract-defined `data.fabricHandoff`:
+For each Subnet, OSAC first invokes the Fabric Manager's `subnet.create` task
+with the deterministic handoff reference
+`<operator-namespace>/osac-fabric-handoff-<subnet-uid>`. The Fabric role
+creates or updates that contract-defined ConfigMap with `contractVersion`,
+`profile`, Subnet UID, observed generation, L2/L3 VNIs, import/export route
+targets for each VNI, and all reserved IPv4 CIDRs. The VNI and route-target
+values are allocated or selected by the Fabric implementation; the K8s
+implementation never derives them.
 
-```yaml
-profile: evpn-vxlan
-l2Vni: 12345
-l3Vni: 23456
-reservedIPv4CIDRs:
-  - 192.0.2.0/27
-```
-
-OSAC validates and durably records that result, then invokes
-`cudn_evpn.subnet.create` with the complete Subnet resource and the unchanged
-handoff at `osac_job_vars.context.fabricHandoff`. The K8s task returns its own
-`osac_result` with the operation, Subnet UID, and observed generation. It does
-not read a Netris ConfigMap, inspect provider-specific AAP extra vars, or call
-back into OSAC.
+The Fabric task returns the common `osac_result` envelope with `data: {}`.
+OSAC validates that result and the ConfigMap schema and identity, stores its
+ConfigMap UID and resourceVersion, then invokes `cudn_evpn.subnet.create`
+with the complete Subnet resource and the version-pinned ConfigMap reference
+in `osac_job_vars.context.fabricHandoffConfigMap`. The K8s task reads the
+referenced object, checks its UID, resourceVersion, Subnet UID, and observed
+generation, and uses the contract fields to configure CUDN and FRR. It returns
+its own `osac_result` with the operation, Subnet UID, and observed generation.
+The K8s role does not call Fabric or read a Netris-specific object.
 
 ### One secondary CUDN per Subnet
 
 The K8s task creates one namespace and one `ClusterUserDefinedNetwork` with
 `role: Secondary` for each Subnet. It uses the Subnet UID for stable ownership
-and derives the CUDN/NAD name from that UID. The CUDN contains the Subnet CIDR,
-`fabricHandoff.l2Vni`, `fabricHandoff.l3Vni`, and
-`fabricHandoff.reservedIPv4CIDRs`. The Namespace selector and tenant/owner
+and derives the CUDN/NAD name from that UID. The CUDN and FRR configuration use the Subnet CIDR, `l2Vni`, `l3Vni`,
+`l2RouteTargets`, `l3RouteTargets`, and `reservedIPv4CIDRs` read from the
+validated contract ConfigMap. The Namespace selector and tenant/owner
 metadata identify only that Subnet's workload namespace.
 
 VMaaS resolves the VM's selected Subnet to its generated NAD and attaches that
@@ -145,9 +158,11 @@ physical fabric. Multi-cluster VM placement, multiple tenant NICs, and direct
 OVN routing between separate CUDNs remain out of scope.
 
 Subnet deletion runs the K8s Manager's `subnet.delete` task before the Fabric
-Manager deletes the physical segment. It removes the CUDN and namespace only
-after VM attachments are gone, and retries by Subnet UID until cleanup is
-observed. There is no subnet-count test, first-Subnet special case, or
+Manager deletes the physical segment. OSAC retains the handoff ConfigMap
+through both cleanup stages so either manager can use the same data on retry.
+The K8s role removes its CUDN and namespace only after VM attachments are
+gone; OSAC deletes the ConfigMap after both managers confirm cleanup. All
+steps retry by Subnet UID until observed complete. There is no subnet-count test, first-Subnet special case, or
 `skip-k8s-manager` annotation.
 
 ### Installation prerequisites
@@ -168,8 +183,8 @@ installation configuration, not additional manager operations.
 
 | Contract operation | `implementationRef` | `tasks_from` | Input and result |
 |---|---|---|---|
-| `subnet.create` | `osac.templates.cudn_evpn` | `create_subnet` | Full Subnet resource plus validated `context.fabricHandoff`; successful task returns the common `osac_result` |
-| `subnet.delete` | `osac.templates.cudn_evpn` | `delete_subnet` | Full Subnet resource and UID-owned CUDN/NAD; successful task confirms deletion before returning `osac_result` |
+| `subnet.create` | `osac.templates.cudn_evpn` | `create_subnet` | Full Subnet resource plus the version-pinned `context.fabricHandoffConfigMap` reference; task reads and validates the shared ConfigMap and returns the common `osac_result` |
+| `subnet.delete` | `osac.templates.cudn_evpn` | `delete_subnet` | Full Subnet resource, version-pinned `context.fabricHandoffConfigMap` reference, and UID-owned CUDN/NAD; successful task confirms deletion before returning `osac_result` |
 
 These are the complete K8s Manager operations assigned by the
 fabric-backed EVPN profile. A different profile has a different fixed
@@ -186,12 +201,13 @@ objects as successful deletion. It removes only resources it owns.
 
 #### Address exclusions and VM attachment
 
-The task copies every `reservedIPv4CIDRs` value from the shared handoff into
-the CUDN's address exclusion field. It fails closed if the handoff is missing,
-malformed, or contains reserved CIDRs outside the Subnet CIDR. OSAC validates
-the Fabric result's operation, Subnet UID, and generation before passing the
-associated handoff to this task; those identity fields are not part of
-`fabricHandoff`. VMaaS selects the NAD associated with the resolved `subnetRef`;
+The task reads `reservedIPv4CIDRs`, `l2Vni`, `l3Vni`, `l2RouteTargets`, and
+`l3RouteTargets` from the standard handoff ConfigMap and applies them to CUDN
+and FRRConfiguration. It fails closed if the ConfigMap is missing, malformed,
+stale, or contains reserved CIDRs outside the Subnet CIDR. OSAC validates the
+Fabric result envelope and ConfigMap's Subnet UID/generation before passing
+the version-pinned reference; the ConfigMap identity fields are separate from
+its EVPN data. VMaaS selects the NAD associated with the resolved `subnetRef`;
 the K8s Manager does not infer the selection from Subnet names or creation
 order.
 
@@ -214,14 +230,14 @@ implementation.
 
 ### Security Considerations
 
-The manager receives only the authorized Subnet object, validated fabricHandoff, and AAP credentials. Credentials are not stored in manager registration ConfigMaps or resource payloads. The K8s role creates resources only for the supplied Subnet UID and tenant, and deletion removes only objects carrying that UID ownership metadata. SecurityGroup policy remains the Fabric Manager's responsibility in this profile.
+The manager receives only the authorized Subnet object, the validated contract ConfigMap reference, and AAP credentials. The Fabric and K8s manager jobs receive only the Kubernetes access needed to write or read the named handoff in the configured OSAC namespace. Credentials are not stored in manager registration ConfigMaps or resource payloads. The K8s role creates resources only for the supplied Subnet UID and tenant, and deletion removes only objects carrying that UID ownership metadata. SecurityGroup policy remains the Fabric Manager's responsibility in this profile.
 
 CUDN and FRRConfiguration are cluster-scoped implementation resources. Tenants interact through the existing OSAC APIs; only the provider-scoped AAP identity can create or remove these resources. Installation credentials for the underlay remain in provider-managed Secrets.
 
 ### Failure Handling and Recovery
 
-- Invalid or missing handoff: reject the task before creating K8s objects. A successful Fabric AAP job without a valid osac_result.data.fabricHandoff is a failed Subnet stage; OSAC does not start the K8s task.
-- Fabric result identity mismatch: OSAC rejects a Fabric result whose operation, resource UID, or observed generation does not match the current Subnet before dispatching to the K8s Manager. The K8s Manager validates the supplied `context.fabricHandoff` schema, EVPN profile, VNI values, and reserved CIDRs against the Subnet; those resource identity fields belong to the outer `osac_result` envelope, not inside `fabricHandoff`. Do not infer missing handoff fields from a manager-specific configuration source.
+- Invalid or missing handoff: OSAC rejects a missing/malformed/stale ConfigMap or a Fabric result whose operation, resource UID, or generation does not match the current Subnet. It does not start the K8s task until both the result envelope and ConfigMap identity/schema validate.
+- K8s-side handoff mismatch: `cudn_evpn` reads the named ConfigMap and verifies its UID, resourceVersion, profile, Subnet UID, generation, VNIs, route-target sets, and reserved CIDRs against the request. A replaced or changed ConfigMap causes a retry after OSAC revalidates it. The manager must not infer missing fields from a manager-specific source.
 - CUDN API or readiness failure: return a failed AAP task with a sanitized diagnostic. OSAC keeps the Subnet non-ready and retries through its provisioning lifecycle.
 - Retry after partial create: reconcile the same UID-owned namespace, CUDN, and NAD to desired state without creating duplicates.
 - Delete failure: return failure until all UID-owned CUDN/NAD/namespace resources are absent. OSAC retains the Subnet finalizer and retries before invoking Fabric cleanup.
@@ -233,21 +249,21 @@ The AAP execution identity receives only the cluster permissions needed to manag
 
 ### Observability and Monitoring
 
-Operators diagnose this manager through the OSAC Subnet conditions and provisioning job history, the validated osac_result, CUDN status, and OVN-Kubernetes/FRR events and logs. Failures identify the operation and the missing or invalid contract field. No CUDN-specific callback, result annotation, or provider ConfigMap is used for manager-to-manager data transfer; the OSAC provisioning record stores the validated Fabric handoff.
+Operators diagnose this manager through OSAC Subnet conditions and job history, the standard handoff ConfigMap and its validated UID/resourceVersion, `osac_result`, CUDN status, and OVN-Kubernetes/FRR events and logs. Failures identify the operation and missing or invalid contract field. No CUDN-specific callback, result annotation, or provider-specific ConfigMap is used for manager-to-manager transfer.
 
 ### Risks and Mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| Fabric Manager returns duplicate or invalid VNIs | The Fabric Manager must allocate unique values; OSAC validates the common handoff schema and the K8s task fails closed if the CUDN rejects it. |
-| Handoff is lost between manager stages | OSAC persists the validated result by Subnet UID and generation before dispatching the K8s task. |
+| Fabric Manager returns duplicate or invalid VNIs/route targets | The Fabric Manager must allocate values valid for the selected pair; OSAC validates the common schema and pair tests verify interoperability. |
+| Handoff is lost or changes between manager stages | OSAC persists the validated ConfigMap UID/resourceVersion by Subnet UID and generation; K8s fails closed if that identity changes. |
 | VTEP, FRR, or underlay is not ready | Installation validation and the documented prerequisites run before selecting this profile; CUDN readiness and route advertisement failures remain visible on the Subnet. |
 | Concurrent Subnet creation | Every Subnet has a separate UID-owned CUDN/NAD; Fabric Manager allocation must be atomic and unique. |
 | Partial deletion leaves overlay objects | K8s deletion is retry-safe and reports success only when all resources owned by the Subnet UID are absent. |
 
 ### Drawbacks
 
-The deployment requires manual VTEP, FRR, NMState, BGP underlay, and gateway-MAC prerequisites. Subnet provisioning is sequential because the K8s Manager consumes the Fabric Manager's Subnet result, so it takes longer than independent parallel provisioning. The scope is single-cluster and each VM supports at most one tenant attachment; direct OVN routing between separate CUDNs is out of scope, while fabric-routed cross-Subnet traffic is supported.
+The deployment requires manual VTEP, FRR, NMState, BGP underlay, and gateway-MAC prerequisites. Subnet provisioning is sequential because the K8s Manager consumes the shared handoff written by the Fabric Manager, so it takes longer than independent parallel provisioning. The scope is single-cluster and each VM supports at most one tenant attachment; direct OVN routing between separate CUDNs is out of scope, while fabric-routed cross-Subnet traffic is supported.
 
 ## Alternatives (Not Implemented)
 
@@ -255,9 +271,9 @@ The deployment requires manual VTEP, FRR, NMState, BGP underlay, and gateway-MAC
 
 Rejected because it loses the one-to-one mapping between OSAC Subnets and workload networks, prevents distinct Subnet CIDRs and attachment selection, and makes resource readiness depend on creation order. Contract v1 requires the manager to reconcile every Subnet assigned by the selected profile.
 
-### Manager-specific ConfigMap or callback handoff
+### Supplier-specific ConfigMap or callback handoff
 
-Rejected because it couples cudn_evpn to a particular Fabric Manager and bypasses OSAC's shared result validation, replay, and lifecycle. The contract's osac_result.data.fabricHandoff is the only handoff for this profile.
+Rejected because it couples `cudn_evpn` to a particular Fabric Manager. Contract v1 instead defines one shared ConfigMap schema, deterministic name, validation boundary, and lifecycle. Fabric writes that standard object; K8s consumes it; OSAC validates and coordinates it.
 
 ### Single AAP workflow containing both managers
 
@@ -275,13 +291,13 @@ The design's conformance tests validate the shared interface as well as CUDN beh
 
 ### Unit and integration tests
 
-- Validate cudn_evpn registration fields, role label, implementationRef, contractVersion v1, and ipv4,evpn-vxlan capabilities. Reject missing capabilities and K8s-only profile selection before AAP.
+- Validate cudn_evpn registration fields, role label, implementationRef, contractVersion v1, ipv4,evpn-vxlan capabilities, and compatibleFabricManagers. Reject missing capabilities, missing reciprocal pair declaration, Agentless VLAN pairing, and K8s-only profile selection before AAP.
 - Validate the complete osac_job_vars envelope, subnet.create / subnet.delete task names, and Fabric-before-K8s sequencing.
 - Accept a Fabric `osac_result` only when its operation, Subnet UID, and
-  generation match the request and its `data.fabricHandoff` passes the v1
-  schema, profile, and CIDR checks. Reject any invalid result before creating
-  a CUDN.
-- Create two Subnets in either order. Verify each receives one secondary CUDN/NAD and that its VNI and reserved CIDRs match the handoff for that Subnet UID.
+  generation match the request and the referenced contract ConfigMap passes
+  the v1 schema, profile, VNI, route-target, and CIDR checks. Reject invalid
+  results or handoff data before creating a CUDN.
+- Create two Subnets in either order. Verify each receives one secondary CUDN/NAD and that its VNIs, L2/L3 import/export route targets, and reserved CIDRs match its UID-owned handoff ConfigMap.
 - Retry create after partial progress and verify no duplicate namespace, CUDN, or NAD is created.
 - Delete one of two Subnets; verify only that Subnet's UID-owned resources are removed and Fabric deletion starts only after K8s cleanup result validation.
 - Reject absent, stale, or malformed K8s osac_result; retain non-ready status and retry.
@@ -295,7 +311,7 @@ The design's conformance tests validate the shared interface as well as CUDN beh
 
 ## Graduation Criteria
 
-- Every assigned K8s operation conforms to the Network Manager Integration Contract v1 and passes contract-result replay, retry, and deletion tests.
+- Every assigned K8s operation conforms to the Network Manager Integration Contract v1 and passes contract-result replay, retry, and deletion tests. The declared Netris pair passes the pinned-version handoff and end-to-end connectivity suite; other Fabric peers are not advertised until their pair suite passes.
 - Every Subnet gets its own ready secondary CUDN/NAD and VMs reach same-Subnet and fabric-routed cross-Subnet peers.
 - Installation prerequisites and troubleshooting steps are documented and validated in the deployment environment.
 
@@ -305,17 +321,17 @@ This feature adds a K8s Manager registration and operation behavior; it does not
 
 ## Version Skew Strategy
 
-OSAC must validate registration contractVersion and capabilities before dispatch. A controller that does not understand contract v1 or cannot validate osac_result must reject cudn_evpn as unavailable; it must not invoke a default role or read a manager-specific handoff ConfigMap. Roll out the contract-aware operator, the cudn_evpn collection, and registration together. During skew, Subnets remain non-ready with a diagnostic rather than being reported successful without a validated handoff/result.
+OSAC must validate registration contractVersion, capabilities, and mutual peer compatibility before dispatch. A controller that does not understand contract v1 or cannot validate osac_result and the standard handoff ConfigMap must reject cudn_evpn as unavailable; it must not invoke a default role or read a supplier-specific handoff object. Roll out the contract-aware operator, the cudn_evpn collection, and registration together. During skew, Subnets remain non-ready with a diagnostic rather than being reported successful without a validated handoff/result.
 
 ## Support Procedures
 
 1. Inspect the Subnet condition and provisioning job history to identify the failed operation and manager.
-2. Inspect the Fabric osac_result for matching operation, Subnet UID, generation, and data.fabricHandoff fields.
-3. Inspect the K8s job's validated input context.fabricHandoff, the K8s osac_result, and the UID-owned Namespace/CUDN/NAD.
+2. Inspect the Fabric osac_result envelope and the standard handoff ConfigMap for matching operation, Subnet UID, generation, VNIs, route targets, and reserved CIDRs.
+3. Inspect the K8s job's version-pinned context.fabricHandoffConfigMap reference, the K8s osac_result, and the UID-owned Namespace/CUDN/NAD.
 4. Check CUDN readiness, VTEP and FRR status, BGP EVPN routes, and the relevant OVN-Kubernetes events.
 5. For deletion, confirm that VM attachments are gone and that every resource with the Subnet UID has been removed before diagnosing Fabric cleanup.
 
-Do not repair the Subnet by editing a manager-specific handoff ConfigMap or calling an OSAC callback. Correct the selected manager or infrastructure prerequisite, then allow OSAC to retry the contract operation.
+Do not repair the Subnet by editing the contract handoff ConfigMap or calling an OSAC callback. Correct the selected manager or infrastructure prerequisite, then allow OSAC to retry the contract operation.
 
 ## Infrastructure Needed
 
@@ -329,8 +345,11 @@ None. The OpenShift cluster, an evpn-vxlan-capable physical fabric, and FRR oper
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace worktree-netris-k8sonly-prd-design @ 0f51a81 (1 behind origin/main, dirty)
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ e97b06357
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0f51a81 (dirty)","source_repo_branch":"worktree-netris-k8sonly-prd-design","commits_behind_main":1,"commits_ahead_main":17,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -73,16 +73,17 @@ in the `osac.templates.netris` collection, invoked by AAP.
 
 #### Manager Registration
 
-The target Netris ConfigMap uses the Fabric Manager role label, data.name
-netris, implementationRef osac.templates.netris, contractVersion v1, and the
-ipv4 and evpn-vxlan capabilities. The latter allows selection in the EVPN
-profile when paired with an evpn-vxlan K8s Manager. The Netris collection must
-implement the complete Fabric Manager operation and target set assigned by
-contract v1; its registration does not list operations. Do not advertise this
-registration as contract v1 or make it selectable until every assigned
-operation and target passes contract conformance. The current SecurityGroup
-implementation is a known blocker, so the current Netris manager is not yet
-contract-conformant. The registration format and operation identifiers are defined by the
+The target operator registration uses the Fabric role label, logical name
+`netris`, implementationRef `osac.templates.netris`, contractVersion v1, and
+capabilities `ipv4,evpn-vxlan`. It may declare
+`compatibleK8sManagers: cudn_evpn` only after both the complete Fabric role
+conformance suite and the pair integration suite pass for the recorded Netris
+and `cudn_evpn` collection versions. Netris plus `cudn_evpn` is the first pair
+targeted for certification, but is not certified now: SecurityGroup
+conformance remains a blocker. Do not advertise the manager as contract v1 or
+make it selectable until every assigned operation and target passes. A
+different K8s Manager requires its own conformance and pair test. The Netris
+registration never lists an operation subset. The registration format and operation identifiers are defined by the
 [Network Manager Integration Contract](/enhancements/OSAC-5928-pluggable-network-manager-integration-contract-networking/design.md).
 The resource mapping below documents Netris-specific backend behavior.
 
@@ -127,12 +128,14 @@ implementation; the tasks do not define a Netris-specific operation API.
 | `dhcp_lease.query` | `query_dhcp_lease` | `query_dhcp_lease.yaml` |
 
 Every successful task returns the contract's `osac_result` artifact with the
-operation, OSAC resource UID, and observed generation. For a Subnet in an
-`evpn-vxlan` profile, `create_subnet` also returns the required
-`data.fabricHandoff` containing the assigned L2 VNI, parent routing-domain
-VNI, and all IPv4 ranges reserved by the fabric. OSAC persists and passes this
-result to the K8s Manager; the Netris role does not publish manager output in a
-ConfigMap or invoke a private callback. ExternalIP allocation and DHCP query
+operation, OSAC resource UID, and observed generation. For a Subnet in an `evpn-vxlan` profile, `create_subnet` writes or updates
+the standard `osac-fabric-handoff-<subnet-uid>` ConfigMap in the OSAC operator
+namespace. It includes the assigned L2 VNI, parent L3 VNI, actual L2/L3
+import/export route targets, and every IPv4 range reserved by the fabric. The
+role returns the normal `osac_result` envelope with `data: {}`. OSAC validates
+and pins the ConfigMap identity; the compatible K8s Manager reads the same
+contract-defined object. The Netris role does not use a private ConfigMap,
+callback, or Netris-specific handoff schema. ExternalIP allocation and DHCP query
 results use the schemas defined by the contract. Current task behavior is
 called out separately in the resource mapping and implementation-gap text.
 
@@ -469,13 +472,9 @@ and deletion guards; they do not assert the resulting Netris controller state.
 | N-UT-3 — Status and deletion guards | FR-12–14, FR-17–18 | `osac-operator` | Use controlled AAP job results to verify failure status, sanitized diagnostics, bounded retry behavior, and dependency guards before deletion. Netris API response parsing and backend cleanup are not covered here. |
 | N-UT-4 — Lease discovery request and result | FR-10, FR-23 | `bare-metal-fulfillment-operator`, `osac-operator/pkg/provisioning` | Verify `osac_job_vars.context.attachments` carries each binding UID, Subnet UID/reference, interface, and authoritative MAC; verify exactly one matching entry is returned in `osac_result.data.leases` with `subnetRef`, `interface`, `ipAddress`, and `macAddress`, and OSAC publishes it to the corresponding BaremetalInstance attachment status. Missing, stale, or ambiguous matches fail. |
 | N-UT-5 — SecurityGroup binding lifecycle dispatch | FR-11, Contract | `osac-operator` | Verify group creation, rule changes, and binding add/remove dispatch `security_group.apply` with the full current `context.securityGroup.attachments` snapshot; verify attach policy gates readiness and detach removes the workload before the next snapshot omits it. This verifies dispatch order and inputs, not Netris enforcement. |
-| N-CHART-1 — Registration and credentials | FR-1, FR-19, NFR-2 | `osac-installer` | Run `make helm-networking-test`; verify the labeled Netris registration ConfigMap declares ipv4 and evpn-vxlan capabilities and Netris credentials are rendered into the Secret and wired to network jobs. |
+| N-CHART-1 — Registration and credentials | FR-1, FR-19, NFR-2 | `osac-installer` | Run `make helm-networking-test`; after the Netris and cudn_evpn conformance and pair gates pass, verify the labeled registration ConfigMap declares ipv4 and evpn-vxlan capabilities plus compatibleK8sManagers=cudn_evpn; before the gates pass, verify that peer declaration is absent. Also verify Netris credentials are rendered into AAP Secrets and wired to network jobs. |
 
-The CI tree has no Netris mock REST server or Netris-backed role integration
-target, so there is no Netris API integration-test tier. Do not describe the
-operator Kind test as Netris integration coverage: it removes finalizers to
-bypass AAP, while operator unit/envtest only checks OSAC-side dispatch and
-lifecycle behavior.
+There is no Netris mock REST suite in the operator unit/envtest tier. A separate deployed pair integration test is required in CI for the pinned Netris and `cudn_evpn` collection versions. It uses the real Netris and OpenShift/CUDN path to verify mutual registration, the standard handoff ConfigMap, route-target/VNI consumption, and VM-to-fabric reachability. It is cross-manager coverage owned by the CUDN pair test plan; the operator Kind test is not a substitute. Until the pair test passes, the Netris registration must not advertise `compatibleK8sManagers: cudn_evpn`.
 
 ### As-a-Service E2E
 
@@ -514,4 +513,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ e97b06357
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

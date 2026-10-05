@@ -15,85 +15,17 @@ The feature describes k8s manager registration, CUDN creation, and BGP peering s
 - Cloud Provider Admin work when onboarding a new region?
 - Automatically enabled based on infrastructure detection?
 
-#### Answer
+#### Earlier Answer (superseded)
 
-Cloud Infrastructure Admin work during initial OSAC installation.
+The initial demo-based interpretation limited this implementation to one Subnet per VirtualNetwork. That restriction is not part of the current contract-aligned design.
 
-#### Impact
+#### Current Impact
 
-PRD user stories will target Cloud Infrastructure Admin for EVPN setup/configuration workflows. Tenant-facing sections describe VirtualNetwork/Subnet provisioning with no EVPN visibility.
+The target creates one CUDN/NAD per OSAC Subnet. Multiple Subnets under one VirtualNetwork are supported, and Subnet creation must not reject a second Subnet because of the selected K8s Manager. The legacy single-CUDN implementation requires an explicit migration to the UID-owned per-Subnet model.
 
-#### Decision (D1)
+#### Current Decision (D4)
 
-EVPN configuration is Cloud Infrastructure Admin responsibility during installation - not tenant-facing, not automatic, not per-region onboarding.
-
----
-
-### R1.Q2: Tenant visibility — Is EVPN transparent to tenants?
-
-When a Tenant User or Tenant Admin provisions a VM, do they:
-- Choose EVPN vs. other networking methods explicitly (e.g., via a dropdown or flag)?
-- See EVPN mentioned anywhere in the UI/CLI (e.g., "Network type: EVPN")?
-- Experience EVPN as completely infrastructure-transparent (no visibility)?
-
-#### Answer
-
-Tenants use VirtualNetwork / Subnet. They do not choose EVPN, set VNIs or route-targets, or peer BGP. The provider picks how the hosting cluster joins the fabric.
-
-#### Impact
-
-PRD will not include tenant-facing EVPN configuration options. Tenant user stories focus on VirtualNetwork/Subnet provisioning. All EVPN implementation details (VNI, route targets, BGP peering) are infrastructure-side only.
-
-#### Decision (D2)
-
-EVPN is completely transparent to tenants. No UI/CLI exposure of EVPN-specific concepts (VNI, route targets, BGP) in tenant workflows.
-
----
-
-### R1.Q3: Scope — VNI Management
-
-The demo shows **Netris manages VPC/VNet allocations (sets VNI IDs)** and **OSAC allocates VPC/Subnet → Netris provisions VNIs → CUDN consumes them**.
-
-For Phase 1:
-- Does the PRD include **automatic VNI extraction from Netris** and propagation to CUDN?
-- Or is manual VNI coordination (like the demo's Phase 4/5) acceptable for 0.3?
-- Should Phase 1 include the **`0:VNI_ID` route-target standardization** the demo mentions Netris will fix?
-
-#### Answer
-
-Phase 1 will not include `0:VNI_ID` route-target standardization. VNI propagation from fabric manager to k8s manager is automatic - no manual extraction or coordination steps required (unlike the demo's Phase 4/5 manual workflow).
-
-#### Impact
-
-PRD scope includes automatic VNI propagation (no manual steps). Out of scope: `0:VNI_ID` route-target format (deferred until Netris implements it). The fabric manager must provide VNI when provisioning VPC/VNet, and the k8s manager must receive it to configure the overlay network. The mechanism for passing VNI from fabric manager output to k8s manager input is a design decision.
-
-#### Decision (D3)
-
-Automatic VNI propagation from fabric manager to k8s manager is in scope for Phase 1. The `0:VNI_ID` route-target standardization is out of scope.
-
----
-
-### R1.Q4: Edge case — CUDN Single-Subnet Limitation
-
-The demo states **"CUDN is limited to a single subnet per VPC ipVRF — cannot reuse a VPC and add more subnets."**
-
-This is stricter than the Jira description's "one VM-subnet per VirtualNetwork" constraint:
-- Is the constraint **one CUDN per VPC ipVRF** (demo limitation)?
-- Or **one VM-hosting subnet per VirtualNetwork** (Jira wording)?
-- Where is this validated? (When creating the Subnet? When creating the CUDN? When provisioning the VM?)
-
-#### Answer
-
-The limit is one subnet per VirtualNetwork. The validation happens when creating the subnet - a second subnet under the same VirtualNetwork won't be allowed.
-
-#### Impact
-
-PRD validation requirements: fulfillment-service Subnet creation API must reject a second subnet when the parent VirtualNetwork uses a NetworkClass whose k8s manager has this limitation. Error message should reference OVN Connectors limitation. No operator-side validation needed (API rejection prevents the CR from ever being created).
-
-#### Decision (D4)
-
-Validation enforced at Subnet API creation time in fulfillment-service, conditional on the NetworkClass's k8s manager. Constraint is one subnet per VirtualNetwork when the k8s manager is `cudn_evpn` (not a universal constraint; other NetworkClasses support multiple subnets). Second subnet creation attempt returns validation error.
-
+`cudn_evpn` provisions one CUDN/NAD per Subnet and supports multiple Subnets per VirtualNetwork. There is no one-Subnet-per-VirtualNetwork validation.
 ---
 
 ### R1.Q5: Scope — IPAM and Gateway Management
@@ -201,13 +133,11 @@ What exact fields are in the ConfigMap?
 
 #### Answer
 
-NetworkClass ConfigMap should contain: `name: cudn_evpn` with the IPv4-only
-capability (same structure as other k8s managers, no additional EVPN-specific
-fields). IPv6 and dual-stack networking are not supported.
+The K8s Manager registration contains the common contract fields and `compatibleFabricManagers` list in addition to its capabilities. CUDN EVPN declares only Fabric Manager names that have passed pair integration testing. IPv6 and dual-stack networking are not supported.
 
 #### Impact
 
-PRD documents NetworkClass ConfigMap schema matching existing pattern from OSAC-1433 unified networking. No EVPN-specific ConfigMap fields beyond standard name and capabilities.
+PRD and design reference the Network Manager Integration Contract for the exact registration schema, including the compatibility peer list. Fabric/K8s pair selection is mutual and pair-tested; the implementation design does not duplicate the registration schema.
 
 ---
 
@@ -221,15 +151,15 @@ For Phase 1:
 
 #### Answer
 
-Route target is automatically set during CUDN creation. The route target is not known until Netris creates the VPC and subnet. The k8s manager then uses that route target when creating the CUDN. No manual configuration by users.
+The Fabric Manager allocates or selects the actual route targets while it creates the physical Subnet and writes them into the shared contract ConfigMap. The K8s Manager reads and applies those values when it creates the CUDN; it does not calculate or substitute them. This generalizes the original Netris-specific assumption to any Fabric Manager that passes pair testing.
 
 #### Impact
 
-PRD workflow: Netris VPC/VNet creation returns route target values → k8s manager uses those values in FRRConfiguration when creating CUDN. No route-target calculation logic in k8s manager. Netris is source of truth for route targets.
+Contract workflow: the selected Fabric Manager writes its actual L2/L3 import/export route-target values to the standard Subnet handoff ConfigMap; the K8s Manager reads and applies those values when creating CUDN/FRRConfiguration. The K8s Manager does not calculate or substitute route targets. Pair integration tests validate the values and resulting connectivity for each declared Fabric/K8s pair.
 
 #### Decision (D7)
 
-Route targets come from Netris (returned during VPC/VNet creation). K8s manager uses Netris-provided route target values when creating CUDN - no client-side calculation.
+Route targets come from the selected Fabric Manager through the standard ConfigMap; the K8s Manager applies them without client-side calculation. The original Netris-only wording is superseded by the source-neutral manager contract.
 
 ---
 
@@ -340,13 +270,13 @@ Cloud Infrastructure Admin must complete these steps before creating the first V
 ### CUDN Creation Workflow (from Round 3 discussion)
 
 When tenant creates VirtualNetwork/Subnet:
-1. **Netris creates VPC and subnet first** (allocates VNIs and route targets)
-2. **Only after that, CUDN is created** (reuses Netris VNIs and route-targets)
-3. **When CUDN is set up, EVPN routes are updated**
+1. **The selected Fabric Manager creates the physical Subnet first** and writes its VNIs, route targets, and reserved IPv4 ranges to the shared contract ConfigMap.
+2. **Only after OSAC validates that ConfigMap does the K8s Manager create the CUDN**, reusing the exact VNI and route-target values.
+3. **When CUDN is set up, EVPN routes are updated.**
 
 ### Subnet Flexibility (from Round 3 discussion)
 
-- CUDN can reuse existing VPC and VNet from Netris if we get the VNI for Layer 2, Layer 3, and route-targets
+- CUDN can reuse the physical routing domain and segment when the selected Fabric Manager publishes the L2/L3 VNIs and import/export route targets required by the standard handoff schema
 - The subnet can be the same as Netris or different
 - In case of different subnets (OCP CUDN subnet vs. Netris VNet subnet), Layer 3 VNI (ipVRF) is used for routing between them
 
@@ -356,11 +286,13 @@ When tenant creates VirtualNetwork/Subnet:
 
 - **D1:** EVPN configuration is Cloud Infrastructure Admin responsibility during installation
 - **D2:** EVPN is completely transparent to tenants
-- **D3:** Automatic VNI propagation from fabric manager to k8s manager is in scope; `0:VNI_ID` route-target format is out of scope
-- **D4:** One-subnet-per-VirtualNetwork validation enforced at Subnet API creation time, conditional on NetworkClass's k8s manager (applies to `cudn_evpn`, not universal)
+- **D3:** Automatic VNI and assigned route-target propagation from Fabric to K8s through the standard contract ConfigMap is in scope; route-target calculation/derivation conventions (including `0:VNI_ID`) are out of scope
+- **D4:** One CUDN/NAD per Subnet; multiple Subnets per VirtualNetwork are supported. This supersedes the initial single-Subnet interpretation.
 - **D5:** FRRConfiguration for EVPN overlay is automatic; BGP underlay peering is manual prerequisite
 - **D6:** Underlay configuration is documented prerequisite, not automated
-- **D7:** Route targets come from Netris (no client-side calculation)
-- **D8:** Integration test is automated in CI with real Netris fabric
+- **D7:** Route targets come from the selected Fabric Manager through the contract ConfigMap (no K8s-side calculation). The earlier Netris-only source is superseded by the user's source-neutral manager requirement.
+- **D8:** Integration test is automated in CI with real Netris fabric and the pinned `cudn_evpn` collection, including validation of the standard handoff ConfigMap and end-to-end reachability
 - **D9:** MetalLB IPAddressPool creation is out of scope
 - **D10:** Design extends OSAC-1433, not a new document
+- **D11:** For Fabric-backed EVPN, Fabric writes the shared, contract-defined VNI/route-target/reserved-CIDR ConfigMap; OSAC validates and pins it; K8s consumes it. Supplier-specific handoff objects are not used. [User, 2026-10-05]
+- **D12:** A Fabric/K8s pair is eligible only when both registrations mutually declare compatibility and the pair's supported collection versions pass integration testing. Capabilities alone do not establish compatibility. [User, 2026-10-05]

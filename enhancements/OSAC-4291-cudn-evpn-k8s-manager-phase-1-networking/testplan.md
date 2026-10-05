@@ -12,11 +12,11 @@
 
 ### TC-1: Register and select the manager
 
-Register cudn_evpn with the K8s Manager label, implementationRef osac.templates.cudn_evpn, contractVersion v1, and ipv4,evpn-vxlan capabilities. Verify the manager is discoverable. Remove either required capability and verify OSAC rejects the registration/profile before creating an AAP job.
+Use test-only registrations for candidate Netris and cudn_evpn collection versions, with both managers mutually naming each other. First run each manager's assigned-role conformance suite, then run the pair integration suite. Publish neither reciprocal peer declaration in a release registration unless all gates pass. Exercise the compatible pair, remove a required capability, remove either side's peer declaration, and pair cudn_evpn with Agentless VLAN; verify OSAC and the Enclave UI accept only the tested pair and reject each invalid pairing before creating an AAP job.
 
 ### TC-2: Validate the Fabric-to-K8s handoff
 
-Create a Subnet with an evpn-vxlan Fabric Manager. Verify Fabric completes first and returns osac_result with the correct operation, Subnet UID, generation, and data.fabricHandoff. Verify OSAC persists the validated result and passes it unchanged as context.fabricHandoff to cudn_evpn.subnet.create. Missing, malformed, wrong-UID, wrong-generation, or out-of-range data must prevent K8s dispatch and leave the Subnet non-ready.
+Create a Subnet with the registered compatible Fabric Manager. Verify Fabric completes first, writes the standard ConfigMap containing contract version, profile, Subnet UID/generation, L2/L3 VNIs, import/export route targets, and reserved IPv4 CIDRs, then returns the common osac_result envelope with data: {}. Verify OSAC validates the ConfigMap and passes its UID/resourceVersion-pinned reference to cudn_evpn, which reads the same object. Missing, malformed, wrong-UID, changed-resourceVersion, stale-generation, invalid-route-target, or out-of-range data must prevent K8s provisioning and leave the Subnet non-ready.
 
 ### TC-3: Provision one CUDN/NAD for every Subnet
 
@@ -48,4 +48,4 @@ With VTEP, FRR, or BGP underlay unavailable, attempt provisioning. Verify the CU
 
 ## Gaps
 
-A passing test run demonstrates this implementation's conformance only for the evpn-vxlan K8s Manager role. It does not certify the Fabric Manager or the K8s-only fallback role.
+A passing pair test demonstrates interoperability only for the tested Netris and cudn_evpn collection versions and the evpn-vxlan profile. It does not certify either manager with an untested peer or certify the K8s-only fallback role.

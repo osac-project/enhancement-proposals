@@ -3,13 +3,13 @@
 ## Overview
 
 - **Feature:** Pluggable Network Manager Integration Contract
-- **Total test cases:** 7
-- **Requirements covered:** 4 of 4 functional requirements
-- **Interface changes covered:** 4 of 4
+- **Total test cases:** 8
+- **Requirements covered:** 6 of 6 functional requirements
+- **Interface changes covered:** 5 of 5
 
 ## Test Cases
 
-### FR-1: Source-neutral manager conformance
+### FR-1 and FR-6: Source-neutral manager conformance and AAP dependency boundary
 
 #### TC-FR1-01: Dispatch to a role outside the OSAC collection
 
@@ -49,7 +49,7 @@
 
 ##### Steps
 
-1. Create registrations with an unsupported contractVersion, malformed implementationRef, missing required fields, unknown role labels, or duplicate logical names.
+1. Create registrations with an unsupported contractVersion, malformed implementationRef, missing required fields, unknown role labels, duplicate logical names, and malformed or duplicate peer names.
 2. Reconcile a NetworkClass that selects each invalid manager.
 
 ##### Expected Results
@@ -155,24 +155,51 @@
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-1, IC-2 | high | automated |
+| IC-1, IC-2, IC-5 | high | automated |
 
 ##### Preconditions
 
-- A conforming Fabric implementation and a conforming K8s implementation are installed in the AAP execution environment.
-- Each has a role-labeled registration with a distinct logical name and implementationRef.
+- A Fabric and K8s implementation with distinct logical names are installed in the AAP execution environment.
+- Their role-labeled registrations declare the required capabilities and mutually name one another as compatible.
+- The exact collection versions are recorded as a pair-test fixture.
 
 ##### Steps
 
-1. Configure NetworkClass to select the two managers.
+1. Configure NetworkClass to select the mutually declared pair.
 2. Create a Subnet using the existing tenant networking API.
-3. Observe the jobs dispatched to both assigned roles.
+3. Observe the Fabric job, contract ConfigMap, OSAC validation, and K8s job input.
+4. Repeat the create at the same UID/generation, then delete the Subnet.
 
 ##### Expected Results
 
 - OSAC dispatches each assigned operation to the selected implementation for its role.
-- Both implementations receive the resource shape defined by the contract.
-- No tenant API change is required to select implementations from different sources.
+- Fabric writes the standard handoff ConfigMap with VNI, route-target, reserved-CIDR, UID, and generation values; OSAC validates and pins its UID/resourceVersion; K8s reads that same ConfigMap and uses the values to provision the matching network.
+- Retry is idempotent and deletion retains the ConfigMap until both manager cleanup stages succeed, then removes it.
+- No tenant API or supplier-specific OSAC change is required to select implementations from different sources. The backend collection and any provider SDK/module dependencies are installed in AAP; this conformance case requires no supplier-specific code in the OSAC operator or UI.
+
+### FR-3: Provider selection with one tenant networking API
+
+#### TC-FR3-02: Reject a manager pair without mutual compatibility
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1, IC-3 | critical | automated |
+
+##### Preconditions
+
+- The test inventory contains Fabric and K8s registrations with the `evpn-vxlan` capability but no mutual peer declaration, a one-sided declaration, and an explicitly compatible pair.
+- The inventory also contains Agentless VLAN and `cudn_evpn` registrations.
+
+##### Steps
+
+1. Attempt to select each non-mutual pair in NetworkClass and through Enclave installation.
+2. Attempt to select the declared compatible pair.
+
+##### Expected Results
+
+- Shared capabilities alone and one-sided peer declarations do not make a pair eligible; Agentless VLAN plus `cudn_evpn` is rejected before AAP.
+- The diagnostic identifies the incompatible Fabric/K8s pair and missing reciprocal declaration.
+- OSAC makes the mutually declared pair eligible after capability and registration checks. The pair release gate independently runs the integration suite against the exact AAP collection versions before the publisher lists the pair; OSAC does not claim to run that suite at selection time.
 
 ### FR-4: Reject work unavailable in the selected profile without silent fallback
 
@@ -211,12 +238,12 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 7 |
-| Critical | 4 |
+| Total test cases | 8 |
+| Critical | 6 |
 | High | 2 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 6 |
+| Automated | 8 |
 | Manual | 0 |
-| Requirements with test cases | 4 / 4 |
-| Interface changes with test cases | 4 / 4 |
+| Requirements with test cases | 6 / 6 |
+| Interface changes with test cases | 5 / 5 |

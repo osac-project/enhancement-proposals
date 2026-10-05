@@ -51,16 +51,19 @@ OSAC networking designs describe manager roles and provisioning, but the manager
 - **FR-2:** An implementation author must be able to determine from the contract the manager role responsibilities, every required operation and workload target in a selected profile, registration requirements, task inputs and results, lifecycle behavior, and failure handling. A conforming implementation must provide the complete operation set assigned to its role in that profile. [User]
 - **FR-3:** A Cloud Infrastructure Admin must be able to configure conforming implementations for the manager roles while tenants continue using the shared OSAC networking API. [Unified Networking PRD: FR-6]
 - **FR-4:** When the selected profile does not route a requested operation and workload target, or lacks the manager role required by the fixed dispatch rules, OSAC must give the provider a clear diagnostic and must not route that work to a different manager. [User]
+- **FR-5:** A Fabric-backed profile must be selectable only when the selected Fabric and K8s Manager registrations mutually declare one another as compatible and both declare the required technical capabilities. A compatibility declaration represents a pair tested for the exact published implementation versions. [User]
+- **FR-6:** A conforming implementation must require no supplier-specific OSAC API, operator, dispatcher, or UI changes after OSAC supports its contract version. Backend collections, modules, SDKs, and credentials are provided through AAP; documented shared platform prerequisites remain explicit. [User]
 
 ## 4. Acceptance Criteria
 
 - [ ] The published contract defines the exact v1 registration, role, complete operation and target sets, input, output, lifecycle, error, and security requirements for Fabric and K8s Manager implementations.
 - [ ] The contract includes working ConfigMap examples for both roles and identifies the exact AAP collection entry point for every required operation.
 - [ ] Every successful manager task returns the common, versioned `osac_result`; OSAC validates the operation, resource UID, and generation before accepting it or starting a dependent manager stage.
-- [ ] The contract defines the Subnet result handoff used by an EVPN K8s Manager, the ExternalIP allocation and release result, DHCP lease results, and workload attachment move results.
+- [ ] The contract defines the EVPN Subnet handoff as a standard ConfigMap written by Fabric and consumed by K8s, including VNIs, route targets, reserved CIDRs, UID/generation identity, validation, retries, and cleanup. `osac_result` remains the common operation result envelope. ExternalIP allocation/release, DHCP lease, and workload attachment move results are also fully defined.
 - [ ] For ExternalIP allocation, the manager selects and durably reserves a unique address in the selected pool and returns it in `osac_result`; OSAC validates the address and alone writes the allocated-address annotation, status, and API capacity counters. The contract does not require a particular address-selection order.
-- [ ] Manager results flow through the shared OSAC provisioning lifecycle. Implementations do not require manager-specific callbacks, annotations, ConfigMaps, or OSAC code paths.
-- [ ] An implementation from any source, including an implementation distributed with OSAC, is eligible for selection when it conforms to the published contract.
+- [ ] Manager results flow through the shared OSAC provisioning lifecycle. The only cross-manager ConfigMap is the contract-defined EVPN Subnet handoff. Implementations do not require supplier-specific callbacks, annotations, ConfigMaps, or OSAC code paths.
+- [ ] An implementation from any source, including an implementation distributed with OSAC, is eligible for selection when it conforms to the published contract. Backend-specific code and dependencies run through AAP; no supplier-specific dispatch or API code is required outside AAP.
+- [ ] Combined Fabric/K8s profiles require mutual compatibility declarations in manager registrations and release-specific pair integration evidence. Shared capabilities alone never make two managers compatible.
 - [ ] A provider can select conforming manager implementations without changing the tenant-facing OSAC networking API.
 - [ ] The contract defines the selectable Fabric-only IPv4, Fabric-backed EVPN, and K8s-only IPv4 profiles, their required registration capabilities, complete operation sets, and workload-target sets. Workload attachment moves and DHCP lease queries target BaremetalInstance; CaaS physical workers use BMaaS for those operations. Invalid combinations fail before AAP; a registration cannot opt out of assigned work.
 - [ ] The Unified Networking design explains OSAC profile selection and orchestration and links to the standalone contract for exact implementation requirements.
@@ -69,7 +72,9 @@ OSAC networking designs describe manager roles and provisioning, but the manager
 ## 5. Dependencies
 
 - **Unified Networking API and dispatch:** The contract applies to the Fabric Manager and K8s Manager roles and operation routing defined by Unified Networking.
-- **AAP execution environment:** The selected implementation's Ansible collection role must be available to the deployed execution environment.
+- **AAP execution environment:** The selected implementation's Ansible collection role and backend-specific modules/SDKs must be available to the deployed execution environment.
+- **Combined-profile compatibility:** Each selected pair must have mutual registration declarations and pair-specific integration test evidence.
+- **EVPN ConfigMap access:** The Fabric and K8s jobs and OSAC operator require the least privilege Kubernetes access defined by the contract to write, read, validate, and clean up the shared handoff.
 
 ---
 
@@ -80,4 +85,4 @@ Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ e97b06357
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
