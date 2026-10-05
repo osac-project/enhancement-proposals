@@ -79,11 +79,11 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Specification
 
-- **FR-1:** Tenants can specify zero or one entry in the repeated `network_attachments` field when creating a bare-metal server. A missing subnet or security-group list follows the shared tenant-defaulting rules in FR-5. A physical interface may be supplied and is validated against the BareMetalInstanceType's available ports, but it is not selected by network-attachment defaulting. The complete resolved list and every entry field are immutable after creation. The repeated field is retained for API compatibility; more than one entry is rejected. [User]
+- **FR-1:** Tenants can specify zero or one entry in the repeated `network_attachments` field when creating a bare-metal server. The attachment may omit its subnet, security-group list, or physical interface; missing fields are defaulted without replacing supplied values. The complete resolved list and every entry field are immutable after creation. The repeated field is retained for API compatibility; more than one entry is rejected. [User]
 
 #### BareMetalInstanceType Network Port Discovery
 
-- **FR-2:** The BareMetalInstanceType API exposes available physical network ports. Each port includes a name (e.g., "data-0"), role (e.g., "fabric", "management", "storage"), type, and speed. [User]
+- **FR-2:** The BareMetalInstanceType API exposes available physical network ports. Each port includes a name (e.g., "data-0"), role (e.g., "fabric", "management", "storage"), type, and speed. Ports are ordered; when multiple ports share the same role, the first in the list is the default for that role. [User]
 
 #### Interface Validation
 
@@ -95,7 +95,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Optional Network Attachments with Defaults
 
-- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted or empty, the system attaches the server to the tenant's default subnet and default security group (see Default Networking PRD). When one attachment is supplied, only a missing subnet and a missing or explicitly empty security-group list are defaulted; the default security group is used only when the resolved subnet belongs to the tenant's default VirtualNetwork. Otherwise, the caller must provide SecurityGroups from the resolved subnet's VirtualNetwork. Supplied values are preserved. A physical interface is not selected by these network-attachment defaults. The resolved attachment is stored with the server so the server is self-describing after creation. [User]
+- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted or empty, the system attaches the server to the tenant's default subnet and default security group, using the first `fabric` port from the BareMetalInstanceType (see Default Networking PRD). When a single attachment is supplied, only missing subnet, security-group, or interface fields are defaulted; a missing or explicitly empty security-group list is treated as missing. A default security group is used only when the resolved subnet belongs to the tenant's default VirtualNetwork; otherwise the caller must provide SecurityGroups from the resolved subnet's VirtualNetwork. Supplied values are preserved. If the BareMetalInstanceType has no valid fabric port, creating a server without an explicit interface fails with a clear error. The resolved attachment is stored with the server so the server is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -149,7 +149,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 - The tenant has default networking resources (virtual network, subnet, security group) pre-created at onboarding (see Default Networking PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
 - The NetworkClass has a fabric manager configured (the system can resolve which network automation to use).
-- The BareMetalInstanceType for the bare-metal template has a populated `network_ports` list with at least one `fabric` port.
+- The BareMetalInstanceType for the bare-metal template has a populated `network_ports` list with at least one `fabric` port. If no valid fabric port exists, creating a server without an explicit interface fails with a clear error.
 - Out-of-band provisioning interfaces (PXE boot, BMC) are reserved for system use and are NOT tenant-attachable (should not appear in network attachments).
 
 ## 7. Dependencies
@@ -194,12 +194,6 @@ Resolved: Explicitly excluded in validation. Lifecycle and BMC interfaces are no
 
 Resolved: Return error, no resource persisted.
 
----
+### ~~9.3 What is the interface selection logic when network attachments are omitted and the BareMetalInstanceType has multiple fabric ports?~~ — Resolved
 
-## Provenance
-
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (53 behind origin/main)
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":53,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+Resolved: First in the list. Ports are ordered in the BareMetalInstanceType; when multiple ports share the same role, the first one is the default. This is already defined in FR-2.
