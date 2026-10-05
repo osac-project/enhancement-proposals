@@ -3,7 +3,7 @@ title: multi-fabric-east-west-networking
 authors:
   - vromanso@redhat.com
 creation-date: 2026-07-14
-last-updated: 2026-08-11
+last-updated: 2026-09-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1382
 prd:
@@ -415,7 +415,10 @@ backends later.
    `supports_east_west_ethernet` and `east_west_config.ethernet_ew.template_id`.
 2. **Tenant Admin** (or Cloud Infrastructure Admin) has VirtualNetwork (N-S).
 3. **Cloud Infrastructure Admin** creates FabricDomain (`type=ETHERNET_EW`,
-   `servers`, `virtual_networks: [that VN]`).
+   `servers`, `virtual_networks: [that VN]`). The fulfillment-service
+   validates that the referenced VirtualNetwork is in Ready state; the
+   create request is rejected with a `FailedPrecondition` error if the VN
+   is not Ready (see [Unified Networking — Creation Readiness Gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates)).
 4. Operator resolves NetworkClass from VN; resolves template from NC;
    resolves VN → Netris VPC id.
 5. Create Netris Server Cluster **in that VPC**.
@@ -575,7 +578,7 @@ FabricDomain inherits the existing OSAC multi-tenant security model:
 | **Netris API unreachable** | AAP job fails to POST server-cluster | AAP retries per job template retry policy; operator re-queues reconciliation | Condition `Ready=False`, Reason=`ProvisioningFailed`, message includes AAP error |
 | **Netris Server Cluster activation timeout** | Server Cluster stays in "Provisioning" > 5 min | Operator polls status; after configurable timeout sets condition with timeout reason | Condition `Ready=False`, Reason=`ActivationTimeout` |
 | **Invalid template_id on NetworkClass** | Netris rejects the create request (400) | AAP job fails fast; operator surfaces the error | Condition `Ready=False`, Reason=`InvalidTemplate` |
-| **VN deleted while FabricDomain references it** | Validation prevents VN deletion if FabricDomains reference it (finalizer on VN) | Admin must delete FabricDomain first, then VN | VN deletion blocked with error message |
+| **VN deleted while FabricDomain references it** | fulfillment-service API rejects VN deletion if active FabricDomains reference it (operator-side finalizer remains as defense in depth) | Admin must delete FabricDomain first, then VN | VN deletion rejected with `FailedPrecondition` error listing the blocking FabricDomain |
 | **Operator restart mid-reconciliation** | Controller re-reads FabricDomain CR on startup | Idempotent: if Server Cluster already exists in Netris (matched by `backend_id`), operator syncs status; if not, re-creates | Temporary condition staleness until re-reconciliation completes |
 | **Duplicate server across FabricDomains** | Phase 1 does not validate server overlap | Netris may reject or accept depending on template; admin is trusted | If Netris rejects: Condition `Ready=False`; if accepted: both domains provision |
 
@@ -600,8 +603,9 @@ cluster by name before creating.
 - `osac.openshift.io/owner-reference`: Not applicable. FabricDomain is a
   top-level resource associated with (not owned by) VirtualNetwork. The
   association is a spec reference, not an ownership hierarchy. Deleting a
-  FabricDomain does not cascade to the VN; deleting a VN is blocked by a
-  finalizer if FabricDomains reference it.
+  FabricDomain does not cascade to the VN; deleting a VN is rejected by
+  the fulfillment-service API if active FabricDomains reference it (see
+  [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)).
 
 ### Observability and Monitoring
 

@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-16
+last-updated: 2026-09-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -84,6 +84,26 @@ IPv6 and dual-stack networking are not supported.
 
 For user stories, goals, and non-goals, see the
 [Requirements Document (PRD)](prd.md).
+
+### Resource lifecycle enforcement
+
+The fulfillment-service enforces strict dependency constraints on both
+creation and deletion of networking resources at the API layer. Invalid
+operations are rejected immediately — the system never accepts a request and
+defers validation to asynchronous operator reconciliation.
+
+- **Creation:** A resource referencing another resource can only be created
+  when every referenced resource is in its terminal ready state. See
+  [Creation Readiness Gates](#creation-readiness-gates) for the full table.
+  There are no exceptions — internal flows (auto-provisioning and default
+  networking) follow the same rules by creating resources in dependency
+  order and waiting for each to reach its ready state before creating the
+  next.
+- **Deletion:** A resource can only be deleted when no other active resource
+  references it (only dependency-graph leaves are deletable). See
+  [Deletion Dependency Guards](#deletion-dependency-guards) for the full
+  table and dependency chain. Auto-provisioned resources are the only
+  resources subject to cascade deletion on parent removal.
 
 ### API operation constraint
 
@@ -618,60 +638,59 @@ osac get cluster my-cluster -o yaml
 # ingress_endpoint: 10.0.1.50
 ```
 
-ExternalIPAttachments can be created before or after the cluster. If
-created before (Pending state), the controller activates them once the
-cluster's endpoint VIPs are available. If created after, the DNAT rule
-is configured immediately.
+ExternalIPAttachments for clusters follow the same creation readiness
+rules as all other resources: the cluster must be in Ready state before
+an ExternalIPAttachment targeting it can be created. Auto-provisioned
+ExternalIPAttachments (via `auto_external_ip_attachment`) also follow
+the readiness rules — they are created by the fulfillment-service
+internal reconciler only after both the ExternalIP is Allocated and the
+cluster is Ready (see below).
 
 **Auto-provisioning lifecycle (auto_external_ip_attachment):**
 
 Auto ExternalIP attachment provisioning (described in per-service
 EPs and [Default Networking](/enhancements/OSAC-1433-default-networking)) is a
-two-phase process:
+multi-step process that follows the same creation readiness rules as
+tenant-initiated operations. The fulfillment-service controls the
+timing and creates each resource only after its dependencies are ready.
 
-*Phase 1 — synchronous (during the create API call):*
+*Step 1 — synchronous (during the create API call):*
 
-The fulfillment-service validates pool capacity, creates ExternalIP and
-ExternalIPAttachment records in PostgreSQL, and decrements pool capacity
-— all within the same API transaction. If the pool is exhausted, the
+The fulfillment-service validates pool capacity, creates ExternalIP
+records in PostgreSQL, and decrements pool capacity — within the same
+API transaction as the workload creation. If the pool is exhausted, the
 call fails and no resources are persisted (including the parent
-resource). Both the ExternalIP and ExternalIPAttachment start in
-**Pending** state. The ExternalIPAttachment's target reference is set at
-creation time, but the DNAT target IP may not yet be known (the target
-resource may still be provisioning).
+workload). The ExternalIP starts in **Pending** state. For clusters,
+two ExternalIPs are created (one for API, one for ingress). For
+ComputeInstances and BaremetalInstances, one ExternalIP is created.
 
-The fulfillment-service creates the ExternalIPAttachment with the
-ExternalIP in Pending state (not yet Allocated). This bypasses the
-normal ExternalIPAttachment server validation that requires the
-ExternalIP to be Allocated — the auto-provisioning codepath in the
-fulfillment-service creates both resources atomically within the same
-transaction, so the Allocated check is not needed (the ExternalIP is
-guaranteed to exist and will be reconciled by the operator).
+ExternalIPAttachments are **not** created at this point — their
+dependencies (ExternalIP Allocated + target Ready) are not yet met.
 
-*Phase 2 — asynchronous (controller reconciliation):*
+*Step 2 — asynchronous (ExternalIP reconciliation):*
 
-Each resource type has an independent fulfillment-service reconciler.
-The ExternalIP and ExternalIPAttachment CRs are pushed to the hub
-cluster independently — there is no cross-resource ordering in the
-reconcilers. The operator-side controllers handle ordering via
-precondition checks and requeue:
+The fulfillment-service reconciler pushes ExternalIP CRs to the hub
+cluster. The osac-operator ExternalIP controller dispatches to AAP →
+fabric manager allocates an IP address → ExternalIP transitions to
+**Allocated**. The fulfillment-service receives the status update via
+Signal RPC.
 
-- fulfillment-service reconcilers push ExternalIP and
-  ExternalIPAttachment CRs to the hub cluster (independently, around
-  the same time)
-- osac-operator ExternalIP controller dispatches to AAP → fabric
-  manager allocates an IP address → ExternalIP transitions to
-  **Allocated**
-- osac-operator ExternalIPAttachment controller checks two
-  preconditions before dispatching:
-  - **ExternalIP must be Allocated** (have an allocated address). If
-    not, the controller requeues.
-  - **Target resource must have a known IP.** The required IP depends
-    on the target type (see below). If not yet available, the
-    controller requeues.
-- Once both preconditions are met, the controller dispatches to AAP →
-  fabric manager creates the DNAT rule → ExternalIPAttachment
-  transitions to **Ready**
+*Step 3 — asynchronous (deferred ExternalIPAttachment creation):*
+
+Once both prerequisites are met — the ExternalIP is **Allocated** and
+the target workload is **Ready** — the fulfillment-service internal
+reconciler creates the ExternalIPAttachment. This follows the standard
+creation readiness gate: the ExternalIPAttachment is only persisted when
+its ExternalIP is Allocated and its target is Ready. The
+ExternalIPAttachment starts in **Pending** state and is pushed to the
+hub cluster by the reconciler.
+
+*Step 4 — asynchronous (ExternalIPAttachment reconciliation):*
+
+The osac-operator ExternalIPAttachment controller verifies its
+preconditions (ExternalIP Allocated + target has a known IP) and
+dispatches to AAP → fabric manager creates the DNAT rule →
+ExternalIPAttachment transitions to **Ready**.
 
 *ExternalIPAttachment controller preconditions per target type:*
 
@@ -1138,44 +1157,74 @@ All fields are immutable after creation.
 
 #### Deletion Dependency Guards
 
-When the API layer (fulfillment-service) soft-deletes networking resources,
-it accepts the delete as soon as child resources are themselves soft-deleted.
-On the operator side, each controller triggers its AAP deprovision job when
-it sees a `deletionTimestamp`. If a parent and its children are deleted
-near-simultaneously, the parent's deprovision job fires before children
-have been fully removed from the infrastructure backend, causing the backend
-to reject the parent deletion.
+The fulfillment-service enforces resource dependency constraints at the API
+layer. A delete request is rejected immediately with a `FailedPrecondition`
+error if any active resource still references the target. Only
+dependency-graph leaves — resources with no active dependents — are
+deletable. The error response includes the blocking resource type so the
+caller knows what to remove first.
 
-To prevent unnecessary failed jobs and backoff delays, each parent
-controller gates its deprovision on the complete removal of child CRs.
-The controller lists child CRs referencing the parent before triggering the
-AAP deprovision job. If any children still exist on the cluster (regardless
-of their own deletion state), the controller requeues with a short interval
-(10 seconds) instead of dispatching a doomed job.
+**API-layer deletion guards (fulfillment-service):**
 
-| Controller | Gate deprovision on |
+| Resource | Reject delete if active … exist |
 |---|---|
-| VirtualNetwork | No Subnet, SecurityGroup, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
-| Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet; no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)) |
-| ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
-| ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
+| VirtualNetwork | Subnets, SecurityGroups, NATGateways, or FabricDomains referencing this VirtualNetwork |
+| Subnet | ComputeInstances, Clusters, or BaremetalInstances with network attachments referencing this Subnet |
+| SecurityGroup | ComputeInstances, Clusters, or BaremetalInstances with network attachments referencing this SecurityGroup |
+| ExternalIP | ExternalIPAttachments or NATGateways referencing this ExternalIP |
+| ExternalIPPool | ExternalIPs referencing this pool |
+| ExternalIPAttachment | (leaf — no dependents, always deletable) |
+| NATGateway | (leaf — no dependents, always deletable) |
+| ComputeInstance / Cluster / BaremetalInstance | Manually-created ExternalIPAttachments targeting this resource |
+| NetworkClass | VirtualNetworks referencing this NetworkClass |
+
+"Active" means the resource exists and has not been fully deleted (i.e., is
+not archived). A resource that is itself being deleted (has
+`deletion_timestamp` set but is still being deprovisioned) counts as active
+for the purpose of these guards — the parent cannot be deleted until the
+child is fully gone, not merely marked for deletion.
+
+**Exception — auto-provisioned resources:** Resources created by the system
+via `auto_external_ip_attachment` (labeled
+`osac.openshift.io/auto-created`) are cascade-deleted when their parent
+workload is deleted. The parent workload's delete handler in
+fulfillment-service initiates the cascade, and the operator-side finalizer
+executes it in dependency order (ExternalIPAttachment first, then
+ExternalIP). Because the system created these resources and controls the
+full dependency chain, cascade deletion is safe. Manually-created
+ExternalIPAttachments targeting the same workload are NOT cascade-deleted —
+they block the workload's deletion until the tenant removes them.
+
+**Operator-side guards (defense in depth):** The operator controllers retain
+their existing child-CR gates as a safety net. Each parent controller lists
+child CRs before triggering the AAP deprovision job; if any children still
+exist, the controller requeues instead of dispatching. This is defense in
+depth — the fulfillment-service API-layer rejection is the primary
+enforcement point.
 
 The full dependency chain (delete order, leaf first):
 
 ```text
-ComputeInstance / BareMetalInstance (leaf)
-  must be gone before --> Subnet
-  must be gone before --> ExternalIPAttachment (via auto-cleanup)
-
-ExternalIPAttachment
+ExternalIPAttachment (leaf)
   must be gone before --> ExternalIP
+  must be gone before --> target ComputeInstance / Cluster / BaremetalInstance
+                          (only manually-created attachments block target deletion;
+                           auto-created attachments are cascade-deleted)
 
-NATGateway
+NATGateway (leaf)
   must be gone before --> ExternalIP
+  must be gone before --> VirtualNetwork
+
+FabricDomain (leaf)
   must be gone before --> VirtualNetwork
 
 SecurityGroup
   must be gone before --> VirtualNetwork
+  (blocked by ComputeInstances / Clusters / BaremetalInstances referencing it)
+
+ComputeInstance / Cluster / BaremetalInstance
+  must be gone before --> Subnet
+  (blocked by manually-created ExternalIPAttachments targeting it)
 
 Subnet
   must be gone before --> VirtualNetwork
@@ -1183,12 +1232,52 @@ Subnet
 ExternalIP
   must be gone before --> ExternalIPPool
 
-VirtualNetwork (delete last)
+VirtualNetwork
+  must be gone before --> NetworkClass
+
+NetworkClass (provider-managed, delete last)
 ```
 
-This is the same pattern used during provisioning (e.g., the NATGateway
-controller gates provisioning on ExternalIP readiness and VirtualNetwork
-readiness) -- applied symmetrically to the deprovision path.
+#### Creation Readiness Gates
+
+The fulfillment-service enforces that every referenced resource is in its
+terminal ready state before allowing creation. A create request is rejected
+immediately with a `FailedPrecondition` error if any referenced resource
+does not exist, is not ready, or is being deleted.
+
+**API-layer creation gates (fulfillment-service):**
+
+| Created resource | Referenced resource | Required state |
+|---|---|---|
+| VirtualNetwork | NetworkClass | Ready |
+| Subnet | VirtualNetwork | Ready |
+| SecurityGroup | VirtualNetwork | Ready |
+| NATGateway | VirtualNetwork | Ready |
+| NATGateway | ExternalIP | Allocated |
+| ExternalIP | ExternalIPPool | Ready |
+| ExternalIPAttachment | ExternalIP | Allocated |
+| ExternalIPAttachment | Target (ComputeInstance / Cluster / BaremetalInstance) | Ready |
+| ComputeInstance | Subnet | Ready |
+| ComputeInstance | SecurityGroup(s) | Ready |
+| Cluster | Subnet | Ready |
+| Cluster | SecurityGroup(s) | Ready |
+| BaremetalInstance | Subnet | Ready |
+| BaremetalInstance | SecurityGroup(s) | Ready |
+| FabricDomain | VirtualNetwork | Ready |
+
+The fulfillment-service checks these conditions synchronously during the
+create API call. If any referenced resource is in Pending, Failed, or
+Deleting state, the request is rejected before persistence. The error
+response includes the referenced resource and its current state.
+
+There are no exceptions to the creation readiness rule. Internal
+fulfillment-service flows — `auto_external_ip_attachment` and default
+networking tenant onboarding — follow the same readiness gates by
+creating resources in dependency order and waiting for each to reach its
+ready state before creating the next. See
+[Auto-provisioning lifecycle](#auto-provisioning-lifecycle-auto_external_ip_attachment)
+and [Default Resource Lifecycle](/enhancements/OSAC-1433-default-networking/design.md#default-resource-lifecycle)
+for the stepped creation flows.
 
 #### NATGateway Scope
 

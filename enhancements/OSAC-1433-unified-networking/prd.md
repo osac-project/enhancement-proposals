@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-16
+last-updated: 2026-09-28
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -315,13 +315,19 @@ explicitly specifies them.
   clusters, or bare-metal servers for inbound access
 - As a tenant, I want to create a NATGateway for outbound access from my
   VirtualNetwork
+- As a tenant, I want resource creation to fail immediately if a referenced
+  resource is not fully ready, so that I do not end up with resources stuck
+  waiting for prerequisites
+- As a tenant, I want resource deletion to fail immediately if other
+  resources still depend on the one I am deleting, so that I do not
+  accidentally break running workloads
 
 ### CaaS-Specific Stories
 
 - As a tenant, I want to place my cluster's worker nodes on a Subnet in my
   VirtualNetwork
 - As a tenant, I want to attach ExternalIPs to my cluster's API server and
-  ingress endpoints before provisioning
+  ingress endpoints after the cluster is ready
 - As a tenant, I want my cluster to work in the provider's connected network
   using provider-routable IPs
 
@@ -412,6 +418,38 @@ This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
 reference this PRD; those proposals inherit it and do not redefine networking
 operations.
 
+#### FR-9: Strict resource lifecycle enforcement (R9)
+
+The fulfillment-service must enforce resource dependency constraints at the
+API layer, rejecting invalid operations immediately rather than accepting
+them and relying on asynchronous operator-side reconciliation to handle
+ordering.
+
+**Creation:** A resource that references another resource may only be created
+when every referenced resource is in its terminal ready state (Ready or
+Allocated, depending on the resource type). If a referenced resource does not
+exist, is not ready, or is being deleted, the create request must be rejected
+with a precondition error. There are no exceptions to this rule. Internal
+fulfillment-service flows — `auto_external_ip_attachment` and default
+networking tenant onboarding — follow the same readiness gates by creating
+resources in dependency order and waiting for each to reach its ready state
+before creating the next (e.g., the auto-provisioned ExternalIPAttachment is
+created only after the ExternalIP is Allocated and the target workload is
+Ready).
+
+**Deletion:** A resource may only be deleted when no other active resource
+references it — only dependency-graph leaves are deletable. If active
+dependents exist, the delete request must be rejected with a precondition
+error listing the blocking resource type. Auto-provisioned resources (labeled
+`osac.openshift.io/auto-created`) are cascade-deleted when their parent
+workload is deleted, because the system created them and controls the full
+dependency chain. Even for auto-provisioned resources, cascade deletion must
+follow dependency order (ExternalIPAttachment before ExternalIP).
+
+Default networking resources (labeled `osac.openshift.io/default`) follow the
+same rules — they cannot be deleted while any workload or networking resource
+references them.
+
 ### 4.2 Non-Functional Requirements
 
 _No non-functional requirements were specified in the original document._
@@ -435,6 +473,26 @@ _No non-functional requirements were specified in the original document._
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
 - [ ] Networking resources support only Create, List/Get, and Delete; changing a networking resource or a workload network attachment requires delete and recreate
+
+### Resource Lifecycle Enforcement
+
+- [ ] Creating a Subnet when the referenced VirtualNetwork is not Ready is rejected by the API
+- [ ] Creating a SecurityGroup when the referenced VirtualNetwork is not Ready is rejected by the API
+- [ ] Creating a NATGateway when the referenced VirtualNetwork is not Ready is rejected by the API
+- [ ] Creating a NATGateway when the referenced ExternalIP is not Allocated is rejected by the API
+- [ ] Creating an ExternalIP when the referenced ExternalIPPool is not Ready is rejected by the API
+- [ ] Creating an ExternalIPAttachment when the referenced ExternalIP is not Allocated is rejected by the API
+- [ ] Creating an ExternalIPAttachment when the referenced target resource (ComputeInstance, Cluster, or BaremetalInstance) is not Ready is rejected by the API
+- [ ] Creating a VirtualNetwork when the referenced NetworkClass is not Ready is rejected by the API
+- [ ] Auto-provisioned ExternalIPAttachments (via `auto_external_ip_attachment`) are created by the fulfillment-service internal reconciler only after the ExternalIP is Allocated and the target workload is Ready — no exception to readiness rules
+- [ ] Deleting a VirtualNetwork that has active Subnets, SecurityGroups, NATGateways, or FabricDomains is rejected by the API
+- [ ] Deleting a Subnet that has active ComputeInstances, Clusters, or BaremetalInstances attached is rejected by the API
+- [ ] Deleting an ExternalIP that has active ExternalIPAttachments or NATGateways is rejected by the API
+- [ ] Deleting an ExternalIPPool that has active ExternalIPs is rejected by the API
+- [ ] Deleting a ComputeInstance, Cluster, or BaremetalInstance that has active manually-created ExternalIPAttachments is rejected by the API
+- [ ] Deleting a SecurityGroup that is referenced by active ComputeInstances, Clusters, or BaremetalInstances is rejected by the API
+- [ ] Auto-provisioned resources (labeled `osac.openshift.io/auto-created`) are cascade-deleted when their parent workload is deleted, following dependency order
+- [ ] Rejection errors include the blocking resource type so the tenant knows what to delete first
 
 ### External Access
 
