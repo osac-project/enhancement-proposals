@@ -8,7 +8,7 @@ This design covers the first UI iteration for authoring Catalog Items under the 
 
 ## Scope
 
-**Personas:** Cloud Provider Admin (`admin` role) authoring shared Catalog Items, and Tenant Admin (`tenant-admin` role) authoring Catalog Items scoped to their own organization. Tenant User gets no new UI surface in this design, but provisioning is covered here (see [Provisioning](#provisioning)).
+**Personas:** Cloud Provider Admin (`admin` role) authoring shared Catalog Items, and Tenant Admin (`tenant-admin` role) authoring Catalog Items scoped to their own organization. Tenant User gets no new UI surface in this design, but provisioning is covered here (see [Provisioning](#provisioning-wizard)).
 
 **In scope:** Create (wizard), Detail/Edit, Delete, and Publish/Unpublish actions. The List page's structure (`CatalogItemListSection`/`CatalogItemCard`/`CatalogItemTable`) already exists and is not rebuilt.
 
@@ -72,7 +72,7 @@ The current `CatalogItemDetailPage` is too sparse: it shows only a generic Detai
 
 The page has the following structure:
 
-- **Resource header:** show the resource-type icon, Catalog Item name, description, breadcrumb back to Catalog, and page-level actions. Cloud Provider Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable. Tenant Admin sees **Edit** and **Delete** only for Catalog Items in their tenant. Tenant User sees **Launch instance** for published items.
+- **Resource header:** show the resource-type icon, Catalog Item name, description, breadcrumb back to Catalog, and page-level actions. Cloud Provider Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable. Tenant Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable for Catalog Items in their tenant. Tenant User sees **Launch instance** for published items.
 - **Overview:** show the status, created date and tenant
 - **Configuration card:** show the complete type-specific configuration. Include the configured value or default for every governed field and a **Locked**/**Editable** indicator beside the field label. Omit fields that are not governed. Use the following type-specific content:
   - `ComputeInstance`: instance type, user data, run strategy, boot-disk size and storage tier, additional disks, and other in-scope governed fields.
@@ -169,3 +169,11 @@ The field components and initial-values functions are shared; the wrappers provi
 
 - Unit tests for the wizard cover Compute Instance, Cluster, and Bare Metal field controls, including Locked/Editable behavior, complex-field switches, and excluded fields.
 - Unit tests for routes and actions cover Create, Details/Edit, Publish/Unpublish, Delete, and role-appropriate actions.
+
+---
+
+## Provenance
+
+Authored: respond @ design 0.3.0 - 1e226e0 (dirty), workspace bugfix-OSAC-5384-remove-ipv6-ui @ 51b44d851
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.3.0","ai_workflows":"1e226e0 (dirty)","source_repo":"51b44d851","source_repo_branch":"bugfix-OSAC-5384-remove-ipv6-ui","commits_behind_main":0,"commits_ahead_main":8,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false} -->
