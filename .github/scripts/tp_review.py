@@ -296,7 +296,7 @@ def main():
 
     hooks = TestPlanHooks(
         repo=REPO,
-        skills_path="/opt/test-plan-skills",
+        skills_path=os.environ.get("TP_REVIEW_SKILLS_PATH", "/opt/test-plan-skills"),
         shadow=shadow,
         pr_data=pr_data,
     )
