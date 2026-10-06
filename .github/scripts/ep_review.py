@@ -22,7 +22,7 @@ from ep_skill_config import build_skill_config
 
 
 REPO = os.environ.get("GITHUB_REPOSITORY", "osac-project/enhancement-proposals")
-SKILLS_PATH = "/opt/skills"
+SKILLS_PATH = os.environ.get("EP_REVIEW_SKILLS_PATH", "/opt/skills")
 IN_CI = os.environ.get("GITHUB_ACTIONS") == "true"
 
 
