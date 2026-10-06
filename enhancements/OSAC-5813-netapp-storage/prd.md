@@ -19,72 +19,34 @@ tenant isolation. CaaS consumption and Enclave installation follow later.
 
 ## In Scope
 
-- **VMaaS:** NetApp-backed boot and additional disks over SCSI/FC, using existing
-  storage-tier selection and VM lifecycle workflows.
-- **VaaS:** independently provisioned NetApp volumes, attached to authorized VMs
-  through the shared attachment workflow.
-- **Shared administration:** NetApp backend registration and block tiers through
-  the existing OSAC UI, CLI, and API; automatic isolated tenant onboarding,
-  readiness and failure visibility, and guarded offboarding.
+Developer Preview, in priority order:
+
+- **VMaaS:** NetApp-backed boot and additional disks over SCSI/FC.
+- **VaaS:** independent NetApp volumes attached to authorized VMs.
+- **Administration:** backend registration and block tiers through the existing
+  UI, CLI, and API; automatic isolated tenant SVMs with centrally managed
+  credentials. Tenants receive no ONTAP management credentials.
 - **Installation and documentation:** supported installer deployment, ONTAP
-  privileges and host/HBA/zoning prerequisites, and consumption, retention,
-  and recovery guidance.
+  privileges and FC host/HBA/zoning prerequisites, consumption and recovery guidance.
 
-These are Developer Preview requirements, in descending priority. Later delivery
-adds CaaS consumption and configurable, validated NetApp installation settings
-through the Enclave Wizard; neither blocks the preview.
+Attachment and offboarding use the same authorization, retention, deletion
+safeguards and cleanup guarantees as other providers, following
+[OSAC-23](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-23-tenant-storage-onboarding/prd.md),
+[OSAC-2117](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-2117-pure-storage-flashblade/prd.md)
+and [OSAC-4884](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-4884-volume-api-storage-attach-detach/prd.md).
+Registration validates management access; FC readiness requires connected-host
+verification. Failed onboarding remains not ready with safe diagnostics.
 
-| Service | Milestone | Required consumption outcome |
-|---|---|---|
-| VMaaS | Developer Preview | A VM uses the selected NetApp tier for boot or additional disks. |
-| VaaS | Developer Preview | An independent volume is attached to an authorized VM through the shared attachment workflow. |
-| CaaS | Post Developer Preview | NetApp-backed StorageClasses appear automatically; a PVC supports workload reads and writes. |
-
-Each tenant receives an isolated ONTAP storage virtual machine (SVM) with central
-credentials and authorized-consumer access. Tenants receive no ONTAP management
-credentials.
-
-When a tenant has both VAST and NetApp tiers, existing tier-selection rules apply:
-each volume uses its selected tier's provider. Existing VAST volumes remain usable.
-
-Registration validates management access; FC consumption requires connected-host
-verification. Failed onboarding leaves storage not ready. Failures remain
-visible until recovery; diagnostics exclude credentials and other tenants' details.
-
-Offboarding follows [OSAC-23's lifecycle](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-23-tenant-storage-onboarding/prd.md)
-and [OSAC-2117's isolation safeguards](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-2117-pure-storage-flashblade/prd.md):
-consumer cleanup precedes backend cleanup, and removing one VM preserves
-other consumers. Remaining workload volumes, including retained volumes, or
-unresolved attachments block SVM removal; detachment alone does not authorize
-data deletion. Completion is
-reported only after owned tenant storage resources and credential entries are
-removed and the tenant's previous credentials no longer grant access. Cleanup
-failures remain visible and block completion until recovery succeeds.
-Later CaaS delivery applies the same safeguards to cluster removal.
-
-Direct attachment follows [OSAC-4884](https://github.com/osac-project/enhancement-proposals/blob/main/enhancements/OSAC-4884-volume-api-storage-attach-detach/prd.md),
-including authorization, access capabilities, retries, and deletion guards.
-In-place OSAC upgrades remain unsupported.
+**Post Developer Preview:** CaaS StorageClasses/PVC consumption and Enclave
+Wizard configuration and validation. In-place OSAC upgrades remain unsupported.
 
 ### Required verification
 
-QE-owned automated E2E tests exercise deployed OSAC with an FC-capable ONTAP
-array and connected hosts. Manual experiments supplement this acceptance evidence.
-
-- The VMaaS and VaaS paths above demonstrate successful workload I/O.
-- Tenant A cannot attach, read, or delete Tenant B's volumes through supported
-  workflows; its own volumes remain usable.
-- Representative management-access, SVM-onboarding, and FC-attachment failures
-  report the affected operation and safe diagnostics. Correction and retry
-  succeed without duplicate tenant storage allocation.
-- VM removal preserves other consumers. Offboarding is blocked while
-  workload volumes or attachments remain; subsequent cleanup removes owned
-  resources and access.
-- A tenant's VAST and NetApp tiers both work and honor provider selection.
-
-CaaS workload I/O and cluster cleanup are acceptance requirements for later
-CaaS delivery. Wizard input validation and a usable NetApp-enabled deployment
-are acceptance requirements for later Enclave delivery.
+QE-owned automated E2E follows the existing provider lifecycle, isolation,
+failure/retry and cleanup pattern, with NetApp-specific FC I/O for VMaaS/VaaS
+and mixed VAST/NetApp tier selection on an FC-capable array and connected hosts.
+Manual experiments supplement acceptance. CaaS consumption/cleanup and Wizard
+installation are verified at their later milestones.
 
 ## Out of Scope
 
@@ -189,8 +151,8 @@ verified Wizard controls; that chain gates the later Wizard capability.
 ## Provenance
 
 Authored: draft @ prd 0.11.3 - 2bd6607, workspace main @ c5819927b
-Final: respond @ prd 0.11.3 - 2bd6607, workspace osac-5813-netapp-integration @ c8d0d8890
+Final: revise @ prd 0.11.3 - 2bd6607, workspace osac-5813-netapp-integration @ c8d0d8890
 
-> Context changed between draft and respond.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"c8d0d8890","source_repo_branch":"osac-5813-netapp-integration","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"c8d0d8890","source_repo_branch":"osac-5813-netapp-integration","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
