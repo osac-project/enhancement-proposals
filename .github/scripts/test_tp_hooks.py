@@ -1,3 +1,4 @@
+import base64
 import json
 import shutil
 import subprocess
@@ -242,6 +243,61 @@ class ApplyScoreTests(unittest.TestCase):
         self.assertIn(SCORE_COMMENT_TAG, captured["body"])
         self.assertIn("<!-- sha:abc12345 -->", captured["body"])
         self.assertFalse(captured["path"].exists())
+
+
+class ApplyRespondTests(unittest.TestCase):
+    def test_apply_respond_updates_only_the_testplan_via_contents_api(self):
+        hooks = TestPlanHooks(
+            repo="test/repo",
+            skills_path="/tmp",
+            shadow=False,
+            pr_data={
+                "head_repo": "test/repo",
+                "head_branch": "test-plan/osac-42",
+                "testplan_path": "enhancements/osac-42/TestPlan.md",
+                "testplan_sha": "existing-file-sha",
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir) / "testplan-output.md"
+            revised = "# Revised plan\n" + ("scenario details\n" * 50)
+            output.write_text(revised)
+            with patch.object(hooks, "_gh", return_value="") as gh:
+                hooks._apply_respond(
+                    "TP-42", {}, tmpdir,
+                    ticket={"_ep_slug": "osac-42"},
+                )
+
+        args = gh.call_args.args[0]
+        self.assertEqual(args[0:2], [
+            "api", "repos/test/repo/contents/enhancements/osac-42/TestPlan.md"
+        ])
+        self.assertIn("PUT", args)
+        self.assertIn("sha=existing-file-sha", args)
+        self.assertIn("branch=test-plan/osac-42", args)
+        encoded = args[args.index("-f", args.index("-f") + 1) + 1]
+        self.assertEqual(base64.b64decode(encoded.removeprefix("content=")).decode(), revised)
+
+    def test_apply_respond_does_not_try_to_write_a_fork(self):
+        hooks = TestPlanHooks(
+            repo="test/repo",
+            skills_path="/tmp",
+            shadow=False,
+            pr_data={
+                "head_repo": "contributor/repo",
+                "head_branch": "test-plan/osac-42",
+                "testplan_path": "enhancements/osac-42/TestPlan.md",
+                "testplan_sha": "existing-file-sha",
+            },
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            (Path(tmpdir) / "testplan-output.md").write_text("x" * 600)
+            with patch.object(hooks, "_gh") as gh:
+                hooks._apply_respond(
+                    "TP-42", {}, tmpdir,
+                    ticket={"_ep_slug": "osac-42"},
+                )
+        gh.assert_not_called()
 
 
 if __name__ == "__main__":
