@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-28
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -39,6 +39,14 @@ Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
 BaremetalInstance supports a repeated `BareMetalNetworkAttachment` field for API compatibility, but accepts at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures the switch port via dispatcher, and IP address feedback via CR status enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
+
+The manager-backed resource flows and provider IP-discovery/readiness behavior
+in this document describe the enabled mode. The feature-gated disabled behavior
+is specified at the end of the Proposal section. API-level SecurityGroup rule
+validation and reference checks remain active in disabled mode. OSAC submits no
+provider operation to apply or remove SecurityGroup rules; rules already
+programmed in the backend may continue to affect traffic until provider-side
+cleanup. [User]
 
 ## Motivation
 
@@ -549,15 +557,20 @@ The operator uses conditions and phase to signal tenant handoff readiness:
   if `IPDiscoveryComplete=False/TemplateFailed`, the phase is set to `Failed`
   and the flow stops. Without this explicit check, the phase could briefly
   reach `Ready` between IP discovery retry cycles.
-- `NetworkOffboardComplete` (deletion only) — the host has been powered off
+- `NetworkOffboardComplete` (enabled-mode deletion only) — the host has been powered off
   while still on the tenant network, prior to the port moving back to the
   provisioning network. Tracked by `reconcileNetworkOffboardShutdown`.
-- Phase `Ready` — fully provisioned + on the tenant network + IP known.
+- With provider networking enabled, phase `Ready` means fully provisioned, on
+  the tenant network, and tenant IP known. With provider networking disabled,
+  Ready means OS provisioning completed; it does not assert tenant placement or
+  tenant IP discovery (see [Provider Networking Disabled](#provider-networking-disabled)).
 
-**Gating rule:** the operator must not surface a tenant IP or report `Ready`
-until after move + segment active + reboot + discovery. The provisioning-network
-IP is never exposed to the tenant. External access is signaled separately by
-the `ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
+**Enabled-mode gating rule:** the operator must not surface a tenant IP or
+report `Ready` until after move + segment active + reboot + discovery. The
+provisioning-network IP is never exposed to the tenant. External access is
+signaled separately by the `ExternalIPAttachment` (DNAT) and `NATGateway`
+(SNAT) CR statuses. In disabled mode, no tenant IP is surfaced and the skipped
+stages follow the separate contract below.
 
 #### IP Discovery
 
@@ -714,6 +727,78 @@ bare-metal-fulfillment-operator handles provisioning and networking, osac-operat
 
 **Trade-off:** Separation of concerns (provisioning vs. feedback) vs. operational simplicity. Chosen approach: maintain two-operator architecture to avoid merging codebases. Document reconciliation phase ordering and finalizer dependencies.
 
+### Provider Networking Disabled
+
+This service follows the shared provider-networking setting and disabled-mode
+contract in [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+The setting is changed during installation or upgrade and takes effect after
+the coordinated rollout. Networking APIs, authorization, validation and
+defaulting, and ordinary service provisioning remain available while provider
+networking is disabled.
+[PRD: FR-13] [User]
+
+1. Inventory allocation, hardware management, power management, and ordinary
+   host operating-system provisioning and deprovisioning remain active. New
+   hosts keep their baseline provisioning connectivity throughout host
+   provisioning. `--auto-up` (`RunStrategy=Always`) still turns the host on; it
+   stays on the provisioning network because the tenant port move, handoff
+   reboot, and tenant DHCP discovery are skipped.
+2. Any network move or DHCP query already in progress reaches terminal state
+   before the phase is reported skipped. No port move, handoff reboot, tenant
+   DHCP query, or substitute work is started while disabled. Each incomplete
+   phase skipped after disablement uses `Status=Unknown`, reason
+   `ProvisioningDisabled`, and a message naming the skipped operation. Preserve
+   `True` conditions for provider phases confirmed complete before disablement.
+   A skipped network phase counts as complete only when its condition is
+   `Unknown` with the exact reason `ProvisioningDisabled`; any other `Unknown`
+   remains incomplete.
+   Host provisioning can reach Ready without a tenant IP; that Ready state
+   describes OS provisioning, not tenant connectivity.
+3. No provisioning-network address is relabeled as a tenant-network address;
+   no tenant IP is fabricated or discovered through the skipped path, and no
+   new public ExternalIP routing operation is submitted. Disabling networking
+   does not withdraw an existing `ExternalIPAttachment` DNAT route. A route
+   configured before disablement may remain active until manual/provider-side
+   cleanup, so the disabled setting does not guarantee that prior public
+   exposure ends.
+4. Deletion preserves normal host shutdown, teardown, inventory release, and
+   logical auto-created child deletion order. It waits for active network work
+   to become terminal and performs no tenant-to-provisioning port movement or
+   other provider cleanup. A host is
+   not powered off solely to precede a port move that will not occur, and
+   `NetworkOffboardComplete` is not created or changed solely to report that
+   the move was skipped. If the condition already exists, preserve it as a record
+   of the prior enabled-mode power-off attempt: `True` confirms host power-off;
+   `False` means completion was not observed before disablement. Neither value
+   proves the port moved. Newly created disabled-mode hosts were never moved
+   off provisioning connectivity, so ordinary deprovisioning can use that
+   baseline. A host
+   previously moved to a tenant network is not moved back when the setting is
+   disabled; provider/manual restoration may be required before Ironic cleaning
+   can use provisioning connectivity.
+
+Default SecurityGroup selection, rule validation, API readiness,
+interface/cardinality/immutability, and deletion guards remain in force.
+Disabled mode submits no provider operation to create, change, or remove
+SecurityGroup rules; rules already programmed in the backend may continue to
+affect traffic until provider-side cleanup. An automatic ExternalIP request
+retains the existing synchronous pool/capacity checks and reserves one logical
+pool-capacity slot until its ExternalIP is deleted. With networking disabled,
+the request remains Pending without a provider address and creates no
+ExternalIPAttachment. A real allocation confirmed before disablement retains
+its address, confirmed through the manager-written annotation, and `Allocated`
+state, but reports `Progressing`
+and `Ready=False`/`ProvisioningDisabled`; the address is last-known only. The
+complete shared status contract is in
+[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#resource-operation-behavior).
+Fulfillment creates an automatic attachment only after real allocation and
+workload Ready with a known primary attachment address, so disabled mode does
+not bypass those gates. Deleting an ExternalIP while disabled releases its
+OSAC capacity slot without a provider release operation; any earlier provider
+reservation may require manual cleanup. See the shared
+[ExternalIP disabled-mode contract](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+[User]
+
 ## Alternatives (Not Implemented)
 
 ### Alternative 1: Single-operator architecture
@@ -747,6 +832,25 @@ Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's
 Resolved: After `reconcileProvisioning` completes and the host has received a DHCP lease, the operator queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role). The role matches the server's port MAC address — resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to find the assigned IP (falling back to server-name matching for named fabric servers). The operator writes to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR. The feedback controller then syncs to fulfillment-service via Signal RPC. `move_network_attachment` remains switch-side only (moves the fabric port between network segments).
 
 ## Test Plan
+
+### Provider Networking Control (FR-13)
+
+- Verify normal bare-metal server provision/delete jobs still run with the shared setting
+  disabled and sufficient baseline connectivity; no network provider job runs.
+- Verify in-progress network work reaches terminal state before skipped status
+  or deletion completion, including retryable status errors.
+- Verify non-allocating Networking API resources report `Ready=True`, reason
+  `ProvisioningDisabled`, with a skipped-work message after logical
+  preconditions pass. Verify ExternalIP pending and previously allocated
+  statuses match the shared contract. Verify incomplete BMI networking phases
+  skipped after disablement report `Status=Unknown`, reason
+  `ProvisioningDisabled`, confirmed prior successes remain `True`, and legacy
+  `True`/`Skipped` conditions are normalized; no tenant IP or ExternalIP address
+  is fabricated. Verify disabled deletion does not synthesize
+  `NetworkOffboardComplete`. Enabled mode retains normal provider behavior.
+- Verify invalid API/defaulting/dependency requests remain rejected,
+  SecurityGroup defaulting/immutability remains unchanged, and automatic
+  attachments still wait for Allocated + workload Ready.
 
 ### Unit Tests
 
@@ -921,7 +1025,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 2. If IP is missing, check bare-metal-fulfillment-operator logs for provisioning phase completion
 3. If provisioning completed but IP missing, investigate `query_dhcp_lease` dispatcher call (DHCP lease query may have failed, returned empty, or port MAC did not match any lease). Confirm the BareMetalHost carries the `osac.openshift.io/interface-macs` annotation with the attachment's interface — without it, MAC matching is skipped and only named fabric servers resolve
 
-### Disabling the feature
+### Disabling automatic ExternalIP requests
 
 To disable auto ExternalIP attachment:
 - Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
@@ -931,6 +1035,18 @@ Consequences:
 - Auto ExternalIP allocation fails with error (resource not created)
 - Manual ExternalIP workflows remain functional
 - No impact on existing running BM servers
+
+### Provider networking intentionally skipped
+
+Set `global.networking.provisioningEnabled=false` through the Helm setting or Enclave Wizard checkbox
+installation/upgrade value map and complete both operator rollouts. Inspect
+`Ready=True`/`ProvisioningDisabled` conditions on non-allocating Networking API
+resources, `Unknown`/`ProvisioningDisabled` conditions on BMI network phases,
+and tracked network job states. Ordinary workload provisioning remains active
+with the baseline connectivity described
+above. Networking APIs remain available; no provider allocation, routing,
+port movement, DHCP discovery, or cleanup is supplied by the skipped path.
+Existing provider resources may require manual/provider-side cleanup. [User]
 
 ## Infrastructure Needed
 
@@ -963,3 +1079,13 @@ Consequences:
 | bare-metal-fulfillment-operator dispatcher capability + RBAC for Subnet/NetworkClass CRs | Not tracked | **GAP** |
 | Remove unused BareMetalInstance spec.networkClass field | Not tracked | **GAP** |
 | BareMetalInstanceType: network ports (BareMetalNetworkPortSpec) with name, role, type, speed | Not tracked | **GAP** |
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
