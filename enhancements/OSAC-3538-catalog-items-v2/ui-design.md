@@ -48,7 +48,7 @@ Each resource type has its own simple CatalogItem wizard, used for both Create a
 |---|---|---|---|
 | General | `tenant`/`project`, `name`, `description` | same | same |
 | Configuration | `disk_image`, `instance_type`, `user_data`, `run_strategy` | `version`, `node_sets` | `image`, `user_data`, `run_strategy` |
-| Storage | `boot_disk.size_gib` | — | — |
+| Storage | `boot_disk.size_gib`, `boot_disk.storage_tier`, `additional_disks` | — | — |
 | Networking | *(omitted — only governable field here is `network_attachments`, out of scope)* | `network.pod_cidr`, `network.service_cidr` | — |
 | Review | read-only summary | read-only summary | read-only summary |
 
@@ -75,7 +75,7 @@ The page has the following structure:
 - **Resource header:** show the resource-type icon, Catalog Item name, description, breadcrumb back to Catalog, and page-level actions. Cloud Provider Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable. Tenant Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable for Catalog Items in their tenant, plus **Launch instance** when the item is published. Tenant User sees **Launch instance** for published items.
 - **Overview:** show the status, created date and tenant
 - **Configuration card:** show the complete type-specific configuration. Include the configured value or default for every governed field and a **Locked**/**Editable** indicator beside the field label. Omit fields that are not governed. Use the following type-specific content:
-  - `ComputeInstance`: disk image, instance type, user data, run strategy, and boot-disk size.
+  - `ComputeInstance`: disk image, instance type, user data, run strategy, boot-disk size and storage tier, and additional disks.
   - `Cluster`: version and node sets, followed by the applicable network CIDRs.
   - `BareMetalInstance`: image, user data, and run strategy.
 
