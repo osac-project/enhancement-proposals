@@ -8,8 +8,9 @@
 - Exit criteria met: Yes
 - Source: [OSAC-5672](https://redhat.atlassian.net/browse/OSAC-5672), captured in `01-requirements.md`
 - Effective locked decisions: D1, D4, D5, D6
-- Historical decisions D2 and D3 are superseded by the explicit user direction recorded in D6.
-- User direction: “Choose the recommended answers where they exist. For q4 only block changes that would trigger provisioning.”
+- D2 and D3 are superseded by D6; their entries below reflect the final canonical-only outcome.
+- Final architecture direction: “Only the canonical architecture names should be accepted”.
+- Provisioning direction: “For q4 only block changes that would trigger provisioning.”
 
 ## Verified Context
 
@@ -42,47 +43,39 @@ The canonical user-visible CPU architecture values are `amd64`, `arm64`, and `s3
 
 ---
 
-### R1.Q2: Accepted aliases and normalization
+### R1.Q2: Accepted architecture inputs
 
-Should `x86_64` map to `amd64` and `aarch64` map to `arm64`, accepting case variations and surrounding whitespace, while rejecting other unknown values?
-
-Suggested answers: accept those aliases, ignore case, and trim whitespace; accept those aliases with exact spelling only; or accept canonical values only. Alias destinations must follow the answer to R1.Q1.
+Which architecture names should be accepted, and how should aliases, case variations, and surrounding whitespace be handled?
 
 #### Answer
 
-The user selected the recommended behavior: accept the documented aliases, ignore case, and trim surrounding whitespace while rejecting unknown values.
+The user's later revision replaces the original normalization answer: accept only the exact names `amd64`, `arm64`, and `s390x`. Reject aliases such as `x86_64` and `aarch64`, case variations, surrounding whitespace, and unknown values.
 
 #### Impact
 
-The PRD will describe successful normalization of recognized inputs, including case variations and surrounding whitespace, and actionable rejection of unknown values. Canonical names will be used for display and filtering across interfaces.
+The PRD requires canonical-only validation with actionable rejection of every noncanonical input. There is no runtime alias mapping, case conversion, or whitespace trimming. Displays and filters use the same canonical names across interfaces.
 
 #### Decision (D2)
 
-Superseded by D6. The following records the original decision for traceability.
-
-Accept `x86_64` as an alias for `amd64` and `aarch64` as an alias for `arm64`. Normalize canonical values and these aliases without regard to case and after trimming surrounding whitespace. Reject other unknown architecture inputs; do not assume an architecture for them.
+The original alias-normalization decision is superseded by D6. The effective decision is to accept only exact canonical names and reject all noncanonical inputs.
 
 ---
 
 ### R1.Q3: Existing catalog data
 
-How should existing bare-metal types with legacy architecture strings behave when this feature is introduced?
-
-Suggested answers: normalize recognized aliases, keep unknown values visible, and block new provisioning until an admin corrects them; or require admins to correct all noncanonical values before rollout.
+How should existing `BareMetalInstanceType` resources with noncanonical architecture strings behave when this feature is introduced?
 
 #### Answer
 
-The user selected the recommended behavior: normalize recognized aliases; keep unknown existing values visible, but block new provisioning using them until an admin corrects the architecture.
+Under the user's canonical-only revision, all existing noncanonical architecture values remain visible for correction. An admin must correct them to exact canonical names before the affected `BareMetalInstanceType` resources can be used for new provisioning. Recognized aliases receive no special treatment.
 
 #### Impact
 
-The PRD will preserve usability of recognized legacy catalog values and describe visibility and admin correction for unknown existing values. Existing unknown values cannot establish compatibility for new provisioning. The mechanism for migration and normalization belongs in the design; existing OSAC limitations on in-place upgrades remain applicable.
+The PRD requires correction of every existing noncanonical architecture value, including previously recognized aliases, before new provisioning can use it. No runtime normalization preserves compatibility for legacy values. The correction mechanism belongs in the design. D4 continues to allow changes that do not trigger provisioning.
 
 #### Decision (D3)
 
-Superseded by D6. The following records the original decision for traceability.
-
-Normalize recognized legacy architecture aliases in existing bare-metal types. Keep unrecognized existing architecture values visible and require admin correction before those types can be used for new provisioning.
+The original legacy-alias normalization decision is superseded by D6. The effective decision is to keep existing noncanonical values visible and require correction before the affected `BareMetalInstanceType` resources can be used for new provisioning.
 
 ---
 
@@ -138,11 +131,11 @@ Accept only the exact names `amd64`, `arm64`, and `s390x`. Reject aliases, case 
 
 #### Impact
 
-The PRD describes canonical-only validation and correction of all existing noncanonical catalog values before new provisioning can use them. Documentation, regression scenarios, provider stories, and catalog dependencies follow this rule. Existing noncanonical values remain visible for correction. D4 still limits blocking to requests that would trigger provisioning, and D5 still defines the UI behavior for incompatible image choices.
+The PRD describes canonical-only validation and correction of all existing noncanonical catalog values before new provisioning can use them. Documentation, regression scenarios, provider stories, and catalog requirements follow this rule. Existing noncanonical values remain visible for correction. D4 still limits blocking to requests that would trigger provisioning, and D5 still defines the UI behavior for incompatible image choices.
 
 #### Decision (D6)
 
-Only exact canonical architecture names are accepted: `amd64`, `arm64`, and `s390x`. No runtime alias mapping, case conversion, or whitespace trimming is supported. Existing noncanonical type values require correction to exact canonical names before use in new provisioning. D6 supersedes D2 and the normalization behavior in D3; D1, D4, and D5 remain binding.
+Only exact canonical architecture names are accepted: `amd64`, `arm64`, and `s390x`. No runtime alias mapping, case conversion, or whitespace trimming is supported. Existing noncanonical `BareMetalInstanceType` architecture values require correction to exact canonical names before use in new provisioning. D6 supersedes D2 and the normalization behavior in D3; D1, D4, and D5 remain binding.
 
 ---
 
