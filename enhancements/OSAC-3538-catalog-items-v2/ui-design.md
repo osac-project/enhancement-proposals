@@ -154,7 +154,7 @@ The field components and initial-values functions are shared; the wrappers provi
 
 ### Additional details
 
-- **Details page reuse:** Implement `CatalogItemDetailPage` by composing the shared `ResourceDetailsPage` component, rather than creating a catalog-specific page shell. Pass the Catalog Item's parent breadcrumb, resource identity, loading state, fetch error, not-found state, and unauthorized state through the shared page contract. Reuse `ResourceDetailsPageLoading` and `ResourceDetailsPageError` for the corresponding states. The Catalog Item implementation supplies only its resource-specific header actions and the Overview, Publishing, Configuration, and Description/labels content described above; these sections remain Catalog Item-specific children of `ResourceDetailsPage`.
+- **Details page reuse:** Implement `CatalogItemDetailPage` by composing the shared `ResourceDetailsPage` component.
 - Reuse `OsacForm`/Formik and shared field components already used by the application.
 - Reuse `OsacFormFooter` for wizard navigation and submission; it also provides the shared form-level error handling and display behavior.
 - Use the shared generic resource hooks for Catalog Item list, create, update, and delete operations rather than adding Catalog Item-specific CRUD hooks.
