@@ -20,6 +20,12 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
+Provider-dependent connectivity, allocation, and cleanup in this document
+describe the enabled mode. FR-12 defines the shared installation/upgrade
+setting and disabled experience. Networking APIs retain the published default
+SecurityGroup selection, immutability, validation, and dependency rules in
+both modes. [User]
+
 ## 1. Problem Statement
 
 Cluster provisioning has no networking configuration. Tenants cannot choose which subnet their cluster nodes use, cannot place two clusters in the same virtual network, and cannot isolate them in separate networks. All clusters are placed on a single deployment-wide networking backend with zero tenant control. Cluster networking is completely divergent from VM and bare-metal server workflows, requiring separate knowledge and tools.
@@ -88,7 +94,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Auto External IP
 
-- **FR-3:** Cluster creation supports `--external-ip-attachment`. When enabled, the system allocates external IPs for both the API server and ingress from available IP pools before provisioning begins. External IPs and their attachments are labeled as auto-provisioned. The attachments are activated once the cluster's API server and ingress endpoints are available. [User]
+- **FR-3:** Cluster creation supports `--external-ip-attachment`. The request synchronously selects pools with capacity and persists two Pending, auto-provisioned ExternalIP requests (API and ingress), reserving two logical pool-capacity slots. Provider address allocation is asynchronous and does not block ClusterOrder provisioning. An ExternalIPAttachment is created for each endpoint only after that ExternalIP has a real backend allocation and the Cluster is Ready with the corresponding endpoint. The ExternalIPs and resulting ExternalIPAttachments are labeled as auto-provisioned. [User]
 
 #### Endpoint Discovery
 
@@ -96,7 +102,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### External IP Activation
 
-- **FR-5:** When automatic external IP allocation is enabled, the system creates external IP attachments before provisioning begins. After the cluster's API server and/or ingress endpoints are available, the system configures inbound routing from the external IPs to the endpoints and activates the attachments. [User]
+- **FR-5:** The system creates each ExternalIPAttachment only after its ExternalIP has a confirmed backend allocation and the Cluster target is Ready with the corresponding API or ingress endpoint. It then configures inbound routing and activates the attachment. If either prerequisite is unmet, no attachment is created. [User]
 
 #### Host Selection and Network Configuration
 
@@ -122,9 +128,18 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 - **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, security groups, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
+#### Provider Networking Disabled
+
+- **FR-12:** A Cloud Provider Admin can disable OSAC network-provider operations through the shared Helm setting or Enclave Wizard checkbox available during installation or upgrade while keeping networking APIs, their authorization/validation/defaulting, and ordinary cluster provisioning available. The setting takes effect through rollout and is not an OSAC console live toggle. Cluster and worker-host provisioning/deletion remain available when baseline platform/provisioning connectivity supports control-plane and assisted-service access, DNS/address services, and required installation/image dependencies. Bare-metal workers remain on provisioning connectivity; OSAC supplies neither tenant port movement/routing nor public ExternalIP routing, and does not discover a tenant DHCP address for them. Endpoint addresses are reported only when actually supplied by the working baseline environment. After logical prerequisites pass, non-allocating Networking API resources report `Ready=True` with reason `ProvisioningDisabled`; unmet prerequisites remain waiting. An ExternalIP without confirmed backend allocation reports `Pending`/`Progressing`, an empty address, and `Ready=False`/`ProvisioningDisabled`; its logical pool-capacity reservation remains held until deletion and no ExternalIPAttachment is created. A confirmed real allocation retains its address and `Allocated` state but reports `Progressing` and `Ready=False`/`ProvisioningDisabled` while networking is disabled. The two automatic ExternalIP requests do not block cluster provisioning; their attachments are created only after real allocation and Cluster Ready. Incomplete worker BMI network phases skipped after disablement report `Unknown`/`ProvisioningDisabled`, while confirmed earlier phases retain `True`; progress treats a phase as complete for that skip only when the reason matches exactly. Existing network operations are cancelled and awaited before skipped/deleted completion; logical cleanup preserves dependency order and may leave provider resources for manual/provider-side cleanup. A host moved to a tenant network before disablement is not moved back on delete; manual/provider restoration may be needed for Ironic cleaning. [User]
+
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Automatic external IP allocation and endpoint discovery complete synchronously within the cluster creation flow. Endpoint addresses are available in cluster status during provisioning, not minutes later.
+- **NFR-1:** Pool selection and capacity validation for automatic ExternalIP requests complete synchronously in the cluster creation flow. Backend address allocation and endpoint discovery continue asynchronously; confirmed endpoint addresses are written to cluster status as the provider supplies them. Automatic ExternalIP requests do not block ClusterOrder provisioning.
+
+Connectivity, allocation, provider policy enforcement/cleanup, and related
+provider-work timing requirements described here apply when provider networking is
+enabled. Disabled mode retains API prerequisites and explicitly identifies
+skipped provider work; it does not claim those provider outcomes. [User]
 
 ## 5. Acceptance Criteria
 
@@ -132,11 +147,21 @@ attachments. Multi-NIC cluster-node networking is future scope.
 - [ ] A Tenant User can create a cluster with a single network attachment and multiple node sets, and all node sets are provisioned on the same subnet with the appropriate physical interface automatically selected from each node set's BareMetalInstanceType
 - [ ] A Tenant User can create a cluster with `--external-ip-attachment` and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs for both API and ingress
 - [ ] Cluster status exposes API server and ingress endpoint addresses after provisioning completes
-- [ ] Auto-created external IP attachments activate after endpoint addresses are available and inbound routing is configured
+- [ ] Each auto-created ExternalIPAttachment is created only after the ExternalIP is Allocated and the Cluster target is Ready with its endpoint address; inbound routing is then configured
 - [ ] The system selects hosts and configures network connectivity before cluster provisioning begins
 - [ ] Auto-created external IPs and external IP attachments are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
 - [ ] The system determines which physical network interface to use based on each node set's BareMetalInstanceType `network_ports` configuration
+
+- [ ] With the shared setting disabled after rollout, an API-valid ordinary workload request still provisions using the stated platform/provisioning connectivity
+- [ ] Core ClusterOrder install/delete jobs remain active while tenant VIP allocation, IPAM, public DNS/routing, and provider cleanup are absent when networking is disabled
+- [ ] Disabled CaaS reports endpoint addresses only when supplied by the baseline environment; it does not create tenant-pool-backed LoadBalancer Services or fabricate VIPs
+- [ ] Non-allocating Networking API resources report `Ready=True`; incomplete worker BMI network phases skipped after disablement report `Unknown`/`ProvisioningDisabled`, while confirmed earlier phases retain `True`; ClusterOrder Ready does not claim tenant/public routing, ExternalIP allocation, or provider cleanup
+- [ ] With networking disabled, automatic ExternalIP requests remain Pending without an address and do not block ClusterOrder provisioning; no ExternalIPAttachment is created until a real allocation and Ready Cluster target exist
+- [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
+- [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
+- [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary workload deletion stays active and does not synthesize a `NetworkOffboardComplete` condition for a skipped port move
+- [ ] Unallocated ExternalIPs expose no fabricated address and do not bypass Allocated + workload Ready gates for automatic attachment creation [User]
 
 ## 6. Assumptions
 
@@ -184,3 +209,16 @@ Resolved: DHCP handles all host-side networking. The host receives IP, gateway, 
 ### ~~9.3 How are IP address pools for cluster endpoints configured?~~ — Resolved
 
 Resolved: The system creates IP address pools for cluster endpoint allocation at subnet creation time, reserving a sub-range of the subnet CIDR. The DHCP assignment range excludes this sub-range to prevent overlap.
+
+---
+
+## Provenance
+
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (57 behind origin/main)
+
+> Context changed between revise and revise.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":57,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -3,7 +3,7 @@ title: caas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-28
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -38,6 +38,14 @@ Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
 Cluster provisioning uses the OSAC Networking API for all networking lifecycle — tenants place clusters on their VirtualNetworks via `network_attachment`, the `BareMetalWorkerReconciler` creates on-demand `BareMetalInstance` objects via the BMaaS private gRPC API (BMaaS owns the fabric port move and IP assignment as part of BMI provisioning), and a VIP feedback loop enables auto-provisioned external access for cluster API and ingress endpoints. See [PRD](prd.md) for detailed requirements and [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full provisioning design.
+
+The manager-backed resource flows and provider IP-discovery/readiness behavior
+in this document describe the enabled mode. The feature-gated disabled behavior
+is specified at the end of the Proposal section. API-level SecurityGroup rule
+validation and reference checks remain active in disabled mode. OSAC submits no
+provider operation to apply or remove SecurityGroup rules; rules already
+programmed in the backend may continue to affect traffic until provider-side
+cleanup. [User]
 
 ## Motivation
 
@@ -74,7 +82,7 @@ The `BareMetalWorkerReconciler` reads the private `ClusterOrder.spec.networkAtta
 
 - VMaaS or BMaaS networking (this EP covers CaaS only)
 - VM-based cluster node sets (v0.2 supports BM node sets only; VM worker nodes require HyperShift ↔ CUDN integration not in scope)
-- DNS API (DNS record creation stays inline in the template until DNS API is implemented)
+- DNS API (enabled-mode tenant/public endpoint records stay in the CaaS network phase until the DNS API is implemented; disabled mode uses baseline DNS)
 - Multi-NIC cluster nodes (not supported; v0.2 has one attachment per cluster → one subnet, while each node set resolves its own fabric interface from its BareMetalInstanceType)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
 
@@ -145,18 +153,20 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
     > **Tenant-network reachability prerequisites.** After the port move, cluster installation runs entirely on the tenant network. The tenant V-Net and the management cluster are in separate VPCs with no direct network path — all communication between them traverses the external network: outbound via NATGateway/SNAT from the tenant V-Net, inbound to the management cluster's external ingress. This applies to assisted-service registration, container image pulls, and post-installation kubelet-to-kube-apiserver heartbeats. All dependencies (container images, RHCOS, OCP release payload) must be pullable from the tenant network via the same egress path. SecurityGroup egress rules must allow outbound `:443`. `AgentRegistrationTimeout` catches tenant-to-assisted-service egress failures (the agent cannot register if it cannot reach assisted-service). A future disconnected installation flow would pre-stage dependencies locally, removing the egress requirement.
 
-7. **CaaS template creates the HostedCluster + NodePool; BareMetalWorkerReconciler provisions workers.**
+7. **CaaS core workflow creates the HostedCluster + NodePool; BareMetalWorkerReconciler provisions workers.**
 
-    The template's `install.yaml` changes:
+    The core `install.yaml` workflow creates the cluster and waits for its
+    workloads. Provider-network work is a separate, tracked phase rather than
+    an inline task in the core ClusterOrder AAP job:
 
     **a. Create HostedCluster + NodePools:**
     - AAP creates HyperShift HostedCluster + NodePool CRs
     - No agent selection or switch port configuration — the `BareMetalWorkerReconciler` handles worker provisioning on-demand via BMaaS (step 6b)
     - Host-side networking handled by DHCP — no NMState or static config needed
 
-    **b. MetalLB VIP provisioning (REPLACES `external_access` step):**
+    **b. Enabled-mode MetalLB VIP provisioning (separate provider-network phase; replaces the legacy `external_access` step):**
 
-    The VN and Subnet already exist (tenant created them in steps 1-3). External access (ExternalIP, ExternalIPAttachment) is auto-provisioned or managed separately by the tenant. NATGateway is expected to exist on the VN as a default from tenant onboarding, not auto-created per cluster. The template:
+    The VN and Subnet already exist (tenant created them in steps 1-3). External access (ExternalIP, ExternalIPAttachment) is auto-provisioned or managed separately by the tenant. NATGateway is expected to exist on the VN as a default from tenant onboarding, not auto-created per cluster. When enabled, the separate network phase:
     - Creates MetalLB LoadBalancer Services for API server + ingress VIPs
     - MetalLB allocates VIPs from its IPAddressPool (created by k8s_manager at subnet creation)
     - Discovers the allocated VIPs and writes them to ClusterOrder CR status:
@@ -165,7 +175,17 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
         apiEndpoint: 10.0.1.200     # MetalLB-allocated API VIP
         ingressEndpoint: 10.0.1.201 # MetalLB-allocated ingress VIP
       ```
-    - DNS record creation (stays inline — DNS API is a separate EP)
+    - Tenant/public endpoint DNS records are updated only in this separately
+      gated network phase; the DNS API itself remains a separate EP
+
+    This phase uses the Subnet's OSAC-managed MetalLB IPAddressPool and runs
+    only when provider networking is enabled. It must be independently
+    tracked/cancellable without cancelling the ClusterOrder install job. With
+    provider networking disabled, do not create these tenant-pool-backed
+    LoadBalancer Services or dispatch provider VIP/routing work; use endpoint
+    services already supplied by the baseline environment and report only
+    addresses that environment actually provides. A missing baseline endpoint
+    is not replaced with a fabricated VIP.
 
     **c. Retrieve kubeconfig, wait for nodes + operators (same as today)**
 
@@ -195,9 +215,11 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
     - CaaS delete template:
-      - Deletes MetalLB LoadBalancer Services
       - Deletes HyperShift HostedCluster + NodePools
       - DNS cleanup
+      - When provider networking is enabled, a separate network phase removes
+        the MetalLB LoadBalancer Services. When disabled, skip that phase and
+        leave any provider resources for manual/provider-side cleanup.
     - ClusterOrder finalizer actively deletes every BMI listed in `status.workers[]` via `BareMetalInstances.Delete` on the BMaaS private API (30 s context deadline per call). The call returns once the delete is accepted; BMaaS handles full host cleanup asynchronously (deprovision, fabric port return to provisioning network). The controller retains each worker entry in `status.workers[]` in `Deleting` phase and polls BMI state on subsequent reconciliation cycles until the BMI is confirmed gone — only then is the entry removed. If the deadline is exceeded or the call fails, the controller retries on the next requeue (controller-runtime exponential backoff); `BareMetalInstances.Delete` is idempotent, so retries are safe. The finalizer holds until all `status.workers[]` entries are confirmed deleted. The InfraEnv CR is garbage collected via its ownerReference to the ClusterOrder (see OSAC-2135).
     - Removes ClusterOrder finalizer
 
@@ -282,7 +304,8 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 
 - HyperShift HostedCluster + NodePool creation (same)
 - Agent correlation and labeling (BareMetalWorkerReconciler correlates Agents to BMIs via MAC address)
-- DNS record creation (inline, until DNS API is implemented)
+- Enabled-mode tenant/public endpoint DNS updates (in the separately gated
+  network phase until the DNS API is implemented)
 - Kubeconfig retrieval (same)
 - Wait for nodes + cluster operators (same)
 - AAP workflow structure (create → post-install → report-status)
@@ -364,19 +387,23 @@ Migration adds to clusters table:
 - Immutability: network_attachment is immutable after creation
 - target_endpoint validation on ExternalIPAttachment: required when target is cluster, must be `API` or `INGRESS`
 
-#### Template Changes
+#### Template and Network Phase Changes
 
-**osac.templates.ocp_4_17_small/install.yaml:**
-- Remove: `osac.service.cluster_infra` call
-- Remove: `osac.service.external_access` call
+**`osac.templates.ocp_4_17_small/install.yaml` core ClusterOrder job:**
+- Remove: `osac.service.cluster_infra` and `osac.service.external_access` calls
 - Remove: agent selection logic (moved to operator)
-- Add: create HostedCluster + NodePools referencing pre-selected agents from ClusterOrder status
-- Add: MetalLB VIP provisioning (create LoadBalancer Services, discover VIPs, write to ClusterOrder status)
+- Keep: create HostedCluster + NodePools referencing pre-selected agents from ClusterOrder status
+- Do not run tenant-pool-backed MetalLB VIP provisioning inline in this core job
 
-**osac.templates.ocp_4_17_small/delete.yaml:**
-- Remove: step collection delete dispatch
-- Remove: switch port cleanup (handled by BMaaS via BMI deletion)
-- Keep: delete HostedCluster + NodePools, MetalLB Services, DNS cleanup
+**Separate enabled-mode CaaS network phase:**
+- Create MetalLB LoadBalancer Services from the tenant Subnet's OSAC-managed IPAddressPool
+- Discover real API/ingress VIPs and write them to ClusterOrder status
+- Run as separately tracked/cancellable network work; the disabled mode skips it and consumes only baseline-provided endpoints
+
+**`osac.templates.ocp_4_17_small/delete.yaml` core ClusterOrder job:**
+- Remove: step-collection delete dispatch and switch-port cleanup (BMaaS handles port placement through BMI deletion)
+- Keep: delete HostedCluster + NodePools and perform core cluster teardown
+- Run MetalLB Service and other provider-network cleanup only in the separately tracked enabled-mode network phase; disabled deletion skips provider cleanup
 
 ### Implementation Details/Notes/Constraints
 
@@ -487,6 +514,70 @@ VIP discovery flow (template → ClusterOrder status → Signal RPC → fulfillm
 
 **Trade-off:** Complexity vs. auto external access. Chosen approach: implement VIP feedback loop to enable auto ExternalIP for clusters. Alternative: manual external access only (simpler, less usable).
 
+### Provider Networking Disabled
+
+This service follows the shared provider-networking setting and disabled-mode
+contract in [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+The setting is changed during installation or upgrade and takes effect after
+the coordinated rollout. Networking APIs, authorization, validation and
+defaulting, and ordinary service provisioning remain available while provider
+networking is disabled.
+[PRD: FR-12] [User]
+
+1. Core cluster installation and deletion remain available when baseline
+   platform/provisioning connectivity and installation dependencies are
+   available. Tenant network setup and cleanup remain separate from this core
+   work; when provider networking is disabled, that work is not submitted and
+   does not block the core cluster lifecycle. Worker hosts follow the BMaaS
+   disabled behavior: no tenant port move, handoff reboot, or tenant DHCP query.
+   Each incomplete worker network phase skipped after disablement uses
+   `Status=Unknown`, reason `ProvisioningDisabled`; confirmed earlier phases
+   retain `True`. Cluster Ready means installation completed on the available
+   baseline connectivity, not that tenant routing is configured. [User]
+
+2. Cluster installation requires working baseline platform/provisioning
+   connectivity to assisted-service, control-plane endpoints, DNS/address
+   services, and image/install dependencies. No OSAC tenant segment, routing,
+   or OSAC-managed tenant VIP pool is provisioned. Endpoint/VIP services must
+   be available through that baseline environment for installation to succeed;
+   skipped Subnet provisioning does not supply them.
+3. Real baseline API/ingress endpoint feedback remains available. It does not
+   imply public ExternalIP routing. ExternalIP allocation and DNAT/SNAT jobs
+   are skipped; an unallocated ExternalIP cannot unlock attachment creation.
+   The two Pending ExternalIP requests reserve two pool-capacity slots until
+   those logical ExternalIPs are deleted; the reservation does not allocate
+   addresses in the provider. Each unallocated ExternalIP reports
+   `Pending`/`Progressing`, an empty address, and `Ready=False`/
+   `ProvisioningDisabled`. A previously confirmed allocation
+   retains its real address, confirmed through the manager-written annotation,
+   and `Allocated` state, but reports
+   `Progressing` and `Ready=False`/`ProvisioningDisabled` while disabled; that
+   address is last-known only. A non-allocating Networking API resource reports
+   `Ready=True`/`ProvisioningDisabled` only after its logical preconditions
+   pass. See the shared status contract in
+   [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#resource-operation-behavior).
+   Deleting an ExternalIP while disabled releases its OSAC capacity slot
+   without a provider release operation; any earlier provider reservation may
+   require manual cleanup. See the shared
+   [ExternalIP disabled-mode contract](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+4. Cluster and worker deletion remain available. OSAC preserves logical child
+   deletion order and waits for in-progress network operations to finish before
+   deletion completes. No provider-network cleanup is submitted; provider
+   resources or host port placements may remain and require provider-side
+   cleanup or restoration before host cleaning can use provisioning
+   connectivity. [User]
+
+Default SecurityGroup selection, rule validation, API readiness,
+interface/cardinality/immutability, and deletion guards remain in force.
+Disabled mode submits no provider operation to create, change, or remove
+SecurityGroup rules; rules already programmed in the backend may continue to
+affect traffic until provider-side cleanup. Automatic ExternalIP requests
+retain existing pool/capacity checks;
+an IP that stays unallocated exposes no fabricated address and does not satisfy
+the Allocated prerequisite. Fulfillment creates an automatic attachment only
+after Allocated + workload Ready, so the disabled branch does not fabricate or
+early-create an attachment to bypass those gates. [User]
+
 ## Alternatives (Not Implemented)
 
 ### Alternative 1: Keep networking in step collections
@@ -537,6 +628,29 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 
 ## Test Plan
 
+### Provider Networking Control (FR-12)
+
+- Verify normal cluster provision/delete jobs still run with the shared setting
+  disabled and sufficient baseline connectivity; no tenant VIP allocation,
+  IPAM, public DNS/routing, or provider cleanup runs while disabled; core
+  ClusterOrder jobs remain active.
+- Verify the disabled contract takes effect after coordinated rollout and
+  active provider-network operations reach terminal state.
+- Verify in-progress provider-network operations reach terminal state before
+  skipped status or deletion completion, including retryable status errors.
+- Verify non-allocating Networking API resources report `Ready=True`, reason
+  `ProvisioningDisabled`, with a skipped-work message only after logical
+  preconditions pass. Verify ExternalIP pending and previously allocated
+  statuses match the shared contract. Verify incomplete worker BMI phases
+  skipped after disablement report `Status=Unknown`, reason
+  `ProvisioningDisabled`, confirmed earlier phases retain `True`, and legacy
+  `True`/`Skipped` conditions are normalized; ClusterOrder Ready and those
+  skipped conditions do not claim tenant routing or ExternalIP attachment.
+  Enabled mode retains normal provider behavior.
+- Verify invalid API/defaulting/dependency requests remain rejected,
+  SecurityGroup defaulting/immutability remains unchanged, and automatic
+  attachments still wait for Allocated + workload Ready.
+
 ### Unit Tests
 
 - fulfillment-service: network_attachment validation (subnet exists, Ready, same VN)
@@ -577,7 +691,7 @@ Tech Preview criteria:
 - [ ] Agent-to-BMI MAC correlation and NodePool labeling implemented
 - [ ] VIP feedback loop (template → ClusterOrder → fulfillment-service → Cluster) implemented
 - [ ] Auto ExternalIP attachment provisioning functional
-- [ ] Template changes (remove cluster_infra/external_access, add MetalLB VIP provisioning) completed
+- [ ] With networking disabled, ClusterOrder install/delete remains available while tenant VIP allocation, IPAM, public DNS/routing, and provider cleanup are absent
 - [ ] Integration tests pass (E2E coverage for network_attachment, auto ExternalIP attachment, VIP feedback)
 - [ ] Documentation: API reference, user guide for simplified cluster creation
 
@@ -599,7 +713,7 @@ Micro version upgrades (`x.y.N → x.y.N+2`):
 - No user action required
 
 Minor version upgrades (`x.N → x.N+1`):
-- Template changes deployed (cluster_infra/external_access removed, MetalLB VIP provisioning added)
+- Core template changes deployed and separately tracked CaaS VIP phase gated by provider networking
 - Existing clusters (created before upgrade) continue to work with old flow
 - New clusters (created after upgrade) use new flow (OSAC Networking API)
 - No breaking changes
@@ -674,7 +788,7 @@ kubectl describe cluster <name> -n <namespace>
 2. Check fulfillment-service logs for VIP sync errors
 3. Manually trigger reconciliation: `kubectl annotate clusterorder <name> osac.openshift.io/reconcile=true`
 
-### Disabling the feature
+### Disabling automatic ExternalIP requests
 
 To disable auto ExternalIP attachment:
 - Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
@@ -685,9 +799,21 @@ Consequences:
 - Manual ExternalIP workflows remain functional
 - No impact on existing running clusters
 
+### Provider networking intentionally skipped
+
+Set `global.networking.provisioningEnabled=false` through the Helm setting or Enclave Wizard checkbox
+installation/upgrade value map and complete both operator rollouts. Inspect
+`Ready=True`/`ProvisioningDisabled` conditions on non-allocating Networking API
+resources, `Unknown`/`ProvisioningDisabled` conditions on worker BMI network
+phases, and tracked network job states. Ordinary workload provisioning remains
+active with the baseline connectivity described
+above. Networking APIs remain available; no provider allocation, routing,
+port movement, DHCP discovery, or cleanup is supplied by the skipped path.
+Existing provider resources may require manual/provider-side cleanup. [User]
+
 ## Infrastructure Needed
 
-- AAP execution environment with `osac.templates.ocp_4_17_small` role updated (remove cluster_infra/external_access, add MetalLB VIP provisioning)
+- AAP execution environment with `osac.templates.ocp_4_17_small` core role updated; a separately tracked CaaS network phase manages enabled-mode MetalLB VIP provisioning
 - k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
 - fabric_manager Ansible role with the generic `move_network_attachment` primitive (OSAC-2081); a provisioned provisioning network segment for BMaaS BMI provisioning
 - Integration test environment with CUDN or EVPN fabric
@@ -721,3 +847,13 @@ Consequences:
 | Remove cluster_infra / external_access step collection dispatch | Not tracked | **GAP** |
 | Remove NETWORK_STEPS_COLLECTION dependency | Not tracked | **GAP** |
 | fulfillment-service: resolve interface from BareMetalInstanceType (fabric_interface) | Not tracked | **GAP** |
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

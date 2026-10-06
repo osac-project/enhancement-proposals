@@ -31,9 +31,7 @@ class StageContextTests(unittest.TestCase):
         content = WORKFLOW.read_text()
         step = content.split("- name: Stage canonical OSAC context", 1)[1]
         step = step.split("- name: Stage enhancement-proposals content", 1)[0]
-        self.script = textwrap.dedent(step.split("run: |\n", 1)[1]).replace(
-            "/opt/skills", str(self.skills),
-        )
+        self.script = textwrap.dedent(step.split("run: |\n", 1)[1])
         gh = self.root / "gh"
         gh.write_text('''#!/usr/bin/env python3
 import os, sys
@@ -56,7 +54,8 @@ if path != os.environ.get("EMPTY_DOC"):
         return subprocess.run(
             ["bash", "-c", self.script], capture_output=True, text=True,
             env={**os.environ, "PATH": f"{self.root}:{os.environ['PATH']}",
-                 "GITHUB_STEP_SUMMARY": str(self.root / "summary.md"), **env},
+                 "GITHUB_STEP_SUMMARY": str(self.root / "summary.md"),
+                 "EP_REVIEW_SKILLS_PATH": str(self.skills), **env},
         )
 
     def assert_lookup_paths(self, root):

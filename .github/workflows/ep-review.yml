@@ -92,18 +92,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - name: Checkout OSAC AI skills
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          python-version: '3.12'
+          repository: osac-project/osac-ai-skills
+          token: ${{ secrets.OSAC_AI_SKILLS_READ_TOKEN }}
+          path: osac-ai-skills
+          persist-credentials: false
 
-      - name: Install dependencies
-        run: pip install -r .github/scripts/requirements.txt
-
-      - name: Clone skills
+      - name: Verify skills checkout
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/osac-project/osac-ai-skills /opt/skills
-          skills_sha="$(git -C /opt/skills rev-parse --verify "HEAD^{commit}")"
+          skills_path="$GITHUB_WORKSPACE/osac-ai-skills"
+          skills_sha="$(git -C "$skills_path" rev-parse --verify "HEAD^{commit}")"
           if ! [[ "$skills_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::osac-ai-skills resolved to an invalid commit SHA: $skills_sha"
             exit 1
@@ -115,31 +116,39 @@ jobs:
             echo "Resolved osac-ai-skills commit: ${skills_sha}"
           } >> "$GITHUB_STEP_SUMMARY"
           for s in prd-review design-review; do
-            if [[ ! -f "/opt/skills/skills/$s/SKILL.md" ]]; then
+            if [[ ! -f "$skills_path/skills/$s/SKILL.md" ]]; then
               echo "::error::skills/$s/SKILL.md missing from osac-ai-skills"
               exit 1
             fi
           done
 
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r .github/scripts/requirements.txt
+
       - name: Stage canonical OSAC context for skill lookups
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EP_REVIEW_SKILLS_PATH: ${{ github.workspace }}/osac-ai-skills
         run: |
           set -euo pipefail
           osac_sha="$(gh api repos/osac-project/osac/commits/main --jq '.sha')"
           echo "Resolved OSAC context commit: $osac_sha"
           echo "OSAC review context commit: $osac_sha" >> "$GITHUB_STEP_SUMMARY"
-          mkdir -p /opt/skills/reference/agent-context
+          mkdir -p "$EP_REVIEW_SKILLS_PATH/reference/agent-context"
           # Fetch full documents at one commit; any failed or empty download
           # stops the job before either review workspace is created.
           for doc in \
             agent-context/{enclave-wizard-pipeline,networking-decisions,osac-dimensions,review-patterns} \
             ARCHITECTURE CONVENTIONS personas INTEGRATION-TESTING; do
             gh api "repos/osac-project/osac/contents/docs/${doc}.md?ref=${osac_sha}" \
-              -H 'Accept: application/vnd.github.raw+json' > "/opt/skills/reference/${doc}.md"
-            test -s "/opt/skills/reference/${doc}.md"
+              -H 'Accept: application/vnd.github.raw+json' > "$EP_REVIEW_SKILLS_PATH/reference/${doc}.md"
+            test -s "$EP_REVIEW_SKILLS_PATH/reference/${doc}.md"
           done
-          echo "$osac_sha" > /opt/skills/reference/osac-context-sha.txt
+          echo "$osac_sha" > "$EP_REVIEW_SKILLS_PATH/reference/osac-context-sha.txt"
 
       - name: Stage enhancement-proposals content for skill lookups
         # Reuses the repo already checked out by the first step above (at
@@ -151,10 +160,12 @@ jobs:
         # excludes the current PR's own enhancement directory from this
         # copy before running the skill, so a design/PRD update never sees
         # its own stale pre-PR version staged as a "reference" example.
+        env:
+          EP_REVIEW_SKILLS_PATH: ${{ github.workspace }}/osac-ai-skills
         run: |
-          mkdir -p /opt/skills/enhancement-proposals
-          cp -r guidelines /opt/skills/enhancement-proposals/
-          cp -r enhancements /opt/skills/enhancement-proposals/
+          mkdir -p "$EP_REVIEW_SKILLS_PATH/enhancement-proposals"
+          cp -r guidelines "$EP_REVIEW_SKILLS_PATH/enhancement-proposals/"
+          cp -r enhancements "$EP_REVIEW_SKILLS_PATH/enhancement-proposals/"
 
       - name: Set up GCP credentials
         run: echo "$GCP_SA_KEY" | base64 -d > /tmp/gcp-sa-key.json
@@ -164,6 +175,7 @@ jobs:
       - name: Run EP review
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EP_REVIEW_SKILLS_PATH: ${{ github.workspace }}/osac-ai-skills
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-sa-key.json
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
           CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
