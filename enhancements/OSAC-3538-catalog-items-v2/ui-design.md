@@ -14,7 +14,7 @@ This design covers the first UI iteration for authoring Catalog Items under the 
 
 **Out of scope for this first iteration**
 
-- `ssh_public_key`, pull secrets, and `network_attachments` / `network_attachment`. These fields are supported by the backend policy model, but governing them requires picking a tenant-managed resource at authoring time — an SSH key for `ssh_public_key`, a pull-secret resource for pull secrets, and a VirtualNetwork/Subnet for the network attachment fields — and this iteration does not add those pickers.
+- `ssh_public_key`, pull secrets, `network_attachments` / `network_attachment`, and `auto_external_ip_attachment`. The first three require authoring-time resource pickers, and `auto_external_ip_attachment` belongs in the networking step; this iteration does not add that step for ComputeInstance or BareMetalInstance and does not expose the field in the Cluster networking step.
 - Template parameter (`map<string, AnyField>`) governance. The Create wizard and edit view do not expose a step or section for template parameters in this iteration.
 - Tenant User provisioning UI changes.
 
@@ -47,12 +47,12 @@ Each resource type has its own simple CatalogItem wizard, used for both Create a
 | Step | ComputeInstance | Cluster | BareMetalInstance |
 |---|---|---|---|
 | General | `tenant`/`project`, `name`, `description` | same | same |
-| Configuration | `instance_type`, `user_data`, `run_strategy` | `version`, `node_sets` | `instance_type`, `disk_image`, `user_data` |
-| Storage | `boot_disk.size_gib`, `boot_disk.storage_tier`, `additional_disks` | — | — |
+| Configuration | `disk_image`, `instance_type`, `user_data`, `run_strategy` | `version`, `node_sets` | `image`, `user_data`, `run_strategy` |
+| Storage | `boot_disk.size_gib` | — | — |
 | Networking | *(omitted — only governable field here is `network_attachments`, out of scope)* | `network.pod_cidr`, `network.service_cidr` | — |
 | Review | read-only summary | read-only summary | read-only summary |
 
-All supported fields in the Configuration, Storage, and Networking steps reuse the corresponding form controls from the provisioning wizard, including Cluster's existing node-set control. The authoring form does not introduce alternate widgets for these fields. The Networking step is dropped entirely for ComputeInstance and BareMetalInstance in this iteration because their only governable networking field is `network_attachments`, which is out of scope (see Scope); Cluster keeps a Networking step because `network.pod_cidr`/`network.service_cidr` are plain CIDR strings, not resource pickers.
+All supported fields in the Configuration, Storage, and Networking steps reuse the corresponding form controls from the provisioning wizard, including Cluster's existing node-set control. The authoring form does not introduce alternate widgets for these fields. The Networking step is dropped entirely for ComputeInstance and BareMetalInstance in this iteration because their governable networking fields (`network_attachments` and `auto_external_ip_attachment`) are out of scope (see Scope). Cluster keeps a Networking step for `network.pod_cidr`/`network.service_cidr`, which are plain CIDR strings; `auto_external_ip_attachment` remains out of scope there as well.
 
 The configuration forms reuse the provisioning wizard's existing field components and layout. Each governable field is rendered exactly as it is in the provisioning wizard, with one authoring-only addition:
 
@@ -75,9 +75,9 @@ The page has the following structure:
 - **Resource header:** show the resource-type icon, Catalog Item name, description, breadcrumb back to Catalog, and page-level actions. Cloud Provider Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable. Tenant Admin sees **Edit**, **Publish**/**Unpublish**, and **Delete** as applicable for Catalog Items in their tenant, plus **Launch instance** when the item is published. Tenant User sees **Launch instance** for published items.
 - **Overview:** show the status, created date and tenant
 - **Configuration card:** show the complete type-specific configuration. Include the configured value or default for every governed field and a **Locked**/**Editable** indicator beside the field label. Omit fields that are not governed. Use the following type-specific content:
-  - `ComputeInstance`: instance type, user data, run strategy, boot-disk size and storage tier, additional disks, and other in-scope governed fields.
+  - `ComputeInstance`: disk image, instance type, user data, run strategy, and boot-disk size.
   - `Cluster`: version and node sets, followed by the applicable network CIDRs.
-  - `BareMetalInstance`: instance type, disk image, and user data.
+  - `BareMetalInstance`: image, user data, and run strategy.
 
 The Details page is read-only. **Edit** opens the same wizard structure used for Create, pre-populated from the Catalog Item. The edit form reuses the provisioning wizard's exact field components and layout, with the authoring-only Editable switch on the same line as each field label, aligned to the right. Existing provisioned resources are unaffected by edits, publish/unpublish, or deletion of the Catalog Item.
 
