@@ -47,7 +47,7 @@ Each resource type has its own simple CatalogItem wizard, used for both Create a
 | Step | ComputeInstance | Cluster | BareMetalInstance |
 |---|---|---|---|
 | General | `tenant`/`project`, `name`, `description` | same | same |
-| Configuration | `disk_image`, `instance_type`, `user_data`, `run_strategy` | `version`, `node_sets` | `image`, `user_data`, `run_strategy` |
+| Configuration | `disk_image`, `instance_type`, `user_data`, `run_strategy` | `version`, `node_sets` | `instance_type`, `disk_image`, `user_data`, `run_strategy` |
 | Storage | `boot_disk.size_gib`, `boot_disk.storage_tier`, `additional_disks` | — | — |
 | Networking | *(omitted — only governable field here is `network_attachments`, out of scope)* | `network.pod_cidr`, `network.service_cidr` | — |
 | Review | read-only summary | read-only summary | read-only summary |
@@ -77,7 +77,7 @@ The page has the following structure:
 - **Configuration card:** show the complete type-specific configuration. Include the configured value or default for every governed field and a **Locked**/**Editable** indicator beside the field label. Omit fields that are not governed. Use the following type-specific content:
   - `ComputeInstance`: disk image, instance type, user data, run strategy, boot-disk size and storage tier, and additional disks.
   - `Cluster`: version and node sets, followed by the applicable network CIDRs.
-  - `BareMetalInstance`: image, user data, and run strategy.
+  - `BareMetalInstance`: instance type, disk image, user data, and run strategy.
 
 The Details page is read-only. **Edit** opens the same wizard structure used for Create, pre-populated from the Catalog Item. The edit form reuses the provisioning wizard's exact field components and layout, with the authoring-only Editable switch on the same line as each field label, aligned to the right. Existing provisioned resources are unaffected by edits, publish/unpublish, or deletion of the Catalog Item.
 
