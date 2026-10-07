@@ -43,6 +43,9 @@ BMaaS is currently not compliant with NVIDIA Cloud Partner (NCP) requirements, p
 ## Assumptions
 
 - Cloud Provider Admins, Cloud Infrastructure Admins, and Tenant Admins see the same serial-number representation. [Clarify: R1.Q3]
+- **Open question:** Does BFX03-01 serial-number coverage apply to all physical machines in the provider's infrastructure, including machines not reserved for BMaaS, or only to machines reserved or provisioned as BMaaS BareMetalInstances? [User]
+  - **Owner:** Feature owner
+  - **Impact:** Determines whether the inventory and compliance scope includes unreserved physical machines or only machines represented as BMaaS BareMetalInstances.
 - **Open question:** Should BMaaS expose raw serial numbers, stable obfuscated representations, or make the choice configurable? [Clarify: R1.Q3] [User]
   - **Owner:** Feature owner
   - **Impact:** Determines which serial-number representation users see and whether it can be changed through configuration.
@@ -55,7 +58,9 @@ BMaaS is currently not compliant with NVIDIA Cloud Partner (NCP) requirements, p
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 0d3997211
-Phases: draft, revise
+Authored: draft @ prd 0.11.3 - 2bd6607, workspace main @ 0d3997211
+Final: revise @ prd 0.11.3 - 2bd6607, workspace feature/OSAC-5668-host-type-removal @ f42ed0a20
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"0d3997211","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"f42ed0a20","source_repo_branch":"feature/OSAC-5668-host-type-removal","commits_behind_main":0,"commits_ahead_main":16,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
