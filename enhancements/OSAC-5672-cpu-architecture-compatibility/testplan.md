@@ -44,9 +44,27 @@ The following rows are the behavior-to-boundary evidence matrix. A case can appe
 | Deployed explicit-type BMaaS and inherited private caller; IS-9 / IC-3 | TC-IS9-03 | E2E, QE | E5; proposed focused regression file | New cases/fixtures/deployment needed; owner ticket unresolved |
 | Browser/persona behavior with real API; IS-9 / IC-6 | TC-IS9-04 | E2E manual verification, QE | E6 | Existing manual harness; UI regression uses E4 |
 
-For Contract assertions, explicitly invoke the actual outer reconciler with persisted state and inspect CR writes and stored status when it returns. For deployed lifecycle progression, use the existing fixture/helper polling limits and fail when they expire. Establish a rejected Create through its response and absent admitted identity; establish a blocked projection through ConfigurationApplied=False with reason ValidationFailed and the architecture-error message before checking that provisioning fields remain unchanged.
+E2 Contract assertions cannot execute until the proposed runner is implemented; fake-client Unit checks do not replace them. For Contract assertions, explicitly invoke the actual outer reconciler with persisted state and inspect CR writes and stored status when it returns. For deployed lifecycle progression, use the existing fixture/helper polling limits and fail when they expire. Establish a rejected Create through its response and absent admitted identity; establish a blocked projection through ConfigurationApplied=False with reason ValidationFailed and the architecture-error message before checking that provisioning fields remain unchanged.
 
 ## Test Cases
+
+TC identifiers are stable; gaps represent retired cases and are not reused.
+
+### Shared request data
+
+Use the existing suite builders for valid hardware, template, image source, and authentication fields. The following labels identify architecture variants of those fixtures; use the IDs returned by Create and unique names per test. BareMetalInstanceType references set `shared=true`, as required by the existing platform-scoped type contract. DiskImage references retain the scope of their fixture.
+
+| Fixture label | Architecture declaration |
+|---------------|--------------------------|
+| type-amd64 | `spec.hardware.cpu.architecture = "amd64"` |
+| type-arm64 | `spec.hardware.cpu.architecture = "arm64"` |
+| type-s390x | `spec.hardware.cpu.architecture = "s390x"` |
+| image-amd64 | `spec.architecture = [ARCHITECTURE_AMD64]` |
+| image-arm64 | `spec.architecture = [ARCHITECTURE_ARM64]` |
+| image-s390x | `spec.architecture = [ARCHITECTURE_S390X]` |
+| image-multi | `spec.architecture = [ARCHITECTURE_AMD64, ARCHITECTURE_ARM64]` |
+
+For `BareMetalInstances.Create`, set `object.metadata.name` to the unique request name and supply the template/catalog reference and valid authentication from the existing fixture. Set `object.spec.instance_type.id` and `object.spec.disk_image.id` to the selected fixture IDs. Omit only the references being supplied by catalog/template selection in IS-1. Provider-only type Create/Update calls use the private service; instance calls use public/private clients where exposed. Field paths below use protobuf names.
 
 ### IS-1: Effective selections after existing defaults and reference resolution
 
@@ -64,7 +82,8 @@ A template and visible canonical types/images exist. Prepare locked and editable
 
 ##### Steps
 
-1. Create instances with omitted references and with permitted caller overrides of editable references.
+1. Call `BareMetalInstances.Create` with `object.spec.catalog_item.id` set and `instance_type`/`disk_image` omitted. Use catalog defaults selecting type-amd64 with image-amd64, then type-amd64 with image-arm64.
+2. For an editable catalog, repeat with explicit `object.spec.instance_type.id` and `object.spec.disk_image.id` selecting matching and mismatching pairs. For accepted requests, inspect `response.object.spec.instance_type.id` and `response.object.spec.disk_image.id`.
 
 ##### Expected Results
 
@@ -80,11 +99,13 @@ A template and visible canonical types/images exist. Prepare locked and editable
 
 ##### Preconditions
 
-A visible BareMetalInstanceTemplate supplies an instance type under the PR #1451 contract. Visible canonical types/images include matching and mismatching pairs.
+A visible template supplies type-amd64 under the PR #1451 contract. type-arm64, image-amd64, and image-arm64 are visible. Retain the existing template/authentication fixture fields.
 
 ##### Steps
 
-1. Create directly from the template with an explicit image, first using its provided type and then an explicit caller type. Submit matching and mismatching pairs, including name-based references.
+1. Call `BareMetalInstances.Create` with `object.spec.template.id` set, `instance_type` omitted, and `disk_image.id` selecting image-amd64; repeat with image-arm64.
+2. Set `object.spec.instance_type.id` to type-arm64 and `shared=true`; repeat with image-arm64 and image-amd64.
+3. Repeat using reference `name` instead of `id`, preserving each reference's scope.
 
 ##### Expected Results
 
@@ -106,7 +127,7 @@ The CLI can read an image for each supported architecture and a multi-architectu
 
 ##### Steps
 
-1. Run the specialized DiskImage describe command for those images.
+1. Run `describe diskimage <image-id>` for image-amd64, image-arm64, image-s390x, and image-multi; inspect the architecture labels in the command output.
 
 ##### Expected Results
 
@@ -126,7 +147,8 @@ The type creation form uses mock Connect transport with valid remaining hardware
 
 ##### Steps
 
-1. Inspect the architecture selector and create a type with each offered value.
+1. Open the type creation form and inspect the architecture choices.
+2. Select amd64, arm64, and s390x in separate submissions. Capture the Connect request and inspect `object.spec.hardware.cpu.architecture`.
 
 ##### Expected Results
 
@@ -148,7 +170,9 @@ Valid remaining hardware fields are supplied. Prepare amd64, arm64, s390x and in
 
 ##### Steps
 
-1. Exercise the changed public/private type constraint and private Create with each value. Repeat masked legacy architecture correction with each invalid value.
+1. Set `spec.hardware.cpu.architecture` to each listed value in otherwise valid public/private type messages and run the changed schema validation in E1.
+2. Call private `BareMetalInstanceTypes.Create` with each value in `object.spec.hardware.cpu.architecture`; inspect the returned value or gRPC error.
+3. For the seeded legacy type, call private `BareMetalInstanceTypes.Update` with its `object.id`, each invalid replacement, and `update_mask.paths=["spec.hardware.cpu.architecture"]`. Read the stored architecture after each rejection.
 
 ##### Expected Results
 
@@ -168,7 +192,8 @@ CLI is configured for the component-integration fulfillment service; valid remai
 
 ##### Steps
 
-1. Pass each invalid variant from TC-IS3-01 to create baremetalinstancetype --cpu-architecture and create diskimage --architecture. Submit every canonical value.
+1. For each invalid variant from TC-IS3-01, run `create baremetalinstancetype --cpu-architecture <value>` and `create diskimage --architecture <value>` with valid remaining fixture arguments. Capture the exit code and error output.
+2. Repeat with amd64, arm64, and s390x; inspect the submitted type string and image enum.
 
 ##### Expected Results
 
@@ -190,7 +215,10 @@ Three canonical types and three single-architecture images are visible and avail
 
 ##### Steps
 
-1. Exercise the shared comparison and generated public/private Create with all nine image/type combinations. Repeat each mismatch as dry-run.
+1. In E1, pass each of the three type fixtures and three single-architecture image fixtures to the proposed comparison helper: all nine ordered type/image pairs.
+2. For each pair, call public/private `BareMetalInstances.Create` using the shared request fields and a fresh `object.metadata.name`. Inspect `response.object` for acceptance or the gRPC status/message for rejection.
+3. Repeat the six mismatches with gRPC metadata `x-dry-run: true`, using the existing dry-run context helper for in-process handler tests.
+4. After each rejection, call `BareMetalInstances.List` with `filter='this.metadata.name == "<request-name>"'` and assert that `items` is empty.
 
 ##### Expected Results
 
@@ -210,7 +238,9 @@ An image declares amd64 and arm64 in both list orders; an s390x type and matchin
 
 ##### Steps
 
-1. Exercise the shared comparison and Create for each matching target and for the unmatched target.
+1. Pass image-multi with type-amd64, type-arm64, and type-s390x to the proposed comparison helper.
+2. Call `BareMetalInstances.Create` with each of those pairs and a fresh name. Inspect the accepted object or mismatch status/message.
+3. Repeat with the image architecture list reversed to `[ARCHITECTURE_ARM64, ARCHITECTURE_AMD64]`.
 
 ##### Expected Results
 
@@ -226,11 +256,13 @@ An image declares amd64 and arm64 in both list orders; an s390x type and matchin
 
 ##### Preconditions
 
-E2 Contract harness has a persisted compatible instance and access to the running fulfillment service and its catalog. Pause before explicit reconciler invocation; optionally create an existing CR with a different pending selector/template-parameter projection.
+E2 has two persisted instances selecting type-amd64/image-multi: one before first CR creation, and one with an existing CR whose provisioning fields are captured. Change the type's mutable `spec.host_label_selector` through provider Update to produce a pending selector projection for the second instance; retain all other fixture fields.
 
 ##### Steps
 
-1. Change the image architecture list to remove the target, then explicitly invoke the real reconciler. Test first creation and a pending provisioning-input patch. Correct the image and invoke again.
+1. Call `DiskImages.Update` for image-multi with `object.spec.architecture=[ARCHITECTURE_ARM64]` and `update_mask.paths=["spec.architecture"]`.
+2. Explicitly invoke the actual outer reconciler for each instance. Query the Kubernetes API for CR absence/unchanged provisioning fields, then `BareMetalInstances.Get(id)` for persisted `object.status`.
+3. Restore `[ARCHITECTURE_AMD64, ARCHITECTURE_ARM64]` through the same image Update, invoke each reconciler again, and reread the CR and persisted status.
 
 ##### Expected Results
 
@@ -252,8 +284,10 @@ An instance and CR exist with known applied provisioning fields and an incompati
 
 ##### Steps
 
-1. Apply metadata edits, status-only internal updates, HALTED, ALWAYS, and restart-trigger changes separately through masked API updates; invoke reconciliation after each. Also submit a full update with identical provisioning references and parameters.
-2. Repeat a metadata/stop update with no existing CR.
+1. Call `BareMetalInstances.Update` with `object.id`, a changed `object.metadata.labels`, and `update_mask.paths=["metadata.labels"]`.
+2. On the private service, update `object.status.state` with mask `["status.state"]`. Separately update `object.spec.run_strategy` to HALTED and ALWAYS with mask `["spec.run_strategy"]`, and increment `object.spec.restart_trigger` with mask `["spec.restart_trigger"]`.
+3. Invoke reconciliation after each update and read the CR. Also submit the current full object with unchanged provisioning references/parameters and no mask.
+4. Repeat metadata/HALTED updates for the persisted instance without a CR and query the Kubernetes API after reconciliation.
 
 ##### Expected Results
 
@@ -270,11 +304,13 @@ An instance and CR exist with known applied provisioning fields and an incompati
 
 ##### Preconditions
 
-An instance uses inline user data and permits the existing atomic migration to a user-data Secret. The selected catalog pair is made incompatible.
+An instance uses inline user data and permits the existing atomic migration. A visible Secret contains nonempty `data["userdata"]`; capture the stored user-data fields and applied CR parameters. The selected catalog pair is incompatible.
 
 ##### Steps
 
-1. In one masked update clear inline user_data and set user_data_secret. Repeat with a compatible pair. Inspect persistence and projected parameters.
+1. Call `BareMetalInstances.Update` with `object.id`, `object.spec.user_data=""`, `object.spec.user_data_secret.id=<secret-id>`, and `update_mask.paths=["spec.user_data", "spec.user_data_secret"]`.
+2. After rejection, call `BareMetalInstances.Get(id)` and compare the stored user-data fields with the captured values.
+3. Restore the image's compatible architecture list, repeat the same migration, invoke reconciliation, and inspect the stored references and projected user-data parameters.
 
 ##### Expected Results
 
@@ -296,7 +332,8 @@ Seed synthetic legacy types with x86_64, aarch64, uppercase, whitespace, and unk
 
 ##### Steps
 
-1. Read/list/describe the types as permitted personas; render provider list/detail. Attempt new instances selecting each legacy type.
+1. Call `BareMetalInstanceTypes.Get(id)` and `List` for each seeded legacy type, run its CLI describe command, and render the provider list/detail with those returned objects.
+2. Call `BareMetalInstances.Create` selecting each legacy type and a visible image. After rejection, query List using the request name and the Kubernetes API for any derived CR.
 
 ##### Expected Results
 
@@ -316,7 +353,9 @@ A legacy type is referenced by a CatalogItem and existing instance. Provider cre
 
 ##### Steps
 
-1. Correct only spec.hardware.cpu.architecture through private masked Update, generic CLI edit, and provider UI. Then submit a matching instance. Attempt another hardware change and a different canonical-to-canonical architecture change.
+1. As provider, call private `BareMetalInstanceTypes.Update` with the legacy `object.id`, `object.spec.hardware.cpu.architecture="amd64"`, and `update_mask.paths=["spec.hardware.cpu.architecture"]`; read back the type with Get.
+2. Repeat equivalent corrections on separate legacy fixtures through generic CLI edit and the provider UI, then call `BareMetalInstances.Create` with the corrected type and image-amd64.
+3. Attempt to change `spec.hardware.cpu.cores` using its nested mask, then the now-canonical architecture to arm64 with the architecture mask. Read back the type after each rejection.
 
 ##### Expected Results
 
@@ -336,7 +375,9 @@ A provider and tenant client can view a legacy type; retain a stale version. A c
 
 ##### Steps
 
-1. Attempt correction as a tenant, with a stale provider version/lock, and with invalid replacement strings. Then reread and correct as the provider.
+1. Attempt private `BareMetalInstanceTypes.Update` as the tenant with `object.id`, architecture="amd64", and mask `["spec.hardware.cpu.architecture"]`.
+2. As provider, repeat with `lock=true` and the stale value in `object.metadata.version`. Then submit each invalid architecture from TC-IS3-01 using the same mask.
+3. Reread the type with Get and submit the valid correction with `lock=true` and the current metadata version. Compare stored hardware after each response.
 
 ##### Expected Results
 
@@ -358,7 +399,9 @@ Mock Connect returns an amd64 type and visible available images for amd64, arm64
 
 ##### Steps
 
-1. Select the type, open the image selector, inspect the disabled reason using keyboard and accessibility queries, and choose a compatible image.
+1. Select type-amd64 and open the image selector populated with image-amd64, image-arm64, and image-multi.
+2. Use keyboard/accessibility queries to inspect image-arm64's disabled state and reason.
+3. Select image-amd64 and image-multi in separate runs and attempt to advance.
 
 ##### Expected Results
 
@@ -378,7 +421,9 @@ A wizard has an image selected or defaulted under one type. Prepare another type
 
 ##### Steps
 
-1. Change type where policy allows. Load CatalogItem-defaulted and direct-template selections, including an off-page selected reference. Try to advance/submit with an incompatible retained image.
+1. Start with type-amd64/image-amd64 selected, change to type-arm64 where policy permits, and attempt to advance/submit without replacing the image.
+2. Load a CatalogItem default or direct-template selection whose type/image reference is outside the mocked list page. Inspect the Get request and attempt to advance before and after resolution.
+3. Repeat with image-multi defaulted for type-amd64 and type-arm64.
 
 ##### Expected Results
 
@@ -398,7 +443,9 @@ Mock Connect supports delayed and failed type/image lookups and an admission mis
 
 ##### Steps
 
-1. Render each loading/error state; retry lookups. Submit after changing catalog data server-side. Select a legacy type in a permitted existing catalog.
+1. Delay the selected type/image Get responses; attempt to advance. Fail a lookup, select Retry, and resolve it with the matching fixture.
+2. After a compatible selection, have the mock Create return InvalidArgument with INCOMPATIBLE_DISK_IMAGE_ARCHITECTURE and the design's correction message; inspect the displayed error.
+3. Return a selected type with architecture="x86_64" and attempt image-based submission.
 
 ##### Expected Results
 
@@ -420,7 +467,8 @@ Two tenants have distinct image catalogs. Prepare a hidden image whose architect
 
 ##### Steps
 
-1. As one tenant submit the other tenant's image by ID and name before and after changing its architecture. Then submit the authorized shared mismatch.
+1. As tenant A, call `BareMetalInstances.Create` with its type-amd64 and tenant B's image reference, first by ID and then by name in B's scope. Repeat with the hidden image declaring amd64, then arm64.
+2. Submit the authorized shared image-arm64 with `disk_image.shared=true`; compare the returned status/message with those for the hidden references.
 
 ##### Expected Results
 
@@ -440,7 +488,8 @@ Prepare matching and mismatching images marked available, deprecated, obsolete, 
 
 ##### Steps
 
-1. Create through caller/default references for each lifecycle case; use a deprecated matching multi-architecture image and inspect warnings.
+1. Call `BareMetalInstances.Create` with type-amd64 and each available/deprecated/obsolete/deleting image fixture, using both matching and mismatching architecture lists and caller/catalog-selected references.
+2. For the matching deprecated multi-architecture image, inspect `response.warnings`; for rejected requests, inspect the gRPC code/message to determine which validation ran first.
 
 ##### Expected Results
 
@@ -460,11 +509,13 @@ E2 has a persisted instance with a blocked projection. Its authorized image has 
 
 ##### Steps
 
-1. Invoke the real reconciler and read the persisted failure condition through public/private Get and List.
+1. Invoke the actual outer reconciler for the blocked instance.
+2. Call public/private `BareMetalInstances.Get(id)` and List; locate the condition of type `BARE_METAL_INSTANCE_CONDITION_TYPE_CONFIGURATION_APPLIED` in the returned object's `status.conditions`.
+3. Inspect that condition's `status`, `reason`, and `message` for the expected failure and omission of the fixture's source URL/host selector.
 
 ##### Expected Results
 
-1. ConfigurationApplied=False has reason ValidationFailed and an actionable message identifying the authorized catalog names and supported/required architectures. The message omits the image source URL and private host selector.
+1. The condition has `status=CONDITION_STATUS_FALSE`, `reason="ValidationFailed"`, and an actionable message naming the authorized catalogs and supported/required architectures. The message omits the image source URL and private host selector.
 
 ### IS-9: Documentation, audited boundaries, and regression verification
 
@@ -502,8 +553,10 @@ E5 has compatible source-pinned deployments of the fulfillment service, bare-met
 
 ##### Steps
 
-1. Create matching and mismatching catalog/direct-template requests through CLI/API, including a multi-architecture match and a private Create shaped like the CaaS worker caller.
-2. Attempt provisioning with a legacy type, correct it as the provider, and retry a matching request. Make an existing instance's catalog pair incompatible and apply metadata/stop updates.
+1. Through the deployed CLI/API, create matching catalog/direct-template pairs including type-amd64/image-multi; poll the existing BMaaS lifecycle using E5 helpers.
+2. Submit type-amd64/image-arm64 with a fresh name, including a private Create with explicit type/image references as used by the CaaS caller. Inspect the error, persisted instances, hub CRs and provider allocation observations.
+3. Submit a seeded legacy type, correct its architecture through provider `BareMetalInstanceTypes.Update`, and retry a matching Create.
+4. Remove amd64 from the image used by an existing instance. Submit metadata and HALTED updates with their masks from TC-IS5-01, invoke/poll reconciliation, and compare the prior provisioning fields.
 
 ##### Expected Results
 
@@ -524,7 +577,9 @@ E6 has a deployed UI and fulfillment service, provider and tenant accounts, auth
 
 ##### Steps
 
-1. As provider create/correct type architectures. As tenant select matching, mismatching, multi-architecture and default images, and receive a stale-catalog submission error. Check disabled explanations with keyboard navigation.
+1. As provider, create a type with each canonical architecture choice and explicitly correct a seeded legacy type.
+2. As tenant, select type-amd64 and inspect image-amd64/image-arm64/image-multi; use keyboard navigation to read the disabled reason and select the compatible multi-architecture image.
+3. Load an incompatible default and attempt submission. Separately change catalog architecture after a compatible selection and inspect the returned submission error.
 
 ##### Expected Results
 

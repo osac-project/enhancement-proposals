@@ -112,6 +112,8 @@ The existing Architecture enum supplies the supported vocabulary for the compari
 
 `IS-1` through `IS-9` identify the PRD's nine In Scope bullets in published order. They are local traceability anchors, not additional requirements.
 
+IC identifiers are stable; gaps represent retired entries.
+
 ## IC-1: BareMetalInstanceType architecture input constraint
 
 **Requirements:** IS-2, IS-3.
@@ -172,7 +174,7 @@ Regenerate the changed shared contract once with `make -C proto generate`, valid
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 515ce8758
-Phases: draft, revise, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise, revise
+Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 515ce8758
+Phases: draft, revise, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise, revise, respond
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"515ce8758","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"515ce8758","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
