@@ -3,7 +3,7 @@ title: cluster-upgrade-caas-phase1
 authors:
   - vemporop@redhat.com
 creation-date: 2026-09-22
-last-updated: 2026-10-06
+last-updated: 2026-10-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1415
 prd:
@@ -174,7 +174,7 @@ The create and scale path must render the HostedCluster image from `ClusterOrder
 | Succeeded | HyperShift has completed applying the requested version to the selected component. |
 | Failed | HyperShift reports an unrecoverable terminal error for an initiated upgrade and has stopped working toward the target. |
 
-The operator detects HyperShift-driven state transitions from the selected `HostedCluster` or `NodePool` status, conditions, and available history. The exact HyperShift signals for each transition are left to implementation.
+The operator determines whether the selected HyperShift control plane or node pool has started upgrading, completed the requested version, or reached a terminal failure. The concrete HyperShift fields and signals used to make those determinations are left to implementation.
 
 The operator reports HyperShift completion signals and observed semver through the existing private Cluster Update path. Fulfillment accepts success only when the reported component and observed semver match the accepted component and target semver in `Cluster.status.upgrade`. On success or terminal failure, it updates `Cluster.status.upgrade`, appends one history entry indicating success or failure, and sets `CanUpgrade=True` in the same transaction. Success also advances the observed version; failure leaves it unchanged. Stale feedback cannot release the gate.
 
@@ -266,7 +266,7 @@ Phase 1 introduces no new support tooling or separate runtime enable/disable pro
 
 ## Infrastructure Needed
 
-No new infrastructure or AAP job template is needed; Phase 1 reuses the configured AAP cluster job or workflow and existing HyperShift resources.
+No new runtime infrastructure or AAP job template is needed; Phase 1 reuses the configured AAP cluster job or workflow and existing HyperShift resources. The companion test plan records unresolved deployed provider, browser, and failure-injection test prerequisites.
 
 ---
 
