@@ -82,7 +82,7 @@ In scope:
 
 - Replace the inline `SshKeyField` in both `VmGeneralStep.tsx` and
   `BareMetalGeneralStep.tsx` with `SecretSelectionField`, filtered to
-  `SecretType.SSH_PUBLIC_KEY` and scoped to the selected project.
+  `SecretType.SSH_PUBLIC_KEY` and scoped to the tenant.
 - Update `spec.sshKey` in both wizard value types from inline key text to a
   secret name reference.
 - Update both payload builders to send the secret name instead of the raw key.
