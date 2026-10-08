@@ -49,13 +49,15 @@ preserves prepared infrastructure and the other tenant's storage, and rejects
 unsafe reassignment. QE validates the resulting configuration
 through the shared VMaaS-over-FC flow; VM disk lifecycle implementation is a
 separate dependency below. Setup and acceptance may be performed manually.
+Acceptance covers VM hosting on the hub and on a dedicated remote cluster,
+with one hosting target configured per deployment.
 
 ## Out of Scope
 
 - Shared VM/Volume lifecycle implementation, independent VaaS volumes and dynamic attach/detach.
 - OSAC CSI integration changes or removal, and vendor-driver installation automation.
 - CaaS and BMaaS storage integration, and Enclave.
-- Multi-cluster or multi-backend preview deployment profiles.
+- Concurrent VM hosting targets or multiple storage backends per deployment.
 - FC switch configuration, zoning, host/HBA preparation, and dedicated fabric diagnostics.
 - NFS, iSCSI, FCoE, and NVMe/TCP transports.
 - Migration between NetApp and other providers; supported in-place OSAC upgrades.
@@ -95,9 +97,9 @@ separate dependency below. Setup and acceptance may be performed manually.
 
 ## Assumptions
 
-- One existing, connected OpenShift cluster with OpenShift Virtualization hosts
-  OSAC and tenant VMs. The preview profile operates without the OSAC CSI driver;
-  existing CSI integrations remain intact.
+- One existing, connected OpenShift Virtualization cluster hosts tenant VMs,
+  either on the OSAC hub or as a dedicated remote hosting cluster. The preview
+  profile operates without the OSAC CSI driver; existing CSI integrations remain intact.
 - Infrastructure administrators supply workers with supported FC access, prepared
   zoning, management connectivity, and the required vendor storage deployment.
   These prerequisites use documented setup steps.
@@ -155,4 +157,4 @@ Final: revise @ prd 0.11.3 - 2bd6607, workspace osac-5813-netapp-integration @ c
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"c8d0d8890","source_repo_branch":"osac-5813-netapp-integration","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"c8d0d8890","source_repo_branch":"osac-5813-netapp-integration","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
