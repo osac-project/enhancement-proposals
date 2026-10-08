@@ -3,11 +3,11 @@ title: netris-ca-support-for-aap-execution-environments
 authors:
   - etabak@redhat.com
 creation-date: 2026-10-07
-last-updated: 2026-10-07
+last-updated: 2026-10-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-5971
   - https://redhat.atlassian.net/browse/OSAC-5972
-prd: []
+prd: "prd.md"
 see-also:
   - N/A
 replaces:
@@ -30,17 +30,24 @@ available through the supported installation flow without embedding certificate
 material in Enclave or OSAC.
 
 The requirements are tracked in [OSAC-5971](https://redhat.atlassian.net/browse/OSAC-5971)
-and [OSAC-5972](https://redhat.atlassian.net/browse/OSAC-5972). This proposal
-does not have a separate PRD.
+and [OSAC-5972](https://redhat.atlassian.net/browse/OSAC-5972). The lightweight
+user-outcome PRD is [prd.md](prd.md).
 
 ## Motivation
 
-OSAC AAP jobs use Netris for network and bare-metal operations. The temporary
-`global.networking.netris.validateCerts` setting makes it possible to disable
-TLS verification, but it does not provide the CA bundle required when a
-customer's Netris controller uses a private or self-signed CA. With validation
-enabled, the Ansible execution environment trusts only its existing system
-trust store.
+OSAC AAP jobs use Netris for network and bare-metal operations. OSAC-5971 is the
+temporary prerequisite that establishes the chart-owned
+`global.networking.netris.validateCerts` value and its
+`NETRIS_VALIDATE_CERTS` propagation. OSAC-5972 then adds the customer CA
+support described here. The implementation order is OSAC-5971 first, followed
+by this design's installer/AAP changes in OSAC-5972, and only then enabling the
+production HTTPS path. If the temporary change lands with a different
+contract, the implementation must update this proposal and the release notes
+before implementation begins.
+
+Without the CA support, enabling validation does not provide the CA bundle
+required when a customer's Netris controller uses a private or self-signed CA.
+The Ansible execution environment trusts only its existing system trust store.
 
 The CA is customer configuration and must not be baked into an upstream OSAC
 or OSAC AAP image. The supported OSAC path is to mount the CA into the AAP
@@ -186,6 +193,15 @@ resource or already-running pods. AAP and installer maintainers should review
 the implementation because the change affects upstream AAP-managed execution
 pod behavior.
 
+### Affected repositories
+
+- `osac-installer`: values schema, Helm propagation, preflight checks, and
+  operator documentation.
+- `osac-aap`: config-as-code inventory, execution-pod volume configuration,
+  protected launch-input handling, and Netris task plumbing.
+- `osac-test-infra`: installer, AAP, and private-CA integration coverage.
+- Enclave plugin/Wizard repository: schema-driven control and value pass-through.
+
 ## UX Alignment
 
 This is an installation-time configuration contract, not a fulfillment-service
@@ -224,7 +240,14 @@ installer values contain the ConfigMap name. It does not add certificate-file
 upload, secret storage, or custom cross-field UI logic. Syntax and value-shape
 validation happen in the Wizard/schema; ConfigMap existence, namespace,
 immutability, digest, and permissions are checked by installer deployment
-preflight and Kubernetes admission.
+preflight and Kubernetes admission. The installer preflight reads `bundle.pem`,
+computes its digest, and records the digest together with the exact
+namespace/name, ConfigMap UID, and resourceVersion in the release-scoped OSAC
+binding. Admission verifies that the pod reference matches this binding and
+that the ConfigMap is immutable with the expected metadata; it does not GET or
+hash arbitrary ConfigMaps. Rotation creates a new immutable ConfigMap and
+updates the binding and Helm values together. Rollback restores the previous
+binding.
 
 The Enclave plugin work is blocked by the installer schema/value work. The
 Wizard verification is blocked by the plugin update. Both are required before
@@ -313,13 +336,15 @@ The chart-generated controller URL, `NETRIS_VALIDATE_CERTS`, and
 `NETRIS_CA_PATH` values are authoritative. Managed job templates must not
 expose any of them as user-overridable extra variables. The AAP job templates
 must set
-`ask_variables_on_launch: false`, the launch role must not grant permission to
-edit protected extra variables, and the launch role must route direct API
-requests through the shared launch-input helper. Config-as-code must fail
-before creating or updating a job template if it cannot enforce this
-allowlist. Tests must cover UI and direct API attempts to override TLS
-variables or redirect the endpoint; Ansible variable precedence is not a
-security boundary.
+`ask_variables_on_launch: true` for the existing non-protected runtime inputs
+that the OSAC operator supplies through `extra_vars`. The three chart-owned
+Netris inputs remain protected: they are not survey fields, are rejected or
+removed by the shared launch-input helper before an AAP API launch, and cannot
+be edited by the launch role. Direct AAP API requests use the same helper
+rather than bypassing it. Config-as-code must fail before creating or updating
+a job template if it cannot enforce this allowlist. Tests must cover UI and
+direct API attempts to override TLS variables or redirect the endpoint;
+Ansible variable precedence is not a security boundary.
 
 The production contract requires an HTTPS controller URL. The production
 chart rejects an `http://` URL and exposes no HTTP bypass value. HTTP
