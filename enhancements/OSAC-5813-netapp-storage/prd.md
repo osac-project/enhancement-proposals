@@ -22,8 +22,8 @@ NetApp tiers in the Developer Preview.
 - Register one ONTAP backend and one or more FC block tiers through the existing
   UI, CLI, and API.
 - Bind each tenant to its dedicated, administrator-prepared storage virtual
-  machine (SVM), with a separate management LIF (logical interface), protected
-  credentials and usable configuration for its assigned tiers.
+  machine (SVM), with protected management access and usable configuration for
+  its assigned tiers. The management-endpoint model remains open (OQ-5).
 - Offboard tenant storage using the established lifecycle safeguards.
 
 Administrators prepare dedicated SVMs, LIFs, credentials, native policies and
@@ -39,8 +39,9 @@ Tenants receive no ONTAP management credentials.
 
 ### Required verification
 
-Onboard two tenants and verify distinct SVMs and management LIFs, correct tier
-bindings, and FC access limited to authorized consumers. FC requires no separate
+Onboard two tenants and verify distinct SVMs, the agreed management-access model,
+correct tier bindings, and FC access limited to authorized consumers, including
+tenant VMs sharing a worker (OQ-6). FC requires no separate
 tenant IP data LIF; its target LIFs and access configuration follow ONTAP's FC
 model. Failed onboarding remains not ready and retries avoid duplicate resources.
 Offboarding respects data/dependency guards, removes OSAC-owned resources/access,
@@ -105,6 +106,9 @@ separate dependency below. Setup and acceptance may be performed manually.
 - Management access does not prove FC connectivity; infrastructure owners prepare
   tenant targets and zoning before onboarding.
 - Existing central credential handling and lifecycle safeguards apply.
+- Separate SVM management LIFs (logical interfaces) remain the proposed baseline;
+  a shared management endpoint requires agreement on protected credentials and
+  tested permissions (OQ-5).
 
 ## Dependencies
 
@@ -128,6 +132,8 @@ separate dependency below. Setup and acceptance may be performed manually.
   resources need verified data/access cleanup before reuse (OQ-3).
 - A mismatch with the shared consumption configuration can block VM acceptance
   despite successful tenant resource creation (OQ-1).
+- Shared-worker FC access needs verified tenant VM disk isolation; separate SVMs
+  alone do not establish this (OQ-6).
 
 ## Open Questions
 
@@ -137,6 +143,8 @@ separate dependency below. Setup and acceptance may be performed manually.
 | OQ-2 | Has the intended NetApp environment demonstrated working FC consumption from its OpenShift workers? | Access handed to E2E team; validation pending — QE / infrastructure owners | Establishes readiness for joint VM acceptance. |
 | OQ-3 | Do the recovery, offboarding and manual-reuse safeguards preserve tenant isolation? | Proposed — Storage Working Group / Core-secrets workstream | Prevents data loss and unsafe reuse of retained infrastructure. |
 | OQ-4 | Are dedicated administrator-prepared SVMs and their operational prerequisites accepted for the preview? | Proposed — Infrastructure/partner workstream / Feature owner | Confirms the preparation and ownership boundary. |
+| OQ-5 | Does the preview use separate SVM management endpoints or a shared endpoint, with which credential scope? | Open — Storage Working Group / infrastructure owners | Confirms documented preparation and protected management access. |
+| OQ-6 | Can tenant VMs sharing a worker consume their distinct SVMs while preserving disk isolation? | Open — Storage Working Group / architects / QE | Qualifies the shared-cluster preview profile and joint acceptance. |
 
 ---
 
@@ -147,4 +155,4 @@ Final: revise @ prd 0.11.3 - 2bd6607, workspace osac-5813-netapp-integration @ c
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"c8d0d8890","source_repo_branch":"osac-5813-netapp-integration","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"c8d0d8890","source_repo_branch":"osac-5813-netapp-integration","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","respond","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
