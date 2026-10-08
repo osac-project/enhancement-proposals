@@ -30,25 +30,23 @@ The following rows are the behavior-to-boundary evidence matrix. A case can appe
 
 | Behavior; source / interface | Case IDs | Required tier and owner | Suite / environment to extend | Execution readiness |
 |-----------------------------|----------|-------------------------|-------------------------------|---------------------|
-| Compatibility after CatalogItem or direct-template selection; IS-1 / IC-3 | TC-IS1-01, TC-IS1-02 | Component integration, DEV | Catalog/instance/template API suites, E3; merged-candidate DB assertions, E7 | Existing reference-resolution paths identified; no new template schema |
+| Compatibility after CatalogItem or direct-template selection; IS-1 / IC-2 | TC-IS1-01, TC-IS1-02 | Component integration, DEV | Catalog/instance/template API suites, E3; merged-candidate DB assertions, E7 | Existing reference-resolution paths identified; no new template schema |
 | Canonical type input constraint; IS-2, IS-3 / IC-1 | TC-IS3-01 | Unit and component integration, DEV | Validation E1; API/database E3/E7 | Existing harnesses for the changed type constraint |
-| CLI architecture input/display and legacy correction; IS-2, IS-3, IS-6 / IC-5, IC-4 | TC-IS2-02, TC-IS3-02, TC-IS6-02 | Unit and component integration, DEV | Specialized CLI co-located E1 plus deployed CLI/API E3 | Existing harnesses; implementation not present |
-| UI canonical controls, visible disabled choices and changed defaults; IS-2, IS-7 / IC-6 | TC-IS2-03, TC-IS7-01, TC-IS7-02, TC-IS7-03 | Unit, DEV | UI tests E4 | Existing harness; cover CatalogItem defaults and caller-selected references |
-| Nine-pair matrix, multi-architecture, dry-run and rollback; IS-4 / IC-3 | TC-IS4-01, TC-IS4-02 | Unit and database/component integration, DEV | Comparison E1; server/database E7 and API E3 | Existing harnesses; no feature execution |
-| Drift/no CR creation or provisioning patch, recovery/status persistence; IS-4 / IC-7 | TC-IS4-03 | Unit plus Contract, DEV | Reconciler fake-client E1 plus real E2 | Unit harness exists; real Contract harness missing |
-| Non-provisioning updates and guarded user-data migration; IS-5 / IC-3 | TC-IS5-01, TC-IS5-02 | Component integration plus Contract, DEV | API/database E3/E7; CR fields/status E2 | API paths identified; real projection harness missing |
-| Legacy readability, provisioning rejection, correction and denial/conflicts; IS-6 / IC-3, IC-4 | TC-IS6-01, TC-IS6-02, TC-IS6-03 | Component integration, DEV | API/database/CLI E3/E7; provider UI controls E4 | Controlled legacy fixture required; implementation not present |
-| Hidden references, lifecycle precedence, warning preservation; IS-8 / IC-3 | TC-IS8-01, TC-IS8-02 | Component integration, DEV | Tenant/lifecycle API suites E3/E7 | Existing harnesses |
-| Safe returned compatibility status; IS-8 / IC-7 | TC-IS8-03 | Unit plus Contract, DEV | Reconciler E1 and real E2 | Contract execution not ready |
+| CLI architecture input/display and legacy correction; IS-2, IS-3, IS-6 / IC-4, IC-3 | TC-IS2-02, TC-IS3-02, TC-IS6-02 | Unit and component integration, DEV | Specialized CLI co-located E1 plus deployed CLI/API E3 | Existing harnesses; implementation not present |
+| UI canonical controls, visible disabled choices and changed defaults; IS-2, IS-7 / IC-5 | TC-IS2-03, TC-IS7-01, TC-IS7-02, TC-IS7-03 | Unit, DEV | UI tests E4 | Existing harness; cover CatalogItem defaults and caller-selected references |
+| Nine-pair matrix, multi-architecture, dry-run and rollback; IS-4 / IC-2 | TC-IS4-01, TC-IS4-02 | Unit and database/component integration, DEV | Comparison E1; server/database E7 and API E3 | Existing harnesses; no feature execution |
+| Drift/no CR creation or provisioning patch, recovery/status persistence; IS-4 / IC-6 | TC-IS4-03 | Unit plus Contract, DEV | Reconciler fake-client E1 plus real E2 | Unit harness exists; real Contract harness missing |
+| Non-provisioning updates and guarded user-data migration; IS-5 / IC-2 | TC-IS5-01, TC-IS5-02 | Component integration plus Contract, DEV | API/database E3/E7; CR fields/status E2 | API paths identified; real projection harness missing |
+| Legacy readability, provisioning rejection, correction and denial/conflicts; IS-6 / IC-2, IC-3 | TC-IS6-01, TC-IS6-02, TC-IS6-03 | Component integration, DEV | API/database/CLI E3/E7; provider UI controls E4 | Controlled legacy fixture required; implementation not present |
+| Hidden references, lifecycle precedence, warning preservation; IS-8 / IC-2 | TC-IS8-01, TC-IS8-02 | Component integration, DEV | Tenant/lifecycle API suites E3/E7 | Existing harnesses |
+| Safe returned compatibility status; IS-8 / IC-6 | TC-IS8-03 | Unit plus Contract, DEV | Reconciler E1 and real E2 | Contract execution not ready |
 | Documentation of architecture validation and correction; IS-9 / — | TC-IS9-01 | Documentation review, DEV | E8 | Depends on final decisions |
-| Deployed explicit-type BMaaS and inherited private caller; IS-9 / IC-3 | TC-IS9-03 | E2E, QE | E5; proposed focused regression file | New cases/fixtures/deployment needed; owner ticket unresolved |
-| Browser/persona behavior with real API; IS-9 / IC-6 | TC-IS9-04 | E2E manual verification, QE | E6 | Existing manual harness; UI regression uses E4 |
+| Deployed explicit-type BMaaS and inherited private caller; IS-9 / IC-2 | TC-IS9-03 | E2E, QE | E5; proposed focused regression file | New cases/fixtures/deployment needed; owner ticket unresolved |
+| Browser/persona behavior with real API; IS-9 / IC-5 | TC-IS9-04 | E2E manual verification, QE | E6 | Existing manual harness; UI regression uses E4 |
 
 E2 Contract assertions cannot execute until the proposed runner is implemented; fake-client Unit checks do not replace them. For Contract assertions, explicitly invoke the actual outer reconciler with persisted state and inspect CR writes and stored status when it returns. For deployed lifecycle progression, use the existing fixture/helper polling limits and fail when they expire. Establish a rejected Create through its response and absent admitted identity; establish a blocked projection through ConfigurationApplied=False with reason ValidationFailed and the architecture-error message before checking that provisioning fields remain unchanged.
 
 ## Test Cases
-
-TC identifiers are stable; gaps represent retired cases and are not reused.
 
 ### Shared request data
 
@@ -72,7 +70,7 @@ For `BareMetalInstances.Create`, set `object.metadata.name` to the unique reques
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-2 | critical | automated |
 
 **Coverage:** Component integration / DEV, E3.
 
@@ -93,7 +91,7 @@ A template and visible canonical types/images exist. Prepare locked and editable
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-2 | critical | automated |
 
 **Coverage:** Component integration / DEV, E3 and E7.
 
@@ -117,7 +115,7 @@ A visible template supplies type-amd64 under the PR #1451 contract. type-arm64, 
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-5 | high | automated |
+| IC-4 | high | automated |
 
 **Coverage:** Unit and component integration / DEV, E1 and E3.
 
@@ -137,7 +135,7 @@ The CLI can read an image for each supported architecture and a multi-architectu
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-6 | high | automated |
+| IC-5 | high | automated |
 
 **Coverage:** Unit / DEV, E4.
 
@@ -182,7 +180,7 @@ Valid remaining hardware fields are supplied. Prepare amd64, arm64, s390x and in
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-5 | high | automated |
+| IC-4 | high | automated |
 
 **Coverage:** Unit and component integration / DEV, E1 and E3.
 
@@ -205,7 +203,7 @@ CLI is configured for the component-integration fulfillment service; valid remai
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-2 | critical | automated |
 
 **Coverage:** Unit and component integration / DEV, E1 and E3/E7.
 
@@ -228,7 +226,7 @@ Three canonical types and three single-architecture images are visible and avail
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-2 | critical | automated |
 
 **Coverage:** Unit and component integration / DEV, E1 and E3/E7.
 
@@ -250,7 +248,7 @@ An image declares amd64 and arm64 in both list orders; an s390x type and matchin
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-7 | critical | automated |
+| IC-6 | critical | automated |
 
 **Coverage:** Unit and Contract / DEV, E1 and E2.
 
@@ -274,7 +272,7 @@ E2 has two persisted instances selecting type-amd64/image-multi: one before firs
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-2 | critical | automated |
 
 **Coverage:** Component integration and Contract / DEV, E3/E7 for API behavior and E2 for CR projections.
 
@@ -298,7 +296,7 @@ An instance and CR exist with known applied provisioning fields and an incompati
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-2 | critical | automated |
 
 **Coverage:** Component integration and Contract / DEV, E3/E7 for admission and E2 for downstream parameters.
 
@@ -322,7 +320,7 @@ An instance uses inline user data and permits the existing atomic migration. A v
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-2 | critical | automated |
 
 **Coverage:** Component integration and Contract / DEV, E3/E7 for API behavior, E4 for UI visibility and E2 for CR absence.
 
@@ -343,7 +341,7 @@ Seed synthetic legacy types with x86_64, aarch64, uppercase, whitespace, and unk
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-4 | critical | automated |
+| IC-3 | critical | automated |
 
 **Coverage:** Component integration and Unit / DEV, E3/E7 for API/CLI and E4 for provider controls.
 
@@ -365,7 +363,7 @@ A legacy type is referenced by a CatalogItem and existing instance. Provider cre
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-4 | high | automated |
+| IC-3 | high | automated |
 
 **Coverage:** Component integration / DEV, E3 and E7.
 
@@ -389,7 +387,7 @@ A provider and tenant client can view a legacy type; retain a stale version. A c
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-6 | high | automated |
+| IC-5 | high | automated |
 
 **Coverage:** Unit / DEV, E4.
 
@@ -411,7 +409,7 @@ Mock Connect returns an amd64 type and visible available images for amd64, arm64
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-6 | high | automated |
+| IC-5 | high | automated |
 
 **Coverage:** Unit / DEV, E4.
 
@@ -433,7 +431,7 @@ A wizard has an image selected or defaulted under one type. Prepare another type
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-6 | medium | automated |
+| IC-5 | medium | automated |
 
 **Coverage:** Unit / DEV, E4.
 
@@ -457,7 +455,7 @@ Mock Connect supports delayed and failed type/image lookups and an admission mis
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-2 | critical | automated |
 
 **Coverage:** Component integration / DEV, E3 and E7.
 
@@ -478,7 +476,7 @@ Two tenants have distinct image catalogs. Prepare a hidden image whose architect
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | high | automated |
+| IC-2 | high | automated |
 
 **Coverage:** Component integration / DEV, E3 and E7.
 
@@ -499,7 +497,7 @@ Prepare matching and mismatching images marked available, deprecated, obsolete, 
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-7 | critical | automated |
+| IC-6 | critical | automated |
 
 **Coverage:** Unit and Contract / DEV, E1 and E2.
 
@@ -543,7 +541,7 @@ The implementation's API reference, CLI help, and provider/tenant documentation 
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-3 | critical | automated |
+| IC-2 | critical | automated |
 
 **Coverage:** E2E / QE, E5.
 
@@ -567,7 +565,7 @@ E5 has compatible source-pinned deployments of the fulfillment service, bare-met
 
 | Interface Change | Priority | Automation |
 |------------------|----------|------------|
-| IC-6 | high | manual |
+| IC-5 | high | manual |
 
 **Coverage:** E2E manual verification / QE, E6.
 
@@ -593,7 +591,7 @@ All nine source In Scope bullets have planned cases, with the PRD's constraints 
 
 ### Interface Change Coverage Gaps
 
-All six interface changes have planned cases: IC-1 type input validation, IC-3 instance request validation/errors, IC-4 provider correction through Update, IC-5 CLI inputs/display, IC-6 UI choices, and IC-7 returned failure status. Existing-default selection cases exercise IC-3. Documentation review maps directly to IS-9 with `—`. IC-7's real-boundary cases still require the proposed E2 runner; the controller-disabled fulfillment service integration target cannot close that execution gap. IC-6 uses existing UI Unit regression and manual deployed-browser verification.
+All six interface changes have planned cases: IC-1 type input validation, IC-2 instance request validation/errors, IC-3 provider correction through Update, IC-4 CLI inputs/display, IC-5 UI choices, and IC-6 returned failure status. Existing-default selection cases exercise IC-2. Documentation review maps directly to IS-9 with `—`. IC-6's real-boundary cases still require the proposed E2 runner; the controller-disabled fulfillment service integration target cannot close that execution gap. IC-5 uses existing UI Unit regression and manual deployed-browser verification.
 
 ### Execution and Ownership Gaps
 

@@ -112,39 +112,37 @@ The existing Architecture enum supplies the supported vocabulary for the compari
 
 `IS-1` through `IS-9` identify the PRD's nine In Scope bullets in published order. They are local traceability anchors, not additional requirements.
 
-IC identifiers are stable; gaps represent retired entries.
-
 ## IC-1: BareMetalInstanceType architecture input constraint
 
 **Requirements:** IS-2, IS-3.
 
 BareMetalInstanceTypes Create and Update accept only `amd64`, `arm64`, or `s390x` for `spec.hardware.cpu.architecture`. A noncanonical input returns InvalidArgument identifying the field and accepted values.
 
-## IC-3: BareMetalInstance Create and provisioning-changing Update validation
+## IC-2: BareMetalInstance Create and provisioning-changing Update validation
 
 **Requirements:** IS-1, IS-4, IS-5, IS-6, IS-8.
 
 BareMetalInstances Create rejects an incompatible effective image/type pair with InvalidArgument and `INCOMPATIBLE_DISK_IMAGE_ARCHITECTURE`; a noncanonical type returns FailedPrecondition and `NONCANONICAL_INSTANCE_TYPE_ARCHITECTURE`. This applies to caller selections, CatalogItem defaults, and template-provided instance types. The supported provisioning-changing Update receives the same check. Errors identify only authorized resources and explain the correction. Metadata and stop requests remain available as specified in §4.1.
 
-## IC-4: BareMetalInstanceType architecture correction through Update
+## IC-3: BareMetalInstanceType architecture correction through Update
 
 **Requirements:** IS-3, IS-6, IS-8.
 
 An authorized provider can Update a legacy type's `spec.hardware.cpu.architecture` to an exact canonical name, including through that nested update mask. Other hardware and already canonical architecture values remain immutable. Get/List continue to expose the stored legacy value until corrected.
 
-## IC-5: CLI architecture inputs and display
+## IC-4: CLI architecture inputs and display
 
 **Requirements:** IS-2, IS-3.
 
 `create baremetalinstancetype --cpu-architecture` and `create diskimage --architecture` accept the three exact canonical strings and reject other spellings with the accepted names. DiskImage describe displays `amd64`, `arm64`, and `s390x` rather than uppercase enum-derived labels.
 
-## IC-6: UI type architecture and compatibility choices
+## IC-5: UI type architecture and compatibility choices
 
 **Requirements:** IS-2, IS-3, IS-4, IS-6, IS-7.
 
 The type creation form offers the three canonical architecture choices instead of free text. A provider can explicitly choose a canonical replacement for a legacy value and submit the correction through Update. In `BareMetalConfigurationStep`, incompatible images remain visible but disabled with an accessible explanation; matching multi-architecture images remain selectable. A changed type re-evaluates the selected/default image, and an incompatible retained selection blocks submission.
 
-## IC-7: BareMetalInstance status for blocked provisioning configuration
+## IC-6: BareMetalInstance status for blocked provisioning configuration
 
 **Requirements:** IS-4, IS-5, IS-6, IS-8.
 
@@ -174,7 +172,7 @@ Regenerate the changed shared contract once with `make -C proto generate`, valid
 
 ## Provenance
 
-Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 515ce8758
-Phases: draft, revise, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise, revise, respond
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 515ce8758
+Phases: draft, revise, revise, revise, revise, revise, revise, manual-edit, revise, revise, revise, revise, revise, revise, respond, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"515ce8758","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"515ce8758","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","respond","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":false} -->
